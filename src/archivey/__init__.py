@@ -119,6 +119,7 @@ from archivey.types import (
     OnError,
     OverwritePolicy,
     StreamFormat,
+    Verification,
 )
 
 __all__ = [
@@ -198,6 +199,7 @@ __all__ = [
     "StreamNotSeekableError",
     "TruncatedError",
     "UnsupportedFeatureError",
+    "Verification",
     "__version__",
     "detect_format",
     "format_availability",

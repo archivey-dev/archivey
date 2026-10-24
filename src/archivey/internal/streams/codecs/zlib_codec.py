@@ -582,6 +582,7 @@ def _zlib_header_plausible(prefix: bytes) -> bool:
 
 class ZlibCodec(_ZlibErrorCodec):
     codec = Codec.ZLIB
+    checks_content = True
     _label = "zlib"
     stream_format = StreamFormat.ZLIB
     extension_aliases = (".zlib",)

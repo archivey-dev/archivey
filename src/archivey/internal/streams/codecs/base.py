@@ -346,6 +346,12 @@ class StreamCodec:
     # They matter most for the formats only a content probe recognises, whose probe runs
     # only for a name that claims the format.
     extension_aliases: ClassVar[tuple[str, ...]] = ()
+    # Whether the decoder checks every byte it decodes against a checksum the format
+    # requires (gzip's CRC-32, bzip2's CRCs, lzip's CRC-32, zlib's Adler-32), raising on
+    # a mismatch before it reports the end. Formats whose checksum is optional per
+    # frame (xz, zstd, LZ4) leave it False until their decoders report, per frame,
+    # that one was present. Read by a stream's verification level.
+    checks_content: ClassVar[bool] = False
 
     # --- derived single-file identity ---
 

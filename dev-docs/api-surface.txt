@@ -133,7 +133,7 @@ method archivey.ArchiveReader.open(self, member: str | ArchiveMember) -> Archive
 method archivey.ArchiveReader.read(self, member: str | ArchiveMember) -> bytes
 method archivey.ArchiveReader.stream_members(self, members: MemberSelector = None, *, file_copy_streams: bool = True) -> MemberPass[tuple[ArchiveMember, ArchiveStream | None]]
 class archivey.ArchiveStream(ReadOnlyIOStream)
-init archivey.ArchiveStream(open_fn: Callable[[], BinaryIO], *, translate: ExceptionTranslator, stamp: ErrorStamp | None = None, lazy: bool = False, seekable: bool = True, rewind_warning: RewindWarning | None = None, size: int | None = None, collector: DiagnosticCollector | None = None, on_close: CloseHook | None = None, expected_hashes: Mapping[HashAlgorithm, bytes] | None = None, expected_size: int | None = None, digest_transforms: Mapping[HashAlgorithm, Callable[[bytes], bytes]] | None = None, verify_member: ArchiveMember | None = None, end_check: Callable[[int], None] | None = None, fill_size: bool = False, archive_name: str | None = None, verifier: MemberVerifier | None = None, member_name: str | None = None, repeat_verdict: bool = True) -> None
+init archivey.ArchiveStream(open_fn: Callable[[], BinaryIO], *, translate: ExceptionTranslator, stamp: ErrorStamp | None = None, lazy: bool = False, seekable: bool = True, rewind_warning: RewindWarning | None = None, size: int | None = None, collector: DiagnosticCollector | None = None, on_close: CloseHook | None = None, expected_hashes: Mapping[HashAlgorithm, bytes] | None = None, expected_size: int | None = None, digest_transforms: Mapping[HashAlgorithm, Callable[[bytes], bytes]] | None = None, verify_member: ArchiveMember | None = None, end_check: Callable[[int], None] | None = None, fill_size: bool = False, archive_name: str | None = None, verifier: MemberVerifier | None = None, member_name: str | None = None, repeat_verdict: bool = True, checks_content: bool = False) -> None
 method archivey.ArchiveStream.close(self) -> None
 property archivey.ArchiveStream.diagnostics: DiagnosticSummary
 property archivey.ArchiveStream.mode: str
@@ -148,6 +148,8 @@ method archivey.ArchiveStream.seek(self, offset: int, whence: int = 0, /) -> int
 method archivey.ArchiveStream.seekable(self) -> bool
 property archivey.ArchiveStream.size: int | None
 method archivey.ArchiveStream.tell(self, /) -> int
+property archivey.ArchiveStream.verifiable: Verification
+property archivey.ArchiveStream.verified: Verification
 method archivey.ArchiveStream.writable(self) -> bool
 method archivey.ArchiveStream.write(self, b: object, /) -> int
 class archivey.ArchiveyConfig()
@@ -519,6 +521,12 @@ class archivey.TruncatedError(CorruptionError)
 init archivey.TruncatedError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
 class archivey.UnsupportedFeatureError(ArchiveyError)
 init archivey.UnsupportedFeatureError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+class archivey.Verification(IntEnum)
+enum archivey.Verification
+value archivey.Verification.NONE = 0
+value archivey.Verification.KEY = 1
+value archivey.Verification.STRUCTURE = 2
+value archivey.Verification.CONTENT = 3
 function archivey.detect_format(source: str | Path | BinaryIO, *, config: ArchiveyConfig | None = None, follow_stub_volumes: bool = True) -> FormatInfo
 function archivey.format_availability(fmt: ArchiveFormat | str, *, check_programs: bool = True) -> FormatAvailability
 function archivey.list_known_formats() -> list[ArchiveFormat]

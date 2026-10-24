@@ -786,6 +786,7 @@ def _starts_empty_bzip2_stream(data: bytes) -> bool:
 
 class Bzip2Codec(StreamCodec):
     codec = Codec.BZIP2
+    checks_content = True
     stream_format = StreamFormat.BZIP2
     magic = (MagicSignature(0, b"BZh", ArchiveFormat.BZ2),)
 

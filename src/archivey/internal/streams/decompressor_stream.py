@@ -66,6 +66,10 @@ from archivey.internal.streams.streamtools import (
     ensure_bufferedio,
     resolve_seek,
 )
+from archivey.internal.streams.verification import (
+    VerificationProofs,
+    ask_verification_proofs,
+)
 
 
 class _StreamChecksumError(CorruptionError):
@@ -1170,6 +1174,20 @@ class DecompressorStream(ReadOnlyIOStream):
         """
         i = bisect.bisect_right(self._seek_points, SeekPoint(pos, 0)) - 1
         return self._seek_points[i]
+
+    def _verification_proofs(self) -> VerificationProofs:
+        """Only a whole-content match from the source, and doubt about its key.
+
+        The source is compressed, so its end and length say nothing about the
+        decoded bytes. A check over all of it does: the WinZip AES HMAC covers every
+        ciphertext byte, and so every byte decoded from them.
+        """
+        below = ask_verification_proofs(self._inner)
+        return VerificationProofs(
+            key_in_doubt=below.key_in_doubt,
+            content=below.content,
+            content_possible=below.content_possible,
+        )
 
     def nearest_resume_offset(self, target: int) -> int:
         """Decompressed offset the decoder must restart from to reach ``target``.

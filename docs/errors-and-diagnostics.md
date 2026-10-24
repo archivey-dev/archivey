@@ -143,11 +143,35 @@ No option makes archivey check a member before handing you its bytes. If you mus
 unchecked data, read the whole member into memory or a temporary file first, and use it only once
 the read has finished without an error.
 
+A member stream tells you what has been checked so far. `stream.verified` is a `Verification`
+level, and `stream.verifiable` is the most a read from the start to the end can reach:
+
+| Level | What has been checked |
+|---|---|
+| `NONE` | Nothing yet, or the member's password passed only a check that a wrong password can pass by chance |
+| `KEY` | The member isn't encrypted, or its password passed a reliable check |
+| `STRUCTURE` | A read reached the end, and the length and the end of the data were as expected |
+| `CONTENT` | A checksum stored with the data matched every byte |
+
+The levels are ordered, so you can compare them:
+
+```python
+with archive.open(member) as stream:
+    data = stream.read()
+    if stream.verified < stream.verifiable:
+        ...  # a check this member carries didn't run
+```
+
+A member with no checksum of its own, such as a TAR, ISO or `.lzma` member, stops at
+`STRUCTURE`. A gzip, bzip2, lzip or zlib file reaches `CONTENT` from its own checksum when it's
+read from the start with no seek in between. `.xz`, `.zst` and `.lz4` files stop at `STRUCTURE`
+for now, even when they carry a checksum.
+
 An encrypted member whose password was accepted only on a weak check, such as the one-byte check of
-old ZIP encryption, is in the same position. If you close its stream before the end, or seek past
-bytes without reading them, archivey logs `ENCRYPTED_MEMBER_UNVERIFIED`, since the bytes you read
-may come from a wrong password. WinZip AES members are the exception: their check holds across
-seeks.
+old ZIP encryption, is in the same position. Its `stream.verified` stays `NONE` until its checksum
+matches. If you close its stream before the end, or seek past bytes without reading them, archivey
+logs `ENCRYPTED_MEMBER_UNVERIFIED`, since the bytes you read may come from a wrong password. WinZip
+AES members are the exception: their check holds across seeks.
 
 If you opened the archive with `seekable_members=True` (see [Choosing how to read](reading.md)),
 most seeks keep the checksum check: a seek back, a seek to or past the end, and a seek forward that
@@ -161,6 +185,10 @@ their own checksums aren't checked either. Seeking back to a point you had alrea
 it back. The length is still checked after a jump, and damage the decompressor itself notices still
 raises. Once a read has raised, a later read that reaches the end raises the same error, even after
 a seek, so seeking back can't hand you the damaged member as if it were complete.
+
+After seeks, `stream.verified` shows whether the checksum still ran. If it's below
+`stream.verifiable` once you've read to the end, a seek back to the start and a read to the end
+runs every check.
 
 [Damaged members](extracting.md#damaged-members) covers what extraction does.
 

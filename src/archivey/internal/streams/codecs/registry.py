@@ -145,6 +145,8 @@ class CodecBackend:
     _open: Callable[[CodecSource, CodecParams, StreamConfig], BinaryIO] = field(
         repr=False
     )
+    # The codec's ``StreamCodec.checks_content``.
+    checks_content: bool = False
 
     def open(
         self, source: CodecSource, params: CodecParams = _DEFAULT_PARAMS
@@ -174,6 +176,7 @@ def resolve_codec(
         translate=sc.translator(config),
         rewind_warning=sc.rewind_warning(config),
         _open=sc.open,
+        checks_content=sc.checks_content,
     )
 
 
@@ -232,6 +235,7 @@ def open_codec_stream(
         collector=collector if collector is not None else config.collector,
         on_close=on_close,
         repeat_verdict=repeat_verdict,
+        checks_content=backend.checks_content,
     )
 
 

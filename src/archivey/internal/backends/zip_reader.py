@@ -572,6 +572,9 @@ class _UnconfirmedZipCryptoStream(DelegatingStream):
     (see :func:`_is_candidate_integrity_failure`).
     """
 
+    # Translates errors and changes no byte: the verification level looks through.
+    forwards_verification = True
+
     def __init__(
         self, inner: BinaryIO, *, payload_complete: Callable[[], bool]
     ) -> None:

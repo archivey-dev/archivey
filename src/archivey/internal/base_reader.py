@@ -2385,8 +2385,15 @@ class BaseArchiveReader(ArchiveReader):
                 logger=integrity_logger,
             )
 
+        def key_in_doubt() -> bool:
+            return (check() if callable(check) else check) is not None
+
         return UnverifiedPasswordReadWatch(
-            stream, size=size, on_unverified=report, seek_forfeits=seek_forfeits
+            stream,
+            size=size,
+            on_unverified=report,
+            seek_forfeits=seek_forfeits,
+            key_in_doubt=key_in_doubt,
         )
 
     def _read_link_target_data(

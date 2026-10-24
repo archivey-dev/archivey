@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, tzinfo
-from enum import Enum, Flag, StrEnum, auto
+from enum import Enum, Flag, IntEnum, StrEnum, auto
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -427,6 +427,31 @@ class HashAlgorithm(StrEnum):
     """CRC-32, as four big-endian bytes."""
     BLAKE2SP = "blake2sp"
     """BLAKE2sp, 32 bytes. Only RAR5 stores it."""
+
+
+class Verification(IntEnum):
+    """How much of a member stream's data has been checked, from least to most.
+
+    ``ArchiveStream.verified`` is the level a stream has reached, and
+    ``ArchiveStream.verifiable`` the most it can reach by a read from the start to
+    the end. The levels are ordered, so ``stream.verified >= Verification.STRUCTURE``
+    reads as "at least the structure was checked".
+    """
+
+    NONE = 0
+    """Nothing is checked yet. The stream has not opened its member, or the member's
+    password passed only a check that a wrong password can pass by chance, such as the
+    one-byte check of old ZIP encryption."""
+    KEY = 1
+    """The bytes come from the right key: the member is not encrypted, or its password
+    passed a check a wrong password cannot pass by chance."""
+    STRUCTURE = 2
+    """The right key, and a read reached the end with the length and every
+    end-of-data check passing."""
+    CONTENT = 3
+    """The structure, and a checksum stored with the data matched every byte: the
+    member's CRC-32 or BLAKE2sp, the WinZip AES authentication code, or the checksum of
+    a gzip, bzip2, lzip or zlib stream read from its start."""
 
 
 class CompressionAlgorithm(Enum):

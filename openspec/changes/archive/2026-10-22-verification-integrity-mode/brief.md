@@ -7,7 +7,7 @@ proposal.md / design.md / tasks.md; do not introduce new decisions here.
 
 # verification-integrity-mode — A strict opt-in for content verification
 
-**Status:** Parked, not part of 0.2.0 (2026-10-07). Design proposal, accepted but deliberately not scheduled. Two questions stay open: what to call the modes, and whether a seek under strict verifies ahead or simply fails. Effort: moderate, and gated on a design question it shares with another idea.
+**Status:** Closed, not implemented (2026-10-22): the verification level replaced it. Earlier: parked, not part of 0.2.0 (2026-10-07). The questions below were never answered, and no longer need to be.
 
 **Why it matters:** Content verification is verify-as-you-go. Read a member fully and you get a verdict; read part of it, or seek, or read then close, and verification is quietly abandoned. That is deliberate, it is what keeps verification inside the performance budget, and decision fourteen settled it as the contract. What is missing is the way out of that bargain. Someone extracting an untrusted archive wants to demand verification however they read, and there is no way to ask. For an encrypted member the gap is sharper, because the authentication tag sits at the end: a partial read hands back plaintext that nobody has authenticated, with no error and no signal. The caller who most needs the guarantee is the one who cannot get it.
 

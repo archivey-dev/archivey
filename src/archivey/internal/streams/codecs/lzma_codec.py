@@ -126,6 +126,7 @@ class XzCodec(_SizedLzmaCodec):
 
 class LzipCodec(_SizedLzmaCodec):
     codec = Codec.LZIP
+    checks_content = True
     stream_format = StreamFormat.LZIP
     magic = (MagicSignature(0, b"LZIP", ArchiveFormat.LZIP),)
 

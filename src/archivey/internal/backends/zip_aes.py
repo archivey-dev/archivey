@@ -38,6 +38,7 @@ from archivey.internal.streams.streamtools import (
     read_exact,
     resolve_seek,
 )
+from archivey.internal.streams.verification import VerificationProofs
 
 # The wrong-password message of every ZIP decrypt path (ZipCrypto and WinZip AES), so
 # the paths cannot drift apart.
@@ -265,6 +266,7 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
         self._hashed = 0  # length of the ciphertext prefix the HMAC has taken in
         self._authenticated = False
         self._mac_failed = False
+        self._mac_matched = False
         self._cipher_len = cipher_len
         # The plaintext length, exactly (CTR adds no bytes). ``source_byte_size`` reads
         # it, so the codec layer's accelerator threshold and source bound see the true
@@ -329,6 +331,12 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
             # Every later read raises too: the last chunk it withheld stays withheld.
             self._mac_failed = True
             raise _mac_mismatch()
+        self._mac_matched = True
+
+    def _verification_proofs(self) -> VerificationProofs:
+        # The HMAC covers the whole ciphertext, so its match covers every byte decoded
+        # from it, below any codec. The source is ciphertext: nothing below counts.
+        return VerificationProofs(content=self._mac_matched, content_possible=True)
 
     def read(self, size: int | None = -1) -> bytes:
         if size is None:  # read to EOF, as on any ``io`` stream
@@ -442,6 +450,7 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
         self._buf = bytearray()
         self._ended = False
         self._mac_failed = False
+        self._mac_matched = False
 
     def _pull(self) -> None:
         chunk = self._source.read(FORWARD_READ)
@@ -467,6 +476,12 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
             # Every later read raises too: the last chunk it withheld stays withheld.
             self._mac_failed = True
             raise _mac_mismatch()
+        self._mac_matched = True
+
+    def _verification_proofs(self) -> VerificationProofs:
+        # The HMAC covers the whole ciphertext, so its match covers every byte decoded
+        # from it, below any codec. The source is ciphertext: nothing below counts.
+        return VerificationProofs(content=self._mac_matched, content_possible=True)
 
     def readall(self) -> bytes:
         # Through ``read(-1)``, so a ``hold_back`` stream refuses it too.

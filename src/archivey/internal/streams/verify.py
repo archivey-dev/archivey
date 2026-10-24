@@ -78,6 +78,10 @@ from archivey.internal.streams.streamtools import (
     is_closed_file_error,
     is_seekable,
 )
+from archivey.internal.streams.verification import (
+    VerificationProofs,
+    ask_verification_proofs,
+)
 from archivey.types import HashAlgorithm
 
 if TYPE_CHECKING:
@@ -259,6 +263,11 @@ class MemberVerifier:
         self._hashed_to = 0
         # Decode-error abandon: skip all end-of-stream checks on later reads.
         self._abandoned = False
+        # What the checks have proved, kept across a rewind (``_rearm``): the member's
+        # bytes do not change, so a check that passed once stays passed. Read by the
+        # stream's verification level (``proofs``).
+        self._ended_clean = False
+        self._digest_matched = False
         # Where a size-unknown member was seen to end, once a read reached its end at
         # the read frontier. ``None`` until then, and unused with a declared size.
         self._end_seen: int | None = None
@@ -388,6 +397,14 @@ class MemberVerifier:
             and self._hashed_to == self._furthest_read_pos
         )
 
+    def proofs(self) -> VerificationProofs:
+        """What this verifier has proved, for the stream's verification level."""
+        return VerificationProofs(
+            ended=self._ended_clean,
+            content=self._digest_matched,
+            content_possible=bool(self._expected),
+        )
+
     @property
     def pos(self) -> int:
         return self._pos
@@ -458,6 +475,7 @@ class MemberVerifier:
         if self._expected_size is None and self._end_check is not None:
             self._end_check(end)
         self._verify_digests()
+        self._digest_matched = True
         fill = self._fill_member
         if fill is not None:
             if fill.size is None:
@@ -541,6 +559,7 @@ class MemberVerifier:
         if resume is not None:
             inner.seek(resume)
         self._check_digests_if_complete()
+        self._ended_clean = True
 
     def _after_conclusion(self, data: bytes, *, at_eof: bool) -> bytes:
         """Record a read made after the length verdict; it may complete the hash.
@@ -989,6 +1008,9 @@ class VerifyingStream(ReadOnlyIOStream):
 
     def _digest_intact(self) -> bool | None:
         return self._verifier.digest_intact
+
+    def _verification_proofs(self) -> VerificationProofs:
+        return self._verifier.proofs().combine(ask_verification_proofs(self._inner))
 
     def tell(self) -> int:
         return self._verifier.tell(self._inner)

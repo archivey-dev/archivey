@@ -4,7 +4,8 @@
 - **Date:** 2026-07 (review of `gzip-zlib-truncation-recovery`, PR #183)
 - **Provenance:** OpenSpec `compressed-streams` (digest verification, read-vs-close
   fault split); `VISION.md` (no silent success; damaged input is first-class);
-  `verification-integrity-mode` change (STRICT opt-in)
+  `verification-level` change (the level a stream reports; it replaced the closed
+  `verification-integrity-mode` STRICT opt-in)
 
 ## Context
 
@@ -65,8 +66,11 @@ asked for a verdict at all.
 - `close()` never raises a content error (target contract; best-effort on a few
   backends today).
 
-Callers who need verification regardless of access pattern use
-`VerificationMode.STRICT` (`verification-integrity-mode`).
+A caller who needs a verdict reads the member to its end, which checks it after any
+seeks, and reads `stream.verified` to see which checks ran (`verification-level`).
+A mode that forced a verdict however the caller reads (`VerificationMode.STRICT`,
+`verification-integrity-mode`) was closed unimplemented in favour of that level
+(maintainer ruling, 2026-10-22).
 
 ## Consequences
 

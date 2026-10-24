@@ -25,6 +25,8 @@ Package map:
   named exception in that package's docstring).
 - :mod:`.verify` — ``MemberVerifier`` (+ standalone ``VerifyingStream`` for codec
   length backstops).
+- :mod:`.verification` — what each layer of a member stream has proved
+  (``ask_verification_proofs``), for ``ArchiveStream.verified``.
 - :mod:`.crypto` — AES decrypt stage (``[recommended]``) + 7z-local KDF helpers.
 - :mod:`.counting` — measurement wrappers (bytes / seeks).
 """
