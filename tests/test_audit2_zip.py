@@ -14,7 +14,6 @@ import hashlib
 import io
 import lzma
 import os
-import random
 import struct
 import subprocess
 import types
@@ -39,7 +38,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.streams.codecs.rapidgzip_child import RapidgzipChildStream
-from archivey.internal.streams.decompressor_stream import DataAfterEndError
+from archivey.internal.streams.decompressor_stream import DataAfterEndError, SeekPoint
 from tests.conftest import requires, requires_binary
 from tests.extract_util import open_and_extract
 from tests.streams_util import NonSeekableBytesIO
@@ -703,40 +702,29 @@ def test_rapidgzip_reads_a_long_second_stream_whose_size_and_crc_cover_both(
     # while it read, so the result is the same when it kept none.
     if not points_kept:
         monkeypatch.setattr(RapidgzipChildStream, "_query_points", lambda *_: None)
-    # 12 MiB of random data, about as long compressed, spans three of rapidgzip's
-    # 4 MiB chunks, so its index has a point in the second stream on every platform.
-    # A 2.6 MB second stream had one on Linux and none on Windows.
-    first, second = _counting_text(40_000), random.Random(0).randbytes(12 << 20)
+    first, second = _counting_text(40_000), _counting_text(1_200_000)
     stream = _raw_deflate(first, level=1) + _raw_deflate(second, level=1)
     blob = _build_zip([_Entry(b"a", stream, method=8, plain=first + second)])
     assert _outcome(blob) == ("raise", DataAfterEndError)
-    # What the end check saw, for the failure message: where the end was, the index,
-    # and the point it took.
-    seen: list[object] = []
+    # Where the end check started. Linux and macOS give the complete index points in
+    # the second stream; on windows-latest it held none past 0, even for a 12 MiB
+    # second stream, and the check decodes from the start.
+    points: list[int | None] = []
     find_point = RapidgzipChildStream.end_check_point
-    index = RapidgzipChildStream.block_offsets
 
-    def record_point(self: RapidgzipChildStream, end: int) -> object:
+    def record_point(self: RapidgzipChildStream, end: int) -> SeekPoint | None:
         point = find_point(self, end)
-        seen.append(("end", end, "point", point and point.decompressed_offset))
+        points.append(None if point is None else point.decompressed_offset)
         return point
 
-    def record_index(self: RapidgzipChildStream) -> dict[int, int]:
-        try:
-            offsets = index(self)
-        except Exception as exc:
-            seen.append(("index raised", repr(exc)))
-            raise
-        seen.append(("index", sorted(offsets.values())))
-        return offsets
-
     monkeypatch.setattr(RapidgzipChildStream, "end_check_point", record_point)
-    monkeypatch.setattr(RapidgzipChildStream, "block_offsets", record_index)
     outcome = _outcome(blob, config=ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON))
-    assert outcome == ("ok", hashlib.sha256(first + second).hexdigest()), (
-        len(first),
-        seen,
-    )
+    assert len(points) == 1, points
+    if points[0] is None or points[0] < len(first):
+        # No point in the second stream: the standard library's verdict.
+        assert outcome == ("raise", DataAfterEndError), points
+        pytest.skip(f"rapidgzip's index has no point in the second stream: {points}")
+    assert outcome == ("ok", hashlib.sha256(first + second).hexdigest()), points
 
 
 # ---------------------------------------------------------------------------------------

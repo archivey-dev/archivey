@@ -829,15 +829,17 @@ so when its output ends zlib decodes only the tail, from the last point of rapid
 complete index before the end, to find a final block and any input after it. The index
 is taken whole, not from the points the stream kept as it read, so the result does not
 depend on timing; it depends on the data and on how many threads rapidgzip runs, which
-follows the core count (it places points every few hundred KiB to a few MiB of output). A
-second stream that holds that point is then the stream whose end the check sees, and a
-member whose size and CRC cover both streams reads as both under rapidgzip; with the
-accelerator off it is `DataAfterEndError`, and 7-Zip and Info-ZIP read the first stream
-and fail the CRC. No known writer makes such a member. Finding the first stream's end
-would take a zlib decode from the start, which cost a full read under rapidgzip as much
-as the standard-library read it replaces (maintainer decision, 2026-10-24;
-`design-rules.md` DR-5a). A shorter second stream, junk, zeros and a cut stream keep the
-standard library's verdict.
+follows the core count (it places points every few hundred KiB to a few MiB of output on
+Linux and macOS; on the windows-latest CI runner a ZIP member's index held none past 0,
+so there the check decodes from the start). A second stream that holds that point is
+then the stream whose end the check sees, and a member whose size and CRC cover both
+streams reads as both under rapidgzip; with the accelerator off it is
+`DataAfterEndError`, and 7-Zip and Info-ZIP read the first stream and fail the CRC. No
+known writer makes such a member. Finding the first stream's end would take a zlib
+decode from the start, which cost a full read under rapidgzip as much as the
+standard-library read it replaces (maintainer decision, 2026-10-24; `design-rules.md`
+DR-5a). A shorter second stream, junk, zeros and a cut stream keep the standard
+library's verdict.
 
 Encrypted members take the same route with a decrypt stage between the slice and the codec
 layer, so they decode every method an unencrypted member does, and their CRC runs through

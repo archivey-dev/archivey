@@ -893,10 +893,9 @@ def test_rapidgzip_reads_a_long_second_deflate_stream_declared_with_the_first() 
     # after the stream"; maintainer decision 2026-10-24). A short first stream, then
     # a long one, the unpack size covering both. The end check decodes from the last
     # point of rapidgzip's index, in the second stream, so it sees only that stream's
-    # end. The second stream spans three of rapidgzip's 4 MiB chunks, so the index
-    # has a point in it on every platform (test_audit2_zip.py, the ZIP case).
+    # end.
     first = b"".join(b"%d " % i for i in range(40_000))
-    second = random.Random(0).randbytes(12 << 20)
+    second = b"".join(b"%d " % i for i in range(1_200_000))
     coder, one = _one_stream_coder("deflate", first)
     _, two = _one_stream_coder("deflate", second)
     data = _codec_archive([coder], [len(first + second)], one + two, first + second)
