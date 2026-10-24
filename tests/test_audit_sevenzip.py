@@ -887,6 +887,23 @@ def test_accelerated_coder_with_a_second_stream_is_corrupt(
         _read_only_member(data, config=config, seekable_members=True)
 
 
+@requires("rapidgzip")
+def test_rapidgzip_reads_a_long_second_deflate_stream_declared_with_the_first() -> None:
+    # The one case where the accelerator changes the result (7z.md, coders, "Input
+    # after the stream"; maintainer decision 2026-10-24). A short first stream, then
+    # one long enough that a resume point lies in it, the unpack size covering both.
+    # The end check decodes from that point, so it sees only the second stream's end.
+    first = b"".join(b"%d " % i for i in range(40_000))
+    second = b"".join(b"%d " % i for i in range(1_200_000))
+    coder, one = _one_stream_coder("deflate", first)
+    _, two = _one_stream_coder("deflate", second)
+    data = _codec_archive([coder], [len(first + second)], one + two, first + second)
+    with pytest.raises(DataAfterEndError):
+        _read_only_member(data)
+    on = ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
+    assert _read_only_member(data, config=on) == first + second
+
+
 def test_codec_in_a_bcj2_branch_decoding_past_its_unpack_size_is_corruption() -> None:
     # BCJ2 whose main branch is BZip2 (7z a -m0=BCJ2 -m1=BZip2 ...), with empty call
     # and jump streams and a 5-byte rc stream. With no branch opcodes in the payload,

@@ -390,7 +390,7 @@ where the reads had reached completes a paused digest, maintainer 2026-10-13.
 - **Operating system.** The same archive extracts the same way on Linux, macOS and
   Windows, or is refused everywhere.
 - **Accelerators and extras.** An accelerator changes speed, never the result or the
-  error type.
+  error type, but for one crafted shape (DR-5a).
 - **Entry point.** Public functions agree with each other (`detect_format` recognises
   what `open_archive` opens).
 - **When and where a call is made.** A call that works on one archive, or at one point in
@@ -456,6 +456,12 @@ meaning instead of 7-Zip's three bytes, because matching would mean carrying eac
 origin through the filters "for a name nobody writes on purpose" (2026-10-03, PR 564).
 The quadratic crafted hard-link shape was settled by the simpler backward-only rule
 rather than more memo state (2026-10-02, PR 532).
+rapidgzip on a ZIP or 7z DEFLATE member checks only the tail after its newest resume
+point, so a second stream long enough to hold one, with a size and CRC that cover both
+streams, reads as both; with the accelerator off it raises. Finding the first stream's
+end takes a decode from the start, which "negates the whole point of accelerators", so
+the limitation is accepted and documented (2026-10-24). It does not relax DR-1: the
+output is what the member's own size and CRC describe.
 
 **Reopen if** a real producer writes the shape.
 
