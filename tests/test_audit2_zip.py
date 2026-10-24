@@ -706,9 +706,32 @@ def test_rapidgzip_reads_a_long_second_stream_whose_size_and_crc_cover_both(
     stream = _raw_deflate(first, level=1) + _raw_deflate(second, level=1)
     blob = _build_zip([_Entry(b"a", stream, method=8, plain=first + second)])
     assert _outcome(blob) == ("raise", DataAfterEndError)
-    assert _outcome(blob, config=ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)) == (
-        "ok",
-        hashlib.sha256(first + second).hexdigest(),
+    # What the end check saw, for the failure message: where the end was, the index,
+    # and the point it took.
+    seen: list[object] = []
+    find_point = RapidgzipChildStream.end_check_point
+    index = RapidgzipChildStream.block_offsets
+
+    def record_point(self: RapidgzipChildStream, end: int) -> object:
+        point = find_point(self, end)
+        seen.append(("end", end, "point", point and point.decompressed_offset))
+        return point
+
+    def record_index(self: RapidgzipChildStream) -> dict[int, int]:
+        try:
+            offsets = index(self)
+        except Exception as exc:
+            seen.append(("index raised", repr(exc)))
+            raise
+        seen.append(("index", sorted(offsets.values())))
+        return offsets
+
+    monkeypatch.setattr(RapidgzipChildStream, "end_check_point", record_point)
+    monkeypatch.setattr(RapidgzipChildStream, "block_offsets", record_index)
+    outcome = _outcome(blob, config=ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON))
+    assert outcome == ("ok", hashlib.sha256(first + second).hexdigest()), (
+        len(first),
+        seen,
     )
 
 
