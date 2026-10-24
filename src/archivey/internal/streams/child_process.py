@@ -19,7 +19,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import IO
 
-from archivey.exceptions import ArchiveyError, ReadError, ResourceLimitError
+from archivey.exceptions import ArchiveyError, ReadError, ResourceUnavailableError
 
 # Seconds a child has to exit after it is told to end (its pipes closed, or a signal
 # sent) before it is killed.
@@ -179,7 +179,7 @@ def outside_death(returncode: int | None, what: str) -> tuple[type[ArchiveyError
 
     ``what`` says which process ended and how, such as ``describe_exit``'s text. The
     end came from outside the decoder, so it is no verdict on the data:
-    ``ResourceLimitError`` for SIGKILL (most often the out-of-memory killer), and
+    ``ResourceUnavailableError`` for SIGKILL (most often the out-of-memory killer), and
     ``ReadError`` for any other end.
 
     ``signal_exit_error`` in ``archivey.internal.external.cli`` classifies the end of
@@ -190,7 +190,7 @@ def outside_death(returncode: int | None, what: str) -> tuple[type[ArchiveyError
     """
     if is_system_kill(returncode):
         return (
-            ResourceLimitError,
+            ResourceUnavailableError,
             (
                 f"{what}. SIGKILL comes from outside the decoder, most often the "
                 "system's out-of-memory killer, so the data may be valid; read it "

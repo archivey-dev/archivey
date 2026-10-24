@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import lzma
 import random
+import sys
 import tarfile
 from dataclasses import replace
 from pathlib import Path
@@ -21,6 +22,7 @@ from archivey import (
     DecoderLimits,
     DetectionConfidence,
     DiagnosticPolicy,
+    ProcessIsolation,
     detect_format,
     open_archive,
 )
@@ -30,6 +32,7 @@ from archivey.exceptions import (
     CorruptionError,
     DiagnosticRaisedError,
     ResourceLimitError,
+    ResourceUnavailableError,
 )
 from archivey.internal.detection import _extension_corroborates
 from archivey.internal.streams.codecs.brotli_framing import BrotliBlock, parse_metablock
@@ -169,6 +172,25 @@ def test_lzma_alone_probable_limit_refusal_sets_format_unconfirmed() -> None:
     assert "Partial output" not in message
     codes = {d.code for d in diagnostics}
     assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED in codes
+
+
+def test_a_shortage_on_unconfirmed_evidence_is_not_called_a_limit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``ResourceUnavailableError`` is stamped as the system running short, not as a
+    limit: no limit was set, and a decoder killed part-way may have produced output."""
+    # ``.lzma`` has no signature: the name is the only evidence.
+    path = tmp_path / "data.lzma"
+    path.write_bytes(lzma.compress(b"x" * 10_000, format=lzma.FORMAT_ALONE))
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "no-such-python"))
+    config = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
+    with pytest.raises(ResourceUnavailableError) as caught:
+        _open_and_read(path, config=config)
+    assert caught.value.format_unconfirmed is True
+    message = str(caught.value)
+    assert "system ran short" in message
+    assert "stopped by a limit" not in message
+    assert "Partial output may already have been produced" in message
 
 
 def test_lzma_alone_limit_refusal_with_extension_is_not_stamped(

@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import io
 import struct
+import sys
 import zipfile
 import zlib
 from pathlib import Path
@@ -16,7 +17,11 @@ from pathlib import Path
 import pytest
 
 import archivey
-from archivey.exceptions import ResourceLimitError, UnsupportedFeatureError
+from archivey.exceptions import (
+    ResourceLimitError,
+    ResourceUnavailableError,
+    UnsupportedFeatureError,
+)
 from tests.extract_util import open_and_extract
 from tests.zipcrypto import _Keys, build_zipcrypto_zip
 
@@ -206,3 +211,36 @@ def test_idna_unflagged_fallback_keeps_the_cp437_name() -> None:
     config = archivey.ArchiveyConfig(zip_unflagged_fallback_encoding="idna")
     with archivey.open_archive(io.BytesIO(buf.getvalue()), config=config) as ar:
         assert [m.name for m in ar.members()] == ["café.txt"]
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("password", ["right", ["wrong", "right"]])
+def test_no_decoder_child_under_zipcrypto_is_not_a_noted_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    password: str | list[str],
+    streaming: bool,
+) -> None:
+    """A decoder child that cannot start is the system running short, not settings a
+    wrong key decrypted: it stays ``ResourceUnavailableError``, with no password note
+    (format-zip, "Read ZipCrypto-encrypted members")."""
+    blob = build_zipcrypto_zip(
+        b"right", b"a.txt", _LZMA_COLLISION_PAYLOAD, compression=zipfile.ZIP_LZMA
+    )
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "no-such-python"))
+    config = archivey.ArchiveyConfig(
+        process_isolation=archivey.ProcessIsolation.NATIVE_DECODERS
+    )
+    with (
+        archivey.open_archive(
+            io.BytesIO(blob), password=password, config=config, streaming=streaming
+        ) as ar,
+        pytest.raises(ResourceUnavailableError) as excinfo,
+    ):
+        if streaming:
+            for _member, stream in ar.stream_members():
+                assert stream is not None
+                stream.read()
+        else:
+            ar.read(ar.members()[0])
+    assert "password may be wrong" not in str(excinfo.value)

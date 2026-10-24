@@ -15,7 +15,7 @@ from archivey.config import RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE, ProcessIsolation
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
-    ResourceLimitError,
+    ResourceUnavailableError,
     StreamNotSeekableError,
     TruncatedError,
     exception_detail,
@@ -298,7 +298,7 @@ def _accelerator_field(label: str) -> str:
 
 
 def _no_child_reason(label: str) -> str:
-    """The start of the ``ResourceLimitError`` message for a ``label`` stream whose
+    """The start of the ``ResourceUnavailableError`` message for a ``label`` stream whose
     rapidgzip child cannot run."""
     field_name = _accelerator_field(label)
     return (
@@ -309,11 +309,11 @@ def _no_child_reason(label: str) -> str:
 
 
 def _require_rapidgzip_child(label: str) -> None:
-    """Raise ``ResourceLimitError`` where no rapidgzip child process can run here
+    """Raise ``ResourceUnavailableError`` where no rapidgzip child process can run here
     (:func:`rapidgzip_child_unavailable_reason`). Starts nothing."""
     unavailable = rapidgzip_child_unavailable_reason()
     if unavailable is not None:
-        raise ResourceLimitError(f"{_no_child_reason(label)} ({unavailable}).")
+        raise ResourceUnavailableError(f"{_no_child_reason(label)} ({unavailable}).")
 
 
 def _open_rapidgzip(
@@ -337,7 +337,7 @@ def _open_rapidgzip(
     import rapidgzip), ``AUTO`` returns ``None`` and the caller decodes with the
     standard library, as ``AUTO`` does when rapidgzip is absent. Each of those fails
     before the child reads any of ``source``, so the caller's source is where it was.
-    ``ON`` raises ``ResourceLimitError`` rather than decode in-process.
+    ``ON`` raises ``ResourceUnavailableError`` rather than decode in-process.
 
     The child's memory is capped at ``DecoderLimits.max_decoder_memory``: rapidgzip
     keeps decoded chunks, so a small file that decodes to gigabytes would otherwise
@@ -357,7 +357,7 @@ def _open_rapidgzip(
         )
     except RapidgzipChildStartError as exc:
         if getattr(config, field_name) is not AcceleratorMode.AUTO:
-            raise ResourceLimitError(f"{reason} ({exc}).") from exc
+            raise ResourceUnavailableError(f"{reason} ({exc}).") from exc
         _warn_child_fallback(str(exc), field_name)
         return None
 

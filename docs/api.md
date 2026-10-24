@@ -121,7 +121,8 @@ or its environment. `ArchiveyUsageError` covers mistakes in the calling code and
 deliberately outside that tree, so `except ArchiveyError` does not hide them. The
 entries below follow the class tree: each group starts with its base class, except the
 group from `ResourceLimitError` to `DiagnosticRaisedError`. Those four are direct
-subclasses of `ArchiveyError` and unrelated to each other.
+subclasses of `ArchiveyError` and unrelated to each other, and only `ResourceLimitError`
+has a subclass, `ResourceUnavailableError`, listed after it.
 [Errors and diagnostics](errors-and-diagnostics.md) explains which one to catch.
 
 ::: archivey.ArchiveyError
@@ -143,6 +144,7 @@ subclasses of `ArchiveyError` and unrelated to each other.
 ::: archivey.NameRewrittenError
 
 ::: archivey.ResourceLimitError
+::: archivey.ResourceUnavailableError
 ::: archivey.UnsupportedFeatureError
 ::: archivey.PackageNotInstalledError
 ::: archivey.DiagnosticRaisedError

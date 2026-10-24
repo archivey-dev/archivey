@@ -20,7 +20,7 @@ from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
     ReadError,
-    ResourceLimitError,
+    ResourceUnavailableError,
 )
 from archivey.internal.streams.codecs import decoder_child, decoder_worker
 from archivey.internal.streams.codecs.decoder_child import POOL, DecoderChild
@@ -315,7 +315,7 @@ def test_a_re_run_that_disagrees_with_delivered_output_raises(stand_in: Path) ->
 @pytest.mark.parametrize(
     ("signum", "error"),
     # By name: Windows has no SIGKILL, and collection runs there before the skip.
-    [("SIGKILL", ResourceLimitError), ("SIGTERM", ReadError)],
+    [("SIGKILL", ResourceUnavailableError), ("SIGTERM", ReadError)],
 )
 def test_an_end_from_outside_is_not_a_verdict(
     stand_in: Path, signum: str, error: type[Exception]
@@ -425,7 +425,7 @@ def test_no_fresh_child_part_way_is_the_open_time_error(
     monkeypatch.setattr(decoder_child, "_Process", refuse)
     try:
         for _ in range(2):  # and again on the next call
-            with pytest.raises(ResourceLimitError, match="process_isolation"):
+            with pytest.raises(ResourceUnavailableError, match="process_isolation"):
                 child.call("decompress", zlib.compress(os.urandom(5000)))
     finally:
         child.close()

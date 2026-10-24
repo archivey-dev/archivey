@@ -265,7 +265,7 @@ class Natives:
         known: dict[tuple[str, str], type[Exception]] | None = None,
         reuse: bool = True,
     ) -> DecoderChild:
-        """A decoder of ``codec`` in a child process. Raises ``ResourceLimitError``
+        """A decoder of ``codec`` in a child process. Raises ``ResourceUnavailableError``
         naming ``process_isolation`` when no child can run it."""
         reason = decoder_child_unavailable_reason(codec)
         if reason is not None:

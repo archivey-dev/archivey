@@ -154,7 +154,7 @@ costs only the member being read:
   each PPMd member, or each solid PPMd folder, costs about 1.4 to 2 ms more, and each 4 KiB
   member read from a solid PPMd folder about 0.1 to 0.35 ms, with the copying of larger members
   on top ([why every PPMd member](#where-the-guarantees-stop)). Where no child process can start, such as in a frozen
-  application, a PPMd member raises `ResourceLimitError`, and rapidgzip gives way to the standard
+  application, a PPMd member raises `ResourceUnavailableError`, and rapidgzip gives way to the standard
   library's decoder with one warning.
 - **`ProcessIsolation.NATIVE_DECODERS`** also isolates zlib, bz2, lzma, zstd, lz4, brotli and
   inflate64 (Deflate64), detection's trial decodes included. Reads take longer. Measured on one
@@ -165,7 +165,7 @@ costs only the member being read:
   folder is one decoder, plus about 0.1 to 0.3 ms for each 4 KiB member read from it, with the
   copying of larger members on top. Each process
   holds about 9 MB while it waits to be reused. Where no child process can start, reading raises
-  `ResourceLimitError`; nothing is decoded in your process instead.
+  `ResourceUnavailableError`; nothing is decoded in your process instead.
   [`scripts/bench_process_isolation.py`](https://github.com/archivey-dev/archivey/blob/main/scripts/bench_process_isolation.py)
   in the repository measures these costs on your machine.
 - **`ProcessIsolation.NONE`** decodes everything in your process. It's for trusted files, tests,
@@ -178,8 +178,8 @@ invalid read, so it may still have that bug. Under the default, a crash or a wil
 that member, not your process, though a crafted member may still decode to wrong data.
 
 AES decryption and checksums always run in your process. A child that crashes raises
-`CorruptionError`, and one killed from outside raises `ResourceLimitError` (most often the
-out-of-memory killer) or `ReadError`. No setting limits how long a decoder takes; for that, see
+`CorruptionError`, and one killed from outside raises `ResourceUnavailableError` (SIGKILL, most
+often the out-of-memory killer) or `ReadError`. No setting limits how long a decoder takes; for that, see
 the time-limit recipe [above](#where-the-guarantees-stop).
 
 ??? note "Why are processes reused, and what if a member damages one?"

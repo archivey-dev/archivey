@@ -770,7 +770,7 @@ inherited decoder leaves the parent's child alone, and a call on one SHALL raise
 
 A decoder child that ends during a request SHALL be reported by how it ended, and every
 later call on that decoder SHALL raise the same error: a fault signal (or its Windows
-status) SHALL raise `CorruptionError`; SIGKILL SHALL raise `ResourceLimitError`; any other
+status) SHALL raise `CorruptionError`; SIGKILL SHALL raise `ResourceUnavailableError`; any other
 end SHALL raise `ReadError`, which is not a verdict on the data. An exception the
 decoder raises in the child SHALL reach the codec's translator as the same type it
 would raise in-process, so a corrupt or truncated stream raises the same archivey
@@ -780,7 +780,7 @@ error under every value.
 
 | Case | Expected |
 | --- | --- |
-| The decoder child crashes / is killed by SIGKILL / by SIGTERM during a read | `CorruptionError` / `ResourceLimitError` / `ReadError`; every later read raises it again |
+| The decoder child crashes / is killed by SIGKILL / by SIGTERM during a read | `CorruptionError` / `ResourceUnavailableError` / `ReadError`; every later read raises it again |
 | A corrupt deflate stream under `NATIVE_DECODERS` | `CorruptionError`, the same message as `KNOWN_CRASHES`; that child is not reused |
 
 ### Requirement: Start failures, NONE and time limits
@@ -789,7 +789,7 @@ Under `NATIVE_DECODERS`, and for PPMd and rapidgzip `ON` under `KNOWN_CRASHES`, 
 child process can be started (a frozen application,
 an interpreter without `sys.executable`, an archivey imported from a zip with no worker
 script on disk, a spawn the operating system refuses), opening a decoder SHALL raise
-`ResourceLimitError` naming the reason and `process_isolation`; it MUST NOT decode
+`ResourceUnavailableError` naming the reason and `process_isolation`; it MUST NOT decode
 in-process. A decoder that needs a fresh child part-way through a member (a re-run, or
 the move past the replay record's bound) SHALL raise the same error the same failure
 raises at open. rapidgzip `AUTO` under `KNOWN_CRASHES` keeps falling back to the standard
@@ -810,8 +810,8 @@ The system SHALL NOT bound the time a decoder takes under any value.
 
 | Case | Expected |
 | --- | --- |
-| `NATIVE_DECODERS`, no child process can be started | `ResourceLimitError` naming `process_isolation`; nothing decoded in-process |
-| 7z PPMd member of 1 KB, default config, no child process can be started | `ResourceLimitError` naming `process_isolation` on the first read |
-| A decoder needs a fresh child part-way through a member, and none can start / the fresh child cannot allocate the PPMd model | `ResourceLimitError` naming `process_isolation` / `ResourceLimitError` "Decoder limit reached" |
+| `NATIVE_DECODERS`, no child process can be started | `ResourceUnavailableError` naming `process_isolation`; nothing decoded in-process |
+| 7z PPMd member of 1 KB, default config, no child process can be started | `ResourceUnavailableError` naming `process_isolation` on the first read |
+| A decoder needs a fresh child part-way through a member, and none can start / the fresh child cannot allocate the PPMd model | `ResourceUnavailableError` naming `process_isolation` / `ResourceUnavailableError` saying the decoder process could not allocate the model |
 | 7z PPMd member of 200 KB compressed, `max_ppmd_held_input=1024`, `NONE` | Decoded in-process |
 | gzip stream opened seekable, `use_rapidgzip=AUTO`, `NONE` | Standard library decoder; no warning |

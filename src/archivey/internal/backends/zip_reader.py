@@ -82,6 +82,7 @@ from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
     ResourceLimitError,
+    ResourceUnavailableError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -3741,6 +3742,9 @@ class ZipReader(BaseArchiveReader):
             body = stage(password)
             try:
                 decoded = decode_body(body)
+            except ResourceUnavailableError:
+                # The system ran short (no decoder child, say): not the settings.
+                raise
             except ResourceLimitError as exc:
                 # The LZMA or PPMd settings decrypted to a size over the cap. The
                 # password may be wrong, but the size may be real: say both, and keep
@@ -3856,6 +3860,10 @@ class ZipReader(BaseArchiveReader):
             try:
                 try:
                     probe = decode_body(body)
+                except ResourceUnavailableError:
+                    # A shortage, not what the decrypted settings asked for: it must
+                    # not become a candidate failure below.
+                    raise
                 except ResourceLimitError as exc:
                     if not cipher.keyed_settings:
                         raise

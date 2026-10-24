@@ -1278,7 +1278,7 @@ candidate iteration. Under `process_isolation=KNOWN_CRASHES` (the default) and
 "Native decoders run where process_isolation puts them"), where a crash of the native
 decoder (a fault signal such as SIGSEGV, or the Windows status for the same fault) SHALL
 surface as `CorruptionError`. A child killed by SIGKILL, or one that dies allocating the
-member's model, SHALL raise `ResourceLimitError`, as SHALL a member where no child process
+member's model, SHALL raise `ResourceUnavailableError`, as SHALL a member where no child process
 can be started. A child that ends any other way (another signal, a plain exit status)
 SHALL raise `ReadError`, which is not a verdict on the data. `max_ppmd_held_input`
 SHALL bound the compressed bytes of one PPMd member the process holds to hand to pyppmd
@@ -1339,8 +1339,8 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 | `detect_format(BytesIO(zlib_bytes))`, then with `always_probe_content=True` | `FormatDetectionError`, then `ZLIB` / `content_probe` |
 | Reader opened with `read_link_targets=False` | No data-stored link target is read by listing or a pass for the reader lifetime |
 | Header-encrypted RAR5 set of four parts, one encryption record repeated, `max_key_derivation_rounds` one round short of key + PswCheck | `ResourceLimitError` at `open_archive`; at exactly key + PswCheck the set lists |
-| 7z PPMd member of 200 KB compressed, no child process possible | `ResourceLimitError` on the first read, naming `process_isolation` |
-| Same member; the child crashes / is killed by SIGKILL / by SIGTERM | `CorruptionError` / `ResourceLimitError` / `ReadError`, not `CorruptionError` |
+| 7z PPMd member of 200 KB compressed, no child process possible | `ResourceUnavailableError` on the first read, naming `process_isolation` |
+| Same member; the child crashes / is killed by SIGKILL / by SIGTERM | `CorruptionError` / `ResourceUnavailableError` / `ReadError`, not `CorruptionError` |
 | Same member, `process_isolation=NONE`, `max_ppmd_held_input=1024` / default | In-process, fed in pieces / held and decoded whole |
 | Valid 7z PPMd member of 8 MiB (one random 1 MiB block, 8 times), default config | Held, decoded whole in a child, read in full |
 | Same member, `max_ppmd_held_input` of 1 MiB, in a child or with `process_isolation=NONE` | Fed in pieces, read in full |

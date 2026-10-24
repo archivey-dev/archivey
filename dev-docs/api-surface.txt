@@ -492,6 +492,8 @@ class archivey.ReadError(ArchiveyError)
 init archivey.ReadError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
 class archivey.ResourceLimitError(ArchiveyError)
 init archivey.ResourceLimitError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+class archivey.ResourceUnavailableError(ResourceLimitError)
+init archivey.ResourceUnavailableError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
 class archivey.SpoolLimits()
 init archivey.SpoolLimits(max_bytes: int | None = 1073741824) -> None
 field archivey.SpoolLimits.max_bytes: int | None = 1073741824

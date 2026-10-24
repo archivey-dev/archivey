@@ -292,7 +292,7 @@ class NameRewrittenError(ExtractionError):
 
 
 class ResourceLimitError(ArchiveyError):
-    """A configured resource limit was exceeded, or a decoder could not get a resource.
+    """A configured resource limit was exceeded, or the system did not give a resource.
 
     Covers :class:`~archivey.config.ListingLimits` listing caps,
     parse-time ``max_members`` on ZIP, 7z, RAR and ISO,
@@ -300,12 +300,27 @@ class ResourceLimitError(ArchiveyError):
     :class:`~archivey.config.DecoderLimits` caps on archive-declared decoder memory
     and key-derivation work, and :class:`~archivey.config.SpoolLimits`, the cap on
     copying a stream source to temporary storage; opening the archive from a path
-    avoids that copy. Also raised for a decoder that
-    :class:`~archivey.config.ProcessIsolation` runs only in a child process when no
-    child can start, and for a decoder child ended by SIGKILL (most often the
-    out-of-memory killer).
+    avoids that copy. A shortage of the system rather than a configured limit raises
+    the subclass :class:`ResourceUnavailableError`.
     Sibling of :class:`ExtractionError` (not a subclass): these are not filter/path
     failures.
+    """
+
+
+class ResourceUnavailableError(ResourceLimitError):
+    """The system did not give a resource the read needed; no configured limit was
+    exceeded.
+
+    Raised when a decoder or helper program is ended by SIGKILL (most often the
+    out-of-memory killer), when a decoder that
+    :class:`~archivey.config.ProcessIsolation` runs only in a child process cannot
+    have one (a frozen application, a refused spawn), and when a PPMd decoder process
+    cannot allocate the member's model (a container memory limit). The data may be
+    valid: read it again with more memory, or where child processes can start. Raising
+    a limit in the config does not help.
+
+    A subclass of :class:`ResourceLimitError`, so code that catches that type catches
+    this one too.
     """
 
 

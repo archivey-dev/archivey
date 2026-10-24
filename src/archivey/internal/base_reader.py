@@ -63,6 +63,7 @@ from archivey.exceptions import (
     PackageNotInstalledError,
     ReadError,
     ResourceLimitError,
+    ResourceUnavailableError,
     UnsupportedFeatureError,
     _UsageTypeError,
     _UsageValueError,
@@ -1340,7 +1341,14 @@ class BaseArchiveReader(ArchiveReader):
                 f"Format identification was unconfirmed ({evidence_short}); "
                 f"the source may not be {stamped_format}."
             )
-            if isinstance(exc, ResourceLimitError):
+            if isinstance(exc, ResourceUnavailableError):
+                # The system ran short, maybe part-way through (a decoder process
+                # killed from outside), so no limit is to blame and output may exist.
+                new_msg = (
+                    f"{unconfirmed} The read was stopped because the system ran short: "
+                    f"{detail}. Partial output may already have been produced"
+                )
+            elif isinstance(exc, ResourceLimitError):
                 # A limit stops the read rather than the decoder failing on it, and a
                 # decoder-memory refusal stops it before anything is decoded, so
                 # neither "decode failed" nor "partial output" would be true of it.

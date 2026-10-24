@@ -80,7 +80,7 @@ class ProcessIsolation(Enum):
 
     A decoder in a child process whose process crashes raises
     :class:`~archivey.CorruptionError`; one killed from outside raises
-    :class:`~archivey.ResourceLimitError` (SIGKILL, most often the out-of-memory killer)
+    :class:`~archivey.ResourceUnavailableError` (SIGKILL, most often the out-of-memory killer)
     or :class:`~archivey.ReadError`. Checksums and AES decryption always run in the
     caller's process, and no setting bounds how long a decoder takes.
     """
@@ -97,7 +97,7 @@ class ProcessIsolation(Enum):
     it; the decoded bytes cross between processes on top of that, at the copying cost
     ``NATIVE_DECODERS`` gives for single streams.
     Where no child process can be started, a PPMd member raises
-    :class:`~archivey.ResourceLimitError` and rapidgzip under ``AUTO`` falls back to the
+    :class:`~archivey.ResourceUnavailableError` and rapidgzip under ``AUTO`` falls back to the
     standard library."""
     NATIVE_DECODERS = "native_decoders"
     """Every native decoder runs in a child process: zlib, bz2, lzma, zstd, lz4, brotli,
@@ -114,7 +114,7 @@ class ProcessIsolation(Enum):
     plus about 0.1 to 0.3 ms for each 4 KiB member read from it, with the copying of
     larger members on top. An idle process holds about 9 MB. Where no child process can
     be started (a frozen application, archivey imported from a zip, a refused spawn),
-    opening a decoder raises :class:`~archivey.ResourceLimitError`; nothing is decoded
+    opening a decoder raises :class:`~archivey.ResourceUnavailableError`; nothing is decoded
     in the caller's process."""
     NONE = "none"
     """No child process at all: every decoder runs in the caller's process.
@@ -686,7 +686,7 @@ class ArchiveyConfig:
     closes. Where no child can be started (a frozen application, archivey imported from
     a zip, or a spawn or temporary file the operating system refuses), ``AUTO`` uses the
     standard library, logging one warning per process on the ``archivey.streams``
-    logger, and ``ON`` raises :class:`~archivey.exceptions.ResourceLimitError`.
+    logger, and ``ON`` raises :class:`~archivey.exceptions.ResourceUnavailableError`.
     ``OFF`` never starts a child.
     """
 
@@ -700,7 +700,7 @@ class ArchiveyConfig:
     precaution, because it comes from the same library as the gzip decoder, which does
     crash on some input. Where no child can be started, ``AUTO`` uses the standard
     library, logging one warning per process on the ``archivey.streams`` logger, and
-    ``ON`` raises :class:`~archivey.exceptions.ResourceLimitError`.
+    ``ON`` raises :class:`~archivey.exceptions.ResourceUnavailableError`.
     """
 
     process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES

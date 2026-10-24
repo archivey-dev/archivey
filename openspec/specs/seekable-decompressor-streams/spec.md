@@ -96,7 +96,7 @@ requirement): the child opens a path source itself, a stream source stays in the
 process, a child that dies on the data is a verdict the standard library takes over from,
 and where no child can be started `AUTO` decodes with the stdlib backend, logging one
 warning per process that names `use_indexed_bzip2=OFF`, and `ON` raises
-`ResourceLimitError`. No crash of that decoder has been seen; it is isolated as a precaution,
+`ResourceUnavailableError`. No crash of that decoder has been seen; it is isolated as a precaution,
 because it comes from the same library as the DEFLATE decoder, whose crashes cannot always be
 avoided. A maintainer script SHALL run each rapidgzip decoder
 in-process on damaged input in a watched process and report every crash by its
@@ -109,7 +109,7 @@ signature, so that whether the isolation is still needed stays measurable.
 | `use_rapidgzip` enabled and package installed | gzip seeks without full re-decompression |
 | `use_indexed_bzip2` enabled and rapidgzip installed | bzip2 uses `rapidgzip.IndexedBzip2File` in a child process; the caller's process imports neither rapidgzip nor standalone `indexed_bzip2` |
 | `use_indexed_bzip2=AUTO`, no child process can start | stdlib decoder; one warning per process naming `use_indexed_bzip2=OFF` |
-| `use_indexed_bzip2=ON`, no child process can start | `ResourceLimitError`; never decoded in-process |
+| `use_indexed_bzip2=ON`, no child process can start | `ResourceUnavailableError`; never decoded in-process |
 | rapidgzip absent or flag `OFF` | stdlib decoder; backward seek re-decompresses from the start, or from a known gzip member start, and warns when it re-decodes past the threshold |
 
 ### Requirement: DEFLATE-family random access uses rapidgzip
@@ -157,7 +157,7 @@ temporary file the operating system refuses, a child that cannot import rapidgzi
 SHALL decode with the stdlib backend, as it does when rapidgzip is absent, and SHALL log one
 warning per process on the `archivey.streams` logger naming the reason and
 `use_rapidgzip=OFF` (none where rapidgzip is absent). `ON` in that case SHALL raise
-`ResourceLimitError` naming the reason and `use_rapidgzip=OFF`; it MUST NOT decode
+`ResourceUnavailableError` naming the reason and `use_rapidgzip=OFF`; it MUST NOT decode
 in-process.
 
 rapidgzip keeps decoded chunks in memory, so its memory grows with what the data decodes to,
@@ -184,7 +184,7 @@ the member's compressed length); an unbounded or over-long stream MAY raise a sp
 | rapidgzip absent, `OFF`, or size < `AUTO` threshold | stdlib `zlib` (`-15` / `MAX_WBITS`); backward seek re-decompresses from start |
 | Accelerator fed an over-long/unbounded slice | May raise a spurious decode error on trailing bytes; callers MUST bound the input |
 | No child can be started (frozen interpreter, zip import, refused spawn or temporary file), `AUTO` | stdlib backend |
-| No child can be started, `ON` | `ResourceLimitError` at open |
+| No child can be started, `ON` | `ResourceUnavailableError` at open |
 | A `deflate` source that starts like gzip, zlib or bzip2, or a `zlib` source with no valid zlib header or with a preset dictionary, `ON` | The bytes and error of `OFF` (`CorruptionError` at the header) |
 | A raw DEFLATE stream cut before any output (`03`), `ON`, with or without a declared size | `TruncatedError`, as with `OFF` |
 | A raw DEFLATE stream cut after a whole block or inside its last one, `ON`, with or without a declared size equal to the output before the cut | `TruncatedError`, as with `OFF` |
@@ -249,7 +249,7 @@ translated `compressed-streams` error rather than aborting the process.
 A DEFLATE-family child process that ends during a request SHALL be reported by how it ended,
 and every later call on the child stream SHALL raise the same error: a fault signal (or its
 Windows status) is a verdict on the data — `TruncatedError` when rapidgzip's abort names the
-truncation, else `CorruptionError`; SIGKILL is `ResourceLimitError`; any other end is
+truncation, else `CorruptionError`; SIGKILL is `ResourceUnavailableError`; any other end is
 `ReadError`.
 
 A fault signal, like a data error rapidgzip reports on a read or a seek, SHALL hand the read
@@ -316,7 +316,7 @@ inside a DEFLATE block SHALL still surface as `CorruptionError`.
 | Truncated gzip/zlib/deflate that aborts rapidgzip, any source, any access pattern | The process survives; the bytes and the error of the standard library decoder (`TruncatedError`) |
 | A fault signal ends the child on a valid stream | The standard library reads on from the delivered position; the caller loses nothing |
 | A resumed standard-library decode reaches the end of a DEFLATE stream (a later member, bytes after the data) | It starts over from the start of the stream; the stream's checksum is checked |
-| DEFLATE-family child killed by SIGKILL / ended by SIGTERM | `ResourceLimitError` / `ReadError`; later calls raise the same |
+| DEFLATE-family child killed by SIGKILL / ended by SIGTERM | `ResourceUnavailableError` / `ReadError`; later calls raise the same |
 | Caller-owned source raises while the child reads it | That exception, unchanged; a later child death is `ReadError` |
 | Caller-owned source after the archivey stream closes | Still open and readable; accelerator/wrapper closed only its own view |
 | Damaged standalone zlib through rapidgzip, read to its end | `CorruptionError`; never a silent wrong read (Adler-32 check) |

@@ -29,7 +29,7 @@ from typing import IO, BinaryIO, cast
 from archivey.exceptions import (
     PackageNotInstalledError,
     ReadError,
-    ResourceLimitError,
+    ResourceUnavailableError,
 )
 from archivey.internal.streams.child_process import (
     describe_exit,
@@ -305,12 +305,14 @@ def spawn_for_stdout(
     return proc, cast(BinaryIO, proc.stdout)
 
 
-def signal_exit_error(name: str, returncode: int) -> ReadError | ResourceLimitError:
+def signal_exit_error(
+    name: str, returncode: int
+) -> ReadError | ResourceUnavailableError:
     """The error for a program that a signal ended after it closed its output.
 
     Not a verdict on the archive, which is why this never raises ``CorruptionError``
     or ``TruncatedError``: SIGKILL comes from outside (most often the out-of-memory
-    killer), and is a ``ResourceLimitError`` as in ``outside_death``
+    killer), and is a ``ResourceUnavailableError`` as in ``outside_death``
     (``archivey.internal.streams.child_process``), which classifies the end of the ppmd
     and rapidgzip decoder children. Any other signal is a ``ReadError``, the crash
     signals included: ``unar`` 1.10.1 crashes on some valid archives, so a crash of
@@ -322,7 +324,7 @@ def signal_exit_error(name: str, returncode: int) -> ReadError | ResourceLimitEr
     """
     how = describe_exit(returncode)
     if is_system_kill(returncode):
-        return ResourceLimitError(
+        return ResourceUnavailableError(
             f"{name} was killed ({how}) while reading data. SIGKILL comes from "
             "outside the program, most often the system's out-of-memory killer, so "
             "the archive may be valid; read it again with more memory available."

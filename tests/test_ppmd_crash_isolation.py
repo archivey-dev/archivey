@@ -34,7 +34,7 @@ from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
     ReadError,
-    ResourceLimitError,
+    ResourceUnavailableError,
     TruncatedError,
 )
 from archivey.internal.config import StreamConfig
@@ -291,7 +291,7 @@ def test_truncated_member_read_whole_asks_bounded_chunks(
 def test_without_a_child_process_a_member_is_refused(
     monkeypatch: pytest.MonkeyPatch, isolation: ProcessIsolation
 ) -> None:
-    """A frozen app cannot start a child: ``ResourceLimitError`` naming the setting
+    """A frozen app cannot start a child: ``ResourceUnavailableError`` naming the setting
     that would decode it here. That is ``NONE`` under every other setting, since
     ``KNOWN_CRASHES`` isolates PPMd too."""
     monkeypatch.setattr(
@@ -303,7 +303,7 @@ def test_without_a_child_process_a_member_is_refused(
     with open_codec_stream(
         Codec.PPMD, io.BytesIO(packed), params=params, config=config
     ) as stream:
-        with pytest.raises(ResourceLimitError, match="none can be started") as e:
+        with pytest.raises(ResourceUnavailableError, match="none can be started") as e:
             stream.read(10)
         # The refusal names why no child can start, and the way out.
         assert "(no child here)" in str(e.value)
@@ -311,7 +311,7 @@ def test_without_a_child_process_a_member_is_refused(
         assert "ProcessIsolation.NONE" in str(e.value)
         assert "use ProcessIsolation.KNOWN_CRASHES" not in str(e.value)
         # The refusal sticks: a second read says the same, never a stray error.
-        with pytest.raises(ResourceLimitError, match="none can be started"):
+        with pytest.raises(ResourceUnavailableError, match="none can be started"):
             stream.read(10)
 
 
@@ -323,7 +323,7 @@ def test_a_fresh_child_that_cannot_start_part_way_names_none() -> None:
     child._mem_size = _MEM
     child._setting = "NATIVE_DECODERS"
     error = child._fresh_child_error(start_error("no child here"))
-    assert isinstance(error, ResourceLimitError)
+    assert isinstance(error, ResourceUnavailableError)
     assert "process_isolation=NATIVE_DECODERS" in str(error)
     assert "ProcessIsolation.NONE" in str(error)
     assert "use ProcessIsolation.KNOWN_CRASHES" not in str(error)
@@ -334,7 +334,7 @@ def test_a_child_that_cannot_start_is_a_resource_limit(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str
 ) -> None:
     """A spawn refused by the OS, or a child that dies before its decoder is ready
-    (it cannot import pyppmd), is the same ``ResourceLimitError`` as no child."""
+    (it cannot import pyppmd), is the same ``ResourceUnavailableError`` as no child."""
     if failure == "spawn":
 
         def refuse(*args: object, **kwargs: object) -> None:
@@ -349,7 +349,7 @@ def test_a_child_that_cannot_start_is_a_resource_limit(
     params = _params(7, len(packed), len(_ZERO_RUN))
     with (
         open_codec_stream(Codec.PPMD, io.BytesIO(packed), params=params) as stream,
-        pytest.raises(ResourceLimitError, match="none can be started"),
+        pytest.raises(ResourceUnavailableError, match="none can be started"),
     ):
         stream.read(10)
 
@@ -610,7 +610,7 @@ def test_a_child_that_dies_allocating_its_model_is_not_sent_in_process(
     message names ``mem_size`` and does not suggest decoding in-process, where the
     same allocation would abort the caller.
     """
-    with pytest.raises(ResourceLimitError, match="mem_size=") as caught:
+    with pytest.raises(ResourceUnavailableError, match="mem_size=") as caught:
         _read_child_member(monkeypatch, tmp_path, build="os.abort()")
     assert "ProcessIsolation.NONE" not in str(caught.value)
     assert "none can be started" not in str(caught.value)
@@ -619,13 +619,13 @@ def test_a_child_that_dies_allocating_its_model_is_not_sent_in_process(
 @pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason="RLIMIT_AS is enforced on Linux"
 )
-def test_a_memory_cap_below_mem_size_is_a_resource_limit_on_the_child_path() -> None:
+def test_an_address_space_cap_below_mem_size_is_a_shortage_on_the_child_path() -> None:
     """The measured case: under ``RLIMIT_AS``, pyppmd's constructor aborts the child."""
     _run_ppmd_child(
         textwrap.dedent(
             """\
             import io, resource, struct
-            from archivey.exceptions import ResourceLimitError
+            from archivey.exceptions import ResourceUnavailableError
             from archivey.internal.config import StreamConfig
             from archivey.internal.streams.codecs import (
                 Codec, CodecParams, open_codec_stream,
@@ -649,7 +649,7 @@ def test_a_memory_cap_below_mem_size_is_a_resource_limit_on_the_child_path() -> 
                     Codec.PPMD, io.BytesIO(packed), params=params, config=config
                 ) as stream:
                     stream.read(10)
-            except ResourceLimitError as exc:
+            except ResourceUnavailableError as exc:
                 assert "mem_size=1073741824" in str(exc), exc
                 assert "in-process would fail" in str(exc), exc
                 print("ok")
@@ -665,7 +665,7 @@ def test_a_memory_cap_below_mem_size_is_a_resource_limit_on_the_child_path() -> 
         ("SIGSEGV", CorruptionError, "crashed.*killed by SIGSEGV"),
         ("SIGABRT", CorruptionError, "crashed.*killed by SIGABRT"),
         ("SIGBUS", CorruptionError, "crashed.*killed by SIGBUS"),
-        ("SIGKILL", ResourceLimitError, "killed by SIGKILL.*out-of-memory"),
+        ("SIGKILL", ResourceUnavailableError, "killed by SIGKILL.*out-of-memory"),
         ("SIGTERM", ReadError, "killed by SIGTERM.*did not crash"),
         ("SIGHUP", ReadError, "killed by SIGHUP.*did not crash"),
     ],
@@ -706,7 +706,7 @@ def test_is_crash_reads_fault_signals_and_ntstatus_as_crashes() -> None:
 @pytest.mark.parametrize(
     ("decode", "expected"),
     [
-        ("os.kill(os.getpid(), signal.SIGKILL)", ResourceLimitError),
+        ("os.kill(os.getpid(), signal.SIGKILL)", ResourceUnavailableError),
         ("os._exit(7)", ReadError),
         ("os.kill(os.getpid(), signal.SIGSEGV)", CorruptionError),
     ],
@@ -744,7 +744,7 @@ def test_without_sys_executable_a_member_is_refused(
     params = _params(7, len(packed), len(_ZERO_RUN))
     with (
         open_codec_stream(Codec.PPMD, io.BytesIO(packed), params=params) as stream,
-        pytest.raises(ResourceLimitError, match="sys.executable is not set"),
+        pytest.raises(ResourceUnavailableError, match="sys.executable is not set"),
     ):
         stream.read(10)
 
@@ -859,12 +859,12 @@ def test_a_member_whose_crc_does_not_match_retires_its_child(
     assert POOL.idle_count() == (0 if wrong else 1)
 
 
-def test_a_model_a_fresh_child_cannot_allocate_part_way_is_a_limit_error(
+def test_a_model_a_fresh_child_cannot_allocate_part_way_is_a_shortage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The move to a fresh child part-way through a member builds the model again;
-    if that child cannot allocate it, the caller gets the ``ResourceLimitError`` the
-    same failure gives when the member opens, not a bare internal error."""
+    if that child cannot allocate it, the caller gets the ``ResourceUnavailableError``
+    the same failure gives when the member opens, not a bare internal error."""
     packed = _encode_ppmd7(b"hello child " * 50)
     first = open_ppmd_child(variant=7, order=_ORDER, mem_size=_MEM)
     assert first.decode(packed, 600) == b"hello child " * 50
@@ -879,8 +879,11 @@ def test_a_model_a_fresh_child_cannot_allocate_part_way_is_a_limit_error(
     monkeypatch.setattr(decoder_child, "REPLAY_LIMIT", 0)
     monkeypatch.setattr(inner, "_open", cannot_allocate)
     try:
-        with pytest.raises(ResourceLimitError, match="Decoder limit reached"):
+        with pytest.raises(
+            ResourceUnavailableError, match="the model does not fit"
+        ) as info:
             child.decode(packed, 600)
+        assert "Decoder limit reached" not in str(info.value)
     finally:
         child.close()
 

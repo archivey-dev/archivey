@@ -285,6 +285,8 @@ def check_upload(path):
         return "encrypted archives are not accepted"
     except archivey.CorruptionError:
         return "the archive is damaged"
+    except archivey.ResourceUnavailableError:
+        return "the server is short of memory; try again later"
     except archivey.ResourceLimitError:
         return "the archive is too large"
     except archivey.DiagnosticRaisedError as e:
@@ -311,8 +313,10 @@ What each exception means for an upload:
 - **`EncryptionError`**: a member needs a password. 7z archives and old ZIP encryption can't tell
   damage from a wrong password, so damage in an encrypted member raises this too.
 - **`CorruptionError`**, with its subclass `TruncatedError`: the data is damaged or ends early.
-- **`ResourceLimitError`**: the archive went over a limit. It's also raised when a decoder's child
-  process is killed from outside, most often by the out-of-memory killer.
+- **`ResourceLimitError`**: the archive went over a limit. Its subclass `ResourceUnavailableError`
+  means the machine ran short instead: a decoder's child process was killed from outside, most
+  often by the out-of-memory killer, or no child process could start. Retrying with more memory
+  may work; raising a limit won't.
 - **`DiagnosticRaisedError`**: `DiagnosticPolicy.STRICT` raised a diagnostic. `e.diagnostic.code`
   says which one.
 - **`UnsupportedFeatureError`**: the format is recognized, but the archive uses something archivey

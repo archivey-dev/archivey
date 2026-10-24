@@ -36,6 +36,7 @@ from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
     ResourceLimitError,
+    ResourceUnavailableError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -670,6 +671,8 @@ class _PassData:
         except ResourceLimitError as exc:
             # The LZMA or PPMd settings a ZipCrypto key decrypted ask for more than
             # the cap: the password may be wrong, or the size real (as from a file).
+            # Only the settings are read here, no decoder is built, so this is never
+            # a ResourceUnavailableError, which the decode below lets through.
             if not keyed or not note_limit:
                 raise
             noted = _unconfirmed_resource_limit(exc)
@@ -912,6 +915,10 @@ class _PassData:
         try:
             try:
                 decoded = self._decode(loc, body, keyed=keyed, note_limit=False)
+            except ResourceUnavailableError:
+                # A shortage, not what the decrypted settings asked for: it must not
+                # become a candidate failure below.
+                raise
             except ResourceLimitError as exc:
                 if not keyed:
                     raise
