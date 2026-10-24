@@ -356,8 +356,8 @@ sending side when the ZIP is done.
   or a PPMd member, whose declared size stops short of its data. One zero byte after LZMA data
   without an end marker reads, because 7-Zip's encoder sometimes writes it. Under ZipCrypto these
   read as the password-or-damage `EncryptionError` instead, caused by that `CorruptionError`,
-  because the bytes are encrypted. With rapidgzip, one crafted shape reads instead: a second
-  DEFLATE stream of more than about a MiB compressed, whose size and CRC cover both streams. See
+  because the bytes are encrypted. With rapidgzip, one crafted shape may read instead: a long
+  second DEFLATE stream, with a size and CRC that cover both streams. See
   [Where the guarantees stop](security.md#where-the-guarantees-stop).
 - `ListingLimits.max_members` is checked at open against the entry count the end record declares,
   and again as the directory is read, in `stream_members()` too. From a pipe it is checked as the

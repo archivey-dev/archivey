@@ -15,11 +15,12 @@ output SHALL be re-decoded by the non-accelerated decoder over a fresh view of t
 source, which raises or confirms the empty stream. A seek before that first read does not
 bypass the check: on such a stream the accelerator clamps the seek to 0. Accelerator mode
 is a performance choice and SHALL NOT be observable as a difference in whether a corrupt
-source raises, with one exception. Where every byte of output is covered by checks the
-data itself declares, those checks give the verdict, and an accelerator MAY differ from
-the standard-library decoder on a stream-boundary malformation they cannot see: for a
-standalone multi-member gzip, a wrong ISIZE on a member other than the last, when every
-member's CRC-32 is still checked.
+source raises, with two exceptions. First, where every byte of output is covered by
+checks the data itself declares, those checks give the verdict, and an accelerator MAY
+differ from the standard-library decoder on a stream-boundary malformation they cannot
+see: for a standalone multi-member gzip, a wrong ISIZE on a member other than the last,
+when every member's CRC-32 is still checked. Second, rapidgzip on a container member's
+raw DEFLATE data MAY read a second stream as content (below).
 
 A container member's compressed data (a ZIP member's, a 7z coder's declared input) is
 one stream of its codec and nothing else. A byte of it the codec leaves after the
@@ -38,20 +39,24 @@ its input goes on past that size; such a cut leaves input over, so it is not a
 `TruncatedError`. A standalone compressed file keeps reporting the bytes after its
 streams as `ARCHIVE_TRAILING_DATA` instead.
 
-rapidgzip on raw DEFLATE is the second exception. rapidgzip does not report where a
-stream ends, and it reads on into a second stream. When its output ends, zlib SHALL
-decode only the tail, from the last point of rapidgzip's complete index before the end
-(or from the start when there is none), to find a final block and any input after it. A decode from
-the start would cost as much as the standard-library read that the accelerator replaces.
-So when a second DEFLATE stream holds that point, the check
-sees only that stream's end, and the member SHALL read as both streams when its declared
-size and CRC cover both. With the accelerator off it raises `CorruptionError`, and 7-Zip
-and Info-ZIP read the first stream and fail the CRC. No known writer makes such a member.
-A second stream that does not hold it (rapidgzip indexes a stream about every MiB of
-compressed data), junk, zero bytes and a cut stream keep the
-standard library's verdict.
+rapidgzip on a container member's raw DEFLATE data is the second exception, to that
+rule and to the parity above. rapidgzip does not report where a stream ends, and it
+reads on into a second stream. When its output ends, zlib SHALL decode only the tail,
+from the last point of rapidgzip's complete index before the end (or from the start
+when there is none), to find a final block and any input after it. A decode from the
+start would cost as much as the standard-library read that the accelerator replaces. So
+when a second DEFLATE stream holds that point, the check sees only that stream's end,
+and the member SHALL read as both streams when its declared size and CRC cover both.
+With the accelerator off it raises `CorruptionError`, and 7-Zip and Info-ZIP read the
+first stream and fail the CRC. No known writer makes such a member. Which stream holds
+the point depends on the data and on whether rapidgzip runs with one thread or more: it
+places points every few hundred KiB to a few MiB of output, closer together with more
+threads. A second stream that does not hold it, junk, zero bytes and a cut stream keep
+the standard library's verdict. zlib parses only the tail: the output before the point
+is rapidgzip's, checked by the member's CRC where the container declares one.
 
-A wrong ISIZE on the last member of a one-member gzip is not among them, whatever follows
+A wrong ISIZE on the last member of a one-member gzip is not among the stream-boundary
+malformations of the first exception, whatever follows
 the member. The accelerator reads the output through a CRC-32 and finds the trailer as the
 one place near the end of the file where that CRC-32 occurs: it looks from 72 bytes before
 the end of the non-zero data to 12 bytes after it, and takes the file as ending with the

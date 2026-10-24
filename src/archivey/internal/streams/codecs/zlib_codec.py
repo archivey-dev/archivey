@@ -412,6 +412,11 @@ class _DeflateEndCheckStream(DelegatingStream):
     known writer makes one. A second stream that does not hold the point is input
     after the stream whose end the check finds, and is refused.
 
+    zlib parses only the tail. The output before the point is rapidgzip's alone: the
+    member's CRC checks it where the container declares one, and the accelerator fuzz
+    targets compare rapidgzip with zlib, but a stretch rapidgzip decodes and zlib would
+    refuse is not caught here.
+
     The view is not guarded against ``OSError`` as the gzip member scan is: raw DEFLATE
     is container-only, so the view is a sibling of the handle the decode itself reads,
     and an error from it is the caller's source failing, which reaches the caller.

@@ -294,7 +294,8 @@ verified (DR-1 wins).
 
 **Rule.**
 - Leftover compressed input inside a member's declared data is a `CorruptionError` by
-  default.
+  default. rapidgzip on a DEFLATE member is the one exception, for a long second stream
+  (DR-5a).
 - Bytes after the end of an archive or stream are reported as `ARCHIVE_TRAILING_DATA`: a
   warning by default, refused under strict.
 - Zero padding is silent.
@@ -456,8 +457,8 @@ meaning instead of 7-Zip's three bytes, because matching would mean carrying eac
 origin through the filters "for a name nobody writes on purpose" (2026-10-03, PR 564).
 The quadratic crafted hard-link shape was settled by the simpler backward-only rule
 rather than more memo state (2026-10-02, PR 532).
-rapidgzip on a ZIP or 7z DEFLATE member checks only the tail after the last point of
-rapidgzip's index, so a second stream that holds that point, with a size and CRC that cover both
+rapidgzip on a ZIP or 7z DEFLATE member checks only the tail after the last point of its
+index, so a second stream that holds that point, with a size and CRC that cover both
 streams, reads as both; with the accelerator off it raises. Finding the first stream's
 end takes a decode from the start, which "negates the whole point of accelerators", so
 the limitation is accepted and documented (2026-10-24). It does not relax DR-1: the
