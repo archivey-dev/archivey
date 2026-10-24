@@ -14,6 +14,7 @@ import hashlib
 import io
 import lzma
 import os
+import random
 import struct
 import subprocess
 import types
@@ -702,7 +703,10 @@ def test_rapidgzip_reads_a_long_second_stream_whose_size_and_crc_cover_both(
     # while it read, so the result is the same when it kept none.
     if not points_kept:
         monkeypatch.setattr(RapidgzipChildStream, "_query_points", lambda *_: None)
-    first, second = _counting_text(40_000), _counting_text(1_200_000)
+    # 12 MiB of random data, about as long compressed, spans three of rapidgzip's
+    # 4 MiB chunks, so its index has a point in the second stream on every platform.
+    # A 2.6 MB second stream had one on Linux and none on Windows.
+    first, second = _counting_text(40_000), random.Random(0).randbytes(12 << 20)
     stream = _raw_deflate(first, level=1) + _raw_deflate(second, level=1)
     blob = _build_zip([_Entry(b"a", stream, method=8, plain=first + second)])
     assert _outcome(blob) == ("raise", DataAfterEndError)
