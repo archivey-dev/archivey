@@ -824,9 +824,16 @@ and has no `unused_data`, so `Deflate64Decoder` holds back the last byte it is g
 and input follows the end when `eof` is already True as that byte goes in. The
 accelerators read on into a second stream; at the bytes after the first they hand the
 read over to the standard library, which refuses them, so the verdict does not depend on
-the accelerator. Finding where a DEFLATE member's first stream ends takes a zlib decode
-from its start (a rapidgzip resume point may lie in a second stream), so a full read
-under rapidgzip pays that decode too; the accelerator still speeds up seeks.
+the accelerator, with one exception. rapidgzip does not say where a DEFLATE stream ends,
+so when its output ends zlib decodes only the tail, from the newest resume point, to find
+a final block and any input after it. A second stream long enough that a resume point
+lies in it is then the stream whose end the check sees, and a member whose size and CRC
+cover both streams reads as both under rapidgzip; with the accelerator off it is
+`DataAfterEndError`, and 7-Zip and Info-ZIP read the first stream and fail the CRC. No
+known writer makes such a member. Finding the first stream's end would take a zlib decode
+from the start, which cost a full read under rapidgzip as much as the standard-library
+read it replaces (maintainer decision, 2026-10-24; `design-rules.md` DR-5a). A shorter
+second stream, junk, zeros and a cut stream keep the standard library's verdict.
 
 Encrypted members take the same route with a decrypt stage between the slice and the codec
 layer, so they decode every method an unencrypted member does, and their CRC runs through

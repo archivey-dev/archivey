@@ -97,7 +97,9 @@ A member's compressed data SHALL be one stream of its codec and nothing else, as
 byte too, and a further stream there, SHALL raise `CorruptionError`
 (`DataAfterEndError`) once the output before it is read, whatever the declared size and
 CRC cover, for every method and for encrypted members too, with an accelerator on or
-off; under ZipCrypto the password confirmation counts it as the candidate failing, as
+off, except as `compressed-streams` allows for rapidgzip on a DEFLATE member (a second
+stream long enough to hold a resume point, with a size and CRC that cover both, reads as
+both); under ZipCrypto the password confirmation counts it as the candidate failing, as
 above. The exception is a Zstd member: RFC 8878 defines Zstd data as one or more
 frames, so every frame, skippable ones too, SHALL be read as a `.zst` file's are
 (`compressed-streams`), and only bytes after the last frame that start no frame SHALL
@@ -117,6 +119,7 @@ encoder sometimes flushes it past the decoder's last read.
 | LZMA member without an end marker (bit 1 clear), with junk after its data or a declared size 1000 bytes short of it | `CorruptionError`, not `TruncatedError` (7-Zip: "Data Error") |
 | PPMd member with junk or zero bytes after its end mark, a declared size 1000 bytes short of its data, or no end mark | `CorruptionError`, not `TruncatedError` (7-Zip: "Data Error") |
 | DEFLATE, Deflate64, BZIP2 or Zstd member with junk or zero bytes after its stream (after its last frame for Zstd), or a DEFLATE, Deflate64 or BZIP2 member with a second stream, accelerator off or on | `CorruptionError` (7-Zip: "There are some data after the end of the payload data") |
+| DEFLATE member with a second stream that holds a rapidgzip resume point, declared size and CRC covering both, `use_rapidgzip=ON` | Decodes both streams; with the accelerator off, `CorruptionError` |
 | Zstd member with a second frame or a skippable frame after its first, declared size and CRC covering all of it | Decodes every frame, as a `.zst` file does; a declared size or CRC that stops at the first frame raises `CorruptionError` |
 | DEFLATE64 (method 9) member, `inflate64` backend present | Decodes; absent backend → `PackageNotInstalledError` |
 | ZSTD (method 93) / PPMD (method 98) member, backend present | Decodes; absent backend → `PackageNotInstalledError` |

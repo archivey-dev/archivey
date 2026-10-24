@@ -245,9 +245,10 @@ def stream_end(
 
     The second value is False unless ``check_input_after`` is set. Then it is whether
     ``source`` holds any byte after the stream's end, a zero too, a further stream
-    included. Only a decode from the start (``point`` of ``None``) can say that of the
-    stream's first end: a resume point can lie in a further stream that rapidgzip read
-    on into.
+    included. From a resume point, "the stream" is the one the point lies in: a point
+    can lie in a further stream that rapidgzip read on into, and then the first
+    stream's end goes unseen. Only a decode from the start (``point`` of ``None``) finds
+    that end.
     """
     if point is not None:
         resume = point.state
