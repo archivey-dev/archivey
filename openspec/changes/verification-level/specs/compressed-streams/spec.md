@@ -46,7 +46,7 @@ level adds no new error and no new way to read.
 | `.xz` file read to the end | `STRUCTURE` (frame checks not traced yet) |
 | ZipCrypto member, password on its check byte, half read | `verified` is `NONE`; `verifiable` is `CONTENT` |
 | Same member read to the end, CRC matches | `CONTENT` |
-| 7z AES member with no CRC, folder password not confirmed | `verifiable` is `NONE` |
+| Encrypted member with no stored digest, password accepted only on a weak check | `verifiable` is `NONE`; it rises once the password is confirmed |
 | WinZip AES AE-2 member read to the end | `CONTENT` (the HMAC) |
 | Lazy stream from `stream_members()`, before its first read | `verified` is `NONE` |
 | Member whose read raises `CorruptionError` | `verified` stays at the level it had before that read |

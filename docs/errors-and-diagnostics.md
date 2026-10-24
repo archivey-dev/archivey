@@ -162,10 +162,10 @@ with archive.open(member) as stream:
         ...  # a check this member carries didn't run
 ```
 
-A member with no checksum of its own, such as the ones in the list above, stops at `STRUCTURE`. A
-gzip, bzip2, lzip or zlib file reaches `CONTENT` from its own checksum when it's read from the start
-with no seek in between. `.xz`, `.zst` and `.lz4` files stop at `STRUCTURE` for now, even when they
-carry a checksum.
+A member with no checksum of its own, such as a TAR, ISO or `.lzma` member, stops at
+`STRUCTURE`. A gzip, bzip2, lzip or zlib file reaches `CONTENT` from its own checksum when it's
+read from the start with no seek in between. `.xz`, `.zst` and `.lz4` files stop at `STRUCTURE`
+for now, even when they carry a checksum.
 
 An encrypted member whose password was accepted only on a weak check, such as the one-byte check of
 old ZIP encryption, is in the same position. Its `stream.verified` stays `NONE` until its checksum

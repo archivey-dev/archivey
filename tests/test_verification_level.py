@@ -286,3 +286,100 @@ def test_sevenzip_unconfirmed_folder_partial_read_is_none(tmp_path: Path) -> Non
         assert (stream.verified, stream.verifiable) == (NONE, CONTENT)
         stream.read()
         assert stream.verified is CONTENT
+
+
+@requires("cryptography")
+def test_winzip_aes_stream_members_partial_read_is_none() -> None:
+    with open_archive(_AE1, password="secret", streaming=True) as reader:
+        for member, stream in reader.stream_members():
+            if not member.is_file:
+                continue
+            stream.read(1)
+            assert stream.verified is NONE
+            stream.read()
+            assert stream.verified is CONTENT
+
+
+@requires("cryptography")
+def test_winzip_aes_ae2_reaches_content_from_its_hmac(tmp_path: Path) -> None:
+    from tests.zip_aes_fixture import build_aes_zip
+
+    # AE-2 stores CRC 0: the HMAC is the only check over the member's bytes.
+    path = tmp_path / "ae2.zip"
+    path.write_bytes(
+        build_aes_zip([(b"a.txt", _DATA)], password=b"secret", vendor_version=2)
+    )
+    with (
+        open_archive(path, password="secret") as reader,
+        reader.open("a.txt") as stream,
+    ):
+        assert stream.verifiable is CONTENT
+        stream.read(1)
+        assert stream.verified is NONE
+        assert stream.read() == _DATA[1:]
+        assert stream.verified is CONTENT
+
+
+@requires("cryptography")
+@requires_binary("7z")
+def test_sevenzip_unconfirmed_folder_stream_members_partial_read_is_none(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "a.txt"
+    source.write_bytes(_DATA)
+    archive = tmp_path / "a.7z"
+    run_7z(["a", "-t7z", "-pPW", str(archive), str(source)], check=True)
+    with open_archive(archive, password="PW", streaming=True) as reader:
+        for member, stream in reader.stream_members():
+            if not member.is_file:
+                continue
+            stream.read(100)
+            assert stream.verified is NONE
+            stream.read()
+            assert stream.verified is CONTENT
+
+
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_weak_key_with_no_digest_can_reach_nothing(confirmed: bool) -> None:
+    # The stack under a member with no stored digest whose password only a weak check
+    # accepted (a 7z AES member with no CRC): the password watch alone.
+    from archivey.internal.password_confirm import UnverifiedPasswordReadWatch
+    from archivey.internal.streams.archive_stream import ArchiveStream
+
+    doubt = [True]
+
+    def watch() -> UnverifiedPasswordReadWatch:
+        return UnverifiedPasswordReadWatch(
+            io.BytesIO(_DATA),
+            size=len(_DATA),
+            on_unverified=lambda _message: None,
+            key_in_doubt=lambda: doubt[0],
+        )
+
+    with ArchiveStream(watch, translate=lambda _exc: None) as stream:
+        assert (stream.verified, stream.verifiable) == (NONE, NONE)
+        assert stream.read() == _DATA
+        # Read to the end, and still nothing proves the key.
+        assert (stream.verified, stream.verifiable) == (NONE, NONE)
+        if confirmed:
+            doubt[0] = False  # another member's checksum confirmed the password
+            assert (stream.verified, stream.verifiable) == (STRUCTURE, STRUCTURE)
+
+
+@pytest.mark.parametrize("measured", [False, True])
+def test_gzip_member_reaches_content_with_measurement(
+    tmp_path: Path, measured: bool
+) -> None:
+    from contextlib import nullcontext
+
+    from archivey.internal.measurement import enable_measurement
+
+    path = tmp_path / "one.gz"
+    path.write_bytes(gzip.compress(_DATA))
+    with (
+        enable_measurement() if measured else nullcontext(),
+        open_archive(path) as reader,
+        reader.open(_first_file(reader)) as stream,
+    ):
+        assert stream.read() == _DATA
+        assert (stream.verified, stream.verifiable) == (CONTENT, CONTENT)

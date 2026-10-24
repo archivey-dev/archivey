@@ -54,5 +54,5 @@ stays: retiring it is a removal for the maintainer to decide on its own.
   it decodes); the pass-through stream wrappers (forward the query).
 - **Cost:** the hot read path gains one test on an empty or to-the-end read. The
   properties do the rest of the work when they are read.
-- **Docs:** `errors-and-diagnostics.md` (how to tell what was checked), `reading.md`
-  (seeks and the level), the API reference.
+- **Docs:** `errors-and-diagnostics.md` (how to tell what was checked, and how seeks
+  affect the level, next to the seek rules it qualifies), the API reference.

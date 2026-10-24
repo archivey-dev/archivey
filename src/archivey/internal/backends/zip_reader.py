@@ -571,6 +571,9 @@ class _UnconfirmedZipCryptoStream(DelegatingStream):
     (see :func:`_is_candidate_integrity_failure`).
     """
 
+    # Translates errors and changes no byte: the verification level looks through.
+    forwards_verification = True
+
     def __init__(
         self, inner: BinaryIO, *, payload_complete: Callable[[], bool]
     ) -> None:
@@ -600,9 +603,6 @@ class _UnconfirmedZipCryptoStream(DelegatingStream):
     def _digest_intact(self) -> bool | None:
         # The password watch above asks after a seek whether the CRC can still run.
         return ask_digest_intact(self._inner)
-
-    # Translates errors and changes no byte: the verification level looks through.
-    forwards_verification = True
 
     def _reraise(self, exc: Exception) -> NoReturn:
         if _is_candidate_integrity_failure(

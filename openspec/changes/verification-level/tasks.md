@@ -17,7 +17,7 @@
       helper, next to `ask_digest_intact`.
 - [x] 2.2 `forwards_verification` on pass-through wrappers, read by
       `ask_verification_proofs` (absent: forward only the key doubt). On for the
-      counting wrappers and the ZipCrypto wrapper; the password watch answers itself.
+      output counting wrapper and the ZipCrypto wrapper; the password watch answers itself.
       A `BufferedReader` forwards its raw stream (a decoder's input over a decrypt
       stage).
 - [x] 2.3 `VerifyingStream` answers from its verifier. `DecompressorStream` forwards

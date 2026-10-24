@@ -110,12 +110,13 @@ whether one can match.
 - **The password watch** reports the key in doubt while its check is undecided and
   its digest has not been reached. The `check` callable it already takes answers the
   first half: `None` once confirmed.
-- **The WinZip AES stages** report a match once `_authenticated` is set.
+- **The WinZip AES stages** report a match once `_mac_matched` is set. Not
+  `_authenticated`: that means the MAC was read, and it stays set when the MAC fails.
 - **Pass-through wrappers** forward the query. `ask_verification_proofs` reads a
   `forwards_verification` class flag on a layer with no method of its own. Without it,
   only "key in doubt" passes through: a slice (a TAR member's data view) must not
   forward a codec check that covers the whole archive, and doubt about a key is safe
-  to pass on. The counting wrappers and the ZipCrypto wrapper set it. A
+  to pass on. The output counting wrapper and the ZipCrypto wrapper set it. A
   `BufferedReader` forwards its raw stream, which is how a decoder's input buffer over
   a WinZip AES stage passes the HMAC on.
 - **The DecompressorStream** forwards only a whole-content match from its source.

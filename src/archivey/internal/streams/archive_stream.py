@@ -253,7 +253,6 @@ class ArchiveStream(ReadOnlyIOStream):
         self._checks_content = checks_content
         self._uninterrupted = True
         self._ended_from_start = False
-        self._verified_level = Verification.NONE
         # A stream's diagnostics are what its own calls emit, from this constructor on:
         # ``read``, ``seek`` and ``close`` enter this scope, on whichever thread calls.
         # Other threads' emits into the same collector stay out, as do the reader's
@@ -750,6 +749,8 @@ class ArchiveStream(ReadOnlyIOStream):
         here is dropped.
         """
         after = note_raised_seek(self._verifier, inner)
+        # Both ``None`` is equal and keeps the flag: ``before`` is ``None`` only when
+        # the ``tell()`` ahead of the seek raised, so the seek never ran.
         if after != before:
             # Where the inner was left is unknown, or somewhere the decode may have
             # jumped to.
@@ -797,9 +798,11 @@ class ArchiveStream(ReadOnlyIOStream):
         Compare it with ``verifiable``: a TAR member has no checksum, so ``STRUCTURE``
         is the most it can reach. Reading this property reads nothing from the archive.
         """
-        level = self._level_now()
-        self._verified_level = max(self._verified_level, level)
-        return self._verified_level
+        # No high-water mark is kept: every input to ``_level_now`` moves one way. The
+        # stream's end flag and the verifier's and the HMAC stage's match flags are
+        # only ever set, ``_inner`` is never cleared, and a password watch's doubt
+        # only clears.
+        return self._level_now()
 
     @property
     def verifiable(self) -> Verification:
@@ -809,8 +812,11 @@ class ArchiveStream(ReadOnlyIOStream):
         ``STRUCTURE`` when it carries none, and ``NONE`` for an encrypted member with no
         checksum whose password passed only a weak check. It rises when another
         member's checksum confirms that password. A stream from ``stream_members()``
-        learns what its member carries when it opens, at its first read. Reading this
-        property reads nothing from the archive.
+        learns what its member carries when it opens, at its first read. Until then it
+        answers from what it knows without opening (the member's stored digest), and
+        the answer can settle lower when it opens: a password watch that only appears
+        then takes a member with no checksum from ``STRUCTURE`` to ``NONE``. Once open,
+        it never falls. Reading this property reads nothing from the archive.
         """
         proofs = self._verification_proofs()
         if proofs.content_possible:
@@ -822,7 +828,7 @@ class ArchiveStream(ReadOnlyIOStream):
         return max(ceiling, self.verified)
 
     def _level_now(self) -> Verification:
-        """The level what the layers have proved adds up to."""
+        """The level the layers' proofs add up to."""
         if self._inner is None:
             return Verification.NONE
         proofs = self._verification_proofs()
