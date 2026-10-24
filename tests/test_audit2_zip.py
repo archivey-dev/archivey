@@ -37,6 +37,7 @@ from archivey.exceptions import (
     DiagnosticRaisedError,
     UnsupportedFeatureError,
 )
+from archivey.internal.streams.codecs.rapidgzip_child import RapidgzipChildStream
 from archivey.internal.streams.decompressor_stream import DataAfterEndError
 from tests.conftest import requires, requires_binary
 from tests.extract_util import open_and_extract
@@ -671,9 +672,9 @@ def test_seekable_members_refuses_a_short_second_stream_in_a_large_deflate_membe
 ):
     # 9 MiB of random data, then a 64 KiB stream: > RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
     # compressed, so under the default AUTO, seekable_members=True engages rapidgzip.
-    # Its end check decodes from the newest resume point, which lies in the first
-    # stream, so it finds that stream's end and the bytes after it. Both paths refuse
-    # the second stream, though the size and CRC cover it.
+    # Its end check decodes from the last point of rapidgzip's index, which lies in
+    # the first stream, so it finds that stream's end and the bytes after it. Both
+    # paths refuse the second stream, though the size and CRC cover it.
     payload = os.urandom(9 * 2**20)
     tail = os.urandom(64 << 10)
     stream = _raw_deflate(payload, level=1) + _raw_deflate(tail, level=1)
@@ -687,13 +688,20 @@ def _counting_text(count: int) -> bytes:
 
 
 @requires("rapidgzip")
-def test_rapidgzip_reads_a_long_second_stream_whose_size_and_crc_cover_both() -> None:
+@pytest.mark.parametrize("points_kept", [True, False], ids=["kept", "none-kept"])
+def test_rapidgzip_reads_a_long_second_stream_whose_size_and_crc_cover_both(
+    points_kept: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # The one case where the accelerator changes the result (zip.md §2.3, maintainer
-    # decision 2026-10-24). A short first stream, then one long enough that a resume
-    # point lies in it, with the size and CRC of both. The end check decodes from
-    # that point, so it sees only the second stream's end, with nothing after it.
-    # Finding the first stream's end would take a decode from the start. 7-Zip and
-    # Info-ZIP read the first stream and fail the CRC.
+    # decision 2026-10-24). A first stream shorter than rapidgzip's first index point,
+    # then a long one, with the size and CRC of both. The end check decodes from the
+    # last index point, in the second stream, so it sees only the second stream's
+    # end, with nothing after it. Finding the first stream's end would take a decode
+    # from the start. 7-Zip and Info-ZIP read the first stream and fail the CRC.
+    # The point comes from the complete index, not from the points the stream kept
+    # while it read, so the result is the same when it kept none.
+    if not points_kept:
+        monkeypatch.setattr(RapidgzipChildStream, "_query_points", lambda *_: None)
     first, second = _counting_text(40_000), _counting_text(1_200_000)
     stream = _raw_deflate(first, level=1) + _raw_deflate(second, level=1)
     blob = _build_zip([_Entry(b"a", stream, method=8, plain=first + second)])

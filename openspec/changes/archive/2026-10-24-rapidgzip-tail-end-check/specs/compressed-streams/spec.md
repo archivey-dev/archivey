@@ -40,14 +40,15 @@ streams as `ARCHIVE_TRAILING_DATA` instead.
 
 rapidgzip on raw DEFLATE is the second exception. rapidgzip does not report where a
 stream ends, and it reads on into a second stream. When its output ends, zlib SHALL
-decode only the tail, from the newest resume point at or before the end (or from the
-start when there is none), to find a final block and any input after it. A decode from
+decode only the tail, from the last point of rapidgzip's complete index before the end
+(or from the start when there is none), to find a final block and any input after it. A decode from
 the start would cost as much as the standard-library read that the accelerator replaces.
-So when a second DEFLATE stream is long enough that a resume point lies in it, the check
+So when a second DEFLATE stream holds that point, the check
 sees only that stream's end, and the member SHALL read as both streams when its declared
 size and CRC cover both. With the accelerator off it raises `CorruptionError`, and 7-Zip
 and Info-ZIP read the first stream and fail the CRC. No known writer makes such a member.
-A second stream with no resume point in it, junk, zero bytes and a cut stream keep the
+A second stream that does not hold it (rapidgzip indexes a stream about every MiB of
+compressed data), junk, zero bytes and a cut stream keep the
 standard library's verdict.
 
 A wrong ISIZE on the last member of a one-member gzip is not among them, whatever follows
@@ -114,8 +115,8 @@ of a second decode.
 | --- | --- | --- |
 | Two bzip2 streams; declared size and CRC cover both, or the first only | `CorruptionError` | `CorruptionError` |
 | Two DEFLATE streams; declared size and CRC cover the first only | `CorruptionError` | `CorruptionError` |
-| Two DEFLATE streams; declared size and CRC cover both, no rapidgzip resume point in the second | `CorruptionError` | `CorruptionError` |
-| Two DEFLATE streams; declared size and CRC cover both, a rapidgzip resume point in the second | `CorruptionError` | Decodes both |
+| Two DEFLATE streams; declared size and CRC cover both, the last rapidgzip index point in the first | `CorruptionError` | `CorruptionError` |
+| Two DEFLATE streams; declared size and CRC cover both, the last rapidgzip index point in the second | `CorruptionError` | Decodes both |
 | One DEFLATE or bzip2 stream, then junk or zero bytes | `CorruptionError` | `CorruptionError` |
 | ZIP Zstd member with two frames; declared size and CRC cover both | Decodes both | — |
 | ZIP Zstd member with two frames; declared size and CRC cover the first only, or junk after the last | `CorruptionError` | — |

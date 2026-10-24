@@ -891,8 +891,9 @@ def test_accelerated_coder_with_a_second_stream_is_corrupt(
 def test_rapidgzip_reads_a_long_second_deflate_stream_declared_with_the_first() -> None:
     # The one case where the accelerator changes the result (7z.md, coders, "Input
     # after the stream"; maintainer decision 2026-10-24). A short first stream, then
-    # one long enough that a resume point lies in it, the unpack size covering both.
-    # The end check decodes from that point, so it sees only the second stream's end.
+    # a long one, the unpack size covering both. The end check decodes from the last
+    # point of rapidgzip's index, in the second stream, so it sees only that stream's
+    # end.
     first = b"".join(b"%d " % i for i in range(40_000))
     second = b"".join(b"%d " % i for i in range(1_200_000))
     coder, one = _one_stream_coder("deflate", first)

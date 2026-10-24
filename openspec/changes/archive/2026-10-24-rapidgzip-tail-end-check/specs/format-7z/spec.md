@@ -98,7 +98,7 @@ some data after the end of the payload data"). The exception is Zstd and LZ4, wh
 decoders read concatenated frames as one stream: a further frame is output that counts
 against the unpack size (below), and only bytes after the last frame that start no
 frame SHALL raise. rapidgzip on a Deflate coder is the other exception
-(`compressed-streams`): a second Deflate stream long enough to hold a resume point, with
+(`compressed-streams`): a second Deflate stream that holds the last point of rapidgzip's index, with
 an unpack size and CRC that cover both, reads as both. The coder's input is its declared input
 size (its pack size, or the size the coder before it declares), so AES padding past it
 is not such a byte. An LZMA1 or PPMd coder ends at its declared size: its input SHALL
@@ -151,6 +151,6 @@ where a further stream starts, so the verdict is the standard library's.
 | LZMA1 coder without an end marker, with input after its data | `CorruptionError` (`7z t`: Data Error), except one zero byte |
 | 7-Zip's own LZMA, LZMA:eos, LZMA2, PPMd, `-mhe=on`, solid, `-ms=off` and BCJ2 archives | Read clean |
 | Two BZip2 streams under rapidgzip (`use_indexed_bzip2` `ON`), whatever the size and CRC count | `CorruptionError`, as with the accelerator off |
-| Two Deflate streams under `use_rapidgzip=ON`, the unpack size covering the first only, or no resume point in the second | `CorruptionError`, as with the accelerator off |
-| Two Deflate streams under `use_rapidgzip=ON`, a resume point in the second, the unpack size covering both | Decodes both streams |
+| Two Deflate streams under `use_rapidgzip=ON`, the unpack size covering the first only, or the last index point in the first | `CorruptionError`, as with the accelerator off |
+| Two Deflate streams under `use_rapidgzip=ON`, the last index point in the second, the unpack size covering both | Decodes both streams |
 

@@ -119,14 +119,15 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   use_indexed_bzip2=archivey.AcceleratorMode.OFF)`.
 
     rapidgzip gives the same results as the standard library but for one crafted shape: a ZIP
-    member or 7z coder holding two DEFLATE streams, the second longer than a few MiB, with a
+    member or 7z coder holding two DEFLATE streams, the second more than about a MiB compressed, with a
     size and CRC that cover both. With rapidgzip you get both streams. Without it you get
     `CorruptionError`, and 7-Zip and unzip read the first stream and report a bad CRC. No known
     tool writes such a member. Turn rapidgzip off if your code must refuse it.
 
     ??? note "Why not check for it?"
         rapidgzip doesn't say where a DEFLATE stream ends. Archivey checks the end of the data
-        from the last place rapidgzip can restart from, which catches a cut stream and any bytes
+        from the last place rapidgzip can restart from (it marks one about every MiB of compressed
+        data), which catches a cut stream and any bytes
         after the last one. Finding where an earlier stream ended would mean decompressing the
         member again from the start, which costs as much as reading it without rapidgzip.
 

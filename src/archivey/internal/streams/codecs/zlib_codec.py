@@ -392,23 +392,25 @@ class _DeflateEndCheckStream(DelegatingStream):
       zlib reaches, a zero too, raises :class:`DataAfterEndError`, as the standard
       library does. A second stream is the one exception, below.
 
-    zlib decodes from the newest resume point at or before the end, or from the start
-    when there is none, so the check costs a decode of the tail after that point, not
-    of the whole stream. A point at the end itself cannot be had instead: its window is
-    the 32 KiB of output before the point, and the stream keeps only the 32 KiB before
-    the end.
+    zlib decodes from a resume point before the end, or from the start when there is
+    none, so the check costs a decode of the tail after that point, not of the whole
+    stream. Without the flag it is the newest point the stream kept (``resume_point``),
+    since any point gives the same answer. Under it, the point can change the verdict
+    (below), so it is the last point of rapidgzip's complete index before the end
+    (``end_check_point``), which does not depend on how far the child had decoded when
+    the stream kept its points.
 
     Every shipped caller sets ``refuse_input_after_end``: raw DEFLATE is a ZIP member
     or a 7z coder, and both readers set it. A decode from a resume point sees only the
-    stream that the point lies in. When rapidgzip read on into a second stream and a
+    stream that the point lies in. When rapidgzip read on into a second stream and the
     point lies in it, that stream ends at the end of the input, and the check finds no
     input after it: the read returns both streams, where the standard library refuses
     the second one. Finding the first stream's end would take a decode from the start,
     which costs as much as the standard-library read the accelerator replaces
     (maintainer decision, 2026-10-24). The size and CRC that the container declares
     still apply, so only a member whose sizes and CRC cover both streams reads; no
-    known writer makes one. A second stream short enough that no point lies in it is
-    input after the stream whose end the check finds, and is refused.
+    known writer makes one. A second stream that does not hold the point is input
+    after the stream whose end the check finds, and is refused.
 
     The view is not guarded against ``OSError`` as the gzip member scan is: raw DEFLATE
     is container-only, so the view is a sibling of the handle the decode itself reads,
@@ -480,8 +482,12 @@ class _DeflateEndCheckStream(DelegatingStream):
             return False
         self._checked = True
         end = self._takeover.position
-        resume_point = getattr(self._takeover.accelerator, "resume_point", None)
-        point = None if resume_point is None else resume_point(end)
+        accelerator = self._takeover.accelerator
+        # Under the flag the point can change the verdict, so it is the same on every
+        # run (end_check_point); without it, any kept point gives the same answer.
+        name = "end_check_point" if self._refuse_input_after_end else "resume_point"
+        find_point = getattr(accelerator, name, None)
+        point = None if find_point is None else find_point(end)
         with self._views.view() as f:
             found, input_after = stream_end(
                 f,

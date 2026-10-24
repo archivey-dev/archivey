@@ -825,9 +825,11 @@ and input follows the end when `eof` is already True as that byte goes in. The
 accelerators read on into a second stream; at the bytes after the first they hand the
 read over to the standard library, which refuses them, so the verdict does not depend on
 the accelerator, with one exception. rapidgzip does not say where a DEFLATE stream ends,
-so when its output ends zlib decodes only the tail, from the newest resume point, to find
-a final block and any input after it. A second stream long enough that a resume point
-lies in it is then the stream whose end the check sees, and a member whose size and CRC
+so when its output ends zlib decodes only the tail, from the last point of rapidgzip's
+complete index before the end, to find a final block and any input after it. The index
+is taken whole, not from the points the stream kept as it read, so the result does not
+depend on timing. A second stream that holds that point (rapidgzip indexes about every
+MiB of compressed data) is then the stream whose end the check sees, and a member whose size and CRC
 cover both streams reads as both under rapidgzip; with the accelerator off it is
 `DataAfterEndError`, and 7-Zip and Info-ZIP read the first stream and fail the CRC. No
 known writer makes such a member. Finding the first stream's end would take a zlib decode
