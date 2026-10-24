@@ -489,7 +489,8 @@ class _DeflateEndCheckStream(DelegatingStream):
         end = self._takeover.position
         accelerator = self._takeover.accelerator
         # Under the flag the point can change the verdict, so it is the same on every
-        # run (end_check_point); without it, any kept point gives the same answer.
+        # run on one machine (end_check_point); without it, any kept point gives the
+        # same answer.
         name = "end_check_point" if self._refuse_input_after_end else "resume_point"
         find_point = getattr(accelerator, name, None)
         point = None if find_point is None else find_point(end)

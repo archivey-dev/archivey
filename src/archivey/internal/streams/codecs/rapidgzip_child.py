@@ -1040,9 +1040,9 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         went out. The end check's verdict can depend on the point it starts from (a
         point in a second stream finds that stream's end, not the first one's), so it
         takes the point from the complete index instead, which depends only on the
-        data and on whether rapidgzip runs with one thread or more. A point this
-        stream did not keep has its window read back from the child, and the stream
-        returns to where it was.
+        data and on how many threads rapidgzip runs, which follows the core count. A
+        point this stream did not keep has its window read back from the child, and
+        the stream returns to where it was.
         """
         if self._bzip2 or self._death is not None or self._proc is None:
             return None

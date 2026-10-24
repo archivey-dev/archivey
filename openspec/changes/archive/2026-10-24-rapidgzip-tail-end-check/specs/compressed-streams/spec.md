@@ -49,11 +49,12 @@ when a second DEFLATE stream holds that point, the check sees only that stream's
 and the member SHALL read as both streams when its declared size and CRC cover both.
 With the accelerator off it raises `CorruptionError`, and 7-Zip and Info-ZIP read the
 first stream and fail the CRC. No known writer makes such a member. Which stream holds
-the point depends on the data and on whether rapidgzip runs with one thread or more: it
-places points every few hundred KiB to a few MiB of output, closer together with more
-threads. A second stream that does not hold it, junk, zero bytes and a cut stream keep
-the standard library's verdict. zlib parses only the tail: the output before the point
-is rapidgzip's, checked by the member's CRC where the container declares one.
+the point depends on the data and on how many threads rapidgzip runs, which follows the
+core count: it places points every few hundred KiB to a few MiB of output, closer
+together with more threads. A second stream that does not hold it, junk, zero bytes and
+a cut stream keep the standard library's verdict. zlib parses only the tail: the output
+before the point is rapidgzip's, checked by the member's CRC where the container
+declares one.
 
 A wrong ISIZE on the last member of a one-member gzip is not among the stream-boundary
 malformations of the first exception, whatever follows

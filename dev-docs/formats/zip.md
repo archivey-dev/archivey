@@ -828,15 +828,16 @@ the accelerator, with one exception. rapidgzip does not say where a DEFLATE stre
 so when its output ends zlib decodes only the tail, from the last point of rapidgzip's
 complete index before the end, to find a final block and any input after it. The index
 is taken whole, not from the points the stream kept as it read, so the result does not
-depend on timing; it depends on the data and on whether rapidgzip runs with one thread
-or more (it places points every few hundred KiB to a few MiB of output). A second stream
-that holds that point is then the stream whose end the check sees, and a member whose size and CRC
-cover both streams reads as both under rapidgzip; with the accelerator off it is
-`DataAfterEndError`, and 7-Zip and Info-ZIP read the first stream and fail the CRC. No
-known writer makes such a member. Finding the first stream's end would take a zlib decode
-from the start, which cost a full read under rapidgzip as much as the standard-library
-read it replaces (maintainer decision, 2026-10-24; `design-rules.md` DR-5a). A shorter
-second stream, junk, zeros and a cut stream keep the standard library's verdict.
+depend on timing; it depends on the data and on how many threads rapidgzip runs, which
+follows the core count (it places points every few hundred KiB to a few MiB of output). A
+second stream that holds that point is then the stream whose end the check sees, and a
+member whose size and CRC cover both streams reads as both under rapidgzip; with the
+accelerator off it is `DataAfterEndError`, and 7-Zip and Info-ZIP read the first stream
+and fail the CRC. No known writer makes such a member. Finding the first stream's end
+would take a zlib decode from the start, which cost a full read under rapidgzip as much
+as the standard-library read it replaces (maintainer decision, 2026-10-24;
+`design-rules.md` DR-5a). A shorter second stream, junk, zeros and a cut stream keep the
+standard library's verdict.
 
 Encrypted members take the same route with a decrypt stage between the slice and the codec
 layer, so they decode every method an unencrypted member does, and their CRC runs through
@@ -1212,7 +1213,7 @@ ours.
 | Choice | Why | Rejected |
 | --- | --- | --- |
 | archivey's own parser for the end record, central directory and local headers ([ADR 0020](../decisions/0020-native-zip-reader.md), superseding [0006](../decisions/0006-stdlib-zipfile.md)) | Zero-dependency still. Stdlib parsed the whole directory at open before `ListingLimits` saw a member, lost the archive over one damaged entry, varied by Python version and was reached through private names and exception text; the parser lists lazily, lists up to damage, and behaves the same everywhere | Stdlib `zipfile` (ADR 0006); `python-libarchive-c`, faster and broader at the cost of a native dependency |
-| Under rapidgzip, check a DEFLATE member's end from the last point of rapidgzip's complete index (2026-10-24) | The check finds a cut stream and bytes after the last stream for the cost of the tail. The complete index makes the result the same on every run, where the points a stream keeps as it reads depend on timing | A zlib decode from the start, which doubled a full read under rapidgzip (about 500 ms against 320 ms without it, 40 MiB member); a parallel zlib check of the stretches between resume points, prototyped at about 300 ms, which still costs as much as the read rapidgzip replaces |
+| Under rapidgzip, check a DEFLATE member's end from the last point of rapidgzip's complete index (2026-10-24) | The check finds a cut stream and bytes after the last stream for the cost of the tail. The complete index makes the result the same on every run on one machine, where the points a stream keeps as it reads depend on timing | A zlib decode from the start, which doubled a full read under rapidgzip (about 500 ms against 320 ms without it, 40 MiB member); a parallel zlib check of the stretches between resume points, prototyped at about 300 ms, which still costs as much as the read rapidgzip replaces |
 | Report bytes after the end record as `ARCHIVE_TRAILING_DATA` | DR-3: the TAR, 7z, RAR and ISO rule. 7-Zip warns on any tail; zero padding stays silent here as there | Ignoring the tail, as Info-ZIP `unzip` and stdlib do |
 | Refuse at open an end record declaring more entries than `max_members` | Every walk keeps an offset per entry for the overlap guard, so the count bounds memory in every mode (DR-15b); the directory must be 46 bytes per declared entry, so a wrong count field alone does not refuse a small archive | Charging only on `members()`, which left a streaming pass unbounded |
 | A central entry whose fields run past the directory's end, hold the headers after it (they chain from a signature inside exactly to the end), or whose name is shorter than its local header's with no header after it, is damage (§2.2) | Cutting the field, as stdlib does, listed a member named after the swallowed entries' bytes and dropped those entries with only a count warning, where a pipe listed every member (DR-1, DR-5); `unzip` and 7-Zip both stop with an error. As damage, both reads list every member from the local headers and raise | Cutting at the directory's end (the native reader's first choice; superseded by davi's 2026-10-17 ruling, PR 860); treating a signature with a wrong count as damage, which refuses an intact directory over a name and a count field |

@@ -35,20 +35,20 @@ settings are decrypted data, so both SHALL raise `CorruptionError` there, which 
 password confirmation counts as the candidate failing (see below).
 
 A member's compressed data SHALL be one stream of its codec and nothing else, as 7-Zip
-23.01 reads it (DR-3). A byte of it the codec leaves after the stream's end, a zero
-byte too, and a further stream there, SHALL raise `CorruptionError`
-(`DataAfterEndError`) once the output before it is read, whatever the declared size and
-CRC cover, for every method and for encrypted members too, with an accelerator on or
-off, except as `compressed-streams` allows for rapidgzip on a DEFLATE member (a second
-stream that holds the last point of rapidgzip's index, with a size and CRC that cover both, reads as
+23.01 reads it (DR-3). A byte of it the codec leaves after the stream's end, a zero byte
+too, and a further stream there, SHALL raise `CorruptionError` (`DataAfterEndError`)
+once the output before it is read, whatever the declared size and CRC cover, for every
+method and for encrypted members too, with an accelerator on or off, except as
+`compressed-streams` allows for rapidgzip on a DEFLATE member (a second stream that
+holds the last point of rapidgzip's index, with a size and CRC that cover both, reads as
 both); under ZipCrypto the password confirmation counts it as the candidate failing, as
-above. The exception is a Zstd member: RFC 8878 defines Zstd data as one or more
-frames, so every frame, skippable ones too, SHALL be read as a `.zst` file's are
+above. The exception is a Zstd member: RFC 8878 defines Zstd data as one or more frames,
+so every frame, skippable ones too, SHALL be read as a `.zst` file's are
 (`compressed-streams`), and only bytes after the last frame that start no frame SHALL
 raise. An LZMA member without the end-marker flag (general-purpose bit 1) and a PPMd
 member end at their declared size: their input SHALL end there too (after an end marker
-right at that size for LZMA, and after PPMd8's end mark, which a member SHALL carry),
-so a declared size short of the stream's data SHALL raise `CorruptionError`, not
+right at that size for LZMA, and after PPMd8's end mark, which a member SHALL carry), so
+a declared size short of the stream's data SHALL raise `CorruptionError`, not
 `TruncatedError`. One zero byte after LZMA data without an end marker reads, as 7-Zip's
 encoder sometimes flushes it past the decoder's last read.
 
