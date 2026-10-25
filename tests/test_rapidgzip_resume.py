@@ -471,3 +471,41 @@ def test_end_check_point_is_none_when_the_index_fails_otherwise(
         end = child.tell()
         monkeypatch.setattr(RapidgzipChildStream, "block_offsets", fail)
         assert child.end_check_point(end) is None
+
+
+def test_end_check_point_lets_an_error_in_the_window_read_back_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RapidgzipChildStream, "_query_points", lambda *_: None)
+
+    def fail(_self: RapidgzipChildStream, _n: int | None = -1, /) -> bytes:
+        raise OSError("pipe")
+
+    with _read_to_the_end() as child:
+        end = child.tell()
+        monkeypatch.setattr(RapidgzipChildStream, "read", fail)
+        with pytest.raises(OSError, match="pipe"):
+            child.end_check_point(end)
+        monkeypatch.undo()
+        assert child.tell() == end
+
+
+def test_end_check_point_raises_when_the_child_refuses_the_restoring_seek(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RapidgzipChildStream, "_query_points", lambda *_: None)
+    seek = RapidgzipChildStream.seek
+    calls: list[int] = []
+
+    def refuse_second(self: RapidgzipChildStream, offset: int, whence: int = 0) -> int:
+        calls.append(offset)
+        if len(calls) == 2:
+            raise ValueError("seek refused")
+        return seek(self, offset, whence)
+
+    with _read_to_the_end() as child:
+        end = child.tell()
+        monkeypatch.setattr(RapidgzipChildStream, "seek", refuse_second)
+        with pytest.raises(ValueError, match="seek refused"):
+            child.end_check_point(end)
+        assert calls[1] == end

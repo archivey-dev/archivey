@@ -1080,6 +1080,9 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             window = bytearray()
         finally:
             # A seek the child refuses raises here: the stream must not stay at start.
+            # When the read already failed, this raises the same error: each failure
+            # there (a dead child, a closed or forked stream, a broken pipe) fails the
+            # seek the same way.
             self.seek(position)
         if len(window) != decoded - start:
             return None
