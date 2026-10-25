@@ -37,7 +37,8 @@ from archivey.exceptions import (
     DiagnosticRaisedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.streams.decompressor_stream import DataAfterEndError
+from archivey.internal.streams.codecs.rapidgzip_child import RapidgzipChildStream
+from archivey.internal.streams.decompressor_stream import DataAfterEndError, SeekPoint
 from tests.conftest import requires, requires_binary
 from tests.extract_util import open_and_extract
 from tests.streams_util import NonSeekableBytesIO
@@ -666,15 +667,64 @@ def test_second_deflate_stream_that_breaks_the_crc_raises(
 
 
 @requires("rapidgzip")
-def test_seekable_members_refuses_a_second_stream_in_a_large_deflate_member() -> None:
-    # 9 MiB of random data twice: > RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE compressed, so
-    # under the default AUTO, seekable_members=True engages rapidgzip. Both paths
-    # refuse the second stream, though the size and CRC cover it.
+def test_seekable_members_refuses_a_short_second_stream_in_a_large_deflate_member() -> (
+    None
+):
+    # 9 MiB of random data, then a 64 KiB stream: > RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
+    # compressed, so under the default AUTO, seekable_members=True engages rapidgzip.
+    # Its end check decodes from the last point of rapidgzip's index, which lies in
+    # the first stream, so it finds that stream's end and the bytes after it. Both
+    # paths refuse the second stream, though the size and CRC cover it.
     payload = os.urandom(9 * 2**20)
-    stream = _raw_deflate(payload, level=1)
-    blob = _build_zip([_Entry(b"a", stream + stream, method=8, plain=payload * 2)])
+    tail = os.urandom(64 << 10)
+    stream = _raw_deflate(payload, level=1) + _raw_deflate(tail, level=1)
+    blob = _build_zip([_Entry(b"a", stream, method=8, plain=payload + tail)])
     assert _outcome(blob) == ("raise", DataAfterEndError)  # zlib
     assert _outcome(blob, seekable_members=True) == ("raise", DataAfterEndError)
+
+
+def _counting_text(count: int) -> bytes:
+    return b"".join(b"%d " % i for i in range(count))
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize("points_kept", [True, False], ids=["kept", "none-kept"])
+def test_rapidgzip_reads_a_long_second_stream_whose_size_and_crc_cover_both(
+    points_kept: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The one case where the accelerator changes the result (zip.md §2.3, maintainer
+    # decision 2026-10-24). A first stream shorter than rapidgzip's first index point,
+    # then a long one, with the size and CRC of both. The end check decodes from the
+    # last index point, in the second stream, so it sees only the second stream's
+    # end, with nothing after it. Finding the first stream's end would take a decode
+    # from the start. 7-Zip and Info-ZIP read the first stream and fail the CRC.
+    # The point comes from the complete index, not from the points the stream kept
+    # while it read, so the result is the same when it kept none.
+    if not points_kept:
+        monkeypatch.setattr(RapidgzipChildStream, "_query_points", lambda *_: None)
+    first, second = _counting_text(40_000), _counting_text(1_200_000)
+    stream = _raw_deflate(first, level=1) + _raw_deflate(second, level=1)
+    blob = _build_zip([_Entry(b"a", stream, method=8, plain=first + second)])
+    assert _outcome(blob) == ("raise", DataAfterEndError)
+    # Where the end check started. Linux and macOS give the complete index points in
+    # the second stream; on windows-latest it held none past 0, even for a 12 MiB
+    # second stream, and the check decodes from the start.
+    points: list[int | None] = []
+    find_point = RapidgzipChildStream.end_check_point
+
+    def record_point(self: RapidgzipChildStream, end: int) -> SeekPoint | None:
+        point = find_point(self, end)
+        points.append(None if point is None else point.decompressed_offset)
+        return point
+
+    monkeypatch.setattr(RapidgzipChildStream, "end_check_point", record_point)
+    outcome = _outcome(blob, config=ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON))
+    assert len(points) == 1, points
+    if points[0] is None or points[0] < len(first):
+        # No point in the second stream: the standard library's verdict.
+        assert outcome == ("raise", DataAfterEndError), points
+        pytest.skip(f"rapidgzip's index has no point in the second stream: {points}")
+    assert outcome == ("ok", hashlib.sha256(first + second).hexdigest()), points
 
 
 # ---------------------------------------------------------------------------------------

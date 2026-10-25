@@ -294,7 +294,8 @@ verified (DR-1 wins).
 
 **Rule.**
 - Leftover compressed input inside a member's declared data is a `CorruptionError` by
-  default.
+  default. rapidgzip on a DEFLATE member is the one exception, for a long second stream
+  (DR-5a).
 - Bytes after the end of an archive or stream are reported as `ARCHIVE_TRAILING_DATA`: a
   warning by default, refused under strict.
 - Zero padding is silent.
@@ -388,9 +389,10 @@ where the reads had reached completes a paused digest, maintainer 2026-10-13.
 - **Access mode.** Streaming and random access end up the same on disk "unless there's a
   strong reason that makes it impossible" (2026-09-25).
 - **Operating system.** The same archive extracts the same way on Linux, macOS and
-  Windows, or is refused everywhere.
+  Windows, or is refused everywhere, but for the same crafted shape under rapidgzip
+  (DR-5a).
 - **Accelerators and extras.** An accelerator changes speed, never the result or the
-  error type.
+  error type, but for one crafted shape (DR-5a).
 - **Entry point.** Public functions agree with each other (`detect_format` recognises
   what `open_archive` opens).
 - **When and where a call is made.** A call that works on one archive, or at one point in
@@ -456,6 +458,15 @@ meaning instead of 7-Zip's three bytes, because matching would mean carrying eac
 origin through the filters "for a name nobody writes on purpose" (2026-10-03, PR 564).
 The quadratic crafted hard-link shape was settled by the simpler backward-only rule
 rather than more memo state (2026-10-02, PR 532).
+rapidgzip on a ZIP or 7z DEFLATE member checks only the tail after the last point of its
+index, so a second stream that holds that point, with a size and CRC that cover both
+streams, reads as both; with the accelerator off it raises. Finding the first stream's
+end takes a decode from the start, which "negates the whole point of accelerators", so
+the limitation is accepted and documented (2026-10-24). Whether the second stream holds
+the point depends on the data, rapidgzip's thread count and the platform, so the same
+member may read on one machine and be refused on another; that is accepted as well, and
+the docs say "may" (2026-10-25). It does not relax DR-1: the output is what the member's
+own size and CRC describe.
 
 **Reopen if** a real producer writes the shape.
 

@@ -388,23 +388,34 @@ class _DeflateEndCheckStream(DelegatingStream):
     - zlib does not reach a final block (a cut or damaged stream): the read goes to the
       standard library (``switch_to_stdlib`` on the ``_StdlibOnAcceleratorError``
       inside), which gives the verdict it gives with the accelerator off.
-    - With ``refuse_input_after_end``, any byte of the source after the first stream's
-      final block, a zero too and a second stream rapidgzip read whole, raises
-      :class:`DataAfterEndError`, as the standard library does.
+    - With ``refuse_input_after_end``, any byte of the source after the final block
+      zlib reaches, a zero too, raises :class:`DataAfterEndError`, as the standard
+      library does. A second stream is the one exception, below.
+
+    zlib decodes from a resume point before the end, or from the start when there is
+    none, so the check costs a decode of the tail after that point, not of the whole
+    stream. Without the flag it is the newest point the stream kept (``resume_point``),
+    since any point gives the same answer. Under it, the point can change the verdict
+    (below), so it is the last point of rapidgzip's complete index before the end
+    (``end_check_point``), which does not depend on how far the child had decoded when
+    the stream kept its points.
 
     Every shipped caller sets ``refuse_input_after_end``: raw DEFLATE is a ZIP member
-    or a 7z coder, and both readers set it. A decode from a resume point cannot see a
-    second stream (a point past the first stream's end lies in the second, which ends
-    at the offset), so under the flag zlib decodes the stream from its start. The check
-    therefore costs a standard-library decode of the whole stream on top of
-    rapidgzip's, paid by the read or the seek that reaches the end, so a bare
-    ``seek(0, SEEK_END)`` size query pays it too. For a container member the
-    accelerator speeds up seeks short of the end and the first output, not the full
-    read. Without the flag, which only a direct ``open_codec_stream`` caller reaches,
-    zlib decodes from the newest resume point at or before the end, or from the start
-    when there is none. A point at the end itself cannot be had instead: its window is
-    the 32 KiB of output before the point, and the stream keeps only the 32 KiB before
-    the end.
+    or a 7z coder, and both readers set it. A decode from a resume point sees only the
+    stream that the point lies in. When rapidgzip read on into a second stream and the
+    point lies in it, that stream ends at the end of the input, and the check finds no
+    input after it: the read returns both streams, where the standard library refuses
+    the second one. Finding the first stream's end would take a decode from the start,
+    which costs as much as the standard-library read the accelerator replaces
+    (maintainer decision, 2026-10-24). The size and CRC that the container declares
+    still apply, so only a member whose sizes and CRC cover both streams reads; no
+    known writer makes one. A second stream that does not hold the point is input
+    after the stream whose end the check finds, and is refused.
+
+    zlib parses only the tail. The output before the point is rapidgzip's alone: the
+    member's CRC checks it where the container declares one, and the accelerator fuzz
+    targets compare rapidgzip with zlib, but a stretch rapidgzip decodes and zlib would
+    refuse is not caught here.
 
     The view is not guarded against ``OSError`` as the gzip member scan is: raw DEFLATE
     is container-only, so the view is a sibling of the handle the decode itself reads,
@@ -476,10 +487,13 @@ class _DeflateEndCheckStream(DelegatingStream):
             return False
         self._checked = True
         end = self._takeover.position
-        resume_point = getattr(self._takeover.accelerator, "resume_point", None)
-        point = None
-        if resume_point is not None and not self._refuse_input_after_end:
-            point = resume_point(end)
+        accelerator = self._takeover.accelerator
+        # Under the flag the point can change the verdict, so it is the same on every
+        # run on one machine (end_check_point); without it, any kept point gives the
+        # same answer.
+        name = "end_check_point" if self._refuse_input_after_end else "resume_point"
+        find_point = getattr(accelerator, name, None)
+        point = None if find_point is None else find_point(end)
         with self._views.view() as f:
             found, input_after = stream_end(
                 f,

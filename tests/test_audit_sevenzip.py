@@ -28,7 +28,8 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.sevenzip_parser import MAGIC_7Z
-from archivey.internal.streams.decompressor_stream import DataAfterEndError
+from archivey.internal.streams.codecs.rapidgzip_child import RapidgzipChildStream
+from archivey.internal.streams.decompressor_stream import DataAfterEndError, SeekPoint
 from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
 
 _COPY = b"\x00"
@@ -885,6 +886,49 @@ def test_accelerated_coder_with_a_second_stream_is_corrupt(
     data, _ = _two_stream_archive(codec, declare_both=declare_both)
     with pytest.raises(DataAfterEndError):
         _read_only_member(data, config=config, seekable_members=True)
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize("points_kept", [True, False], ids=["kept", "none-kept"])
+def test_rapidgzip_reads_a_long_second_deflate_stream_declared_with_the_first(
+    points_kept: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The one case where the accelerator changes the result (7z.md, coders, "Input
+    # after the stream"; maintainer decision 2026-10-24). A short first stream, then
+    # a long one, the unpack size covering both. The end check decodes from the last
+    # point of rapidgzip's index; in the second stream, it sees only that stream's
+    # end. Which stream holds the point depends on the machine (DR-5a), so the test
+    # asserts the outcome the point it took gives, as the ZIP case does
+    # (test_audit2_zip.py).
+    if not points_kept:
+        monkeypatch.setattr(RapidgzipChildStream, "_query_points", lambda *_: None)
+    first = b"".join(b"%d " % i for i in range(40_000))
+    second = b"".join(b"%d " % i for i in range(1_200_000))
+    coder, one = _one_stream_coder("deflate", first)
+    _, two = _one_stream_coder("deflate", second)
+    data = _codec_archive([coder], [len(first + second)], one + two, first + second)
+    with pytest.raises(DataAfterEndError):
+        _read_only_member(data)
+    points: list[int | None] = []
+    find_point = RapidgzipChildStream.end_check_point
+
+    def record_point(self: RapidgzipChildStream, end: int) -> SeekPoint | None:
+        point = find_point(self, end)
+        points.append(None if point is None else point.decompressed_offset)
+        return point
+
+    monkeypatch.setattr(RapidgzipChildStream, "end_check_point", record_point)
+    on = ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
+    try:
+        result: object = _read_only_member(data, config=on)
+    except DataAfterEndError:
+        result = DataAfterEndError
+    assert len(points) == 1, points
+    if points[0] is None or points[0] < len(first):
+        # No point in the second stream: the standard library's verdict.
+        assert result is DataAfterEndError, points
+        pytest.skip(f"rapidgzip's index has no point in the second stream: {points}")
+    assert result == first + second, points
 
 
 def test_codec_in_a_bcj2_branch_decoding_past_its_unpack_size_is_corruption() -> None:

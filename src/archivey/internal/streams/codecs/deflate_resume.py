@@ -24,8 +24,11 @@ input first is a truncation, which a checksum would not change.
 asks only whether a raw DEFLATE stream reaches a final block, and where. Raw DEFLATE has
 no checksum, so there reaching the end is the answer, with no ``ResumeReachedStreamEnd``
 case. Its caller is ``_DeflateEndCheckStream`` in ``codecs/zlib_codec.py``, before any
-takeover, to decide whether one is needed. The points for both come from
-``RapidgzipChildStream.resume_point``.
+takeover, to decide whether one is needed. The takeover's points come from
+``RapidgzipChildStream.resume_point``, the points the stream kept as it read. The end
+check under ``refuse_input_after_end`` takes its point from
+``RapidgzipChildStream.end_check_point``, the last point of rapidgzip's complete index,
+and without the flag from ``resume_point``.
 """
 
 from __future__ import annotations
@@ -245,13 +248,14 @@ def stream_end(
 
     The second value is False unless ``check_input_after`` is set. Then it is whether
     ``source`` holds any byte after the stream's end, a zero too, a further stream
-    included. Only a decode from the start (``point`` of ``None``) can say that of the
-    stream's first end: a resume point can lie in a further stream that rapidgzip read
-    on into.
+    included. From a resume point, "the stream" is the one the point lies in: a point
+    can lie in a further stream that rapidgzip read on into, and then the first
+    stream's end goes unseen. Only a decode from the start (``point`` of ``None``) finds
+    that end.
     """
     if point is not None:
         resume = point.state
-        # RapidgzipChildStream.resume_point gives only such points.
+        # RapidgzipChildStream.resume_point and end_check_point give only such points.
         assert isinstance(resume, DeflateResume) and point.decompressed_offset <= cap
         decomp = _resume_decompressor(resume, natives)
         produced, bit = point.decompressed_offset, resume.bit

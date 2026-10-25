@@ -1029,6 +1029,65 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         usable = [offset for offset in self._checkpoints if offset <= at]
         return self._checkpoints[max(usable)] if usable else None
 
+    def end_check_point(self, end: int) -> SeekPoint | None:
+        """The resume point the DEFLATE end check decodes from, when the output ends
+        at decompressed offset ``end``: the last point of rapidgzip's complete index
+        before ``end``, with the 32 KiB of output before it. ``None`` when the index
+        has no such point, or the child cannot give it. The errors the other probes let
+        through (an archivey error, ``OSError``, ``MemoryError``) raise, as the next
+        read would: ``None`` would read as "no point", and the check would decode from
+        the start instead.
+
+        :meth:`resume_point` gives the newest point this stream kept, and which points
+        it kept depends on how far the child had decoded when each ``POINTS`` query
+        went out. The end check's verdict can depend on the point it starts from (a
+        point in a second stream finds that stream's end, not the first one's), so it
+        takes the point from the complete index instead, which depends only on the
+        data and on how many threads rapidgzip runs, which follows the core count. A
+        point this stream did not keep has its window read back from the child, and
+        the stream returns to where it was.
+        """
+        if self._bzip2 or self._death is not None or self._proc is None:
+            return None
+        try:
+            offsets = self.block_offsets()
+        except (ArchiveyError, ArchiveyUsageError, OSError, MemoryError):
+            raise
+        except Exception:  # noqa: BLE001 - None decodes from the start, the full check
+            return None
+        points = [
+            (decoded, bit) for bit, decoded in offsets.items() if 0 < decoded < end
+        ]
+        if not points:
+            return None
+        decoded, bit = max(points)
+        kept = self._checkpoints.get(decoded)
+        if kept is not None:
+            return kept
+        start = max(0, decoded - WINDOW_SIZE)
+        window = bytearray()
+        position = self.tell()
+        try:
+            self.seek(start)
+            while len(window) < decoded - start:
+                data = self.read(decoded - start - len(window))
+                if not data:
+                    break
+                window += data
+        except (ArchiveyError, ArchiveyUsageError, OSError, MemoryError):
+            raise
+        except Exception:  # noqa: BLE001 - as above
+            window = bytearray()
+        finally:
+            # A seek the child refuses raises here: the stream must not stay at start.
+            # When the read already failed, this raises the same error: each failure
+            # there (a dead child, a closed or forked stream, a broken pipe) fails the
+            # seek the same way.
+            self.seek(position)
+        if len(window) != decoded - start:
+            return None
+        return SeekPoint(decoded, bit // 8, DeflateResume(bit % 8, bytes(window)))
+
     def read(self, n: int | None = -1, /) -> bytes:
         # Before the buffer: a closed or dead stream raises even with read-ahead left.
         self._raise_if_unusable()

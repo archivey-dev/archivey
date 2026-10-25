@@ -118,6 +118,20 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   `config=archivey.ArchiveyConfig(use_rapidgzip=archivey.AcceleratorMode.OFF,
   use_indexed_bzip2=archivey.AcceleratorMode.OFF)`.
 
+    rapidgzip gives the same results as the standard library but for one crafted shape: a ZIP
+    member or 7z coder holding two DEFLATE streams, with a size and CRC that cover both. With
+    rapidgzip you may get both streams when the second is long. It depends on the data, on
+    how many cores the machine has and on the platform, so the same member may read on one
+    machine and be refused on another. Without rapidgzip you get `CorruptionError`, and 7-Zip
+    and unzip read the first stream and report a bad CRC. No known tool writes such a member.
+    Turn rapidgzip off if your code must refuse it.
+
+    ??? note "Why not check for it?"
+        rapidgzip doesn't say where a DEFLATE stream ends. Archivey checks the end of the data
+        from the last place rapidgzip can restart from, which catches a cut stream and any bytes
+        after the last one. Finding where an earlier stream ended would mean decompressing the
+        member again from the start, which costs as much as reading it without rapidgzip.
+
     ??? note "Why a separate process, and why those sizes?"
         The crashes seen so far are in rapidgzip's DEFLATE decoder. Its bzip2 decoder hasn't been
         seen to crash, but it runs in a separate process too as a precaution, since it's part of the

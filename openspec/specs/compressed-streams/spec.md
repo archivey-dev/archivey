@@ -598,11 +598,12 @@ output SHALL be re-decoded by the non-accelerated decoder over a fresh view of t
 source, which raises or confirms the empty stream. A seek before that first read does not
 bypass the check: on such a stream the accelerator clamps the seek to 0. Accelerator mode
 is a performance choice and SHALL NOT be observable as a difference in whether a corrupt
-source raises, with one exception. Where every byte of output is covered by checks the
-data itself declares, those checks give the verdict, and an accelerator MAY differ from
-the standard-library decoder on a stream-boundary malformation they cannot see: for a
-standalone multi-member gzip, a wrong ISIZE on a member other than the last, when every
-member's CRC-32 is still checked.
+source raises, with two exceptions. First, where every byte of output is covered by
+checks the data itself declares, those checks give the verdict, and an accelerator MAY
+differ from the standard-library decoder on a stream-boundary malformation they cannot
+see: for a standalone multi-member gzip, a wrong ISIZE on a member other than the last,
+when every member's CRC-32 is still checked. Second, rapidgzip on a container member's
+raw DEFLATE data MAY read a second stream as content (below).
 
 A container member's compressed data (a ZIP member's, a 7z coder's declared input) is
 one stream of its codec and nothing else. A byte of it the codec leaves after the
@@ -621,7 +622,27 @@ its input goes on past that size; such a cut leaves input over, so it is not a
 `TruncatedError`. A standalone compressed file keeps reporting the bytes after its
 streams as `ARCHIVE_TRAILING_DATA` instead.
 
-A wrong ISIZE on the last member of a one-member gzip is not among them, whatever follows
+rapidgzip on a container member's raw DEFLATE data is the second exception, to that
+rule and to the parity above. rapidgzip does not report where a stream ends, and it
+reads on into a second stream. When its output ends, zlib SHALL decode only the tail,
+from the last point of rapidgzip's complete index before the end (or from the start
+when there is none), to find a final block and any input after it. A decode from the
+start would cost as much as the standard-library read that the accelerator replaces;
+where the index has no point the check is that decode, and the read costs what it did
+without the tail check. So when a second DEFLATE stream holds that point, the check
+sees only that stream's end, and the member MAY read as both streams when its declared
+size and CRC cover both. With the accelerator off it raises `CorruptionError`, and
+7-Zip and Info-ZIP read the first stream and fail the CRC. No known writer makes such a
+member. Where rapidgzip places its points, and so which stream holds the last one,
+depends on the data, on how many threads it runs (which follows the core count) and on
+the platform: on Linux and macOS a member of a few MiB had several, and on the
+windows-latest CI runner a ZIP member's index held none past 0. A second stream that
+does not hold it, junk, zero bytes and a cut stream keep the standard library's
+verdict. zlib parses only the tail: the output before the point is rapidgzip's, checked
+by the member's CRC where the container declares one.
+
+A wrong ISIZE on the last member of a one-member gzip is not among the stream-boundary
+malformations of the first exception, whatever follows
 the member. The accelerator reads the output through a CRC-32 and finds the trailer as the
 one place near the end of the file where that CRC-32 occurs: it looks from 72 bytes before
 the end of the non-zero data to 12 bytes after it, and takes the file as ending with the
@@ -677,13 +698,16 @@ of a second decode.
 | Case | Expected |
 | --- | --- |
 | `open_archive(corrupt.bz2, seekable_members=True).read(member)` | Raises, matching `seekable_members=False` |
-| A capability flag (`seekable_members`) | Never changes whether a corrupt source raises, except through the accelerator on the stream-boundary malformation listed above |
+| A capability flag (`seekable_members`) | Never changes whether a corrupt source raises, except through the accelerator on the stream-boundary malformations listed above |
 
 #### Scenario: a container member with input after its stream
 
 | Member | Accelerator `OFF` | Accelerator `ON` |
 | --- | --- | --- |
-| Two DEFLATE or bzip2 streams; declared size and CRC cover both, or the first only | `CorruptionError` | `CorruptionError` |
+| Two bzip2 streams; declared size and CRC cover both, or the first only | `CorruptionError` | `CorruptionError` |
+| Two DEFLATE streams; declared size and CRC cover the first only | `CorruptionError` | `CorruptionError` |
+| Two DEFLATE streams; declared size and CRC cover both, the last rapidgzip index point in the first | `CorruptionError` | `CorruptionError` |
+| Two DEFLATE streams; declared size and CRC cover both, the last rapidgzip index point in the second | `CorruptionError` | Decodes both |
 | One DEFLATE or bzip2 stream, then junk or zero bytes | `CorruptionError` | `CorruptionError` |
 | ZIP Zstd member with two frames; declared size and CRC cover both | Decodes both | — |
 | ZIP Zstd member with two frames; declared size and CRC cover the first only, or junk after the last | `CorruptionError` | — |
