@@ -185,12 +185,15 @@ class MemberRecord(NamedTuple):
 
 class MemberSpan(NamedTuple):
     member: ArchiveMember
-    data_length: int           # the next data_length bytes of the stream are its data
+    data_length: int | None = None  # raw: the next data_length bytes of the stream
+    data: BinaryIO | None = None    # decoded: a stream the plugin's library decodes
     expected_hashes: Mapping[HashAlgorithm, bytes] = {}
+    checked: bool = False           # the library verified the data when read to the end
 
 class MemberData(NamedTuple):
     stream: BinaryIO
     expected_hashes: Mapping[HashAlgorithm, bytes] = {}
+    checked: bool = False
 
 class ForwardStream:
     """The archive bytes (decompressed, if there is an outer stream), read forward."""
@@ -198,6 +201,7 @@ class ForwardStream:
     def read(self, n: int) -> bytes: ...     # short only at the end
     def read_exact(self, n: int) -> bytes: ...   # TruncatedError if short
     def skip(self, n: int) -> None: ...
+    def decompress(self, stream: StreamFormat) -> ForwardStream: ...  # from here on (RPM)
 
 class PluginSource:
     """The archive bytes for an indexed reader. Always seekable."""
@@ -216,6 +220,7 @@ class PluginContext:
     def link_target_unavailable(self, member_name: str, why: str) -> None: ...
 
 class PluginArchiveInfo(NamedTuple):
+    is_solid: bool = False                  # members share one decode (ACE, CAB folders)
     format_version: str | None = None
     comment: str | None = None
     extra: Mapping[str, object] = {}
@@ -232,6 +237,15 @@ Points that matter:
   listed size, so a short stream raises `TruncatedError` (principle 1). A plugin that
   knows a checksum returns it in `expected_hashes`. A plugin that knows none gets the
   `DIGEST_UNVERIFIABLE` behaviour that a built-in format without a checksum gets.
+- **Checksums the enum cannot name (maintainer, 2026-10-25).** `HashAlgorithm` holds
+  CRC32 and BLAKE2SP only, and stays closed. When the plugin's library verifies a digest
+  archivey cannot (LHA's CRC-16, WIM's SHA-1, XAR's SHA-1 or MD5), the plugin sets
+  `checked=True`: "the library verified this data when it was read to the end, and
+  raised if it did not match". archivey counts the member as verified, as it trusts
+  plugin code (§5). The stored value is still exposed: a digest the enum names goes in
+  `ArchiveMember.hashes` (archivey verifies it), and any other goes in
+  `ArchiveMember.extra` under a namespaced key such as `extra["xar.sha1"]`, which
+  `MemberExtra` already allows.
 - **Sources are views, not a shared handle.** `PluginSource.view()` returns a stream with
   its own position over the shared source (the `SharedSource` views the built-ins use).
   Two member streams open at the same time, or a `CONCURRENT` reader, cannot move each
@@ -247,7 +261,7 @@ Points that matter:
   `translate_exception`, and an untranslated one propagates unchanged, as for a built-in
   (DR-15a).
 - **Archive info.** The adapter builds `ArchiveInfo` and `CostReceipt` itself:
-  `is_solid=False`, `is_multivolume=False`, `is_encrypted=False`, access `DIRECT`, listing
+  `is_solid` from the plugin, `is_multivolume=False`, `is_encrypted=False`, access `DIRECT`, listing
   cost from `member_list_upfront`, stream capability from the source. The plugin
   supplies only what the adapter cannot know.
 - **No password, volume or SFX parameters.** Each would be a field on `PluginContext`
@@ -287,12 +301,51 @@ public way to feed it. `SequentialReader.walk()` is that way.
   checksums of the archive's own structure are the plugin's `walk()` to verify. It
   raises `CorruptionError` or `TruncatedError` like any reader. The adapter keeps the
   members listed before the damage, as a TAR walk does.
+- **Data a library decodes (maintainer, 2026-10-25).** Formats that compress each
+  member (LHA, ARJ, ACE read in order, anything through libarchive) give the plugin no
+  raw window to describe. Such a plugin yields `MemberSpan(member, data=stream)`: a
+  decoded stream that stays valid until the next member. The adapter wraps it as it
+  wraps a window (size check against `member.size`, extraction limits, digest or
+  `checked`), and drains what the caller left unread before it resumes `walk()`. Random
+  access to such a member walks again from the start, as a solid archive does, unless
+  the reader also implements `open_member`.
+- **Compression that starts mid-stream** (RPM: headers, then a gzip, xz or zstd CPIO
+  payload): `ForwardStream.decompress(fmt)` returns a forward stream through archivey's
+  own codecs, with the decoder limits and the live ratio guard.
 - **`open()` for a sequential format** gets `source=None`. The bytes reach `walk()`
   only, because on a pipe or a compressed source there is no seekable source to give.
 
 The shared-pass locking (a `CONCURRENT` reader whose walk has a live member stream) is
 TAR's `_pull_member` hand-off, moved into the adapter. It is the risky part of the
 adapter, and the cross-format pass tests cover it.
+
+### 2b. Checked against real libraries
+
+The maintainer asked (2026-10-25) to check the interface against existing third-party
+readers before building it. From the libraries' source distributions on PyPI (read,
+not run):
+
+| Format | Library (PyPI) | How it reads | Shape it fits | What it needs that the design lacks |
+| --- | --- | --- | --- | --- |
+| AR / .deb outer | arpy 2.4.0, unix-ar 0.2.1 | header + raw data, GNU/BSD long names | Sequential, as designed | Nothing. (.deb's inner data.tar.xz is a nested archive: out of scope) |
+| CPIO | (our proof) | header + raw data | Sequential, as designed | newc hard links carry data on the last link |
+| RPM | rpmfile 2.2.1 | lead + headers, then a gzip/xz/zstd/bzip2 CPIO payload | Sequential | **Compression that starts mid-stream** (after the RPM headers), not at byte 0 |
+| LHA / LZH | lhafile 0.3.1 | header + per-member compressed data; library decodes, checks CRC-16 | Indexed today (it seeks); sequential possible | **Library-decoded member data**; **CRC-16** (not a HashAlgorithm) |
+| ACE 1.0/2.0 | acefile 0.6.14 | seekable file or path; solid archives, multi-volume, passwords; `readblocks()` streams output | Indexed (library keeps solid state; out-of-order is slow) | **is_solid** in archive info; passwords; volumes (library finds siblings from a path) |
+| ARJ | none found on PyPI; libarchive has no ARJ; 7-Zip reads it | header + per-member compressed data | Sequential or indexed via a decoder, or a 7z CLI wrapper (path) | Library-decoded data; CRC-32 fits; passwords ("garble") later |
+| CAB | cabarchive 0.2.5 (MSZIP only, no LZX/Quantum; whole file as bytes, decodes all at parse) | index (CFFOLDER/CFFILE) + folders compressed as one stream | Indexed | Solid-like folders (**is_solid**); multi-cabinet sets later; library memory is unbounded (plugin's own risk) |
+| SquashFS | PySquashfsImage 0.9.0, dissect.squashfs 1.12 | file object + offset; inode table, hard links by inode, devices, xattrs | Indexed, as designed | Nothing new (hard links: plugin picks the first name) |
+| WIM | dissect.archive 1.8 | file object; several images per file; SHA-1 per resource; reparse points | Indexed | **SHA-1**; a naming rule for several images (plugin's choice, e.g. `1/...`) |
+| XAR | libarchive only (no pure-Python reader found) | zlib XML TOC first, per-file checksums (SHA-1/MD5) | Indexed | **SHA-1 / MD5** |
+| many (cab, lha, xar, iso, 7z, rar, warc, mtree) | libarchive-c 5.3 | forward only: next header, read data blocks; library owns I/O and decoding | Sequential | **Library-decoded member data**; it reads a path or file object itself |
+
+What the survey changed: decoded data in the sequential shape, the `checked` flag and
+the `extra` rule for digests, `ForwardStream.decompress`, and `PluginArchiveInfo.is_solid`
+(all in §2 and §2a). What it confirmed stays out of the first version: passwords (ACE,
+ARJ), multi-volume sets (ACE, ARJ, CAB; a library that finds its own volumes from
+`PluginSource.path` works already) and nested archives (`.deb`). No ARJ reader exists in
+Python, and libarchive has none, so an ARJ plugin needs its own decoder or a 7-Zip wrapper
+through `PluginSource.path`.
 
 ### 3. Format identity: `PluginContainer`
 
@@ -389,8 +442,7 @@ as one member, and it depends on the codec registry, the accelerator selection
 (rapidgzip) and the compressed-input counter that gives the live ratio guard its
 denominator. Moving it would put all three into the public interface.
 
-**Directory stays internal** (recommended; the maintainer asked on 2026-10-25 whether it
-could move, still open). Its reading part would fit the indexed shape, since it calls
+**Directory stays internal** (maintainer, 2026-10-25). Its reading part would fit the indexed shape, since it calls
 one base helper. But three things it needs no other plugin would: a source that is a
 folder path, not bytes; routing before detection (`core.py` sends a folder path to it
 before any magic or extension check); and `_check_extraction_dest`, which refuses
@@ -472,7 +524,7 @@ No PR merges before the 0.2.0 tag. The target is 0.3.0.
 
 The maintainer decided the brief's calls on 2026-10-25 (`brief.md`): provisional status,
 explicit registration, both reader shapes with pipes, outer compression for sequential
-formats, `FormatInfo.from_plugin` (one boolean), ISO onto the interface, and CPIO in
-`packages/archivey-cpio/`. Still open:
-
-- Whether the directory reader moves onto the interface (§7; recommended: no).
+formats, `FormatInfo.from_plugin` (one boolean), ISO onto the interface, CPIO in
+`packages/archivey-cpio/`, the directory reader stays internal, decoded data in the
+sequential shape, and the `checked` flag with stored digests in `hashes` or `extra`.
+No question is open.

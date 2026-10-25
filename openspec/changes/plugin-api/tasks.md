@@ -14,6 +14,9 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
       (`_iter_with_data`, `_list_before_extraction`, the `_pull_member` hand-off), span
       windows with skip-on-advance, recorded offsets for random access on a seekable
       source, link targets read from data.
+- [ ] 1.2c Decoded `MemberSpan.data` (drain on advance, re-walk for random access),
+      `ForwardStream.decompress`, `checked` members counted as verified,
+      `PluginArchiveInfo.is_solid`.
 - [ ] 1.2b Move TAR's codec-stream opening (`_open_byte_stream`) to a helper shared
       with the adapter, for compressed sequential plugins.
 - [ ] 1.3 `archivey/plugins.py`: `FormatPlugin`, `PluginReader`, `IndexedReader`,

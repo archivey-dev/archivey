@@ -45,6 +45,12 @@ checks run in an adapter the plugin cannot skip.
 5. `FormatInfo.from_plugin`: yes.
 6. ISO moves onto the interface.
 7. The CPIO proof lives in `packages/archivey-cpio/`, unpublished.
+8. The directory reader stays internal.
+9. A sequential plugin may hand over data its library decoded (LHA, ARJ, ACE, libarchive).
+10. Digests the enum cannot name: a `checked=True` flag; the stored value goes in
+    `member.extra` (`HashAlgorithm` stays closed).
 
-**Still open:** whether the directory reader moves too (recommended: no, §7 of
-`design.md`).
+The interface was checked against eleven formats and their existing libraries
+(`design.md` §2b).
+
+**Still open:** nothing.
