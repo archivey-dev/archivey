@@ -96,8 +96,7 @@ This is extraction output, not a copy of the archive. Three rules bear on that:
 
 This design takes the second reading: staged data is counted by the bomb limits like any
 write, and lives where the extraction was going to put it. The `format-zip` delta says
-so. The reading is the maintainer's to confirm (Open Questions); if the first is chosen,
-the change gains a `format-zip` declaration and a `spool_limits` clause.
+so. The maintainer confirmed this reading (Open Questions).
 
 Inside `dest_root`, so placement is a rename on the same filesystem. The `.archivey-tmp-`
 prefix is the one `docs/extracting.md` already calls safe to delete, and a uuid4 name
@@ -266,17 +265,13 @@ helpers stay for TAR from a pipe.
 
 ## Open Questions
 
-Both were taken as this design recommends when the change was implemented, with no
-ruling yet: staged data is extraction output (the `archive-reading` delta says "Bounded
-implicit temporary storage" does not reach it), and progress uses the order of
-Decision 5. The maintainer may still rule otherwise.
+None left. The maintainer ratified both as shipped during the review of PR 920
+(2026-10-20) and confirmed them again on 2026-10-25:
 
-- **Is staged data extraction output, or implicit temporary storage?** Three rules bear
+- **Staged data is extraction output**, not implicit temporary storage. Three rules bore
   on it: ADR 0010, the `format-zip` rule against copying the source, and
-  `archive-reading`'s "Bounded implicit temporary storage". Decision 1 argues output.
-  The maintainer rules; the answer decides whether the change also owes a `format-zip`
-  declaration and a `spool_limits` budget.
-- **Is the progress order of Decision 5 acceptable?** Per-member reports while staging,
-  outcome tallies only in one report after placement. The `safe-extraction` delta to
-  "Progress Reporting via on_progress Callback" states it; the maintainer confirms or
-  picks another order.
+  `archive-reading`'s "Bounded implicit temporary storage". Decision 1's reading holds:
+  staged data is bounded by the extraction limits, with no `format-zip` declaration and
+  no `spool_limits` budget.
+- **The progress order of Decision 5 stays**: per-member reports while staging, outcome
+  tallies once, in one report after placement.
