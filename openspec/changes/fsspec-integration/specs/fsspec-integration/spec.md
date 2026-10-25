@@ -12,7 +12,7 @@ start and length itself:
 | Rule | Behaviour |
 | --- | --- |
 | Sequential run | A read that continues the last fetch grows the next fetch, up to a fixed maximum fetch size |
-| Short forward gap | A forward seek no longer than a fixed read-through distance continues the run instead of starting a new request |
+| Short forward gap | A forward seek no longer than `ArchiveyConfig.max_read_through` (default 1 MiB) continues the run instead of starting a new request |
 | Jump | A backward seek, or a longer forward one, starts a new run at the minimum fetch size |
 | Backend range hint | A span the backend declares it will read next is fetched in one request, up to the maximum fetch size, then continued as a run |
 

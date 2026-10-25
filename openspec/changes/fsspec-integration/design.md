@@ -173,8 +173,9 @@ fetch's start and length:
 1. **Doubling read-ahead.** A read that continues where the last fetch ended doubles
    the next fetch, from 64 KiB up to `_MAX_FETCH` (8 MiB). A backward jump, or a forward
    jump past the read-through distance, resets it.
-2. **Read through short forward gaps.** A forward seek of at most `_READ_THROUGH`
-   bytes (1 MiB to start; tuned by the benchmark) does not end the sequential run: the
+2. **Read through short forward gaps.** A forward seek of at most
+   `ArchiveyConfig.max_read_through` bytes (public, default 1 MiB; maintainer,
+   2026-10-25) does not end the sequential run: the
    planner keeps fetching through the gap. This is the TAR fix without any TAR code: a
    hop over a small member's data costs bytes, not a request, and a hop over a large one
    is a jump.
@@ -382,10 +383,9 @@ only for data that has a checksum. In order of strength:
 3. **Otherwise nothing can see a same-length replacement.** Comparing the total size on
    each fetch catches a replacement of a different length only. This is an accepted
    non-guarantee, recorded in the threat model beside the others, and the reader says so
-   at open with a diagnostic of the `DIGEST_UNVERIFIABLE` kind (name and severity are
-   open question 2), so that silence never reads as "checked".
+   at open with a diagnostic of the `DIGEST_UNVERIFIABLE` kind (advisory; §Decisions 3), so that silence never reads as "checked".
 
-A change that is caught raises; which error is also open question 2.
+A change that is caught raises `SourceChangedError` (§Decisions 3).
 
 ## Benchmark: requests and bytes fetched
 
@@ -424,19 +424,24 @@ The structural gate counts seeks today. This change adds a remote axis.
   path does. It also records the "caller's own fsspec file with the default cache"
   numbers, which the docs quote.
 
-## Open questions
+## Decisions by the maintainer (2026-10-25)
 
-1. **The CLI and URLs.** `archivey list s3://bucket/set.7z` is the obvious use. The
-   proposal: when fsspec is installed, an argument with a `scheme://` prefix that fsspec
-   knows, and that is not an existing local path, is opened as `fsspec.open(arg)`.
-   The CLI is a user tool, so the server-side concern of D1 does not apply, but this is a
-   public behaviour and goes to the maintainer.
-2. **D7's errors and diagnostic.** A detected change: `OpenError` fits a change seen at
-   open, `CorruptionError` one seen later. The "changes cannot be detected" diagnostic:
-   its name, and whether `STRICT` refuses on it (the `DIGEST_UNVERIFIABLE` precedent says
-   advisory). Settled at implementation against DR-1, or with the maintainer if no rule
-   settles it.
-3. **Download as a cost.** Bytes fetched cost money on metered egress. `CostReceipt`
-   describes access cost in kinds, not bytes. A "this operation downloads about N bytes"
-   figure would need the planner to predict, which it can for ZIP and 7z and not for
-   TAR. Left for when a user asks.
+The open questions of the first draft, and the review's decision card:
+
+1. **Remote listing of a format without an index (TAR, RAR5): a public knob.**
+   `ArchiveyConfig.max_read_through` (bytes, default 1 MiB): a forward gap of at most this
+   is read through, a longer one is a new request. The default sits just under the
+   break-even of one request against its bytes (about 30 ms × 50 MB/s ≈ 1.5 MB), leaning
+   toward fewer requests. `0` means "fetch only what is needed". It replaces the
+   internal `_READ_THROUGH`; the benchmark still sets small values through it. It is the
+   one public addition to the planner (D2's other constants stay internal).
+2. **The CLI accepts URLs.** When fsspec is installed, an argument with a `scheme://`
+   prefix fsspec knows, that is not an existing local path, is opened as
+   `fsspec.open(arg)`.
+3. **A detected change raises `SourceChangedError`**, a new subclass of `ReadError`, at
+   open or later (D7). It is not damage, so not `CorruptionError`, and a distinct type
+   lets a caller reopen and retry. Where no guard exists (no version pinning, no
+   `If-Match`), the reader emits an advisory diagnostic at open saying that changes
+   cannot be detected; like `DIGEST_UNVERIFIABLE`, `STRICT` does not refuse on it.
+4. **No download-size cost figure.** If a user asks, the honest form is an
+   after-the-fact count of bytes fetched, not a prediction.
