@@ -3,7 +3,8 @@
 ### Requirement: A package adds a format through archivey.plugins
 
 The system SHALL let a package outside archivey add a read-only format by subclassing
-`archivey.plugins.FormatPlugin` and `archivey.plugins.PluginReader` and calling
+`archivey.plugins.FormatPlugin` and one of `archivey.plugins.IndexedReader` or
+`archivey.plugins.SequentialReader`, and calling
 `archivey.plugins.register_format()`. A plugin reader SHALL NOT subclass or see
 `BaseArchiveReader`. An internal adapter SHALL present it as an ordinary
 `ArchiveReader`.
@@ -56,3 +57,43 @@ listing limits and extraction limits to plugin members.
 | Plugin stream shorter than the listed size, read to the end | `TruncatedError` |
 | Plugin returns a CRC-32 that does not match | `CorruptionError` |
 | Plugin lists a member named `../x`; `extract_all` | Refused as for a built-in format |
+
+### Requirement: Sequential plugins read forward-only sources
+
+A `SequentialReader` plugin SHALL be readable from a non-seekable source in one forward
+pass through `stream_members()`, iteration and `extract_all()`, with the listing limits
+enforced as members arrive. The adapter SHALL own each member's data window and skip
+what the caller leaves unread. On a seekable source the adapter SHALL serve random access
+without an `open_member` from the plugin.
+
+#### Scenario: sequential plugin sources
+
+| Case | Expected |
+| --- | --- |
+| A CPIO archive piped to `open_archive(stream, streaming=True)`; `stream_members()` | Every member with its data, in one pass |
+| `x.cpio.gz` from a file; `open(member)` on the third member | Its data |
+| A caller reads half of a member's stream and advances | The next member's header and data are read correctly |
+
+### Requirement: Sequential plugin formats are detected inside compression streams
+
+Detection SHALL check registered sequential plugins' magic inside a gzip, bzip2, xz or
+zstd stream after TAR, within the prefix and budget the inner-TAR probe uses today.
+
+#### Scenario: compressed plugin format
+
+| Case | Expected |
+| --- | --- |
+| `x.cpio.gz` from a file; `detect_format` | `ArchiveFormat(CpioContainer.CPIO, StreamFormat.GZIP)` |
+| No plugin registered; `x.cpio.gz` | Detects as `GZ`, as today |
+
+### Requirement: FormatInfo marks plugin formats
+
+`FormatInfo` SHALL carry `from_plugin`, true for a format added by `register_format()`
+and false for every built-in format.
+
+#### Scenario: from_plugin
+
+| Case | Expected |
+| --- | --- |
+| `format_availability` / `FormatInfo` for the registered CPIO plugin | `from_plugin` is `True` |
+| The same for `ArchiveFormat.ZIP` | `from_plugin` is `False` |
