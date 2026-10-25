@@ -120,10 +120,11 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
 
     rapidgzip gives the same results as the standard library but for one crafted shape: a ZIP
     member or 7z coder holding two DEFLATE streams, with a size and CRC that cover both. With
-    rapidgzip you may get both streams, when the second is long enough (from a few hundred KiB
-    to a few MiB, depending on the data). Without it you get `CorruptionError`, and 7-Zip and
-    unzip read the first stream and report a bad CRC. No known tool writes such a member. Turn
-    rapidgzip off if your code must refuse it.
+    rapidgzip you may get both streams when the second is long (a few hundred KiB or more). It
+    depends on the data, on how many cores the machine has and on the platform, so the same
+    member may read on one machine and be refused on another. Without rapidgzip you get
+    `CorruptionError`, and 7-Zip and unzip read the first stream and report a bad CRC. No
+    known tool writes such a member. Turn rapidgzip off if your code must refuse it.
 
     ??? note "Why not check for it?"
         rapidgzip doesn't say where a DEFLATE stream ends. Archivey checks the end of the data

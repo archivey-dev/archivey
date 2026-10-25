@@ -389,7 +389,8 @@ where the reads had reached completes a paused digest, maintainer 2026-10-13.
 - **Access mode.** Streaming and random access end up the same on disk "unless there's a
   strong reason that makes it impossible" (2026-09-25).
 - **Operating system.** The same archive extracts the same way on Linux, macOS and
-  Windows, or is refused everywhere.
+  Windows, or is refused everywhere, but for the same crafted shape under rapidgzip
+  (DR-5a).
 - **Accelerators and extras.** An accelerator changes speed, never the result or the
   error type, but for one crafted shape (DR-5a).
 - **Entry point.** Public functions agree with each other (`detect_format` recognises
@@ -461,8 +462,11 @@ rapidgzip on a ZIP or 7z DEFLATE member checks only the tail after the last poin
 index, so a second stream that holds that point, with a size and CRC that cover both
 streams, reads as both; with the accelerator off it raises. Finding the first stream's
 end takes a decode from the start, which "negates the whole point of accelerators", so
-the limitation is accepted and documented (2026-10-24). It does not relax DR-1: the
-output is what the member's own size and CRC describe.
+the limitation is accepted and documented (2026-10-24). Whether the second stream holds
+the point depends on the data, rapidgzip's thread count and the platform, so the same
+member may read on one machine and be refused on another; that is accepted as well, and
+the docs say "may" (2026-10-25). It does not relax DR-1: the output is what the member's
+own size and CRC describe.
 
 **Reopen if** a real producer writes the shape.
 
