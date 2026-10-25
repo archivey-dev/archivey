@@ -627,17 +627,19 @@ rule and to the parity above. rapidgzip does not report where a stream ends, and
 reads on into a second stream. When its output ends, zlib SHALL decode only the tail,
 from the last point of rapidgzip's complete index before the end (or from the start
 when there is none), to find a final block and any input after it. A decode from the
-start would cost as much as the standard-library read that the accelerator replaces. So
-when a second DEFLATE stream holds that point, the check sees only that stream's end,
-and the member SHALL read as both streams when its declared size and CRC cover both.
-With the accelerator off it raises `CorruptionError`, and 7-Zip and Info-ZIP read the
-first stream and fail the CRC. No known writer makes such a member. Which stream holds
-the point depends on the data and on how many threads rapidgzip runs, which follows the
-core count: it places points every few hundred KiB to a few MiB of output, closer
-together with more threads. A second stream that does not hold it, junk, zero bytes and
-a cut stream keep the standard library's verdict. zlib parses only the tail: the output
-before the point is rapidgzip's, checked by the member's CRC where the container
-declares one.
+start would cost as much as the standard-library read that the accelerator replaces;
+where the index has no point the check is that decode, and the read costs what it did
+without the tail check. So when a second DEFLATE stream holds that point, the check
+sees only that stream's end, and the member MAY read as both streams when its declared
+size and CRC cover both. With the accelerator off it raises `CorruptionError`, and
+7-Zip and Info-ZIP read the first stream and fail the CRC. No known writer makes such a
+member. Where rapidgzip places its points, and so which stream holds the last one,
+depends on the data, on how many threads it runs (which follows the core count) and on
+the platform: on Linux and macOS a member of a few MiB had several, and on the
+windows-latest CI runner a ZIP member's index held none past 0. A second stream that
+does not hold it, junk, zero bytes and a cut stream keep the standard library's
+verdict. zlib parses only the tail: the output before the point is rapidgzip's, checked
+by the member's CRC where the container declares one.
 
 A wrong ISIZE on the last member of a one-member gzip is not among the stream-boundary
 malformations of the first exception, whatever follows

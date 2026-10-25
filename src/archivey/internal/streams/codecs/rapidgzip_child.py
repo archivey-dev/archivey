@@ -1033,7 +1033,10 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         """The resume point the DEFLATE end check decodes from, when the output ends
         at decompressed offset ``end``: the last point of rapidgzip's complete index
         before ``end``, with the 32 KiB of output before it. ``None`` when the index
-        has no such point, or the child cannot give it.
+        has no such point, or the child cannot give it. The errors the other probes let
+        through (an archivey error, ``OSError``, ``MemoryError``) raise, as the next
+        read would: ``None`` would read as "no point", and the check would decode from
+        the start instead.
 
         :meth:`resume_point` gives the newest point this stream kept, and which points
         it kept depends on how far the child had decoded when each ``POINTS`` query
@@ -1048,6 +1051,8 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             return None
         try:
             offsets = self.block_offsets()
+        except (ArchiveyError, ArchiveyUsageError, OSError, MemoryError):
+            raise
         except Exception:  # noqa: BLE001 - None decodes from the start, the full check
             return None
         points = [
@@ -1061,10 +1066,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             return kept
         start = max(0, decoded - WINDOW_SIZE)
         window = bytearray()
-        try:
-            position = self.tell()
-        except Exception:  # noqa: BLE001 - None decodes from the start, the full check
-            return None
+        position = self.tell()
         try:
             self.seek(start)
             while len(window) < decoded - start:
@@ -1072,12 +1074,13 @@ class RapidgzipChildStream(ReadOnlyIOStream):
                 if not data:
                     break
                 window += data
+        except (ArchiveyError, ArchiveyUsageError, OSError, MemoryError):
+            raise
         except Exception:  # noqa: BLE001 - as above
             window = bytearray()
-        try:
+        finally:
+            # A seek the child refuses raises here: the stream must not stay at start.
             self.seek(position)
-        except Exception:  # noqa: BLE001, S110 - a dead child raises on the next read
-            pass
         if len(window) != decoded - start:
             return None
         return SeekPoint(decoded, bit // 8, DeflateResume(bit % 8, bytes(window)))
