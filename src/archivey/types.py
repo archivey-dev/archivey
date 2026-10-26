@@ -90,6 +90,22 @@ class ContainerFormat(StrEnum):
     :class:`~archivey.ArchiveyUsageError`."""
 
 
+class PluginContainer(StrEnum):
+    """Base class for a container enum that a format plugin defines.
+
+    A plugin subclasses it with one member per container it adds, and builds its
+    :class:`~archivey.ArchiveFormat` from that member::
+
+        class CpioContainer(PluginContainer):
+            CPIO = "cpio"
+
+        CPIO = ArchiveFormat(CpioContainer.CPIO, StreamFormat.UNCOMPRESSED)
+
+    Provisional, with the rest of ``archivey.plugins``. Code that matches on
+    ``ArchiveFormat.container`` needs a default case once a plugin is registered.
+    """
+
+
 class StreamFormat(StrEnum):
     """The compression around the whole container, the second half of an
     :class:`~archivey.ArchiveFormat`. Each value is the format's file extension."""
@@ -128,8 +144,9 @@ class ArchiveFormat:
     and an unknown spelling raises :class:`~archivey.ArchiveyUsageError` there.
     """
 
-    container: ContainerFormat
-    """The archive format, such as ``ZIP`` or ``TAR``."""
+    container: ContainerFormat | PluginContainer
+    """The archive format, such as ``ZIP`` or ``TAR``, or a member of a
+    :class:`~archivey.PluginContainer` subclass for a format a plugin adds."""
 
     stream: StreamFormat
     """The compression around the archive, such as ``GZIP`` for a ``.tar.gz``, or
@@ -143,8 +160,9 @@ class ArchiveFormat:
         # Holding members makes the two agree. A member of another enum is refused
         # as a container, but left as it is as a stream: the codec registry is keyed
         # on these pairs, and a codec registered from outside
-        # (``tests/test_codec_descriptor.py`` does) brings its own stream enum.
-        if not isinstance(self.container, ContainerFormat):
+        # (``tests/test_codec_descriptor.py`` does) brings its own stream enum. A
+        # plugin's container is kept as it is too (``archivey.plugins``).
+        if not isinstance(self.container, (ContainerFormat, PluginContainer)):
             object.__setattr__(
                 self,
                 "container",
@@ -213,14 +231,17 @@ class ArchiveFormat:
 
         Uses the predefined named-instance attribute name (``ZIP``, ``TAR_GZ``, …).
         A pair with no named constant, such as ``tar.lz``, gets
-        ``CONTAINER_STREAM`` from the two enum member names (``"TAR_LZIP"``); its
-        ``repr()`` stays the explicit constructor form. ``_FORMAT_NAMES`` is
+        ``CONTAINER_STREAM`` from the two enum member names (``"TAR_LZIP"``), or the
+        container name alone when the stream is ``UNCOMPRESSED`` (a plugin's
+        ``"CPIO"``); its ``repr()`` stays the explicit constructor form. ``_FORMAT_NAMES`` is
         populated just after the class definition — safe at runtime because this
         property is never called before the module is fully loaded.
         """
         name = _FORMAT_NAMES.get(self)
         if name is not None:
             return name
+        if self.stream == StreamFormat.UNCOMPRESSED:
+            return self.container.name
         return f"{self.container.name}_{self.stream.name}"
 
     def __repr__(self) -> str:

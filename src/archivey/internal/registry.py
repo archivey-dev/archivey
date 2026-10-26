@@ -40,6 +40,7 @@ from archivey.types import (
     FormatSupport,
     MagicSignature,
     MissingComponent,
+    PluginContainer,
     StreamFormat,
     TrailerSignature,
 )
@@ -89,7 +90,9 @@ __all__ = [
 # multi-codec container still opens and lists). Single-codec formats (bare RAW_STREAM
 # compressors and compressed tars) are handled separately: their sole stream codec
 # missing makes them NONE, not PARTIAL.
-_CONTAINER_OPTIONAL_CODECS: dict[ContainerFormat, tuple[Codec, ...]] = {
+_CONTAINER_OPTIONAL_CODECS: dict[
+    ContainerFormat | PluginContainer, tuple[Codec, ...]
+] = {
     ContainerFormat.SEVEN_Z: (
         Codec.PPMD,
         Codec.DEFLATE64,
@@ -138,11 +141,22 @@ class BackendRegistry:
         self._readers: dict[ArchiveFormat, type[ReadBackend]] = {}
         # Unique reader classes in registration order (a class may serve several formats).
         self._reader_classes: list[type[ReadBackend]] = []
+        # Plugin backends (``archivey.plugins.register_format``), kept apart so every
+        # detection table lists them after the built-in backends and the stream codecs:
+        # detection takes the first match in table order, so a built-in signal wins.
+        self._plugin_classes: list[type[ReadBackend]] = []
         self._extension_map_cache: dict[str, ArchiveFormat] | None = None
 
     def register_reader(self, backend_cls: type[ReadBackend]) -> None:
         if backend_cls not in self._reader_classes:
             self._reader_classes.append(backend_cls)
+        for fmt in backend_cls.FORMATS:
+            self._readers[fmt] = backend_cls
+        self._extension_map_cache = None
+
+    def register_plugin_backend(self, backend_cls: type[ReadBackend]) -> None:
+        """Register a plugin's backend after every built-in one (see ``_plugin_classes``)."""
+        self._plugin_classes.append(backend_cls)
         for fmt in backend_cls.FORMATS:
             self._readers[fmt] = backend_cls
         self._extension_map_cache = None
@@ -159,6 +173,8 @@ class BackendRegistry:
             entries.extend(cls.MAGIC)
         for codec in STREAM_CODECS:
             entries.extend(codec.magic)
+        for cls in self._plugin_classes:
+            entries.extend(cls.MAGIC)
         return entries
 
     def magic_prefix_walks(self) -> list[tuple[ArchiveFormat, Callable[[bytes], bool]]]:
@@ -247,6 +263,8 @@ class BackendRegistry:
         for codec in SINGLE_FILE_CODECS:
             if codec.probes_content and codec.single_file_format is not None:
                 probes.append((codec.single_file_format, codec.content_probe))
+        for cls in self._plugin_classes:
+            probes.extend(cls.CONTENT_PROBES)
         return probes
 
     def extension_map(self) -> dict[str, ArchiveFormat]:
@@ -266,14 +284,25 @@ class BackendRegistry:
             if codec.single_file_format is not None:
                 for ext in codec.extensions:
                     merged[ext] = codec.single_file_format
+        for cls in self._plugin_classes:
+            # Registration refuses an extension already in the map, so a plugin
+            # never overwrites a built-in entry here.
+            merged.update(cls.EXTENSIONS)
         self._extension_map_cache = merged
         return merged
 
     # --- availability --------------------------------------------------------------------
 
-    def _backend_available(self, backend_cls: type[ReadBackend]) -> bool:
+    def _missing_dependency(self, backend_cls: type[ReadBackend]) -> str | None:
+        """The first module the backend needs that does not import, else ``None``."""
         dep = backend_cls.OPTIONAL_DEPENDENCY
-        return dep is None or _optional(dep) is not None
+        for name in (
+            *((dep,) if dep is not None else ()),
+            *backend_cls.REQUIRED_MODULES,
+        ):
+            if _optional(name) is None:
+                return name
+        return None
 
     def format_availability(
         self, fmt: ArchiveFormat, *, check_programs: bool = False
@@ -308,11 +337,8 @@ class BackendRegistry:
             # flag, which is what the spool recipe branches on.
             return FormatAvailability(fmt, FormatSupport.NONE, (), required_source)
 
-        if not self._backend_available(backend_cls):
-            dep = backend_cls.OPTIONAL_DEPENDENCY
-            assert (
-                dep is not None
-            )  # _backend_available only returns False when dep is set
+        dep = self._missing_dependency(backend_cls)
+        if dep is not None:
             hint = backend_cls.INSTALL_HINT or f"install {dep}"
             return FormatAvailability(
                 fmt,

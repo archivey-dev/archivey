@@ -72,6 +72,19 @@ def _archive_format_spellings() -> dict[str, ArchiveFormat]:
     )
 
 
+# Spellings of plugin formats (``archivey.plugins.register_format``), looked up after
+# the built-in table, so a plugin never changes what a built-in spelling means.
+_plugin_spellings: dict[str, ArchiveFormat] = {}
+
+
+def add_plugin_spellings(fmt: ArchiveFormat) -> None:
+    """Make ``fmt``'s extension and display name accepted as ``format=`` spellings."""
+    for spelling in (fmt.file_extension(), fmt.display_name):
+        key = normalize_spelling(spelling)
+        if key not in _archive_format_spellings():
+            _plugin_spellings.setdefault(key, fmt)
+
+
 def _accepted_archive_formats() -> str:
     """The spellings worth recommending, for a refusal message.
 
@@ -174,7 +187,8 @@ def coerce_archive_format(
     if isinstance(value, Enum):
         _reject_wrong_enum(value, call=call, expected="an ArchiveFormat")
     if isinstance(value, str):
-        fmt = _archive_format_spellings().get(normalize_spelling(value))
+        key = normalize_spelling(value)
+        fmt = _archive_format_spellings().get(key) or _plugin_spellings.get(key)
         if fmt is not None:
             return fmt
     raise _usage_error_for(value)(
