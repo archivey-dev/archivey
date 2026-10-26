@@ -343,7 +343,7 @@ def _normalizing(monkeypatch: pytest.MonkeyPatch, module: str) -> None:
     """Make ``module``'s name normalization change every name, so each member reports."""
     import importlib
 
-    backend = importlib.import_module(f"archivey.internal.backends.{module}")
+    backend = importlib.import_module(f"archivey.internal.{module}")
     original = backend.normalize_member_name
 
     def renamed(name: str, *args: object, **kwargs: object) -> str:
@@ -355,10 +355,11 @@ def _normalizing(monkeypatch: pytest.MonkeyPatch, module: str) -> None:
 @pytest.mark.parametrize(
     ("kind", "module"),
     [
-        pytest.param("zip", "zip_reader", id="zip"),
-        pytest.param("iso", "iso_reader", id="iso", marks=requires("pycdlib")),
-        pytest.param("7z", "sevenzip_reader", id="7z"),
-        pytest.param("rar", "rar_reader", id="rar"),
+        pytest.param("zip", "backends.zip_reader", id="zip"),
+        # ISO is read through archivey.plugins: the adapter normalizes its names.
+        pytest.param("iso", "plugin_adapter", id="iso", marks=requires("pycdlib")),
+        pytest.param("7z", "backends.sevenzip_reader", id="7z"),
+        pytest.param("rar", "backends.rar_reader", id="rar"),
     ],
 )
 def test_typing_time_diagnostics_name_the_member_id(

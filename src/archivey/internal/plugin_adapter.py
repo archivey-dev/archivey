@@ -20,7 +20,11 @@ from typing import TYPE_CHECKING, BinaryIO, ClassVar
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
-from archivey.diagnostics import DiagnosticCode, DiagnosticContext
+from archivey.diagnostics import (
+    DiagnosticCode,
+    DiagnosticContext,
+    validate_code_context,
+)
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
@@ -204,6 +208,10 @@ class PluginReaderAdapter(BaseArchiveReader):
                 "report SYMLINK_TARGET_UNAVAILABLE with "
                 "PluginContext.link_target_unavailable()"
             )
+        try:
+            validate_code_context(code, details)
+        except ValueError as exc:
+            raise ArchiveyUsageError(f"PluginContext.report(): {exc}") from None
         fill: dict[str, object] = {}
         if getattr(details, "archive_name", "") is None:
             fill["archive_name"] = self._archive_name

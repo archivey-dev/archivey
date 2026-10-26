@@ -15,7 +15,7 @@ import lzma
 import struct
 import zipfile
 import zlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -37,6 +37,11 @@ from archivey import (
     detect_format,
     format_availability,
     open_archive,
+)
+from archivey.diagnostics import (
+    DiagnosticCode,
+    MemberTimestampContext,
+    SymlinkTargetContext,
 )
 from archivey.internal import format_args
 from archivey.internal.registry import get_registry
@@ -744,3 +749,120 @@ def test_seekable_member_with_no_listed_size(
             stream.seek(0)
             assert stream.read() == data
             assert stream.verified is archivey.Verification.CONTENT
+
+
+# ── Reports, config and the plugin-level translator ─────────────────────────────────
+
+
+def _reporting_plugin(
+    report: Callable[[PluginContext, ArchiveMember], None],
+) -> type[FormatPlugin]:
+    """TOYA whose reader calls ``report(context, member)`` on ``docs/a.txt``."""
+
+    class ReportingReader(ToyReader):
+        def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+            for record in super().iter_members():
+                if record.member.name == "docs/a.txt":
+                    report(self._context, record.member)
+                yield record
+
+    class ReportingPlugin(ToyPlugin):
+        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+            return ReportingReader(source, context)
+
+    return ReportingPlugin
+
+
+def test_report_fills_archive_and_member(clean_registry: None, tmp_path: Path) -> None:
+    def report(context: PluginContext, member: ArchiveMember) -> None:
+        context.report(
+            DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
+            "bad date",
+            MemberTimestampContext(
+                member_name=member.name,
+                field="modified",
+                source="toya",
+                value_repr="0",
+            ),
+            member=member,
+        )
+
+    register_format(_reporting_plugin(report))
+    path = _write(tmp_path, build_toya(_ENTRIES))
+    with open_archive(path) as reader:
+        member = reader.get("docs/a.txt")
+        (found,) = member.diagnostics
+        assert found.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
+        assert found.context.archive_name is not None
+        assert found.context.member_id == member.member_id == 1  # type: ignore[union-attr]
+
+
+def test_report_refuses_a_mismatched_context(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    def report(context: PluginContext, member: ArchiveMember) -> None:
+        context.report(
+            DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
+            "wrong context",
+            SymlinkTargetContext(member_name=member.name, reason="x"),
+        )
+
+    register_format(_reporting_plugin(report))
+    path = _write(tmp_path, build_toya(_ENTRIES))
+    with open_archive(path) as reader, pytest.raises(ArchiveyUsageError):
+        reader.members()
+
+
+def test_link_target_unavailable(clean_registry: None, tmp_path: Path) -> None:
+    def report(context: PluginContext, member: ArchiveMember) -> None:
+        context.link_target_unavailable(
+            member,
+            reason="target_record_malformed",
+            message="lost",
+            target_in_archive=True,
+        )
+        with pytest.raises(ArchiveyUsageError):
+            context.report(
+                DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
+                "lost",
+                SymlinkTargetContext(member_name=member.name, reason="x"),
+            )
+
+    register_format(_reporting_plugin(report))
+    path = _write(tmp_path, build_toya(_ENTRIES))
+    with open_archive(path) as reader:
+        member = reader.get("docs/a.txt")
+        assert member.link_target is None
+        assert [d.code for d in member.diagnostics] == [
+            DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+        ]
+
+
+def test_context_config_is_the_callers(clean_registry: None, tmp_path: Path) -> None:
+    seen: list[archivey.ArchiveyConfig] = []
+
+    def report(context: PluginContext, member: ArchiveMember) -> None:
+        seen.append(context.config)
+
+    register_format(_reporting_plugin(report))
+    config = archivey.ArchiveyConfig()
+    with open_archive(_write(tmp_path, build_toya(_ENTRIES)), config=config) as reader:
+        reader.members()
+    assert seen == [config]
+
+
+def test_plugin_translates_errors_from_open(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    class FailingOpenPlugin(ToyPlugin):
+        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+            raise ValueError("bad header")
+
+        def translate_exception(self, exc: Exception) -> archivey.ArchiveyError | None:
+            if isinstance(exc, ValueError):
+                return CorruptionError(str(exc))
+            return None
+
+    register_format(FailingOpenPlugin)
+    with pytest.raises(CorruptionError, match="bad header"):
+        open_archive(_write(tmp_path, build_toya(_ENTRIES)))

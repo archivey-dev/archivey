@@ -119,6 +119,7 @@ from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_SPECIAL_FILE_TYPE,
     ArchiveFormat,
+    ArchiveInfoExtra,
     ArchiveMember,
     CompressionAlgorithm,
     CompressionMethod,
@@ -2541,7 +2542,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             # passed on as if it were read from the image.
             format_version=None,
             comment=volume_id or None,
-            extra={"iso.namespace": self._namespace},
+            extra=ArchiveInfoExtra({"iso.namespace": self._namespace}),
         )
 
     def _release_archive_handles(self) -> None:
