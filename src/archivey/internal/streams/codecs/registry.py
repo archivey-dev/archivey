@@ -318,24 +318,25 @@ def _decoder_config(
 ) -> StreamConfig:
     """``config`` as :func:`open_codec_stream`'s decoder sees it.
 
-    Carries ``collector``, drops seek demand that a stream source cannot meet, fills the
-    known input size, then lets the codec adjust it.
+    Carries ``collector``, drops seek demand that a stream source cannot meet, notes
+    whether the source can seek, fills the known input size, then lets the codec adjust
+    it.
     """
-    # One copy for all three adjustments, and none when nothing changes: a ZIP reader
+    # One copy for all four adjustments, and none when nothing changes: a ZIP reader
     # opens a codec per member, and each copy of this dataclass is a few microseconds.
     changes: dict[str, Any] = {}
     if collector is not None and config.collector is not collector:
         changes["collector"] = collector
-    if (
-        not isinstance(source, (str, os.PathLike))
-        and config.seekable
-        and not is_seekable(source)
-    ):
+    source_seekable = isinstance(source, (str, os.PathLike)) or is_seekable(source)
+    if config.seekable and not source_seekable:
         # Seek demand on a source that cannot seek cannot be met, and it would make
         # accelerator AUTO pick a decoder that fails at open when it asks the
         # source for ``tell``. A compressed TAR opened ``streaming=True`` with
         # ``seekable_members=True`` over a forward-only stream arrives here so.
         changes["seekable"] = False
+    if source_seekable and not config.source_seekable:
+        # Lets accelerator AUTO consider a sequential read (``_rapidgzip_wanted``).
+        changes["source_seekable"] = True
     # Fill the AUTO size gate when the caller did not already supply a known length
     # (path ``stat``, ``SlicingStream.size``, ``BytesIO``, …). Unknown stays ``None``.
     if config.compressed_input_size is None:

@@ -36,7 +36,10 @@ class AcceleratorMode(Enum):
     :data:`INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE` for bzip2. An input of unknown size
     counts as large enough. For gzip, zlib and raw deflate the decompressed size must
     also be known, so that a truncated stream cannot be read short without an error.
-    Otherwise the standard library decodes the stream."""
+    Also for gzip, zlib and raw deflate, on Linux and macOS, a read with no seeking asked
+    for uses it when the source can seek, the compressed input is known to be at least
+    :data:`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`, and the data compresses 3:1 or less, since
+    rapidgzip decodes in parallel. Otherwise the standard library decodes the stream."""
     ON = "on"
     """Always use it. Raises :class:`~archivey.PackageNotInstalledError` when its
     package is not installed."""
@@ -670,11 +673,14 @@ class ArchiveyConfig:
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     """Whether to use the ``rapidgzip`` accelerator for gzip, zlib and raw deflate.
 
-    It gives seekable member streams over those codecs. Under ``AUTO`` it is used only
-    when the compressed input is known to be at least
+    It gives seekable member streams over those codecs, and decodes in parallel. Under
+    ``AUTO`` it is used only when the compressed input is known to be at least
     ``RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`` bytes (or its size is unknown) and the
     decompressed size can be verified, so a truncated stream cannot be swallowed
-    silently.
+    silently. With seeking asked for, that is enough. Without it, ``AUTO`` uses it only
+    on Linux and macOS, when the size is known, the source can seek and the data
+    compresses 3:1 or less: more compressible data, and Windows, where the child starts
+    more slowly, read faster with the standard library.
 
     rapidgzip runs in a child Python process, because it aborts the process on a stream
     that ends early; starting one costs about 45 ms, which is why the ``AUTO`` threshold

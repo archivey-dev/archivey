@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import os
+import sys
 import threading
 from collections.abc import Callable
 from typing import BinaryIO
@@ -96,7 +97,8 @@ def _warn_child_fallback(why: str, setting: str = "use_rapidgzip") -> None:
 
 def _rapidgzip_wanted(config: StreamConfig, *, available: bool) -> bool:
     """Resolve ``use_rapidgzip`` including the DEFLATE-family AUTO size gate, before
-    asking whether a child process can run it.
+    asking whether a child process can run it. ``AUTO`` counts a large sequential read
+    whose data is not very compressible as seek demand (:func:`_sequential_read_pays`).
 
     AUTO also requires truncation to be verifiable: a container-declared
     ``expected_decompressed_size``, or (gzip only) a readable ISIZE trailer flagged
@@ -114,11 +116,44 @@ def _rapidgzip_wanted(config: StreamConfig, *, available: bool) -> bool:
     ):
         return False
     return config.use_rapidgzip.enabled_for(
-        seekable=config.seekable,
+        seekable=config.seekable or _sequential_read_pays(config),
         available=available,
         input_size=config.compressed_input_size,
         min_size=RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE,
     )
+
+
+# AUTO takes a sequential read through rapidgzip only up to this ratio of decoded to
+# compressed size. The child's cost grows with the bytes it hands back, the decoding it
+# saves with the bytes it reads, so the gain shrinks as data gets more compressible: on 4
+# cores, a full read under ON took a third to a half of the standard library's time from
+# 1.2:1 to 2.6:1, the same time at 6:1, and 2.4 times as long at 17:1
+# (dev-docs/formats/gzip.md §2.3).
+_SEQUENTIAL_MAX_RATIO = 3
+# Whether this platform takes a sequential read through rapidgzip at all (not Windows:
+# :func:`_sequential_read_pays`).
+_SEQUENTIAL_PLATFORM = sys.platform != "win32"
+
+
+def _sequential_read_pays(config: StreamConfig) -> bool:
+    """Whether ``AUTO`` takes a read with no declared seek demand through rapidgzip.
+
+    Only on Linux and macOS, and only for a large stream of a known size whose source
+    can seek and that compresses ``_SEQUENTIAL_MAX_RATIO``:1 or less. On Windows the
+    child takes longer to start and reads its source through a pipe, and a full read was
+    slower under ``ON`` than with the standard library at 40 MiB, on a 16-core machine.
+    The ratio uses the declared decoded size, else the gzip ISIZE trailer, an estimate
+    (it is mod 2**32, and covers only the last member).
+    """
+    if not (_SEQUENTIAL_PLATFORM and config.source_seekable):
+        return False
+    compressed = config.compressed_input_size
+    if compressed is None or compressed < RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE:
+        return False
+    decoded = config.expected_decompressed_size
+    if decoded is None:
+        decoded = config.gzip_isize
+    return decoded is not None and decoded <= _SEQUENTIAL_MAX_RATIO * compressed
 
 
 def _auto_without_child(config: StreamConfig, *, available: bool) -> str | None:
