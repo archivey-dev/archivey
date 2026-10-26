@@ -26,7 +26,7 @@ import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
-from typing import BinaryIO, ClassVar, NamedTuple
+from typing import BinaryIO, ClassVar, Generic, NamedTuple, TypeVar
 
 from archivey.exceptions import ArchiveyError
 from archivey.types import (
@@ -58,7 +58,11 @@ class Magic(NamedTuple):
     data: bytes
 
 
-class MemberRecord(NamedTuple):
+LocatorT = TypeVar("LocatorT")
+"""The type of a reader's locators: whatever it needs to find a member's data."""
+
+
+class MemberRecord(NamedTuple, Generic[LocatorT]):
     """One member, as :meth:`IndexedReader.iter_members` yields it."""
 
     member: ArchiveMember
@@ -66,7 +70,7 @@ class MemberRecord(NamedTuple):
     normalized: archivey normalizes it and reports the change, as for a built-in
     format."""
 
-    locator: object = None
+    locator: LocatorT
     """Anything the reader needs to find the member's data again. archivey stores it
     and hands it back to :meth:`IndexedReader.open_member`."""
 
@@ -194,8 +198,12 @@ class PluginReader(ABC):
         """Release what ``open()`` acquired. archivey closes the source itself."""
 
 
-class IndexedReader(PluginReader):
+class IndexedReader(PluginReader, Generic[LocatorT]):
     """A format with an index: list the members, then open any one of them.
+
+    Parametrize it with the locator type, ``IndexedReader[tuple[int, int]]``, so a
+    type checker matches what :meth:`iter_members` yields with what
+    :meth:`open_member` receives. archivey never looks inside a locator.
 
     archivey calls the methods of one reader from one thread at a time.
     """
@@ -205,12 +213,12 @@ class IndexedReader(PluginReader):
     archive; ``False`` when :meth:`iter_members` walks headers through the file."""
 
     @abstractmethod
-    def iter_members(self) -> Iterator[MemberRecord]:
+    def iter_members(self) -> Iterator[MemberRecord[LocatorT]]:
         """Yield every member once, in archive order. The order must be the same on a
         second call."""
 
     @abstractmethod
-    def open_member(self, member: ArchiveMember, locator: object) -> MemberData:
+    def open_member(self, member: ArchiveMember, locator: LocatorT) -> MemberData:
         """Open the data of a ``FILE`` member. ``locator`` is the one its
         :class:`MemberRecord` carried."""
 

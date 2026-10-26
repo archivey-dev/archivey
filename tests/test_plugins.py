@@ -79,7 +79,7 @@ def build_toya(
     return bytes(index + data)
 
 
-class ToyReader(IndexedReader):
+class ToyReader(IndexedReader[tuple[int, int]]):
     def __init__(self, source: PluginSource, context: PluginContext) -> None:
         self._source = source
         self._context = context
@@ -88,7 +88,7 @@ class ToyReader(IndexedReader):
             raise TruncatedError("TOYA index is cut short")
         (self._count,) = struct.unpack_from("<I", head, 8)
 
-    def iter_members(self) -> Iterator[MemberRecord]:
+    def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
         pos = 12
         for _ in range(self._count):
             (name_len,) = struct.unpack("<H", self._source.read_at(pos, 2))
@@ -108,8 +108,9 @@ class ToyReader(IndexedReader):
             )
             yield MemberRecord(member, locator=(offset, size))
 
-    def open_member(self, member: ArchiveMember, locator: object) -> MemberData:
-        assert isinstance(locator, tuple)
+    def open_member(
+        self, member: ArchiveMember, locator: tuple[int, int]
+    ) -> MemberData:
         offset, size = locator
         return MemberData(self._source.view(offset, size))
 
@@ -335,7 +336,7 @@ def test_missing_requirement(clean_registry: None, tmp_path: Path) -> None:
 
 def test_translate_exception(clean_registry: None, tmp_path: Path) -> None:
     class Failing(ToyReader):
-        def iter_members(self) -> Iterator[MemberRecord]:
+        def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
             raise ValueError("bad index")
 
         def translate_exception(self, exc: Exception) -> archivey.ArchiveyError | None:
