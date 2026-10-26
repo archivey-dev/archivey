@@ -418,29 +418,34 @@ def test_the_memory_peak_resets_between_streams() -> None:
     assert after < grown - (128 << 20)
 
 
-@linux_only
 def test_a_reused_child_counts_every_stream_from_its_first_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # What an earlier stream left resident counts against the next stream's limit,
     # and a process that kept more than a quarter of a limit is not reused.
+    # The peak is scripted: this process's real VmHWM moves with whatever else the
+    # test run frees or allocates, which flaked a 64 MiB margin under a free-threaded
+    # run. test_the_memory_peak_resets_between_streams covers the real reset.
     # No watcher thread: it would end the test process past the ceiling.
     monkeypatch.setattr(rapidgzip_worker._MemoryWatch, "_watch", lambda self: None)
+    peak = [100 << 20]
+    monkeypatch.setattr(rapidgzip_worker, "_peak_memory", lambda: peak[0])
     watch = rapidgzip_worker._MemoryWatch()
     limit = 512 << 20
-    assert rapidgzip_worker._reset_peak()  # as a fresh child's peak: what it holds
+    share = limit // rapidgzip_worker._REUSE_SHARE
     watch.arm(limit)
     first = watch.ceiling
-    assert first is not None
+    assert first == (100 << 20) + limit
     watch.disarm()
-    held = _resident(limit // rapidgzip_worker._REUSE_SHARE + (64 << 20))
-    assert rapidgzip_worker._reset_peak()
+    peak[0] += share  # exactly a quarter kept: still reusable
+    assert watch.reusable()
+    peak[0] += 1
     assert not watch.reusable()
+    # The next stream's ceiling still counts from the first open, not from now.
     watch.arm(limit)
     assert watch.ceiling == first
     watch.disarm()
-    held.close()
-    assert rapidgzip_worker._reset_peak()
+    peak[0] = 100 << 20
     assert watch.reusable()
 
 
