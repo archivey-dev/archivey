@@ -688,7 +688,9 @@ footgun on TAR/7z" (ADR 0003). Blocking a cheap read too catches the mistake dur
 development, not in production on a different archive (2026-09-29).
 
 **Rulings.** ADR 0003, 0004, 0010. `stream_members()` is never seekable (2026-09-26).
-The gzip AUTO accelerator stays seek-only for 0.2.0 (2026-09-27). `ListingCost` names
+The gzip AUTO accelerator stays seek-only for 0.2.0 (2026-09-27); after it, AUTO also
+takes a large sequential DEFLATE-family read at 3:1 or less, on Linux and macOS, and the
+stream stays forward-only (2026-10-26). `ListingCost` names
 how the member list is read through the source the archive was opened on (index, header
 walk or decompression), not the work of finding the index or when it is paid: RAR
 reports `REQUIRES_SCANNING` although it walks its headers inside `open_archive`
