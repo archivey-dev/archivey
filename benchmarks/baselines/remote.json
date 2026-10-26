@@ -1,8 +1,8 @@
 {
   "cases": {
     "7z_solid_extract_all_default": {
-      "archive_size": 524774,
-      "bytes_fetched": 524774,
+      "archive_size": 524776,
+      "bytes_fetched": 524776,
       "cache": "default",
       "format": "7z_solid",
       "gated": false,
@@ -12,8 +12,8 @@
       "range_requests": 1
     },
     "7z_solid_extract_all_nocache": {
-      "archive_size": 524774,
-      "bytes_fetched": 533384,
+      "archive_size": 524776,
+      "bytes_fetched": 533388,
       "cache": "nocache",
       "format": "7z_solid",
       "gated": false,
@@ -23,8 +23,8 @@
       "range_requests": 12
     },
     "7z_solid_list_default": {
-      "archive_size": 524774,
-      "bytes_fetched": 524774,
+      "archive_size": 524776,
+      "bytes_fetched": 524776,
       "cache": "default",
       "format": "7z_solid",
       "gated": false,
@@ -34,8 +34,8 @@
       "range_requests": 1
     },
     "7z_solid_list_nocache": {
-      "archive_size": 524774,
-      "bytes_fetched": 8642,
+      "archive_size": 524776,
+      "bytes_fetched": 8644,
       "cache": "nocache",
       "format": "7z_solid",
       "gated": false,
@@ -45,8 +45,8 @@
       "range_requests": 3
     },
     "7z_solid_read_first_default": {
-      "archive_size": 524774,
-      "bytes_fetched": 524774,
+      "archive_size": 524776,
+      "bytes_fetched": 524776,
       "cache": "default",
       "format": "7z_solid",
       "gated": false,
@@ -56,8 +56,8 @@
       "range_requests": 1
     },
     "7z_solid_read_first_nocache": {
-      "archive_size": 524774,
-      "bytes_fetched": 74178,
+      "archive_size": 524776,
+      "bytes_fetched": 74180,
       "cache": "nocache",
       "format": "7z_solid",
       "gated": false,
@@ -67,8 +67,8 @@
       "range_requests": 4
     },
     "7z_solid_read_last_default": {
-      "archive_size": 524774,
-      "bytes_fetched": 524774,
+      "archive_size": 524776,
+      "bytes_fetched": 524776,
       "cache": "default",
       "format": "7z_solid",
       "gated": false,
@@ -78,8 +78,8 @@
       "range_requests": 1
     },
     "7z_solid_read_last_nocache": {
-      "archive_size": 524774,
-      "bytes_fetched": 533384,
+      "archive_size": 524776,
+      "bytes_fetched": 533388,
       "cache": "nocache",
       "format": "7z_solid",
       "gated": false,
@@ -89,8 +89,8 @@
       "range_requests": 6
     },
     "7z_solid_read_middle_default": {
-      "archive_size": 524774,
-      "bytes_fetched": 524774,
+      "archive_size": 524776,
+      "bytes_fetched": 524776,
       "cache": "default",
       "format": "7z_solid",
       "gated": false,
@@ -100,8 +100,8 @@
       "range_requests": 1
     },
     "7z_solid_read_middle_nocache": {
-      "archive_size": 524774,
-      "bytes_fetched": 336322,
+      "archive_size": 524776,
+      "bytes_fetched": 336324,
       "cache": "nocache",
       "format": "7z_solid",
       "gated": false,
@@ -111,8 +111,8 @@
       "range_requests": 5
     },
     "7z_solid_stream_members_default": {
-      "archive_size": 524774,
-      "bytes_fetched": 524774,
+      "archive_size": 524776,
+      "bytes_fetched": 524776,
       "cache": "default",
       "format": "7z_solid",
       "gated": false,
@@ -122,8 +122,8 @@
       "range_requests": 1
     },
     "7z_solid_stream_members_nocache": {
-      "archive_size": 524774,
-      "bytes_fetched": 533384,
+      "archive_size": 524776,
+      "bytes_fetched": 533388,
       "cache": "nocache",
       "format": "7z_solid",
       "gated": false,
@@ -661,6 +661,7 @@
       "range_requests": 69
     }
   },
+  "io_default_buffer_size": 8192,
   "model": {
     "bandwidth_bytes_per_s": 50000000,
     "latency_s": 0.03

@@ -13,6 +13,7 @@ from benchmarks.remote import (
     REMOTE_BASELINE,
     CountingFileSystem,
     RemoteCaseResult,
+    baseline_applies,
     check_against_baseline,
     run_cases,
 )
@@ -38,6 +39,8 @@ def test_remote_requests_match_the_baseline():
     ``uv run --extra all python -m benchmarks.remote --update-baselines``.
     """
     baseline = json.loads(REMOTE_BASELINE.read_text())
+    if not baseline_applies(baseline):
+        pytest.skip("baseline measured with another io.DEFAULT_BUFFER_SIZE")
     results = run_cases()
     assert {r.format for r in results} >= GATED_FORMATS
     assert check_against_baseline(results, baseline) == []

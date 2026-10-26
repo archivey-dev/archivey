@@ -262,6 +262,17 @@ REMOTE_SCALES: dict[str, RemoteScale] = {
 # bytes), so their counts are reported but not gated.
 GATED_FORMATS = frozenset({"zip_stored", "tar"})
 
+
+def baseline_applies(baseline: dict[str, Any]) -> bool:
+    """Whether this interpreter reads in the steps the baseline was measured with.
+
+    Without the planner, archivey reads a caller's file through buffers of
+    ``io.DEFAULT_BUFFER_SIZE`` (8 KiB, 128 KiB from Python 3.14), so the request
+    counts differ by version. The gate runs where the size matches the baseline's.
+    """
+    return baseline.get("io_default_buffer_size") == io.DEFAULT_BUFFER_SIZE
+
+
 _FIXED_DATE = (2020, 1, 1, 0, 0, 0)
 _FIXED_MTIME = 1_577_836_800
 
@@ -402,6 +413,7 @@ def check_against_baseline(
 
 def to_payload(results: list[RemoteCaseResult]) -> dict[str, Any]:
     return {
+        "io_default_buffer_size": io.DEFAULT_BUFFER_SIZE,
         "model": {
             "latency_s": MODEL_LATENCY_S,
             "bandwidth_bytes_per_s": MODEL_BANDWIDTH_BPS,
@@ -452,6 +464,13 @@ def main(argv: list[str] | None = None) -> int:
     baseline = (
         json.loads(REMOTE_BASELINE.read_text()) if REMOTE_BASELINE.exists() else {}
     )
+    if not baseline_applies(baseline):
+        print(
+            f"baseline measured with io.DEFAULT_BUFFER_SIZE="
+            f"{baseline.get('io_default_buffer_size')}, this Python has "
+            f"{io.DEFAULT_BUFFER_SIZE}: not gated"
+        )
+        return 0
     failures = check_against_baseline(results, baseline)
     for failure in failures:
         print(f"FAIL {failure}", file=sys.stderr)
