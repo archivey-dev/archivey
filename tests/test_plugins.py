@@ -8,7 +8,9 @@ data offset), then the data. Each test registers it on a registry restored after
 
 from __future__ import annotations
 
+import bz2
 import io
+import lzma
 import struct
 import zipfile
 import zlib
@@ -22,6 +24,7 @@ from archivey import (
     ArchiveFormat,
     ArchiveMember,
     ArchiveyUsageError,
+    CompressionAlgorithm,
     CorruptionError,
     FormatSupport,
     HashAlgorithm,
@@ -377,3 +380,177 @@ def test_cli_lists_plugin_format(
     path = _write(tmp_path, build_toya(_ENTRIES))
     assert main(["list", str(path)]) == 0
     assert "docs/a.txt" in capsys.readouterr().out
+
+
+# ── PluginContext.decompress ────────────────────────────────────────────────────────
+
+
+def _raw_deflate(data: bytes) -> bytes:
+    compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
+    return compressor.compress(data) + compressor.flush()
+
+
+def _lzma_raw(data: bytes, filter_id: int) -> tuple[bytes, bytes]:
+    filters = [{"id": filter_id, "dict_size": 1 << 16}]
+    props = lzma._encode_filter_properties(filters[0])  # type: ignore[attr-defined]
+    return lzma.compress(data, format=lzma.FORMAT_RAW, filters=filters), props
+
+
+_PLAIN = b"plugin member data " * 200
+
+
+def _compressed_plugin(
+    method: CompressionAlgorithm,
+    properties: bytes | None = None,
+    translated: list[Exception] | None = None,
+) -> type[FormatPlugin]:
+    """A TOYA plugin whose one member is stored compressed with ``method``; the
+    member's data runs to the end of the file."""
+
+    class CompressedReader(ToyReader):
+        def open_member(
+            self, member: ArchiveMember, locator: tuple[int, int]
+        ) -> MemberData:
+            offset, _ = locator
+            return MemberData(
+                self._context.decompress(
+                    self._source.view(offset),
+                    method,
+                    size=member.size,
+                    properties=properties,
+                )
+            )
+
+        def translate_exception(self, exc: Exception) -> archivey.ArchiveyError | None:
+            if translated is not None:
+                translated.append(exc)
+            return None
+
+    class CompressedPlugin(ToyPlugin):
+        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+            return CompressedReader(source, context)
+
+    return CompressedPlugin
+
+
+def _compressed_archive(tmp_path: Path, stored: bytes, plain: bytes = _PLAIN) -> Path:
+    data = build_toya(
+        [("m.bin", MemberType.FILE, stored)],
+        sizes={0: len(plain)},
+        crcs={0: zlib.crc32(plain)},
+    )
+    return _write(tmp_path, data)
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        CompressionAlgorithm.STORED,
+        CompressionAlgorithm.DEFLATE,
+        CompressionAlgorithm.BZIP2,
+        CompressionAlgorithm.LZMA,
+        CompressionAlgorithm.LZMA2,
+    ],
+)
+def test_decompress_methods(
+    clean_registry: None, tmp_path: Path, method: CompressionAlgorithm
+) -> None:
+    properties = None
+    if method is CompressionAlgorithm.STORED:
+        stored = _PLAIN
+    elif method is CompressionAlgorithm.DEFLATE:
+        stored = _raw_deflate(_PLAIN)
+    elif method is CompressionAlgorithm.BZIP2:
+        stored = bz2.compress(_PLAIN)
+    else:
+        filter_id = (
+            lzma.FILTER_LZMA1
+            if method is CompressionAlgorithm.LZMA
+            else lzma.FILTER_LZMA2
+        )
+        stored, properties = _lzma_raw(_PLAIN, filter_id)
+    register_format(_compressed_plugin(method, properties))
+    with (
+        open_archive(_compressed_archive(tmp_path, stored)) as reader,
+        reader.open("m.bin") as stream,
+    ):
+        assert stream.read() == _PLAIN
+        assert stream.verified is archivey.Verification.CONTENT
+
+
+def test_decompress_data_after_end_is_corrupt(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    register_format(_compressed_plugin(CompressionAlgorithm.DEFLATE))
+    path = _compressed_archive(tmp_path, _raw_deflate(_PLAIN) + b"junk")
+    with open_archive(path) as reader, pytest.raises(CorruptionError):
+        reader.read("m.bin")
+
+
+def test_decompress_errors_skip_the_plugin_translator(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    translated: list[Exception] = []
+    register_format(
+        _compressed_plugin(CompressionAlgorithm.DEFLATE, translated=translated)
+    )
+    path = _compressed_archive(tmp_path, b"\xff" * 64)
+    with open_archive(path) as reader, pytest.raises(CorruptionError):
+        reader.read("m.bin")
+    assert translated == []
+
+
+@pytest.mark.parametrize(
+    ("method", "properties", "error"),
+    [
+        (CompressionAlgorithm.PPMD, None, archivey.UnsupportedFeatureError),
+        (CompressionAlgorithm.LZMA, None, CorruptionError),
+        (CompressionAlgorithm.LZMA2, b"\x00\x00", CorruptionError),
+    ],
+)
+def test_decompress_refusals(
+    clean_registry: None,
+    tmp_path: Path,
+    method: CompressionAlgorithm,
+    properties: bytes | None,
+    error: type[Exception],
+) -> None:
+    register_format(_compressed_plugin(method, properties))
+    with (
+        open_archive(_compressed_archive(tmp_path, b"x")) as reader,
+        pytest.raises(error),
+    ):
+        reader.read("m.bin")
+
+
+def test_translate_exception_mid_read(clean_registry: None, tmp_path: Path) -> None:
+    class FailingStream(io.RawIOBase):
+        def readable(self) -> bool:
+            return True
+
+        def readinto(self, buffer: object) -> int:
+            raise ValueError("library failed mid-read")
+
+    class FailingReader(ToyReader):
+        def open_member(
+            self, member: ArchiveMember, locator: tuple[int, int]
+        ) -> MemberData:
+            return MemberData(FailingStream())  # type: ignore[arg-type]
+
+        def translate_exception(self, exc: Exception) -> archivey.ArchiveyError | None:
+            if isinstance(exc, ValueError):
+                return CorruptionError(str(exc))
+            return None
+
+    class FailingPlugin(ToyPlugin):
+        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+            return FailingReader(source, context)
+
+    register_format(FailingPlugin)
+    path = _write(tmp_path, build_toya(_ENTRIES))
+    with (
+        open_archive(path) as reader,
+        pytest.raises(CorruptionError, match="mid-read") as info,
+    ):
+        reader.read("docs/a.txt")
+    assert info.value.member_name == "docs/a.txt"

@@ -12,18 +12,26 @@ registers it after the built-in backends, so a built-in signal always wins (§4)
 
 from __future__ import annotations
 
+import lzma
 import threading
 from collections.abc import Iterator, Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING, BinaryIO, ClassVar
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
-from archivey.exceptions import ArchiveyError, ArchiveyUsageError
+from archivey.exceptions import (
+    ArchiveyError,
+    ArchiveyUsageError,
+    CorruptionError,
+    UnsupportedFeatureError,
+)
 from archivey.internal.base_reader import (
     BaseArchiveReader,
     ReadBackend,
     reject_start_offset,
 )
+from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.format_args import add_plugin_spellings
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
@@ -32,6 +40,12 @@ from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.codecs import (
+    Codec,
+    CodecParams,
+    decode_lzma_filter_properties,
+    open_codec_stream,
+)
 from archivey.internal.streams.streamtools import LockedStream, SharedSource
 from archivey.plugins import (
     FormatPlugin,
@@ -45,6 +59,7 @@ from archivey.types import (
     ArchiveInfo,
     ArchiveInfoExtra,
     ArchiveMember,
+    CompressionAlgorithm,
     ContainerFormat,
     MagicSignature,
     MemberStreams,
@@ -90,7 +105,23 @@ class PluginReaderAdapter(BaseArchiveReader):
             self._handle_lock = threading.Lock()
         self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
         plugin_source = PluginSource(self._shared.view, self._shared.size, source.path)
-        context = PluginContext(encoding=encoding, archive_name=archive_name)
+        # The member decoder config, as ZIP builds its own: the compressed bytes a
+        # plugin hands ``decompress`` are the codec's whole input, so a byte after the
+        # codec's end of stream is damage.
+        self._decoder_config = replace(
+            stream_config_from_archivey(
+                self._config,
+                streaming=streaming,
+                seekable=MemberStreams.SEEKABLE in member_streams,
+                usage=self._usage,
+            ),
+            refuse_input_after_end=True,
+        )
+        context = PluginContext(
+            encoding=encoding,
+            archive_name=archive_name,
+            decompress=self._decompress,
+        )
         with self._translated_errors(), self._handle_guard():
             reader = plugin.open(plugin_source, context)
         if not isinstance(reader, IndexedReader):
@@ -100,6 +131,46 @@ class PluginReaderAdapter(BaseArchiveReader):
             )
         self._reader = reader
         self._MEMBER_LIST_UPFRONT = reader.member_list_upfront
+
+    def _decompress(
+        self,
+        data: BinaryIO,
+        method: CompressionAlgorithm,
+        size: int | None,
+        properties: bytes | None,
+    ) -> BinaryIO:
+        """``PluginContext.decompress``: ``data`` through archivey's codec layer."""
+        codec = _PLUGIN_CODECS.get(method)
+        if codec is None:
+            raise UnsupportedFeatureError(
+                f"PluginContext.decompress() does not decode {method.name}",
+                source_format=self._format,
+                archive_name=self._archive_name,
+            )
+        params = CodecParams(single_stream=True)
+        if codec is Codec.LZMA or codec is Codec.LZMA2:
+            want = 5 if codec is Codec.LZMA else 1
+            if properties is None or len(properties) != want:
+                raise CorruptionError(
+                    f"{method.name} needs {want} bytes of properties, got "
+                    f"{'none' if properties is None else len(properties)}"
+                )
+            what = f"{self._format.display_name} {method.name} member"
+            filter_id = lzma.FILTER_LZMA1 if codec is Codec.LZMA else lzma.FILTER_LZMA2
+            params = CodecParams(
+                filters=[
+                    decode_lzma_filter_properties(filter_id, properties, what=what)
+                ],
+                # Raw LZMA1 may have no end marker: it stops at the stored size.
+                unpack_size=size if codec is Codec.LZMA else None,
+            )
+        return open_codec_stream(
+            codec,
+            data,
+            config=self._decoder_config,
+            params=params,
+            collector=self._diagnostics_collector,
+        )
 
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         return self._reader.translate_exception(exc)
@@ -194,6 +265,21 @@ class PluginReaderAdapter(BaseArchiveReader):
                 self._reader.close()
         finally:
             self._shared.close()
+
+
+# The methods ``PluginContext.decompress`` decodes. PPMd, the branch filters and RAR
+# need parameters or framing a plain method name cannot carry.
+_PLUGIN_CODECS: dict[CompressionAlgorithm, Codec] = {
+    CompressionAlgorithm.STORED: Codec.STORED,
+    CompressionAlgorithm.DEFLATE: Codec.DEFLATE,
+    CompressionAlgorithm.DEFLATE64: Codec.DEFLATE64,
+    CompressionAlgorithm.BZIP2: Codec.BZIP2,
+    CompressionAlgorithm.ZSTD: Codec.ZSTD,
+    CompressionAlgorithm.LZ4: Codec.LZ4,
+    CompressionAlgorithm.BROTLI: Codec.BROTLI,
+    CompressionAlgorithm.LZMA: Codec.LZMA,
+    CompressionAlgorithm.LZMA2: Codec.LZMA2,
+}
 
 
 class _PluginBackend(ReadBackend):

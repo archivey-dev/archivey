@@ -171,8 +171,29 @@ read from the start. archivey closes the stream.
 
 `PluginSource.view(start, length)` gives a stream over part of the archive with its own
 position, so two members open at the same time do not move each other. A format that
-stores members uncompressed returns a view directly, as TOYA does. A format that
-compresses members wraps the view in its decompressor.
+stores members uncompressed returns a view directly, as TOYA does.
+
+A format that compresses each member with a method archivey already decodes hands the
+member's compressed bytes to `PluginContext.decompress()`, and returns what it gives:
+
+```python
+def open_member(self, member: ArchiveMember, locator: Locator) -> MemberData:
+    offset, compressed_size = locator
+    data = self._source.view(offset, compressed_size)
+    return MemberData(
+        self._context.decompress(data, CompressionAlgorithm.DEFLATE, size=member.size)
+    )
+```
+
+It decodes raw Deflate, Deflate64, bzip2, Zstandard and LZ4 frames, Brotli, and raw
+LZMA and LZMA2 (with the `properties` bytes the format stores). It uses the caller's
+decoder limits, process isolation and accelerator settings, and turns the decoder's
+errors into archivey's own. Bytes left after the end of the compressed data raise
+`CorruptionError`. A method whose optional package is missing raises
+`PackageNotInstalledError`.
+
+A format whose methods archivey does not decode wraps the view in its own library's
+decoder.
 
 archivey checks every member stream against what the listing said:
 
@@ -193,7 +214,10 @@ When the archive is damaged, raise archivey's own exceptions from the reader:
 `CorruptionError` for bytes that cannot be right, `TruncatedError` for an archive that
 ends too early, and `UnsupportedFeatureError` for a feature your reader does not handle.
 
-An exception from a library you wrap can go through `translate_exception()`. Return the
+An exception from a library you wrap can go through `translate_exception()`. It is asked
+about every exception raised while archivey calls the reader, and while a member stream
+it returned is read. Errors from `PluginContext.decompress()` are archivey's own already
+and never reach it. Return the
 archivey exception to raise in its place, or `None` to let it propagate as it is:
 
 ```python

@@ -32,6 +32,7 @@ from archivey.exceptions import ArchiveyError
 from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
+    CompressionAlgorithm,
     HashAlgorithm,
     PluginContainer,
 )
@@ -146,9 +147,18 @@ class PluginSource:
 class PluginContext:
     """What an open archive needs from archivey. archivey builds it."""
 
-    def __init__(self, *, encoding: str | None, archive_name: str | None) -> None:
+    def __init__(
+        self,
+        *,
+        encoding: str | None,
+        archive_name: str | None,
+        decompress: Callable[
+            [BinaryIO, CompressionAlgorithm, int | None, bytes | None], BinaryIO
+        ],
+    ) -> None:
         self._encoding = encoding
         self._archive_name = archive_name
+        self._decompress = decompress
 
     @property
     def encoding(self) -> str | None:
@@ -176,6 +186,36 @@ class PluginContext:
             except UnicodeError:
                 pass
         return raw.decode("utf-8", errors="surrogateescape")
+
+    def decompress(
+        self,
+        data: BinaryIO,
+        method: CompressionAlgorithm,
+        *,
+        size: int | None = None,
+        properties: bytes | None = None,
+    ) -> BinaryIO:
+        """Decode one member's compressed bytes with archivey's own decoders.
+
+        ``data`` holds exactly the member's compressed bytes, usually a
+        :meth:`PluginSource.view` of them. Bytes left after the end of the compressed
+        stream are damage and raise ``CorruptionError``. The returned stream gives the
+        decoded bytes; return it in :class:`MemberData`. It applies the caller's
+        decoder limits, process isolation and accelerator settings, and translates the
+        decoder's errors itself, so ``translate_exception`` never sees them.
+
+        ``method`` is one of ``STORED``, ``DEFLATE`` (raw, no zlib or gzip header),
+        ``DEFLATE64``, ``BZIP2``, ``ZSTD`` (a frame), ``LZ4`` (a frame), ``BROTLI``,
+        ``LZMA`` (raw LZMA1; ``properties`` is its 5-byte properties: the ``lc``,
+        ``lp``, ``pb`` byte and the dictionary size) and ``LZMA2`` (raw; ``properties``
+        is its 1-byte dictionary size). Any other method raises
+        ``UnsupportedFeatureError``, and a method whose optional package is missing
+        raises ``PackageNotInstalledError``.
+
+        ``size`` is the decoded length when the format stores it. Raw LZMA1 may have
+        no end marker and needs it then.
+        """
+        return self._decompress(data, method, size, properties)
 
 
 class PluginReader(ABC):
