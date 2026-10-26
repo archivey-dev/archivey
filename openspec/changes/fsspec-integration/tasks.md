@@ -92,7 +92,7 @@
       the garbage-filled-holes test, before any code.
 - [ ] 7.3 A changed remote object (design D7): version pinning, `If-Match`, the size
       check, and the open-time diagnostic when nothing can be pinned.
-- [ ] 7.4 CLI URL arguments, once the maintainer answers open question 1.
+- [ ] 7.4 CLI URL arguments (maintainer, 2026-10-25: yes; design §Decisions 2).
 
 ## 8. Verify
 
