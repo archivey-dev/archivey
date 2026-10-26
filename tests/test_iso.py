@@ -34,9 +34,13 @@ from archivey.exceptions import (
     StreamNotSeekableError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends.iso_reader import IsoReader, _strip_version
+from archivey.internal.backends.iso_reader import IsoPlugin, _strip_version
+from archivey.internal.plugin_adapter import PluginReaderAdapter
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
+from archivey.internal.streams.streamtools import (
+    DEFAULT_UNKNOWN_LENGTH_READ_STEP,
+    SharedView,
+)
 from archivey.types import FormatSupport
 from tests.conftest import requires, requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
@@ -453,9 +457,8 @@ def test_a_parser_error_is_named_without_its_repr() -> None:
 
 
 def test_an_error_from_this_backends_own_code_is_not_called_damage() -> None:
-    reader = IsoReader.__new__(IsoReader)
     exc = AttributeError("'NoneType' object has no attribute 'ce_entries'")
-    translated = reader._translate_exception(exc)
+    translated = IsoPlugin().translate_exception(exc)
     assert isinstance(translated, CorruptionError)
     assert str(translated) == (
         "Error reading ISO image: a structure in the image could not be parsed "
@@ -840,10 +843,12 @@ def test_a_path_source_is_read_through_the_archive_source(
     source that can record what was asked of it.
     """
     with open_archive(rock_ridge_iso) as reader:
-        assert isinstance(reader, IsoReader)
+        assert isinstance(reader, PluginReaderAdapter)
         assert isinstance(reader._source, ArchiveSource)
         assert reader._source.path == rock_ridge_iso
-        assert reader._iso._cdfp is reader._source
+        # pycdlib reads a view of the shared source, which reads the archive source.
+        assert isinstance(reader._reader._iso._cdfp, SharedView)
+        assert reader._shared._handle is reader._source
         assert [m.name for m in reader.members()]
 
 
@@ -1301,8 +1306,8 @@ def test_the_record_walk_descends_each_directory_extent_once() -> None:
 
     with open_archive(io.BytesIO(out.getvalue())) as ar:
         reader: Any = ar
-        a = reader._iso.get_record(iso_path="/A")
-        b = reader._iso.get_record(iso_path="/A/B")
+        a = reader._reader._iso.get_record(iso_path="/A")
+        b = reader._reader._iso.get_record(iso_path="/A/B")
         b.children.append(a)  # B now lists its own parent A as a child
         names = [m.name for m in ar.members()]
     assert sorted(names) == ["A/", "A/B/", "A/B/A/", "A/B/F"]

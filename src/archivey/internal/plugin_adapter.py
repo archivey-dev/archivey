@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, BinaryIO, ClassVar
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
+from archivey.diagnostics import DiagnosticCode, DiagnosticContext
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
@@ -102,6 +103,7 @@ class PluginReaderAdapter(BaseArchiveReader):
             open_site=open_site,
         )
         self._source = source
+        self._plugin = plugin
         # The plugin may hold a handle of its own (a library over ``source.path``), so
         # under CONCURRENT every call into it, and every read of a stream it returned,
         # takes one lock. The views of ``PluginSource`` need none, but archivey cannot
@@ -122,10 +124,16 @@ class PluginReaderAdapter(BaseArchiveReader):
             ),
             refuse_input_after_end=True,
         )
+        # The walk position of the member being listed: the id registration will
+        # stamp on it, for a report made before it is yielded.
+        self._walk_index = 0
         context = PluginContext(
             encoding=encoding,
             archive_name=archive_name,
+            config=config,
             decompress=self._decompress,
+            report=self._report,
+            link_target_unavailable=self._link_target_unavailable,
         )
         with self._translated_errors(), self._handle_guard():
             reader = plugin.open(plugin_source, context)
@@ -177,15 +185,75 @@ class PluginReaderAdapter(BaseArchiveReader):
             collector=self._diagnostics_collector,
         )
 
+    def _member_id(self, member: ArchiveMember | None) -> int | None:
+        if member is None:
+            return None
+        return member._member_id if member._member_id is not None else self._walk_index
+
+    def _report(
+        self,
+        code: DiagnosticCode,
+        message: str,
+        details: DiagnosticContext,
+        member: ArchiveMember | None,
+    ) -> None:
+        """``PluginContext.report``: one diagnostic, with the archive and member filled
+        in."""
+        if code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE:
+            raise ArchiveyUsageError(
+                "report SYMLINK_TARGET_UNAVAILABLE with "
+                "PluginContext.link_target_unavailable()"
+            )
+        fill: dict[str, object] = {}
+        if getattr(details, "archive_name", "") is None:
+            fill["archive_name"] = self._archive_name
+        if getattr(details, "member_id", "") is None and member is not None:
+            fill["member_id"] = self._member_id(member)
+        self._diagnostics_collector.emit(
+            code=code,
+            message=message,
+            context=replace(details, **fill) if fill else details,  # type: ignore[type-var]
+            member=member,
+            attach_to_member=member is not None,
+        )
+
+    def _link_target_unavailable(
+        self,
+        member: ArchiveMember,
+        reason: str,
+        message: str,
+        target_in_archive: bool,
+    ) -> None:
+        member.link_target = None
+        self._emit_link_target_unavailable(
+            member,
+            reason=reason,
+            message=message,
+            target_in_archive=target_in_archive,
+            member_id=self._member_id(member),
+        )
+
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
-        return self._reader.translate_exception(exc)
+        # Before ``open()`` returns there is no reader: only the plugin translates.
+        reader = getattr(self, "_reader", None)
+        translated = None if reader is None else reader.translate_exception(exc)
+        return (
+            translated
+            if translated is not None
+            else self._plugin.translate_exception(exc)
+        )
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
-        with self._translated_errors(), self._handle_guard():
+        # One boundary and one guard for the whole walk: both are reusable, and
+        # building them per member is a measurable part of listing a large archive.
+        boundary = self._translated_errors()
+        guard = self._handle_guard()
+        with boundary, guard:
             records = iter(self._reader.iter_members())
         index = 0
         while True:
-            with self._translated_errors(), self._handle_guard():
+            self._walk_index = index
+            with boundary, guard:
                 record = next(records, None)
             if record is None:
                 return
@@ -241,8 +309,11 @@ class PluginReaderAdapter(BaseArchiveReader):
             rewind = RewindWarning(
                 codec_name=self._format.display_name, suggest_install=False
             )
-        expected: dict = dict(member.hashes)
-        expected.update(data.expected_hashes)
+        expected = (
+            {**member.hashes, **data.expected_hashes}
+            if data.expected_hashes
+            else member.hashes
+        )
         return self._wrap_member_stream(
             stream,
             member.name,
@@ -254,7 +325,11 @@ class PluginReaderAdapter(BaseArchiveReader):
             verify_member=member,
             fill_size=member.size is None,
             checks_content=data.checked,
-            custom_digests={d.name: (d.expected, d.new) for d in data.digests} or None,
+            custom_digests=(
+                {d.name: (d.expected, d.new) for d in data.digests}
+                if data.digests
+                else None
+            ),
             rewind_warning=rewind,
         )
 
@@ -425,23 +500,42 @@ def _check_plugin(plugin: type[FormatPlugin]) -> ArchiveFormat:
     return fmt
 
 
-def register_plugin(plugin: type[FormatPlugin]) -> None:
-    """Build the backend class for ``plugin`` and register it (``register_format``)."""
-    fmt = _check_plugin(plugin)
-    extensions: Mapping[str, ArchiveFormat] = dict.fromkeys(plugin.extensions, fmt)
+def _backend_class(
+    plugin: type[FormatPlugin], fmt: ArchiveFormat, overrides: Mapping[str, object]
+) -> type[_PluginBackend]:
     probe = plugin.probe
-    requires = tuple(plugin.requires)
     attrs: dict[str, object] = {
         "PLUGIN": plugin,
         "FORMATS": (fmt,),
-        "EXTENSIONS": extensions,
+        "EXTENSIONS": dict.fromkeys(plugin.extensions, fmt),
         "MAGIC": tuple(MagicSignature(m.offset, m.data, fmt) for m in plugin.magic),
         "CONTENT_PROBES": (((fmt, _prefix_probe(probe)),) if probe is not None else ()),
         "USES_ENCODING": bool(plugin.uses_encoding),
         "NON_SEEKABLE_REASON": "its reader needs random access to the archive",
         "INSTALL_HINT": plugin.install_hint,
-        "REQUIRED_MODULES": requires,
+        "REQUIRED_MODULES": tuple(plugin.requires),
+        **overrides,
     }
-    backend = type(f"{plugin.__name__}Backend", (_PluginBackend,), attrs)
-    get_registry().register_plugin_backend(backend)
+    return type(f"{plugin.__name__}Backend", (_PluginBackend,), attrs)
+
+
+def register_plugin(plugin: type[FormatPlugin]) -> None:
+    """Build the backend class for ``plugin`` and register it (``register_format``)."""
+    fmt = _check_plugin(plugin)
+    get_registry().register_plugin_backend(_backend_class(plugin, fmt, {}))
     add_plugin_spellings(fmt)
+
+
+def register_builtin_plugin(
+    plugin: type[FormatPlugin], **overrides: object
+) -> type[ReadBackend]:
+    """Register a built-in format whose reader is written against ``archivey.plugins``.
+
+    The format keeps its built-in container, extensions, magic and place among the
+    built-in backends, so detection does not change and ``FormatInfo.from_plugin`` is
+    false. ``overrides`` sets backend attributes a plugin cannot declare
+    (``NON_SEEKABLE_REASON``, ``OPTIONAL_DEPENDENCY``). Returns the backend class.
+    """
+    backend = _backend_class(plugin, plugin.format, overrides)
+    get_registry().register_reader(backend)
+    return backend

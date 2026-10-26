@@ -47,7 +47,6 @@ import io
 import re
 import stat
 import struct
-import threading
 import zlib
 from collections.abc import Iterator, Mapping
 from contextvars import ContextVar
@@ -72,17 +71,12 @@ if TYPE_CHECKING:
     from pycdlib.rockridge import RockRidge, RockRidgeEntries, RRCERecord
     from pycdlib.udf import UDFFileEntry, UDFFileIdentifierDescriptor
 
-from archivey.config import ArchiveyConfig, ListingLimits
-from archivey.cost import (
-    AccessCost,
-    CostReceipt,
-    ListingCost,
-    StreamCapability,
-)
+from archivey.config import ListingLimits
 from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
     MemberHeaderRecordContext,
+    MemberTimestampContext,
     NameEncodingContext,
     raw_name_to_base64,
 )
@@ -95,19 +89,9 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
     exception_detail,
 )
-from archivey.internal.base_reader import (
-    BaseArchiveReader,
-    ReadBackend,
-    reject_start_offset,
-)
-from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.base_reader import special_file_has_data_report
 from archivey.internal.listing_limits import check_metadata_budget
-from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
-from archivey.internal.open_site import OpenSite
-from archivey.internal.password import _PasswordCandidates
-from archivey.internal.registry import register_reader
-from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.plugin_adapter import register_builtin_plugin
 from archivey.internal.streams.codecs.isolated import (
     IN_PROCESS,
     Natives,
@@ -116,24 +100,29 @@ from archivey.internal.streams.codecs.isolated import (
 from archivey.internal.streams.decompressor_stream import release_decoder
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
-    LockedStream,
     resolve_seek,
 )
 from archivey.internal.timestamps import TimestampIssue
 from archivey.internal.trailing_scan import first_nonzero_offset
 from archivey.internal.unix_mode import special_file_type
+from archivey.plugins import (
+    FormatPlugin,
+    IndexedReader,
+    Magic,
+    MemberData,
+    MemberRecord,
+    PluginArchiveInfo,
+    PluginContext,
+    PluginSource,
+)
 from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_SPECIAL_FILE_TYPE,
     ArchiveFormat,
-    ArchiveInfo,
-    ArchiveInfoExtra,
     ArchiveMember,
     CompressionAlgorithm,
     CompressionMethod,
-    MagicSignature,
     MemberExtra,
-    MemberStreams,
     MemberType,
     MissingComponent,
 )
@@ -1434,46 +1423,25 @@ class _PyCdlibStream(DelegatingStream):
         return super().seek(target, io.SEEK_SET)
 
 
-class IsoReader(BaseArchiveReader):
-    """Reads an ISO 9660 image via ``pycdlib`` (Rock Ridge / Joliet / plain)."""
+class IsoReader(IndexedReader["DirectoryRecord"]):
+    """Reads an ISO 9660 image via ``pycdlib`` (Rock Ridge / Joliet / plain).
 
-    _MEMBER_LIST_UPFRONT = (
-        True  # the directory tree is an in-header index (O(1) listing)
-    )
+    Written against ``archivey.plugins`` (``IsoPlugin``): the adapter holds the handle
+    lock around every call into it and around the streams it returns, translates
+    errors through :meth:`translate_exception`, and checks each member's size.
+    """
 
-    def __init__(
-        self,
-        source: ArchiveSource,
-        format: ArchiveFormat,
-        streaming: bool,
-        passwords: _PasswordCandidates | None,
-        encoding: str | None,
-        archive_name: str | None,
-        config: ArchiveyConfig,
-        collector: DiagnosticCollector | None = None,
-        member_streams: MemberStreams = MemberStreams(0),
-        open_site: OpenSite | None = None,
-    ) -> None:
-        # password rejection is central: open_archive checks ReadBackend.SUPPORTS_PASSWORD.
-        super().__init__(
-            format,
-            streaming,
-            archive_name,
-            config,
-            collector=collector,
-            member_streams=member_streams,
-            open_site=open_site,
-        )
-        self._source = source
+    def __init__(self, source: PluginSource, context: PluginContext) -> None:
+        self._context = context
+        self._archive_name = context.archive_name
+        self._format = ArchiveFormat.ISO
+        encoding = context.encoding
+        config = context.config
         self._encoding = encoding
-        # Shared-handle lock: only for CONCURRENT readers (default path takes none).
-        self._handle_lock: threading.Lock | None = (
-            threading.Lock() if MemberStreams.CONCURRENT in member_streams else None
-        )
         if pycdlib is None:
             raise PackageNotInstalledError(
                 _PYCDLIB_REQUIREMENT.message("reading ISO images"),
-                archive_name=archive_name,
+                archive_name=self._archive_name,
             )
 
         self._iso = pycdlib.PyCdlib()
@@ -1507,62 +1475,60 @@ class IsoReader(BaseArchiveReader):
         # built the first time a link target is followed through it, so following
         # many targets through one wide directory stays linear.
         self._rock_ridge_children: dict[int, dict[bytes, DirectoryRecord]] = {}
-        # Boundary outside the guard; an exception the translator does not recognize
-        # (a genuine OSError from the handle) propagates unchanged.
+        # The adapter calls this under the handle lock and translates its errors.
+        # Kept for ``_data_inode``, which reads extents pycdlib has no inode for
+        # through the same handle pycdlib reads from.
+        self._iso_fp = source.view(0)
         try:
-            with self._translated_errors(), self._handle_guard():
-                # Always the source, never ``open(str(path))``: a path pycdlib opened
-                # for itself would have nothing of ours underneath it, and the
-                # source is what bounds the reads pycdlib sizes from the image's own
-                # headers. pycdlib clamps a *file*'s ``data_length`` to the image,
-                # but not a *directory*'s: a root record declaring 4 GiB asks for 4
-                # GiB inside ``open_fp``, from a file of any size. The source turns
-                # that into a short read, which pycdlib reports as an invalid
-                # directory record. When the file holds less than the image
-                # declares, ``_cut_short`` makes that a ``TruncatedError``;
-                # otherwise, as for a full-length image whose directory declares
-                # too much, ``_translate_exception`` makes it a
-                # ``CorruptionError``. pycdlib never closes a file object it was
-                # handed (``_managing_fp`` is set only by ``open()``).
-                # Kept for ``_data_inode``, which reads extents pycdlib has no
-                # inode for through the same handle pycdlib reads from.
-                self._iso_fp = self._track_source_seeks(source)
-                limits = config.listing_limits
-                budget = (
-                    None
-                    if limits.max_members is None and limits.max_metadata_bytes is None
-                    else _ParseBudget(limits)
-                )
-                token = _SYSTEM_USE_NOTES.set(self._system_use)
-                budget_token = _PARSE_BUDGET.set(budget)
-                try:
-                    self._iso.open_fp(self._iso_fp)
-                except _PYCDLIB_ERRORS as exc:
-                    truncated = _cut_short(self._iso_fp, exc)
-                    if truncated is None:
-                        raise
-                    raise truncated from exc
-                finally:
-                    _PARSE_BUDGET.reset(budget_token)
-                    _SYSTEM_USE_NOTES.reset(token)
-                self._iso_opened = True
-                # pycdlib measured the image the same way inside ``open_fp``.
-                self._image_length = self._iso_fp.seek(0, 2)
+            # Always the source, never ``open(str(path))``: a path pycdlib opened
+            # for itself would have nothing of ours underneath it, and the
+            # source is what bounds the reads pycdlib sizes from the image's own
+            # headers. pycdlib clamps a *file*'s ``data_length`` to the image,
+            # but not a *directory*'s: a root record declaring 4 GiB asks for 4
+            # GiB inside ``open_fp``, from a file of any size. The source turns
+            # that into a short read, which pycdlib reports as an invalid
+            # directory record. When the file holds less than the image
+            # declares, ``_cut_short`` makes that a ``TruncatedError``;
+            # otherwise, as for a full-length image whose directory declares
+            # too much, ``_translate_exception`` makes it a
+            # ``CorruptionError``. pycdlib never closes a file object it was
+            # handed (``_managing_fp`` is set only by ``open()``).
+            limits = config.listing_limits
+            budget = (
+                None
+                if limits.max_members is None and limits.max_metadata_bytes is None
+                else _ParseBudget(limits)
+            )
+            token = _SYSTEM_USE_NOTES.set(self._system_use)
+            budget_token = _PARSE_BUDGET.set(budget)
+            try:
+                self._iso.open_fp(self._iso_fp)
+            except _PYCDLIB_ERRORS as exc:
+                truncated = _cut_short(self._iso_fp, exc)
+                if truncated is None:
+                    raise
+                raise truncated from exc
+            finally:
+                _PARSE_BUDGET.reset(budget_token)
+                _SYSTEM_USE_NOTES.reset(token)
+            self._iso_opened = True
+            # pycdlib measured the image the same way inside ``open_fp``.
+            self._image_length = self._iso_fp.seek(0, 2)
 
-                # Auto-select the richest namespace: Rock Ridge > Joliet > plain
-                # ISO 9660. Inside the guard, not after it: these are pycdlib calls
-                # on the image just opened, so a failure here is an image failure
-                # and belongs to the same translation and the same release.
-                if self._iso.has_rock_ridge():
-                    self._namespace = "rock_ridge"
-                    self._path_kw = "rr_path"
-                elif self._iso.has_joliet():
-                    self._namespace = "joliet"
-                    self._path_kw = "joliet_path"
-                else:
-                    self._namespace = "iso9660"
-                    self._path_kw = "iso_path"
-                self._report_trailing_data()
+            # Auto-select the richest namespace: Rock Ridge > Joliet > plain
+            # ISO 9660. Inside the guard, not after it: these are pycdlib calls
+            # on the image just opened, so a failure here is an image failure
+            # and belongs to the same translation and the same release.
+            if self._iso.has_rock_ridge():
+                self._namespace = "rock_ridge"
+                self._path_kw = "rr_path"
+            elif self._iso.has_joliet():
+                self._namespace = "joliet"
+                self._path_kw = "joliet_path"
+            else:
+                self._namespace = "iso9660"
+                self._path_kw = "iso_path"
+            self._report_trailing_data()
         except BaseException:
             # No reader is returned for anyone to close, and the exception's traceback
             # keeps this frame alive for as long as the caller holds it (inventory/fuzz
@@ -1595,15 +1561,15 @@ class IsoReader(BaseArchiveReader):
         found = first_nonzero_offset(self._iso_fp)
         if found is None:
             return
-        self._diagnostics_collector.emit(
-            code=DiagnosticCode.ARCHIVE_TRAILING_DATA,
-            message=(
+        self._context.report(
+            DiagnosticCode.ARCHIVE_TRAILING_DATA,
+            (
                 "ISO image continues past its end: a non-zero byte appears "
                 f"{found} bytes after the volume space and any partitions its "
                 "partition table lists. The listing does not account for it (this "
                 "file may hold something appended to the image)."
             ),
-            context=ArchiveEofContext(
+            ArchiveEofContext(
                 archive_name=self._archive_name,
                 format="iso",
                 expected_marker="zeros_to_eof",
@@ -1612,23 +1578,6 @@ class IsoReader(BaseArchiveReader):
                 observed_kind="nonzero",
             ),
         )
-
-    def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
-        # pycdlib choked on corrupt structure; ``_PYCDLIB_ERRORS`` says why the set is
-        # this broad. A genuine OSError is not in it and propagates unchanged.
-        if isinstance(exc, _PYCDLIB_ERRORS):
-            detail = _pycdlib_detail(exc)
-            if detail is None:
-                # Not pycdlib's own verdict: a parser stepping on bad bytes, or this
-                # backend's own code reading pycdlib internals (see _PYCDLIB_ERRORS).
-                # Nothing here tells the two apart, so the message names the error
-                # and does not say the image is damaged.
-                detail = (
-                    "a structure in the image could not be parsed "
-                    f"({exception_detail(exc, with_type=True)})"
-                )
-            return CorruptionError(f"Error reading ISO image: {detail}")
-        return None
 
     # --- listing ------------------------------------------------------------------------
 
@@ -1999,7 +1948,7 @@ class IsoReader(BaseArchiveReader):
         """The records that hold one file's data, as the walk joined them."""
         return self._file_records_of.get(id(record), (record,))
 
-    def _iter_members(self) -> Iterator[ArchiveMember]:
+    def iter_members(self) -> Iterator[MemberRecord[DirectoryRecord]]:
         # Pinned-pycdlib audit (tar-concurrent-open 2.7 / concurrent-member-streams 5.4):
         # the record walk traverses in-memory parsed catalog records and reads nothing
         # from the image, except in two cases. For a repeated identifier
@@ -2014,15 +1963,17 @@ class IsoReader(BaseArchiveReader):
         # (``dr_entries``/``ce_entries``). Any other image read added to listing needs
         # the same guard. If a future pycdlib version gains handle access in the walk,
         # lock the complete call.
-        with self._translated_errors():
-            # ``index`` is each member's position in the walk, the id registration
-            # stamps, so a diagnostic raised while typing can name it.
-            for index, (ns_path, raw_path, record, superseded) in enumerate(
-                self._walk_records()
-            ):
-                yield self._make_member(
+        # ``index`` is each member's position in the walk, the id registration
+        # stamps, so a diagnostic raised while typing can name it.
+        for index, (ns_path, raw_path, record, superseded) in enumerate(
+            self._walk_records()
+        ):
+            yield MemberRecord(
+                self._make_member(
                     ns_path, raw_path, record, index, superseded=superseded
-                )
+                ),
+                record,
+            )
 
     def _make_member(
         self,
@@ -2073,9 +2024,8 @@ class IsoReader(BaseArchiveReader):
             # The newest version takes the bare name. Keeping the stored spelling also
             # keeps ``FOO.;1`` and ``FOO;1`` apart when both are superseded.
             presented = ns_path.lstrip("/")
-        name = normalize_member_name(
-            presented, member_type, backslash_is_separator=False
-        )
+        # The adapter normalizes the name, and reports a change, once it is yielded.
+        name = presented
         raw_name = raw_path
         extra = (
             MemberExtra({"iso.version": version})
@@ -2131,18 +2081,10 @@ class IsoReader(BaseArchiveReader):
             is_encrypted=False,
             extra=extra,
             is_current=not superseded,
-            _raw=record,  # the directory record, so _open_member needs no path lookup
-        )
-        emit_member_name_normalized(
-            self._diagnostics_collector,
-            member=member,
-            presented_name=presented,
-            archive_name=self._archive_name,
-            member_id=index,
         )
         self._emit_system_use_cut(member, rr, index)
         if special is not None and member.type is MemberType.FILE:
-            self._emit_special_file_has_data(member, index)
+            self._context.report(*special_file_has_data_report(member), member=member)
         # The message names the normalized name, so it is built here, not in
         # ``_timestamps``.
         for field, source, value_repr in invalid_dates:
@@ -2150,16 +2092,25 @@ class IsoReader(BaseArchiveReader):
             issue = TimestampIssue(
                 field=field, source=source, value_repr=value_repr, message=message
             )
-            # ISO sends every diagnostic to the collector's default logger; so does this.
-            self._emit_timestamp_invalid(member, index, issue, log=None)
+            self._context.report(
+                DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
+                issue.message,
+                MemberTimestampContext(
+                    member_name=member.name,
+                    field=issue.field,
+                    source=issue.source,
+                    value_repr=issue.value_repr,
+                ),
+                member=member,
+            )
         if id(record) in self._joliet_named:
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,
-                message=(
+            self._context.report(
+                DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,
+                (
                     "Rock Ridge name is not valid UTF-8; the name is taken from the "
                     f"Joliet tree: {quoted(member.name)}"
                 ),
-                context=NameEncodingContext(
+                NameEncodingContext(
                     archive_name=self._archive_name,
                     member_name=member.name,
                     member_id=index,
@@ -2170,21 +2121,20 @@ class IsoReader(BaseArchiveReader):
                     declared_encoding="",
                 ),
                 member=member,
-                attach_to_member=True,
             )
         if self._namespace == "rock_ridge" and rr is None:
             # The image is Rock Ridge but this record's System Use area carries none
             # (absent or damaged). The member is kept under its ISO 9660 name; what the
             # entries would have given (the long name, POSIX mode/owner, a symlink)
             # is missing, and the caller is told so.
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
-                message=(
+            self._context.report(
+                DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+                (
                     f"Directory record {quoted(presented)} carries no Rock Ridge "
                     "entries; the member is listed under its ISO 9660 name without "
                     "Rock Ridge name, mode, owner or link data."
                 ),
-                context=MemberHeaderRecordContext(
+                MemberHeaderRecordContext(
                     archive_name=self._archive_name,
                     member_name=name,
                     member_id=index,
@@ -2192,7 +2142,6 @@ class IsoReader(BaseArchiveReader):
                     reason="no Rock Ridge entries in the System Use area",
                 ),
                 member=member,
-                attach_to_member=True,
             )
         return member
 
@@ -2211,13 +2160,13 @@ class IsoReader(BaseArchiveReader):
         reason = None if rr is None else self._system_use.dropped_reason(rr)
         if reason is None:
             return
-        self._diagnostics_collector.emit(
-            code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
-            message=(
+        self._context.report(
+            DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+            (
                 f"The Rock Ridge entries of {quoted(member.name)} are malformed "
                 f"({reason}); the member is listed from the entries before that."
             ),
-            context=MemberHeaderRecordContext(
+            MemberHeaderRecordContext(
                 archive_name=self._archive_name,
                 member_name=member.name,
                 member_id=index,
@@ -2227,11 +2176,9 @@ class IsoReader(BaseArchiveReader):
                 list_truncated=True,
             ),
             member=member,
-            attach_to_member=True,
         )
         if member.type == MemberType.SYMLINK:
-            member.link_target = None
-            self._emit_link_target_unavailable(
+            self._context.link_target_unavailable(
                 member,
                 reason="target_record_malformed",
                 message=(
@@ -2239,7 +2186,6 @@ class IsoReader(BaseArchiveReader):
                     "malformed Rock Ridge entry; leaving link_target unset."
                 ),
                 target_in_archive=True,
-                member_id=index,
             )
 
     def _timestamps(
@@ -2468,9 +2414,9 @@ class IsoReader(BaseArchiveReader):
         raw = self._raw_directories.get(key)
         if raw is None:
             block_size = self._iso.logical_block_size
-            with self._handle_guard():
-                self._iso_fp.seek(key * block_size)
-                data = self._iso_fp.read(directory.get_data_length())
+            # Under the adapter's handle lock, like every call into this reader.
+            self._iso_fp.seek(key * block_size)
+            data = self._iso_fp.read(directory.get_data_length())
             raw = _parse_raw_directory(data, block_size, self._image_length)
             self._raw_directories[key] = raw
         return raw
@@ -2532,15 +2478,14 @@ class IsoReader(BaseArchiveReader):
         start = layout[0].sector * self._iso.logical_block_size
         return start + sum(extent.length for extent in layout) > self._image_length
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
-        record = member._raw
-        assert _is_directory_record(record), (
-            "ISO member is missing its directory record"
-        )
-        # A file whose declared data runs past the end of the image reads what is
-        # there, then fails at the cut: the length check is enabled for it alone.
-        # Every other file keeps the bare ``size``, which enables no check.
-        cut = self._runs_past_image_end(record)
+    def open_member(
+        self, member: ArchiveMember, locator: DirectoryRecord
+    ) -> MemberData:
+        # The adapter checks the listed size on every member, so a file whose declared
+        # data runs past the end of the image reads what is there, then fails at the
+        # cut with TruncatedError. A zisofs file cut there fails at the block that is
+        # cut, as a TruncatedError from the decoder.
+        record = locator
         zisofs = self._zisofs_entry(record)
         if zisofs is not None:
             refusal = _zisofs_refusal(zisofs)
@@ -2551,28 +2496,9 @@ class IsoReader(BaseArchiveReader):
                     source_format=self._format,
                     archive_name=self._archive_name,
                 )
-            # A zisofs file cut by the end of the image fails at the block that is
-            # cut, as a TruncatedError from the decoder, not by a length check.
-            cut = False
-        # Boundary outside the lock; _PyCdlibStream construction stays inside it so any
-        # enter-time pycdlib seek/error is covered by both.
-        with self._translated_errors(member.name):
-            if self._handle_lock is not None:
-                with self._handle_lock:
-                    # Construct under the lock so enter-time pycdlib seek (and the
-                    # zisofs header read) is covered.
-                    stream: BinaryIO = LockedStream(
-                        self._data_stream(record, zisofs, member), self._handle_lock
-                    )
-            else:
-                stream = self._data_stream(record, zisofs, member)
-        return self._wrap_member_stream(
-            stream,
-            member.name,
-            size=member.size,
-            expected_size=member.size if cut else None,
-            verify_member=member if cut else None,
-        )
+        # The adapter holds the handle lock here, so the enter-time pycdlib seek (and
+        # the zisofs header read) is covered, and wraps the stream in it after.
+        return MemberData(self._data_stream(record, zisofs, member))
 
     def _data_stream(
         self,
@@ -2591,20 +2517,14 @@ class IsoReader(BaseArchiveReader):
                     stream,
                     zisofs,
                     member.compressed_size,
-                    natives_for(self._config.process_isolation),
+                    natives_for(self._context.config.process_isolation),
                 ),
             )
         except BaseException:
             stream.close()
             raise
 
-    def _get_archive_info(self) -> ArchiveInfo:
-        cost = CostReceipt(
-            listing_cost=ListingCost.INDEXED,  # directory tree lives in the header region
-            access_cost=AccessCost.DIRECT,  # each extent is independently addressable
-            stream_capability=StreamCapability.SEEKABLE,
-            solid_block_count=None,
-        )
+    def archive_info(self) -> PluginArchiveInfo:
         pvd = self._iso.pvd
         # The standard allows d-characters only, but writers store the -V text as it
         # was given (xorriso: UTF-8). It records no charset, as a Rock Ridge name does
@@ -2615,20 +2535,13 @@ class IsoReader(BaseArchiveReader):
         # a multi-byte encoding= never meets the padding and a label's own trailing
         # character (a no-break space, say) stays.
         volume_id = self._decode_bytes_name(pvd.volume_identifier.rstrip(b" "))
-        info_extra = ArchiveInfoExtra({"iso.namespace": self._namespace})
-        return ArchiveInfo(
-            format=self._format,
+        return PluginArchiveInfo(
             # ISO 9660 stores no interchange level. pycdlib infers one from the
             # names it walks and reports 3 for nearly every image, so it is not
             # passed on as if it were read from the image.
             format_version=None,
-            is_solid=False,
-            member_count=None,  # counting requires walking the tree
             comment=volume_id or None,
-            is_encrypted=False,
-            is_multivolume=False,
-            cost=cost,
-            extra=info_extra,
+            extra={"iso.namespace": self._namespace},
         )
 
     def _release_archive_handles(self) -> None:
@@ -2641,12 +2554,14 @@ class IsoReader(BaseArchiveReader):
         is not this reader's to close here: the reader closes it after teardown, and
         ``open_archive`` closes it when the constructor raises.
         """
-        if self._iso_opened:
-            with self._handle_guard():
+        try:
+            if self._iso_opened:
                 self._iso.close()
-            self._iso_opened = False
+                self._iso_opened = False
+        finally:
+            self._iso_fp.close()
 
-    def _close_archive(self) -> None:
+    def close(self) -> None:
         self._release_archive_handles()
 
 
@@ -2728,61 +2643,53 @@ def refuse_raw_sector_image(
     )
 
 
-class IsoReadBackend(ReadBackend):
-    """Backend factory for ISO 9660 images (requires the ``[recommended]`` extra → ``pycdlib``)."""
+class IsoPlugin(FormatPlugin):
+    """ISO 9660 images, read through ``archivey.plugins`` (requires ``pycdlib``)."""
 
-    FORMATS: tuple[ArchiveFormat, ...] = (ArchiveFormat.ISO,)
-    EXTENSIONS: Mapping[str, ArchiveFormat] = {".iso": ArchiveFormat.ISO}
-    # The primary volume descriptor's "CD001" magic sits at offset 32 769; detection peeks the
-    # extended 32 774-byte window on demand to find it (see internal/detection.py).
-    MAGIC: tuple[MagicSignature, ...] = (
-        MagicSignature(32769, b"CD001", ArchiveFormat.ISO),
+    format = ArchiveFormat.ISO
+    extensions = (".iso",)
+    # The primary volume descriptor's "CD001" magic sits at offset 32 769; detection
+    # peeks the extended 32 774-byte window on demand to find it (see
+    # internal/detection.py).
+    magic = (
+        Magic(32769, b"CD001"),
         # A raw CD sector dump. Claimed as ISO so that open_archive can refuse it by
         # name (see refuse_raw_sector_image) rather than fail detection.
-        MagicSignature(0, _RAW_SECTOR_SYNC, ArchiveFormat.ISO),
+        Magic(0, _RAW_SECTOR_SYNC),
     )
-    # SUPPORTS_STREAMING_NON_SEEKABLE stays False: pycdlib addresses the image by
-    # absolute offsets (volume descriptors at 32 KiB), so even a forward-only pass
-    # needs a seekable source.
-    # Same requirement the reader raises from, so the hint reported by listing /
-    # format_availability and the one in the open() failure cannot diverge.
-    NON_SEEKABLE_REASON = (
-        "its volume descriptors and directory records are at absolute offsets in the "
-        "image"
-    )
-    USES_ENCODING = True  # for Rock Ridge and plain names that are not valid UTF-8
-    OPTIONAL_DEPENDENCY = _PYCDLIB_REQUIREMENT.name
-    INSTALL_HINT = _PYCDLIB_REQUIREMENT.install_hint
+    uses_encoding = True  # for Rock Ridge and plain names that are not valid UTF-8
 
-    def open_read(
-        self,
-        source: ArchiveSource,
-        format: ArchiveFormat,
-        streaming: bool,
-        passwords: _PasswordCandidates | None,
-        encoding: str | None,
-        archive_name: str | None,
-        config: ArchiveyConfig,
-        collector: DiagnosticCollector | None = None,
-        member_streams: MemberStreams = MemberStreams(0),
-        open_site: OpenSite | None = None,
-        start_offset: int = 0,
-    ) -> IsoReader:
-        reject_start_offset(start_offset, format, archive_name)
-        # `format` is always ISO here (single-format backend); accepted for the uniform
-        # ReadBackend signature.
-        return IsoReader(
-            source,
-            format,
-            streaming,
-            passwords,
-            encoding,
-            archive_name,
-            config,
-            collector=collector,
-            member_streams=member_streams,
-            open_site=open_site,
-        )
+    def open(self, source: PluginSource, context: PluginContext) -> IsoReader:
+        return IsoReader(source, context)
+
+    def translate_exception(self, exc: Exception) -> ArchiveyError | None:
+        # pycdlib choked on corrupt structure; ``_PYCDLIB_ERRORS`` says why the set is
+        # this broad. A genuine OSError is not in it and propagates unchanged.
+        if isinstance(exc, _PYCDLIB_ERRORS):
+            detail = _pycdlib_detail(exc)
+            if detail is None:
+                # Not pycdlib's own verdict: a parser stepping on bad bytes, or this
+                # backend's own code reading pycdlib internals (see _PYCDLIB_ERRORS).
+                # Nothing here tells the two apart, so the message names the error
+                # and does not say the image is damaged.
+                detail = (
+                    "a structure in the image could not be parsed "
+                    f"({exception_detail(exc, with_type=True)})"
+                )
+            return CorruptionError(f"Error reading ISO image: {detail}")
+        return None
 
 
-register_reader(IsoReadBackend)
+IsoReadBackend = register_builtin_plugin(
+    IsoPlugin,
+    # pycdlib addresses the image by absolute offsets (volume descriptors at 32 KiB),
+    # so even a forward-only pass needs a seekable source. The same requirement the
+    # reader raises from, so the hint reported by listing / format_availability and
+    # the one in the open() failure cannot diverge.
+    NON_SEEKABLE_REASON=(
+        "its volume descriptors and directory records are at absolute offsets in "
+        "the image"
+    ),
+    OPTIONAL_DEPENDENCY=_PYCDLIB_REQUIREMENT.name,
+    INSTALL_HINT=_PYCDLIB_REQUIREMENT.install_hint,
+)

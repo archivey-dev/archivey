@@ -28,6 +28,8 @@ from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import BinaryIO, ClassVar, Generic, NamedTuple, Protocol, TypeVar
 
+from archivey.config import ArchiveyConfig
+from archivey.diagnostics import DiagnosticCode, DiagnosticContext
 from archivey.exceptions import ArchiveyError
 from archivey.types import (
     ArchiveFormat,
@@ -190,13 +192,21 @@ class PluginContext:
         *,
         encoding: str | None,
         archive_name: str | None,
+        config: ArchiveyConfig,
         decompress: Callable[
             [BinaryIO, CompressionAlgorithm, int | None, bytes | None], BinaryIO
         ],
+        report: Callable[
+            [DiagnosticCode, str, DiagnosticContext, ArchiveMember | None], None
+        ],
+        link_target_unavailable: Callable[[ArchiveMember, str, str, bool], None],
     ) -> None:
         self._encoding = encoding
         self._archive_name = archive_name
+        self._config = config
         self._decompress = decompress
+        self._report = report
+        self._link_target_unavailable = link_target_unavailable
 
     @property
     def encoding(self) -> str | None:
@@ -207,6 +217,52 @@ class PluginContext:
     def archive_name(self) -> str | None:
         """The archive's name, for messages."""
         return self._archive_name
+
+    @property
+    def config(self) -> ArchiveyConfig:
+        """The caller's configuration. A reader that parses a large index itself can
+        bound it by ``config.listing_limits``; archivey applies those limits to the
+        members it is handed in any case."""
+        return self._config
+
+    def report(
+        self,
+        code: DiagnosticCode,
+        message: str,
+        details: DiagnosticContext,
+        *,
+        member: ArchiveMember | None = None,
+    ) -> None:
+        """Report something the caller should know that does not stop the read.
+
+        ``code`` is one of archivey's own codes, and ``details`` the context type that
+        code takes (``MemberTimestampContext`` for ``MEMBER_TIMESTAMP_INVALID``); a
+        mismatch raises ``ArchiveyUsageError``. Leave ``archive_name`` and
+        ``member_id`` in ``details`` unset: archivey fills them in. With ``member``,
+        the report is attached to that member as well: pass the member being listed,
+        before it is yielded, or the member being opened. The caller's
+        ``DiagnosticPolicy`` applies, so a code it raises on raises here.
+
+        For ``SYMLINK_TARGET_UNAVAILABLE`` use :meth:`link_target_unavailable`.
+        """
+        self._report(code, message, details, member)
+
+    def link_target_unavailable(
+        self,
+        member: ArchiveMember,
+        *,
+        reason: str,
+        message: str,
+        target_in_archive: bool,
+    ) -> None:
+        """Report a symlink whose target the reader could not read, and leave
+        ``link_target`` unset.
+
+        ``target_in_archive`` says whether the archive does hold a target the reader
+        could not reach (damaged, cut short), rather than recording none. Extraction
+        fails such a member instead of skipping it as a link with no target.
+        """
+        self._link_target_unavailable(member, reason, message, target_in_archive)
 
     def decode_name(self, raw: bytes) -> str:
         """Decode a stored name the way built-in formats do.
@@ -266,8 +322,9 @@ class PluginReader(ABC):
     def translate_exception(self, exc: Exception) -> ArchiveyError | None:
         """Map an exception from the plugin's library to an archivey exception.
 
-        Return ``None`` to let ``exc`` propagate as it is. An archivey exception the
-        plugin raises itself (``CorruptionError``, ``TruncatedError``,
+        Return ``None`` to let ``exc`` propagate as it is, or to fall back to
+        :meth:`FormatPlugin.translate_exception`. An archivey exception the plugin
+        raises itself (``CorruptionError``, ``TruncatedError``,
         ``UnsupportedFeatureError``) needs no translation.
         """
         return None
@@ -332,6 +389,16 @@ class FormatPlugin(ABC):
 
     install_hint: ClassVar[str | None] = None
     """What to install when a module in ``requires`` is missing."""
+
+    def translate_exception(self, exc: Exception) -> ArchiveyError | None:
+        """Map an exception from the plugin's library to an archivey exception.
+
+        Asked about an exception raised in :meth:`open`, before there is a reader, and
+        about any exception the reader's own ``translate_exception`` returns ``None``
+        for. A plugin whose translation needs no state from the open archive defines
+        it here only. Return ``None`` to let ``exc`` propagate as it is.
+        """
+        return None
 
     @abstractmethod
     def open(self, source: PluginSource, context: PluginContext) -> PluginReader:
