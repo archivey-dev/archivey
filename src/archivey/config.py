@@ -45,7 +45,8 @@ class AcceleratorMode(Enum):
     """Always use it. Raises :class:`~archivey.PackageNotInstalledError` when its
     package is not installed."""
     OFF = "off"
-    """Never use it. The standard library decodes the stream."""
+    """Never use it. The standard library decodes the stream. Set both ``use_rapidgzip``
+    and ``use_indexed_bzip2`` to this when results must not depend on the machine."""
 
     def enabled_for(
         self,

@@ -185,6 +185,12 @@ Each idea carries a status:
   rounds, and possibly a lower `max_members`. The name is open (`UNTRUSTED` is the
   suggestion). It may also want to be a mode, for example refusing a decode that could
   take the process down.
+- **Predefined `ArchiveyConfig` objects for safety and for speed.** *Needs design.* Like
+  `DiagnosticPolicy.STRICT`: one tuned for safety (accelerators `OFF`, so results do not
+  depend on the machine, and possibly the stricter limits above) and one for speed
+  (accelerators `AUTO`). Until then, "The same result on every machine" in
+  `docs/reading.md` shows the settings by hand. Not to be built yet (maintainer,
+  2026-10-26).
 - **Resource usage against the limits, as data.** *Open idea.* A caller cannot ask how
   close an archive came to each limit. A usage record on the reader and on the extraction
   report would help tune limits against a real corpus. `scripts/scan_archives.py` shows
