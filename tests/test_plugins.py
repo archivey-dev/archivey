@@ -554,3 +554,69 @@ def test_translate_exception_mid_read(clean_registry: None, tmp_path: Path) -> N
     ):
         reader.read("docs/a.txt")
     assert info.value.member_name == "docs/a.txt"
+
+
+# ── Seekable members over a plugin stream that reads forward only ───────────────────
+
+
+class _ForwardOnly(io.RawIOBase):
+    def __init__(self, data: bytes, opened: list[int]) -> None:
+        self._data = io.BytesIO(data)
+        opened.append(1)
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: memoryview) -> int:  # type: ignore[override]
+        chunk = self._data.read(len(buffer))
+        buffer[: len(chunk)] = chunk
+        return len(chunk)
+
+
+def _forward_only_plugin(opened: list[int]) -> type[FormatPlugin]:
+    class ForwardOnlyReader(ToyReader):
+        def open_member(
+            self, member: ArchiveMember, locator: tuple[int, int]
+        ) -> MemberData:
+            offset, size = locator
+            return MemberData(
+                _ForwardOnly(self._source.read_at(offset, size), opened)  # type: ignore[arg-type]
+            )
+
+    class ForwardOnlyPlugin(ToyPlugin):
+        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+            return ForwardOnlyReader(source, context)
+
+    return ForwardOnlyPlugin
+
+
+def test_seekable_member_over_forward_only_stream(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    opened: list[int] = []
+    register_format(_forward_only_plugin(opened))
+    data = bytes(range(256)) * 4
+    path = _write(tmp_path, build_toya(_ENTRIES))
+    with (
+        open_archive(path, seekable_members=True) as reader,
+        reader.open("b.bin") as stream,
+    ):
+        assert stream.seekable()
+        stream.seek(500)
+        assert stream.read(4) == data[500:504]
+        assert len(opened) == 1  # a forward seek reads through
+        stream.seek(10)
+        assert stream.read(4) == data[10:14]
+        assert len(opened) == 2  # a backward seek opens the member again
+        stream.seek(0)
+        assert stream.read() == data
+        assert stream.verified is archivey.Verification.CONTENT
+
+
+def test_forward_only_stream_without_seekable_members(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    register_format(_forward_only_plugin([]))
+    path = _write(tmp_path, build_toya(_ENTRIES))
+    with open_archive(path) as reader, reader.open("b.bin") as stream:
+        assert not stream.seekable()

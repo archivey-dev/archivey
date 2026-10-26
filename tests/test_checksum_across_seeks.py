@@ -20,7 +20,7 @@ import pytest
 
 from archivey import open_archive
 from archivey.exceptions import CorruptionError
-from archivey.internal.backends.rar_reader import _RespawnStream
+from archivey.internal.streams.respawn import RespawnStream
 from archivey.internal.streams.verify import VerifyingStream
 from archivey.types import HashAlgorithm
 
@@ -149,7 +149,7 @@ def test_unrar_pipe_seek_stays_lazy() -> None:
         return spawned[-1]
 
     wrong = ((zlib.crc32(_DATA) + 1) & 0xFFFFFFFF).to_bytes(4, "big")
-    pipe = _RespawnStream(spawn, io.BytesIO(_DATA), size=len(_DATA))
+    pipe = RespawnStream(spawn, io.BytesIO(_DATA), size=len(_DATA), what="test output")
     stream = VerifyingStream(
         pipe, {HashAlgorithm.CRC32: wrong}, expected_size=len(_DATA)
     )

@@ -30,7 +30,6 @@ and RAR5 ConvertHashToMAC when checksums are tweaked.
 from __future__ import annotations
 
 import hashlib
-import io
 import itertools
 import os
 import shutil
@@ -176,13 +175,12 @@ from archivey.internal.streams.crypto import (
     open_aes_decrypt_stage,
     open_aes_decrypt_stream,
 )
+from archivey.internal.streams.respawn import RespawnStream
 from archivey.internal.streams.streamtools import (
-    ReadOnlyIOStream,
     SharedSource,
     SlicingStream,
     SolidBlockReader,
     is_seekable,
-    resolve_seek,
     skip_forward,
 )
 from archivey.internal.streams.verify import build_member_verifier
@@ -979,149 +977,6 @@ class _UnrarOwnedStream(ProcessOutputStream):
             raise CorruptionError(
                 "unrar found no matching member (exit 10); the member could not be read"
             )
-
-
-class _RespawnStream(ReadOnlyIOStream):
-    """Seekable view of a one-member decompressor pipe (``unrar p`` or ``unar``).
-
-    The inner handle is a pipe, so a backward seek cannot reposition it. Close it
-    and spawn a fresh process on the next ``read()`` that needs bytes; skip to the
-    logical offset then. Forward seeks do not drain the pipe until a later
-    ``read()`` needs those bytes. Past-end seeks leave the pipe where it is: a
-    read with ``pos > size`` is empty, and a read at ``pos == size`` still
-    reaches the pipe so fused verify's one-byte overrun probe can see trailing
-    output — that boundary read is clamped to one byte.
-
-    ``_pos`` is the logical offset. ``_pipe_pos`` is pipe progress clamped to
-    ``_size``: the fused-verify overrun probe's extra byte advances ``_pos``
-    but not ``_pipe_pos``, so a no-op ``SEEK_CUR`` after it does not kill the
-    process. Re-probing after seeking back to ``_size`` is then not
-    byte-exact; that path is unreachable while the first probe raises
-    ``CorruptionError`` on any trailing byte (``verify.py`` ``_conclude``).
-    Respawn is keyed on the pipe, so ``seek(0, SEEK_END); seek(0)`` before any
-    read costs nothing.
-
-    ``spawn`` must return a stream that owns the process (``_UnrarOwnedStream``,
-    ``_bounded_member_pipe`` wrapping one, or a ``UnarOutputStream``), so
-    close/respawn reaps it.
-
-    Same restart-on-rewind shape as ``DecompressorStream`` /
-    ``Decoder.recreate`` with a one-point index at origin. It does not use
-    that engine: ``Decoder`` is a push interface fed compressed bytes, while
-    unrar produces plaintext on stdout from a path. ``AesDecryptStream`` is
-    a different shape — O(1) CBC restart, no replay — and does not count
-    toward extracting a shared restart-and-replay base. A third pull-shaped
-    replay producer would be that point.
-    """
-
-    def __init__(
-        self,
-        spawn: Callable[[], BinaryIO],
-        inner: BinaryIO,
-        *,
-        size: int,
-    ) -> None:
-        super().__init__()
-        self._spawn = spawn
-        self._inner: BinaryIO | None = inner
-        self._size = size
-        self._pos = 0
-        self._pipe_pos = 0
-
-    def seekable(self) -> bool:
-        return True
-
-    def tell(self) -> int:
-        if self.closed:
-            raise ValueError("I/O operation on closed file.")
-        return self._pos
-
-    def _close_inner(self) -> None:
-        inner = self._inner
-        self._inner = None
-        # A replacement process always starts at byte 0. Reset even if close
-        # raises, so a later read cannot label those bytes with the old offset.
-        self._pipe_pos = 0
-        if inner is not None:
-            inner.close()
-
-    def _ensure(self) -> BinaryIO:
-        if self._inner is None:
-            self._inner = self._spawn()
-        return self._inner
-
-    def _pipe_needed(self, logical: int) -> int:
-        return min(logical, self._size)
-
-    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        if self.closed:
-            raise ValueError("I/O operation on closed file.")
-        target = resolve_seek(offset, whence, pos=self._pos, end=lambda: self._size)
-        needed = self._pipe_needed(target)
-        if needed < self._pipe_pos:
-            # Close first; set the logical cursor only if close succeeds, so a
-            # failed seek leaves tell() unchanged (Python IO). Spawn is lazy —
-            # _sync_pipe calls _ensure on the next read. Spawning here would
-            # start a process that close-without-read would kill.
-            self._close_inner()
-        self._pos = target
-        return self._pos
-
-    def nearest_resume_offset(self, target: int) -> int:
-        """Where the output restarts to reach ``target``: the live pipe's position when
-        ``target`` is at or past it, else 0 (a fresh process). A member's verifier asks
-        this to see that reaching a forward target decodes the skipped bytes anyway."""
-        if self._inner is not None and self._pipe_needed(target) >= self._pipe_pos:
-            return self._pipe_pos
-        return 0
-
-    def _sync_pipe(self) -> BinaryIO:
-        inner = self._ensure()
-        want = self._pipe_needed(self._pos)
-        if want > self._pipe_pos:
-            try:
-                skip_forward(inner, want - self._pipe_pos)
-            except EOFError as exc:
-                raise TruncatedError(
-                    f"unrar output ended after {self._pipe_pos} of {self._size} bytes"
-                ) from exc
-            self._pipe_pos = want
-        return inner
-
-    def read(self, n: int = -1, /) -> bytes:
-        if self.closed:
-            raise ValueError("I/O operation on closed file.")
-        if self._pos > self._size:
-            return b""
-        inner = self._sync_pipe()
-        if self._pos < self._size:
-            remaining = self._size - self._pos
-            if n < 0 or n > remaining:
-                n = remaining
-        else:
-            # At declared size the overrun probe must reach the pipe, but only
-            # for one byte — read(-1) here would pull the rest of a corrupt
-            # member into memory.
-            n = 1 if n < 0 else min(n, 1)
-        data = inner.read(n)
-        self._pos += len(data)
-        # Overrun probe at pos == size can return one extra byte. Count it in
-        # _pos (so pos > size reads are empty) but not as pipe progress past
-        # _size, or the next seek including SEEK_CUR would kill the process.
-        self._pipe_pos = min(self._pipe_pos + len(data), self._size)
-        return data
-
-    def close(self) -> None:
-        if self.closed:
-            return
-        close_error: BaseException | None = None
-        try:
-            self._close_inner()
-        except BaseException as exc:  # noqa: BLE001 - mark closed even if inner.close fails
-            close_error = exc
-        super().close()
-        if close_error is not None:
-            raise close_error
 
 
 def _bounded_member_pipe(inner: BinaryIO, *, prefix: int, size: int) -> BinaryIO:
@@ -4675,7 +4530,12 @@ class RarReader(BaseArchiveReader):
         try:
             rewind: RewindWarning | None = None
             if self._seek_declared():
-                inner = _RespawnStream(spawn, inner, size=_member_stream_size(member))
+                inner = RespawnStream(
+                    spawn,
+                    inner,
+                    size=_member_stream_size(member),
+                    what="unrar output",
+                )
                 rewind = RewindWarning(
                     codec_name="rar",
                     suggest_install=False,

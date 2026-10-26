@@ -39,14 +39,19 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
 from archivey.internal.streams.codecs import (
     Codec,
     CodecParams,
     decode_lzma_filter_properties,
     open_codec_stream,
 )
-from archivey.internal.streams.streamtools import LockedStream, SharedSource
+from archivey.internal.streams.respawn import RespawnStream
+from archivey.internal.streams.streamtools import (
+    LockedStream,
+    SharedSource,
+    is_seekable,
+)
 from archivey.plugins import (
     FormatPlugin,
     IndexedReader,
@@ -205,7 +210,8 @@ class PluginReaderAdapter(BaseArchiveReader):
             index += 1
             yield member
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+    def _plugin_member_data(self, member: ArchiveMember) -> MemberData:
+        """Call the plugin's ``open_member``, with its stream under the handle lock."""
         with self._translated_errors(member.name), self._handle_guard():
             data = self._reader.open_member(member, member._raw)
             if not isinstance(data, MemberData):
@@ -213,9 +219,32 @@ class PluginReaderAdapter(BaseArchiveReader):
                     f"{type(self._reader).__name__}.open_member() returned "
                     f"{type(data).__name__}, not MemberData"
                 )
-        stream: BinaryIO = data.stream
         if self._handle_lock is not None:
-            stream = LockedStream(stream, self._handle_lock)
+            data = data._replace(stream=LockedStream(data.stream, self._handle_lock))
+        return data
+
+    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+        data = self._plugin_member_data(member)
+        stream: BinaryIO = data.stream
+        rewind: RewindWarning | None = None
+        if (
+            self._seek_declared()
+            and member.size is not None
+            and not is_seekable(stream)
+        ):
+            # The caller asked for seekable members and the plugin's stream reads
+            # forward only: a forward seek reads through, and a backward one opens
+            # the member again from the start (``open_member`` once more). A member
+            # with no listed size stays forward-only, since its end is not known.
+            stream = RespawnStream(
+                lambda: self._plugin_member_data(member).stream,
+                stream,
+                size=member.size,
+                what=f"{self._format.display_name} member data",
+            )
+            rewind = RewindWarning(
+                codec_name=self._format.display_name, suggest_install=False
+            )
         expected: dict = dict(member.hashes)
         expected.update(data.expected_hashes)
         return self._wrap_member_stream(
@@ -229,6 +258,7 @@ class PluginReaderAdapter(BaseArchiveReader):
             verify_member=member,
             fill_size=member.size is None,
             checks_content=data.checked,
+            rewind_warning=rewind,
         )
 
     def _get_archive_info(self) -> ArchiveInfo:
