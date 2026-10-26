@@ -26,7 +26,7 @@ import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
-from typing import BinaryIO, ClassVar, Generic, NamedTuple, TypeVar
+from typing import BinaryIO, ClassVar, Generic, NamedTuple, Protocol, TypeVar
 
 from archivey.exceptions import ArchiveyError
 from archivey.types import (
@@ -39,9 +39,11 @@ from archivey.types import (
 
 __all__ = [
     "FormatPlugin",
+    "Hasher",
     "IndexedReader",
     "Magic",
     "MemberData",
+    "MemberDigest",
     "MemberRecord",
     "PluginArchiveInfo",
     "PluginContainer",
@@ -76,6 +78,37 @@ class MemberRecord(NamedTuple, Generic[LocatorT]):
     and hands it back to :meth:`IndexedReader.open_member`."""
 
 
+class Hasher(Protocol):
+    """A running checksum, shaped like a ``hashlib`` object: ``hashlib.sha1()`` is
+    one."""
+
+    def update(self, data: bytes, /) -> None:
+        """Add the next bytes of the member."""
+
+    def digest(self) -> bytes:
+        """The checksum of every byte added so far."""
+
+
+class MemberDigest(NamedTuple):
+    """A checksum archivey cannot compute itself, with what computes it.
+
+    archivey feeds the member's bytes to a fresh hasher from ``new`` as they are read,
+    and compares ``digest()`` with ``expected`` when a read reaches the end. A mismatch
+    raises ``CorruptionError``, and a match counts as ``Verification.CONTENT``, as for
+    a CRC-32 in ``ArchiveMember.hashes``. Bytes read again after a backward seek are
+    not fed twice.
+    """
+
+    name: str
+    """The checksum's name, for messages (``"sha1"``)."""
+
+    expected: bytes
+    """The value the archive stores, as ``digest()`` returns it."""
+
+    new: Callable[[], Hasher]
+    """Makes a fresh hasher: ``hashlib.sha1``, or a class of the plugin's own."""
+
+
 class MemberData(NamedTuple):
     """A member's data, as :meth:`IndexedReader.open_member` returns it."""
 
@@ -87,9 +120,14 @@ class MemberData(NamedTuple):
     ``ArchiveMember.hashes`` is checked too."""
 
     checked: bool = False
-    """The plugin's library verified the data with a checksum archivey cannot compute
-    (a CRC-16, a SHA-1), and raises when it does not match once read to the end. The
-    member then counts as verified when a read reaches its end."""
+    """The stream checks its bytes itself, with a checksum the plugin's library
+    computes inside it, and raises when it does not match once read to the end. The
+    member then counts as verified when a read reaches its end. A plugin that can
+    compute the checksum but returns a raw stream uses ``digests`` instead."""
+
+    digests: tuple[MemberDigest, ...] = ()
+    """Checksums archivey computes with a hasher the plugin supplies, as the stream
+    is read."""
 
 
 class PluginArchiveInfo(NamedTuple):

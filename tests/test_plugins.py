@@ -9,6 +9,7 @@ data offset), then the data. Each test registers it on a registry restored after
 from __future__ import annotations
 
 import bz2
+import hashlib
 import io
 import lzma
 import struct
@@ -44,6 +45,7 @@ from archivey.plugins import (
     IndexedReader,
     Magic,
     MemberData,
+    MemberDigest,
     MemberRecord,
     PluginArchiveInfo,
     PluginContext,
@@ -620,3 +622,97 @@ def test_forward_only_stream_without_seekable_members(
     path = _write(tmp_path, build_toya(_ENTRIES))
     with open_archive(path) as reader, reader.open("b.bin") as stream:
         assert not stream.seekable()
+
+
+# ── Digests archivey computes with a hasher the plugin supplies ─────────────────────
+
+
+class _Sum16:
+    """A checksum archivey has no hasher for: the byte sum modulo 2¹⁶."""
+
+    def __init__(self) -> None:
+        self._value = 0
+
+    def update(self, data: bytes, /) -> None:
+        self._value = (self._value + sum(data)) & 0xFFFF
+
+    def digest(self) -> bytes:
+        return self._value.to_bytes(2, "little")
+
+
+def _sum16(data: bytes) -> bytes:
+    hasher = _Sum16()
+    hasher.update(data)
+    return hasher.digest()
+
+
+def _digest_plugin(digests: dict[str, MemberDigest]) -> type[FormatPlugin]:
+    """TOYA with no CRC-32 in the listing: only ``digests`` (by member name) checks."""
+
+    class DigestReader(ToyReader):
+        def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+            for record in super().iter_members():
+                record.member.hashes = {}
+                yield record
+
+        def open_member(
+            self, member: ArchiveMember, locator: tuple[int, int]
+        ) -> MemberData:
+            offset, size = locator
+            return MemberData(
+                self._source.view(offset, size), digests=(digests[member.name],)
+            )
+
+    class DigestPlugin(ToyPlugin):
+        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+            return DigestReader(source, context)
+
+    return DigestPlugin
+
+
+@pytest.mark.parametrize(
+    ("make", "name"),
+    [
+        (
+            lambda data: MemberDigest(
+                "sha1", hashlib.sha1(data).digest(), hashlib.sha1
+            ),
+            "sha1",
+        ),
+        (lambda data: MemberDigest("sum16", _sum16(data), _Sum16), "sum16"),
+    ],
+)
+def test_member_digest_checked(
+    clean_registry: None, tmp_path: Path, make: object, name: str
+) -> None:
+    data = bytes(range(256)) * 4
+    good = make(data)  # type: ignore[operator]
+    register_format(_digest_plugin({"b.bin": good}))
+    path = _write(tmp_path, build_toya(_ENTRIES))
+    with open_archive(path) as reader, reader.open("b.bin") as stream:
+        assert stream.read() == data
+        assert stream.verified is archivey.Verification.CONTENT
+
+
+def test_member_digest_mismatch_raises(clean_registry: None, tmp_path: Path) -> None:
+    bad = MemberDigest("sha1", bytes(20), hashlib.sha1)
+    register_format(_digest_plugin({"b.bin": bad}))
+    path = _write(tmp_path, build_toya(_ENTRIES))
+    with open_archive(path) as reader, pytest.raises(CorruptionError, match="sha1"):
+        reader.read("b.bin")
+
+
+def test_member_digest_across_seeks(clean_registry: None, tmp_path: Path) -> None:
+    data = bytes(range(256)) * 4
+    register_format(
+        _digest_plugin({"b.bin": MemberDigest("sum16", _sum16(data), _Sum16)})
+    )
+    path = _write(tmp_path, build_toya(_ENTRIES))
+    with (
+        open_archive(path, seekable_members=True) as reader,
+        reader.open("b.bin") as stream,
+    ):
+        stream.read(300)
+        stream.seek(100)  # bytes read again are not fed to the hasher twice
+        assert stream.read() == data[100:]
+        assert stream.verified is archivey.Verification.CONTENT

@@ -258,6 +258,7 @@ class PluginReaderAdapter(BaseArchiveReader):
             verify_member=member,
             fill_size=member.size is None,
             checks_content=data.checked,
+            custom_digests={d.name: (d.expected, d.new) for d in data.digests} or None,
             rewind_warning=rewind,
         )
 

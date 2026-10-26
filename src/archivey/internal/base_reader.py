@@ -132,6 +132,7 @@ from archivey.internal.streams.streamtools import (
     read_exact,
     source_byte_size,
 )
+from archivey.internal.streams.verify import CustomDigests
 from archivey.internal.timestamps import TimestampIssue
 from archivey.internal.windows_reparse import (
     REPARSE_HEADER_BYTES,
@@ -1115,6 +1116,7 @@ class BaseArchiveReader(ArchiveReader):
         rewind_warning: RewindWarning | None = None,
         translate: ExceptionTranslator | None = None,
         checks_content: bool = False,
+        custom_digests: CustomDigests | None = None,
     ) -> ArchiveStream:
         """Wrap a raw member stream so read/seek errors route through the backend's
         translator and are stamped with format/archive/member context.
@@ -1122,6 +1124,8 @@ class BaseArchiveReader(ArchiveReader):
         ``checks_content`` says that ``inner`` checks every byte against a checksum of
         its own when read from the start to the end, and raises on a mismatch (a
         plugin's ``MemberData.checked``): such a read counts as ``CONTENT``.
+        ``custom_digests`` are digests whose hasher the caller supplies (a plugin's
+        ``MemberData.digests``), checked as ``expected_hashes`` are.
 
         Backends return ``_wrap_member_stream(raw, member.name, size=member.size)`` from
         ``_open_member`` so a decode error surfaces as a stamped ``ArchiveyError`` rather
@@ -1204,6 +1208,7 @@ class BaseArchiveReader(ArchiveReader):
                 rewind_warning=rewind_warning,
                 member_name=member_name,
                 checks_content=checks_content,
+                custom_digests=custom_digests,
             )
 
         assert inner is not None
@@ -1231,6 +1236,7 @@ class BaseArchiveReader(ArchiveReader):
             rewind_warning=rewind_warning,
             member_name=member_name,
             checks_content=checks_content,
+            custom_digests=custom_digests,
         )
 
     @abstractmethod

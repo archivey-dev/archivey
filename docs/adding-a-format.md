@@ -208,11 +208,22 @@ archivey checks every member stream against what the listing said:
 - **Checksums archivey can compute.** A CRC-32 or BLAKE2sp in `member.hashes`, or in
   `MemberData.expected_hashes`, is checked as the stream is read. A mismatch raises
   `CorruptionError`, and a full read with a match reaches `Verification.CONTENT`.
-- **Checksums only your library can compute.** If your library checks a CRC-16, SHA-1 or
-  other checksum itself and raises when it does not match, set `checked=True` on the
-  `MemberData`. A read to the end then counts as `Verification.CONTENT` too. Keep the
-  stored value in `member.extra` under a key named after your format, such as
-  `"toya.sha1"`.
+- **Checksums archivey has no hasher for.** For a CRC-16, a SHA-1 or any other
+  checksum, put a `MemberDigest` in `MemberData.digests`: its name, the stored value,
+  and a function that makes a fresh hasher, such as `hashlib.sha1`. A hasher is any
+  object with `update(bytes)` and `digest()`. archivey feeds it the bytes as they are
+  read, and checks the result the same way as a CRC-32:
+
+  ```python
+  return MemberData(
+      self._source.view(offset, size),
+      digests=(MemberDigest("sha1", stored_sha1, hashlib.sha1),),
+  )
+  ```
+
+- **Checksums the stream checks itself.** If the stream your library returns checks
+  its own checksum and raises when it does not match, set `checked=True` on the
+  `MemberData`. A read to the end then counts as `Verification.CONTENT` too.
 
 ## Errors
 

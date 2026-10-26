@@ -121,10 +121,13 @@ def _algo_key(algorithm: HashAlgorithm | str) -> str:
 class _IncrementalHasher(Protocol):
     """The subset of the ``hashlib`` hash interface this stage uses."""
 
-    @property
-    def digest_size(self) -> int: ...
     def update(self, data: bytes, /) -> None: ...
     def digest(self) -> bytes: ...
+
+
+#: Digests whose hasher the caller supplies (a format plugin's SHA-1 or CRC-16): name to
+#: (stored value, factory of a fresh hasher). Checked exactly as ``expected`` is.
+CustomDigests = Mapping[str, tuple[bytes, Callable[[], _IncrementalHasher]]]
 
 
 class _Crc32Hasher:
@@ -200,6 +203,7 @@ class MemberVerifier:
         digest_transforms: _DigestTransforms | None = None,
         end_check: Callable[[int], None] | None = None,
         fill_size: bool = False,
+        custom_digests: CustomDigests | None = None,
     ) -> None:
         self._expected_size = expected_size
         # With no declared size: called with the member's length before the digest
@@ -241,6 +245,10 @@ class MemberVerifier:
                     logger=logger,
                 )
                 continue
+            self._hasher_factories[key] = factory
+            self._hashers[key] = factory()
+            self._expected[key] = value
+        for key, (value, factory) in (custom_digests or {}).items():
             self._hasher_factories[key] = factory
             self._hashers[key] = factory()
             self._expected[key] = value
@@ -917,6 +925,7 @@ def build_member_verifier(
     digest_transforms: _DigestTransforms | None = None,
     end_check: Callable[[int], None] | None = None,
     fill_size: bool = False,
+    custom_digests: CustomDigests | None = None,
 ) -> MemberVerifier | None:
     """Return a :class:`MemberVerifier` when there is something to check, else ``None``.
 
@@ -930,7 +939,7 @@ def build_member_verifier(
     """
     hashes = expected if expected is not None else {}
     fills = fill_size and member is not None and expected_size is None
-    if not hashes and expected_size is None and not fills:
+    if not hashes and not custom_digests and expected_size is None and not fills:
         return None
     return MemberVerifier(
         hashes,
@@ -941,6 +950,7 @@ def build_member_verifier(
         digest_transforms=digest_transforms,
         end_check=end_check,
         fill_size=fills,
+        custom_digests=custom_digests,
     )
 
 
