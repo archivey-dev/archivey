@@ -21,6 +21,8 @@ from archivey.internal.streams.streamtools import (
 
 __all__ = ["RespawnStream"]
 
+_SKIP_CHUNK = 1 << 16
+
 
 class RespawnStream(ReadOnlyIOStream):
     """Seekable view of a member stream that can only be read forward.
@@ -50,6 +52,13 @@ class RespawnStream(ReadOnlyIOStream):
     ``what`` names the producer in the ``TruncatedError`` raised when it ends before
     ``size`` (``"unrar output"``).
 
+    ``size=None`` is a member whose length is not known up front (a plugin member
+    listed with no size). The stream learns it when the inner stream first ends: on a
+    read or forward seek that reaches the end, or on a ``SEEK_END``, which reads
+    through to the end to find it. Until then a read is not clamped, and an early end
+    cannot be told from the real one. Once learned, it behaves as a known ``size``:
+    a later spawn that ends sooner raises ``TruncatedError``.
+
     Same restart-on-rewind shape as ``DecompressorStream`` /
     ``Decoder.recreate`` with a one-point index at origin. It does not use
     that engine: ``Decoder`` is a push interface fed compressed bytes, while
@@ -64,7 +73,7 @@ class RespawnStream(ReadOnlyIOStream):
         spawn: Callable[[], BinaryIO],
         inner: BinaryIO,
         *,
-        size: int,
+        size: int | None,
         what: str,
     ) -> None:
         super().__init__()
@@ -98,12 +107,24 @@ class RespawnStream(ReadOnlyIOStream):
         return self._inner
 
     def _pipe_needed(self, logical: int) -> int:
-        return min(logical, self._size)
+        return logical if self._size is None else min(logical, self._size)
+
+    def _advance(self, count: int) -> None:
+        self._pipe_pos += count
+
+    def _end(self) -> int:
+        """The member's length; with no size known yet, read through to the end."""
+        if self._size is None:
+            inner = self._ensure()
+            while chunk := inner.read(_SKIP_CHUNK):
+                self._pipe_pos += len(chunk)
+            self._size = self._pipe_pos
+        return self._size
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
-        target = resolve_seek(offset, whence, pos=self._pos, end=lambda: self._size)
+        target = resolve_seek(offset, whence, pos=self._pos, end=self._end)
         needed = self._pipe_needed(target)
         if needed < self._pipe_pos:
             # Close first; set the logical cursor only if close succeeds, so a
@@ -127,8 +148,13 @@ class RespawnStream(ReadOnlyIOStream):
         want = self._pipe_needed(self._pos)
         if want > self._pipe_pos:
             try:
-                skip_forward(inner, want - self._pipe_pos)
+                skip_forward(inner, want - self._pipe_pos, on_chunk=self._advance)
             except EOFError as exc:
+                if self._size is None:
+                    # A forward seek past the end of a member of unknown length:
+                    # the end is found, and the read there returns nothing.
+                    self._size = self._pipe_pos
+                    return inner
                 raise TruncatedError(
                     f"{self._what} ended after {self._pipe_pos} of {self._size} bytes"
                 ) from exc
@@ -138,9 +164,19 @@ class RespawnStream(ReadOnlyIOStream):
     def read(self, n: int = -1, /) -> bytes:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
-        if self._pos > self._size:
+        if self._size is not None and self._pos > self._size:
             return b""
         inner = self._sync_pipe()
+        if self._size is None:
+            data = inner.read(n)
+            self._pos += len(data)
+            self._pipe_pos += len(data)
+            # An empty read, or a read of everything, has reached the end.
+            if n < 0 or (not data and n != 0):
+                self._size = self._pipe_pos
+            return data
+        if self._pos > self._size:  # the forward seek above found the end
+            return b""
         if self._pos < self._size:
             remaining = self._size - self._pos
             if n < 0 or n > remaining:

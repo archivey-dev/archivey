@@ -227,15 +227,11 @@ class PluginReaderAdapter(BaseArchiveReader):
         data = self._plugin_member_data(member)
         stream: BinaryIO = data.stream
         rewind: RewindWarning | None = None
-        if (
-            self._seek_declared()
-            and member.size is not None
-            and not is_seekable(stream)
-        ):
+        if self._seek_declared() and not is_seekable(stream):
             # The caller asked for seekable members and the plugin's stream reads
             # forward only: a forward seek reads through, and a backward one opens
-            # the member again from the start (``open_member`` once more). A member
-            # with no listed size stays forward-only, since its end is not known.
+            # the member again from the start (``open_member`` once more). With no
+            # listed size, a seek from the end reads through to find it.
             stream = RespawnStream(
                 lambda: self._plugin_member_data(member).stream,
                 stream,

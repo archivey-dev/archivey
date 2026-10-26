@@ -575,8 +575,16 @@ class _ForwardOnly(io.RawIOBase):
         return len(chunk)
 
 
-def _forward_only_plugin(opened: list[int]) -> type[FormatPlugin]:
+def _forward_only_plugin(
+    opened: list[int], *, listed_size: bool = True
+) -> type[FormatPlugin]:
     class ForwardOnlyReader(ToyReader):
+        def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+            for record in super().iter_members():
+                if not listed_size and record.member.is_file:
+                    record.member.size = None
+                yield record
+
         def open_member(
             self, member: ArchiveMember, locator: tuple[int, int]
         ) -> MemberData:
@@ -716,3 +724,23 @@ def test_member_digest_across_seeks(clean_registry: None, tmp_path: Path) -> Non
         stream.seek(100)  # bytes read again are not fed to the hasher twice
         assert stream.read() == data[100:]
         assert stream.verified is archivey.Verification.CONTENT
+
+
+def test_seekable_member_with_no_listed_size(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    opened: list[int] = []
+    register_format(_forward_only_plugin(opened, listed_size=False))
+    data = bytes(range(256)) * 4
+    path = _write(tmp_path, build_toya(_ENTRIES))
+    with open_archive(path, seekable_members=True) as reader:
+        assert reader.get("b.bin").size is None
+        with reader.open("b.bin") as stream:
+            assert stream.seekable()
+            assert stream.seek(-4, io.SEEK_END) == len(data) - 4
+            assert stream.read() == data[-4:]
+            stream.seek(10)
+            assert stream.read(4) == data[10:14]
+            stream.seek(0)
+            assert stream.read() == data
+            assert stream.verified is archivey.Verification.CONTENT

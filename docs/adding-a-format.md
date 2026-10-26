@@ -172,8 +172,8 @@ read from the start. archivey closes the stream.
 The stream does not need to seek. When the caller opens the archive with
 `seekable_members=True` and the stream cannot seek, archivey seeks for it: a forward seek
 reads the bytes in between, and a backward seek calls `open_member()` again and reads
-forward from the start, which is slow for a large member. A member whose listing gives no
-`size` stays forward-only.
+forward from the start, which is slow for a large member. When the listing gives no
+`size`, a seek from the end reads to the end once to find it.
 
 `PluginSource.view(start, length)` gives a stream over part of the archive with its own
 position, so two members open at the same time do not move each other. A format that
