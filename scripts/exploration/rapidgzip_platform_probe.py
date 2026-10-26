@@ -225,7 +225,8 @@ def main() -> None:
             json.dumps(
                 {"env": env, "in_process": in_process, "archivey": archivey_rows},
                 indent=2,
-            )
+            ),
+            encoding="utf-8",
         )
 
 

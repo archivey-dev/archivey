@@ -197,7 +197,9 @@ def open_codec_stream(
     The returned stream wraps the backend so corrupt/truncated/non-seekable errors surface
     as ``ArchiveyError`` subclasses (never raw codec exceptions).
 
-    ``config.seekable`` gates accelerator ``AUTO`` resolution and native index construction.
+    ``config.seekable`` gates native index construction and accelerator ``AUTO``
+    resolution; for the DEFLATE family, ``AUTO`` also takes a large sequential read
+    (``_sequential_read_pays`` in ``rapidgzip_select.py``).
     The ArchiveStream seekability hint is separate: pass ``seekable=False`` to force a
     forward-only public handle (as :func:`~archivey.open_stream` does by default). When
     ``seekable`` is omitted the handle stays seekable so format backends that need
@@ -334,9 +336,9 @@ def _decoder_config(
         # source for ``tell``. A compressed TAR opened ``streaming=True`` with
         # ``seekable_members=True`` over a forward-only stream arrives here so.
         changes["seekable"] = False
-    if source_seekable and not config.source_seekable:
+    if source_seekable != config.source_seekable:
         # Lets accelerator AUTO consider a sequential read (``_rapidgzip_wanted``).
-        changes["source_seekable"] = True
+        changes["source_seekable"] = source_seekable
     # Fill the AUTO size gate when the caller did not already supply a known length
     # (path ``stat``, ``SlicingStream.size``, ``BytesIO``, …). Unknown stays ``None``.
     if config.compressed_input_size is None:

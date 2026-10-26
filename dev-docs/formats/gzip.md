@@ -161,7 +161,7 @@ end. A `.gzi` index is a separate file, which a stream cannot find, so it is not
 | --- | --- |
 | `OFF` | The standard library engine, always |
 | `ON` | `rapidgzip`, whatever the size; `PackageNotInstalledError` without it, `ResourceLimitError` if no child process can start, `StreamNotSeekableError` on a source that cannot seek (a pipe, or a member stream of an outer archive opened without `seekable_members`) |
-| `AUTO` | `rapidgzip` only when all hold: seeking was declared (`seekable_members=True`, `open_stream(seekable=True)`), or the read is a large sequential one that pays (below); the source is seekable; `rapidgzip` is installed; the compressed input is not known to be smaller than 16 MiB (`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`; an unknown size counts as large enough, as `AcceleratorMode.AUTO` records); and the decoded length can be checked, either because the container declared it or because a gzip trailer is readable. Otherwise the standard library engine, silently |
+| `AUTO` | `rapidgzip` only when all hold: seeking was declared (`seekable_members=True`, `open_stream(seekable=True)`), or the read is a large sequential one that pays (below); the source is seekable; `rapidgzip` is installed; the compressed input is not known to be smaller than 16 MiB (`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`; for a declared seek an unknown size counts as large enough, as `AcceleratorMode.AUTO` records, and for the sequential route it does not); and the decoded length can be checked, either because the container declared it or because a gzip trailer is readable. Otherwise the standard library engine, silently |
 
 The 16 MiB gate is the break-even of the child process: it costs about 45 ms to start and
 open (about 25 ms of it starting the child), plus about 70 µs per round trip, which the
@@ -179,13 +179,17 @@ xz and lzip build theirs, and also a faster decoder, since it decodes in paralle
 `AUTO` gives it a read with no declared seeking too (`_sequential_read_pays` in
 `codecs/rapidgzip_select.py`), when all of the conditions above hold and also:
 
-- the platform is not Windows;
+- the platform is Linux or macOS, where it was measured to pay (Windows was measured not
+  to, below; other platforms were not measured);
 - the compressed size is known and at least 16 MiB (an unknown size does not count as
   large enough here);
 - the data compresses 3:1 or less. The decoded size is the container's (a ZIP or 7z
   member), else the gzip ISIZE trailer, an estimate: it is mod 2**32 and covers only the
   last member, so a file over 4 GiB, or of several members, can be misjudged either way,
-  and the cost of that is speed only.
+  and the cost of that is speed only. An ISIZE below 99% of the compressed size counts as
+  unknown, since DEFLATE never shrinks data that far below its input: that is a last
+  member's size (every BGZF file ends with an empty member, whose ISIZE is 0) or a wrapped
+  one, and the read stays on the standard library.
 
 The member stream stays as seekable as it was: an open without `seekable_members=True`
 still refuses `seek`. A `streaming=True` open over a file on disk qualifies too, since its
@@ -197,6 +201,14 @@ the decoding it saves grows with the bytes it reads. On 4 cores (Linux, 128 MiB 
 library's time from 1.2:1 to 2.6:1, and the same time at 6.2:1; an earlier run measured a
 17:1 log 2.4 times slower. The limit sits below the break-even with a margin, as the
 16 MiB gate does.
+
+Those are full reads. A read that stops early pays the child's start and the decode it
+runs ahead for nothing: opening a 112 MiB `.gz` at 1.2:1, reading 4 KiB and closing it took
+about 3 to 4 ms under `OFF` and 62 to 80 ms under `ON` (same machine). Sequential `AUTO`
+gives that cost to a plain open that reads the first lines of a large log, or sniffs a
+member's first bytes; before, only a declared seek paid it. It is not gated: nothing at
+open says how much the caller will read, and the loss is bounded by one child start per
+stream, while a full read saves seconds.
 
 **Windows.** On a 16-core Windows machine (2026-10-26, rapidgzip 0.16.0, 40 MiB decoded),
 `rapidgzip` in process is parallel and fast: from a path or a `BytesIO` alike, its index
@@ -622,7 +634,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A `.gz` with bytes after it under `rapidgzip` decodes part of the file twice | **archivey** | The switch to the standard library replays up to where `rapidgzip` failed (§2.3); a resumed replay that reaches a member's end starts over to check its CRC-32 |
 | One warning on `archivey.streams` that `rapidgzip` cannot run | **archivey** | No child process can start here; `AUTO` used the standard library. `use_rapidgzip=OFF` silences it |
 | A zlib stream with a preset dictionary is not detected, and fails when opened by name | **format** | archivey holds no dictionary |
-| A large `.gz` opened without `seekable_members=True` is no faster with `[seekable]` installed | **archivey** | Without declared seeking, `AUTO` uses `rapidgzip` only from 16 MiB, at 3:1 or less, and not on Windows (§2.3). Declare seeking, or set `use_rapidgzip=ON` |
+| A large `.gz` opened without `seekable_members=True` is no faster with `[seekable]` installed | **archivey** | Without declared seeking, `AUTO` uses `rapidgzip` only from 16 MiB, at 3:1 or less, and only on Linux and macOS (§2.3). Declare seeking, or set `use_rapidgzip=ON` |
 | A cold backward seek under `rapidgzip` still re-decodes megabytes, and the log says so | **library** | Its index is sparse: three points over 5 MB of `gzip.compress` output |
 
 ## 6. Decisions
@@ -636,7 +648,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | One accelerator library, `rapidgzip`, for gzip, zlib, raw DEFLATE and bzip2 (ADR 0008) | `indexed_gzip` or `indexed_bzip2` next to it corrupt the heap on macOS | Several accelerator packages |
 | Run `rapidgzip` in a child process for the DEFLATE family (PR #493) | Its abort on a cut stream is uncatchable in-process | In-process with guards, which cannot catch `std::terminate`; decoding with the standard library first and handing `rapidgzip` only proven input, which decoded the whole member at the first backward seek |
 | `AUTO` needs 16 MiB of input and a checkable size | Below that the child costs more than it saves; without a size, a soft end would pass silently | 1 MiB, the in-process threshold; `AUTO` on any declared seek, with no size gate |
-| `AUTO` uses `rapidgzip` for declared-seekable streams (the concurrent-member-streams change, PR #59), and for a sequential read from 16 MiB at 3:1 or less, except on Windows (maintainer ruling, 2026-10-26) | Seek machinery is built on declared demand, for every codec; the parallel decode pays on a full read only for data that is not very compressible, and on Windows the child costs more than it saves | `AUTO` keyed on the `streaming` access mode; sequential `AUTO` at any ratio, which is up to 2.4 times slower on very compressible data; sequential `AUTO` on Windows too |
+| `AUTO` uses `rapidgzip` for declared-seekable streams (the concurrent-member-streams change, PR #59), and for a sequential read from 16 MiB at 3:1 or less, on Linux and macOS (maintainer ruling, 2026-10-26) | Seek machinery is built on declared demand, for every codec; the parallel decode pays on a full read only for data that is not very compressible, and on Windows the child costs more than it saves. A short read of a large stream now pays one child start (§2.3) | `AUTO` keyed on the `streaming` access mode; sequential `AUTO` at any ratio, which is up to 2.4 times slower on very compressible data; sequential `AUTO` on Windows, or on any platform but Windows, which ships it where nobody measured |
 | `AUTO` falls back to the standard library with one log warning where no child can start | The accelerator is an enhancement; a frozen application must still read `.gz` | Raising, which `ON` does |
 | Report `FNAME` decoded as Latin-1, keep the bytes in `raw_name` | RFC 1952 says so, and the bytes are there for a caller who knows better | Guessing UTF-8 |
 | Member starts as seek points, and a BGZF walk by `BC` subfields, on declared seek demand | A member start is an exact restart point; BGZF names every member's size, so seeking needs no `rapidgzip` for the most common blocked gzip | A `BgzfDecompressorStream` of its own, as first proposed; reading `.gzi` files, which a stream cannot locate |

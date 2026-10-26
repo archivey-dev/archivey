@@ -130,9 +130,10 @@ def _rapidgzip_wanted(config: StreamConfig, *, available: bool) -> bool:
 # 1.2:1 to 2.6:1, the same time at 6:1, and 2.4 times as long at 17:1
 # (dev-docs/formats/gzip.md §2.3).
 _SEQUENTIAL_MAX_RATIO = 3
-# Whether this platform takes a sequential read through rapidgzip at all (not Windows:
-# :func:`_sequential_read_pays`).
-_SEQUENTIAL_PLATFORM = sys.platform != "win32"
+# Whether this platform takes a sequential read through rapidgzip at all: Linux and
+# macOS, where it was measured to pay. Windows was measured not to
+# (:func:`_sequential_read_pays`); other platforms were not measured.
+_SEQUENTIAL_PLATFORM = sys.platform in ("linux", "darwin")
 
 
 def _sequential_read_pays(config: StreamConfig) -> bool:
@@ -143,7 +144,10 @@ def _sequential_read_pays(config: StreamConfig) -> bool:
     child takes longer to start and reads its source through a pipe, and a full read was
     slower under ``ON`` than with the standard library at 40 MiB, on a 16-core machine.
     The ratio uses the declared decoded size, else the gzip ISIZE trailer, an estimate
-    (it is mod 2**32, and covers only the last member).
+    (it is mod 2**32, and covers only the last member). An ISIZE below 99% of the
+    compressed size is no estimate at all: DEFLATE never shrinks data that much below its
+    input, so the trailer is a last member's (a BGZF file ends with an empty one, and
+    reads 0), or a wrapped one. The read then stays on the standard library.
     """
     if not (_SEQUENTIAL_PLATFORM and config.source_seekable):
         return False
@@ -153,6 +157,8 @@ def _sequential_read_pays(config: StreamConfig) -> bool:
     decoded = config.expected_decompressed_size
     if decoded is None:
         decoded = config.gzip_isize
+        if decoded is not None and decoded * 100 < compressed * 99:
+            return False
     return decoded is not None and decoded <= _SEQUENTIAL_MAX_RATIO * compressed
 
 
