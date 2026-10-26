@@ -188,7 +188,7 @@ Each idea carries a status:
 - **Predefined `ArchiveyConfig` objects for safety and for speed.** *Needs design.* Like
   `DiagnosticPolicy.STRICT`: one tuned for safety (accelerators `OFF`, so results do not
   depend on the machine, and possibly the stricter limits above) and one for speed
-  (accelerators `AUTO`). Until then, "The same result on every machine" in
+  (accelerators `AUTO`). Until then, "The same result everywhere" in
   `docs/reading.md` shows the settings by hand. Not to be built yet (maintainer,
   2026-10-26).
 - **Resource usage against the limits, as data.** *Open idea.* A caller cannot ask how

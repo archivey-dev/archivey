@@ -119,7 +119,7 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   it, pass `config=archivey.ArchiveyConfig(use_rapidgzip=archivey.AcceleratorMode.OFF,
   use_indexed_bzip2=archivey.AcceleratorMode.OFF)`.
 
-    rapidgzip gives the same results as the standard library but for one crafted shape: a ZIP
+    rapidgzip gives the same results as the standard library except for one crafted shape: a ZIP
     member or 7z coder holding two DEFLATE streams, with a size and CRC that cover both. With
     rapidgzip you may get both streams when the second is long. It depends on the data, on
     how many cores the machine has and on the platform, so the same member may read on one
