@@ -29,8 +29,9 @@ class AcceleratorMode(Enum):
     """Whether to use an optional accelerator that gives seekable streams over a codec."""
 
     AUTO = "auto"
-    """Use it only when seekable streams were asked for (``seekable_members=True`` on
-    ``open_archive``, ``seekable=True`` on ``open_stream``), its package is installed,
+    """Use it when seekable streams were asked for (``seekable_members=True`` on
+    ``open_archive``, ``seekable=True`` on ``open_stream``), or for gzip, zlib and raw
+    deflate on Linux and macOS a large sequential read (below), its package is installed,
     and the compressed input is known to be large enough to pay for it:
     :data:`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` for gzip, zlib and raw deflate, and
     :data:`INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE` for bzip2. An input of unknown size

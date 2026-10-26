@@ -131,9 +131,9 @@ random-access/parallel backend for raw DEFLATE (`deflate` codec) and zlib-wrappe
 codec SHALL pass the stream through unwrapped — no synthetic gzip header/footer. Selection is
 gated identically to gzip (`use_rapidgzip` × declared seekability × availability, plus the
 `AUTO` minimum-input-size threshold, and the large sequential read of the demand
-requirement above). The default sequential backend is stdlib `zlib`, except for that
-large sequential read: when rapidgzip is unavailable, `OFF`, or below the `AUTO` threshold,
-deflate/zlib decode through stdlib `zlib`.
+requirement above). The default sequential backend is stdlib `zlib`, except for that large
+sequential read. When rapidgzip is unavailable, `OFF`, or below the `AUTO` threshold,
+deflate/zlib always decode through stdlib `zlib`.
 
 Because rapidgzip auto-detects the format, the codec SHALL decode with the stdlib backend a
 source rapidgzip could take for another format: a `deflate` source that starts with `1f 8b`, a

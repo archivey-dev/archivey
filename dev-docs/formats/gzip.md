@@ -207,8 +207,9 @@ runs ahead for nothing: opening a 112 MiB `.gz` at 1.2:1, reading 4 KiB and clos
 about 3 to 4 ms under `OFF` and 62 to 80 ms under `ON` (same machine). Sequential `AUTO`
 gives that cost to a plain open that reads the first lines of a large log, or sniffs a
 member's first bytes; before, only a declared seek paid it. It is not gated: nothing at
-open says how much the caller will read, and the loss is bounded by one child start per
-stream, while a full read saves seconds.
+open says how much the caller will read, and the loss, about 60 to 80 ms per stream (the
+child's start, the open, and the decode ahead that the caller never reads), is small
+against the seconds a full read saves.
 
 **Windows.** On a 16-core Windows machine (2026-10-26, rapidgzip 0.16.0, 40 MiB decoded),
 `rapidgzip` in process is parallel and fast: from a path or a `BytesIO` alike, its index
@@ -648,7 +649,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | One accelerator library, `rapidgzip`, for gzip, zlib, raw DEFLATE and bzip2 (ADR 0008) | `indexed_gzip` or `indexed_bzip2` next to it corrupt the heap on macOS | Several accelerator packages |
 | Run `rapidgzip` in a child process for the DEFLATE family (PR #493) | Its abort on a cut stream is uncatchable in-process | In-process with guards, which cannot catch `std::terminate`; decoding with the standard library first and handing `rapidgzip` only proven input, which decoded the whole member at the first backward seek |
 | `AUTO` needs 16 MiB of input and a checkable size | Below that the child costs more than it saves; without a size, a soft end would pass silently | 1 MiB, the in-process threshold; `AUTO` on any declared seek, with no size gate |
-| `AUTO` uses `rapidgzip` for declared-seekable streams (the concurrent-member-streams change, PR #59), and for a sequential read from 16 MiB at 3:1 or less, on Linux and macOS (maintainer ruling, 2026-10-26) | Seek machinery is built on declared demand, for every codec; the parallel decode pays on a full read only for data that is not very compressible, and on Windows the child costs more than it saves. A short read of a large stream now pays one child start (§2.3) | `AUTO` keyed on the `streaming` access mode; sequential `AUTO` at any ratio, which is up to 2.4 times slower on very compressible data; sequential `AUTO` on Windows, or on any platform but Windows, which ships it where nobody measured |
+| `AUTO` uses `rapidgzip` for declared-seekable streams (the concurrent-member-streams change, PR #59), and for a sequential read from 16 MiB at 3:1 or less, on Linux and macOS (maintainer ruling, 2026-10-26) | Seek machinery is built on declared demand, for every codec; the parallel decode pays on a full read only for data that is not very compressible, and on Windows the child costs more than it saves. A short read of a large stream now costs about 60 to 80 ms more: the child's start and open, and its decode ahead (§2.3) | `AUTO` keyed on the `streaming` access mode; sequential `AUTO` at any ratio, which is up to 2.4 times slower on very compressible data; sequential `AUTO` on Windows, or on any platform but Windows, which ships it where nobody measured |
 | `AUTO` falls back to the standard library with one log warning where no child can start | The accelerator is an enhancement; a frozen application must still read `.gz` | Raising, which `ON` does |
 | Report `FNAME` decoded as Latin-1, keep the bytes in `raw_name` | RFC 1952 says so, and the bytes are there for a caller who knows better | Guessing UTF-8 |
 | Member starts as seek points, and a BGZF walk by `BC` subfields, on declared seek demand | A member start is an exact restart point; BGZF names every member's size, so seeking needs no `rapidgzip` for the most common blocked gzip | A `BgzfDecompressorStream` of its own, as first proposed; reading `.gzi` files, which a stream cannot locate |
@@ -697,7 +698,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | zlib Adler-32 checked, not listed; under `rapidgzip` too, across seeks and through the TAR end scan |
 | `ON` on a source that cannot seek raises `StreamNotSeekableError`; `AUTO` uses the standard library there |
 | zlib header grammar and probe |
-| `AUTO` on a large `.gz` and ZIP member: declared seeking gets `rapidgzip` at any ratio; without it, only at 3:1 or less, not on Windows, with a known size and a source that can seek. `ON` needs none of that |
+| `AUTO` on a large `.gz` and ZIP member: declared seeking gets `rapidgzip` at any ratio; without it, only at 3:1 or less, on Linux and macOS, with a known size and a source that can seek, and each of those conditions refuses on its own; an ISIZE below 99% of the input (a file ending in an empty member) keeps the read on the standard library. `ON` needs none of that |
 | `AUTO` threshold and size condition; `ON` below it |
 | The abort happens in-process, and not through archivey |
 | A cut stream under `rapidgzip` delivers the standard library's bytes; the takeover resumes at a checkpoint, and starts over at a member's end |
