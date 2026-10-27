@@ -29,15 +29,15 @@ Other pages own parts of this, and this page links them rather than repeating th
   decodes in this process, and rapidgzip is not used at all (`AUTO` falls back to the
   standard library, and `ON` is refused when the config is built).
 - **What a caller sees when a child dies.** A crash signal (or its Windows status) is
-  `CorruptionError`: a verdict on the data. SIGKILL is `ResourceLimitError`, usually the
-  out-of-memory killer. Any other end is `ReadError`. The last two say the data may be
-  valid. A rapidgzip child has more cases (truncation, its memory cap): gzip.md §2.3.
+  `CorruptionError`: a verdict on the data. SIGKILL is `ResourceUnavailableError` (a
+  `ResourceLimitError`), usually the out-of-memory killer. Any other end is `ReadError`.
+  The last two say the data may be valid. A rapidgzip child has more cases (truncation, its memory cap): gzip.md §2.3.
 - **The caller's process keeps** checksums, AES and ZipCrypto decryption, the archive
   parsers, and everything the codecs do around the native object. Only the native decoder
   object moves.
 - **Where no child can start** (a frozen application, no `sys.executable`, archivey
   imported from a zip, a refused spawn), a decoder that must be isolated raises
-  `ResourceLimitError`. The exception is rapidgzip under `AUTO`, which falls back to the
+  `ResourceUnavailableError`. The exception is rapidgzip under `AUTO`, which falls back to the
   standard library with one warning per process (§2.6).
 - **What you might expect and will not find:**
   - A timeout. A decoder that loops in a child loops for ever, as it would in-process
@@ -87,7 +87,10 @@ setting is `NONE`.
 Whether rapidgzip is used at all is a separate decision, made by `AcceleratorMode` in
 `codecs/rapidgzip_select.py`. `AUTO` uses it only when all of these are true:
 
-- the caller declared seeking (`seekable_members=True`, `open_stream(seekable=True)`);
+- the caller declared seeking (`seekable_members=True`, `open_stream(seekable=True)`),
+  or, for the DEFLATE family, the read is a large sequential one that pays: on Linux or
+  macOS, a compressed size known to be at least 16 MiB, and data that compresses 3:1 or
+  less;
 - the source is seekable and rapidgzip is installed;
 - the compressed input is not known to be smaller than the gate
   (`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`, 16 MiB, for the DEFLATE family;
@@ -95,8 +98,8 @@ Whether rapidgzip is used at all is a separate decision, made by `AcceleratorMod
 - for the DEFLATE family, the decoded length can be checked.
 
 The gate exists because of the child: a stream smaller than it does not pay back the
-start of the process. gzip.md §2.3 has the full table, and why declared seeking is the
-signal.
+start of the process. gzip.md §2.3 has the full table, why declared seeking is the
+signal, and why the sequential route stops at 3:1 and leaves out Windows.
 
 ### 2.2 The generic decoder child
 
@@ -138,6 +141,15 @@ goes. PyPy does that only at a later collection, so a reader that replaces or dr
 decoder calls `release_decoder`, and a reader that closes calls
 `release_decoder_children`. Without these, PyPy under `NATIVE_DECODERS` once started one
 process for each gzip member, xz stream or zstd frame.
+
+The last reference goes only if no reference cycle holds the decoder, and a raised
+exception that the decoder keeps makes one: the traceback's frames hold the decoder. A
+decoder whose child died keeps that error and raises it on every later call, so it keeps
+an instance that is never raised and raises a copy (`_unraised`). Before that, CPython
+too held such a decoder until a collection, and a collection that finalized one inside
+other code kept that code's frames alive through `f_back`, with any decoder in their
+locals and its child. The leak oracle caught it as an order-dependent failure: a PPMd
+test right after a child-death test on the same worker.
 
 **Interrupts.** A `KeyboardInterrupt` part-way through a request or reply leaves the pipe
 out of step. Every later call on that decoder raises `ArchiveyUsageError`, and the child is
@@ -201,7 +213,7 @@ from Python that state looks like a valid stream that waits for input (ADR 0022,
 A solid 7z folder is one decoder for all its members, so it takes one child.
 
 When the child cannot allocate the member's model (a container memory limit,
-`RLIMIT_AS`), the member raises `ResourceLimitError` and does not suggest `NONE`, because
+`RLIMIT_AS`), the member raises `ResourceUnavailableError` and does not suggest `NONE`, because
 the same allocation in-process would abort the caller.
 
 ### 2.5 What crosses the boundary
@@ -231,10 +243,10 @@ cap, no temporary directory, too many open files).
 
 | Decoder | Then |
 | --- | --- |
-| PPMd under `KNOWN_CRASHES` or `NATIVE_DECODERS` | `ResourceLimitError`, which names `NONE` as the way to decode in-process (PPMd runs in a child under every other setting) |
-| Any other decoder under `NATIVE_DECODERS` | `ResourceLimitError`, which names `KNOWN_CRASHES` |
+| PPMd under `KNOWN_CRASHES` or `NATIVE_DECODERS` | `ResourceUnavailableError`, which names `NONE` as the way to decode in-process (PPMd runs in a child under every other setting) |
+| Any other decoder under `NATIVE_DECODERS` | `ResourceUnavailableError`, which names `KNOWN_CRASHES` |
 | rapidgzip under `AUTO` | The standard library, with one warning per process on `archivey.streams` |
-| rapidgzip under `ON` | `ResourceLimitError` |
+| rapidgzip under `ON` | `ResourceUnavailableError` |
 
 A fresh child that is needed part-way through a member (§2.2, the re-run) and cannot start
 gives the same error as at open.
@@ -256,16 +268,14 @@ this section says what each cost comes from.
   too when the source is a stream.
 - **A round trip per request.** Small for large reads; it adds up over many small
   members, and over a non-solid 7z of many small PPMd members, each a decoder of its own.
-- **A second decode for a ZIP or 7z DEFLATE member read through rapidgzip.** ZIP and 7z
-  set `refuse_input_after_end`. When rapidgzip's output ends, the parent decodes the
-  whole member again with zlib from offset 0 (`_hands_over_at_end`, then
+- **A tail decode at the end of a ZIP or 7z DEFLATE member read through rapidgzip.** ZIP
+  and 7z set `refuse_input_after_end`. When rapidgzip's output ends, the parent decodes
+  with zlib from the last point of rapidgzip's complete index (`_hands_over_at_end`, then
   `deflate_resume.stream_end`, in `zlib_codec.py`) to find where the DEFLATE stream ends
-  and whether bytes follow it. It cannot start from a resume point, because rapidgzip
-  reads on into a second stream, so a point could sit past the first stream's end. This
-  is the largest part of a full read of a large ZIP member, and it is why such a read is
-  slower with rapidgzip than without. `.gz` and `.tar.gz` do not pay it. A seek short of
-  the end does not pay it either, so random reads of a large member are still much
-  faster.
+  and whether bytes follow it. That costs a decode of the tail, not of the member. Where
+  the index has no point before the end, the check decodes from the start and costs a
+  whole decode. `.gz` and `.tar.gz` do not pay it, and neither does a seek short of the
+  end.
 - **Memory.** An idle generic child holds a Python interpreter. A rapidgzip child also
   holds decoded chunks, bounded by `DecoderLimits.max_decoder_memory`.
 
@@ -275,11 +285,11 @@ this section says what each cost comes from.
 
 | What you see | Where | More |
 | --- | --- | --- |
-| A full read of a large ZIP DEFLATE member is slower with `seekable_members=True` than without | **archivey** | The end check decodes the member a second time (§3). Random reads of the same member are much faster. A gate on the source kind would not help: the loss and the gain were measured about the same for a path, an open file and a `BytesIO`. §6 |
+| A DEFLATE member that holds two streams, with a size and CRC that cover both, reads as both under rapidgzip and is `DataAfterEndError` without it | **library** / **archivey** | The end check starts from rapidgzip's last resume point (§3), which can sit in the second stream. A shorter second stream is refused either way; no known writer makes such a member. [`formats/zip.md`](../formats/zip.md) has the detail |
 | A non-solid 7z of many small PPMd members reads more slowly than under `NONE` | **archivey** | One decoder, so one request cycle, per member, and a new child every `MAX_DECODERS_PER_CHILD` (§2.2). A solid folder pays once |
 | `NATIVE_DECODERS` makes zstd and gzip reads several times slower | **archivey** | The pipe copy (§3). The setting is for hostile input where a crash must cost only the member |
 | A loop on crafted input in a child never ends | **library** | No timeout (§At a glance). Set the accelerators `OFF` for a latency budget |
-| A PPMd member raises `ResourceLimitError` in a frozen application or under a spawn limit | **archivey** | By design: it does not decode in-process unless `NONE` is set (§2.6) |
+| A PPMd member raises `ResourceUnavailableError` in a frozen application or under a spawn limit | **archivey** | By design: it does not decode in-process unless `NONE` is set (§2.6) |
 | `use_rapidgzip=ON` with `process_isolation=NONE` raises `ArchiveyUsageError` when the config is built | **archivey** | rapidgzip runs only in a child (§At a glance) |
 | A member stream used after `fork` raises `ArchiveyUsageError` | **archivey** | Its child belongs to the parent process, for the generic child (§2.2) and the rapidgzip child (§2.3) alike. Open the member again in the forked process. Closing the inherited stream there leaves the parent's child alone |
 | Under PyPy, a reader that is never closed holds its children until a collection | **library** (PyPy) | Close readers; the readers already release replaced decoders (§2.2) |
@@ -302,15 +312,14 @@ this section says what each cost comes from.
 - **rapidgzip children are reused within one open archive only** (§2.3). Rejected: a
   process-wide pool. The child holds one file's descriptor from its start, and a
   process-wide pool would keep that file open after the archive closes.
+- **A recorded death is never the instance raised** (§2.2). Rejected: raising the kept
+  instance with `with_traceback(None)`, which bounds the traceback but still makes the
+  cycle.
 - **A file range, not a path, for a ZIP member.** The descriptor is passed at spawn, so a
   rename after the open cannot change what the child reads.
 
 ## 6. Open questions
 
-- **Can the end check start from the last resume point?** When rapidgzip's index shows only
-  one DEFLATE stream, the check may only need the tail after the last point. That would
-  remove the second decode (§3). It needs a careful design, because the check is what
-  refuses trailing bytes after a member.
 - **Does rapidgzip still crash?** `scripts/accelerator_crash_search.py` answers it. A run
   with no crash over a new release would let the DEFLATE family come back in-process,
   and with it the bzip2 decoder, which is isolated only because the DEFLATE one is.
