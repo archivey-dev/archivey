@@ -102,7 +102,7 @@ class ToyReader(IndexedReader[Locator]):
 
     def open_member(self, member: ArchiveMember, locator: Locator) -> MemberData:
         offset, size = locator
-        return MemberData(self._source.view(offset, size))
+        return MemberData(self._source.view(offset, size), bounded=True)
 
 
 class ToyPlugin(FormatPlugin):
@@ -213,7 +213,11 @@ archivey checks every member stream against what the listing said:
 
 - **Size.** A stream that ends before `member.size` raises `TruncatedError`, and one that
   runs past it raises `CorruptionError`. A file listed with no size is read to the end
-  of its stream, and only its checksums are checked.
+  of its stream, and only its checksums are checked. To find out whether a stream runs
+  past the size, archivey reads one more byte at the end. Set `bounded=True` on the
+  `MemberData` when the stream cannot return more than `member.size` bytes, as a
+  `PluginSource.view()` of exactly the member's bytes cannot, to skip that read. It is a
+  measurable part of opening a small member.
 - **Checksums archivey can compute.** A CRC-32 or BLAKE2sp in `member.hashes`, or in
   `MemberData.expected_hashes`, is checked as the stream is read. A mismatch raises
   `CorruptionError`, and a full read with a match reaches `Verification.CONTENT`.
@@ -250,8 +254,8 @@ ends too early, and `UnsupportedFeatureError` for a feature your reader does not
 An exception from a library you wrap can go through `translate_exception()`. It is asked
 about every exception raised while archivey calls the reader, and while a member stream
 it returned is read. Errors from `PluginContext.decompress()` are archivey's own already
-and never reach it. Return the
-archivey exception to raise in its place, or `None` to let it propagate as it is:
+and never reach it. Return the archivey exception to raise in its place, or `None` to
+let it propagate as it is:
 
 ```python
 def translate_exception(self, exc: Exception) -> archivey.ArchiveyError | None:
@@ -259,6 +263,53 @@ def translate_exception(self, exc: Exception) -> archivey.ArchiveyError | None:
         return archivey.CorruptionError(str(exc))
     return None
 ```
+
+Define it on the `FormatPlugin` to cover `open()` too, where there is no reader yet. The
+plugin's `translate_exception()` is also asked about anything the reader's returns
+`None` for, so a translation that needs nothing from the open archive is written once,
+on the plugin.
+
+## Reporting problems that do not stop the read
+
+Some damage is worth telling the caller about without refusing the archive: a date that
+is not a date, a header field that had to be skipped, bytes after the end of the
+archive. Report it with `PluginContext.report()`, using one of archivey's own diagnostic
+codes and the context type that code takes:
+
+```python
+from archivey.diagnostics import DiagnosticCode, MemberTimestampContext
+
+self._context.report(
+    DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
+    f"Invalid date for {member.name!r}: {raw!r}",
+    MemberTimestampContext(
+        member_name=member.name,
+        field="modified",
+        source="header",
+        value_repr=repr(raw),
+    ),
+    member=member,
+)
+```
+
+Leave `archive_name` and `member_id` unset: archivey fills them in. Pass `member` to
+attach the report to a member, either while listing it (before it is yielded) or while
+opening it. The caller's `DiagnosticPolicy` applies, so a code the caller raises on
+raises from `report()`.
+
+A report made while listing a member should name it as callers will see it, and
+archivey normalizes names only after `iter_members()` yields them. So normalize the
+name first with `PluginContext.normalize_name()`, set `member.name` to the result, and
+yield the name you started from as `MemberRecord(member, locator, stored_name=...)`.
+archivey then reports the change from that name, as it would have.
+
+A symlink whose target cannot be read is reported with
+`PluginContext.link_target_unavailable()`, which also leaves `link_target` unset and
+tells extraction whether the archive holds a target the reader could not reach.
+
+`PluginContext.config` is the caller's `ArchiveyConfig`. A reader that parses a large
+index itself can bound that work by `config.listing_limits`. archivey applies those
+limits to the members it is handed in any case.
 
 ## Archive details
 
@@ -320,6 +371,5 @@ refuse plugin formats by checking `FormatInfo.from_plugin`.
 - Formats read in one pass from start to end, and reading a plugin format from a pipe.
 - A plugin format inside an outer compressor, such as `.cpio.gz`.
 - Self-extracting archives, multi-volume sets and passwords.
-- Diagnostics from the plugin, such as an invalid timestamp. A plugin cannot add new
-  diagnostic codes.
+- New diagnostic codes. A plugin reports with archivey's existing codes.
 - Writing archives.

@@ -15,7 +15,7 @@ import lzma
 import struct
 import zipfile
 import zlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import BinaryIO
 
@@ -38,6 +38,11 @@ from archivey import (
     detect_format,
     format_availability,
     open_archive,
+)
+from archivey.diagnostics import (
+    DiagnosticCode,
+    MemberTimestampContext,
+    SymlinkTargetContext,
 )
 from archivey.internal import format_args
 from archivey.internal.plugin_adapter import registration_scope
@@ -1229,3 +1234,209 @@ def test_member_stream_is_closed_when_a_hasher_factory_fails(
         reader.read("docs/a.txt")
     assert opened
     assert opened[0].closed
+
+
+# ── Reports, config and the plugin-level translator ─────────────────────────────────
+
+
+def _reporting_plugin(
+    report: Callable[[PluginContext, ArchiveMember], None],
+) -> type[FormatPlugin]:
+    """TOYA whose reader calls ``report(context, member)`` on ``docs/a.txt``."""
+
+    class ReportingReader(ToyReader):
+        def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+            for record in super().iter_members():
+                if record.member.name == "docs/a.txt":
+                    report(self._context, record.member)
+                yield record
+
+    class ReportingPlugin(ToyPlugin):
+        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+            return ReportingReader(source, context)
+
+    return ReportingPlugin
+
+
+def test_report_fills_archive_and_member(clean_registry: None, tmp_path: Path) -> None:
+    def report(context: PluginContext, member: ArchiveMember) -> None:
+        context.report(
+            DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
+            "bad date",
+            MemberTimestampContext(
+                member_name=member.name,
+                field="modified",
+                source="toya",
+                value_repr="0",
+            ),
+            member=member,
+        )
+
+    register_format(_reporting_plugin(report))
+    path = _write(tmp_path, build_toya(_ENTRIES))
+    with open_archive(path) as reader:
+        member = reader.get("docs/a.txt")
+        (found,) = member.diagnostics
+        assert found.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
+        assert found.context.archive_name is not None
+        assert found.context.member_id == member.member_id == 1  # type: ignore[union-attr]
+
+
+def test_report_refuses_a_mismatched_context(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    def report(context: PluginContext, member: ArchiveMember) -> None:
+        context.report(
+            DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
+            "wrong context",
+            SymlinkTargetContext(member_name=member.name, reason="x"),
+        )
+
+    register_format(_reporting_plugin(report))
+    path = _write(tmp_path, build_toya(_ENTRIES))
+    with open_archive(path) as reader, pytest.raises(ArchiveyUsageError):
+        reader.members()
+
+
+def test_link_target_unavailable(clean_registry: None, tmp_path: Path) -> None:
+    def report(context: PluginContext, member: ArchiveMember) -> None:
+        context.link_target_unavailable(
+            member,
+            reason="target_record_malformed",
+            message="lost",
+            target_in_archive=True,
+        )
+        with pytest.raises(ArchiveyUsageError):
+            context.report(
+                DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
+                "lost",
+                SymlinkTargetContext(member_name=member.name, reason="x"),
+            )
+
+    register_format(_reporting_plugin(report))
+    path = _write(tmp_path, build_toya(_ENTRIES))
+    with open_archive(path) as reader:
+        member = reader.get("docs/a.txt")
+        assert member.link_target is None
+        assert [d.code for d in member.diagnostics] == [
+            DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+        ]
+
+
+def test_context_config_is_the_callers(clean_registry: None, tmp_path: Path) -> None:
+    seen: list[archivey.ArchiveyConfig] = []
+
+    def report(context: PluginContext, member: ArchiveMember) -> None:
+        seen.append(context.config)
+
+    register_format(_reporting_plugin(report))
+    config = archivey.ArchiveyConfig()
+    with open_archive(_write(tmp_path, build_toya(_ENTRIES)), config=config) as reader:
+        reader.members()
+    assert seen == [config]
+
+
+def test_plugin_translates_errors_from_open(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    class FailingOpenPlugin(ToyPlugin):
+        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+            raise ValueError("bad header")
+
+        def translate_exception(self, exc: Exception) -> archivey.ArchiveyError | None:
+            if isinstance(exc, ValueError):
+                return CorruptionError(str(exc))
+            return None
+
+    register_format(FailingOpenPlugin)
+    with pytest.raises(CorruptionError, match="bad header"):
+        open_archive(_write(tmp_path, build_toya(_ENTRIES)))
+
+
+# ── MemberData.bounded ─────────────────────────────────────────────────────────────
+
+
+class _CountingReads(io.BytesIO):
+    def __init__(self, data: bytes, reads: list[int]) -> None:
+        super().__init__(data)
+        self._reads = reads
+
+    def read(self, n: int | None = -1, /) -> bytes:
+        data = super().read(n)
+        self._reads.append(len(data))
+        return data
+
+
+def _bounded_plugin(
+    reads: list[int], *, bounded: bool, extra: bytes = b"", cut: int = 0
+) -> type[FormatPlugin]:
+    class BoundedReader(ToyReader):
+        def open_member(
+            self, member: ArchiveMember, locator: tuple[int, int]
+        ) -> MemberData:
+            offset, size = locator
+            data = self._source.read_at(offset, size - cut) + extra
+            return MemberData(_CountingReads(data, reads), bounded=bounded)  # type: ignore[arg-type]
+
+    class BoundedPlugin(ToyPlugin):
+        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+            return BoundedReader(source, context)
+
+    return BoundedPlugin
+
+
+@pytest.mark.parametrize("bounded", [False, True])
+def test_bounded_skips_the_read_past_the_end(
+    clean_registry: None, tmp_path: Path, bounded: bool
+) -> None:
+    reads: list[int] = []
+    register_format(_bounded_plugin(reads, bounded=bounded))
+    with open_archive(_write(tmp_path, build_toya(_ENTRIES))) as reader:
+        assert reader.read("b.bin") == bytes(range(256)) * 4
+    # Without the promise archivey reads once more at the end, to look for extra data.
+    assert reads.count(0) == (0 if bounded else 1)
+
+
+def test_bounded_short_stream_is_truncated(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    register_format(_bounded_plugin([], bounded=True, cut=10))
+    with (
+        open_archive(_write(tmp_path, build_toya(_ENTRIES))) as reader,
+        pytest.raises(TruncatedError),
+    ):
+        reader.read("b.bin")
+
+
+def test_bounded_long_stream_is_cut_at_the_size(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """A broken promise loses the over-run check, but never hands over the extra."""
+    register_format(_bounded_plugin([], bounded=True, extra=b"EXTRA"))
+    with open_archive(_write(tmp_path, build_toya(_ENTRIES))) as reader:
+        assert reader.read("b.bin") == bytes(range(256)) * 4
+
+
+def test_a_reader_can_normalize_names_itself(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """A reader that names a member in a report while listing normalizes the name
+    first; archivey still reports the change, from ``stored_name``."""
+
+    class SelfNormalizing(ToyReader):
+        def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+            for record in super().iter_members():
+                member = record.member
+                stored = member.name
+                member.name = self._context.normalize_name(stored, member.type)
+                yield MemberRecord(member, record.locator, stored_name=stored)
+
+    _plugin_with("selfnorm", reader=SelfNormalizing)
+    data = build_toya(
+        [("./a//b.txt", MemberType.FILE, b"b"), ("d", MemberType.DIRECTORY, b"")]
+    )
+    with open_archive(_write(tmp_path, data, "t.selfnorm")) as reader:
+        assert [m.name for m in reader.members()] == ["a/b.txt", "d/"]
+        # A directory's trailing slash is not a reported change.
+        counts = reader.diagnostics.counts
+        assert counts.get(archivey.DiagnosticCode.MEMBER_NAME_NORMALIZED) == 1

@@ -28,12 +28,16 @@ from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import BinaryIO, ClassVar, Generic, NamedTuple, Protocol, TypeVar
 
+from archivey.config import ArchiveyConfig
+from archivey.diagnostics import DiagnosticCode, DiagnosticContext
 from archivey.exceptions import ArchiveyError
+from archivey.internal.naming import normalize_member_name
 from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
     CompressionAlgorithm,
     HashAlgorithm,
+    MemberType,
     PluginContainer,
 )
 
@@ -69,13 +73,17 @@ class MemberRecord(NamedTuple, Generic[LocatorT]):
     """One member, as :meth:`IndexedReader.iter_members` yields it."""
 
     member: ArchiveMember
-    """The member, with its public fields filled in. ``name`` is decoded but not yet
-    normalized: archivey normalizes it and reports the change, as for a built-in
-    format."""
+    """The member, with its public fields filled in. ``name`` is decoded; archivey
+    normalizes it and reports the change, as for a built-in format."""
 
     locator: LocatorT
     """Anything the reader needs to find the member's data again. archivey stores it
     and hands it back to :meth:`IndexedReader.open_member`."""
+
+    stored_name: str | None = None
+    """The decoded name before :meth:`PluginContext.normalize_name`, when the reader
+    normalized ``member.name`` itself so that a report it made while listing names
+    the member as callers see it. archivey reports the change from this name."""
 
 
 class Hasher(Protocol):
@@ -132,6 +140,16 @@ class MemberData(NamedTuple):
     digests: tuple[MemberDigest, ...] = ()
     """Checksums archivey computes with a hasher the plugin supplies, as the stream
     is read."""
+
+    bounded: bool = False
+    """The stream never returns more than ``ArchiveMember.size`` bytes: a
+    :meth:`PluginSource.view` of exactly the member's bytes, a decoder that stops at
+    the size, or a library stream with the same promise. archivey then skips the
+    one-byte read past the end that looks for extra data, which is a measurable part
+    of opening a small member. A stream that ends early still raises
+    ``TruncatedError``. Leave it ``False`` when unsure: archivey never hands over
+    more than ``size`` bytes either way, but a stream that breaks the promise has
+    its extra bytes go unreported, where they would raise ``CorruptionError``."""
 
 
 class PluginArchiveInfo(NamedTuple):
@@ -194,13 +212,21 @@ class PluginContext:
         *,
         encoding: str | None,
         archive_name: str | None,
+        config: ArchiveyConfig,
         decompress: Callable[
             [BinaryIO, CompressionAlgorithm, int | None, bytes | None], BinaryIO
         ],
+        report: Callable[
+            [DiagnosticCode, str, DiagnosticContext, ArchiveMember | None], None
+        ],
+        link_target_unavailable: Callable[[ArchiveMember, str, str, bool], None],
     ) -> None:
         self._encoding = encoding
         self._archive_name = archive_name
+        self._config = config
         self._decompress = decompress
+        self._report = report
+        self._link_target_unavailable = link_target_unavailable
 
     @property
     def encoding(self) -> str | None:
@@ -211,6 +237,63 @@ class PluginContext:
     def archive_name(self) -> str | None:
         """The archive's name, for messages."""
         return self._archive_name
+
+    @property
+    def config(self) -> ArchiveyConfig:
+        """The caller's configuration. A reader that parses a large index itself can
+        bound it by ``config.listing_limits``; archivey applies those limits to the
+        members it is handed in any case."""
+        return self._config
+
+    def report(
+        self,
+        code: DiagnosticCode,
+        message: str,
+        details: DiagnosticContext,
+        *,
+        member: ArchiveMember | None = None,
+    ) -> None:
+        """Report something the caller should know that does not stop the read.
+
+        ``code`` is one of archivey's own codes, and ``details`` the context type that
+        code takes (``MemberTimestampContext`` for ``MEMBER_TIMESTAMP_INVALID``); a
+        mismatch raises ``ArchiveyUsageError``. Leave ``archive_name`` and
+        ``member_id`` in ``details`` unset: archivey fills them in. With ``member``,
+        the report is attached to that member as well: pass the member being listed,
+        before it is yielded, or the member being opened. The caller's
+        ``DiagnosticPolicy`` applies, so a code it raises on raises here.
+
+        For ``SYMLINK_TARGET_UNAVAILABLE`` use :meth:`link_target_unavailable`.
+        """
+        self._report(code, message, details, member)
+
+    def link_target_unavailable(
+        self,
+        member: ArchiveMember,
+        *,
+        reason: str,
+        message: str,
+        target_in_archive: bool,
+    ) -> None:
+        """Report a symlink whose target the reader could not read, and leave
+        ``link_target`` unset.
+
+        ``target_in_archive`` says whether the archive does hold a target the reader
+        could not reach (damaged, cut short), rather than recording none. Extraction
+        fails such a member instead of skipping it as a link with no target.
+        """
+        self._link_target_unavailable(member, reason, message, target_in_archive)
+
+    def normalize_name(self, name: str, member_type: MemberType) -> str:
+        """The name archivey gives a member: ``./a//b`` becomes ``a/b``, and a
+        directory's name ends in ``/``.
+
+        archivey normalizes every name a reader yields, so most readers never call
+        this. A reader that reports on a member before yielding it calls it first, so
+        the report and the member carry one name: it sets ``member.name`` to the
+        result and yields the name it started from as ``MemberRecord.stored_name``.
+        """
+        return normalize_member_name(name, member_type, backslash_is_separator=False)
 
     def decode_name(self, raw: bytes) -> str:
         """Decode a stored name the way built-in formats do.
@@ -274,8 +357,9 @@ class PluginReader(ABC):
     def translate_exception(self, exc: Exception) -> ArchiveyError | None:
         """Map an exception from the plugin's library to an archivey exception.
 
-        Return ``None`` to let ``exc`` propagate as it is. An archivey exception the
-        plugin raises itself (``CorruptionError``, ``TruncatedError``,
+        Return ``None`` to let ``exc`` propagate as it is, or to fall back to
+        :meth:`FormatPlugin.translate_exception`. An archivey exception the plugin
+        raises itself (``CorruptionError``, ``TruncatedError``,
         ``UnsupportedFeatureError``) needs no translation.
         """
         return None
@@ -340,6 +424,16 @@ class FormatPlugin(ABC):
 
     install_hint: ClassVar[str | None] = None
     """What to install when a module in ``requires`` is missing."""
+
+    def translate_exception(self, exc: Exception) -> ArchiveyError | None:
+        """Map an exception from the plugin's library to an archivey exception.
+
+        Asked about an exception raised in :meth:`open`, before there is a reader, and
+        about any exception the reader's own ``translate_exception`` returns ``None``
+        for. A plugin whose translation needs no state from the open archive defines
+        it here only. Return ``None`` to let ``exc`` propagate as it is.
+        """
+        return None
 
     @abstractmethod
     def open(self, source: PluginSource, context: PluginContext) -> PluginReader:

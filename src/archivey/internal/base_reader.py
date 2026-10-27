@@ -18,7 +18,7 @@ from collections.abc import (
     Set as AbstractSet,
 )
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -489,6 +489,35 @@ class ReadBackend(ABC):
         stub reject a nonzero value rather than silently reading from byte 0.
         """
         ...
+
+
+def special_file_has_data_report(
+    member: ArchiveMember,
+) -> tuple[DiagnosticCode, str, SpecialFileDataContext]:
+    """The ``MEMBER_SPECIAL_FILE_HAS_DATA`` report for a ``FILE`` whose stored type is
+    a device, FIFO or socket (``extra["special_file_type"]`` is set): its code, message
+    and context, without the archive name or member id."""
+    special = member.extra.get(EXTRA_SPECIAL_FILE_TYPE)
+    assert isinstance(special, str)
+    size = member.size
+    stored = "data" if size is None else f"{size} bytes"
+    # "unknown" stands for file-type bits no Unix type uses; the four named
+    # kinds read as nouns.
+    kind = (
+        "an unrecognized file type"
+        if special == "unknown"
+        else f"a {special.replace('_', ' ')}"
+    )
+    return (
+        DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA,
+        (
+            f"Member {quoted(member.name)} is listed as a file: the archive marks it "
+            f"as {kind} and stores {stored} for it."
+        ),
+        SpecialFileDataContext(
+            member_name=member.name, special_file_type=special, size=size
+        ),
+    )
 
 
 class BaseArchiveReader(ArchiveReader):
@@ -1117,6 +1146,7 @@ class BaseArchiveReader(ArchiveReader):
         translate: ExceptionTranslator | None = None,
         checks_content: bool = False,
         custom_digests: CustomDigests | None = None,
+        bounded: bool = False,
     ) -> ArchiveStream:
         """Wrap a raw member stream so read/seek errors route through the backend's
         translator and are stamped with format/archive/member context.
@@ -1125,7 +1155,9 @@ class BaseArchiveReader(ArchiveReader):
         its own when read from the start to the end, and raises on a mismatch (a
         plugin's ``MemberData.checked``): such a read counts as ``CONTENT``.
         ``custom_digests`` are digests whose hasher the caller supplies (a plugin's
-        ``MemberData.digests``), checked as ``expected_hashes`` are.
+        ``MemberData.digests``), checked as ``expected_hashes`` are. ``bounded`` says
+        ``inner`` never returns a byte past ``expected_size`` (a plugin's
+        ``MemberData.bounded``): the read past the end that looks for one is skipped.
 
         Backends return ``_wrap_member_stream(raw, member.name, size=member.size)`` from
         ``_open_member`` so a decode error surfaces as a stamped ``ArchiveyError`` rather
@@ -1209,6 +1241,7 @@ class BaseArchiveReader(ArchiveReader):
                 member_name=member_name,
                 checks_content=checks_content,
                 custom_digests=custom_digests,
+                bounded=bounded,
             )
 
         assert inner is not None
@@ -1237,6 +1270,7 @@ class BaseArchiveReader(ArchiveReader):
             member_name=member_name,
             checks_content=checks_content,
             custom_digests=custom_digests,
+            bounded=bounded,
         )
 
     @abstractmethod
@@ -2290,29 +2324,12 @@ class BaseArchiveReader(ArchiveReader):
         ``member``. ``member_id`` is the walk position, as for
         :meth:`_emit_timestamp_invalid`, or ``None`` when neither the caller nor the
         member has one (a re-type in :meth:`_apply_reparse_data`)."""
-        special = member.extra.get(EXTRA_SPECIAL_FILE_TYPE)
-        assert isinstance(special, str)
-        size = member.size
-        stored = "data" if size is None else f"{size} bytes"
-        # "unknown" stands for file-type bits no Unix type uses; the four named
-        # kinds read as nouns.
-        kind = (
-            "an unrecognized file type"
-            if special == "unknown"
-            else f"a {special.replace('_', ' ')}"
-        )
+        code, message, context = special_file_has_data_report(member)
         self._diagnostics_collector.emit(
-            code=DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA,
-            message=(
-                f"Member {quoted(member.name)} is listed as a file: the archive marks "
-                f"it as {kind} and stores {stored} for it."
-            ),
-            context=SpecialFileDataContext(
-                archive_name=self._archive_name,
-                member_name=member.name,
-                member_id=member_id,
-                special_file_type=special,
-                size=size,
+            code=code,
+            message=message,
+            context=replace(
+                context, archive_name=self._archive_name, member_id=member_id
             ),
             member=member,
             attach_to_member=True,

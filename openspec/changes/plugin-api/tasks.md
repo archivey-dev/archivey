@@ -56,12 +56,24 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
 
 ## 2. ISO onto the interface
 
-- [ ] 2.1 `IsoReader` implements `IndexedReader`; `IsoReadBackend` becomes a
-      `FormatPlugin` registered with `register_format`.
-- [ ] 2.2 `self._emit_*` calls go through `PluginContext`; `_handle_guard` moves to the
-      adapter; the raw-sector-image refusal moves from `core.py` into `open`.
+- [x] 2.1 `IsoReader` implements `IndexedReader`; `IsoReadBackend` becomes a
+      `FormatPlugin` registered with `register_format`. *Registered instead with the
+      internal `register_builtin_plugin()`, so ISO keeps its built-in container, its
+      place among the built-in backends and `from_plugin == False`.*
+- [x] 2.2 `self._emit_*` calls go through `PluginContext`; `_handle_guard` moves to the
+      adapter; the raw-sector-image refusal moves from `core.py` into `open`. *The
+      refusal stays in `core.py`: it runs before the availability check, so an image
+      named `.bin` is refused the same with or without pycdlib.*
 - [ ] 2.3 The ISO suite passes unchanged; `--all-configs` without pycdlib still reports
       ISO as known with `NONE` support and the install hint.
+      *The suite passes; tests that reached into the old reader's internals were
+      repointed, and the multi-extent gap test now reads the gap. The
+      `--all-configs` check is not run yet.*
+- [x] 2.4 Gaps the port found, added to the interface: `FormatPlugin.translate_exception`
+      (errors in `open()`), `PluginContext.report`, `.link_target_unavailable`, `.config`
+      and `.normalize_name` with `MemberRecord.stored_name`, and `MemberData.bounded`.
+      ISO also reads member data through source views, joining the extents of a
+      multi-extent file wherever they sit (maintainer, 2026-10-27).
 
 ## 3. CPIO package
 
@@ -79,5 +91,9 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
       *Landed with 1a so the API could be read as a plugin author sees it; its
       "later version" lines are rewritten as 1b and the ISO port land.*
 - [ ] 4.2 New spec `format-plugins`; deltas to `backend-registry`, `format-detection`,
-      `archive-data-model`, `format-iso`.
+      `archive-data-model`, `format-iso`. The `format-iso` delta owes two changes the
+      ISO port (group 2) made false in the spec: member data is read through source
+      views, not `PyCdlibIO` under the handle lock ("Serialize shared pycdlib handle
+      operations"), and two file records sharing one extent raise `CorruptionError`,
+      not `UnsupportedFeatureError` (the record matrix).
 - [ ] 4.3 `dev-docs/IDEAS.md` and `VISION.md`: the public backend API item points here.

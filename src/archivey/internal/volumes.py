@@ -896,6 +896,27 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
 _MAX_ENUMERATED_PARTS = 8
 
 
+class JoinedViews(ConcatenatedFile):
+    """Views over one source read back to back as one stream; closes the views.
+
+    For a member whose bytes sit in several places in the archive: a RAR member split
+    across volumes, an ISO file in more than one extent.
+    """
+
+    def __init__(self, views: list[BinaryIO]) -> None:
+        self._views = views
+        super().__init__(views)
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        try:
+            super().close()
+        finally:
+            for view in self._views:
+                view.close()
+
+
 def _enumerate_parts(parts: Sequence[int], total: int | None = None) -> str:
     """Render part numbers for an error message, capped so a big set stays readable.
 

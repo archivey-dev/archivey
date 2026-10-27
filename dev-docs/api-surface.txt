@@ -133,7 +133,7 @@ method archivey.ArchiveReader.open(self, member: str | ArchiveMember) -> Archive
 method archivey.ArchiveReader.read(self, member: str | ArchiveMember) -> bytes
 method archivey.ArchiveReader.stream_members(self, members: MemberSelector = None, *, file_copy_streams: bool = True) -> MemberPass[tuple[ArchiveMember, ArchiveStream | None]]
 class archivey.ArchiveStream(ReadOnlyIOStream)
-init archivey.ArchiveStream(open_fn: Callable[[], BinaryIO], *, translate: ExceptionTranslator, stamp: ErrorStamp | None = None, lazy: bool = False, seekable: bool = True, rewind_warning: RewindWarning | None = None, size: int | None = None, collector: DiagnosticCollector | None = None, on_close: CloseHook | None = None, expected_hashes: Mapping[HashAlgorithm, bytes] | None = None, expected_size: int | None = None, digest_transforms: Mapping[HashAlgorithm, Callable[[bytes], bytes]] | None = None, verify_member: ArchiveMember | None = None, end_check: Callable[[int], None] | None = None, fill_size: bool = False, archive_name: str | None = None, verifier: MemberVerifier | None = None, member_name: str | None = None, repeat_verdict: bool = True, checks_content: bool = False, custom_digests: CustomDigests | None = None) -> None
+init archivey.ArchiveStream(open_fn: Callable[[], BinaryIO], *, translate: ExceptionTranslator, stamp: ErrorStamp | None = None, lazy: bool = False, seekable: bool = True, rewind_warning: RewindWarning | None = None, size: int | None = None, collector: DiagnosticCollector | None = None, on_close: CloseHook | None = None, expected_hashes: Mapping[HashAlgorithm, bytes] | None = None, expected_size: int | None = None, digest_transforms: Mapping[HashAlgorithm, Callable[[bytes], bytes]] | None = None, verify_member: ArchiveMember | None = None, end_check: Callable[[int], None] | None = None, fill_size: bool = False, archive_name: str | None = None, verifier: MemberVerifier | None = None, member_name: str | None = None, repeat_verdict: bool = True, checks_content: bool = False, custom_digests: CustomDigests | None = None, bounded: bool = False) -> None
 method archivey.ArchiveStream.close(self) -> None
 property archivey.ArchiveStream.diagnostics: DiagnosticSummary
 property archivey.ArchiveStream.mode: str
@@ -899,6 +899,7 @@ attribute archivey.plugins.FormatPlugin.magic = ()
 method archivey.plugins.FormatPlugin.open(self, source: PluginSource, context: PluginContext) -> PluginReader
 attribute archivey.plugins.FormatPlugin.probe = None
 attribute archivey.plugins.FormatPlugin.requires = ()
+method archivey.plugins.FormatPlugin.translate_exception(self, exc: Exception) -> ArchiveyError | None
 attribute archivey.plugins.FormatPlugin.uses_encoding = False
 class archivey.plugins.Hasher(Protocol)
 init archivey.plugins.Hasher(*args, **kwargs)
@@ -915,6 +916,7 @@ class archivey.plugins.Magic(tuple)
 field archivey.plugins.Magic.data: bytes
 field archivey.plugins.Magic.offset: int
 class archivey.plugins.MemberData(tuple)
+field archivey.plugins.MemberData.bounded: bool
 field archivey.plugins.MemberData.checked: bool
 field archivey.plugins.MemberData.digests: tuple[MemberDigest, ...]
 field archivey.plugins.MemberData.expected_hashes: Mapping[HashAlgorithm, bytes]
@@ -926,6 +928,7 @@ field archivey.plugins.MemberDigest.new: Callable[[], Hasher]
 class archivey.plugins.MemberRecord(tuple, Generic[LocatorT])
 field archivey.plugins.MemberRecord.locator: LocatorT
 field archivey.plugins.MemberRecord.member: ArchiveMember
+field archivey.plugins.MemberRecord.stored_name: str | None
 class archivey.plugins.PluginArchiveInfo(tuple)
 field archivey.plugins.PluginArchiveInfo.comment: str | None
 field archivey.plugins.PluginArchiveInfo.extra: Mapping[str, object]
@@ -934,9 +937,13 @@ field archivey.plugins.PluginArchiveInfo.is_solid: bool
 reexport archivey.plugins.PluginContainer = archivey.PluginContainer
 class archivey.plugins.PluginContext()
 property archivey.plugins.PluginContext.archive_name: str | None
+property archivey.plugins.PluginContext.config: ArchiveyConfig
 method archivey.plugins.PluginContext.decode_name(self, raw: bytes) -> str
 method archivey.plugins.PluginContext.decompress(self, data: BinaryIO, method: CompressionAlgorithm, *, size: int | None = None, properties: bytes | None = None) -> BinaryIO
 property archivey.plugins.PluginContext.encoding: str | None
+method archivey.plugins.PluginContext.link_target_unavailable(self, member: ArchiveMember, *, reason: str, message: str, target_in_archive: bool) -> None
+method archivey.plugins.PluginContext.normalize_name(self, name: str, member_type: MemberType) -> str
+method archivey.plugins.PluginContext.report(self, code: DiagnosticCode, message: str, details: DiagnosticContext, *, member: ArchiveMember | None = None) -> None
 class archivey.plugins.PluginReader(ABC)
 method archivey.plugins.PluginReader.archive_info(self) -> PluginArchiveInfo
 method archivey.plugins.PluginReader.close(self) -> None

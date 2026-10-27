@@ -949,8 +949,9 @@ would need its own copy of it), or when `unar` is known to misread the archive.
   (`xorriso -zisofs version_2=on -set_filter_r --zisofs /`, under the `ZF` or the `Z2` tag), and a
   zisofs entry too short to parse, list with `CompressionAlgorithm.UNKNOWN` and refuse to read with
   `UnsupportedFeatureError`.
-- A file of 4 GiB or more, stored in several extents, lists and reads as one member. Extents that
-  are not back to back are refused with `UnsupportedFeatureError`.
+- A file of 4 GiB or more, stored in several extents, lists and reads as one member, wherever
+  its extents sit in the image. Extents that overlap each other are refused with
+  `CorruptionError`.
 - A bootable image lists its El Torito boot catalog (`boot.catalog`, `BOOT.CAT`) as an ordinary
   file, with the catalog's bytes as its data, as a mounted image shows it.
 - A Rock Ridge device node, FIFO or socket over an empty extent follows

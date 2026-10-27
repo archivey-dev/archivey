@@ -267,12 +267,9 @@ _CLOSE_STATE_FIRST = {
         "plain assignments only"
     ),
     "archivey.internal.streams.codecs.rapidgzip_select._StdlibSeekContract": "plain assignments only",
-    "archivey.internal.backends.rar_reader._JoinedParts": (
+    "archivey.internal.volumes.JoinedViews": (
         "assigns _views, then ConcatenatedFile.__init__, which sets its close state "
         "first; its views come from SharedSource.view, which has already checked them"
-    ),
-    "archivey.internal.backends.iso_reader._PyCdlibStream": (
-        "raw.__enter__() runs after DelegatingStream.__init__ has set what close() reads"
     ),
     "archivey.internal.backends.zip_reader._UnconfirmedZipCryptoStream": (
         "assigns _payload_complete, then DelegatingStream.__init__"

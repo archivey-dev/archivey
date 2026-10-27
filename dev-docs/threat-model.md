@@ -871,8 +871,8 @@ raw library exception, and never a silent wrong answer. Genuine I/O errors propa
 unchanged, and no handler swallows or reclassifies an unknown exception.
 
 **Mechanism.** Each backend translates its library's exceptions. For ISO,
-`IsoReader._translate_exception` maps `_PYCDLIB_ERRORS`: pycdlib's exception base plus
-the bare `IndexError`, `struct.error`, `UnicodeDecodeError`, `AttributeError`,
+`IsoPlugin.translate_exception` maps `_PYCDLIB_ERRORS`, for errors in `open()` and those
+the reader does not translate itself: pycdlib's exception base plus the bare `IndexError`, `struct.error`, `UnicodeDecodeError`, `AttributeError`,
 `KeyError` and `ValueError` fuzzing found it raising, but never `OSError`. Advisories
 that are not errors are `Diagnostic` values with stable codes and a per-code policy
 (`IGNORE` / `COLLECT` / `RAISE`), attached to the surface they concern, with logging as
