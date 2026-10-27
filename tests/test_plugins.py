@@ -9,6 +9,7 @@ data offset), then the data. Each test registers it on a registry restored after
 from __future__ import annotations
 
 import bz2
+import dataclasses
 import hashlib
 import io
 import logging
@@ -1196,6 +1197,32 @@ def test_a_raising_probe_warns_once(
         )
 
     register_format(BrokenProbe)
+    with caplog.at_level(logging.DEBUG, logger="archivey.detection"):
+        for _ in range(2):
+            with pytest.raises(archivey.FormatDetectionError):
+                archivey.open_stream(io.BytesIO(b"hello world, short"))
+    levels = [r.levelno for r in caplog.records if "plugin probe" in r.getMessage()]
+    assert levels == [logging.WARNING, logging.DEBUG]
+
+
+@dataclasses.dataclass
+class _StatefulProbe:
+    """A callable probe object with state: a dataclass, so unhashable."""
+
+    offset: int
+
+    def __call__(self, prefix: bytes) -> bool:
+        return struct.unpack("<I", prefix[self.offset : self.offset + 4])[0] == 1
+
+
+def test_a_raising_unhashable_probe_is_no_match(
+    clean_registry: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    class ObjectProbe(ToyPlugin):
+        magic = ()
+        probe = _StatefulProbe(100)
+
+    register_format(ObjectProbe)
     with caplog.at_level(logging.DEBUG, logger="archivey.detection"):
         for _ in range(2):
             with pytest.raises(archivey.FormatDetectionError):

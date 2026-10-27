@@ -30,8 +30,8 @@ class BlockStream(ReadOnlyIOStream):
     stream, archivey asks for one byte more than the block's length (asking again after
     a short read, as an ``io.RawIOBase`` may give), then closes it, and a block that
     holds that byte is refused. How much the stream decodes to answer is its own: a
-    decoder that buffers decodes up to its buffer, so a block that decodes to far more
-    costs at most that. ``read_block`` is called when a read first needs the block, and
+    decoder that buffers rounds that ask up to its buffer, so a block that decodes to
+    far more costs the block and about one buffer. ``read_block`` is called when a read first needs the block, and
     again after a read has moved to another block: only the current block is kept. A
     block of another length than the file needs there raises ``CorruptionError``.
     Seekable; a seek decodes nothing until the next read.

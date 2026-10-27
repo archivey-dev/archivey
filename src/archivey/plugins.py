@@ -519,8 +519,8 @@ def block_stream(
     SquashFS, CAB, WIM and CSO store them. ``read_block(i)`` returns block ``i``
     decoded: the stream ``PluginContext.decompress`` gives, or bytes from the plugin's
     own decoder. archivey asks a stream for one byte more than the block, and refuses
-    the block if it gets it; a decoder that buffers decodes up to its buffer to answer,
-    so a block that decodes to far more costs no more than that. archivey
+    the block if it gets it; a decoder that buffers rounds that ask up to its buffer,
+    so a block that decodes to far more costs the block and about one buffer. archivey
     calls ``read_block`` when a read first needs the block and keeps only the block it
     is in, so a seek decodes one block, not the file up to it. A block of another
     length than the file needs there raises ``CorruptionError``. Return the result as

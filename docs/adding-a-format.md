@@ -439,7 +439,9 @@ archivey recognises a plugin's format by its `magic`, its `extensions`, and an o
   `open_stream()`), or when `ArchiveyConfig(always_probe_content=True)` is set. So it
   sees untrusted bytes that may not be your format at all. The prefix may be shorter
   than your format's header. A probe that raises counts as no match, and the first
-  time it does archivey logs a warning on `archivey.detection`. Use a probe only for a
+  time it does archivey logs a warning on `archivey.detection`. `MemoryError` and
+  `OSError` are the exception: they propagate, as everywhere else, so decide from the
+  prefix alone and do not reach outside it. Use a probe only for a
   format with no fixed signature.
 
 `FormatInfo.from_plugin` is `True` when detection chose a plugin's format.

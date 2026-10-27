@@ -561,6 +561,8 @@ def _prefix_probe(probe: object) -> ContentProbe:
     it cannot make detection read more of an untrusted source.
     """
     assert callable(probe)
+    # Per registration, so the probe need not be hashable and nothing outlives it.
+    warned = False
 
     def content_probe(
         prefix: bytes,
@@ -571,6 +573,7 @@ def _prefix_probe(probe: object) -> ContentProbe:
         charge_decode: Callable[[int], bool] | None = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
     ) -> bool:
+        nonlocal warned
         # A probe that raises (a struct.unpack past a short prefix, say) is no match:
         # one plugin must not change how unrelated input fails to be detected. Out of
         # memory and OS errors are not the probe's parsing, and propagate as everywhere.
@@ -579,26 +582,18 @@ def _prefix_probe(probe: object) -> ContentProbe:
         except (MemoryError, OSError):
             raise
         except Exception:  # noqa: BLE001 — any parsing error is a plugin bug, logged
-            _warn_probe_raised(probe)
+            # WARNING the first time, so its author sees the bug; DEBUG after that, so
+            # a bad plugin does not flood every detection.
+            detection_logger.log(
+                logging.DEBUG if warned else logging.WARNING,
+                "plugin probe %r raised; taken as no match",
+                probe,
+                exc_info=True,
+            )
+            warned = True
             return False
 
     return content_probe
-
-
-_probes_warned: set[object] = set()
-
-
-def _warn_probe_raised(probe: object) -> None:
-    """Log a raising probe at WARNING the first time, so its author sees the bug,
-    and at DEBUG after that, so a bad plugin does not flood every detection."""
-    first = probe not in _probes_warned
-    _probes_warned.add(probe)
-    detection_logger.log(
-        logging.WARNING if first else logging.DEBUG,
-        "plugin probe %r raised; taken as no match",
-        probe,
-        exc_info=True,
-    )
 
 
 def _check_plugin(plugin: type[FormatPlugin]) -> ArchiveFormat:
