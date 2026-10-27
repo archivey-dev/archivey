@@ -161,6 +161,18 @@ class BackendRegistry:
             self._readers[fmt] = backend_cls
         self._extension_map_cache = None
 
+    def save_plugin_state(self) -> Callable[[], None]:
+        """Save what :meth:`register_plugin_backend` writes; the result restores it."""
+        readers = dict(self._readers)
+        plugin_classes = list(self._plugin_classes)
+
+        def restore() -> None:
+            self._readers = readers
+            self._plugin_classes = plugin_classes
+            self._extension_map_cache = None
+
+        return restore
+
     # --- detection tables (aggregated from two sources) ----------------------------------
     # The container format backends (`ReadBackend.MAGIC`/`EXTENSIONS`/`CONTENT_PROBES`) and
     # the stream-codec objects (`STREAM_CODECS`). The detector reads both via these methods,
