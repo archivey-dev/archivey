@@ -270,8 +270,8 @@ def test_read_empty_member(rock_ridge_iso: Path) -> None:
 
 
 def test_seek_within_opened_member(rock_ridge_iso: Path) -> None:
-    # The opened member stream is seekable (PyCdlibIO via _PyCdlibStream/DelegatingStream)
-    # once SEEKABLE is declared.
+    # The opened member stream (a view of the file's extent) is seekable once
+    # SEEKABLE is declared.
     with (
         open_archive(rock_ridge_iso, seekable_members=True) as ar,
         ar.open("file.txt") as f,

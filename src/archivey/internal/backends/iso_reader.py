@@ -64,10 +64,8 @@ if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
     from pycdlib.dates import DirectoryRecordDate, VolumeDescriptorDate
     from pycdlib.dr import DirectoryRecord
-    from pycdlib.inode import Inode
     from pycdlib.path_table_record import PathTableRecord
     from pycdlib.pycdlib import PyCdlib
-    from pycdlib.pycdlibio import PyCdlibIO
     from pycdlib.rockridge import RockRidge, RockRidgeEntries, RRCERecord
     from pycdlib.udf import UDFFileEntry, UDFFileIdentifierDescriptor
 
@@ -99,7 +97,6 @@ from archivey.internal.streams.codecs.isolated import (
 )
 from archivey.internal.streams.decompressor_stream import release_decoder
 from archivey.internal.streams.streamtools import (
-    DelegatingStream,
     resolve_seek,
 )
 from archivey.internal.timestamps import TimestampIssue
@@ -149,10 +146,8 @@ def _optional(name: str) -> ModuleType | None:
 pycdlib = _optional("pycdlib")
 _pycdlib_exc = _optional("pycdlib.pycdlibexception")
 _pycdlib_core = _optional("pycdlib.pycdlib")
-_pycdlib_io = _optional("pycdlib.pycdlibio")
 _pycdlib_dr = _optional("pycdlib.dr")
 _pycdlib_dates = _optional("pycdlib.dates")
-_pycdlib_inode = _optional("pycdlib.inode")
 
 # The System Use entries pycdlib parses (``RockRidge.parse``). It raises on any other
 # tag, although SUSP 1.12 §5 has a reader ignore an entry it does not recognize.
@@ -1398,32 +1393,6 @@ class _ZisofsStream(io.RawIOBase):
                 super().close()
 
 
-class _PyCdlibStream(DelegatingStream):
-    """Adapt pycdlib's ``PyCdlibIO`` (a one-file context manager) onto ``DelegatingStream``.
-
-    ``PyCdlibIO`` must be *entered* before use — its context manager sets up the read offset —
-    so this enters it in ``__init__`` and relies on ``DelegatingStream.close()`` (which calls
-    ``inner.close()``, the exact equivalent of ``PyCdlibIO.__exit__``) to exit it, keeping the
-    enter/exit lifecycle paired. Read/seek/tell/seekable are inherited delegation.
-    """
-
-    def __init__(self, raw: PyCdlibIO) -> None:
-        # PyCdlibIO is an io.RawIOBase, which is a BinaryIO at runtime but not by typeshed's
-        # nominal hierarchy, so cast at the DelegatingStream boundary.
-        super().__init__(cast("BinaryIO", raw))
-        raw.__enter__()  # set up the read offset; close() -> inner.close() exits the context
-        self._raw = raw
-
-    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        # pycdlib raises its own PyCdlibInvalidInput on a relative seek before the start,
-        # which the translator must read as corruption. Resolve every seek here and
-        # clamp a relative one to the origin, as BytesIO does.
-        target = resolve_seek(
-            offset, whence, pos=self._raw.tell(), end=lambda: self._raw.length()
-        )
-        return super().seek(target, io.SEEK_SET)
-
-
 class IsoReader(IndexedReader["DirectoryRecord"]):
     """Reads an ISO 9660 image via ``pycdlib`` (Rock Ridge / Joliet / plain).
 
@@ -1434,6 +1403,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
 
     def __init__(self, source: PluginSource, context: PluginContext) -> None:
         self._context = context
+        self._source = source
         self._archive_name = context.archive_name
         self._format = ArchiveFormat.ISO
         encoding = context.encoding
@@ -1449,9 +1419,8 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         self._iso_opened = False
         # The extents of each listed file that pycdlib's inode does not describe as
         # written, keyed by ``id`` of its record; ``None`` when a clamped length could
-        # not be found on disc. Worked out while listing, where the image may be read
-        # under the handle guard, because ``_data_inode`` runs where that guard may
-        # already be held. Every other file reads through pycdlib's inode as it is.
+        # not be found on disc. Worked out while listing, so ``_data_span`` reads no
+        # directory again. Every other file is read where pycdlib's inode says.
         self._layouts: dict[int, tuple[_Extent, ...] | None] = {}
         # What each directory's records say on disc, per directory extent read.
         self._raw_directories: dict[int, _RawDirectory] = {}
@@ -1477,8 +1446,8 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         # many targets through one wide directory stays linear.
         self._rock_ridge_children: dict[int, dict[bytes, DirectoryRecord]] = {}
         # The adapter calls this under the handle lock and translates its errors.
-        # Kept for ``_data_inode``, which reads extents pycdlib has no inode for
-        # through the same handle pycdlib reads from.
+        # pycdlib reads the image through this view; ``_raw_directory`` reads a
+        # directory's extent again through it.
         self._iso_fp = source.view(0)
         try:
             # Always the source, never ``open(str(path))``: a path pycdlib opened
@@ -2327,23 +2296,11 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
 
     # --- data ---------------------------------------------------------------------------
 
-    def _open_record(self, record: DirectoryRecord) -> PyCdlibIO:
-        """Open a file's data from its directory record, with no path lookup.
-
-        The same checks ``PyCdlib.open_file_from_iso`` makes once it has the record.
-        """
-        assert _pycdlib_exc is not None and _pycdlib_io is not None
-        if not record.is_file():
-            raise _pycdlib_exc.PyCdlibInvalidInput("Path to open must be a file")
-        return _pycdlib_io.PyCdlibIO(
-            self._data_inode(record), self._iso.logical_block_size
-        )
-
     def _file_size(self, record: DirectoryRecord) -> int | None:
         """A file's size as its records declare it; ``None`` if that is lost.
 
         Records that pycdlib's inode describes as written are the common case and cost
-        nothing. The rest get a layout, kept for ``_data_inode``.
+        nothing. The rest get a layout, kept for ``_data_span``.
         """
         if self._as_written(record):
             return record.data_length
@@ -2422,13 +2379,13 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             self._raw_directories[key] = raw
         return raw
 
-    def _data_inode(self, record: DirectoryRecord) -> Inode:
-        """The inode to read a file's data through, spanning every extent it has.
+    def _data_span(self, record: DirectoryRecord) -> tuple[int, int]:
+        """Where a file's data is in the image: its byte offset and length.
 
-        pycdlib's own inode is used when it describes the file as written. The layout
+        pycdlib's own inode gives it when it describes the file as written. The layout
         worked out while listing is used otherwise, never worked out again here:
-        reading the directory takes the handle guard, which the caller may already
-        hold. Three cases need an inode built from it: a file of 4 GiB or more, whose
+        reading the directory needs the handle, which the adapter holds around this
+        call already. Three cases need the layout: a file of 4 GiB or more, whose
         inode covers only its first extent; the El Torito boot catalog, which pycdlib
         keeps in memory and gives no inode at all, though its extent still holds its
         bytes on disc, which is what a mounted image shows; and a file pycdlib
@@ -2437,22 +2394,21 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         A multi-extent file whose extents are not back to back is refused rather than
         read as one run: every writer seen (xorriso, libarchive's fixture) lays them
         out contiguously, and reading a gap would need a chained stream over
-        per-extent inodes that no image has needed yet. An inode built here stops at
-        the end of the image; ``_open_member`` makes a read that stops there short a
-        ``TruncatedError``.
+        per-extent views that no image has needed yet. A span past the end of the
+        image is read as far as the image goes, and the adapter's size check makes
+        the short read a ``TruncatedError``.
         """
-        assert _pycdlib_inode is not None
-        if id(record) not in self._layouts or self._layouts[id(record)] is None:
+        block_size = self._iso.logical_block_size
+        layout = self._layouts.get(id(record))
+        if layout is None:
             # Described as written, or the declared length is lost and pycdlib's
             # clamped inode is what there is to read.
             assert id(record) in self._layouts or self._as_written(record), (
                 "the layout is worked out while listing"
             )
-            assert record.inode is not None
-            return record.inode
-        layout = self._layouts[id(record)]
-        assert layout is not None
-        block_size = self._iso.logical_block_size
+            inode = record.inode
+            assert inode is not None
+            return inode.orig_extent_loc * block_size, inode.data_length
         start = layout[0].sector
         expected = start
         for index, extent in enumerate(layout):
@@ -2465,19 +2421,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
                     archive_name=self._archive_name,
                 )
             expected += extent.length // block_size
-        length = sum(extent.length for extent in layout)
-        available = max(0, self._image_length - start * block_size)
-        inode = _pycdlib_inode.Inode()
-        inode.parse(start, min(length, available), self._iso_fp, block_size)
-        return inode
-
-    def _runs_past_image_end(self, record: DirectoryRecord) -> bool:
-        """Whether a file's declared data runs past the end of the image."""
-        layout = self._layouts.get(id(record))
-        if not layout:
-            return False
-        start = layout[0].sector * self._iso.logical_block_size
-        return start + sum(extent.length for extent in layout) > self._image_length
+        return start * block_size, sum(extent.length for extent in layout)
 
     def open_member(
         self, member: ArchiveMember, locator: DirectoryRecord
@@ -2509,8 +2453,11 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         zisofs: _ZisofsEntry | None,
         member: ArchiveMember,
     ) -> BinaryIO:
-        # _PyCdlibStream enters the PyCdlibIO context in its __init__.
-        stream: BinaryIO = _PyCdlibStream(self._open_record(record))
+        # The file's bytes are one run of the image (``_data_span``), so a view of the
+        # source reads them directly; pycdlib's own file object would add a layer that
+        # seeks the shared handle on every read.
+        start, length = self._data_span(record)
+        stream = self._source.view(start, length)
         if zisofs is None:
             return stream
         try:

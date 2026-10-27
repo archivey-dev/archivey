@@ -271,9 +271,6 @@ _CLOSE_STATE_FIRST = {
         "assigns _views, then ConcatenatedFile.__init__, which sets its close state "
         "first; its views come from SharedSource.view, which has already checked them"
     ),
-    "archivey.internal.backends.iso_reader._PyCdlibStream": (
-        "raw.__enter__() runs after DelegatingStream.__init__ has set what close() reads"
-    ),
     "archivey.internal.backends.zip_reader._UnconfirmedZipCryptoStream": (
         "assigns _payload_complete, then DelegatingStream.__init__"
     ),
