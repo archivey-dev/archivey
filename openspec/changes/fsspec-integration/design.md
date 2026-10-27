@@ -228,7 +228,7 @@ benchmark or a user shows that a caller needs to change them, that is a new publ
 then, not now. The read-through distance is not one of them: it is the public
 `ArchiveyConfig.max_read_through` (§Decisions by the maintainer 1). The benchmark sets
 the three internal constants through a private seam to small values (16 KiB minimum
-fetch, 128 KiB maximum fetch, 512 KiB pool) and `max_read_through` to 16 KiB through the
+fetch, 128 KiB maximum fetch, 128 KiB pool) and `max_read_through` to 16 KiB through the
 config field, so that its PR-gated cases exercise every planner rule on the small
 fixtures (§Benchmark). The seam's maximum fetch stays above every fixed hint the spec's
 ceilings rely on, the ZIP tail of 64 KiB + 22 bytes being the largest, so a gated case
@@ -452,19 +452,24 @@ The structural gate counts seeks today. This change adds a remote axis.
   `benchmarks/baselines/remote.json`, updated with `--update-baselines` like
   `structural.json`. Both are structural invariants, so they block a PR.
 - **Fixtures and scale.** The PR-gated cases run on `benchmarks/remote.py`'s own `ci`
-  scale: 32 seeded random members, which do not compress, so a compressed fixture is as
-  large as a stored one (stage 1 found that `benchmarks/fixtures.py`'s payloads compress
-  about 100:1 and trip the ratio guard at larger scales). Stage 2 makes the member sizes
-  vary, seeded, between 4 and 32 KiB, so some TAR gaps fall under the 16 KiB read-through
-  and some over it. The planner's constants are set small (D2: 16 KiB minimum fetch,
-  128 KiB maximum fetch, 512 KiB pool, `max_read_through` 16 KiB), so each case still
-  crosses windows, gaps and runs and no large archive is built on a PR. The generator
-  stays seeded, so member spans and the exact counts are the same on every host. The production constants run on the `realistic` scale in the change-guarded
-  nightly that already runs the wall job; those numbers are reported, not gated.
+  scale (#1047): 32 seeded random members, which do not compress, so a compressed fixture
+  is as large as a stored one. `benchmarks/fixtures.py`'s payloads compress about 100:1,
+  so a compressed fixture built from them fits in one small fetch and the counts would
+  show nothing (`benchmarks/remote.py`, module docstring). The member sizes vary, seeded,
+  between 4 and 32 KiB (about 580 KiB per archive), so some TAR gaps fall under the
+  16 KiB read-through and some over it. Stage 1 builds them that way, so the baseline it
+  commits is on the fixtures stage 2 is measured against, and stage 2's baseline diff has
+  one cause. The planner's constants are set small (D2: 16 KiB minimum fetch, 128 KiB
+  maximum fetch, 128 KiB pool, `max_read_through` 16 KiB), so the pool holds 8 windows at
+  the minimum fetch and an archive is several times the pool. Each case then crosses
+  windows, gaps, runs and the window limit, and no large archive is built on a PR. The
+  generator stays seeded, so member spans and the exact counts are the same on every host.
+  The production constants run on the `realistic` scale in the change-guarded nightly
+  that already runs the wall job; those numbers are reported, not gated.
 - **More streams than windows.** One case reads eight members of one ZIP from eight
   threads under `concurrent_operations=True`, so the shrinking-fetch rule of D2 is
-  pinned. A second opens 40 member streams at once, more than the seam's 32 windows
-  (512 KiB / 16 KiB), so the unbuffered rule is pinned too.
+  pinned. A second opens 16 member streams at once, twice the seam's 8 windows
+  (128 KiB / 16 KiB), so the unbuffered rule is pinned too.
 - **Informational:** a modelled time, `range_requests x 30 ms + bytes_fetched / 50 MB/s`,
   printed beside each case so that a change that trades requests for bytes can be judged.
   Not gated.

@@ -8,9 +8,10 @@
 
 - [ ] 1.1 `benchmarks/remote.py`: `CountingFileSystem` over local files, recording each
       range read, size/info call and `ls` (design §Benchmark).
-- [ ] 1.2 Gated cases on the existing seeded `ci` fixtures, with the planner constants
-      set small through a private seam once it exists (stage 2); before that, today's
-      code needs no seam. The production constants run on the `realistic` scale in the
+- [ ] 1.2 Gated cases on `benchmarks/remote.py`'s own seeded `ci` scale, with member
+      sizes varied (design §Benchmark) before 1.4 commits the baseline, and the planner
+      constants set small through a private seam once it exists (stage 2); before that,
+      today's code needs no seam. The production constants run on the `realistic` scale in the
       change-guarded nightly, reported and not gated.
 - [ ] 1.3 Cases: list; first, middle and last member; `extract_all()`;
       `stream_members()` under `streaming=True`; eight threads reading eight ZIP members;
@@ -33,9 +34,8 @@
       sequential read, read-through of short forward gaps, one 32 MiB window pool per
       reader with the shrinking-fetch rule and unbuffered reads past the window limit
       (design D2), and the private seam for the three internal constants. Add
-      `ArchiveyConfig.max_read_through`, checked as the limit fields are. Vary the remote
-      fixtures' member sizes (design §Benchmark). Unit-test the planner on a recorded
-      read trace, independent of any format.
+      `ArchiveyConfig.max_read_through`, checked as the limit fields are. Unit-test the
+      planner on a recorded read trace, independent of any format.
 - [ ] 2.3 `ArchiveSource` uses `RangeSource` for an `OpenFile`; `seek_is_expensive` is
       `True`; `close()` drops the fetched windows, and nothing of the caller's is closed
       (no file object is ever opened).

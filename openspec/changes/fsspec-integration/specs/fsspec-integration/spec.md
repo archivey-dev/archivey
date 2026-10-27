@@ -12,7 +12,7 @@ start and length itself:
 | Rule | Behaviour |
 | --- | --- |
 | Sequential run | The first two reads of a run fetch what they ask for, and at least a fixed minimum fetch size (64 KiB). From the third read that continues the last fetch, each fetch doubles, up to a fixed maximum fetch size |
-| Short forward gap | A forward seek no longer than `ArchiveyConfig.max_read_through` (an `int`, default 1 MiB; a negative value, a `bool`, a float or `None` raises `ArchiveyUsageError` when the config is built) continues the run instead of starting a new request |
+| Short forward gap | A forward seek no longer than `ArchiveyConfig.max_read_through` (default 1 MiB; `archive-reading` §"Explicit configuration object") continues the run instead of starting a new request |
 | Jump | A backward seek, or a longer forward one, starts a new run at the minimum fetch size |
 | Backend range hint | A span the backend declares it will read next is fetched in one request, up to the maximum fetch size, then continued as a run |
 | Known spans of a whole-archive pass | Merged across gaps of at most `max_read_through`, and fetched with `cat_ranges` in groups whose total is at most the pass's maximum fetch; the next group is fetched once the previous one is consumed |
