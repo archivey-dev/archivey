@@ -18,6 +18,7 @@ children are ended at interpreter exit, and a forked process forgets its parent'
 from __future__ import annotations
 
 import atexit
+import copy
 import marshal
 import os
 import subprocess
@@ -245,6 +246,25 @@ def _release(holder: list[_Lease]) -> None:
     holder[0].release()
 
 
+def _unraised(exc: Exception) -> Exception:
+    """A copy of ``exc`` that has never been raised, or ``exc`` itself when its type
+    cannot be rebuilt from its arguments.
+
+    A decoder keeps the error its child died with and raises it again on every later
+    call (:class:`DecoderChild`). The kept instance must never be the one raised: a
+    raise attaches a traceback, whose frames hold the decoder, and the decoder holds the
+    instance, a cycle that only the garbage collector breaks. When the raise comes from
+    a decoder that the collector is finalizing (``PpmdDecoder.__del__`` sends its
+    one-symbol decode at close), the new frames also reach, through ``f_back``, the
+    code the collection interrupted, and the cycle keeps that code's locals alive past
+    its return: a decoder there keeps its child process leased.
+    """
+    try:
+        return copy.copy(exc)
+    except Exception:  # noqa: BLE001 - a type that copy cannot rebuild: keep the cycle
+        return exc
+
+
 class _Died(Exception):
     """The child went away during a request (internal to :class:`DecoderChild`)."""
 
@@ -410,7 +430,7 @@ class DecoderChild:
 
     def _check_usable(self) -> _Process:
         if self._death is not None:
-            raise self._death
+            raise _unraised(self._death)
         if self._interrupted:
             raise ArchiveyUsageError(
                 f"the {self.describe} was interrupted in the middle of a request "
@@ -508,10 +528,11 @@ class DecoderChild:
             # must not reach the caller as a different error because it came later.
             self._lease.reusable = False
             self._lease.release()
-            self._death = self._fresh_child_error(exc)
-            if self._death is exc:
+            death = self._fresh_child_error(exc)
+            self._death = _unraised(death)
+            if death is exc:
                 raise
-            raise self._death from exc
+            raise death from exc
         for tag, arg, parts, crc in log:
             if zlib.crc32(self._request(tag, arg, *parts)) != crc:
                 self._lease.reusable = False
@@ -535,7 +556,7 @@ class DecoderChild:
         return exc
 
     def _death_from(self, died: _Died) -> Exception:
-        """Record and return the error for a child that went away."""
+        """Record the error for a child that went away, and return a copy to raise."""
         self._lease.reusable = False
         self._lease.release()
         if not died.answered:
@@ -546,7 +567,7 @@ class DecoderChild:
             )
         else:
             self._death = self._death_error(died.returncode)
-        return self._death
+        return _unraised(self._death)
 
     def _death_error(self, returncode: int | None) -> Exception:
         """The error for a child that ended during a request (``returncode``): a crash

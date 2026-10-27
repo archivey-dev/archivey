@@ -12,6 +12,7 @@ killing the session.
 from __future__ import annotations
 
 import contextlib
+import gc
 import io
 import marshal
 import os
@@ -22,6 +23,7 @@ import subprocess
 import sys
 import textwrap
 import time
+import weakref
 import zlib
 from collections.abc import Iterator
 from pathlib import Path
@@ -730,6 +732,77 @@ def test_a_decode_after_a_child_death_raises_the_same_error_again(
         child.close()
     assert type(errors[0]) is type(errors[1]) is expected
     assert str(errors[0]) == str(errors[1])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_a_dead_child_decoder_is_freed_without_the_garbage_collector(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Raising the recorded death again must not tie it to the decoder in a cycle.
+
+    A raised exception holds its traceback, whose frames hold the decoder. Were the
+    decoder's recorded instance the one raised, the decoder would live until the
+    collector ran, however promptly the caller dropped it.
+    """
+    _stand_in_worker(monkeypatch, tmp_path, "os.kill(os.getpid(), signal.SIGKILL)")
+    child = open_ppmd_child(variant=7, order=_ORDER, mem_size=_MEM)
+    for _ in range(2):
+        with pytest.raises(ResourceUnavailableError):
+            child.decode(b"\x00" * 16, 10)
+    alive = weakref.ref(child)
+    gc.disable()
+    try:
+        del child
+        assert alive() is None
+    finally:
+        gc.enable()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_collecting_a_dead_decoder_does_not_keep_the_interrupted_code_alive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The leak the leak oracle caught: a decoder whose child died, left in a cycle
+    and collected while another decoder was open, kept that other decoder (and its
+    child) alive after the code holding it returned.
+
+    ``PpmdDecoder.__del__`` sends its one-symbol decode, which raises the death again
+    from the collector's frames, whose ``f_back`` is the code the collection
+    interrupted.
+    """
+    _stand_in_worker(monkeypatch, tmp_path, "os.kill(os.getpid(), signal.SIGKILL)")
+    packed = _encode_ppmd7(_ZERO_RUN)
+    dead = ppmd_decoder.PpmdDecoder(
+        order=_ORDER,
+        mem_size=_MEM,
+        variant=7,
+        unpack_size=len(_ZERO_RUN),
+        pack_size=len(packed),
+    )
+    with pytest.raises(ResourceUnavailableError):
+        dead.feed(packed)
+    dead.cycle = dead  # type: ignore[attr-defined]  # only the collector frees it
+    del dead
+    monkeypatch.undo()  # the next decoder runs the real worker
+
+    def open_one_while_the_dead_one_is_collected() -> weakref.ref[object]:
+        other = ppmd_decoder.PpmdDecoder(
+            order=_ORDER,
+            mem_size=_MEM,
+            variant=7,
+            unpack_size=len(_ZERO_RUN),
+            pack_size=len(packed),
+        )
+        gc.collect()
+        assert other.feed(packed).data + other.flush().data == _ZERO_RUN
+        return weakref.ref(other)
+
+    gc.disable()
+    try:
+        alive = open_one_while_the_dead_one_is_collected()
+        assert alive() is None
+    finally:
+        gc.enable()
 
 
 def test_without_sys_executable_a_member_is_refused(
