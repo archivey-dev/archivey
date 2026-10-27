@@ -226,9 +226,8 @@ rulings on the handbook page, and general ones in `dev-docs/design-rules.md`.
   Tricky ones go to the maintainer: a behaviour trade-off, a design reversal, removing
   or renaming a public name or an `archivey` verb or option (`design-rules.md`
   DR-12a), a very large diff, or anything an open decision touches.
-- `main` refuses a merge while any review thread is open (maintainer, 2026-10-27), so
-  every finding needs its disposition reply and a resolved thread first
-  (`address-review-findings` §7).
+- `main` refuses a merge while any review thread is open, so every thread needs its
+  reply and its resolution first (`address-review-findings` §7).
 - The PR body is the record of a piece of work. Do not commit working plans to the repo.
 - Do not edit `CHANGELOG.md` in a PR; the release writes it.
 

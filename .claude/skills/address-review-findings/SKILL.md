@@ -357,8 +357,11 @@ Once the round is done, the PR should record what happened to every finding.
 - **Resolve the threads you actually resolved** (`resolve_review_thread`). Leave open the
   ones that are still open — including anything escalated in §6 and not yet decided. A
   wall of stale unresolved threads is how a later round loses track of what was settled.
-  An open thread also blocks the merge: the `main` ruleset requires every review thread
-  to be resolved (maintainer, 2026-10-27).
+  An open thread also blocks the merge. The `main-rules` ruleset requires conversation
+  resolution (maintainer, 2026-10-27), so every unresolved review thread blocks, whatever
+  its tier and whoever wrote it: a 💡, 📚 or 🎉 annotation, a disproven finding, and an
+  outdated thread too. Each one gets its reply and its resolution. If a merge is refused
+  with every thread resolved, check that the ruleset still has that requirement.
 - **Say what you did not do, and why.** Split-off and disproven findings get a line each.
 - **Attribute every settled decision to the maintainer** (§6). A bullet decided by a human
   is tagged `maintainer decision` where the others carry `important` or `nit`, so the
@@ -409,7 +412,8 @@ do not spend a round on fixes the review already described.
 
 **After an approving verdict with CI green**, you may merge a straightforward PR; a tricky
 one goes to the maintainer. What counts as tricky: `AGENTS.md` §Working with the
-maintainer. A conditional approval is no exception: fix the conditioned findings, reply on
-each thread, and resolve it, or the merge queue will not take the PR. A thread you cannot
+maintainer. Any verdict leaves threads open, a conditional approval most of all: fix the
+conditioned findings, reply on every thread the review opened, and resolve each one, or
+the merge queue will not take the PR (the rule is in the list above). A thread you cannot
 resolve yet, such as an escalated question, keeps the PR out of the queue until it is
 answered, which is the intent.

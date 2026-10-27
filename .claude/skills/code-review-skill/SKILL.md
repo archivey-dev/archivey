@@ -313,8 +313,9 @@ fixed, or the verdict is the conditional approval above, which keeps them on the
 implementor's list. Only the maintainer waives a nit, explicitly; when they do, record it
 per the settled-decision rule in block 3.
 
-The 💡 / 📚 / 🎉 tiers are the genuinely optional ones — they propose or teach, they do not
-ask for a change, and they never hold a merge.
+The 💡 / 📚 / 🎉 tiers are the genuinely optional ones — they propose or teach and do not
+ask for a change. Their threads still need a reply and a resolution before the merge, as
+every open thread does (`address-review-findings` §7).
 
 ### Round budget — from round 3, nits do not hold the PR
 
