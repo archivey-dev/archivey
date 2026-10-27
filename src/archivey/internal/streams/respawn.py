@@ -139,8 +139,9 @@ class RespawnStream(ReadOnlyIOStream):
 
     def nearest_resume_offset(self, target: int) -> int:
         """Where the output restarts to reach ``target``: the live inner stream's
-        position when ``target`` is at or past it, else 0 (a fresh spawn). A member's verifier asks
-        this to see that reaching a forward target decodes the skipped bytes anyway."""
+        position when ``target`` is at or past it, else 0 (a fresh spawn). A member's
+        verifier asks this to see that reaching a forward target decodes the skipped
+        bytes anyway."""
         if self._inner is not None and self._inner_needed(target) >= self._inner_pos:
             return self._inner_pos
         return 0
