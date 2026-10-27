@@ -37,6 +37,8 @@ When ready to implement, run /opsx:apply
    openspec new change "<name>"
    ```
    This creates a scaffolded change in the planning home resolved by the CLI with `.openspec.yaml`.
+   If the change already exists (for example, `/opsx:apply` reported it blocked on
+   missing artifacts), skip this step: `openspec new change` fails on an existing name.
 
 3. **Get the artifact build order**
    ```bash

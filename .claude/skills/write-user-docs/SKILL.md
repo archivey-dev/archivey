@@ -175,6 +175,6 @@ Where they conflicted, this is how it was settled:
   Mechanics above is the result.
 - **STE strictness.** STE's caps (one instruction per sentence, word limits, avoid -ing)
   are a check for real procedures and warnings only. Applied to whole pages they produced
-  the flat docs this rewrite replaced.
+  the flat docs this process replaced.
 - **The pile.** Both process skills assume the exploring is done. Here it wasn't, which is
   why step 1 builds the pile before any writing starts.

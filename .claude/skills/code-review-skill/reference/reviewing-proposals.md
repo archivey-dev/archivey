@@ -40,8 +40,8 @@ Run every proposal — and every contract-moving code change — past these:
 - [ ] **Non-goals (§What you are reviewing):** not smuggling in an async public API,
   `zipfile`/`py7zr`/`rarfile` compat shims, quirk-driven architecture, or in-place 7z/RAR
   modification.
-- [ ] **Threat-model gaps (`dev-docs/threat-model.md`):** open gaps the proposal
-  touches are addressed in substance, not closed by marketing language.
+- [ ] **Threat-model gaps (`dev-docs/threat-model.md` §5 "Open design gaps"):** open gaps
+  the proposal touches are addressed in substance, not closed by marketing language.
 
 ### Proposal-shape checks
 

@@ -221,7 +221,8 @@ Specs are the best current description of the contract, not holy writ.
 - [ ] When a contract does move, the spec and the matching docs move in the **same** change
 - [ ] A spec that yields a worse outcome gets **revised**, not worked around — surface it
   instead of contorting the code to satisfy the letter of the doc
-- [ ] Open threat-model gaps (`dev-docs/threat-model.md`) are not closed by prose alone
+- [ ] Open threat-model gaps (`dev-docs/threat-model.md` §5 "Open design gaps") are not
+  closed by prose alone
 
 ## Testing
 

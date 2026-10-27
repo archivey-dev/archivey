@@ -15,8 +15,8 @@ version: 0.4.0
 > two modes below applies to which kind of text here.
 >
 > **In this repo the rules are advice, never a gate** (maintainer decision, 2026-09-22),
-> STE-flavored is the default, and Strict is the exception. That section has the ruling
-> and what it means in practice. `unslop` still runs on maintainer-facing prose. This
+> STE-flavored is the default, and Strict is the exception. `dev-docs/writing-english.md`
+> has the ruling and what it means in practice. `unslop` still runs on maintainer-facing prose. This
 > skill and that one cut different things.
 
 ASD-STE100 is a controlled-language standard built by the aerospace and defense industry (ASD, the AeroSpace and Defense Industries Association of Europe) to stop maintenance technicians from misreading English instructions. The standard removes the two biggest sources of misreading: words with more than one meaning, and sentences with more than one possible structure.

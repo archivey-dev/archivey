@@ -460,7 +460,7 @@ cost to the reader who does not want it:
 ```
 <details><summary>Measured this round · what's fine · outward trace</summary>
 
-- `pytest tests/test_sevenzip_limits.py -k bcj2` → 12 passed, RESTART BLOCKS SEEN: [0]
+- `pytest tests/test_sevenzip_bcj2.py -q` → 63 passed
 
 </details>
 ```

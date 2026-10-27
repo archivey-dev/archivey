@@ -62,7 +62,7 @@ Archive a completed change in the experimental workflow.
    - Determine what the archive will apply (adds, modifications, removals, renames)
    - Show a combined summary, then use **AskUserQuestion tool** to confirm: "Archive and apply these deltas", "Cancel"
 
-   If a main spec already contains a delta's changes (for example, `openspec-sync-specs` ran earlier), say so in the summary: the archive applies the deltas again. For a non-trivial delta, `CONTRIBUTING.md` §"Archiving an OpenSpec change" says how to check it with a dry-run archive first.
+   If a main spec already contains a delta's changes (for example, `openspec-sync-specs` ran earlier), say so in the summary. The archive applies only what the main spec is still missing, and reports "Specs already in sync; no files changed" when nothing is (checked with openspec 1.15.0). For a non-trivial delta, `CONTRIBUTING.md` §"Archiving an OpenSpec change" says how to check it with a dry-run archive first.
 
 5. **Perform the archive**
 
