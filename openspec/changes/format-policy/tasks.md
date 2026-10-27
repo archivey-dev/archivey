@@ -16,8 +16,8 @@ Not started. Design approved 2026-10-27; starts once the plugin API stack has me
 
 - [ ] 2.1 `BackendRegistry.reader_for_format(fmt, policy)`: refuse an off format with
       `UnsupportedFeatureError` naming the entry to add; return the replacement backend,
-      after checking its `requires` (missing or excluded raises
-      `PackageNotInstalledError` before the plugin's `open` runs).
+      after checking its `requires` (a missing one raises `PackageNotInstalledError`
+      before the plugin's `open` runs).
 - [ ] 2.2 Replacement backends: `_backend_class` over the built-in format with no
       detection signals, cached per plugin class.
 - [ ] 2.3 `core.py`: refuse multi-volume sets and SFX-found archives for a replaced
@@ -45,8 +45,9 @@ Not started. Design approved 2026-10-27; starts once the plugin API stack has me
 - [ ] 3.4 Widen the `UnsupportedFeatureError` and `PackageNotInstalledError` docstrings
       to cover policy refusals, and add `PackageNotInstalledError.missing` (the
       components the raise is about), set on every raise; the unrar sites fill it from
-      `rarlab_unrar_missing()`, and it is empty only for a program that is present but
-      cannot start.
+      `rarlab_unrar_missing()`, the `CliToolFinder.find` refusal from the finder's
+      `display_name` and `install_hint`, and it is empty only for a program that is
+      found but cannot start. Messages keep naming the package.
 
 ## 4. Tests and docs
 
@@ -59,7 +60,13 @@ Not started. Design approved 2026-10-27; starts once the plugin API stack has me
       never imported; two threads, one excluding `pyppmd` and one not, each get their
       own answer; `format_availability(SEVEN_Z, config=...)` answers `PARTIAL` with
       `pyppmd` installed and excluded; a replacement is refused on a volume set, an
-      SFX-found archive and a pipe.
+      SFX-found archive and a pipe. And one test per delta scenario not named above:
+      availability answers for the replacement (NONE, `P.open` not called);
+      `list_supported_formats(config=...)` does not filter by `allows()`; excluding
+      `compression.zstd` falls through to `backports.zstd`; a missing `unrar` and a
+      missing `unar` each fill `exc.missing`; a registered plugin the policy does not
+      name, whose `requires` holds an excluded package, reads as NONE and refuses at
+      open.
 - [ ] 4.2 Docs: the config page; the security page (the upload-server policy, and one
       sentence that the policy bounds which reader runs, not what detection reads); the
       "Adding a format" guide (replacement plugins); the `FormatPlugin.format`,

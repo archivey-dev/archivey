@@ -307,9 +307,10 @@ cfg.formats.allows(f)]`; a helper for that one line is not added (DR-14).
 `replace=` is the one other field that changes the availability answer. For a replaced
 container `format_availability(fmt, config=cfg)` answers for the backend that would
 read it, the replacement, not the built-in. The replacement's `requires` count as a
-registered plugin's do: a missing or excluded one makes the format `NONE` with that
-package in `missing`, and the open raises `PackageNotInstalledError` before the plugin's
-`open` runs. `only`, `exclude` and `plugins` do not change the answer.
+registered plugin's do: a missing one makes the format `NONE` with that package in
+`missing`, and the open raises `PackageNotInstalledError` before the plugin's `open`
+runs. An excluded one cannot reach this point, since the policy is refused when it is
+built (the Plugins bullet above). `only`, `exclude` and `plugins` do not change the answer.
 
 **How the policy reaches the checks.** Every place that answers "is this package
 available" is process-wide today: `LazyOptional._present` (fixed at construction, module
@@ -331,8 +332,13 @@ another one has it as data. For a format refusal it asks
 `exc.missing`: a component whose `name` is in its `exclude_libraries` was refused by its
 own policy, and any other component needs installing. That holds when one raise has both
 causes. `missing` is filled on every raise for an absent package or program: the unrar
-sites fill it from `rarlab_unrar_missing()`. It is empty only when the program is
-present but cannot start (`external/cli.py`), where nothing is missing to name.
+sites fill it from `rarlab_unrar_missing()`, and the `unar` refusal when no usable
+`unar` is found (`CliToolFinder.find`) builds one from the finder's `display_name` and
+`install_hint`. It is empty only when the program is found but cannot start
+(`spawn_for_stdout`'s `not_started`), where nothing is missing to name. The message
+keeps naming the package and its install hint, as the format specs require: the
+error-handling rule against repeating a structured name in the message is about names
+`__str__` renders, and `__str__` does not render `missing`.
 `missing` is an additive attribute on an existing type, not a new type (DR-13). Both
 docstrings widen in the same change: `UnsupportedFeatureError` also covers "the caller's
 `FormatPolicy` refuses this format", and `PackageNotInstalledError` also covers "the

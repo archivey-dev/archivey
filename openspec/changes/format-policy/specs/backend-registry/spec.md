@@ -116,8 +116,12 @@ its fields change it, and no other:
   `packaging-and-extras`, *An excluded optional library reads as not installed*).
 - `config.formats.replace`: for a replaced container the answer is for the
   replacement's backend, not the built-in's. The replacement's `requires` count as a
-  registered plugin's do, so a missing or excluded one makes the format NONE, and the
-  open raises `PackageNotInstalledError` before the plugin's `open` runs.
+  registered plugin's do, so a missing one makes the format NONE, and the open raises
+  `PackageNotInstalledError` before the plugin's `open` runs. (A replacement whose
+  `requires` holds an excluded package is refused when the policy is built; see
+  `packaging-and-extras`.) The `cryptography` rule above is about the built-in readers,
+  where only encrypted members need it; a replacement that lists it in `requires`
+  reads nothing without it.
 
 The policy's `only`, `exclude` and `plugins` SHALL NOT change the answer;
 `config.formats.allows(fmt)` answers whether a format may open.
@@ -198,7 +202,7 @@ conservative answer.
 
 - **WHEN** a caller asks `format_availability(ArchiveFormat.ZIP, config=cfg)` with
   `cfg.formats == FormatPolicy(replace={ContainerFormat.ZIP: P})`,
-  `P.requires == ("cryptography",)` and `cryptography` not installed
-- **THEN** the answer is NONE and its `missing` names `cryptography`
+  `P.requires == ("acme_zipcrypt",)` and `acme_zipcrypt` not installed
+- **THEN** the answer is NONE and its `missing` names `acme_zipcrypt`
 - **AND** opening a ZIP file with `cfg` raises `PackageNotInstalledError`, and `P.open`
   is not called
