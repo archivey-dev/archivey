@@ -81,16 +81,18 @@ def _plugin_format_spellings(fmt: ArchiveFormat) -> tuple[str, str]:
     return fmt.file_extension(), fmt.display_name
 
 
-def plugin_spelling_clash(fmt: ArchiveFormat) -> str | None:
-    """The first of ``fmt``'s two spellings that already names another format, if any.
+def plugin_spelling_clash(fmt: ArchiveFormat) -> tuple[str, ArchiveFormat] | None:
+    """The first of ``fmt``'s two spellings that already names another format, and that
+    format, if any.
 
     A spelling a built-in format or an earlier plugin holds would resolve to that
     format, so registration refuses it rather than leave ``fmt`` unspellable.
     """
     for spelling in _plugin_format_spellings(fmt):
         key = normalize_spelling(spelling)
-        if key in _archive_format_spellings() or key in _plugin_spellings:
-            return spelling
+        owner = _archive_format_spellings().get(key) or _plugin_spellings.get(key)
+        if owner is not None:
+            return spelling, owner
     return None
 
 

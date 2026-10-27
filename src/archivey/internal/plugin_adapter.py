@@ -82,9 +82,10 @@ class PluginReaderAdapter(BaseArchiveReader):
         )
         self._source = source
         # The plugin may hold a handle of its own (a library over ``source.path``), so
-        # under CONCURRENT every call into it (each inside ``_handle_guard``), and every
-        # read of a stream it returned, takes one lock. The views of ``PluginSource`` need none, but archivey cannot
-        # tell which kind of reader it was given.
+        # under CONCURRENT every call into it, and every read of a stream it returned,
+        # takes one lock (``_handle_guard``). The exception is ``translate_exception``,
+        # which ``base_reader`` runs outside the lock. The views of ``PluginSource``
+        # need none, but archivey cannot tell which kind of reader it was given.
         if MemberStreams.CONCURRENT in member_streams:
             self._handle_lock = threading.Lock()
         self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
@@ -294,9 +295,11 @@ def _check_plugin(plugin: type[FormatPlugin]) -> ArchiveFormat:
             )
     clash = plugin_spelling_clash(fmt)
     if clash is not None:
+        spelling, owner = clash
         raise ArchiveyUsageError(
-            f"{plugin.__name__}: format= spelling {clash!r} already names another "
-            "format; choose a container value and member name no format uses"
+            f"{plugin.__name__}: format= spelling {spelling!r} already names "
+            f"{owner.display_name}; choose a container value and member name no "
+            "format uses"
         )
     claimed = {ext.lower(): owner for ext, owner in registry.extension_map().items()}
     for ext in plugin.extensions:

@@ -60,7 +60,7 @@ _CONST_KEYS = {
 # Written by tests, not by the library. See tests/test_codec_descriptor.py
 # (`synthetic.header_len`), tests/test_data_model.py (open-bag example) and
 # tests/test_plugins.py (a plugin's own `ArchiveInfo` key, `solid.blocks`).
-_TEST_ONLY_MEMBER_KEYS = frozenset(
+_TEST_ONLY_EXTRA_KEYS = frozenset(
     {"synthetic.header_len", "third.party", "solid.blocks"}
 )
 
@@ -414,7 +414,7 @@ def test_tests_do_not_invent_undeclared_extra_keys() -> None:
     unexpected = (
         (written_member | written_info | written_either)
         - declared
-        - _TEST_ONLY_MEMBER_KEYS
+        - _TEST_ONLY_EXTRA_KEYS
     )
     assert not unexpected, (
         f"test-only extra keys missing from allowlist: {sorted(unexpected)}"

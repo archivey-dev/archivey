@@ -209,7 +209,8 @@ def translate_exception(self, exc: Exception) -> archivey.ArchiveyError | None:
 
 `archive_info()` returns a `PluginArchiveInfo` with what archivey cannot work out itself:
 whether members share one decode (`is_solid`), a format version, a comment, and extra
-values under keys named after your format. archivey fills in the rest of
+values under keys named after your format. A key a built-in format already defines,
+such as `7z.volume_count`, is not yours to write. archivey fills in the rest of
 `archive.info`.
 
 ## Detection
