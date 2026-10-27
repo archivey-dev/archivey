@@ -205,7 +205,7 @@ class StrongZipPlugin(FormatPlugin):
 
 ## 7. Calls for the maintainer
 
-1. **Option A (per call) or B (process-wide).** Recommended: A.
+1. **Option A (per call) or B (process-wide).** Decided: A (maintainer, 2026-10-27).
 2. **Plugins on by default once registered.** Recommended: yes. Registration is
    already the program's explicit choice; `plugins=False` and `only=` turn them off.
    The other way, every open names its plugins, makes `register_format` alone do
