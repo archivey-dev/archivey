@@ -9,8 +9,10 @@ data offset), then the data. Each test registers it on a registry restored after
 from __future__ import annotations
 
 import bz2
+import dataclasses
 import hashlib
 import io
+import logging
 import lzma
 import struct
 import zipfile
@@ -1082,6 +1084,209 @@ def test_block_stream_refuses_a_block_of_the_wrong_length() -> None:
         stream.read()
 
 
+def test_block_stream_reads_a_block_stream_no_further_than_it_needs() -> None:
+    read_sizes: list[int] = []
+
+    class Endless(io.RawIOBase):
+        """A block that decodes to far more than the block: a bomb."""
+
+        def readable(self) -> bool:
+            return True
+
+        def readinto(self, buffer: memoryview) -> int:  # type: ignore[override]
+            read_sizes.append(len(buffer))
+            buffer[:] = bytes(len(buffer))
+            return len(buffer)
+
+    stream = block_stream(
+        8192, 4096, lambda index: io.BufferedReader(Endless(), buffer_size=4096)
+    )
+    with pytest.raises(CorruptionError, match="block 0 holds 4097 bytes, not the 4096"):
+        stream.read()
+    assert sum(read_sizes) <= 8192  # a buffer fill or two, not the whole bomb
+
+
+def test_block_stream_takes_a_stream_per_block() -> None:
+    data = bytes(range(256)) * 20
+    stream = block_stream(
+        len(data),
+        1024,
+        lambda index: io.BytesIO(data[index * 1024 : (index + 1) * 1024]),
+    )
+    assert stream.read() == data
+
+
+def test_block_stream_asks_a_short_block_stream_again() -> None:
+    """A block stream that stops each read early, as an io.RawIOBase may, is read to
+    the block's end, not taken as a short block."""
+
+    class Shorting(io.RawIOBase):
+        def __init__(self, data: bytes) -> None:
+            self._data = io.BytesIO(data)
+
+        def readable(self) -> bool:
+            return True
+
+        def readinto(self, buffer: memoryview) -> int:  # type: ignore[override]
+            chunk = self._data.read(min(len(buffer), 100))
+            buffer[: len(chunk)] = chunk
+            return len(chunk)
+
+    data = bytes(range(256)) * 16
+    assert block_stream(len(data), 4096, lambda index: Shorting(data)).read() == data
+
+
+def test_read_exact_raises_truncated_at_the_end(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    seen: list[bytes] = []
+
+    class ExactReader(ToyReader):
+        def __init__(self, source: PluginSource, context: PluginContext) -> None:
+            super().__init__(source, context)
+            seen.append(source.read_exact(0, 8))
+            source.read_exact(len(_MAGIC), 1 << 20)
+
+    class ExactPlugin(ToyPlugin):
+        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+            return ExactReader(source, context)
+
+    register_format(ExactPlugin)
+    with pytest.raises(TruncatedError, match="archive ends") as info:
+        open_archive(_write(tmp_path, build_toya(_ENTRIES)))
+    assert seen == [_MAGIC]
+    assert info.value.archive_name is not None
+
+
+def test_a_probe_that_raises_is_no_match(clean_registry: None) -> None:
+    """One plugin's broken probe must not change how unrelated input fails."""
+
+    class BrokenProbe(ToyPlugin):
+        magic = ()
+        probe = staticmethod(
+            lambda prefix: struct.unpack("<I", prefix[100:104])[0] == 1
+        )
+
+    register_format(BrokenProbe)
+    with pytest.raises(archivey.FormatDetectionError):
+        archivey.open_stream(io.BytesIO(b"hello world, short"))
+
+
+def test_a_probe_out_of_memory_propagates(clean_registry: None) -> None:
+    """Only the probe's own parsing errors count as no match."""
+
+    def probe(prefix: bytes) -> bool:
+        raise MemoryError
+
+    class Starved(ToyPlugin):
+        magic = ()
+
+    Starved.probe = staticmethod(probe)  # type: ignore[assignment]
+    register_format(Starved)
+    with pytest.raises(MemoryError):
+        archivey.open_stream(io.BytesIO(b"hello world, short"))
+
+
+def test_a_raising_probe_warns_once(
+    clean_registry: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    class BrokenProbe(ToyPlugin):
+        magic = ()
+        probe = staticmethod(
+            lambda prefix: struct.unpack("<I", prefix[100:104])[0] == 1
+        )
+
+    register_format(BrokenProbe)
+    with caplog.at_level(logging.DEBUG, logger="archivey.detection"):
+        for _ in range(2):
+            with pytest.raises(archivey.FormatDetectionError):
+                archivey.open_stream(io.BytesIO(b"hello world, short"))
+    levels = [r.levelno for r in caplog.records if "plugin probe" in r.getMessage()]
+    assert levels == [logging.WARNING, logging.DEBUG]
+
+
+@dataclasses.dataclass
+class _StatefulProbe:
+    """A callable probe object with state: a dataclass, so unhashable."""
+
+    offset: int
+
+    def __call__(self, prefix: bytes) -> bool:
+        return struct.unpack("<I", prefix[self.offset : self.offset + 4])[0] == 1
+
+
+def test_a_raising_unhashable_probe_is_no_match(
+    clean_registry: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The test's point: a probe the adapter cannot hash.
+    with pytest.raises(TypeError):
+        hash(_StatefulProbe(100))
+
+    class ObjectProbe(ToyPlugin):
+        magic = ()
+        probe = _StatefulProbe(100)
+
+    register_format(ObjectProbe)
+    with caplog.at_level(logging.DEBUG, logger="archivey.detection"):
+        for _ in range(2):
+            with pytest.raises(archivey.FormatDetectionError):
+                archivey.open_stream(io.BytesIO(b"hello world, short"))
+    levels = [r.levelno for r in caplog.records if "plugin probe" in r.getMessage()]
+    assert levels == [logging.WARNING, logging.DEBUG]
+
+
+def test_bounded_is_inferred_for_a_view_or_block_stream_within_the_size(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    from archivey.internal import plugin_adapter
+    from archivey.internal.streams.streamtools import SharedSource
+
+    with SharedSource(io.BytesIO(b"abcdef")).view(0, 4) as view:
+        assert plugin_adapter._bounded(view, 4)
+        assert plugin_adapter._bounded(view, 5)
+        assert not plugin_adapter._bounded(view, 3)
+        assert not plugin_adapter._bounded(view, None)
+    assert plugin_adapter._bounded(block_stream(10, 4, lambda i: b""), 10)
+    assert not plugin_adapter._bounded(io.BytesIO(b"abcd"), 4)
+
+
+@pytest.mark.parametrize("copy", [False, True], ids=["view", "copied"])
+def test_an_inferred_bound_reaches_the_member_stream(
+    clean_registry: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    copy: bool,
+) -> None:
+    """A view the plugin returns is opened as bounded without the plugin saying so,
+    and a stream archivey cannot size is not."""
+    from archivey.internal.base_reader import BaseArchiveReader
+
+    seen: list[bool] = []
+    original = BaseArchiveReader._wrap_member_stream
+
+    def spy(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        seen.append(kwargs.get("bounded", False))
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(BaseArchiveReader, "_wrap_member_stream", spy)
+
+    class Copying(ToyReader):
+        def open_member(
+            self, member: ArchiveMember, locator: tuple[int, int]
+        ) -> MemberData:
+            with super().open_member(member, locator).stream as view:
+                return MemberData(io.BytesIO(view.read()))
+
+    class CopyingPlugin(ToyPlugin):
+        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+            return Copying(source, context)
+
+    register_format(CopyingPlugin if copy else ToyPlugin)
+    with open_archive(_write(tmp_path, build_toya(_ENTRIES))) as reader:
+        assert reader.read("b.bin") == bytes(range(256)) * 4
+    assert seen == [not copy]
+
+
 def test_buffered_stream_keeps_a_buffered_stream_and_refuses_others() -> None:
     buffered = io.BytesIO(b"x")
     assert buffered_stream(buffered) is buffered
@@ -1598,3 +1803,27 @@ def test_a_reader_can_normalize_names_itself(
         # A directory's trailing slash is not a reported change.
         counts = reader.diagnostics.counts
         assert counts.get(archivey.DiagnosticCode.MEMBER_NAME_NORMALIZED) == 1
+
+
+def test_read_struct_unpacks_and_raises_truncated(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    seen: list[tuple[object, ...]] = []
+
+    class StructReader(ToyReader):
+        def __init__(self, source: PluginSource, context: PluginContext) -> None:
+            super().__init__(source, context)
+            seen.append(source.read_struct(len(_MAGIC), "<I"))
+            seen.append(source.read_struct(0, struct.Struct("<8s")))
+            end = source.size
+            assert end is not None
+            source.read_struct(end - 4, "<Q")
+
+    class StructPlugin(ToyPlugin):
+        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+            return StructReader(source, context)
+
+    register_format(StructPlugin)
+    with pytest.raises(TruncatedError, match="archive ends 4 bytes into the 8"):
+        open_archive(_write(tmp_path, build_toya(_ENTRIES)))
+    assert seen == [(len(_ENTRIES),), (_MAGIC,)]

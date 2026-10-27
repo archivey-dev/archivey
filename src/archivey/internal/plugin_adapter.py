@@ -12,7 +12,9 @@ registers it after the built-in backends, so a built-in signal always wins (§4)
 
 from __future__ import annotations
 
+import functools
 import io
+import logging
 import lzma
 import threading
 from collections.abc import Callable, Generator, Iterator, Mapping
@@ -42,12 +44,14 @@ from archivey.internal.base_reader import (
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.format_args import add_plugin_spellings, plugin_spelling_clash
+from archivey.internal.logs import detection as detection_logger
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
+from archivey.internal.streams.blocks import BlockStream
 from archivey.internal.streams.codecs import (
     Codec,
     CodecParams,
@@ -60,6 +64,7 @@ from archivey.internal.streams.streamtools import (
     FullCountStream,
     LockedStream,
     SharedSource,
+    SlicingStream,
     is_seekable,
     source_byte_size,
 )
@@ -87,6 +92,24 @@ from archivey.types import (
 )
 
 
+def _bounded(stream: object, size: int | None) -> bool:
+    """Whether ``stream`` cannot return more than ``size`` bytes, so the overrun probe
+    is not needed: a view or a block stream no longer than the member, which is what
+    ``MemberData.bounded`` would say."""
+    if size is None or not isinstance(stream, (SlicingStream, BlockStream)):
+        return False
+    length = stream.size
+    return length is not None and length <= size
+
+
+# Cached by type: the ABC ``issubclass`` and the module-name check otherwise run on
+# every member open (about 190-250 ns, against 70 cached). A process meets few stream
+# types; past 64 the oldest is evicted and costs the plain check again.
+@functools.lru_cache(maxsize=64)
+def _type_reads_full(cls: type) -> bool:
+    return issubclass(cls, io.BufferedIOBase) or cls.__module__.startswith("archivey.")
+
+
 def _reads_full(stream: object) -> bool:
     """Whether ``stream.read(n)`` returns ``n`` bytes unless it ends, so a plugin's
     member stream needs no :class:`FullCountStream` in front of it.
@@ -97,9 +120,7 @@ def _reads_full(stream: object) -> bool:
     ``io.RawIOBase`` that stops a read early (at a block boundary, say), and the
     wrapper's cost when it does not is one call per read and no copy.
     """
-    return isinstance(stream, io.BufferedIOBase) or type(stream).__module__.startswith(
-        "archivey."
-    )
+    return _type_reads_full(type(stream))
 
 
 class PluginReaderAdapter(BaseArchiveReader):
@@ -140,7 +161,9 @@ class PluginReaderAdapter(BaseArchiveReader):
         if MemberStreams.CONCURRENT in member_streams:
             self._handle_lock = threading.Lock()
         self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
-        plugin_source = PluginSource(self._shared.view, self._shared.size, source.path)
+        plugin_source = PluginSource(
+            self._shared.view, self._shared.size, source.path, self._shared.read_at
+        )
         # The member decoder config, as ZIP builds its own: the compressed bytes a
         # plugin hands ``decompress`` are the codec's whole input, so a byte after the
         # codec's end of stream is damage.
@@ -358,6 +381,8 @@ class PluginReaderAdapter(BaseArchiveReader):
                 f"{type(data).__name__}, not MemberData"
             )
         stream = cast(BinaryIO, data.stream)
+        if not data.bounded and _bounded(stream, member.size):
+            data = data._replace(bounded=True)
         if not _reads_full(stream):
             stream = FullCountStream(stream)
         if self._handle_lock is not None:
@@ -374,7 +399,9 @@ class PluginReaderAdapter(BaseArchiveReader):
                 if data.expected_hashes
                 else member.hashes
             )
-            custom_digests = self._custom_digests(data, expected)
+            custom_digests = (
+                self._custom_digests(data, expected) if data.digests else None
+            )
             rewind: RewindWarning | None = None
             if self._seek_declared() and not is_seekable(stream):
                 # The caller asked for seekable members and the plugin's stream reads
@@ -534,6 +561,8 @@ def _prefix_probe(probe: object) -> ContentProbe:
     it cannot make detection read more of an untrusted source.
     """
     assert callable(probe)
+    # Per registration, so the probe need not be hashable and nothing outlives it.
+    warned = False
 
     def content_probe(
         prefix: bytes,
@@ -544,7 +573,25 @@ def _prefix_probe(probe: object) -> ContentProbe:
         charge_decode: Callable[[int], bool] | None = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
     ) -> bool:
-        return bool(probe(prefix))
+        nonlocal warned
+        # A probe that raises (a struct.unpack past a short prefix, say) is no match:
+        # one plugin must not change how unrelated input fails to be detected. Out of
+        # memory and OS errors are not the probe's parsing, and propagate as everywhere.
+        try:
+            return bool(probe(prefix))
+        except (MemoryError, OSError):
+            raise
+        except Exception:  # noqa: BLE001 — any parsing error is a plugin bug, logged
+            # WARNING the first time, so its author sees the bug; DEBUG after that, so
+            # a bad plugin does not flood every detection.
+            detection_logger.log(
+                logging.DEBUG if warned else logging.WARNING,
+                "plugin probe %r raised; taken as no match",
+                probe,
+                exc_info=True,
+            )
+            warned = True
+            return False
 
     return content_probe
 

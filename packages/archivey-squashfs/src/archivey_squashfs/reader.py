@@ -22,7 +22,7 @@ import struct
 from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
-from typing import BinaryIO, NamedTuple
+from typing import Any, BinaryIO, NamedTuple
 
 from archivey import (
     ArchiveMember,
@@ -209,14 +209,13 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         if method is not None:
 
             def through_archivey(start: int, length: int, limit: int) -> bytes:
-                with self._source.view(start, length) as view:
-                    if view.seek(0, io.SEEK_END) < length:
-                        raise TruncatedError(
-                            f"a compressed block at {start} runs past the image end"
-                        )
-                    view.seek(0)
-                    with self._context.decompress(view, method) as decoded:
-                        data = decoded.read(limit + 1)
+                # One locked read of the block, then decode from memory, rather than a
+                # view the decoder seeks and reads through; a cut-off block is refused.
+                # Every caller has checked ``length`` first: at most 8 KiB for a
+                # metadata block, the block size (1 MiB at most) for data.
+                raw = io.BytesIO(self._read_exact(start, length, "a compressed block"))
+                with self._context.decompress(raw, method) as decoded:
+                    data = decoded.read(limit + 1)
                 if len(data) > limit:
                     raise CorruptionError(
                         f"a block at {start} decodes to more than {limit} bytes"
@@ -256,10 +255,18 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         )
 
     def _read_exact(self, start: int, length: int, what: str) -> bytes:
-        raw = self._source.read_at(start, length)
-        if len(raw) < length:
-            raise TruncatedError(f"{what} at {start} runs past the image end")
-        return raw
+        """:meth:`PluginSource.read_exact`, naming the structure the image ends in."""
+        try:
+            return self._source.read_exact(start, length)
+        except TruncatedError:
+            raise TruncatedError(f"{what} at {start} runs past the image end") from None
+
+    def _read_struct(self, pos: int, fmt: str, what: str) -> tuple[Any, ...]:
+        """:meth:`PluginSource.read_struct`, naming the structure the image ends in."""
+        try:
+            return self._source.read_struct(pos, fmt)
+        except TruncatedError:
+            raise TruncatedError(f"{what} at {pos} runs past the image end") from None
 
     def _metadata_block(self, pos: int) -> tuple[bytes, int]:
         """The decoded metadata block at absolute ``pos``, and where the next starts."""
@@ -271,7 +278,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
             raise CorruptionError(
                 f"a metadata block at {pos} starts past the image end"
             )
-        (header,) = struct.unpack("<H", self._read_exact(pos, 2, "a metadata header"))
+        (header,) = self._read_struct(pos, "<H", "a metadata header")
         length = header & ~_METADATA_UNCOMPRESSED
         if not 0 < length <= _METADATA_SIZE:
             raise CorruptionError(
@@ -295,9 +302,8 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         if count == 0:
             raise CorruptionError("the SquashFS id table is empty")
         blocks = -(-count * 4 // _METADATA_SIZE)
-        pointers = struct.unpack(
-            f"<{blocks}Q",
-            self._read_exact(self._sb.id_table, 8 * blocks, "the id table index"),
+        pointers = self._read_struct(
+            self._sb.id_table, f"<{blocks}Q", "the id table index"
         )
         data = b"".join(self._metadata_block(p)[0] for p in pointers)
         if len(data) < count * 4:
@@ -317,11 +323,8 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         if self._sb.fragment_table == _NO_TABLE:
             raise CorruptionError("the SquashFS image has fragments but no table")
         block, within = divmod(index * _FRAGMENT_ENTRY.size, _METADATA_SIZE)
-        (pointer,) = struct.unpack(
-            "<Q",
-            self._read_exact(
-                self._sb.fragment_table + 8 * block, 8, "the fragment table index"
-            ),
+        (pointer,) = self._read_struct(
+            self._sb.fragment_table + 8 * block, "<Q", "the fragment table index"
         )
         data = self._metadata_block(pointer)[0]
         if within + _FRAGMENT_ENTRY.size > len(data):

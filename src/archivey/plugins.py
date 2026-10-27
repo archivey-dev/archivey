@@ -23,15 +23,16 @@ passwords, and new diagnostic codes.
 from __future__ import annotations
 
 import io
+import struct
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
-from typing import BinaryIO, ClassVar, Generic, NamedTuple, Protocol, TypeVar, cast
+from typing import Any, BinaryIO, ClassVar, Generic, NamedTuple, Protocol, TypeVar, cast
 
 from archivey.config import ArchiveyConfig
 from archivey.diagnostics import DiagnosticCode, DiagnosticContext
-from archivey.exceptions import ArchiveyError
+from archivey.exceptions import ArchiveyError, TruncatedError
 from archivey.internal.naming import normalize_member_name
 from archivey.internal.streams.blocks import BlockStream
 from archivey.internal.streams.streamtools import ensure_bufferedio
@@ -153,9 +154,10 @@ class MemberData(NamedTuple):
     is read."""
 
     bounded: bool = False
-    """The stream never returns more than ``ArchiveMember.size`` bytes: a
-    :meth:`PluginSource.view` of exactly the member's bytes, a decoder that stops at
-    the size, or a library stream with the same promise. archivey then skips the
+    """The stream never returns more than ``ArchiveMember.size`` bytes: a decoder
+    that stops at the size, or a library stream with the same promise. archivey sets
+    it itself for a :meth:`PluginSource.view` or a :func:`block_stream` no longer than
+    the member. archivey then skips the
     one-byte read past the end that looks for extra data, which is a measurable part
     of opening a small member. A stream that ends early still raises
     ``TruncatedError``. Leave it ``False`` when unsure: archivey never hands over
@@ -188,10 +190,12 @@ class PluginSource:
         view: Callable[[int, int | None], BinaryIO],
         size: int | None,
         path: Path | None,
+        read_at: Callable[[int, int], bytes],
     ) -> None:
         self._view = view
         self._size = size
         self._path = path
+        self._read_at = read_at
 
     @property
     def size(self) -> int | None:
@@ -210,9 +214,30 @@ class PluginSource:
         return self._view(start, length)
 
     def read_at(self, offset: int, n: int) -> bytes:
-        """Up to ``n`` bytes from ``offset``; fewer only at the end of the archive."""
-        with self._view(offset, n) as stream:
-            return stream.read(n)
+        """Up to ``n`` bytes from ``offset``; fewer only at the end of the archive.
+        Cheaper than a :meth:`view` for small reads: no stream is built."""
+        return self._read_at(offset, n)
+
+    def read_exact(self, offset: int, n: int) -> bytes:
+        """``n`` bytes from ``offset``, or ``TruncatedError`` when the archive ends
+        first: for a parser, whose next ``struct.unpack`` would otherwise fail on a
+        short read with an error that is not archivey's."""
+        data = self.read_at(offset, n)
+        if len(data) < n:
+            raise TruncatedError(
+                f"the archive ends {len(data)} bytes into the {n} bytes at offset "
+                f"{offset}"
+            )
+        return data
+
+    def read_struct(self, offset: int, fmt: str | struct.Struct) -> tuple[Any, ...]:
+        """``struct.unpack(fmt, ...)`` of the bytes at ``offset``, read with
+        :meth:`read_exact`: a field the archive ends inside raises ``TruncatedError``.
+        ``fmt`` is a format string or a ``struct.Struct``; a bad format is the
+        plugin's own ``struct.error``."""
+        if isinstance(fmt, struct.Struct):
+            return fmt.unpack(self.read_exact(offset, fmt.size))
+        return struct.unpack(fmt, self.read_exact(offset, struct.calcsize(fmt)))
 
 
 class PluginContext:
@@ -465,6 +490,9 @@ _register_lock = threading.Lock()
 def register_format(plugin: type[FormatPlugin]) -> None:
     """Make archivey read the format ``plugin`` declares, in this process.
 
+    Register before other threads open archives: detection reads the registry
+    without the registration lock.
+
     After the call, ``open_archive``, ``detect_format``, ``format_availability``, the
     format lists and ``format="<extension>"`` all know the format. There is no way to
     remove a registration.
@@ -483,17 +511,20 @@ def register_format(plugin: type[FormatPlugin]) -> None:
 
 
 def block_stream(
-    size: int, block_size: int, read_block: Callable[[int], bytes]
+    size: int, block_size: int, read_block: Callable[[int], bytes | BinaryIO]
 ) -> BinaryIO:
     """A member stream over a file stored as blocks that each decode on their own.
 
     The file is ``size`` bytes in blocks of ``block_size``, the last one shorter, as
     SquashFS, CAB, WIM and CSO store them. ``read_block(i)`` returns block ``i``
-    decoded, from ``PluginContext.decompress`` or the plugin's own decoder. archivey
-    calls it when a read first needs the block and keeps only the block it is in, so
-    a seek decodes one block, not the file up to it. A block of another length than
-    the file needs there raises ``CorruptionError``. Return the result as
-    ``MemberData.stream``, with ``bounded=True``.
+    decoded: the stream ``PluginContext.decompress`` gives, or bytes from the plugin's
+    own decoder. archivey asks a stream for one byte more than the block, and refuses
+    the block if it gets it; a decoder that buffers rounds that ask up to its buffer,
+    so a block that decodes to far more costs the block and about one buffer. archivey
+    calls ``read_block`` when a read first needs the block and keeps only the block it
+    is in, so a seek decodes one block, not the file up to it. A block of another
+    length than the file needs there raises ``CorruptionError``. Return the result as
+    ``MemberData.stream``.
     """
     return BlockStream(size, block_size, read_block)
 
