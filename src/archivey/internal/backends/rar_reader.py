@@ -187,6 +187,7 @@ from archivey.internal.streams.verify import build_member_verifier
 from archivey.internal.unix_mode import special_file_type
 from archivey.internal.volumes import (
     ConcatenatedFile,
+    JoinedViews,
     discover_volume_siblings,
     next_rar_volume_name,
     rar_volume_name,
@@ -369,23 +370,6 @@ def _data_is_reachable(info: RarMemberInfo) -> bool:
     return _data_is_in_one_place(info) or (
         bool(info.data_parts) and not info.split_before and not info.split_after
     )
-
-
-class _JoinedParts(ConcatenatedFile):
-    """The parts of a split stored member read as one stream; closes its views."""
-
-    def __init__(self, views: list[BinaryIO]) -> None:
-        self._views = views
-        super().__init__(views)
-
-    def close(self) -> None:
-        if self.closed:
-            return
-        try:
-            super().close()
-        finally:
-            for view in self._views:
-                view.close()
 
 
 def _link_file(src: Path, dest: Path) -> None:
@@ -3710,7 +3694,7 @@ class RarReader(BaseArchiveReader):
             remaining -= take
         if not views:
             return self._shared.view(info.data_offset, 0)
-        return _JoinedParts(views)
+        return JoinedViews(views)
 
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         if member.type != MemberType.SYMLINK or member.link_target is not None:

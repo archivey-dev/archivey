@@ -1427,7 +1427,8 @@ def _split_into_extents(
     multi-extent flag when ``flags[i]`` is true. With every flag set, the records are
     one file, as a writer stores it. A record without the flag ends its file, so the
     next record with the same identifier is an unrelated file. The second record
-    starts ``gap`` blocks after the first ends. All the records fit in the root
+    starts ``gap`` blocks after the first ends, and the last is ``gap`` blocks
+    shorter, so the records still end where the file did. All the records fit in the root
     directory's sector, whose padding absorbs the new ones.
     """
     buf = bytearray(image)
@@ -1458,7 +1459,7 @@ def _split_into_extents(
         records.append(bytes(chunk))
     last = bytearray(record)
     both_endian(last, 2, extent + len(flags) + gap)
-    both_endian(last, 10, size - 2048 * len(flags))
+    both_endian(last, 10, size - 2048 * (len(flags) + gap))
     records.append(bytes(last))
     sector_end = root + 2048
     rest = bytes(buf[offset + length : sector_end])
@@ -1493,13 +1494,28 @@ def test_a_multi_extent_file_lists_and_reads_every_extent() -> None:
         assert ar.read("Z.TXT") == b"hi"
 
 
-def test_a_multi_extent_file_with_a_gap_is_refused() -> None:
-    """Extents that are not back to back are refused rather than read as one run."""
-    image = _split_into_extents(_image_with_two_block_file(), b"BIG.BIN;1", gap=1)
-    with open_archive(io.BytesIO(image)) as ar:
+def test_a_multi_extent_file_with_a_gap_reads_each_extent_where_it_is() -> None:
+    """Extents need not be back to back: each is read where its record puts it, and
+    the block between them is skipped. Read as one run from the first extent, the
+    skipped ``b`` block came back as file data."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new()
+    content = b"a" * 2048 + b"b" * 2048 + b"c" * 1000
+    iso.add_fp(io.BytesIO(content), len(content), "/BIG.BIN;1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    image = _split_into_extents(out.getvalue(), b"BIG.BIN;1", gap=1)
+    with open_archive(io.BytesIO(image), seekable_members=True) as ar:
         assert ar.get("BIG.BIN").size == 3048
-        with pytest.raises(UnsupportedFeatureError, match="not contiguous"):
-            ar.read("BIG.BIN")
+        assert ar.read("BIG.BIN") == b"a" * 2048 + b"c" * 1000
+        with ar.open("BIG.BIN") as stream:
+            stream.seek(2040)
+            assert stream.read(16) == b"a" * 8 + b"c" * 8
+            stream.seek(0)
+            assert stream.read(4) == b"aaaa"
 
 
 def test_a_repeated_identifier_without_the_flag_lists_each_file(tmp_path: Path) -> None:
@@ -1581,8 +1597,8 @@ def test_records_sharing_an_extent_keep_their_own_multi_extent_flags() -> None:
         first_member, second_member = ar.members()
         assert [first_member.size, second_member.size] == [4096, 1000]
         assert ar.read(second_member) == b"c" * 1000
-        # The first member's two extents are the same block, so not back to back.
-        with pytest.raises(UnsupportedFeatureError, match="not contiguous"):
+        # The first member's two extents are the same block, so they overlap.
+        with pytest.raises(CorruptionError, match="overlap"):
             ar.read(first_member)
 
 

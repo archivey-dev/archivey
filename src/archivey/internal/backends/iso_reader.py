@@ -102,6 +102,7 @@ from archivey.internal.streams.streamtools import (
 from archivey.internal.timestamps import TimestampIssue
 from archivey.internal.trailing_scan import first_nonzero_offset
 from archivey.internal.unix_mode import special_file_type
+from archivey.internal.volumes import JoinedViews
 from archivey.plugins import (
     FormatPlugin,
     IndexedReader,
@@ -1419,7 +1420,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         self._iso_opened = False
         # The extents of each listed file that pycdlib's inode does not describe as
         # written, keyed by ``id`` of its record; ``None`` when a clamped length could
-        # not be found on disc. Worked out while listing, so ``_data_span`` reads no
+        # not be found on disc. Worked out while listing, so ``_data_spans`` reads no
         # directory again. Every other file is read where pycdlib's inode says.
         self._layouts: dict[int, tuple[_Extent, ...] | None] = {}
         # What each directory's records say on disc, per directory extent read.
@@ -2300,7 +2301,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         """A file's size as its records declare it; ``None`` if that is lost.
 
         Records that pycdlib's inode describes as written are the common case and cost
-        nothing. The rest get a layout, kept for ``_data_span``.
+        nothing. The rest get a layout, kept for ``_data_spans``.
         """
         if self._as_written(record):
             return record.data_length
@@ -2379,8 +2380,8 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             self._raw_directories[key] = raw
         return raw
 
-    def _data_span(self, record: DirectoryRecord) -> tuple[int, int]:
-        """Where a file's data is in the image: its byte offset and length.
+    def _data_spans(self, record: DirectoryRecord) -> list[tuple[int, int]]:
+        """Where a file's data is in the image: each extent's byte offset and length.
 
         pycdlib's own inode gives it when it describes the file as written. The layout
         worked out while listing is used otherwise, never worked out again here:
@@ -2391,12 +2392,12 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         bytes on disc, which is what a mounted image shows; and a file pycdlib
         clamped at the end of the image.
 
-        A multi-extent file whose extents are not back to back is refused rather than
-        read as one run: every writer seen (xorriso, libarchive's fixture) lays them
-        out contiguously, and reading a gap would need a chained stream over
-        per-extent views that no image has needed yet. A span past the end of the
-        image is read as far as the image goes, and the adapter's size check makes
-        the short read a ``TruncatedError``.
+        The extents of a multi-extent file are read in record order, wherever they
+        sit: ECMA-119 does not require them to be back to back. Extents that overlap
+        each other are refused as corrupt, since no writer makes them and they would
+        let a small image list a file many times its size. A span past the end of
+        the image is read as far as the image goes, and the adapter's size check
+        makes the short read a ``TruncatedError``.
         """
         block_size = self._iso.logical_block_size
         layout = self._layouts.get(id(record))
@@ -2408,20 +2409,22 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             )
             inode = record.inode
             assert inode is not None
-            return inode.orig_extent_loc * block_size, inode.data_length
-        start = layout[0].sector
-        expected = start
-        for index, extent in enumerate(layout):
-            last = index == len(layout) - 1
-            if extent.sector != expected or (not last and extent.length % block_size):
-                raise UnsupportedFeatureError(
-                    "ISO file stored in extents that are not contiguous; reading "
-                    "it is not supported",
+            return [(inode.orig_extent_loc * block_size, inode.data_length)]
+        spans = [
+            (extent.sector * block_size, extent.length)
+            for extent in layout
+            if extent.length
+        ]
+        end = -1
+        for start, length in sorted(spans):
+            if start < end:
+                raise CorruptionError(
+                    "ISO file stored in extents that overlap each other",
                     source_format=self._format,
                     archive_name=self._archive_name,
                 )
-            expected += extent.length // block_size
-        return start * block_size, sum(extent.length for extent in layout)
+            end = start + length
+        return spans
 
     def open_member(
         self, member: ArchiveMember, locator: DirectoryRecord
@@ -2453,11 +2456,25 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         zisofs: _ZisofsEntry | None,
         member: ArchiveMember,
     ) -> BinaryIO:
-        # The file's bytes are one run of the image (``_data_span``), so a view of the
-        # source reads them directly; pycdlib's own file object would add a layer that
-        # seeks the shared handle on every read.
-        start, length = self._data_span(record)
-        stream = self._source.view(start, length)
+        # A view of the source per extent (``_data_spans``), joined when there are
+        # several; pycdlib's own file object would add a layer that seeks the shared
+        # handle on every read.
+        spans = self._data_spans(record)
+        stream: BinaryIO
+        if len(spans) == 1:
+            stream = self._source.view(*spans[0])
+        elif not spans:
+            stream = self._source.view(0, 0)
+        else:
+            views: list[BinaryIO] = []
+            try:
+                for start, length in spans:
+                    views.append(self._source.view(start, length))
+                stream = JoinedViews(views)
+            except BaseException:
+                for view in views:
+                    view.close()
+                raise
         if zisofs is None:
             return stream
         try:
