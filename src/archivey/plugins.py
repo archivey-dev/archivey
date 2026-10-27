@@ -186,10 +186,12 @@ class PluginSource:
         view: Callable[[int, int | None], BinaryIO],
         size: int | None,
         path: Path | None,
+        read_at: Callable[[int, int], bytes] | None = None,
     ) -> None:
         self._view = view
         self._size = size
         self._path = path
+        self._read_at = read_at
 
     @property
     def size(self) -> int | None:
@@ -208,7 +210,10 @@ class PluginSource:
         return self._view(start, length)
 
     def read_at(self, offset: int, n: int) -> bytes:
-        """Up to ``n`` bytes from ``offset``; fewer only at the end of the archive."""
+        """Up to ``n`` bytes from ``offset``; fewer only at the end of the archive.
+        Cheaper than a :meth:`view` for small reads: no stream is built."""
+        if self._read_at is not None:
+            return self._read_at(offset, n)
         with self._view(offset, n) as stream:
             return stream.read(n)
 

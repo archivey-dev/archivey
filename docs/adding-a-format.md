@@ -313,7 +313,9 @@ archivey cannot check how your reader parses the archive, only what it hands bac
 These habits keep a crafted file from doing more than raising `CorruptionError`.
 
 - **Read with `PluginSource.read_exact()`** wherever the bytes must all be there, as
-  the example does. It raises `TruncatedError` when the archive ends early.
+  the example does. It raises `TruncatedError` when the archive ends early. It and
+  `read_at()` are the cheap way to parse: each is one read of the archive, with no
+  stream built, and safe from any thread. Keep `view()` for a member's data.
 - **Check every size and offset against what the format allows** before you allocate or
   read with it. Compare offsets with `PluginSource.size`, and refuse a count or length
   larger than the format can hold.

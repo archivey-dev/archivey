@@ -157,7 +157,9 @@ class PluginReaderAdapter(BaseArchiveReader):
         if MemberStreams.CONCURRENT in member_streams:
             self._handle_lock = threading.Lock()
         self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
-        plugin_source = PluginSource(self._shared.view, self._shared.size, source.path)
+        plugin_source = PluginSource(
+            self._shared.view, self._shared.size, source.path, self._shared.read_at
+        )
         # The member decoder config, as ZIP builds its own: the compressed bytes a
         # plugin hands ``decompress`` are the codec's whole input, so a byte after the
         # codec's end of stream is damage.
