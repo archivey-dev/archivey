@@ -170,10 +170,44 @@ scan in `archive.cost`.
 `open_member()` returns a `MemberData` with a stream of the member's bytes, decoded and
 read from the start. archivey closes the stream.
 
+The stream does not need to seek. When the caller opens the archive with
+`seekable_members=True` and the stream cannot seek, archivey seeks for it: a forward seek
+reads the bytes in between, and a backward seek calls `open_member()` again and reads
+forward from the start, which is slow for a large member. When the listing gives no
+`size`, a seek from the end reads to the end once to find it.
+
 `PluginSource.view(start, length)` gives a stream over part of the archive with its own
 position, so two members open at the same time do not move each other. A format that
-stores members uncompressed returns a view directly, as TOYA does. A format that
-compresses members wraps the view in its decompressor.
+stores members uncompressed returns a view directly, as TOYA does.
+
+A format that compresses each member with a method archivey already decodes hands the
+member's compressed bytes to `PluginContext.decompress()`, and returns what it gives:
+
+```python
+def open_member(self, member: ArchiveMember, locator: Locator) -> MemberData:
+    offset, compressed_size = locator
+    data = self._source.view(offset, compressed_size)
+    return MemberData(
+        self._context.decompress(data, CompressionAlgorithm.DEFLATE, size=member.size)
+    )
+```
+
+It decodes raw Deflate, Deflate64, bzip2, Zstandard and LZ4 frames, Brotli, and raw
+LZMA and LZMA2 (with the `properties` bytes the format stores). It uses the caller's
+decoder limits, process isolation and accelerator settings, and turns the decoder's
+errors into archivey's own. A method whose optional package is missing raises
+`PackageNotInstalledError`.
+
+Where the compressed data ends depends on the method:
+
+- **Zstandard and LZ4** data may be several frames, and all of them are decoded.
+- **bzip2** data is one stream. A second stream after it raises `CorruptionError`.
+- **LZMA and LZMA2** end at their end marker. Raw LZMA1, which may have none, then
+  ends at `size`.
+- For every method, bytes left after that end raise `CorruptionError`.
+
+A format whose methods archivey does not decode wraps the view in its own library's
+decoder.
 
 archivey checks every member stream against what the listing said:
 
@@ -183,11 +217,29 @@ archivey checks every member stream against what the listing said:
 - **Checksums archivey can compute.** A CRC-32 or BLAKE2sp in `member.hashes`, or in
   `MemberData.expected_hashes`, is checked as the stream is read. A mismatch raises
   `CorruptionError`, and a full read with a match reaches `Verification.CONTENT`.
-- **Checksums only your library can compute.** If your library checks a CRC-16, SHA-1 or
-  other checksum itself and raises when it does not match, set `checked=True` on the
-  `MemberData`. A read to the end then counts as `Verification.CONTENT` too. Keep the
-  stored value in `member.extra` under a key named after your format, such as
-  `"toya.sha1"`.
+- **Checksums archivey has no hasher for.** For a CRC-16, a SHA-1 or any other
+  checksum, put a `MemberDigest` in `MemberData.digests`: its name, the stored value,
+  and a function that makes a fresh hasher, such as `hashlib.sha1`. A hasher is any
+  object with `update(bytes)` and `digest()`. archivey feeds it the bytes as they are
+  read, and checks the result the same way as a CRC-32. Ignoring case, the name may
+  not be one archivey computes itself (`"crc32"`, `"blake2sp"`), a key of
+  `member.hashes` or `expected_hashes`, or another digest's name, or opening the member
+  raises `ValueError`. List a checksum in one place only. For example:
+
+  ```python
+  return MemberData(
+      self._source.view(offset, size),
+      digests=(MemberDigest("sha1", stored_sha1, hashlib.sha1),),
+  )
+  ```
+
+- **Checksums the stream checks itself.** If the stream your library returns checks
+  its own checksum and raises when it does not match, set `checked=True` on the
+  `MemberData`. A read to the end then counts as `Verification.CONTENT` too.
+
+Whichever way a checksum archivey has no name for is checked, keep the stored value in
+`member.extra` under a key named after your format, such as `"toya.sha1"`, so callers
+can see it.
 
 ## Errors
 
@@ -195,7 +247,10 @@ When the archive is damaged, raise archivey's own exceptions from the reader:
 `CorruptionError` for bytes that cannot be right, `TruncatedError` for an archive that
 ends too early, and `UnsupportedFeatureError` for a feature your reader does not handle.
 
-An exception from a library you wrap can go through `translate_exception()`. Return the
+An exception from a library you wrap can go through `translate_exception()`. It is asked
+about every exception raised while archivey calls the reader, and while a member stream
+it returned is read. Errors from `PluginContext.decompress()` are archivey's own already
+and never reach it. Return the
 archivey exception to raise in its place, or `None` to let it propagate as it is:
 
 ```python

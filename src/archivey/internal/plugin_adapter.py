@@ -12,20 +12,28 @@ registers it after the built-in backends, so a built-in signal always wins (§4)
 
 from __future__ import annotations
 
+import lzma
 import threading
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager
-from typing import BinaryIO, ClassVar
+from dataclasses import replace
+from typing import Any, BinaryIO, ClassVar
 
 from archivey.config import ArchiveyConfig, ProcessIsolation
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
-from archivey.exceptions import ArchiveyError, ArchiveyUsageError
+from archivey.exceptions import (
+    ArchiveyError,
+    ArchiveyUsageError,
+    CorruptionError,
+    UnsupportedFeatureError,
+)
 from archivey.internal import format_args
 from archivey.internal.base_reader import (
     BaseArchiveReader,
     ReadBackend,
     reject_start_offset,
 )
+from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.format_args import add_plugin_spellings, plugin_spelling_clash
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
@@ -33,10 +41,24 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStream
-from archivey.internal.streams.streamtools import LockedStream, SharedSource
+from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
+from archivey.internal.streams.codecs import (
+    Codec,
+    CodecParams,
+    decode_lzma_filter_properties,
+    open_codec_stream,
+)
+from archivey.internal.streams.respawn import RespawnStream
+from archivey.internal.streams.streamtools import (
+    LockedStream,
+    SharedSource,
+    is_seekable,
+    source_byte_size,
+)
+from archivey.internal.streams.verify import CustomDigests
 from archivey.plugins import (
     FormatPlugin,
+    Hasher,
     IndexedReader,
     MemberData,
     PluginContext,
@@ -47,7 +69,9 @@ from archivey.types import (
     ArchiveInfo,
     ArchiveInfoExtra,
     ArchiveMember,
+    CompressionAlgorithm,
     ContainerFormat,
+    HashAlgorithm,
     MagicSignature,
     MemberStreams,
     PluginContainer,
@@ -90,7 +114,23 @@ class PluginReaderAdapter(BaseArchiveReader):
             self._handle_lock = threading.Lock()
         self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
         plugin_source = PluginSource(self._shared.view, self._shared.size, source.path)
-        context = PluginContext(encoding=encoding, archive_name=archive_name)
+        # The member decoder config, as ZIP builds its own: the compressed bytes a
+        # plugin hands ``decompress`` are the codec's whole input, so a byte after the
+        # codec's end of stream is damage.
+        self._decoder_config = replace(
+            stream_config_from_archivey(
+                self._config,
+                streaming=streaming,
+                seekable=MemberStreams.SEEKABLE in member_streams,
+                usage=self._usage,
+            ),
+            refuse_input_after_end=True,
+        )
+        context = PluginContext(
+            encoding=encoding,
+            archive_name=archive_name,
+            decompress=self._decompress,
+        )
         with self._translated_errors(), self._handle_guard():
             reader = plugin.open(plugin_source, context)
         # Each check that the plugin kept to the interface sits outside the error
@@ -103,6 +143,60 @@ class PluginReaderAdapter(BaseArchiveReader):
             )
         self._reader = reader
         self._MEMBER_LIST_UPFRONT = reader.member_list_upfront
+
+    def _decompress(
+        self,
+        data: BinaryIO,
+        method: CompressionAlgorithm,
+        size: int | None,
+        properties: bytes | None,
+    ) -> BinaryIO:
+        """``PluginContext.decompress``: ``data`` through archivey's codec layer."""
+        codec = _PLUGIN_CODECS.get(method)
+        if codec is None:
+            raise UnsupportedFeatureError(
+                f"PluginContext.decompress() does not decode {method.name}",
+                source_format=self._format,
+                archive_name=self._archive_name,
+            )
+        # Only a bzip2 member is one stream, as in ZIP and 7z: a further stream after
+        # its end is refused. Zstd and LZ4 data may be several frames, read together
+        # (RFC 8878, the LZ4 frame format), and the other codecs read no flag.
+        params = CodecParams(single_stream=codec is Codec.BZIP2)
+        if codec is Codec.LZMA or codec is Codec.LZMA2:
+            want = 5 if codec is Codec.LZMA else 1
+            if properties is None or len(properties) != want:
+                raise CorruptionError(
+                    f"{method.name} needs {want} bytes of properties, got "
+                    f"{'none' if properties is None else len(properties)}",
+                    source_format=self._format,
+                    archive_name=self._archive_name,
+                )
+            what = f"{self._format.display_name} {method.name} member"
+            filter_id = lzma.FILTER_LZMA1 if codec is Codec.LZMA else lzma.FILTER_LZMA2
+            # Its own params, with no ``single_stream``: raw LZMA needs none.
+            params = CodecParams(
+                filters=[
+                    decode_lzma_filter_properties(filter_id, properties, what=what)
+                ],
+                # Raw LZMA1 may have no end marker: it stops at the stored size.
+                unpack_size=size if codec is Codec.LZMA else None,
+            )
+        # Per call, as ZIP fills them per member (``_member_decoder_config``): the
+        # output size, and the input size while ``data`` is at its start. The
+        # accelerators choose by them, and rapidgzip's length check needs the first.
+        changes: dict[str, Any] = {"expected_decompressed_size": size}
+        if not is_seekable(data) or data.tell() == 0:
+            input_size = source_byte_size(data)
+            if input_size is not None:
+                changes["compressed_input_size"] = input_size
+        return open_codec_stream(
+            codec,
+            data,
+            config=replace(self._decoder_config, **changes),
+            params=params,
+            collector=self._diagnostics_collector,
+        )
 
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         return self._reader.translate_exception(exc)
@@ -137,7 +231,8 @@ class PluginReaderAdapter(BaseArchiveReader):
             index += 1
             yield member
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+    def _plugin_member_data(self, member: ArchiveMember) -> MemberData:
+        """Call the plugin's ``open_member``, with its stream under the handle lock."""
         with self._translated_errors(member.name), self._handle_guard():
             data = self._reader.open_member(member, member._raw)
         if not isinstance(data, MemberData):
@@ -145,24 +240,80 @@ class PluginReaderAdapter(BaseArchiveReader):
                 f"{type(self._reader).__name__}.open_member() returned "
                 f"{type(data).__name__}, not MemberData"
             )
-        stream: BinaryIO = data.stream
         if self._handle_lock is not None:
-            stream = LockedStream(stream, self._handle_lock)
-        expected: dict = dict(member.hashes)
-        expected.update(data.expected_hashes)
-        return self._wrap_member_stream(
-            stream,
-            member.name,
-            size=member.size,
-            # A listed size is enforced, so a short stream raises TruncatedError and
-            # a long one CorruptionError. A file listed with no size is read to the
-            # end of its stream, and only its digests are checked.
-            expected_size=member.size,
-            expected_hashes=expected or None,
-            verify_member=member,
-            fill_size=member.size is None,
-            checks_content=data.checked,
-        )
+            data = data._replace(stream=LockedStream(data.stream, self._handle_lock))
+        return data
+
+    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+        data = self._plugin_member_data(member)
+        stream: BinaryIO = data.stream
+        # Until the ArchiveStream takes the stream over, a raise here (a refused
+        # digest name, a hasher factory that fails) leaves archivey owing it a close.
+        try:
+            expected: dict = dict(member.hashes)
+            expected.update(data.expected_hashes)
+            custom_digests = self._custom_digests(data, expected)
+            rewind: RewindWarning | None = None
+            if self._seek_declared() and not is_seekable(stream):
+                # The caller asked for seekable members and the plugin's stream reads
+                # forward only: a forward seek reads through, and a backward one
+                # opens the member again from the start (``open_member`` once more).
+                # With no listed size, a seek from the end reads through to find it.
+                stream = RespawnStream(
+                    lambda: self._plugin_member_data(member).stream,
+                    stream,
+                    size=member.size,
+                    what=f"{self._format.display_name} member data",
+                )
+                rewind = RewindWarning(
+                    codec_name=self._format.display_name, suggest_install=False
+                )
+            return self._wrap_member_stream(
+                stream,
+                member.name,
+                size=member.size,
+                # A listed size is enforced, so a short stream raises TruncatedError
+                # and a long one CorruptionError. A file listed with no size is read
+                # to the end of its stream, and only its digests are checked.
+                expected_size=member.size,
+                expected_hashes=expected or None,
+                verify_member=member,
+                fill_size=member.size is None,
+                checks_content=data.checked,
+                custom_digests=custom_digests or None,
+                rewind_warning=rewind,
+            )
+        except BaseException:
+            stream.close()
+            raise
+
+    def _custom_digests(self, data: MemberData, expected: Mapping) -> CustomDigests:
+        """``data.digests`` keyed by folded name.
+
+        The verifier keys every check by its folded name, so a digest may not take
+        the name of another digest, of a ``HashAlgorithm`` archivey computes itself,
+        or of a hash the member already lists in ``expected``. The last is refused
+        even when archivey has no hasher for the listed one: two stored values under
+        one name is the plugin's bug, whichever would win.
+        """
+        listed = {str(key).lower() for key in expected}
+        digests: dict[str, tuple[bytes, Callable[[], Hasher]]] = {}
+        for digest in data.digests:
+            key = digest.name.lower()
+            if key in digests:
+                reason = "which another digest of the member also uses"
+            elif key in _ALGORITHM_KEYS:
+                reason = "which is a HashAlgorithm archivey computes itself"
+            elif key in listed:
+                reason = "which the member already lists as a hash"
+            else:
+                digests[key] = (digest.expected, digest.new)
+                continue
+            raise ValueError(
+                f"{type(self._reader).__name__}.open_member() returned a digest "
+                f"named {digest.name!r}, {reason}"
+            )
+        return digests
 
     def _get_archive_info(self) -> ArchiveInfo:
         with self._translated_errors(), self._handle_guard():
@@ -199,6 +350,24 @@ class PluginReaderAdapter(BaseArchiveReader):
                 self._reader.close()
         finally:
             self._shared.close()
+
+
+# The names ``MemberDigest`` may not take: archivey computes these itself.
+_ALGORITHM_KEYS = frozenset(str(algorithm) for algorithm in HashAlgorithm)
+
+# The methods ``PluginContext.decompress`` decodes. PPMd, the branch filters and RAR
+# need parameters or framing a plain method name cannot carry.
+_PLUGIN_CODECS: dict[CompressionAlgorithm, Codec] = {
+    CompressionAlgorithm.STORED: Codec.STORED,
+    CompressionAlgorithm.DEFLATE: Codec.DEFLATE,
+    CompressionAlgorithm.DEFLATE64: Codec.DEFLATE64,
+    CompressionAlgorithm.BZIP2: Codec.BZIP2,
+    CompressionAlgorithm.ZSTD: Codec.ZSTD,
+    CompressionAlgorithm.LZ4: Codec.LZ4,
+    CompressionAlgorithm.BROTLI: Codec.BROTLI,
+    CompressionAlgorithm.LZMA: Codec.LZMA,
+    CompressionAlgorithm.LZMA2: Codec.LZMA2,
+}
 
 
 class _PluginBackend(ReadBackend):

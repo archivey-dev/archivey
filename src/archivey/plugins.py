@@ -26,21 +26,24 @@ import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
-from typing import BinaryIO, ClassVar, Generic, NamedTuple, TypeVar
+from typing import BinaryIO, ClassVar, Generic, NamedTuple, Protocol, TypeVar
 
 from archivey.exceptions import ArchiveyError
 from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
+    CompressionAlgorithm,
     HashAlgorithm,
     PluginContainer,
 )
 
 __all__ = [
     "FormatPlugin",
+    "Hasher",
     "IndexedReader",
     "Magic",
     "MemberData",
+    "MemberDigest",
     "MemberRecord",
     "PluginArchiveInfo",
     "PluginContainer",
@@ -75,6 +78,41 @@ class MemberRecord(NamedTuple, Generic[LocatorT]):
     and hands it back to :meth:`IndexedReader.open_member`."""
 
 
+class Hasher(Protocol):
+    """A running checksum, shaped like a ``hashlib`` object: ``hashlib.sha1()`` is
+    one."""
+
+    def update(self, data: bytes, /) -> None:
+        """Add the next bytes of the member."""
+
+    def digest(self) -> bytes:
+        """The checksum of every byte added so far."""
+
+
+class MemberDigest(NamedTuple):
+    """A checksum archivey cannot compute itself, with what computes it.
+
+    archivey feeds the member's bytes to a fresh hasher from ``new`` as they are read,
+    and compares ``digest()`` with ``expected`` when a read reaches the end. A mismatch
+    raises ``CorruptionError``, and a match counts as ``Verification.CONTENT``, as for
+    a CRC-32 in ``ArchiveMember.hashes``. Bytes read again after a backward seek are
+    not fed twice.
+    """
+
+    name: str
+    """The checksum's name (``"sha1"``), for messages and as its key. Ignoring case, it
+    may not repeat another digest's name, be a ``HashAlgorithm`` value (``"crc32"``),
+    which archivey computes itself, or be a key of the member's ``hashes`` or
+    ``expected_hashes``, even one archivey has no hasher for. A refused name raises
+    ``ValueError`` when the member is opened."""
+
+    expected: bytes
+    """The value the archive stores, as ``digest()`` returns it."""
+
+    new: Callable[[], Hasher]
+    """Makes a fresh hasher: ``hashlib.sha1``, or a class of the plugin's own."""
+
+
 class MemberData(NamedTuple):
     """A member's data, as :meth:`IndexedReader.open_member` returns it."""
 
@@ -86,9 +124,14 @@ class MemberData(NamedTuple):
     ``ArchiveMember.hashes`` is checked too."""
 
     checked: bool = False
-    """The plugin's library verified the data with a checksum archivey cannot compute
-    (a CRC-16, a SHA-1), and raises when it does not match once read to the end. The
-    member then counts as verified when a read reaches its end."""
+    """The stream checks its bytes itself, with a checksum the plugin's library
+    computes inside it, and raises when it does not match once read to the end. The
+    member then counts as verified when a read reaches its end. A plugin that can
+    compute the checksum but returns a raw stream uses ``digests`` instead."""
+
+    digests: tuple[MemberDigest, ...] = ()
+    """Checksums archivey computes with a hasher the plugin supplies, as the stream
+    is read."""
 
 
 class PluginArchiveInfo(NamedTuple):
@@ -146,9 +189,18 @@ class PluginSource:
 class PluginContext:
     """What an open archive needs from archivey. archivey builds it."""
 
-    def __init__(self, *, encoding: str | None, archive_name: str | None) -> None:
+    def __init__(
+        self,
+        *,
+        encoding: str | None,
+        archive_name: str | None,
+        decompress: Callable[
+            [BinaryIO, CompressionAlgorithm, int | None, bytes | None], BinaryIO
+        ],
+    ) -> None:
         self._encoding = encoding
         self._archive_name = archive_name
+        self._decompress = decompress
 
     @property
     def encoding(self) -> str | None:
@@ -176,6 +228,40 @@ class PluginContext:
             except UnicodeError:
                 pass
         return raw.decode("utf-8", errors="surrogateescape")
+
+    def decompress(
+        self,
+        data: BinaryIO,
+        method: CompressionAlgorithm,
+        *,
+        size: int | None = None,
+        properties: bytes | None = None,
+    ) -> BinaryIO:
+        """Decode one member's compressed bytes with archivey's own decoders.
+
+        ``data`` holds exactly the member's compressed bytes, usually a
+        :meth:`PluginSource.view` of them. The returned stream gives the decoded bytes;
+        return it in :class:`MemberData`. It applies the caller's decoder limits,
+        process isolation and accelerator settings, and translates the decoder's errors
+        itself, so ``translate_exception`` never sees them.
+
+        Where the compressed data ends depends on the method. ``ZSTD`` and ``LZ4`` data
+        is one or more frames, decoded together. ``BZIP2`` data is one stream, and a
+        second one is damage. ``LZMA`` and ``LZMA2`` end at their end marker; raw LZMA1,
+        which may have none, then ends at ``size``. For every method, bytes left after
+        that end raise ``CorruptionError``.
+
+        ``method`` is one of ``STORED``, ``DEFLATE`` (raw, no zlib or gzip header),
+        ``DEFLATE64``, ``BZIP2``, ``ZSTD``, ``LZ4``, ``BROTLI``, ``LZMA`` (raw LZMA1;
+        ``properties`` is its 5-byte properties: the ``lc``, ``lp``, ``pb`` byte and the
+        dictionary size) and ``LZMA2`` (raw; ``properties`` is its 1-byte dictionary
+        size). Any other method raises ``UnsupportedFeatureError``, and a method whose
+        optional package is missing raises ``PackageNotInstalledError``.
+
+        ``size`` is the decoded length when the format stores it. Raw LZMA1 may have
+        no end marker and needs it then.
+        """
+        return self._decompress(data, method, size, properties)
 
 
 class PluginReader(ABC):

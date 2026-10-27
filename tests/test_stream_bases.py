@@ -420,6 +420,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         counting,
         crypto,
         decompressor_stream,
+        respawn,
         verify,
     )
     from archivey.internal.streams.codecs import rapidgzip_child
@@ -455,7 +456,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         counting.CountingReader,
         counting.SeekCountingStream,
         rar_reader._UnrarOwnedStream,
-        rar_reader._RespawnStream,
+        respawn.RespawnStream,
         # Subprocess stdout, like the unrar pipe: nothing below it has a table.
         unar.UnarOutputStream,
         cli.ProcessOutputStream,  # the base of the two subprocess stdout streams
