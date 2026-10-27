@@ -267,8 +267,12 @@ Points that matter:
   only refusals left are a repeated name and a missing hasher. A digest that names an
   algorithm `ArchiveMember.hashes` already holds is checked as well, not instead: an
   index and a local header that disagree fail the read, rather than the local value
-  silently replacing the listed one. What would reopen it: a real format whose two
-  stored values legitimately differ.
+  silently replacing the listed one; a listed name archivey has no hasher for is
+  checked with the plugin's. A `HashAlgorithm` digest the listing lacks is added to
+  `ArchiveMember.hashes` when the member is opened, as a built-in format publishes a
+  CRC-32 it reads from a local header, because callers read stored digests only there
+  (`design-rules.md`, 2026-10-20, PR 896). What would reopen it: a real format whose
+  two stored values legitimately differ.
 - **Sources are views, not a shared handle.** `PluginSource.view()` returns a stream with
   its own position over the shared source (the `SharedSource` views the built-ins use).
   Two member streams open at the same time, or a `CONCURRENT` reader, cannot move each

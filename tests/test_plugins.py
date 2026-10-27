@@ -614,36 +614,50 @@ def test_an_opened_crc32_is_published_on_the_member(
         assert reader.read(member) == b"alpha\n"
 
 
-@pytest.mark.parametrize("same", [True, False], ids=["same", "differs"])
-def test_a_listed_name_outside_hashalgorithm_is_checked_twice(
-    clean_registry: None, tmp_path: Path, same: bool
+@pytest.mark.parametrize(
+    ("listed", "opened", "fails"),
+    [
+        ("good", "good", None),
+        ("good", "bad", "'sum16 from open_member\\(\\)'"),
+        ("bad", "good", "'sum16'"),
+    ],
+)
+def test_a_listed_name_outside_hashalgorithm_uses_the_plugins_hasher(
+    clean_registry: None,
+    tmp_path: Path,
+    listed: str,
+    opened: str,
+    fails: str | None,
 ) -> None:
     """A listed hash keyed by a plain name (outside the typed contract, accepted at
-    runtime) and a digest of that name are both checked, as for a CRC-32."""
-    good = hashlib.sha1(b"alpha\n").digest()
+    runtime) and a digest of that name are reconciled: the listed value is checked
+    with the plugin's hasher, as archivey has none of its own for ``sum16``, and an
+    opened value that differs is checked too. When the two agree, one check runs."""
+    value = {"good": _sum16(b"alpha\n"), "bad": b"\0\0"}
 
-    class ListedSha1(ToyReader):
+    class ListedSum16(ToyReader):
         def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
             for record in super().iter_members():
-                record.member.hashes = {"sha1": good}  # type: ignore[dict-item]
+                record.member.hashes = {"sum16": value[listed]}  # type: ignore[dict-item]
                 yield record
 
         def open_member(
             self, member: ArchiveMember, locator: tuple[int, int]
         ) -> MemberData:
             data = super().open_member(member, locator)
-            value = good if same else bytes(20)
             return MemberData(
-                data.stream, digests=(MemberDigest("SHA1", value, hashlib.sha1),)
+                data.stream, digests=(MemberDigest("SUM16", value[opened], _Sum16),)
             )
 
-    _plugin_with("listedsha1", reader=ListedSha1)
-    path = _write(tmp_path, build_toya(_ENTRIES), "t.listedsha1")
+    _plugin_with("listedsum16", reader=ListedSum16)
+    path = _write(tmp_path, build_toya(_ENTRIES), "t.listedsum16")
     with open_archive(path) as reader:
-        if same:
-            assert reader.read("docs/a.txt") == b"alpha\n"
+        if fails is None:
+            with reader.open("docs/a.txt") as stream:
+                assert stream.read() == b"alpha\n"
+                assert stream.verified is archivey.Verification.CONTENT
         else:
-            with pytest.raises(CorruptionError, match="sha1 from open_member"):
+            with pytest.raises(CorruptionError, match=fails):
                 reader.read("docs/a.txt")
 
 

@@ -449,7 +449,7 @@ class PluginReaderAdapter(BaseArchiveReader):
         other digest is computed with the plugin's hasher.
         """
         expected = dict(member.hashes)
-        listed = {str(key).lower(): value for key, value in expected.items()}
+        listed = {str(key).lower(): (key, value) for key, value in expected.items()}
         custom: dict[str, tuple[bytes, Callable[[], Hasher]]] = {}
         published: dict[HashAlgorithm, bytes] = {}
         seen: set[str] = set()
@@ -470,8 +470,13 @@ class PluginReaderAdapter(BaseArchiveReader):
                 self._refuse_digest(
                     digest, "which archivey does not compute, with no hasher"
                 )
-            prior = listed.get(key)
-            if prior is not None:
+            if key in listed:
+                listed_key, prior = listed[key]
+                if algorithm is None:
+                    # A listed name archivey has no hasher of its own for: the
+                    # listed value is checked with the plugin's hasher too.
+                    del expected[listed_key]
+                    custom[key] = (prior, factory)
                 if prior != digest.expected:
                     custom[f"{key} from open_member()"] = (digest.expected, factory)
             elif algorithm is not None:
