@@ -21,20 +21,20 @@ and WinRAR installers the archive starts exactly at the end of the last section.
   today.
 - **An overlay-start check before the forward scan.** For a PE whose overlay starts inside
   the scan window, judge the RAR / 7z / ZIP candidate at the overlay start first. A valid
-  hit there is the answer, ahead of an earlier needle in the stub. A 7z there that ends
-  where the certificate starts counts as ending at end of source. The RAR and 7z parsers'
-  own scans apply the same rule, so forced `format=` opens the same payload.
+  hit there is the answer, ahead of any other needle in the window, including a 7z there
+  that ends short of end of source. The RAR and 7z parsers' scans and the forward ZIP walk
+  apply the same rule, so forced `format=` opens the same payload, seekable or not.
 - **A ZIP tail probe, gated on the PE layout.** It runs only when all of these hold: the
   forward scan found nothing, the source is a PE whose overlay runs past what the window
   covered, and the tail can be read cheaply. It searches the 65 558 bytes before the
   certificate (or before end of file when there is none), and confirms the end record
   against the central directory and a local header before answering `ZIP` / `PROBABLE` /
   `sfx_scan`.
-- **Accounting.** The tail read is counted in `unique_bytes_read` and recorded under a
-  new tier name, `sfx_tail`. No new budget field.
-- **Not breaking.** Files detected today are detected the same way, except a PE whose
-  stub holds a valid needle ahead of a valid payload at its overlay start. That one now
-  answers with the overlay payload (design §3).
+- **Accounting.** The tail read is counted in `unique_bytes_read` under a defined tail
+  allowance and recorded under a new tier name, `sfx_tail`. No new budget field.
+- **Not breaking.** Files detected today are detected the same way, except a PE with a
+  valid payload at its overlay start and another valid needle elsewhere in the window.
+  That one now answers with the overlay payload (design §3).
 
 ## Capabilities
 
@@ -43,14 +43,18 @@ and WinRAR installers the archive starts exactly at the end of the last section.
 ### Modified Capabilities
 - `format-detection`: the SFX requirement gains the overlay-start rule; a new requirement
   for the PE-gated ZIP tail probe.
-- `detection-cost`: a new requirement for how the tail probe is bounded, recorded and
-  charged.
+- `detection-cost`: *Detection declares what it may spend, and reports what it spent*
+  gains the tail allowance, in its definitions and in the within-budget rule. The spec's
+  Purpose note, which expects a tail probe to bring its own budget field, is amended by
+  hand at archive (deltas do not carry Purpose text).
 
 ## Impact
 
 - `internal/sfx.py` (PE layout helper next to `_is_pe`), `internal/detection.py` (overlay
   check, tail probe), `internal/backends/zip_parser.py` (the end-record search and checks,
-  shared), `rar_parser.py` and `sevenzip_parser.py` (overlay-start rule in their scans).
+  shared), `rar_parser.py`, `sevenzip_parser.py` and `zip_local_walk.py` (overlay-start
+  rule in their scans), `detection_workspace.py` (a tail read that ends at a given offset
+  and records its decline under the caller's tier).
 - No public API change. `detected_by` keeps its values. `TierSkip.tier` gains `sfx_tail`.
 - Tests: synthetic PE files with a section table and a certificate entry; no real
   installer is committed.

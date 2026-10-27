@@ -21,9 +21,12 @@ reuses Block 1's helper.
 - [ ] 1.5 `internal/detection.py`: the tail probe after a scan miss, gated as in the spec,
       answering `ZIP` / `PROBABLE` / `sfx_scan` with `payload_offset` per design Open
       Questions (first entry, unless the maintainer decides otherwise).
-- [ ] 1.6 Receipt and records: tail bytes in `unique_bytes_read`, not `scanned_bytes`;
-      `sfx_tail` *not enabled by policy* / *capability unavailable*; nothing recorded for
-      an excluded source.
+- [ ] 1.6 `PrefixWorkspace.read_tail`: take an end offset and the tier name a decline is
+      recorded under (design §7); the trailer step passes `trailer`. Receipt and records:
+      tail bytes in `unique_bytes_read`, not `scanned_bytes`; prefix-held bytes not fetched
+      again; `sfx_tail` *not enabled by policy* / *capability unavailable*; nothing
+      recorded for an excluded source. Add the tail allowance to the test suite's
+      within-budget check.
 - [ ] 1.7 Tests for every row of the tail-probe matrix and the receipt scenario,
       including both ZIP write conventions and a certificate larger than 64 KiB.
 - [ ] 1.8 Docs: `prefixed-archives.md` (§2 tier table, §3 cost, §6 sharp edges, §7
@@ -34,13 +37,15 @@ reuses Block 1's helper.
 ## 2. Overlay start first (Block 2)
 
 - [ ] 2.1 `internal/detection.py`: judge the candidate at the overlay start before the
-      forward scan; a 7z ending at the payload end counts as exact-end.
-- [ ] 2.2 `rar_parser._find_sfx_header` and the 7z signature search: take the same layout
-      and apply the same rule, so forced `format=` agrees.
+      forward scan; `VALID` and `VALID_SHORT` there both answer (design §3).
+- [ ] 2.2 `rar_parser._find_sfx_header`, the 7z signature search and
+      `ZipForwardReader._scan_for_local_header`: take the same layout and apply the same
+      rule, so forced `format=`, seekable or streaming, agrees.
 - [ ] 2.3 Tests for every row of the overlay-start scenario, each checked through both
-      `detect_format` and forced `format=`.
-- [ ] 2.4 Update `IDEAS.md` "Bound the SFX search at the PE overlay": the signed-7z case
-      is covered by 2.1; keep what is left of it, or remove the entry.
+      `detect_format` and forced `format=` (streaming too for the ZIP row).
+- [ ] 2.4 `IDEAS.md` "Bound the SFX search at the PE overlay": 2.1 covers every PE whose
+      layout parses; narrow the entry to stubs without one (bare `MZ`, ELF, Mach-O), and
+      keep `test_short_7z_hit_scan_cost_is_bounded_by_the_window` as it is.
 - [ ] 2.5 Docs: `prefixed-archives.md` §2 and `docs/formats.md` SFX bullet.
 
 ## 3. Verify
@@ -50,3 +55,5 @@ reuses Block 1's helper.
       other files give the same answers as today; record timings before and after for one
       large file
 - [ ] 3.3 `openspec validate --strict pe-aware-sfx-location`
+- [ ] 3.4 At archive: amend the `detection-cost` Purpose note, which expects a tail probe
+      to bring its own budget field, to say the PE gate stands in for one (design §8)

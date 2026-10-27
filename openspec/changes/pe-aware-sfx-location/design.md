@@ -80,13 +80,23 @@ not an RVA. It counts only when it starts at or past the overlay start and runs 
 of the source. Anything else leaves `payload_end` at end of source. **Rejected:** a seek to
 read a section table past the prefix (an extra access, for headers no real linker writes).
 
-### 3. A valid hit at the overlay start beats an earlier needle
+### 3. A valid hit at the overlay start beats every other needle
 The overlay start is where the PE format itself says appended data begins, so it is
-stronger evidence than "earliest needle". This changes one answer: a PE whose stub holds a
-valid needle ahead of a valid payload at its overlay start now gets the overlay payload.
-The RAR and 7z parsers' scans take the same layout and rule, so `format=` and detection
-agree (DR-23a). **Rejected:** treat the overlay start as a hint only, scanning from 0
-first (keeps every decoy in play and saves nothing); apply it only past the window (no
+stronger evidence than "earliest needle" and than the 7z exact-end tie-break. Both
+accepting outcomes count there: `VALID`, and `VALID_SHORT` for a 7z that ends before end
+of source, whether a certificate or anything else follows it. This changes one answer: a
+PE with a valid payload at its overlay start and another valid needle elsewhere in the
+window now gets the overlay payload. It also bounds the scan cost `IDEAS.md` records for
+"a 7z SFX with data after the archive", for every PE whose layout parses. A stub with no
+parsable PE header (the bare `MZ` stub in
+`test_short_7z_hit_scan_cost_is_bounded_by_the_window`) keeps today's rule. Every scan
+bounded by `SFX_MAX` takes the same layout and rule: the detector, the RAR and 7z parsers,
+and the forward ZIP walk, which reads the prefix before it scans and so has the layout.
+`format=` and detection then agree, seekable or not (DR-23a). **Rejected:** treat the
+overlay start as a hint only, scanning from 0 first (keeps every decoy in play and saves
+nothing); accept only `VALID` there (a signed 7z SFX, the common case, would still read
+the whole window); leave the forward ZIP walk on the earliest-needle rule (streaming
+`format=ZIP` would open a decoy that detection skips); apply it only past the window (no
 gain for the common case).
 
 ### 4. Search the span before the certificate, with the reader's locator
@@ -112,15 +122,32 @@ hit. Confidence is `PROBABLE`, as for a scan hit. The tier name `sfx_tail` appea
 `detected_by` value (it is an open set, but adding one for the same kind of evidence only
 splits callers' matches).
 
-### 7. Decline ZIP64 end records in this change
+### 7. The tail read is the trailer tier's read, ending at a given offset
+`PrefixWorkspace.read_tail(length)` returns the last `length` bytes and records its
+declines as `trailer`. The probe's span ends at the certificate start, so the method gains
+an end offset and the name of the tier a decline is recorded under; the trailer step
+passes `trailer` and end of source, the probe passes `sfx_tail` and the payload end. One
+method keeps the cheap-seek rule (seek, restore the handle, never grow the prefix) in one
+place. It also gains the accounting the spec asks for: bytes taken from the prefix are not
+fetched again, and fetched bytes count in `unique_bytes_read`. **Rejected:** `read_at`
+(it grows the prefix on an expensive-seek source and records `content_probe_read_at`); a
+second tail method (two copies of the cheapness test, DR-23a).
+
+### 8. The cost spec's Purpose note is amended at archive
+The `detection-cost` Purpose says a ZIP tail probe "adds its own budget and receipt
+fields". Decision §1 decides against a budget field, and the delta defines a tail
+allowance instead. Purpose text is not part of a requirement delta, so the archive step
+amends it by hand (task 3.4).
+
+### 9. Decline ZIP64 end records in this change
 ZIP64 needs the locator and the ZIP64 end record read and checked as well. No installer
 seen needs it. A declined record leaves detection where it is today.
 
 ## Risks / Trade-offs
 
-- [The overlay-start rule changes an answer] → Only for a stub holding a valid archive
-  ahead of another valid archive at the overlay start. No such file has been seen. The
-  scenario pins the new answer and the parsers follow it.
+- [The overlay-start rule changes an answer] → Only for a PE with a valid archive at its
+  overlay start and another valid needle elsewhere in the window. No such file has been
+  seen. The scenario pins the new answer, and every `SFX_MAX` scan follows it.
 - [Remote sources pay one extra round trip on a gated PE] → Gated files are installers
   that already cost a 2 MiB read; recorded in `prefixed-archives.md` §3.
 - [A crafted PE could point its certificate entry anywhere] → It counts only when it runs

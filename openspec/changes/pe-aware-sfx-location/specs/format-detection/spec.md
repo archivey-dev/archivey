@@ -31,11 +31,14 @@ detection prefix holds, its *overlay start* is the end of the furthest section's
 and its *payload end* is the start of an Authenticode certificate table that runs to the
 end of the source, or the end of the source when there is none. When the overlay start
 lies inside the window, the candidate there SHALL be judged first, with the same
-validators. A hit they accept there SHALL be the answer, ahead of any earlier needle in the
-stub, and a 7z hit there that ends at the payload end SHALL count as ending at end of
-source. When nothing at the overlay start is accepted, the scan below runs unchanged. The
-RAR and 7z parsers' own scans SHALL apply the same rule, so forced `format=` opens the
-same payload. A PE whose layout does not parse SHALL be scanned as today.
+validators. A hit there that its validator returns as `VALID` or `VALID_SHORT` SHALL be
+the answer, ahead of any needle before or after it in the window: the exact-end
+preference below is a tie-break between needles of unknown standing, and the PE's own
+layout outranks it. When nothing at the overlay start is accepted, the scan below runs
+unchanged. Every other scan bounded by `SFX_MAX` SHALL apply the same rule — the RAR and
+7z parsers' scans and the forward ZIP walk that reads a non-seekable source — so forced
+`format=`, seekable or not, opens the same payload. A PE whose layout does not parse SHALL
+be scanned as today.
 
 The scan takes the **earliest** matching needle in the window that its format's hit
 validator accepts, and resumes past one it rejects. A 7z hit whose declared end falls
@@ -98,7 +101,10 @@ judged, and SHALL record `sfx_scan` as *budget exhausted*, whether or not it ans
 | --- | --- |
 | PE, RAR or 7z starting exactly at the overlay start | That archive, `payload_offset` = overlay start; forced `format=` opens the same offset |
 | PE with a valid ZIP local header in a section, a valid RAR at the overlay start | `RAR` at the overlay start, not the earlier ZIP |
-| Signed PE, 7z at the overlay start ending where the certificate starts | That 7z, accepted at once; the scan does not read on to the window end |
+| PE with a valid ZIP local header in a section, a valid ZIP at the overlay start, read through forced `format=ZIP` from a pipe | The forward walk lists the ZIP at the overlay start, as detection reports |
+| Signed PE, 7z at the overlay start ending where the certificate starts | That 7z (`VALID_SHORT`), accepted at once; the scan does not read on to the window end |
+| Unsigned PE, 7z at the overlay start ending 1 KiB before end of source, a second 7z later in the window that ends at end of source | The 7z at the overlay start, through detection and forced `format=SEVEN_Z` alike |
+| Bare `MZ` stub with no PE header (no layout) and a 7z followed by trailing data | Unchanged: the short hit is a fallback and the scan reads the window |
 | PE with a config block between the last section and the 7z (`7zS.sfx` style) | Nothing accepted at the overlay start; the forward scan finds the 7z as today |
 | PE whose ZIP is inside `.rsrc` (Squirrel) | Nothing at the overlay start; the forward scan finds the ZIP as today |
 | PE whose section table lies past the detection prefix, or does not parse | No layout; scanned as today |
@@ -106,15 +112,19 @@ judged, and SHALL record `sfx_scan` as *budget exhausted*, whether or not it ans
 
 ## ADDED Requirements
 
-### Requirement: A ZIP behind a PE's overlay is found from its end record
+### Requirement: A ZIP in a PE's overlay is found from its end record
 
 When the forward scan of *Self-extracting (SFX) archives are detected behind an executable
 stub* finds nothing, detection SHALL look for a ZIP end-of-central-directory record before
 the payload end, but only when all of these hold: the source starts with a PE whose layout
 parses (same definitions as that requirement); the source length is known; the payload end
-lies past both the overlay start and the end of the scan window; and the tail can be read
-cheaply (`PrefixWorkspace.read_tail` rules). The search SHALL cover the 65 558 bytes ending
-at the payload end, the same span the ZIP reader searches, with the same locator.
+lies past both the overlay start and the end of the scan window; and the source allows the
+read the trailer magic step makes, a cheap seek that restores the handle and does not grow
+the prefix. The search SHALL cover the 65 558 bytes ending at the payload end, the same
+span the ZIP reader searches, with the same locator. That span ends at the payload end, not
+necessarily at end of source, and the part of it the prefix already holds SHALL be taken
+from the prefix. A source that does not allow the read SHALL be recorded under `sfx_tail`,
+never under `trailer`, so the two tiers' records cannot be confused.
 
 A record found there SHALL be accepted only when all of these hold: both disk numbers are
 0 and its two entry counts are equal; `cd_start = eocd − cd_size` and
