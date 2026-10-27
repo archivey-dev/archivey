@@ -140,3 +140,15 @@ uv run python scripts/exploration/probe_writer_timestamps.py --out /tmp/archives
 The Linux/macOS/Windows matrix runs in CI: the `Writer timestamp probe` workflow
 (`.github/workflows/writer-timestamps.yml`) on demand from the Actions tab, and on PRs
 that change the probe.
+
+## rapidgzip on this platform
+
+`rapidgzip_platform_probe.py` measures rapidgzip against zlib in process (from a path and
+from a `BytesIO`, at several `parallelization` values, with the index point count), then a
+full read through archivey with `use_rapidgzip` OFF, ON and AUTO. Evidence for where
+`AUTO` takes a sequential read (`dev-docs/formats/gzip.md` §2.3, which has the Windows
+run). Needs the dev environment; read-only apart from a temporary directory.
+
+```bash
+uv run python scripts/exploration/rapidgzip_platform_probe.py --json probe.json
+```
