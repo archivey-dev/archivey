@@ -905,7 +905,7 @@ class archivey.plugins.Hasher(Protocol)
 init archivey.plugins.Hasher(*args, **kwargs)
 method archivey.plugins.Hasher.digest(self) -> bytes
 method archivey.plugins.Hasher.update(self, data: bytes, /) -> None
-class archivey.plugins.IndexedReader(PluginReader, Generic[])
+class archivey.plugins.IndexedReader(PluginReader, Generic[LocatorT])
 method archivey.plugins.IndexedReader.archive_info(self) -> PluginArchiveInfo
 method archivey.plugins.IndexedReader.close(self) -> None
 method archivey.plugins.IndexedReader.iter_members(self) -> Iterator[MemberRecord[LocatorT]]
@@ -925,7 +925,7 @@ class archivey.plugins.MemberDigest(tuple)
 field archivey.plugins.MemberDigest.expected: bytes
 field archivey.plugins.MemberDigest.name: str
 field archivey.plugins.MemberDigest.new: Callable[[], Hasher]
-class archivey.plugins.MemberRecord(tuple, Generic[])
+class archivey.plugins.MemberRecord(tuple, Generic[LocatorT])
 field archivey.plugins.MemberRecord.locator: LocatorT
 field archivey.plugins.MemberRecord.member: ArchiveMember
 field archivey.plugins.MemberRecord.stored_name: str | None
@@ -936,7 +936,6 @@ field archivey.plugins.PluginArchiveInfo.format_version: str | None
 field archivey.plugins.PluginArchiveInfo.is_solid: bool
 reexport archivey.plugins.PluginContainer = archivey.PluginContainer
 class archivey.plugins.PluginContext()
-init archivey.plugins.PluginContext(*, encoding: str | None, archive_name: str | None, config: ArchiveyConfig, decompress: Callable[[BinaryIO, CompressionAlgorithm, int | None, bytes | None], BinaryIO], report: Callable[[DiagnosticCode, str, DiagnosticContext, ArchiveMember | None], None], link_target_unavailable: Callable[[ArchiveMember, str, str, bool], None]) -> None
 property archivey.plugins.PluginContext.archive_name: str | None
 property archivey.plugins.PluginContext.config: ArchiveyConfig
 method archivey.plugins.PluginContext.decode_name(self, raw: bytes) -> str
@@ -950,7 +949,6 @@ method archivey.plugins.PluginReader.archive_info(self) -> PluginArchiveInfo
 method archivey.plugins.PluginReader.close(self) -> None
 method archivey.plugins.PluginReader.translate_exception(self, exc: Exception) -> ArchiveyError | None
 class archivey.plugins.PluginSource()
-init archivey.plugins.PluginSource(view: Callable[[int, int | None], BinaryIO], size: int | None, path: Path | None) -> None
 property archivey.plugins.PluginSource.path: Path | None
 method archivey.plugins.PluginSource.read_at(self, offset: int, n: int) -> bytes
 property archivey.plugins.PluginSource.size: int | None

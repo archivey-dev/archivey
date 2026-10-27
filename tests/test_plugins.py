@@ -17,6 +17,7 @@ import zipfile
 import zlib
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import BinaryIO
 
 import pytest
 
@@ -420,11 +421,11 @@ def _plugin_with(
 
 
 @pytest.mark.parametrize(
-    "container_value",
-    ["tar.gz", "TAR_GZ", "zz"],
+    ("container_value", "owner"),
+    [("tar.gz", "TAR_GZ"), ("TAR_GZ", "TAR_GZ"), ("zz", "ZLIB")],
 )
 def test_registration_refuses_a_taken_spelling(
-    clean_registry: None, container_value: str
+    clean_registry: None, container_value: str, owner: str
 ) -> None:
     """A container value or member name that spells another format is refused, so a
     plugin never registers with no ``format=`` spelling of its own."""
@@ -437,7 +438,7 @@ def test_registration_refuses_a_taken_spelling(
             "extensions": (),
         },
     )
-    with pytest.raises(ArchiveyUsageError, match="already names another format"):
+    with pytest.raises(ArchiveyUsageError, match=f"already names {owner};"):
         register_format(plugin)
 
     named_zip = PluginContainer("NamedZip", {"ZIP": "mine"})  # type: ignore[call-overload]
@@ -449,7 +450,7 @@ def test_registration_refuses_a_taken_spelling(
             "extensions": (),
         },
     )
-    with pytest.raises(ArchiveyUsageError, match="'ZIP' already names"):
+    with pytest.raises(ArchiveyUsageError, match="'ZIP' already names ZIP;"):
         register_format(plugin)
 
 
@@ -560,6 +561,26 @@ def test_probe_detects_a_format_with_no_magic(clean_registry: None) -> None:
     assert seen
     with pytest.raises(archivey.FormatDetectionError):
         detect_format(io.BytesIO(b"nothing here" * 10), config=config)
+
+
+@pytest.mark.parametrize("name", ["a.zip", "a.tar", "a.iso"])
+def test_probe_does_not_run_on_a_name_another_format_owns(
+    clean_registry: None, tmp_path: Path, name: str
+) -> None:
+    # Every plugin format shares the UNCOMPRESSED stream with ZIP and TAR, so the
+    # name gate must match the format, not the stream.
+    calls: list[bytes] = []
+
+    def probe(prefix: bytes) -> bool:
+        calls.append(prefix)
+        return True
+
+    plugin = _plugin_with("probed", probe=probe)
+    data = build_toya(_ENTRIES)
+    assert detect_format(_write(tmp_path, data, name)).format != plugin.format
+    assert not calls
+    assert detect_format(_write(tmp_path, data, "a.probed")).format == plugin.format
+    assert calls
 
 
 def test_archive_info_fields(toya: ArchiveFormat, tmp_path: Path) -> None:
@@ -1132,17 +1153,24 @@ def test_seekable_member_with_no_listed_size(
 
 
 @pytest.mark.parametrize(
-    ("digests", "match"),
+    ("digests", "expected", "match"),
     [
         (
             (MemberDigest("crc32", b"\0\0\0\0", hashlib.sha1),),
-            "HashAlgorithm archivey computes itself",
+            {},
+            "archivey already checks",
+        ),
+        (
+            (MemberDigest("SHA1", b"\0" * 20, hashlib.sha1),),
+            {"sha1": b"\0" * 20},
+            "archivey already checks",
         ),
         (
             (
                 MemberDigest("sha1", b"x", hashlib.sha1),
                 MemberDigest("SHA1", b"y", hashlib.sha1),
             ),
+            {},
             "another digest of the member also uses",
         ),
     ],
@@ -1151,21 +1179,30 @@ def test_member_digest_names_must_not_clash(
     clean_registry: None,
     tmp_path: Path,
     digests: tuple[MemberDigest, ...],
+    expected: dict[str, bytes],
     match: str,
 ) -> None:
-    """A digest named like archivey's own CRC-32 would replace the listed CRC-32's
-    check, and two digests sharing a name would keep one; both are refused."""
+    """A digest named like a check archivey already makes (its own CRC-32, or a name
+    in ``expected_hashes``) would replace that check, and two digests sharing a name
+    would keep one; all are refused, and the refused member's stream is closed. The
+    reader translates broadly, so a refusal inside the error boundary would come out
+    as ``CorruptionError``."""
+    opened: list[BinaryIO] = []
 
-    class Clashing(ToyReader):
+    class Clashing(_BroadTranslator):
         def open_member(
             self, member: ArchiveMember, locator: tuple[int, int]
         ) -> MemberData:
-            return MemberData(self._source.view(*locator), digests=digests)
+            stream = self._source.view(*locator)
+            opened.append(stream)
+            return MemberData(stream, expected_hashes=expected, digests=digests)
 
     _plugin_with("clash", reader=Clashing)
     path = _write(tmp_path, build_toya(_ENTRIES), "t.clash")
     with open_archive(path) as reader, pytest.raises(ValueError, match=match):
         reader.read("docs/a.txt")
+    assert opened
+    assert opened[0].closed
 
 
 # ── Reports, config and the plugin-level translator ─────────────────────────────────
