@@ -57,10 +57,11 @@ Flipping it to borrow was the tempting unification: then swapping
 catches that swap (`tests/leak_oracle.py` pins `owns_inner=True` slices and
 live children). The remaining risk is the other direction.
 
-Fourteen production subclasses, each classified by the close-inventory test. Ten ride the
-owning default with no keyword. Counting wrappers (`CountingReader`,
-`OutputCountingStream`, `SeekCountingStream`) are spliced mid-chain, and their inner must
-therefore be a wrapper rather than the caller's own object.
+Every production subclass is classified by the close-inventory test
+(`test_delegating_stream_close_inventory`), and most ride the owning default with no
+keyword. Counting wrappers (`CountingReader`, `OutputCountingStream`,
+`SeekCountingStream`) are spliced mid-chain, and their inner must therefore be a wrapper
+rather than the caller's own object.
 
 That inner is never the caller's own object, because every source crosses the
 boundary before any backend sees it, and what comes out is an `ArchiveSource`. Closing
@@ -69,8 +70,7 @@ to reach.
 
 | Class | Close must reach |
 | --- | --- |
-| `LockedStream` | tar `extractfile` / the `_PyCdlibStream` underneath |
-| `_PyCdlibStream` | `PyCdlibIO.__exit__` via `inner.close()` |
+| `LockedStream` | tar `extractfile` / the stream a plugin's `open_member` returned |
 | `_GzipTruncationCheckStream` | the rapidgzip accelerator |
 | `OutputCountingStream` | mid-chain; inner is already a non-closing wrapper (see above) |
 | `SeekCountingStream` | mid-chain; inner is already a non-closing wrapper (see above) |
@@ -86,7 +86,7 @@ The other three own too, but close themselves and tell the base to skip the seco
 | --- | --- |
 | `ProcessOutputStream` (`_UnrarOwnedStream`, `UnarOutputStream`) | close the pipe, then reap the process, then mark closed |
 
-The ten that ride the default would need `owns_inner=True` after a flip. A missed one
+The ones that ride the default would need `owns_inner=True` after a flip. A missed one
 leaks a handle the oracle does not pin: default `DelegatingStream` constructors wrap
 `BytesIO` by the thousand and are excluded on purpose. The oracle catching the
 #336 shape is not a reason to create a new silent-miss on `LockedStream`.

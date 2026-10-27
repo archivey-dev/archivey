@@ -2372,6 +2372,42 @@ def test_a_report_made_while_listing_names_the_member_as_listed() -> None:
         assert "ddd/" in diagnostic.message
 
 
+def test_a_directory_record_without_entries_is_named_as_listed() -> None:
+    """The report for a record with no Rock Ridge entries names a directory with its
+    ``/``, in the message as in the context."""
+    from archivey import DiagnosticCode
+
+    def populate(iso: Any) -> None:
+        iso.add_directory("/DDD", rr_name="ddd")
+
+    data = bytearray(_build_rr_iso(populate))
+    # The directory record, not the path table entry: its identifier length sits
+    # at offset 32 and the identifier at 33.
+    at = next(
+        i
+        for i in range(len(data))
+        if data.startswith(b"DDD", i)
+        and i >= 33
+        and data[i - 1] == 3
+        and data[i - 33] >= 33 + 3
+    )
+    start = at - 33
+    extent = int.from_bytes(data[start + 2 : start + 6], "little") * 2048
+    # The directory's own ``.`` and ``..`` records lose their entries too, or pycdlib
+    # refuses children with Rock Ridge under a parent without it.
+    dot = extent
+    dotdot = dot + data[dot]
+    for record, ident_len in ((start, 3), (dot, 1), (dotdot, 1)):
+        su = record + 33 + ident_len + (1 if ident_len % 2 == 0 else 0)
+        data[su : record + data[record]] = bytes(record + data[record] - su)
+    with open_archive(io.BytesIO(bytes(data))) as ar:
+        ddd = {m.name: m for m in ar.members()}["DDD/"]
+        [diagnostic] = ddd.diagnostics
+        assert diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        assert diagnostic.context.member_name == "DDD/"
+        assert "'DDD/'" in diagnostic.message
+
+
 def test_an_area_cut_before_its_nm_entry_lists_under_the_iso_name() -> None:
     """With no ``NM`` entry pycdlib names the record by its ISO 9660 identifier,
     ``;1`` included; the member lists under the identifier with that removed, as a

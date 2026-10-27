@@ -2101,7 +2101,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             self._context.report(
                 DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
                 (
-                    f"Directory record {quoted(presented)} carries no Rock Ridge "
+                    f"Directory record {quoted(name)} carries no Rock Ridge "
                     "entries; the member is listed under its ISO 9660 name without "
                     "Rock Ridge name, mode, owner or link data."
                 ),
@@ -2400,14 +2400,16 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         makes the short read a ``TruncatedError``.
         """
         block_size = self._iso.logical_block_size
-        layout = self._layouts.get(id(record))
-        if id(record) not in self._layouts:
+        try:
+            layout = self._layouts[id(record)]
+        except KeyError:
             # Described as written (``_file_size`` keeps a layout for every other
             # record): the span comes from the record the listed size came from, so
             # ``bounded`` holds for the same number. ``orig_extent_loc`` is where the
             # record says the data is in the image; pycdlib's ``extent_location()``
             # can differ only after it moves extents to write an image, which
             # archivey never does.
+            assert self._as_written(record), "the layout is worked out while listing"
             return [(record.orig_extent_loc * block_size, record.data_length)]
         if layout is None:
             # The declared length is lost, so the member lists with no size, and
