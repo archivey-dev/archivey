@@ -116,7 +116,7 @@ Arguments take any iterable, as `DiagnosticPolicy` does, and the fields hold fro
 entries are containers and compressions, and both halves must pass:
 
 - The container passes when `only` is `None` or lists it, `exclude` does not list it,
-  and, for a plugin container, `plugins` is true or `only` lists it by name.
+  and, for a plugin container, `plugins` is true.
 - The stream passes when it is `UNCOMPRESSED`, or `only` is `None` or lists it, and
   `exclude` does not list it.
 
@@ -137,12 +137,21 @@ policy turn gzip off. The refusal message says which entry to add, so the first 
 fails with the fix in hand rather than opening more than the caller listed.
 
 `C.DIRECTORY` is an entry like the others, so `only={C.ZIP}` also refuses a directory
-path. `C.UNKNOWN` is refused as an entry (`ArchiveyUsageError`). An entry in both `only`
-and `exclude` is refused, as `DiagnosticPolicy` refuses a code in both lists.
+path. `C.UNKNOWN` is refused as an entry (`ArchiveyUsageError`). So is
+`S.UNCOMPRESSED` in `exclude`: it would turn off every container without outer
+compression, ZIP, TAR, 7z, RAR, ISO and directories included, which a caller says more
+clearly by listing those containers. An entry in both `only` and `exclude` is refused,
+as `DiagnosticPolicy` refuses a code in both lists.
 
 **`plugins=False` and `only`.** `plugins` is for the deny-list form. Under `only`, a
 plugin opens only when listed, so `plugins=False` adds nothing; listing a plugin
-container with `plugins=False` is refused as a contradiction.
+container in `only` with `plugins=False` is refused as a contradiction at construction.
+
+**Where each check runs.** `FormatPolicy.__post_init__` checks what the policy alone can
+see: entry types, `C.UNKNOWN`, `S.UNCOMPRESSED`, overlaps, the replacement plugins
+(§5) and the library names (§5a). Checks against other config fields (an excluded
+`rapidgzip` with `use_rapidgzip=ON`) run in `ArchiveyConfig.__post_init__`, beside its
+other cross-field checks, since a policy cannot see those fields.
 
 ## 4. Detection and plugin code
 
@@ -151,7 +160,14 @@ extensions itself, so a plugin's magic and extensions still name its format when
 plugin is off, and the open is refused by name. A plugin's **content probe** is the
 plugin's own code, so it does not run when the policy turns that plugin off. A file that
 only that probe would recognise gets `FormatDetectionError`, which is a reported absence
-(DR-1), not a wrong answer.
+(DR-1), not a wrong answer. The skip is recorded in the detection receipt as
+`TierSkipReason.NOT_ENABLED_BY_POLICY` (`workspace.record_skip("content_probe", ...)`),
+the reason detection already gives a probe the extension rule leaves out, so the
+receipt does not look like a complete search.
+
+**What the policy does not bound.** It decides which *reader* runs, not how much of the
+file detection reads. Far magic, the SFX scan and the built-in content probes still run
+on every input, under `detection_budget`. The security page says so in one sentence.
 
 So `detect_format(source, config=...)` can differ by config in one case only: a file
 that only an off plugin's probe recognises. Built-in probes always run; they are
@@ -210,11 +226,19 @@ FormatPolicy(exclude_libraries={"pyppmd", "inflate64"})
 - **The names** are the package names that `MissingComponent.name` (on
   `FormatAvailability.missing`) already reports: `pyppmd`, `inflate64`, `brotli`, `lz4`,
   `backports.zstd`, `rapidgzip`, `pycdlib`, `cryptography`, and any module a registered
-  plugin lists in `requires`. An unknown name, a standard
-  library module (`zlib`, `bz2`, `lzma`, `compression.zstd`) and a program are refused
-  with `ArchiveyUsageError`. The standard library is not optional: turn off the formats
-  or compressions it reads instead. The programs (`unrar`, `unar`) keep their own
-  setting, `rar_decompressor`.
+  plugin lists in `requires`. `compression.zstd` is accepted too: it is the zstd module
+  on 3.14 and later, and an optional part of a CPython build. An entry names a module,
+  not a capability, so excluding one zstd module falls through to the other, as when it
+  is absent; to turn off zstd decoding on every interpreter, exclude both. Excluding
+  `backports.zstd` on 3.14 and later, where it is not used, changes nothing, and the
+  docs say so.
+- **What cannot be excluded.** An unknown name, `zlib`, `bz2` and `lzma`, and a program
+  are refused with `ArchiveyUsageError`. Those three standard library codecs cannot be
+  turned off: core formats depend on them, and per-algorithm control is out of scope by
+  the maintainer's call 5. A caller who distrusts one can refuse only the containers and
+  outer compressions that carry it, through `only=` and `exclude=`; a Deflate, bzip2 or
+  LZMA member inside a ZIP or 7z still decodes while those containers are allowed. The
+  programs (`unrar`, `unar`) keep their own setting, `rar_decompressor`.
 - **An excluded library reads as not installed, for that call.** The consequences are
   the ones a missing package already has, and are already tested; under PyPy, `deps.py`
   already treats some installed packages as absent and gives the reason in place of the

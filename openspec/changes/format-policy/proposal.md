@@ -1,6 +1,9 @@
 > **Design approved 2026-10-27** (option A and every call in `design.md` §7). The
 > implementation builds on the plugin API stack (`plugin-api`) and starts once that
 > stack has merged.
+> This change carries deltas for `backend-registry`, `format-detection` and
+> `packaging-and-extras`; the deltas to `format-plugins` and `archive-reading` come with
+> the implementation PR.
 
 ## Why
 

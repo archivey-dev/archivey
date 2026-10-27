@@ -4,9 +4,12 @@ Not started. Design approved 2026-10-27; starts once the plugin API stack has me
 
 ## 1. Policy type
 
-- [ ] 1.1 `FormatPolicy` (frozen; `only`, `exclude`, `plugins`, `replace`; `allows()`),
-      with the construction checks in `design.md` §3 and §5. Exported at the root.
-- [ ] 1.2 `ArchiveyConfig.formats: FormatPolicy = FormatPolicy()`.
+- [ ] 1.1 `FormatPolicy` (frozen; `only`, `exclude`, `exclude_libraries`, `plugins`,
+      `replace`; `allows()`), with the construction checks in `design.md` §3, §5 and
+      §5a. Exported at the root.
+- [ ] 1.2 `ArchiveyConfig.formats: FormatPolicy = FormatPolicy()`, and the cross-field
+      check in `ArchiveyConfig.__post_init__` (an excluded `rapidgzip` with
+      `use_rapidgzip=ON` or `use_indexed_bzip2=ON`).
 
 ## 2. Reader choice
 
@@ -19,7 +22,8 @@ Not started. Design approved 2026-10-27; starts once the plugin API stack has me
 
 ## 3. Detection and member open
 
-- [ ] 3.1 Skip the content probe of a plugin the policy turns off.
+- [ ] 3.1 Skip the content probe of a plugin the policy turns off, and record it as
+      `NOT_ENABLED_BY_POLICY` in the detection receipt.
 - [ ] 3.2 `exclude_libraries`: carry the excluded names from `ArchiveyConfig.formats` on
       the reader config and the stream config, and pass them to every place that answers
       "is this package available": `LazyOptional`, `registry._optional` /
@@ -43,5 +47,8 @@ Not started. Design approved 2026-10-27; starts once the plugin API stack has me
       own answer; `format_availability(SEVEN_Z, config=...)` answers `PARTIAL` with
       `pyppmd` installed and excluded; a replacement is refused on a volume set, an
       SFX-found archive and a pipe.
-- [ ] 4.2 Docs: the config page, the security page (the upload-server policy), and the
-      "Adding a format" guide (replacement plugins).
+- [ ] 4.2 Docs: the config page; the security page (the upload-server policy, and one
+      sentence that the policy bounds which reader runs, not what detection reads); the
+      "Adding a format" guide (replacement plugins); the `FormatPlugin.format`,
+      `extensions`, `magic` and `probe` docstrings in `plugins.py`, which today describe
+      registration only.
