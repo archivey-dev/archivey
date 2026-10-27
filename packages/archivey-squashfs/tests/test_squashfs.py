@@ -295,6 +295,18 @@ def test_a_data_block_shorter_than_the_file_needs(tmp_path: Path) -> None:
         archive.read("dir/blocks.bin")
 
 
+def test_a_data_block_longer_than_the_block_size(tmp_path: Path) -> None:
+    """A stored length is refused before any read: a crafted 16 MiB entry costs nothing."""
+    data = _uncompressed()
+    inode = _inode_offset(data, b"blocks.bin")
+    data[inode + 32 : inode + 36] = struct.pack("<I", 0xFFFFFF)  # compressed, 16 MiB
+    with (
+        open_archive(_image(tmp_path, bytes(data))) as archive,
+        pytest.raises(CorruptionError, match=f"declares {0xFFFFFF} bytes"),
+    ):
+        archive.read("dir/blocks.bin")
+
+
 def test_a_metadata_block_longer_than_the_format_allows(tmp_path: Path) -> None:
     data = _uncompressed()
     table = _superblock_field(data, _INODE_TABLE, "<Q")

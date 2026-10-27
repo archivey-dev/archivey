@@ -208,6 +208,8 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
             def through_archivey(start: int, length: int, limit: int) -> bytes:
                 # One read of the block, then decode from memory: cheaper than a view
                 # the decoder reads through, and read_exact refuses a cut-off block.
+                # Every caller has checked ``length`` first: at most 8 KiB for a
+                # metadata block, the block size (1 MiB at most) for data.
                 raw = io.BytesIO(self._source.read_exact(start, length))
                 with self._context.decompress(raw, method) as decoded:
                     data = decoded.read(limit + 1)
