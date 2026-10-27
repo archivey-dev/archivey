@@ -58,8 +58,11 @@ _CONST_KEYS = {
 }
 
 # Written by tests, not by the library. See tests/test_codec_descriptor.py
-# (`synthetic.header_len`) and tests/test_data_model.py (open-bag example).
-_TEST_ONLY_MEMBER_KEYS = frozenset({"synthetic.header_len", "third.party"})
+# (`synthetic.header_len`), tests/test_data_model.py (open-bag example) and
+# tests/test_plugins.py (a plugin's own `ArchiveInfo` key, `solid.blocks`).
+_TEST_ONLY_MEMBER_KEYS = frozenset(
+    {"synthetic.header_len", "third.party", "solid.blocks"}
+)
 
 _CTOR_KIND = {"MemberExtra": "member", "ArchiveInfoExtra": "info"}
 _ANN_KIND = {

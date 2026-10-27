@@ -44,7 +44,7 @@ from archivey.diagnostics import (
     SymlinkTargetContext,
 )
 from archivey.internal import format_args
-from archivey.internal.registry import get_registry
+from archivey.internal.plugin_adapter import registration_scope
 from archivey.plugins import (
     FormatPlugin,
     IndexedReader,
@@ -57,6 +57,7 @@ from archivey.plugins import (
     PluginSource,
     register_format,
 )
+from tests.conftest import requires, requires_zstd
 
 _MAGIC = b"TOYARC1\n"
 
@@ -139,12 +140,9 @@ class ToyPlugin(FormatPlugin):
 
 
 @pytest.fixture
-def clean_registry(monkeypatch: pytest.MonkeyPatch) -> None:
-    reg = get_registry()
-    monkeypatch.setattr(reg, "_readers", dict(reg._readers))
-    monkeypatch.setattr(reg, "_plugin_classes", list(reg._plugin_classes))
-    monkeypatch.setattr(reg, "_extension_map_cache", None)
-    monkeypatch.setattr(format_args, "_plugin_spellings", {})
+def clean_registry() -> Iterator[None]:
+    with registration_scope():
+        yield
 
 
 @pytest.fixture
@@ -245,11 +243,10 @@ def test_dotdot_member_not_written_outside(toya: ArchiveFormat, tmp_path: Path) 
     dest = tmp_path / "out"
     dest.mkdir()
     with open_archive(path) as reader:
-        try:
-            reader.extract_all(dest)
-        except archivey.ArchiveyError:
-            pass
+        reader.extract_all(dest)
     assert not (tmp_path / "escape.txt").exists()
+    assert (dest / "docs" / "a.txt").read_bytes() == b"alpha\n"
+    assert (dest / "b.bin").exists()
 
 
 def test_name_is_normalized(toya: ArchiveFormat, tmp_path: Path) -> None:
@@ -282,7 +279,13 @@ def test_builtin_magic_wins(clean_registry: None) -> None:
     ("attrs", "match"),
     [
         ({"extensions": (".zip",)}, "already claimed"),
-        ({"extensions": ("toya",)}, "start with a dot"),
+        ({"extensions": ("toya",)}, "a dot followed by"),
+        ({"extensions": (".",)}, "a dot followed by"),
+        ({"extensions": (".ZIP",)}, "already claimed by ZIP"),
+        ({"magic": (Magic(-1, b"x"),)}, "non-negative offset"),
+        ({"magic": (Magic(0, b""),)}, "non-negative offset"),
+        ({"probe": 3}, "must be callable"),
+        ({"format": "toya"}, "must be an ArchiveFormat"),
         ({"format": ArchiveFormat.ZIP}, "PluginContainer"),
         (
             {"format": ArchiveFormat(ToyContainer.TOYA, StreamFormat.GZIP)},
@@ -389,6 +392,298 @@ def test_cli_lists_plugin_format(
     assert "docs/a.txt" in capsys.readouterr().out
 
 
+def _plugin_with(
+    name: str,
+    *,
+    reader: type[ToyReader] = ToyReader,
+    **attrs: object,
+) -> type[ToyPlugin]:
+    """A TOYA variant registered under its own container, reading with ``reader``."""
+    container = PluginContainer(f"{name}Container", {name.upper(): name})  # type: ignore[call-overload]
+    fmt = ArchiveFormat(container[name.upper()], StreamFormat.UNCOMPRESSED)
+
+    def open_(
+        self: FormatPlugin, source: PluginSource, context: PluginContext
+    ) -> ToyReader:
+        return reader(source, context)
+
+    body: dict[str, object] = {
+        "format": fmt,
+        "extensions": (f".{name}",),
+        "magic": (),
+        "open": open_,
+    }
+    body.update(attrs)
+    plugin = type(f"{name.title()}Plugin", (ToyPlugin,), body)
+    register_format(plugin)
+    return plugin
+
+
+@pytest.mark.parametrize(
+    "container_value",
+    ["tar.gz", "TAR_GZ", "zz"],
+)
+def test_registration_refuses_a_taken_spelling(
+    clean_registry: None, container_value: str
+) -> None:
+    """A container value or member name that spells another format is refused, so a
+    plugin never registers with no ``format=`` spelling of its own."""
+    container = PluginContainer("Taken", {"MINE": container_value})  # type: ignore[call-overload]
+    plugin = type(
+        "Taken",
+        (ToyPlugin,),
+        {
+            "format": ArchiveFormat(container.MINE, StreamFormat.UNCOMPRESSED),
+            "extensions": (),
+        },
+    )
+    with pytest.raises(ArchiveyUsageError, match="already names another format"):
+        register_format(plugin)
+
+    named_zip = PluginContainer("NamedZip", {"ZIP": "mine"})  # type: ignore[call-overload]
+    plugin = type(
+        "NamedZip",
+        (ToyPlugin,),
+        {
+            "format": ArchiveFormat(named_zip.ZIP, StreamFormat.UNCOMPRESSED),
+            "extensions": (),
+        },
+    )
+    with pytest.raises(ArchiveyUsageError, match="'ZIP' already names"):
+        register_format(plugin)
+
+
+def test_unknown_format_message_lists_plugins(
+    toya: ArchiveFormat, tmp_path: Path
+) -> None:
+    path = _write(tmp_path, build_toya(_ENTRIES))
+    with pytest.raises(ArchiveyUsageError, match="'toya'"):
+        open_archive(path, format="toyaa")
+
+
+def test_registration_scope_undoes_registration() -> None:
+    with registration_scope():
+        register_format(ToyPlugin)
+        assert TOYA in archivey.list_known_formats()
+    assert TOYA not in archivey.list_known_formats()
+    with pytest.raises(ArchiveyUsageError):
+        format_args.coerce_archive_format("toya", call="test")
+    with registration_scope():
+        register_format(ToyPlugin)
+
+
+def test_checked_counts_as_content(clean_registry: None, tmp_path: Path) -> None:
+    """A member with no checksum archivey can compute reaches CONTENT only when the
+    plugin says its library checked the data."""
+
+    class Unhashed(ToyReader):
+        def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+            for record in super().iter_members():
+                record.member.hashes = {}
+                yield record
+
+    class Checked(Unhashed):
+        def open_member(
+            self, member: ArchiveMember, locator: tuple[int, int]
+        ) -> MemberData:
+            data = super().open_member(member, locator)
+            return MemberData(data.stream, checked=True)
+
+    _plugin_with("unhashed", reader=Unhashed)
+    _plugin_with("checked", reader=Checked)
+    for ext, expected in (
+        ("unhashed", archivey.Verification.STRUCTURE),
+        ("checked", archivey.Verification.CONTENT),
+    ):
+        path = _write(tmp_path, build_toya(_ENTRIES), f"t.{ext}")
+        with open_archive(path) as reader, reader.open("docs/a.txt") as stream:
+            assert stream.read() == b"alpha\n"
+            assert stream.verified is expected
+
+
+def test_expected_hashes_from_open_member(clean_registry: None, tmp_path: Path) -> None:
+    """A checksum known only once the member is opened is checked like a listed one."""
+
+    class LateHash(ToyReader):
+        def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+            for record in super().iter_members():
+                record.member.hashes = {}
+                yield record
+
+        def open_member(
+            self, member: ArchiveMember, locator: tuple[int, int]
+        ) -> MemberData:
+            data = super().open_member(member, locator)
+            crc = 0 if member.name == "b.bin" else zlib.crc32(b"alpha\n")
+            return MemberData(
+                data.stream, expected_hashes={HashAlgorithm.CRC32: crc.to_bytes(4)}
+            )
+
+    _plugin_with("latehash", reader=LateHash)
+    path = _write(tmp_path, build_toya(_ENTRIES), "t.latehash")
+    with open_archive(path) as reader:
+        with reader.open("docs/a.txt") as stream:
+            assert stream.read() == b"alpha\n"
+            assert stream.verified is archivey.Verification.CONTENT
+        with pytest.raises(CorruptionError):
+            reader.read("b.bin")
+
+
+def test_long_member_raises_corruption(clean_registry: None, tmp_path: Path) -> None:
+    class Overrun(ToyReader):
+        def open_member(
+            self, member: ArchiveMember, locator: tuple[int, int]
+        ) -> MemberData:
+            offset, size = locator
+            return MemberData(self._source.view(offset, size + 3))
+
+    _plugin_with("overrun", reader=Overrun)
+    path = _write(tmp_path, build_toya(_ENTRIES), "t.overrun")
+    with open_archive(path) as reader, pytest.raises(CorruptionError):
+        reader.read("docs/a.txt")
+
+
+def test_probe_detects_a_format_with_no_magic(clean_registry: None) -> None:
+    seen: list[bytes] = []
+
+    def probe(prefix: bytes) -> bool:
+        seen.append(prefix)
+        return prefix.startswith(_MAGIC)
+
+    plugin = _plugin_with("probed", probe=probe)
+    # Like a built-in probe, it runs on a nameless source only when asked to.
+    config = archivey.ArchiveyConfig(always_probe_content=True)
+    info = detect_format(io.BytesIO(build_toya(_ENTRIES)), config=config)
+    assert info.format == plugin.format
+    assert info.detected_by == "content_probe"
+    assert info.from_plugin
+    assert seen
+    with pytest.raises(archivey.FormatDetectionError):
+        detect_format(io.BytesIO(b"nothing here" * 10), config=config)
+
+
+def test_archive_info_fields(toya: ArchiveFormat, tmp_path: Path) -> None:
+    class Solid(ToyReader):
+        member_list_upfront = False
+
+        def archive_info(self) -> PluginArchiveInfo:
+            return PluginArchiveInfo(is_solid=True, extra={"solid.blocks": 1})
+
+    _plugin_with("solid", reader=Solid)
+    path = _write(tmp_path, build_toya(_ENTRIES), "t.solid")
+    with open_archive(path, format="solid") as reader:
+        info = reader.info
+        assert info.is_solid
+        assert info.cost.access_cost is archivey.AccessCost.SOLID
+        assert info.cost.listing_cost is archivey.ListingCost.REQUIRES_SCANNING
+        assert info.extra["solid.blocks"] == 1
+    with open_archive(_write(tmp_path, build_toya(_ENTRIES))) as reader:
+        assert reader.info.cost.access_cost is archivey.AccessCost.DIRECT
+        assert reader.info.cost.listing_cost is archivey.ListingCost.INDEXED
+
+
+def test_archive_info_errors_are_translated(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    class Failing(ToyReader):
+        def archive_info(self) -> PluginArchiveInfo:
+            raise ValueError("bad header")
+
+        def translate_exception(self, exc: Exception) -> archivey.ArchiveyError | None:
+            if isinstance(exc, ValueError):
+                return CorruptionError(str(exc))
+            return None
+
+    _plugin_with("badinfo", reader=Failing)
+    path = _write(tmp_path, build_toya(_ENTRIES), "t.badinfo")
+    with (
+        open_archive(path) as reader,
+        pytest.raises(CorruptionError, match="bad header"),
+    ):
+        reader.info  # noqa: B018
+
+
+def test_decode_name_fallbacks(toya: ArchiveFormat, tmp_path: Path) -> None:
+    path = _write(tmp_path, build_toya([(b"caf\xe9.txt", MemberType.FILE, b"x")]))
+    with open_archive(path, encoding="latin-1") as reader:
+        assert [m.name for m in reader.members()] == ["café.txt"]
+    with open_archive(path) as reader:
+        (member,) = reader.members()
+        assert member.name == "caf\udce9.txt"
+        assert member.raw_name == b"caf\xe9.txt"
+
+
+def test_encoding_unused_when_the_plugin_takes_none(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    _plugin_with("noenc", uses_encoding=False)
+    path = _write(tmp_path, build_toya(_ENTRIES), "t.noenc")
+    with open_archive(path, encoding="latin-1") as reader:
+        assert reader.diagnostics.counts.get(
+            archivey.DiagnosticCode.ENCODING_ARGUMENT_UNUSED
+        )
+
+
+def test_plugin_source_path_and_size(clean_registry: None, tmp_path: Path) -> None:
+    seen: list[tuple[Path | None, int]] = []
+
+    class Recording(ToyReader):
+        def __init__(self, source: PluginSource, context: PluginContext) -> None:
+            super().__init__(source, context)
+            seen.append((source.path, source.size))
+
+    _plugin_with("rec", reader=Recording)
+    data = build_toya(_ENTRIES)
+    path = _write(tmp_path, data, "t.rec")
+    with open_archive(path):
+        pass
+    with open_archive(io.BytesIO(data), format="rec"):
+        pass
+    assert seen == [(path, len(data)), (None, len(data))]
+
+
+class _BroadTranslator(ToyReader):
+    """Maps every exception to corruption, as a careless plugin might."""
+
+    def translate_exception(self, exc: Exception) -> archivey.ArchiveyError | None:
+        return CorruptionError(str(exc))
+
+
+def test_interface_violations_are_not_reported_as_corruption(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    class BadData(_BroadTranslator):
+        def open_member(  # type: ignore[override]
+            self, member: ArchiveMember, locator: tuple[int, int]
+        ) -> object:
+            return self._source.view(*locator)
+
+    class BadMember(_BroadTranslator):
+        def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+            yield MemberRecord("not a member", locator=(0, 0))  # type: ignore[arg-type]
+
+    class BadOpen(ToyPlugin):
+        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+            return object()  # type: ignore[return-value]
+
+    _plugin_with("baddata", reader=BadData)
+    _plugin_with("badmember", reader=BadMember)
+    _plugin_with("badopen", open=BadOpen.open)
+    data = build_toya(_ENTRIES)
+    with (
+        open_archive(_write(tmp_path, data, "t.baddata")) as reader,
+        pytest.raises(TypeError, match="not MemberData"),
+    ):
+        reader.read("docs/a.txt")
+    with (
+        open_archive(_write(tmp_path, data, "t.badmember")) as reader,
+        pytest.raises(TypeError, match="not an ArchiveMember"),
+    ):
+        reader.members()
+    with pytest.raises(TypeError, match="not an IndexedReader"):
+        open_archive(_write(tmp_path, data, "t.badopen"))
+
+
 # ── PluginContext.decompress ────────────────────────────────────────────────────────
 
 
@@ -449,6 +744,32 @@ def _compressed_archive(tmp_path: Path, stored: bytes, plain: bytes = _PLAIN) ->
     return _write(tmp_path, data)
 
 
+def _compress(method: CompressionAlgorithm, data: bytes) -> bytes:
+    if method is CompressionAlgorithm.STORED:
+        return data
+    if method is CompressionAlgorithm.DEFLATE:
+        return _raw_deflate(data)
+    if method is CompressionAlgorithm.BZIP2:
+        return bz2.compress(data)
+    if method is CompressionAlgorithm.DEFLATE64:
+        import inflate64
+
+        deflater = inflate64.Deflater()
+        return deflater.deflate(data) + deflater.flush()
+    if method is CompressionAlgorithm.ZSTD:
+        from tests.conftest import zstd_backend
+
+        return zstd_backend().compress(data)
+    if method is CompressionAlgorithm.LZ4:
+        import lz4.frame
+
+        return lz4.frame.compress(data)
+    assert method is CompressionAlgorithm.BROTLI
+    import brotli
+
+    return brotli.compress(data)
+
+
 @pytest.mark.parametrize(
     "method",
     [
@@ -457,18 +778,18 @@ def _compressed_archive(tmp_path: Path, stored: bytes, plain: bytes = _PLAIN) ->
         CompressionAlgorithm.BZIP2,
         CompressionAlgorithm.LZMA,
         CompressionAlgorithm.LZMA2,
+        pytest.param(CompressionAlgorithm.DEFLATE64, marks=requires("inflate64")),
+        pytest.param(CompressionAlgorithm.ZSTD, marks=requires_zstd()),
+        pytest.param(CompressionAlgorithm.LZ4, marks=requires("lz4")),
+        pytest.param(CompressionAlgorithm.BROTLI, marks=requires("brotli")),
     ],
 )
 def test_decompress_methods(
     clean_registry: None, tmp_path: Path, method: CompressionAlgorithm
 ) -> None:
     properties = None
-    if method is CompressionAlgorithm.STORED:
-        stored = _PLAIN
-    elif method is CompressionAlgorithm.DEFLATE:
-        stored = _raw_deflate(_PLAIN)
-    elif method is CompressionAlgorithm.BZIP2:
-        stored = bz2.compress(_PLAIN)
+    if method not in (CompressionAlgorithm.LZMA, CompressionAlgorithm.LZMA2):
+        stored = _compress(method, _PLAIN)
     else:
         filter_id = (
             lzma.FILTER_LZMA1
@@ -483,6 +804,65 @@ def test_decompress_methods(
     ):
         assert stream.read() == _PLAIN
         assert stream.verified is archivey.Verification.CONTENT
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        pytest.param(CompressionAlgorithm.ZSTD, marks=requires_zstd()),
+        pytest.param(CompressionAlgorithm.LZ4, marks=requires("lz4")),
+    ],
+)
+def test_decompress_reads_every_frame(
+    clean_registry: None, tmp_path: Path, method: CompressionAlgorithm
+) -> None:
+    """Zstd and LZ4 data may be several frames, and a member reads them all."""
+    half = len(_PLAIN) // 2
+    stored = _compress(method, _PLAIN[:half]) + _compress(method, _PLAIN[half:])
+    register_format(_compressed_plugin(method))
+    with open_archive(_compressed_archive(tmp_path, stored)) as reader:
+        assert reader.read("m.bin") == _PLAIN
+
+
+def test_decompress_second_bzip2_stream_is_corrupt(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """A bzip2 member is one stream, as in ZIP and 7z."""
+    half = len(_PLAIN) // 2
+    stored = bz2.compress(_PLAIN[:half]) + bz2.compress(_PLAIN[half:])
+    register_format(_compressed_plugin(CompressionAlgorithm.BZIP2))
+    with (
+        open_archive(_compressed_archive(tmp_path, stored)) as reader,
+        pytest.raises(CorruptionError),
+    ):
+        reader.read("m.bin")
+
+
+def test_decompress_passes_sizes_to_the_codec(
+    clean_registry: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each call gets the member's sizes, which the accelerators choose by, as ZIP
+    gives them per member."""
+    from archivey.internal import plugin_adapter
+
+    seen: list[tuple[int | None, int | None]] = []
+    real = plugin_adapter.open_codec_stream
+
+    def spy(*args: object, config: object, **kwargs: object) -> object:
+        seen.append(
+            (
+                config.expected_decompressed_size,  # type: ignore[attr-defined]
+                config.compressed_input_size,  # type: ignore[attr-defined]
+            )
+        )
+        return real(*args, config=config, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(plugin_adapter, "open_codec_stream", spy)
+    stored = _raw_deflate(_PLAIN)
+    register_format(_compressed_plugin(CompressionAlgorithm.DEFLATE))
+    with open_archive(_compressed_archive(tmp_path, stored)) as reader:
+        assert reader.read("m.bin") == _PLAIN
+    assert seen == [(len(_PLAIN), len(stored))]
 
 
 def test_decompress_data_after_end_is_corrupt(
@@ -749,6 +1129,43 @@ def test_seekable_member_with_no_listed_size(
             stream.seek(0)
             assert stream.read() == data
             assert stream.verified is archivey.Verification.CONTENT
+
+
+@pytest.mark.parametrize(
+    ("digests", "match"),
+    [
+        (
+            (MemberDigest("crc32", b"\0\0\0\0", hashlib.sha1),),
+            "HashAlgorithm archivey computes itself",
+        ),
+        (
+            (
+                MemberDigest("sha1", b"x", hashlib.sha1),
+                MemberDigest("SHA1", b"y", hashlib.sha1),
+            ),
+            "another digest of the member also uses",
+        ),
+    ],
+)
+def test_member_digest_names_must_not_clash(
+    clean_registry: None,
+    tmp_path: Path,
+    digests: tuple[MemberDigest, ...],
+    match: str,
+) -> None:
+    """A digest named like archivey's own CRC-32 would replace the listed CRC-32's
+    check, and two digests sharing a name would keep one; both are refused."""
+
+    class Clashing(ToyReader):
+        def open_member(
+            self, member: ArchiveMember, locator: tuple[int, int]
+        ) -> MemberData:
+            return MemberData(self._source.view(*locator), digests=digests)
+
+    _plugin_with("clash", reader=Clashing)
+    path = _write(tmp_path, build_toya(_ENTRIES), "t.clash")
+    with open_archive(path) as reader, pytest.raises(ValueError, match=match):
+        reader.read("docs/a.txt")
 
 
 # ── Reports, config and the plugin-level translator ─────────────────────────────────

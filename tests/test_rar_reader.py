@@ -420,10 +420,10 @@ def test_unrar_respawn_boundary_read_is_one_byte() -> None:
 
 
 def test_unrar_respawn_overrun_probe_noop_seek_does_not_kill_pipe() -> None:
-    """After a probe byte past declared size, clamp ``_pipe_pos`` so SEEK_CUR is free.
+    """After a probe byte past declared size, clamp ``_inner_pos`` so SEEK_CUR is free.
 
     The probe is the fused-verify one-byte read at ``pos == size``. Without the
-    clamp, ``_pipe_pos`` sits at ``_size + 1`` and the next seek — including a
+    clamp, ``_inner_pos`` sits at ``_size + 1`` and the next seek — including a
     no-op ``SEEK_CUR`` — kills the live process. That only happens when unrar
     emitted extra bytes (already ``CorruptionError`` on the same call).
     """

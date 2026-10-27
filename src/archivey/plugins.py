@@ -102,7 +102,9 @@ class MemberDigest(NamedTuple):
     """
 
     name: str
-    """The checksum's name, for messages (``"sha1"``)."""
+    """The checksum's name (``"sha1"``), for messages and as its key: two digests of
+    one member cannot share a name, ignoring case, and a ``HashAlgorithm`` value
+    (``"crc32"``) is refused, since archivey computes those itself."""
 
     expected: bytes
     """The value the archive stores, as ``digest()`` returns it."""

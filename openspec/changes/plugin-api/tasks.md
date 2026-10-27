@@ -1,12 +1,12 @@
-No task starts until the maintainer approves the 2026-10-25 revision of `design.md`. Each numbered group is one PR.
+No task starts until the maintainer approves the 2026-10-25 revision of `design.md`. Each numbered group is one PR, except group 1, which lands as two: **1a** (the indexed shape, with tests and the user page) and **1b** (the sequential shape: 1.2a, 1.2b, the rest of 1.2c, 1.3, 1.4 and 1.6), after the ISO port. 1.2d to 1.2f, asked for while 1a was in review, land in their own PR between 1a and the ISO port. No spec delta lands before group 4 (4.2).
 
 ## 1. Format identity, registry, detection and the adapter
 
-- [ ] 1.1 Add `PluginContainer` (`StrEnum` base) to `types.py`; type
+- [x] 1.1 Add `PluginContainer` (`StrEnum` base) to `types.py`; type
       `ArchiveFormat.container` as `ContainerFormat | PluginContainer`; keep a
       `PluginContainer` member in `__post_init__`; `display_name` drops `_UNCOMPRESSED`
       for a pair with no named constant.
-- [ ] 1.2 `internal/plugin_adapter.py`: `PluginBackend(ReadBackend)` and
+- [x] 1.2 `internal/plugin_adapter.py`: `PluginBackend(ReadBackend)` and
       `PluginReaderAdapter(BaseArchiveReader)` (locator on `_raw`, name normalization,
       size and digest verification, `ArchiveInfo` and `CostReceipt` built by the adapter,
       handle lock for plugins that keep their own handle).
@@ -16,18 +16,33 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
       source, link targets read from data.
 - [ ] 1.2c Decoded `MemberSpan.data` (drain on advance, re-walk for random access),
       `ForwardStream.decompress`, `checked` members counted as verified,
-      `PluginArchiveInfo.is_solid`.
+      `PluginArchiveInfo.is_solid`. *1a landed `checked` and `is_solid`; the rest is 1b.*
+- [x] 1.2d `PluginContext.decompress(data, method, *, size, properties)`: a member's
+      compressed bytes through archivey's codec layer, with the caller's config and
+      the member's sizes, for raw Deflate, Deflate64, bzip2, Zstandard, LZ4 frames,
+      Brotli, raw LZMA and LZMA2 (maintainer, 2026-10-26).
+- [x] 1.2e Seekable members over a plugin stream that reads forward only: a forward
+      seek reads through, a backward one calls `open_member()` again
+      (`internal/streams/respawn.py`, shared with RAR's `unrar` pipe), including a
+      member listed with no size (maintainer, 2026-10-26).
+- [x] 1.2f `MemberData.digests`, `MemberDigest` and `Hasher`: checksums archivey has no
+      name for, computed by a hasher the plugin supplies (maintainer, 2026-10-26; see
+      design.md).
 - [ ] 1.2b Move TAR's codec-stream opening (`_open_byte_stream`) to a helper shared
       with the adapter, for compressed sequential plugins.
 - [ ] 1.3 `archivey/plugins.py`: `FormatPlugin`, `PluginReader`, `IndexedReader`,
-      `SequentialReader`, `MemberRecord`, `MemberSpan`, `MemberData`, `ForwardStream`, `PluginSource`, `PluginContext`, `PluginArchiveInfo`, `Magic`,
+      `SequentialReader`, `MemberRecord`, `MemberSpan`, `MemberData`, `MemberDigest`,
+      `Hasher`, `ForwardStream`, `PluginSource`, `PluginContext`, `PluginArchiveInfo`, `Magic`,
       `register_format`. Registration refuses clashing container values, already
-      registered formats, and extensions a built-in format claims.
+      registered formats, and extensions a built-in format claims. *1a landed all but
+      `SequentialReader`, `MemberSpan` and `ForwardStream`, and also refuses a
+      container value or name that is already a `format=` spelling.*
 - [ ] 1.4 Detection: plugin signals counted only when no built-in signal matched at the
       same or a higher confidence; probes get the peeked prefix only. `_probe_inner_tar`
       becomes an inner-container probe (TAR first, then sequential plugin magic ending
-      within 512 bytes), under the same budget.
-- [ ] 1.5 `format_args.py`: plugin spellings after built-in ones. Check the default
+      within 512 bytes), under the same budget. *1a landed the ranking and the probe;
+      the inner-container probe is 1b.*
+- [x] 1.5 `format_args.py`: plugin spellings after built-in ones. Check the default
       branch of each `ContainerFormat` test in `core.py`, `detection.py`,
       `cli/common.py`, `cli/extract_cmd.py` for a plugin container.
 - [ ] 1.6 Tests: a minimal in-test plugin through `open_archive`, `stream_members`,
@@ -35,8 +50,9 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
       stream raises `TruncatedError`; a wrong digest raises; a member named `../x` is
       refused like a built-in's; a plugin magic never outranks a built-in one. A
       sequential test plugin read from a pipe, gzip-compressed, under
-      `stream_members`, `extract_all` and a `CONCURRENT` reader.
-- [ ] 1.7 `FormatInfo.from_plugin` (maintainer, 2026-10-25).
+      `stream_members`, `extract_all` and a `CONCURRENT` reader. *1a landed the
+      indexed tests; the sequential test plugin is 1b.*
+- [x] 1.7 `FormatInfo.from_plugin` (maintainer, 2026-10-25).
 
 ## 2. ISO onto the interface
 
@@ -59,7 +75,9 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
 
 ## 4. Docs and specs
 
-- [ ] 4.1 User page "Adding a format" (Opus), with the trust section; API page entry.
+- [x] 4.1 User page "Adding a format" (Opus), with the trust section; API page entry.
+      *Landed with 1a so the API could be read as a plugin author sees it; its
+      "later version" lines are rewritten as 1b and the ISO port land.*
 - [ ] 4.2 New spec `format-plugins`; deltas to `backend-registry`, `format-detection`,
       `archive-data-model`, `format-iso`.
 - [ ] 4.3 `dev-docs/IDEAS.md` and `VISION.md`: the public backend API item points here.
