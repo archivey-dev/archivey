@@ -20,7 +20,7 @@ import threading
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
-from typing import Any, BinaryIO, ClassVar, cast
+from typing import Any, BinaryIO, ClassVar, NoReturn, cast
 
 from archivey.config import ArchiveyConfig, ProcessIsolation
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -68,12 +68,13 @@ from archivey.internal.streams.streamtools import (
     is_seekable,
     source_byte_size,
 )
-from archivey.internal.streams.verify import CustomDigests
+from archivey.internal.streams.verify import CustomDigests, hasher_factory
 from archivey.plugins import (
     FormatPlugin,
     Hasher,
     IndexedReader,
     MemberData,
+    MemberDigest,
     PluginContext,
     PluginSource,
 )
@@ -394,13 +395,10 @@ class PluginReaderAdapter(BaseArchiveReader):
         # Until the ArchiveStream takes the stream over, a raise here (a refused
         # digest name, a hasher factory that fails) leaves archivey owing it a close.
         try:
-            expected = (
-                {**member.hashes, **data.expected_hashes}
-                if data.expected_hashes
-                else member.hashes
-            )
-            custom_digests = (
-                self._custom_digests(data, expected) if data.digests else None
+            expected, custom_digests = (
+                self._member_digests(member, data)
+                if data.digests
+                else (member.hashes, None)
             )
             rewind: RewindWarning | None = None
             if self._seek_declared() and not is_seekable(stream):
@@ -437,33 +435,64 @@ class PluginReaderAdapter(BaseArchiveReader):
             stream.close()
             raise
 
-    def _custom_digests(self, data: MemberData, expected: Mapping) -> CustomDigests:
-        """``data.digests`` keyed by folded name.
+    def _member_digests(
+        self, member: ArchiveMember, data: MemberData
+    ) -> tuple[dict[HashAlgorithm, bytes], CustomDigests]:
+        """The digests to check: the member's listed ``hashes`` and ``data.digests``.
 
-        The verifier keys every check by its folded name, so a digest may not take
-        the name of another digest, of a ``HashAlgorithm`` archivey computes itself,
-        or of a hash the member already lists in ``expected``. The last is refused
-        even when archivey has no hasher for the listed one: two stored values under
-        one name is the plugin's bug, whichever would win.
+        A digest archivey computes itself joins the listed ones, and is published on
+        ``member.hashes`` as a built-in format publishes a CRC-32 it reads from a local
+        header. When the listing already holds that name with another value, the
+        archive stores two values for one checksum (an index and a local header that
+        disagree): both are checked, so a read that reaches the end raises for
+        whichever does not match, instead of one silently replacing the other. Any
+        other digest is computed with the plugin's hasher.
         """
-        listed = {str(key).lower() for key in expected}
-        digests: dict[str, tuple[bytes, Callable[[], Hasher]]] = {}
+        expected = dict(member.hashes)
+        listed = {str(key).lower(): (key, value) for key, value in expected.items()}
+        custom: dict[str, tuple[bytes, Callable[[], Hasher]]] = {}
+        published: dict[HashAlgorithm, bytes] = {}
+        seen: set[str] = set()
         for digest in data.digests:
             key = digest.name.lower()
-            if key in digests:
-                reason = "which another digest of the member also uses"
-            elif key in _ALGORITHM_KEYS:
-                reason = "which is a HashAlgorithm archivey computes itself"
-            elif key in listed:
-                reason = "which the member already lists as a hash"
+            if key in seen:
+                self._refuse_digest(digest, "which another digest of the member uses")
+            seen.add(key)
+            algorithm = _ALGORITHMS.get(key)
+            if algorithm is not None:
+                # Every HashAlgorithm has a hasher of archivey's own (CRC-32, BLAKE2sp).
+                built_in = hasher_factory(algorithm)
+                assert built_in is not None
+                factory = built_in
+            elif digest.new is not None:
+                factory = digest.new
             else:
-                digests[key] = (digest.expected, digest.new)
-                continue
-            raise ValueError(
-                f"{type(self._reader).__name__}.open_member() returned a digest "
-                f"named {digest.name!r}, {reason}"
-            )
-        return digests
+                self._refuse_digest(
+                    digest, "which archivey does not compute, with no hasher"
+                )
+            if key in listed:
+                listed_key, prior = listed[key]
+                if hasher_factory(key) is None:
+                    # A listed name archivey has no hasher of its own for: the
+                    # listed value is checked with the plugin's hasher too. One
+                    # archivey can hash (hashlib's ``sha1``) keeps archivey's.
+                    del expected[listed_key]
+                    custom[key] = (prior, factory)
+                if prior != digest.expected:
+                    custom[f"{key} from open_member()"] = (digest.expected, factory)
+            elif algorithm is not None:
+                expected[algorithm] = published[algorithm] = digest.expected
+            else:
+                custom[key] = (digest.expected, factory)
+        if published:
+            member.hashes = {**member.hashes, **published}
+        return expected, custom
+
+    def _refuse_digest(self, digest: MemberDigest, reason: str) -> NoReturn:
+        raise ValueError(
+            f"{type(self._reader).__name__}.open_member() returned a digest "
+            f"named {digest.name!r}, {reason}"
+        )
 
     def _get_archive_info(self) -> ArchiveInfo:
         with self._translated_errors(), self._handle_guard():
@@ -502,8 +531,8 @@ class PluginReaderAdapter(BaseArchiveReader):
             self._shared.close()
 
 
-# The names ``MemberDigest`` may not take: archivey computes these itself.
-_ALGORITHM_KEYS = frozenset(str(algorithm) for algorithm in HashAlgorithm)
+# The ``MemberDigest`` names archivey computes itself, with its own hasher.
+_ALGORITHMS = {str(algorithm): algorithm for algorithm in HashAlgorithm}
 
 # The methods ``PluginContext.decompress`` decodes. PPMd, the branch filters and RAR
 # need parameters or framing a plain method name cannot carry.

@@ -145,7 +145,7 @@ class _Crc32Hasher:
         return (self._value & 0xFFFFFFFF).to_bytes(self.digest_size, "big")
 
 
-def _make_hasher(
+def hasher_factory(
     algorithm: HashAlgorithm | str,
 ) -> Callable[[], _IncrementalHasher] | None:
     """Return a zero-arg factory for an incremental hasher, or ``None`` if unavailable."""
@@ -229,7 +229,7 @@ class MemberVerifier:
         self._hasher_factories: dict[str, Callable[[], _IncrementalHasher]] = {}
         for algorithm, value in expected.items():
             key = _algo_key(algorithm)
-            factory = _make_hasher(key)
+            factory = hasher_factory(key)
             if factory is None:
                 message = (
                     f"Cannot verify digest {key!r} (unknown algorithm or backend "
@@ -256,7 +256,7 @@ class MemberVerifier:
         for name, (value, factory) in (custom_digests or {}).items():
             key = _algo_key(name)
             assert key not in self._expected, (
-                "the adapter refuses a name the member already lists"
+                "the adapter renames a digest whose name the member already lists"
             )
             self._hasher_factories[key] = factory
             self._hashers[key] = factory()
