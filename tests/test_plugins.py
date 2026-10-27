@@ -415,11 +415,11 @@ def _plugin_with(
 
 
 @pytest.mark.parametrize(
-    "container_value",
-    ["tar.gz", "TAR_GZ", "zz"],
+    ("container_value", "owner"),
+    [("tar.gz", "TAR_GZ"), ("TAR_GZ", "TAR_GZ"), ("zz", "ZLIB")],
 )
 def test_registration_refuses_a_taken_spelling(
-    clean_registry: None, container_value: str
+    clean_registry: None, container_value: str, owner: str
 ) -> None:
     """A container value or member name that spells another format is refused, so a
     plugin never registers with no ``format=`` spelling of its own."""
@@ -432,7 +432,7 @@ def test_registration_refuses_a_taken_spelling(
             "extensions": (),
         },
     )
-    with pytest.raises(ArchiveyUsageError, match="already names another format"):
+    with pytest.raises(ArchiveyUsageError, match=f"already names {owner};"):
         register_format(plugin)
 
     named_zip = PluginContainer("NamedZip", {"ZIP": "mine"})  # type: ignore[call-overload]
@@ -444,7 +444,7 @@ def test_registration_refuses_a_taken_spelling(
             "extensions": (),
         },
     )
-    with pytest.raises(ArchiveyUsageError, match="'ZIP' already names"):
+    with pytest.raises(ArchiveyUsageError, match="'ZIP' already names ZIP;"):
         register_format(plugin)
 
 
@@ -555,6 +555,26 @@ def test_probe_detects_a_format_with_no_magic(clean_registry: None) -> None:
     assert seen
     with pytest.raises(archivey.FormatDetectionError):
         detect_format(io.BytesIO(b"nothing here" * 10), config=config)
+
+
+@pytest.mark.parametrize("name", ["a.zip", "a.tar", "a.iso"])
+def test_probe_does_not_run_on_a_name_another_format_owns(
+    clean_registry: None, tmp_path: Path, name: str
+) -> None:
+    # Every plugin format shares the UNCOMPRESSED stream with ZIP and TAR, so the
+    # name gate must match the format, not the stream.
+    calls: list[bytes] = []
+
+    def probe(prefix: bytes) -> bool:
+        calls.append(prefix)
+        return True
+
+    plugin = _plugin_with("probed", probe=probe)
+    data = build_toya(_ENTRIES)
+    assert detect_format(_write(tmp_path, data, name)).format != plugin.format
+    assert not calls
+    assert detect_format(_write(tmp_path, data, "a.probed")).format == plugin.format
+    assert calls
 
 
 def test_archive_info_fields(toya: ArchiveFormat, tmp_path: Path) -> None:
