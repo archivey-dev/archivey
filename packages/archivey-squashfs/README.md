@@ -19,7 +19,8 @@ with archivey.open_archive("rootfs.sqfs") as archive:
 ## What it reads
 
 - Images compressed with gzip, xz, LZMA, Zstandard (through archivey's decoders) and
-  LZ4 (with the `lz4` package). LZO images raise `UnsupportedFeatureError`.
+  LZ4 (with the `lz4` package), and LZO, decoded by the package's own LZO1X decoder in
+  Python, or by liblzo2 when `python-lzo` is installed.
 - Files, directories, symlinks, hard links (a second name for an inode is listed as a
   `HARDLINK` to the first), sparse files, and devices, FIFOs and sockets (listed as
   `OTHER`, with `extra["special_file_type"]`).

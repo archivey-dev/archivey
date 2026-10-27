@@ -11,7 +11,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from archivey_squashfs import SQUASHFS, SquashfsPlugin
+from archivey_squashfs import SQUASHFS, SquashfsPlugin, lzo
 from archivey_squashfs.reader import SquashfsReader
 
 import archivey
@@ -51,6 +51,9 @@ TYPES = {
 }
 
 _LZ4 = importlib.util.find_spec("lz4") is not None
+_PYTHON_LZO = pytest.mark.skipif(
+    importlib.util.find_spec("lzo") is None, reason="needs python-lzo"
+)
 _ZSTD = archivey.format_availability(archivey.ArchiveFormat.ZST).support is not (
     archivey.FormatSupport.NONE
 )
@@ -61,6 +64,8 @@ IMAGES = [
     "lzma",
     pytest.param("lz4", marks=pytest.mark.skipif(not _LZ4, reason="needs lz4")),
     pytest.param("zstd", marks=pytest.mark.skipif(not _ZSTD, reason="needs zstd")),
+    "lzo",
+    "lzo1x-1",
     "uncompressed",
     "no-fragments",
     "tail-ends",
@@ -100,9 +105,30 @@ def test_lists_and_reads_every_member(image: str) -> None:
         assert archive.info.extra["squashfs.block_size"] == 4096
 
 
-def test_lzo_is_refused_as_unsupported() -> None:
-    with pytest.raises(UnsupportedFeatureError, match="LZO"):
-        open_archive(DATA / "lzo.sqfs")
+@pytest.fixture(params=["python", pytest.param("python-lzo", marks=_PYTHON_LZO)])
+def lzo_decoder(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Each LZO decoder in turn: the package's own, and liblzo through python-lzo."""
+    if request.param == "python":
+        monkeypatch.setattr(lzo, "_python_lzo", lambda: None)
+    return request.param
+
+
+@pytest.mark.parametrize("image", ["lzo", "lzo1x-1"])
+def test_lzo_images_with_each_decoder(lzo_decoder: str, image: str) -> None:
+    with open_archive(DATA / f"{image}.sqfs") as archive:
+        for name, data in CONTENT.items():
+            assert archive.read(name) == data
+
+
+def test_a_damaged_lzo_block(tmp_path: Path, lzo_decoder: str) -> None:
+    data = bytearray((DATA / "lzo.sqfs").read_bytes())
+    # The inode table's one metadata block, which LZO compresses: a changed first
+    # byte changes its first instruction.
+    table = _superblock_field(data, _INODE_TABLE, "<Q")
+    assert not _superblock_field(data, table, "<H") & 0x8000
+    data[table + 2] ^= 0xFF
+    with pytest.raises(CorruptionError, match="LZO block"):
+        open_archive(_image(tmp_path, bytes(data))).members()
 
 
 def test_detected_by_magic_and_by_name(tmp_path: Path) -> None:

@@ -10,8 +10,9 @@ decoded block.
 
 The reader trusts nothing it reads: every size is checked against what the format
 allows, the directory walk is a loop that refuses a directory reached twice, and every
-compressed block goes through ``PluginContext.decompress`` (or ``lz4.block`` with an
-output cap), so archivey's decoder limits apply.
+compressed block goes through ``PluginContext.decompress``, so archivey's decoder limits
+apply, or through a decoder capped at the block's size: ``lz4.block`` for LZ4, and
+:mod:`archivey_squashfs.lzo` for LZO.
 """
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ from archivey.plugins import (
     PluginContext,
     PluginSource,
 )
+from archivey_squashfs import lzo
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -238,6 +240,16 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
                     raise CorruptionError(f"the LZ4 block at {start}: {exc}") from None
 
             return lz4_block
+        if compressor == "lzo":
+
+            def lzo_block(start: int, length: int, limit: int) -> bytes:
+                raw = self._read_exact(start, length, "an LZO block")
+                try:
+                    return lzo.decompress(raw, limit)
+                except lzo.LzoError as exc:
+                    raise CorruptionError(f"the LZO block at {start}: {exc}") from None
+
+            return lzo_block
         raise UnsupportedFeatureError(
             f"{compressor.upper()}-compressed SquashFS is not supported"
         )

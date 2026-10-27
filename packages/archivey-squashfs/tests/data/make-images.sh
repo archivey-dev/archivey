@@ -28,3 +28,5 @@ mksquashfs "$tree" no-fragments.sqfs -no-fragments "${common[@]}"
 mksquashfs "$tree" xz-bcj.sqfs -comp xz -Xbcj x86 "${common[@]}"
 # Tail ends of larger files in fragments too (off by default since 4.6).
 mksquashfs "$tree" tail-ends.sqfs -tailends "${common[@]}"
+# LZO with liblzo's fast compressor; the default is lzo1x_999, which codes differently.
+mksquashfs "$tree" lzo1x-1.sqfs -comp lzo -Xalgorithm lzo1x_1 "${common[@]}"

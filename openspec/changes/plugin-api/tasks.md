@@ -91,8 +91,8 @@ A second indexed format, written from outside the library (the maintainer asked 
 more indexed plugin, 2026-10-27).
 
 - [x] 3b.1 `packages/archivey-squashfs/` (unpublished): an `IndexedReader` for
-      SquashFS 4.0 with gzip, xz, LZMA, LZ4 (with `lz4`), Zstandard and uncompressed
-      images; files with fragments and sparse blocks, directories, symlinks, hard links
+      SquashFS 4.0 with gzip, xz, LZMA, LZ4 (with `lz4`), LZO, Zstandard and
+      uncompressed images; files with fragments and sparse blocks, directories, symlinks, hard links
       and device nodes, FIFOs and sockets (listed as `OTHER`).
 - [x] 3b.2 Images written by `mksquashfs` (`tests/data/make-images.sh`), and damaged
       copies of one: a truncated image, a bad superblock, a directory cycle, a bad name,
@@ -103,9 +103,13 @@ more indexed plugin, 2026-10-27).
       takes a `StreamFormat` (SquashFS stores zlib, xz and LZMA Alone streams; bytes
       after such a stream are reported as for a file of that format), and the adapter
       buffers a plugin's `RawIOBase` stream so `read(n)` is not short before the end.
-- [ ] 3b.5 Still outside the interface: LZ4 block format (the package calls
-      `lz4.block` itself) and LZO (refused as unsupported); extended attributes and
-      the export table are not read.
+- [x] 3b.5 LZO, which archivey does not decode: the package's own LZO1X decoder in
+      Python (from the kernel's `lzo1x_decompress_safe`), or liblzo2 through
+      `python-lzo` when installed; tests cross-check the two (maintainer, 2026-10-27).
+- [ ] 3b.6 Still outside the interface: the LZ4 block format (the package calls
+      `lz4.block` itself) and LZO, each capped at the block size by the package rather
+      than by archivey's decoder limits. Extended attributes and the export table are
+      not read.
 
 ## 4. Docs and specs
 

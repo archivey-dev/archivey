@@ -1,5 +1,5 @@
 # SquashFS images for archivey, as a format plugin outside the library. It uses only
-# `archivey.plugins` and archivey's public names (tests/test_package.py checks), so it
+# `archivey.plugins` and archivey's public names (tests/test_squashfs.py checks), so it
 # is the proof that a format can be added from outside. Not published.
 
 [build-system]
@@ -22,6 +22,9 @@ dependencies = ["archivey"]
 [project.optional-dependencies]
 # LZ4 images are decoded with lz4.block; the other compressors go through archivey.
 lz4 = ["lz4"]
+# LZO blocks are decoded in Python, or by liblzo2 through python-lzo (GPL, built from
+# source: it needs the liblzo2 headers) when it is installed.
+lzo = ["python-lzo"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/archivey_squashfs"]

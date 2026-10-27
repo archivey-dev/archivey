@@ -757,7 +757,8 @@ jobs:
 
   # The SquashFS reader in packages/archivey-squashfs: a format added from outside the
   # library, through the public plugin API only. Its own tests, against images
-  # mksquashfs wrote (tests/data/make-images.sh), with lz4 for the LZ4 image.
+  # mksquashfs wrote (tests/data/make-images.sh), with lz4 for the LZ4 image and
+  # python-lzo for the second LZO decoder.
   squashfs-plugin:
     name: archivey-squashfs plugin
     runs-on: ubuntu-latest
@@ -771,10 +772,14 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - name: Set up Python
         run: uv python install 3.11
+      - name: Install liblzo2, which python-lzo builds against
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends liblzo2-dev
       - name: Sync, then install the package over it
+        # python-lzo too, so the tests check the package's LZO decoder against liblzo2.
         run: |
           uv sync --group dev --extra all
           uv pip install -e packages/archivey-squashfs --no-deps
+          uv pip install python-lzo
       - name: Pytest
         run: uv run --no-sync pytest packages/archivey-squashfs/tests -q --no-cov -rs
 
