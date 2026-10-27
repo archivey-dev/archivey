@@ -218,8 +218,10 @@ FormatPolicy(exclude={CompressionAlgorithm.PPMD, CompressionAlgorithm.DEFLATE64}
   `.tar.gz`. `CompressionAlgorithm.DEFLATE` turns off deflate members in ZIP and 7z,
   not gzip files: the outer stream is a format, a member method is a member's property.
 - **Limit: RAR.** RAR members report `CompressionAlgorithm.RAR` for every RAR method,
-  and the decoder is `unrar`, so PPMd inside RAR cannot be turned off on its own. Turning
-  off `RAR` turns off every compressed RAR member.
+  and the decoder is `unrar`, so PPMd inside RAR cannot be turned off on its own. RAR 3
+  and 4 (the RAR 2.9 format) can switch any block of a member between LZ and PPMd
+  variant H, with a bit inside the compressed data, so no header says which a member
+  uses. RAR 5 has no PPMd. Turning off `RAR` turns off every compressed RAR member.
 - **Plugins.** A plugin member is checked on the `compression` its `MemberRecord`
   reports, before `open_member` runs.
 
