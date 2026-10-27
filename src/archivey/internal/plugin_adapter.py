@@ -12,12 +12,13 @@ registers it after the built-in backends, so a built-in signal always wins (§4)
 
 from __future__ import annotations
 
+import io
 import lzma
 import threading
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
-from typing import Any, BinaryIO, ClassVar
+from typing import Any, BinaryIO, ClassVar, cast
 
 from archivey.config import ArchiveyConfig, ProcessIsolation
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -50,6 +51,7 @@ from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarnin
 from archivey.internal.streams.codecs import (
     Codec,
     CodecParams,
+    codec_for_stream_format,
     decode_lzma_filter_properties,
     open_codec_stream,
 )
@@ -163,12 +165,19 @@ class PluginReaderAdapter(BaseArchiveReader):
     def _decompress(
         self,
         data: BinaryIO,
-        method: CompressionAlgorithm,
+        method: CompressionAlgorithm | StreamFormat,
         size: int | None,
         properties: bytes | None,
     ) -> BinaryIO:
         """``PluginContext.decompress``: ``data`` through archivey's codec layer."""
-        codec = _PLUGIN_CODECS.get(method)
+        if isinstance(method, StreamFormat):
+            codec = (
+                Codec.STORED
+                if method is StreamFormat.UNCOMPRESSED
+                else codec_for_stream_format(method)
+            )
+        else:
+            codec = _PLUGIN_CODECS.get(method)
         if codec is None:
             raise UnsupportedFeatureError(
                 f"PluginContext.decompress() does not decode {method.name}",
@@ -177,8 +186,12 @@ class PluginReaderAdapter(BaseArchiveReader):
             )
         # Only a bzip2 member is one stream, as in ZIP and 7z: a further stream after
         # its end is refused. Zstd and LZ4 data may be several frames, read together
-        # (RFC 8878, the LZ4 frame format), and the other codecs read no flag.
-        params = CodecParams(single_stream=codec is Codec.BZIP2)
+        # (RFC 8878, the LZ4 frame format), and the other codecs read no flag. A
+        # stream format is read as a file of that format is, so a ``.bz2`` stream may
+        # hold several, as bzip2 itself decodes them.
+        params = CodecParams(
+            single_stream=codec is Codec.BZIP2 and not isinstance(method, StreamFormat)
+        )
         if codec is Codec.LZMA or codec is Codec.LZMA2:
             want = 5 if codec is Codec.LZMA else 1
             if properties is None or len(properties) != want:
@@ -202,6 +215,12 @@ class PluginReaderAdapter(BaseArchiveReader):
         # output size, and the input size while ``data`` is at its start. The
         # accelerators choose by them, and rapidgzip's length check needs the first.
         changes: dict[str, Any] = {"expected_decompressed_size": size}
+        if isinstance(method, StreamFormat):
+            # A whole stream reads as a file of its format does: bytes after its end
+            # are reported (``ARCHIVE_TRAILING_DATA``), not refused. Most stream
+            # codecs have no refusal; the report is what they all share.
+            changes["refuse_input_after_end"] = False
+            changes["report_trailing_data"] = True
         if not is_seekable(data) or data.tell() == 0:
             input_size = source_byte_size(data)
             if input_size is not None:
@@ -315,8 +334,9 @@ class PluginReaderAdapter(BaseArchiveReader):
             index += 1
             yield member
 
-    def _plugin_member_data(self, member: ArchiveMember) -> MemberData:
-        """Call the plugin's ``open_member``, with its stream under the handle lock."""
+    def _plugin_member_data(self, member: ArchiveMember) -> tuple[MemberData, BinaryIO]:
+        """Call the plugin's ``open_member``: its data, and its stream as archivey
+        reads it, buffered if raw and under the handle lock."""
         with self._translated_errors(member.name), self._handle_guard():
             data = self._reader.open_member(member, member._raw)
         if not isinstance(data, MemberData):
@@ -324,13 +344,17 @@ class PluginReaderAdapter(BaseArchiveReader):
                 f"{type(self._reader).__name__}.open_member() returned "
                 f"{type(data).__name__}, not MemberData"
             )
+        stream = data.stream
+        if isinstance(stream, io.RawIOBase):
+            # A raw stream may return fewer bytes than asked for before its end;
+            # archivey's readers expect a file's ``read(n)``, as a buffer gives.
+            stream = cast(BinaryIO, io.BufferedReader(stream))
         if self._handle_lock is not None:
-            data = data._replace(stream=LockedStream(data.stream, self._handle_lock))
-        return data
+            stream = LockedStream(stream, self._handle_lock)
+        return data, stream
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
-        data = self._plugin_member_data(member)
-        stream: BinaryIO = data.stream
+        data, stream = self._plugin_member_data(member)
         # Until the ArchiveStream takes the stream over, a raise here (a refused
         # digest name, a hasher factory that fails) leaves archivey owing it a close.
         try:
@@ -347,7 +371,7 @@ class PluginReaderAdapter(BaseArchiveReader):
                 # opens the member again from the start (``open_member`` once more).
                 # With no listed size, a seek from the end reads through to find it.
                 stream = RespawnStream(
-                    lambda: self._plugin_member_data(member).stream,
+                    lambda: self._plugin_member_data(member)[1],
                     stream,
                     size=member.size,
                     what=f"{self._format.display_name} member data",

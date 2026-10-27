@@ -22,6 +22,7 @@ passwords, and new diagnostic codes.
 
 from __future__ import annotations
 
+import io
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
@@ -39,6 +40,7 @@ from archivey.types import (
     HashAlgorithm,
     MemberType,
     PluginContainer,
+    StreamFormat,
 )
 
 __all__ = [
@@ -124,8 +126,10 @@ class MemberDigest(NamedTuple):
 class MemberData(NamedTuple):
     """A member's data, as :meth:`IndexedReader.open_member` returns it."""
 
-    stream: BinaryIO
-    """The member's decoded bytes, read from the start. archivey closes it."""
+    stream: BinaryIO | io.RawIOBase
+    """The member's decoded bytes, read from the start. archivey closes it. A
+    :class:`io.RawIOBase`, whose ``read(n)`` may return fewer bytes than asked before
+    its end, is buffered by archivey."""
 
     expected_hashes: Mapping[HashAlgorithm, bytes] = {}
     """Digests archivey checks the bytes against as they are read. A digest in
@@ -214,7 +218,8 @@ class PluginContext:
         archive_name: str | None,
         config: ArchiveyConfig,
         decompress: Callable[
-            [BinaryIO, CompressionAlgorithm, int | None, bytes | None], BinaryIO
+            [BinaryIO, CompressionAlgorithm | StreamFormat, int | None, bytes | None],
+            BinaryIO,
         ],
         report: Callable[
             [DiagnosticCode, str, DiagnosticContext, ArchiveMember | None], None
@@ -315,7 +320,7 @@ class PluginContext:
     def decompress(
         self,
         data: BinaryIO,
-        method: CompressionAlgorithm,
+        method: CompressionAlgorithm | StreamFormat,
         *,
         size: int | None = None,
         properties: bytes | None = None,
@@ -328,18 +333,24 @@ class PluginContext:
         process isolation and accelerator settings, and translates the decoder's errors
         itself, so ``translate_exception`` never sees them.
 
+        ``method`` is a compression method or a stream format. As a method, it is one
+        of ``STORED``, ``DEFLATE`` (raw, no zlib or gzip header), ``DEFLATE64``,
+        ``BZIP2``, ``ZSTD``, ``LZ4`` (frames), ``BROTLI``, ``LZMA`` (raw LZMA1;
+        ``properties`` is its 5-byte properties: the ``lc``, ``lp``, ``pb`` byte and the
+        dictionary size) and ``LZMA2`` (raw; ``properties`` is its 1-byte dictionary
+        size). As a stream format, the data is a whole stream with its own framing,
+        decoded as a file of that format is: ``ZLIB`` (deflate with the zlib header and
+        Adler-32), ``GZIP``, ``XZ``, ``LZMA_ALONE``, ``LZIP`` and the others
+        ``StreamFormat`` names. Any other method raises ``UnsupportedFeatureError``,
+        and one whose optional package is missing raises ``PackageNotInstalledError``.
+
         Where the compressed data ends depends on the method. ``ZSTD`` and ``LZ4`` data
         is one or more frames, decoded together. ``BZIP2`` data is one stream, and a
         second one is damage. ``LZMA`` and ``LZMA2`` end at their end marker; raw LZMA1,
         which may have none, then ends at ``size``. For every method, bytes left after
-        that end raise ``CorruptionError``.
-
-        ``method`` is one of ``STORED``, ``DEFLATE`` (raw, no zlib or gzip header),
-        ``DEFLATE64``, ``BZIP2``, ``ZSTD``, ``LZ4``, ``BROTLI``, ``LZMA`` (raw LZMA1;
-        ``properties`` is its 5-byte properties: the ``lc``, ``lp``, ``pb`` byte and the
-        dictionary size) and ``LZMA2`` (raw; ``properties`` is its 1-byte dictionary
-        size). Any other method raises ``UnsupportedFeatureError``, and a method whose
-        optional package is missing raises ``PackageNotInstalledError``.
+        that end raise ``CorruptionError``. A stream format ends where its format says,
+        and bytes after that end are reported as ``ARCHIVE_TRAILING_DATA``, as for a
+        file of that format; under ``DiagnosticPolicy.STRICT`` that report raises.
 
         ``size`` is the decoded length when the format stores it. Raw LZMA1 may have
         no end marker and needs it then.

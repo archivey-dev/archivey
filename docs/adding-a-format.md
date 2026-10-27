@@ -31,6 +31,10 @@ same way it does for a built-in format: it normalizes member names, checks them,
 the listing limits, resolves links, checks each member's size and checksum as it is read,
 and extracts safely.
 
+A complete plugin outside archivey, for SquashFS images, is in
+[`packages/archivey-squashfs`](https://github.com/archivey-dev/archivey/tree/main/packages/archivey-squashfs)
+in the repository. It is not published.
+
 ## A complete example
 
 The example format here, TOYA, is small enough to read in full. A TOYA file starts with
@@ -193,7 +197,10 @@ def open_member(self, member: ArchiveMember, locator: Locator) -> MemberData:
 ```
 
 It decodes raw Deflate, Deflate64, bzip2, Zstandard and LZ4 frames, Brotli, and raw
-LZMA and LZMA2 (with the `properties` bytes the format stores). It uses the caller's
+LZMA and LZMA2 (with the `properties` bytes the format stores). Given a `StreamFormat`
+in place of a method, it decodes a whole stream with its own framing, as a file of that
+format is read: `StreamFormat.ZLIB` for Deflate with the zlib header, and `GZIP`, `XZ`,
+`LZMA_ALONE`, `LZIP` and the rest. It uses the caller's
 decoder limits, process isolation and accelerator settings, and turns the decoder's
 errors into archivey's own. A method whose optional package is missing raises
 `PackageNotInstalledError`.
@@ -205,9 +212,14 @@ Where the compressed data ends depends on the method:
 - **LZMA and LZMA2** end at their end marker. Raw LZMA1, which may have none, then
   ends at `size`.
 - For every method, bytes left after that end raise `CorruptionError`.
+- A **stream format** ends where its format says. Bytes after that end are reported as
+  `ARCHIVE_TRAILING_DATA`, as they are for a file of that format.
 
 A format whose methods archivey does not decode wraps the view in its own library's
 decoder.
+
+The stream may be an `io.RawIOBase`, whose `read(n)` may return fewer bytes than asked
+before the end; archivey buffers it, so its callers get whole reads.
 
 archivey checks every member stream against what the listing said:
 

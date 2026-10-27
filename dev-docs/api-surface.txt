@@ -920,7 +920,7 @@ field archivey.plugins.MemberData.bounded: bool
 field archivey.plugins.MemberData.checked: bool
 field archivey.plugins.MemberData.digests: tuple[MemberDigest, ...]
 field archivey.plugins.MemberData.expected_hashes: Mapping[HashAlgorithm, bytes]
-field archivey.plugins.MemberData.stream: BinaryIO
+field archivey.plugins.MemberData.stream: BinaryIO | io.RawIOBase
 class archivey.plugins.MemberDigest(tuple)
 field archivey.plugins.MemberDigest.expected: bytes
 field archivey.plugins.MemberDigest.name: str
@@ -939,7 +939,7 @@ class archivey.plugins.PluginContext()
 property archivey.plugins.PluginContext.archive_name: str | None
 property archivey.plugins.PluginContext.config: ArchiveyConfig
 method archivey.plugins.PluginContext.decode_name(self, raw: bytes) -> str
-method archivey.plugins.PluginContext.decompress(self, data: BinaryIO, method: CompressionAlgorithm, *, size: int | None = None, properties: bytes | None = None) -> BinaryIO
+method archivey.plugins.PluginContext.decompress(self, data: BinaryIO, method: CompressionAlgorithm | StreamFormat, *, size: int | None = None, properties: bytes | None = None) -> BinaryIO
 property archivey.plugins.PluginContext.encoding: str | None
 method archivey.plugins.PluginContext.link_target_unavailable(self, member: ArchiveMember, *, reason: str, message: str, target_in_archive: bool) -> None
 method archivey.plugins.PluginContext.normalize_name(self, name: str, member_type: MemberType) -> str

@@ -29,7 +29,7 @@ for arg in "$@"; do
   esac
 done
 
-PATHS=(src/ tests/ scripts/ benchmarks/)
+PATHS=(src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/)
 FAILED=()
 
 # The gates below run with `--no-sync`, which assumes this tree already has an

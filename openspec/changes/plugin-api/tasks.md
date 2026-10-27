@@ -85,6 +85,28 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
 - [ ] 3.3 A test that fails if the package imports `archivey.internal`.
 - [ ] 3.4 CI job that installs the package and runs its tests.
 
+## 3b. SquashFS package
+
+A second indexed format, written from outside the library (the maintainer asked for one
+more indexed plugin, 2026-10-27).
+
+- [x] 3b.1 `packages/archivey-squashfs/` (unpublished): an `IndexedReader` for
+      SquashFS 4.0 with gzip, xz, LZMA, LZ4 (with `lz4`), Zstandard and uncompressed
+      images; files with fragments and sparse blocks, directories, symlinks, hard links
+      and device nodes, FIFOs and sockets (listed as `OTHER`).
+- [x] 3b.2 Images written by `mksquashfs` (`tests/data/make-images.sh`), and damaged
+      copies of one: a truncated image, a bad superblock, a directory cycle, a bad name,
+      a fragment past its table, a short data block, an oversized metadata block.
+- [x] 3b.3 A test that fails if the package imports `archivey.internal`; a CI job that
+      installs the package and runs its tests.
+- [x] 3b.4 Gaps the package found, added to the interface: `PluginContext.decompress`
+      takes a `StreamFormat` (SquashFS stores zlib, xz and LZMA Alone streams; bytes
+      after such a stream are reported as for a file of that format), and the adapter
+      buffers a plugin's `RawIOBase` stream so `read(n)` is not short before the end.
+- [ ] 3b.5 Still outside the interface: LZ4 block format (the package calls
+      `lz4.block` itself) and LZO (refused as unsupported); extended attributes and
+      the export table are not read.
+
 ## 4. Docs and specs
 
 - [x] 4.1 User page "Adding a format" (Opus), with the trust section; API page entry.
