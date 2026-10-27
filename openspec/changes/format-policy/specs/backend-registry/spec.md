@@ -34,3 +34,17 @@ the built-in format.
 
 - **WHEN** a caller opens a ZIP file with `FormatPolicy(replace={ContainerFormat.ZIP: P})`
 - **THEN** `P.open` reads it and `reader.format` is `ArchiveFormat.ZIP`
+
+### Requirement: A member codec the policy excludes does not decode
+
+When `FormatPolicy.exclude` holds a `CompressionAlgorithm`, opening the data of a member
+whose `compression` chain contains that algorithm SHALL raise `UnsupportedFeatureError`
+that names the policy. The member SHALL still be listed with its `compression`.
+
+#### Scenario: An excluded PPMd member lists but does not open
+
+- **WHEN** a caller opens a 7z archive that holds a PPMd member and a LZMA2 member with
+  `FormatPolicy(exclude={CompressionAlgorithm.PPMD})`
+- **THEN** both members are listed
+- **AND** reading the PPMd member raises `UnsupportedFeatureError`
+- **AND** the LZMA2 member reads

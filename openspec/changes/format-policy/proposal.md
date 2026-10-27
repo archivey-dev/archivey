@@ -1,6 +1,6 @@
-> **Design only.** Written 2026-10-27 for the maintainer's review. No implementation PR
-> starts until the maintainer picks an approach in `design.md`. It builds on the plugin
-> API stack (`plugin-api`), which is in review now.
+> **Design approved 2026-10-27** (option A and every call in `design.md` §7). The
+> implementation builds on the plugin API stack (`plugin-api`) and starts once that
+> stack has merged.
 
 ## Why
 
@@ -24,13 +24,14 @@ needs are open:
 The maintainer asked (2026-10-27) for a design that covers both plugins and built-in
 readers, including an opt-in path and replacement.
 
-## What changes (recommended option A)
+## What changes
 
 - **New public type `archivey.FormatPolicy`**, a frozen dataclass like
   `DiagnosticPolicy`, and a new field `ArchiveyConfig.formats: FormatPolicy`. Its
   arguments:
   - `only=`: containers and compressions that may open. `None` (the default) means all.
-  - `exclude=`: containers and compressions that may not open.
+  - `exclude=`: containers and compressions that may not open, and member codecs
+    (`CompressionAlgorithm`) that may not decode.
   - `plugins=`: `False` turns off every registered plugin format.
   - `replace=`: a built-in container mapped to the plugin that reads it instead.
   - `allows(fmt)`: whether a format may open under the policy.
@@ -39,6 +40,8 @@ readers, including an opt-in path and replacement.
   refused format raises `UnsupportedFeatureError` that names the policy.
 - **The code of a plugin that is off does not run.** Its content probe is skipped in
   detection; its magic and extensions, which archivey matches itself, still name it.
+- **A member codec that is off** still lists; opening the member raises
+  `UnsupportedFeatureError`. RAR's PPMd cannot be singled out (`design.md` §5a).
 - **A replacement plugin** has a built-in `ArchiveFormat` as its `format`, declares no
   detection signals, and is used only through `replace=`. It is not registered.
 
@@ -47,11 +50,12 @@ Nothing changes for a caller who does not set `formats`.
 ## Impact
 
 - Specs: `backend-registry` (policy and reader selection), `format-detection` (skipped
-  probes), `format-plugins` (replacement plugins), `archive-reading` (the refusal).
+  probes), `format-plugins` (replacement plugins), `archive-reading` (the refusals,
+  including member codecs).
 - Code: `config.py`, a new `FormatPolicy` (in `config.py` or `types.py`),
   `internal/registry.py` (`reader_for_format` takes the policy),
   `internal/detection.py` (plugin probes filtered), `internal/plugin_adapter.py`
-  (replacement backends), `core.py` (one check at the reader choice, and the volume and
-  SFX refusals for a replacement).
+  (replacement backends), the shared member-open path (the codec check), `core.py`
+  (one check at the reader choice, and the volume and SFX refusals for a replacement).
 - Public API: one new root name and one new config field. Both additive.
 - Cost: one set lookup per open.

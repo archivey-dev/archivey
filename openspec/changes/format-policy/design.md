@@ -1,10 +1,10 @@
 # Design — choosing the format readers for one open
 
-> **Design only, for the maintainer's choice.** Section 1 is the recommendation in
-> short. Section 2 compares the options. Sections 3 to 6 are the detail of option A.
-> Section 7 lists the calls that are the maintainer's.
+> **Design approved by the maintainer (2026-10-27): option A and every call in §7.**
+> Section 1 is the design in short. Section 2 compares the options. Sections 3 to 6 are
+> the detail of option A. Section 7 records the calls.
 
-## 1. Recommendation
+## 1. The design
 
 Add one policy object to `ArchiveyConfig`, set per call, the same way
 `diagnostic_policy` is set:
@@ -39,7 +39,7 @@ The rules, in the order archivey applies them:
 
 ## 2. The options
 
-### A. A per-call policy object on `ArchiveyConfig` (recommended)
+### A. A per-call policy object on `ArchiveyConfig` (chosen)
 
 As in §1. Everything about the choice is in the config object the caller already
 passes, so two parts of one program can use different policies at the same time, and a
@@ -102,7 +102,7 @@ FormatEntry = ContainerFormat | PluginContainer | StreamFormat
 @dataclass(frozen=True)
 class FormatPolicy:
     only: frozenset[FormatEntry] | None = None
-    exclude: frozenset[FormatEntry] = frozenset()
+    exclude: frozenset[FormatEntry | CompressionAlgorithm] = frozenset()  # §5a
     plugins: bool = True
     replace: Mapping[ContainerFormat, type[FormatPlugin]] = {}  # stored read-only
 
@@ -193,11 +193,11 @@ class StrongZipPlugin(FormatPlugin):
   `DMG` are refused as keys.
 - A replaced container that `only` or `exclude` turns off is refused as a contradiction.
 
-## 5a. Member codecs (proposed, call 5)
+## 5a. Member codecs
 
 The maintainer asked (2026-10-27) whether a caller could also turn off a codec inside
 members, such as PPMd or Deflate64, because of a security or performance problem in it.
-Proposal: `exclude=` also takes `CompressionAlgorithm` members, the public enum that
+`exclude=` also takes `CompressionAlgorithm` members, the public enum that
 `ArchiveMember.compression` already reports.
 
 ```python
@@ -242,12 +242,13 @@ stay where they are (DR-14).
 
 ## 7. Calls for the maintainer
 
-1. **Option A (per call) or B (process-wide).** Decided: A (maintainer, 2026-10-27).
-2. **Plugins on by default once registered.** Recommended: yes. Registration is
-   already the program's explicit choice; `plugins=False` and `only=` turn them off.
-   The other way, every open names its plugins, makes `register_format` alone do
-   nothing and every call site change.
-3. **Replacement scope in v1: ZIP, 7z, RAR and ISO, with volumes and SFX refused.**
-   Recommended: yes, and TAR with the sequential shape.
+All decided by the maintainer on 2026-10-27: call 1 on the decision card, calls 2 to 5
+by agreeing to the rest of the design.
+
+1. **Option A (per call), not B (process-wide).**
+2. **Plugins are on by default once registered.** Registration is already the
+   program's explicit choice; `plugins=False` and `only=` turn them off.
+3. **Replacement scope in v1: ZIP, 7z, RAR and ISO, with volumes and SFX refused.** TAR
+   follows with the sequential shape.
 4. **Name.** `FormatPolicy` and `ArchiveyConfig.formats`, after `DiagnosticPolicy`.
-5. **Member codecs in `exclude=`** (§5a). Recommended: yes, deny-list only.
+5. **Member codecs in `exclude=`** (§5a), deny-list only.
