@@ -156,9 +156,9 @@ def test_unrar_pipe_seek_stays_lazy() -> None:
     assert stream.read(10) == _DATA[:10]
     assert stream.seek(150_000) == 150_000
     assert stream.tell() == 150_000
-    assert pipe._pipe_pos == 10
+    assert pipe._inner_pos == 10
     stream.seek(10)
-    assert pipe._pipe_pos == 10
+    assert pipe._inner_pos == 10
     stream.seek(150_000)
     assert stream.read(10) == _DATA[150_000:150_010]
     assert spawned == []  # one pipe, read straight through

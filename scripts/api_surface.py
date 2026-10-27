@@ -54,6 +54,7 @@ PUBLIC_MODULES = (
     "archivey.detection_cost",
     "archivey.diagnostics",
     "archivey.paths",
+    "archivey.plugins",
     "archivey.terminal",
 )
 

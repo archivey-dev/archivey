@@ -891,6 +891,64 @@ module archivey.paths
 function archivey.paths.match_glob(*patterns: str, with_contents: bool = False) -> Callable[[ArchiveMember | str], bool]
 function archivey.paths.match_tar_glob(*patterns: str) -> Callable[[ArchiveMember | str], bool]
 function archivey.paths.numbered_name(name: str, n: int, *, is_dir: bool) -> str
+module archivey.plugins
+class archivey.plugins.FormatPlugin(ABC)
+attribute archivey.plugins.FormatPlugin.extensions = ()
+attribute archivey.plugins.FormatPlugin.install_hint = None
+attribute archivey.plugins.FormatPlugin.magic = ()
+method archivey.plugins.FormatPlugin.open(self, source: PluginSource, context: PluginContext) -> PluginReader
+attribute archivey.plugins.FormatPlugin.probe = None
+attribute archivey.plugins.FormatPlugin.requires = ()
+attribute archivey.plugins.FormatPlugin.uses_encoding = False
+class archivey.plugins.Hasher(Protocol)
+init archivey.plugins.Hasher(*args, **kwargs)
+method archivey.plugins.Hasher.digest(self) -> bytes
+method archivey.plugins.Hasher.update(self, data: bytes, /) -> None
+class archivey.plugins.IndexedReader(PluginReader, Generic[])
+method archivey.plugins.IndexedReader.archive_info(self) -> PluginArchiveInfo
+method archivey.plugins.IndexedReader.close(self) -> None
+method archivey.plugins.IndexedReader.iter_members(self) -> Iterator[MemberRecord[LocatorT]]
+attribute archivey.plugins.IndexedReader.member_list_upfront = True
+method archivey.plugins.IndexedReader.open_member(self, member: ArchiveMember, locator: LocatorT) -> MemberData
+method archivey.plugins.IndexedReader.translate_exception(self, exc: Exception) -> ArchiveyError | None
+class archivey.plugins.Magic(tuple)
+field archivey.plugins.Magic.data: bytes
+field archivey.plugins.Magic.offset: int
+class archivey.plugins.MemberData(tuple)
+field archivey.plugins.MemberData.checked: bool
+field archivey.plugins.MemberData.digests: tuple[MemberDigest, ...]
+field archivey.plugins.MemberData.expected_hashes: Mapping[HashAlgorithm, bytes]
+field archivey.plugins.MemberData.stream: BinaryIO
+class archivey.plugins.MemberDigest(tuple)
+field archivey.plugins.MemberDigest.expected: bytes
+field archivey.plugins.MemberDigest.name: str
+field archivey.plugins.MemberDigest.new: Callable[[], Hasher]
+class archivey.plugins.MemberRecord(tuple, Generic[])
+field archivey.plugins.MemberRecord.locator: LocatorT
+field archivey.plugins.MemberRecord.member: ArchiveMember
+class archivey.plugins.PluginArchiveInfo(tuple)
+field archivey.plugins.PluginArchiveInfo.comment: str | None
+field archivey.plugins.PluginArchiveInfo.extra: Mapping[str, object]
+field archivey.plugins.PluginArchiveInfo.format_version: str | None
+field archivey.plugins.PluginArchiveInfo.is_solid: bool
+reexport archivey.plugins.PluginContainer = archivey.PluginContainer
+class archivey.plugins.PluginContext()
+init archivey.plugins.PluginContext(*, encoding: str | None, archive_name: str | None, decompress: Callable[[BinaryIO, CompressionAlgorithm, int | None, bytes | None], BinaryIO]) -> None
+property archivey.plugins.PluginContext.archive_name: str | None
+method archivey.plugins.PluginContext.decode_name(self, raw: bytes) -> str
+method archivey.plugins.PluginContext.decompress(self, data: BinaryIO, method: CompressionAlgorithm, *, size: int | None = None, properties: bytes | None = None) -> BinaryIO
+property archivey.plugins.PluginContext.encoding: str | None
+class archivey.plugins.PluginReader(ABC)
+method archivey.plugins.PluginReader.archive_info(self) -> PluginArchiveInfo
+method archivey.plugins.PluginReader.close(self) -> None
+method archivey.plugins.PluginReader.translate_exception(self, exc: Exception) -> ArchiveyError | None
+class archivey.plugins.PluginSource()
+init archivey.plugins.PluginSource(view: Callable[[int, int | None], BinaryIO], size: int | None, path: Path | None) -> None
+property archivey.plugins.PluginSource.path: Path | None
+method archivey.plugins.PluginSource.read_at(self, offset: int, n: int) -> bytes
+property archivey.plugins.PluginSource.size: int | None
+method archivey.plugins.PluginSource.view(self, start: int, length: int | None = None) -> BinaryIO
+function archivey.plugins.register_format(plugin: type[FormatPlugin]) -> None
 module archivey.terminal
 function archivey.terminal.display_path(path: str | os.PathLike[str]) -> str
 function archivey.terminal.escape_control_chars(text: str) -> str

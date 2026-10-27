@@ -990,7 +990,7 @@ def _bounded_member_pipe(inner: BinaryIO, *, prefix: int, size: int) -> BinaryIO
     The skip is eager at construction. A seekable wrapper respawns lazily on the
     next ``read()``, so this factory — and the skip — runs then, not inside
     ``seek()``. ``seek(0, SEEK_END); seek(0)`` before any read still costs
-    nothing: ``_pipe_pos`` stays 0 and no new pipe is built.
+    nothing: ``RespawnStream._inner_pos`` stays 0 and no new pipe is built.
 
     The bound itself is a non-seekable :class:`SlicingStream` (same shape as the
     7z folder-pipe member slice). ``SharedView`` is the locked re-seek door and

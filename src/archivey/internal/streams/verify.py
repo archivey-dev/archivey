@@ -248,7 +248,9 @@ class MemberVerifier:
             self._hasher_factories[key] = factory
             self._hashers[key] = factory()
             self._expected[key] = value
-        for key, (value, factory) in (custom_digests or {}).items():
+        for name, (value, factory) in (custom_digests or {}).items():
+            key = _algo_key(name)
+            assert key not in self._expected, "the adapter refuses a clashing name"
             self._hasher_factories[key] = factory
             self._hashers[key] = factory()
             self._expected[key] = value

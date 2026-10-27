@@ -227,6 +227,10 @@ archivey checks every member stream against what the listing said:
   its own checksum and raises when it does not match, set `checked=True` on the
   `MemberData`. A read to the end then counts as `Verification.CONTENT` too.
 
+Whichever way a checksum archivey has no name for is checked, keep the stored value in
+`member.extra` under a key named after your format, such as `"toya.sha1"`, so callers
+can see it.
+
 ## Errors
 
 When the archive is damaged, raise archivey's own exceptions from the reader:

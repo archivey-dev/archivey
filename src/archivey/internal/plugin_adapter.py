@@ -17,7 +17,7 @@ import threading
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
-from typing import BinaryIO, ClassVar
+from typing import Any, BinaryIO, ClassVar
 
 from archivey.config import ArchiveyConfig, ProcessIsolation
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -53,9 +53,12 @@ from archivey.internal.streams.streamtools import (
     LockedStream,
     SharedSource,
     is_seekable,
+    source_byte_size,
 )
+from archivey.internal.streams.verify import CustomDigests
 from archivey.plugins import (
     FormatPlugin,
+    Hasher,
     IndexedReader,
     MemberData,
     PluginContext,
@@ -68,6 +71,7 @@ from archivey.types import (
     ArchiveMember,
     CompressionAlgorithm,
     ContainerFormat,
+    HashAlgorithm,
     MagicSignature,
     MemberStreams,
     PluginContainer,
@@ -103,8 +107,8 @@ class PluginReaderAdapter(BaseArchiveReader):
         self._source = source
         # The plugin may hold a handle of its own (a library over ``source.path``), so
         # under CONCURRENT every call into it (each inside ``_handle_guard``), and every
-        # read of a stream it returned, takes one lock. The views of ``PluginSource`` need none, but archivey cannot
-        # tell which kind of reader it was given.
+        # read of a stream it returned, takes one lock. The views of ``PluginSource``
+        # need none, but archivey cannot tell which kind of reader it was given.
         if MemberStreams.CONCURRENT in member_streams:
             self._handle_lock = threading.Lock()
         self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
@@ -154,16 +158,22 @@ class PluginReaderAdapter(BaseArchiveReader):
                 source_format=self._format,
                 archive_name=self._archive_name,
             )
-        params = CodecParams(single_stream=True)
+        # Only a bzip2 member is one stream, as in ZIP and 7z: a further stream after
+        # its end is refused. Zstd and LZ4 data may be several frames, read together
+        # (RFC 8878, the LZ4 frame format), and the other codecs read no flag.
+        params = CodecParams(single_stream=codec is Codec.BZIP2)
         if codec is Codec.LZMA or codec is Codec.LZMA2:
             want = 5 if codec is Codec.LZMA else 1
             if properties is None or len(properties) != want:
                 raise CorruptionError(
                     f"{method.name} needs {want} bytes of properties, got "
-                    f"{'none' if properties is None else len(properties)}"
+                    f"{'none' if properties is None else len(properties)}",
+                    source_format=self._format,
+                    archive_name=self._archive_name,
                 )
             what = f"{self._format.display_name} {method.name} member"
             filter_id = lzma.FILTER_LZMA1 if codec is Codec.LZMA else lzma.FILTER_LZMA2
+            # Its own params, with no ``single_stream``: raw LZMA needs none.
             params = CodecParams(
                 filters=[
                     decode_lzma_filter_properties(filter_id, properties, what=what)
@@ -171,10 +181,18 @@ class PluginReaderAdapter(BaseArchiveReader):
                 # Raw LZMA1 may have no end marker: it stops at the stored size.
                 unpack_size=size if codec is Codec.LZMA else None,
             )
+        # Per call, as ZIP fills them per member (``_member_decoder_config``): the
+        # output size, and the input size while ``data`` is at its start. The
+        # accelerators choose by them, and rapidgzip's length check needs the first.
+        changes: dict[str, Any] = {"expected_decompressed_size": size}
+        if not is_seekable(data) or data.tell() == 0:
+            input_size = source_byte_size(data)
+            if input_size is not None:
+                changes["compressed_input_size"] = input_size
         return open_codec_stream(
             codec,
             data,
-            config=self._decoder_config,
+            config=replace(self._decoder_config, **changes),
             params=params,
             collector=self._diagnostics_collector,
         )
@@ -257,9 +275,27 @@ class PluginReaderAdapter(BaseArchiveReader):
             verify_member=member,
             fill_size=member.size is None,
             checks_content=data.checked,
-            custom_digests={d.name: (d.expected, d.new) for d in data.digests} or None,
+            custom_digests=self._custom_digests(data) or None,
             rewind_warning=rewind,
         )
+
+    def _custom_digests(self, data: MemberData) -> CustomDigests:
+        """``data.digests`` keyed by folded name; a clash is the plugin's bug."""
+        digests: dict[str, tuple[bytes, Callable[[], Hasher]]] = {}
+        for digest in data.digests:
+            key = digest.name.lower()
+            if key in digests or key in _ALGORITHM_KEYS:
+                raise ValueError(
+                    f"{type(self._reader).__name__}.open_member() returned a digest "
+                    f"named {digest.name!r}, "
+                    + (
+                        "which another digest of the member also uses"
+                        if key in digests
+                        else "which is a HashAlgorithm archivey computes itself"
+                    )
+                )
+            digests[key] = (digest.expected, digest.new)
+        return digests
 
     def _get_archive_info(self) -> ArchiveInfo:
         with self._translated_errors(), self._handle_guard():
@@ -300,6 +336,9 @@ class PluginReaderAdapter(BaseArchiveReader):
 
 # The methods ``PluginContext.decompress`` decodes. PPMd, the branch filters and RAR
 # need parameters or framing a plain method name cannot carry.
+# The names ``MemberDigest`` may not take: archivey computes these itself.
+_ALGORITHM_KEYS = frozenset(str(algorithm) for algorithm in HashAlgorithm)
+
 _PLUGIN_CODECS: dict[CompressionAlgorithm, Codec] = {
     CompressionAlgorithm.STORED: Codec.STORED,
     CompressionAlgorithm.DEFLATE: Codec.DEFLATE,

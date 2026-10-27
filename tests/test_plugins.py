@@ -52,6 +52,7 @@ from archivey.plugins import (
     PluginSource,
     register_format,
 )
+from tests.conftest import requires, requires_zstd
 
 _MAGIC = b"TOYARC1\n"
 
@@ -738,6 +739,32 @@ def _compressed_archive(tmp_path: Path, stored: bytes, plain: bytes = _PLAIN) ->
     return _write(tmp_path, data)
 
 
+def _compress(method: CompressionAlgorithm, data: bytes) -> bytes:
+    if method is CompressionAlgorithm.STORED:
+        return data
+    if method is CompressionAlgorithm.DEFLATE:
+        return _raw_deflate(data)
+    if method is CompressionAlgorithm.BZIP2:
+        return bz2.compress(data)
+    if method is CompressionAlgorithm.DEFLATE64:
+        import inflate64
+
+        deflater = inflate64.Deflater()
+        return deflater.deflate(data) + deflater.flush()
+    if method is CompressionAlgorithm.ZSTD:
+        from tests.conftest import zstd_backend
+
+        return zstd_backend().compress(data)
+    if method is CompressionAlgorithm.LZ4:
+        import lz4.frame
+
+        return lz4.frame.compress(data)
+    assert method is CompressionAlgorithm.BROTLI
+    import brotli
+
+    return brotli.compress(data)
+
+
 @pytest.mark.parametrize(
     "method",
     [
@@ -746,18 +773,18 @@ def _compressed_archive(tmp_path: Path, stored: bytes, plain: bytes = _PLAIN) ->
         CompressionAlgorithm.BZIP2,
         CompressionAlgorithm.LZMA,
         CompressionAlgorithm.LZMA2,
+        pytest.param(CompressionAlgorithm.DEFLATE64, marks=requires("inflate64")),
+        pytest.param(CompressionAlgorithm.ZSTD, marks=requires_zstd()),
+        pytest.param(CompressionAlgorithm.LZ4, marks=requires("lz4")),
+        pytest.param(CompressionAlgorithm.BROTLI, marks=requires("brotli")),
     ],
 )
 def test_decompress_methods(
     clean_registry: None, tmp_path: Path, method: CompressionAlgorithm
 ) -> None:
     properties = None
-    if method is CompressionAlgorithm.STORED:
-        stored = _PLAIN
-    elif method is CompressionAlgorithm.DEFLATE:
-        stored = _raw_deflate(_PLAIN)
-    elif method is CompressionAlgorithm.BZIP2:
-        stored = bz2.compress(_PLAIN)
+    if method not in (CompressionAlgorithm.LZMA, CompressionAlgorithm.LZMA2):
+        stored = _compress(method, _PLAIN)
     else:
         filter_id = (
             lzma.FILTER_LZMA1
@@ -772,6 +799,65 @@ def test_decompress_methods(
     ):
         assert stream.read() == _PLAIN
         assert stream.verified is archivey.Verification.CONTENT
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        pytest.param(CompressionAlgorithm.ZSTD, marks=requires_zstd()),
+        pytest.param(CompressionAlgorithm.LZ4, marks=requires("lz4")),
+    ],
+)
+def test_decompress_reads_every_frame(
+    clean_registry: None, tmp_path: Path, method: CompressionAlgorithm
+) -> None:
+    """Zstd and LZ4 data may be several frames, and a member reads them all."""
+    half = len(_PLAIN) // 2
+    stored = _compress(method, _PLAIN[:half]) + _compress(method, _PLAIN[half:])
+    register_format(_compressed_plugin(method))
+    with open_archive(_compressed_archive(tmp_path, stored)) as reader:
+        assert reader.read("m.bin") == _PLAIN
+
+
+def test_decompress_second_bzip2_stream_is_corrupt(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """A bzip2 member is one stream, as in ZIP and 7z."""
+    half = len(_PLAIN) // 2
+    stored = bz2.compress(_PLAIN[:half]) + bz2.compress(_PLAIN[half:])
+    register_format(_compressed_plugin(CompressionAlgorithm.BZIP2))
+    with (
+        open_archive(_compressed_archive(tmp_path, stored)) as reader,
+        pytest.raises(CorruptionError),
+    ):
+        reader.read("m.bin")
+
+
+def test_decompress_passes_sizes_to_the_codec(
+    clean_registry: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each call gets the member's sizes, which the accelerators choose by, as ZIP
+    gives them per member."""
+    from archivey.internal import plugin_adapter
+
+    seen: list[tuple[int | None, int | None]] = []
+    real = plugin_adapter.open_codec_stream
+
+    def spy(*args: object, config: object, **kwargs: object) -> object:
+        seen.append(
+            (
+                config.expected_decompressed_size,  # type: ignore[attr-defined]
+                config.compressed_input_size,  # type: ignore[attr-defined]
+            )
+        )
+        return real(*args, config=config, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(plugin_adapter, "open_codec_stream", spy)
+    stored = _raw_deflate(_PLAIN)
+    register_format(_compressed_plugin(CompressionAlgorithm.DEFLATE))
+    with open_archive(_compressed_archive(tmp_path, stored)) as reader:
+        assert reader.read("m.bin") == _PLAIN
+    assert seen == [(len(_PLAIN), len(stored))]
 
 
 def test_decompress_data_after_end_is_corrupt(
@@ -1038,3 +1124,40 @@ def test_seekable_member_with_no_listed_size(
             stream.seek(0)
             assert stream.read() == data
             assert stream.verified is archivey.Verification.CONTENT
+
+
+@pytest.mark.parametrize(
+    ("digests", "match"),
+    [
+        (
+            (MemberDigest("crc32", b"\0\0\0\0", hashlib.sha1),),
+            "HashAlgorithm archivey computes itself",
+        ),
+        (
+            (
+                MemberDigest("sha1", b"x", hashlib.sha1),
+                MemberDigest("SHA1", b"y", hashlib.sha1),
+            ),
+            "another digest of the member also uses",
+        ),
+    ],
+)
+def test_member_digest_names_must_not_clash(
+    clean_registry: None,
+    tmp_path: Path,
+    digests: tuple[MemberDigest, ...],
+    match: str,
+) -> None:
+    """A digest named like archivey's own CRC-32 would replace the listed CRC-32's
+    check, and two digests sharing a name would keep one; both are refused."""
+
+    class Clashing(ToyReader):
+        def open_member(
+            self, member: ArchiveMember, locator: tuple[int, int]
+        ) -> MemberData:
+            return MemberData(self._source.view(*locator), digests=digests)
+
+    _plugin_with("clash", reader=Clashing)
+    path = _write(tmp_path, build_toya(_ENTRIES), "t.clash")
+    with open_archive(path) as reader, pytest.raises(ValueError, match=match):
+        reader.read("docs/a.txt")

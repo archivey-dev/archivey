@@ -29,25 +29,28 @@ class RespawnStream(ReadOnlyIOStream):
 
     Used for a one-member decompressor pipe (``unrar p`` or ``unar``) and for a
     plugin's member stream that cannot seek. A backward seek cannot reposition the
-    inner handle. Close it and ``spawn`` a fresh one on the next ``read()`` that
-    needs bytes; skip to the logical offset then. Forward seeks do not drain the pipe until a later
-    ``read()`` needs those bytes. Past-end seeks leave the pipe where it is: a
-    read with ``pos > size`` is empty, and a read at ``pos == size`` still
-    reaches the pipe so fused verify's one-byte overrun probe can see trailing
-    output — that boundary read is clamped to one byte.
+    inner stream. Close it and ``spawn`` a fresh one on the next ``read()`` that
+    needs bytes; skip to the logical offset then. Forward seeks do not read the
+    inner stream until a later ``read()`` needs those bytes. Past-end seeks leave
+    the inner stream where it is: a read with ``pos > size`` is empty, and a read at
+    ``pos == size`` still reaches the inner stream so fused verify's one-byte
+    overrun probe can see trailing output — that boundary read is clamped to one
+    byte.
 
-    ``_pos`` is the logical offset. ``_pipe_pos`` is pipe progress clamped to
-    ``_size``: the fused-verify overrun probe's extra byte advances ``_pos``
-    but not ``_pipe_pos``, so a no-op ``SEEK_CUR`` after it does not kill the
-    process. Re-probing after seeking back to ``_size`` is then not
-    byte-exact; that path is unreachable while the first probe raises
-    ``CorruptionError`` on any trailing byte (``verify.py`` ``_conclude``).
-    Respawn is keyed on the pipe, so ``seek(0, SEEK_END); seek(0)`` before any
-    read costs nothing.
+    ``_pos`` is the logical offset. ``_inner_pos`` is the inner stream's progress
+    clamped to ``_size``: the overrun probe's extra byte advances ``_pos`` but not
+    ``_inner_pos``, so a no-op ``SEEK_CUR`` after it does not count as a backward
+    seek and force a respawn, which for RAR means killing and restarting the
+    process. Re-probing after seeking back to ``_size`` is then not byte-exact;
+    that path is unreachable while the first probe raises ``CorruptionError`` on
+    any trailing byte (``verify.py`` ``_conclude``). Respawn is keyed on the inner
+    stream's progress, so ``seek(0, SEEK_END); seek(0)`` before any read costs
+    nothing.
 
     ``spawn`` must return a stream that owns what it opened, so close/respawn
     releases it: for RAR, the process (``_UnrarOwnedStream``,
-    ``_bounded_member_pipe`` wrapping one, or a ``UnarOutputStream``).
+    ``_bounded_member_pipe`` wrapping one, or a ``UnarOutputStream``); for a
+    plugin, the stream its ``open_member`` returned.
 
     ``what`` names the producer in the ``TruncatedError`` raised when it ends before
     ``size`` (``"unrar output"``).
@@ -62,10 +65,9 @@ class RespawnStream(ReadOnlyIOStream):
     Same restart-on-rewind shape as ``DecompressorStream`` /
     ``Decoder.recreate`` with a one-point index at origin. It does not use
     that engine: ``Decoder`` is a push interface fed compressed bytes, while
-    unrar produces plaintext on stdout from a path. ``AesDecryptStream`` is
-    a different shape — O(1) CBC restart, no replay — and does not count
-    toward extracting a shared restart-and-replay base. A third pull-shaped
-    replay producer would be that point.
+    this stream pulls plaintext from a producer it cannot feed. ``AesDecryptStream``
+    is a different shape — O(1) CBC restart, no replay — and does not count
+    toward extracting a shared restart-and-replay base.
     """
 
     def __init__(
@@ -82,7 +84,7 @@ class RespawnStream(ReadOnlyIOStream):
         self._inner: BinaryIO | None = inner
         self._size = size
         self._pos = 0
-        self._pipe_pos = 0
+        self._inner_pos = 0
 
     def seekable(self) -> bool:
         return True
@@ -97,7 +99,7 @@ class RespawnStream(ReadOnlyIOStream):
         self._inner = None
         # A replacement process always starts at byte 0. Reset even if close
         # raises, so a later read cannot label those bytes with the old offset.
-        self._pipe_pos = 0
+        self._inner_pos = 0
         if inner is not None:
             inner.close()
 
@@ -106,59 +108,59 @@ class RespawnStream(ReadOnlyIOStream):
             self._inner = self._spawn()
         return self._inner
 
-    def _pipe_needed(self, logical: int) -> int:
+    def _inner_needed(self, logical: int) -> int:
         return logical if self._size is None else min(logical, self._size)
 
     def _advance(self, count: int) -> None:
-        self._pipe_pos += count
+        self._inner_pos += count
 
     def _end(self) -> int:
         """The member's length; with no size known yet, read through to the end."""
         if self._size is None:
             inner = self._ensure()
             while chunk := inner.read(_SKIP_CHUNK):
-                self._pipe_pos += len(chunk)
-            self._size = self._pipe_pos
+                self._inner_pos += len(chunk)
+            self._size = self._inner_pos
         return self._size
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
         target = resolve_seek(offset, whence, pos=self._pos, end=self._end)
-        needed = self._pipe_needed(target)
-        if needed < self._pipe_pos:
+        needed = self._inner_needed(target)
+        if needed < self._inner_pos:
             # Close first; set the logical cursor only if close succeeds, so a
             # failed seek leaves tell() unchanged (Python IO). Spawn is lazy —
-            # _sync_pipe calls _ensure on the next read. Spawning here would
+            # _sync_inner calls _ensure on the next read. Spawning here would
             # start a process that close-without-read would kill.
             self._close_inner()
         self._pos = target
         return self._pos
 
     def nearest_resume_offset(self, target: int) -> int:
-        """Where the output restarts to reach ``target``: the live pipe's position when
-        ``target`` is at or past it, else 0 (a fresh process). A member's verifier asks
+        """Where the output restarts to reach ``target``: the live inner stream's
+        position when ``target`` is at or past it, else 0 (a fresh spawn). A member's verifier asks
         this to see that reaching a forward target decodes the skipped bytes anyway."""
-        if self._inner is not None and self._pipe_needed(target) >= self._pipe_pos:
-            return self._pipe_pos
+        if self._inner is not None and self._inner_needed(target) >= self._inner_pos:
+            return self._inner_pos
         return 0
 
-    def _sync_pipe(self) -> BinaryIO:
+    def _sync_inner(self) -> BinaryIO:
         inner = self._ensure()
-        want = self._pipe_needed(self._pos)
-        if want > self._pipe_pos:
+        want = self._inner_needed(self._pos)
+        if want > self._inner_pos:
             try:
-                skip_forward(inner, want - self._pipe_pos, on_chunk=self._advance)
+                skip_forward(inner, want - self._inner_pos, on_chunk=self._advance)
             except EOFError as exc:
                 if self._size is None:
                     # A forward seek past the end of a member of unknown length:
                     # the end is found, and the read there returns nothing.
-                    self._size = self._pipe_pos
+                    self._size = self._inner_pos
                     return inner
                 raise TruncatedError(
-                    f"{self._what} ended after {self._pipe_pos} of {self._size} bytes"
+                    f"{self._what} ended after {self._inner_pos} of {self._size} bytes"
                 ) from exc
-            self._pipe_pos = want
+            self._inner_pos = want
         return inner
 
     def read(self, n: int = -1, /) -> bytes:
@@ -166,14 +168,14 @@ class RespawnStream(ReadOnlyIOStream):
             raise ValueError("I/O operation on closed file.")
         if self._size is not None and self._pos > self._size:
             return b""
-        inner = self._sync_pipe()
+        inner = self._sync_inner()
         if self._size is None:
             data = inner.read(n)
             self._pos += len(data)
-            self._pipe_pos += len(data)
+            self._inner_pos += len(data)
             # An empty read, or a read of everything, has reached the end.
             if n < 0 or (not data and n != 0):
-                self._size = self._pipe_pos
+                self._size = self._inner_pos
             return data
         if self._pos > self._size:  # the forward seek above found the end
             return b""
@@ -182,16 +184,16 @@ class RespawnStream(ReadOnlyIOStream):
             if n < 0 or n > remaining:
                 n = remaining
         else:
-            # At declared size the overrun probe must reach the pipe, but only
+            # At declared size the overrun probe must reach the inner stream, but only
             # for one byte — read(-1) here would pull the rest of a corrupt
             # member into memory.
             n = 1 if n < 0 else min(n, 1)
         data = inner.read(n)
         self._pos += len(data)
         # Overrun probe at pos == size can return one extra byte. Count it in
-        # _pos (so pos > size reads are empty) but not as pipe progress past
-        # _size, or the next seek including SEEK_CUR would kill the process.
-        self._pipe_pos = min(self._pipe_pos + len(data), self._size)
+        # _pos (so pos > size reads are empty) but not as inner progress past
+        # _size, or the next seek including SEEK_CUR would respawn.
+        self._inner_pos = min(self._inner_pos + len(data), self._size)
         return data
 
     def close(self) -> None:

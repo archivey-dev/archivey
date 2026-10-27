@@ -1,4 +1,4 @@
-No task starts until the maintainer approves the 2026-10-25 revision of `design.md`. Each numbered group is one PR, except group 1, which lands as two: **1a** (the indexed shape, with tests and the user page) and **1b** (the sequential shape: 1.2a, 1.2b, the rest of 1.2c, 1.3, 1.4 and 1.6), after the ISO port. No spec delta lands before group 4 (4.2).
+No task starts until the maintainer approves the 2026-10-25 revision of `design.md`. Each numbered group is one PR, except group 1, which lands as two: **1a** (the indexed shape, with tests and the user page) and **1b** (the sequential shape: 1.2a, 1.2b, the rest of 1.2c, 1.3, 1.4 and 1.6), after the ISO port. 1.2d to 1.2f, asked for while 1a was in review, land in their own PR between 1a and the ISO port. No spec delta lands before group 4 (4.2).
 
 ## 1. Format identity, registry, detection and the adapter
 
@@ -17,10 +17,22 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
 - [ ] 1.2c Decoded `MemberSpan.data` (drain on advance, re-walk for random access),
       `ForwardStream.decompress`, `checked` members counted as verified,
       `PluginArchiveInfo.is_solid`. *1a landed `checked` and `is_solid`; the rest is 1b.*
+- [x] 1.2d `PluginContext.decompress(data, method, *, size, properties)`: a member's
+      compressed bytes through archivey's codec layer, with the caller's config and
+      the member's sizes, for raw Deflate, Deflate64, bzip2, Zstandard, LZ4 frames,
+      Brotli, raw LZMA and LZMA2 (maintainer, 2026-10-26).
+- [x] 1.2e Seekable members over a plugin stream that reads forward only: a forward
+      seek reads through, a backward one calls `open_member()` again
+      (`internal/streams/respawn.py`, shared with RAR's `unrar` pipe), including a
+      member listed with no size (maintainer, 2026-10-26).
+- [x] 1.2f `MemberData.digests`, `MemberDigest` and `Hasher`: checksums archivey has no
+      name for, computed by a hasher the plugin supplies (maintainer, 2026-10-26; see
+      design.md).
 - [ ] 1.2b Move TAR's codec-stream opening (`_open_byte_stream`) to a helper shared
       with the adapter, for compressed sequential plugins.
 - [ ] 1.3 `archivey/plugins.py`: `FormatPlugin`, `PluginReader`, `IndexedReader`,
-      `SequentialReader`, `MemberRecord`, `MemberSpan`, `MemberData`, `ForwardStream`, `PluginSource`, `PluginContext`, `PluginArchiveInfo`, `Magic`,
+      `SequentialReader`, `MemberRecord`, `MemberSpan`, `MemberData`, `MemberDigest`,
+      `Hasher`, `ForwardStream`, `PluginSource`, `PluginContext`, `PluginArchiveInfo`, `Magic`,
       `register_format`. Registration refuses clashing container values, already
       registered formats, and extensions a built-in format claims. *1a landed all but
       `SequentialReader`, `MemberSpan` and `ForwardStream`, and also refuses a
