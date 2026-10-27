@@ -2499,7 +2499,9 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
                 )
         # The adapter holds the handle lock here, so the enter-time pycdlib seek (and
         # the zisofs header read) is covered, and wraps the stream in it after.
-        return MemberData(self._data_stream(record, zisofs, member))
+        # pycdlib's stream stops at the record's data length and the zisofs decoder at
+        # the declared size, so neither returns a byte past ``size``.
+        return MemberData(self._data_stream(record, zisofs, member), bounded=True)
 
     def _data_stream(
         self,

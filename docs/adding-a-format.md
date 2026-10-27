@@ -102,7 +102,7 @@ class ToyReader(IndexedReader[Locator]):
 
     def open_member(self, member: ArchiveMember, locator: Locator) -> MemberData:
         offset, size = locator
-        return MemberData(self._source.view(offset, size))
+        return MemberData(self._source.view(offset, size), bounded=True)
 
 
 class ToyPlugin(FormatPlugin):
@@ -204,7 +204,11 @@ decoder.
 archivey checks every member stream against what the listing said:
 
 - **Size.** A stream that ends before `member.size` raises `TruncatedError`, and one that
-  runs past it raises `CorruptionError`.
+  runs past it raises `CorruptionError`. To find out whether a stream runs past the size,
+  archivey reads one more byte at the end. Set `bounded=True` on the `MemberData` when
+  the stream cannot return more than `member.size` bytes, as a `PluginSource.view()` of
+  exactly the member's bytes cannot, to skip that read. It is a measurable part of
+  opening a small member.
 - **Checksums archivey can compute.** A CRC-32 or BLAKE2sp in `member.hashes`, or in
   `MemberData.expected_hashes`, is checked as the stream is read. A mismatch raises
   `CorruptionError`, and a full read with a match reaches `Verification.CONTENT`.

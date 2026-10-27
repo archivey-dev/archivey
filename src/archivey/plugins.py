@@ -131,6 +131,16 @@ class MemberData(NamedTuple):
     """Checksums archivey computes with a hasher the plugin supplies, as the stream
     is read."""
 
+    bounded: bool = False
+    """The stream never returns more than ``ArchiveMember.size`` bytes: a
+    :meth:`PluginSource.view` of exactly the member's bytes, a decoder that stops at
+    the size, or a library stream with the same promise. archivey then skips the
+    one-byte read past the end that looks for extra data, which is a measurable part
+    of opening a small member. A stream that ends early still raises
+    ``TruncatedError``. Leave it ``False`` when unsure: archivey never hands over
+    more than ``size`` bytes either way, but a stream that breaks the promise has
+    its extra bytes go unreported, where they would raise ``CorruptionError``."""
+
 
 class PluginArchiveInfo(NamedTuple):
     """What the reader knows about the archive that archivey cannot work out."""

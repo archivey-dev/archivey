@@ -866,3 +866,67 @@ def test_plugin_translates_errors_from_open(
     register_format(FailingOpenPlugin)
     with pytest.raises(CorruptionError, match="bad header"):
         open_archive(_write(tmp_path, build_toya(_ENTRIES)))
+
+
+# ── MemberData.bounded ─────────────────────────────────────────────────────────────
+
+
+class _CountingReads(io.BytesIO):
+    def __init__(self, data: bytes, reads: list[int]) -> None:
+        super().__init__(data)
+        self._reads = reads
+
+    def read(self, n: int | None = -1, /) -> bytes:
+        data = super().read(n)
+        self._reads.append(len(data))
+        return data
+
+
+def _bounded_plugin(
+    reads: list[int], *, bounded: bool, extra: bytes = b"", cut: int = 0
+) -> type[FormatPlugin]:
+    class BoundedReader(ToyReader):
+        def open_member(
+            self, member: ArchiveMember, locator: tuple[int, int]
+        ) -> MemberData:
+            offset, size = locator
+            data = self._source.read_at(offset, size - cut) + extra
+            return MemberData(_CountingReads(data, reads), bounded=bounded)  # type: ignore[arg-type]
+
+    class BoundedPlugin(ToyPlugin):
+        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+            return BoundedReader(source, context)
+
+    return BoundedPlugin
+
+
+@pytest.mark.parametrize("bounded", [False, True])
+def test_bounded_skips_the_read_past_the_end(
+    clean_registry: None, tmp_path: Path, bounded: bool
+) -> None:
+    reads: list[int] = []
+    register_format(_bounded_plugin(reads, bounded=bounded))
+    with open_archive(_write(tmp_path, build_toya(_ENTRIES))) as reader:
+        assert reader.read("b.bin") == bytes(range(256)) * 4
+    # Without the promise archivey reads once more at the end, to look for extra data.
+    assert reads.count(0) == (0 if bounded else 1)
+
+
+def test_bounded_short_stream_is_truncated(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    register_format(_bounded_plugin([], bounded=True, cut=10))
+    with (
+        open_archive(_write(tmp_path, build_toya(_ENTRIES))) as reader,
+        pytest.raises(TruncatedError),
+    ):
+        reader.read("b.bin")
+
+
+def test_bounded_long_stream_is_cut_at_the_size(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """A broken promise loses the over-run check, but never hands over the extra."""
+    register_format(_bounded_plugin([], bounded=True, extra=b"EXTRA"))
+    with open_archive(_write(tmp_path, build_toya(_ENTRIES))) as reader:
+        assert reader.read("b.bin") == bytes(range(256)) * 4

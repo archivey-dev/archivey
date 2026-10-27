@@ -204,8 +204,13 @@ class MemberVerifier:
         end_check: Callable[[int], None] | None = None,
         fill_size: bool = False,
         custom_digests: CustomDigests | None = None,
+        bounded: bool = False,
     ) -> None:
         self._expected_size = expected_size
+        # The inner stream never returns a byte past ``expected_size`` (a plugin's
+        # ``MemberData.bounded``), so the over-run probe is skipped. A short stream
+        # still raises TruncatedError.
+        self._bounded = bounded
         # With no declared size: called with the member's length before the digest
         # verdict, to refuse a length the archive rules out (it raises).
         self._end_check = end_check
@@ -551,7 +556,7 @@ class MemberVerifier:
             # trailing byte is corruption independent of the checksum, so a seek that
             # reached the size must not silence it. This probe also drains post-payload
             # authenticators (e.g. WinZip AES HMAC).
-            if _probe_past_declared(inner):
+            if not self._bounded and _probe_past_declared(inner):
                 raise CorruptionError(
                     "Decompressed content exceeds its declared size of "
                     f"{expected_size} bytes."
@@ -926,6 +931,7 @@ def build_member_verifier(
     end_check: Callable[[int], None] | None = None,
     fill_size: bool = False,
     custom_digests: CustomDigests | None = None,
+    bounded: bool = False,
 ) -> MemberVerifier | None:
     """Return a :class:`MemberVerifier` when there is something to check, else ``None``.
 
@@ -951,6 +957,7 @@ def build_member_verifier(
         end_check=end_check,
         fill_size=fills,
         custom_digests=custom_digests,
+        bounded=bounded,
     )
 
 
