@@ -2373,9 +2373,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         raw = self._raw_directories.get(key)
         if raw is None:
             block_size = self._iso.logical_block_size
-            # Under the adapter's handle lock, like every call into this reader.
-            self._iso_fp.seek(key * block_size)
-            data = self._iso_fp.read(directory.get_data_length())
+            data = self._source.read_at(key * block_size, directory.get_data_length())
             raw = _parse_raw_directory(data, block_size, self._image_length)
             self._raw_directories[key] = raw
         return raw
