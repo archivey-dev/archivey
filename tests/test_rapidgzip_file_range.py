@@ -428,8 +428,8 @@ def test_a_reused_child_counts_every_stream_from_its_first_open(
     # run. test_the_memory_peak_resets_between_streams covers the real reset.
     # No watcher thread: it would end the test process past the ceiling.
     monkeypatch.setattr(rapidgzip_worker._MemoryWatch, "_watch", lambda self: None)
-    peak = [100 << 20]
-    monkeypatch.setattr(rapidgzip_worker, "_peak_memory", lambda: peak[0])
+    peak = 100 << 20
+    monkeypatch.setattr(rapidgzip_worker, "_peak_memory", lambda: peak)
     watch = rapidgzip_worker._MemoryWatch()
     limit = 512 << 20
     share = limit // rapidgzip_worker._REUSE_SHARE
@@ -437,15 +437,15 @@ def test_a_reused_child_counts_every_stream_from_its_first_open(
     first = watch.ceiling
     assert first == (100 << 20) + limit
     watch.disarm()
-    peak[0] += share  # exactly a quarter kept: still reusable
+    peak += share  # exactly a quarter kept: still reusable
     assert watch.reusable()
-    peak[0] += 1
+    peak += 1
     assert not watch.reusable()
     # The next stream's ceiling still counts from the first open, not from now.
     watch.arm(limit)
     assert watch.ceiling == first
     watch.disarm()
-    peak[0] = 100 << 20
+    peak = 100 << 20
     assert watch.reusable()
 
 
