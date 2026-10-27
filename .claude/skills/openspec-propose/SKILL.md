@@ -32,8 +32,6 @@ When ready to implement, run /opsx:apply
 
    From their description, derive a kebab-case name (e.g., "add user authentication" → `add-user-auth`).
 
-   **IMPORTANT**: Do NOT proceed without understanding what the user wants to build.
-
 2. **Create the change directory**
    ```bash
    openspec new change "<name>"
@@ -51,7 +49,7 @@ When ready to implement, run /opsx:apply
 
 4. **Create artifacts in sequence until apply-ready, then write the brief**
 
-   Use the **TodoWrite tool** to track progress through the artifacts.
+   Track progress through the artifacts with the host's task list.
 
    Loop through artifacts in dependency order (artifacts with no pending dependencies first):
 
@@ -69,7 +67,8 @@ When ready to implement, run /opsx:apply
         - `dependencies`: Completed artifacts to read for context
       - Read any completed dependency files for context
       - Create the artifact file using `template` as the structure and write it to `resolvedOutputPath`
-      - Apply `context` and `rules` as constraints - but do NOT copy them into the file
+      - Apply `context` and `rules` as constraints; do not copy them, or any `<context>`,
+        `<rules>` or `<project_context>` block, into the file
       - Show brief progress: "Created <artifact-id>"
 
    b. **Continue until all `applyRequires` artifacts are complete**
@@ -114,9 +113,6 @@ After completing all artifacts, summarize:
 - The schema defines what each artifact should contain - follow it
 - Read dependency artifacts for context before creating new ones
 - Use `template` as the structure for your output file - fill in its sections
-- **IMPORTANT**: `context` and `rules` are constraints for YOU, not content for the file
-  - Do NOT copy `<context>`, `<rules>`, `<project_context>` blocks into the artifact
-  - These guide what you write, but should never appear in the output
 
 **Guardrails**
 - Create ALL artifacts needed for implementation (as defined by schema's `apply.requires`)

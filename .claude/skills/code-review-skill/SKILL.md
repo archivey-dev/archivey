@@ -460,7 +460,6 @@ cost to the reader who does not want it:
 ```
 <details><summary>Measured this round · what's fine · outward trace</summary>
 
-- `python scripts/make_7z_bomb.py --members 70000` → 2.1 s, 4.4 MB header
 - `pytest tests/test_sevenzip_limits.py -k bcj2` → 12 passed, RESTART BLOCKS SEEN: [0]
 
 </details>

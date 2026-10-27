@@ -57,9 +57,7 @@ Still open after this: Q2 <title> · Q3 <title>
 | Heavy evidence | New or updated file under `dev-docs/investigations/`; link from the handbook page |
 | Irreversible repo-wide policy | ADR under `dev-docs/decisions/` (exception path) |
 
-If neither handbook tree exists yet, creating the first page (and optional index README)
-in this change is correct. Record decisions as **light bullets**: *choice → why →
-rejected alternative*.
+Record decisions as **light bullets**: *choice → why → rejected alternative*.
 
 Until a page exists for this scope, put interim conclusions in the thin brief and name
 the handbook file you will create when implementing.

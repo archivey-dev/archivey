@@ -26,22 +26,22 @@ Run every proposal — and every contract-moving code change — past these:
 - [ ] **Uniform interface / no surprises (§No surprises):** one honest interface preserved?
   Every per-format behavior difference expressed as **data** (`None`, enums, documented
   sentinels), never a silent guess?
-- [ ] **Safe by default (load-bearing claim 2):** zip-slip / symlink escape / bombs still
+- [ ] **Safe by default (load-bearing claim 1):** zip-slip / symlink escape / bombs still
   require explicit opt-out; the design doesn't quietly relax a safety contract.
-- [ ] **Memory-safe hostile parsing (load-bearing claim 3):** pure-Python parse boundaries
+- [ ] **Memory-safe hostile parsing (load-bearing claim 2):** pure-Python parse boundaries
   preserved; crafted input yields honest errors, not native-memory corruption.
-- [ ] **Damaged input is first-class (load-bearing claim 4):** recoverable-members +
+- [ ] **Damaged input is first-class (VISION priority):** recoverable-members +
   honest-error posture preserved; salvage isn't invented where the backlog hasn't committed
   to it.
-- [ ] **Cost honesty & perf budget (load-bearing claim 5):** cost signals stay truthful; ≤
+- [ ] **Cost honesty & perf budget (VISION priority):** cost signals stay truthful; ≤
   ~1.3× budget acknowledged in bytes/seeks (not vibes) where the design touches hot paths.
 - [ ] **Contracts (§Coding and contract checks):** zero-dep core, exception-translation
   model, sync-first, typing story, extras layering — none silently broken by the *design*.
 - [ ] **Non-goals (§What you are reviewing):** not smuggling in an async public API,
   `zipfile`/`py7zr`/`rarfile` compat shims, quirk-driven architecture, or in-place 7z/RAR
   modification.
-- [ ] **Threat-model gaps (`O*`):** open gaps the proposal touches are addressed in
-  substance, not closed by marketing language.
+- [ ] **Threat-model gaps (`dev-docs/threat-model.md`):** open gaps the proposal
+  touches are addressed in substance, not closed by marketing language.
 
 ### Proposal-shape checks
 

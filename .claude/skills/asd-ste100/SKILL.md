@@ -10,8 +10,9 @@ version: 0.4.0
 > [danyuchn/asd-ste100-skill](https://github.com/danyuchn/asd-ste100-skill) (MIT,
 > `7d4a135`), except for this note. Upstream fixes come in as a re-copy, so keep
 > archivey-specific rules out of this directory — they live in
-> [`AGENTS.md`](../../../AGENTS.md) §Writing English, which says which of the two modes
-> below applies to which kind of text here.
+> [`AGENTS.md`](../../../AGENTS.md) §Writing English, and
+> [`dev-docs/writing-english.md`](../../../dev-docs/writing-english.md) says which of the
+> two modes below applies to which kind of text here.
 >
 > **In this repo the rules are advice, never a gate** (maintainer decision, 2026-09-22),
 > STE-flavored is the default, and Strict is the exception. That section has the ruling
