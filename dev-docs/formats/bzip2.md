@@ -105,7 +105,7 @@ default:
 | Mode | bzip2 |
 | --- | --- |
 | `OFF` | The standard library, always |
-| `ON` | `rapidgzip.IndexedBzip2File` in a child process, or `PackageNotInstalledError` without `rapidgzip`, or `StreamNotSeekableError` on a source that cannot seek (a pipe, or a member stream of an outer archive opened without `seekable_members`), or `ResourceLimitError` where no child process can start |
+| `ON` | `rapidgzip.IndexedBzip2File` in a child process, or `PackageNotInstalledError` without `rapidgzip`, or `StreamNotSeekableError` on a source that cannot seek (a pipe, or a member stream of an outer archive opened without `seekable_members`), or `ResourceUnavailableError` where no child process can start |
 | `AUTO` | The accelerator when seeking was declared (`seekable_members=True`, `open_stream(seekable=True)`), the source is seekable, `rapidgzip` is installed and the compressed input is at least `INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE` (1 MiB) or of unknown size. Otherwise the standard library, silently; where no child process can start, with one warning per process |
 
 The same rules hold for a bzip2 ZIP member or 7z coder, whose data is one stream
