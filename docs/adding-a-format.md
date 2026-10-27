@@ -202,7 +202,9 @@ def open_member(self, member: ArchiveMember, locator: Locator) -> MemberData:
 - bzip2;
 - Zstandard and LZ4 frames;
 - Brotli;
-- raw LZMA and LZMA2, with the `properties` bytes the format stores.
+- raw LZMA and LZMA2, with the `properties` bytes the format stores;
+- `STORED`, for data kept as is, so a format with a per-member method can pass every
+  method through the same call.
 
 It also takes a `StreamFormat` in place of a method. The data is then a whole stream with
 its own framing, decoded the way a file of that format is: `StreamFormat.ZLIB` for
@@ -211,7 +213,8 @@ Deflate with the zlib header, and `GZIP`, `XZ`, `LZMA_ALONE`, `LZIP` and the res
 The decoding uses the caller's decoder limits, process isolation and accelerator
 settings. It turns the decoder's errors into archivey's own, so your
 `translate_exception()` never sees them. A method whose optional package is missing
-raises `PackageNotInstalledError`.
+raises `PackageNotInstalledError`, and a method not in the list above raises
+`UnsupportedFeatureError`.
 
 Where the compressed data ends depends on the method:
 
@@ -233,9 +236,11 @@ block `i` decoded. archivey takes care of the rest:
 - a seek decodes only the block it lands in, not the file up to it;
 - a block of the wrong length raises `CorruptionError`.
 
-Set `bounded=True` with it. The SquashFS package's `read_block` is about fifteen lines:
-it reads the block list as far as it needs, returns zeros for a sparse block, and calls
-`decompress()` on the rest.
+Set `bounded=True` with it. The SquashFS package's `read_block` is short: it reads the
+block list as far as it needs, returns zeros for a sparse block, and calls `decompress()`
+on the rest. Its first branch returns the file's tail, which SquashFS keeps in a fragment
+block shared with other files: `read_block` only has to return the right bytes for each
+index, wherever the format stores them.
 
 **Your own decoder.** For a method archivey does not decode, wrap the view in your
 library's decoder, or one of your own. Such a decoder is outside archivey's decoder
@@ -253,7 +258,9 @@ The stream does not need to seek. When the caller opens the archive with
   is slow for a large member;
 - when the listing gives no `size`, a seek from the end reads to the end once to find it.
 
-A view, a `decompress()` result and a `block_stream()` all seek by themselves.
+A view and a `block_stream()` seek by themselves, and cheaply. A `decompress()` result
+seeks by itself too, but a backward seek decodes again from the start, as the fallback
+does.
 
 The stream may also return fewer bytes than asked before it ends, as an `io.RawIOBase`
 may. One that stops each read at the end of a block is an example. archivey asks it again
@@ -309,17 +316,22 @@ see it.
 ## Reading untrusted bytes
 
 archivey cannot check how your reader parses the archive, only what it hands back.
-These habits keep a crafted file from doing more than raising `CorruptionError`.
+These habits keep a crafted file from doing more than raising one of archivey's errors:
+`CorruptionError`, `TruncatedError` or `UnsupportedFeatureError`.
 
 - **Check every size and offset against what the format allows** before you allocate or
-  read with it. Compare offsets with `PluginSource.size`, and refuse a count or length
-  larger than the format can hold.
+  read with it. Bound offsets by the format's own structures (a superblock's table
+  offsets, an index's declared extent, the bytes a read returned), and also by
+  `PluginSource.size` when it is not `None`: it is `None` for a stream whose length
+  archivey cannot learn cheaply. Refuse a count or length larger than the format can
+  hold, and bound a count the format leaves wide open by `config.listing_limits`.
 - **Walk trees with a loop and a set of what you have seen**, not recursion. A directory
   that lists itself is then an error, not a hang.
 - **Validate names** before you yield them. A name with `/` in a format that stores one
   path component per entry is damage. archivey checks the final path in any case.
-- **Cap every decode** at the size the format allows, as in
-  [Your own decoder](#where-the-bytes-come-from).
+- **Cap every decode** at the size the format allows, as
+  [Where the bytes come from](#where-the-bytes-come-from) describes for a decoder of
+  your own.
 - **Raise archivey's exceptions** for damage, and let your own bugs propagate, as
   [Errors](#errors) describes.
 
