@@ -4,8 +4,8 @@ What `process_isolation` and the rapidgzip child cost today. The handbook page t
 explains the mechanism is [`topics/process-isolation.md`](../topics/process-isolation.md);
 it carries no numbers and links here.
 
-Every figure on this page comes from two committed scripts, run on main at `f347a2a0` on
-2026-10-24. To refresh the page, run them again and replace the tables:
+Every figure on this page comes from two committed scripts, run on main at `9fc54b31` on
+2026-10-27. To refresh the page, run them again and replace the tables:
 
 ```bash
 uv run --no-sync python scripts/bench_process_isolation.py   # §1
@@ -18,7 +18,8 @@ fresh interpreter: one warm-up read, then the fastest of three. The payload is r
 and numbers, which gzip compresses about two to one. Other data, other sizes, another
 access pattern or another machine give other numbers, so the text below says what each
 cost depends on and quotes a figure only with its case. On the 1 MiB rows, columns that
-should match differ by up to about 25% between runs; treat a smaller difference as noise.
+should match differ by a few ms between runs, which is up to about 70% of a 4 ms row;
+on the larger rows, by up to about 15%. Treat a smaller difference as noise.
 
 ## Summary
 
@@ -29,14 +30,18 @@ should match differ by up to about 25% between runs; treat a smaller difference 
 - **`NATIVE_DECODERS` adds a copy through a pipe** for every byte of output, and a fixed
   cost per decoder (§1). Its relative cost is largest where the decoder itself is fast
   (zstd) or the members are small and many, and smallest for slow decoders (bzip2, xz).
-- **A rapidgzip child has a fixed start cost**, about 36 ms on this host for a 1 MiB
+- **A rapidgzip child has a fixed start cost**, about 35 ms on this host for a 1 MiB
   `.gz` (§2). Within one open archive the child is reused, so a further ZIP member pays a
   smaller per-member cost, not the start again. Whether the accelerator pays for a full
   read depends on whether its parallel decode saves more than that start: in these runs it
-  did for the 64 MiB `.gz` and the 16 MiB `.bz2` files, and not for 1 MiB of either.
-- **A full read of a ZIP or 7z DEFLATE member through rapidgzip pays a second, serial
-  zlib decode** for the end check (§3). For the 40 MiB member measured, that decode alone
-  took longer than the whole gap between the two reads.
+  did for the 64 MiB `.gz`, the 32 MiB ZIP member and `.tar.gz`, and the 16 MiB `.bz2`
+  files, and not for 1 MiB of either.
+- **`AUTO` uses rapidgzip for a large sequential DEFLATE read too**, on Linux and macOS,
+  from 16 MiB compressed at 3:1 or less (§2). Below that, and for bzip2, a read without
+  declared seeking stays on the standard library.
+- **The end check of a ZIP or 7z DEFLATE member decodes only the tail** after rapidgzip's
+  newest resume point (§3), so a full read through the child no longer pays a second
+  decode of the whole member.
 - **After seeks, the gap depends on the seek pattern and the member size** (§4). A seek
   back without the accelerator decodes from the member's start, so it costs more the
   larger the member and the further the target; rapidgzip restarts from its own index.
@@ -50,22 +55,22 @@ should match differ by up to about 25% between runs; treat a smaller difference 
 
 | archive | `NONE` | `KNOWN_CRASHES` (default) | `NATIVE_DECODERS` |
 |---|---:|---:|---:|
-| `01M.gz` | 7 | 8 (1.17x) | 14 (1.87x) |
-| `16M.gz` | 120 | 146 (1.22x) | 191 (1.59x) |
-| `64M.gz` | 454 | 475 (1.05x) | 678 (1.49x) |
-| `01M.zst` | 5 | 5 (1.09x) | 9 (2.08x) |
-| `16M.zst` | 28 | 28 (1.02x) | 108 (3.90x) |
-| `64M.zst` | 111 | 106 (0.95x) | 342 (3.07x) |
-| `01M.bz2` | 90 | 112 (1.24x) | 98 (1.08x) |
-| `16M.bz2` | 812 | 804 (0.99x) | 950 (1.17x) |
-| `01M.xz` | 28 | 32 (1.13x) | 31 (1.08x) |
-| `16M.xz` | 345 | 327 (0.95x) | 404 (1.17x) |
-| `deflate-1x-8M.zip` | 56 | 54 (0.97x) | 112 (1.98x) |
-| `deflate-1024x-8M.zip` | 224 | 229 (1.02x) | 1,096 (4.88x) |
-| `lzma2-nonsolid-1024x4K.7z` | 449 | 425 (0.95x) | 1,196 (2.66x) |
-| `lzma2-solid-1024x4K.7z` | 151 | 157 (1.03x) | 378 (2.50x) |
-| `ppmd-nonsolid-1024x4K.7z` | 1,491 | 2,783 (1.87x) | 2,943 (1.97x) |
-| `ppmd-solid-1024x4K.7z` | 1,125 | 1,350 (1.20x) | 1,301 (1.16x) |
+| `01M.gz` | 8 | 9 (1.05x) | 10 (1.22x) |
+| `16M.gz` | 109 | 114 (1.05x) | 177 (1.63x) |
+| `64M.gz` | 437 | 445 (1.02x) | 616 (1.41x) |
+| `01M.zst` | 4 | 7 (1.68x) | 8 (2.01x) |
+| `16M.zst` | 26 | 27 (1.01x) | 97 (3.66x) |
+| `64M.zst` | 95 | 93 (0.98x) | 295 (3.10x) |
+| `01M.bz2` | 87 | 89 (1.02x) | 91 (1.05x) |
+| `16M.bz2` | 753 | 742 (0.99x) | 820 (1.09x) |
+| `01M.xz` | 23 | 22 (0.98x) | 25 (1.08x) |
+| `16M.xz` | 304 | 311 (1.02x) | 384 (1.26x) |
+| `deflate-1x-8M.zip` | 55 | 57 (1.03x) | 107 (1.94x) |
+| `deflate-1024x-8M.zip` | 219 | 222 (1.01x) | 768 (3.50x) |
+| `lzma2-nonsolid-1024x4K.7z` | 418 | 443 (1.06x) | 982 (2.35x) |
+| `lzma2-solid-1024x4K.7z` | 135 | 133 (0.98x) | 321 (2.37x) |
+| `ppmd-nonsolid-1024x4K.7z` | 1,145 | 2,533 (2.21x) | 2,548 (2.23x) |
+| `ppmd-solid-1024x4K.7z` | 992 | 1,242 (1.25x) | 1,282 (1.29x) |
 
 The script's derived figures: the extra time of the many-decoder archive over its
 one-decoder pair, per extra decoder, and a solid folder's extra time per member read. A
@@ -73,15 +78,15 @@ one-decoder pair, per extra decoder, and a solid folder's extra time per member 
 
 | setting | ZIP deflate, per decoder | 7z LZMA2, per decoder | 7z PPMd, per decoder | LZMA2 solid, per member | PPMd solid, per member |
 |---|---:|---:|---:|---:|---:|
-| `KNOWN_CRASHES` | 0.01 ms (control) | -0.03 ms (control) | 1.04 ms | 0.01 ms (control) | 0.22 ms |
-| `NATIVE_DECODERS` | 0.80 ms | 0.51 ms | 1.25 ms | 0.22 ms | 0.17 ms |
+| `KNOWN_CRASHES` | 0.00 ms (control) | 0.03 ms (control) | 1.11 ms | 0.00 ms (control) | 0.24 ms |
+| `NATIVE_DECODERS` | 0.49 ms | 0.37 ms | 1.09 ms | 0.18 ms | 0.28 ms |
 
 How to read it:
 
 - **`KNOWN_CRASHES` against `NONE`.** The same within noise on every row but PPMd: the
-  default runs nothing else in a child.
+  default runs nothing else in a child. (The `01M.zst` gap is 3 ms on a 4 ms row.)
 - **`NATIVE_DECODERS`, per MiB.** On the `.gz` rows (1 to 64 MiB) the time grows by about
-  7 ms per MiB under `NONE` and about 10.5 under `NATIVE_DECODERS`; the difference is the
+  7 ms per MiB under `NONE` and about 9.5 under `NATIVE_DECODERS`; the difference is the
   copy. The copy costs about the same per MiB whatever the codec, so the ratio it gives
   depends on how fast the codec decodes on its own: large for zstd, small for bzip2 and xz.
 - **Per decoder.** A decoder in a child pays a fixed cost to set up, so the ratio depends on
@@ -102,42 +107,45 @@ accelerators on. Fastest of three, ms.
 
 | archive | stdlib | `OFF` | `AUTO` | `AUTO seek` | `ON seek` |
 |---|---:|---:|---:|---:|---:|
-| `01M.gz` | 7 | 9 | 10 | 9 | 43 |
-| `16M.gz` | 110 | 115 | 112 | 112 | 96 |
-| `64M.gz` | 466 | 455 | 451 | 181 | 195 |
-| `01M.bz2` | 48 | 113 | 92 | 90 | 137 |
-| `16M.bz2` | 781 | 740 | 813 | 305 | 294 |
-| `deflate-1x-32M.zip` | 188 | 237 | 238 | 343 | 358 |
-| `deflate-16x-32M.zip` | 215 | 244 | 265 | 231 | 485 |
-| `deflate-256x-32M.zip` | 250 | 259 | 269 | 252 | 1,229 |
-| `bzip2-1x-16M.zip` | 758 | 767 | 794 | 256 | 273 |
-| `1x-32M.tar.gz` | 221 | 249 | 249 | 246 | 247 |
-| `1024x-32M.tar.gz` | 262 | 336 | 330 | 683 | 644 |
-| `1x-16M.tar.bz2` | 790 | 764 | 850 | 494 | 543 |
+| `01M.gz` | 7 | 9 | 9 | 8 | 41 |
+| `16M.gz` | 116 | 110 | 126 | 111 | 97 |
+| `64M.gz` | 446 | 432 | 189 | 154 | 158 |
+| `01M.bz2` | 42 | 91 | 88 | 89 | 132 |
+| `16M.bz2` | 711 | 766 | 770 | 281 | 264 |
+| `deflate-1x-32M.zip` | 186 | 228 | 147 | 127 | 126 |
+| `deflate-16x-32M.zip` | 199 | 218 | 223 | 224 | 411 |
+| `deflate-256x-32M.zip` | 213 | 237 | 244 | 242 | 1,020 |
+| `bzip2-1x-16M.zip` | 706 | 721 | 743 | 259 | 252 |
+| `1x-32M.tar.gz` | 212 | 231 | 131 | 214 | 219 |
+| `1024x-32M.tar.gz` | 256 | 328 | 241 | 570 | 610 |
+| `1x-16M.tar.bz2` | 740 | 801 | 795 | 456 | 432 |
 
 The script's derived figures:
 
 | figure | value |
 |---|---:|
-| One rapidgzip stream beyond the standard library (`01M.gz`, `ON seek` minus `stdlib`) | 36 ms |
-| Each further ZIP member under `OFF` (deflate, 1 to 256 members at 32 MiB) | 0.09 ms |
-| Each further ZIP member under `ON seek`, one child reused for the archive | 3.42 ms |
+| One rapidgzip stream beyond the standard library (`01M.gz`, `ON seek` minus `stdlib`) | 35 ms |
+| Each further ZIP member under `OFF` (deflate, 1 to 256 members at 32 MiB) | 0.04 ms |
+| Each further ZIP member under `ON seek`, one child reused for the archive | 3.50 ms |
 
 How to read it:
 
-- **`AUTO` without seeking is `OFF`.** `AUTO` uses an accelerator only where seeking is
-  declared, so a `stream_members()` read never starts a child.
+- **`AUTO` without seeking starts a child only for a large DEFLATE stream that pays**:
+  on Linux and macOS, at least 16 MiB compressed and 3:1 or less (gzip.md §2.3). Here
+  that is the `64M.gz`, the single 32 MiB ZIP member and both `.tar.gz` rows; every
+  other row follows `OFF`. bzip2 has no sequential route.
 - **`AUTO seek` starts a child only above the size threshold** (16 MiB compressed for
   DEFLATE, 1 MiB for bzip2), so it follows `OFF` below it and `ON seek` above it. Which
   rows cross the threshold depends on how well the data compresses, not on its size.
 - **Whether a full read gains from the child** is a trade between the fixed start (and,
   for ZIP, the per-member cost) and the time the parallel decode saves, which grows with
   the size of the data and with the number of cores. In these runs the large `.gz`,
-  `.bz2`, `.tar.bz2` and ZIP bzip2 rows gained; the 1 MiB rows and the many-member ZIP
-  rows lost; the ZIP DEFLATE member lost for the reason in §3.
+  `.bz2`, `.tar.bz2`, `.tar.gz`, ZIP bzip2 and single ZIP DEFLATE member rows gained; the
+  1 MiB rows and the many-member ZIP rows lost.
 - **Not traced.** The `.tar.gz` of 1024 members reads slower with seeking allowed, under
-  `AUTO` and `ON` alike, than sequentially. A 1 MiB `.bz2` under `OFF` is slower than the
-  standard library with no child involved.
+  `AUTO` and `ON` alike, than sequentially, though a sequential `AUTO` read of the same
+  file through the child is faster than `OFF`. A 1 MiB `.bz2` under `OFF` is slower than
+  the standard library with no child involved.
 
 ## 3. One large ZIP DEFLATE member, full read
 
@@ -146,17 +154,17 @@ How to read it:
 
 | measurement | ms |
 |---|---:|
-| Full read, `AUTO` (rapidgzip child) | 396 |
-| Full read, `OFF` (standard-library zlib) | 297 |
-| `AUTO`: open and first byte | 90 |
-| A plain `zlib` decode of the member's raw data | 263 |
+| Full read, `AUTO` (rapidgzip child) | 147 |
+| Full read, `OFF` (standard-library zlib) | 278 |
+| `AUTO`: open and first byte | 72 |
+| A plain `zlib` decode of the member's raw data | 242 |
 
-ZIP and 7z set `refuse_input_after_end`, so when rapidgzip's output ends, the parent finds
-where the DEFLATE stream ends and whether bytes follow it by decoding the member again
-with zlib from offset 0 (`_hands_over_at_end`, then `deflate_resume.stream_end`, in
-`zlib_codec.py`). That decode is serial and grows with the member, so it takes about what
-the plain zlib row shows; for this member, more than the whole gap between `AUTO` and
-`OFF`. `.gz` and `.tar.gz` do not pay it.
+ZIP and 7z set `refuse_input_after_end`, so when rapidgzip's output ends, the parent
+checks where the DEFLATE stream ends and whether bytes follow it (`_hands_over_at_end`,
+then `deflate_resume.stream_end`, in `zlib_codec.py`). It decodes with zlib from
+rapidgzip's newest resume point, not from offset 0, so the check costs a decode of the
+tail, not of the member, and does not grow with the member's size. The plain zlib row is
+what a decode of the whole member would cost; the full `AUTO` read takes less than that.
 
 ## 4. Reads after seeks
 
@@ -169,9 +177,9 @@ rapidgzip child, which `AUTO` would use only from 16 MiB compressed. Fastest of 
 
 | member | ascending, `OFF` | ascending, `ON` | descending, `OFF` | descending, `ON` | shuffled, `OFF` | shuffled, `ON` |
 |---|---:|---:|---:|---:|---:|---:|
-| 4 MiB | 27 | 14 | 254 | 20 | 168 | 29 |
-| 16 MiB | 104 | 32 | 1,032 | 43 | 684 | 20 |
-| 64 MiB | 425 | 82 | 3,903 | 286 | 2,701 | 160 |
+| 4 MiB | 27 | 12 | 237 | 14 | 155 | 29 |
+| 16 MiB | 100 | 26 | 929 | 41 | 597 | 20 |
+| 64 MiB | 413 | 73 | 3,796 | 231 | 2,477 | 127 |
 
 How to read it:
 
