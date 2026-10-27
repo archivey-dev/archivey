@@ -36,7 +36,8 @@ value equal to a built-in or registered one, and an extension a built-in format 
 
 A plugin magic or probe match SHALL count only when no built-in format matched at the
 same or a higher confidence. A plugin probe SHALL receive only the prefix detection
-already read.
+already read. A probe that raises SHALL count as no match, so one plugin cannot change
+how unrelated input fails to be detected; `MemoryError` and `OSError` still propagate.
 
 #### Scenario: plugin magic does not change built-in detection
 

@@ -281,6 +281,18 @@ def test_a_fragment_past_the_table(tmp_path: Path) -> None:
         archive.read("a.txt")
 
 
+def test_a_truncation_names_the_structure_it_cuts(tmp_path: Path) -> None:
+    """An id table index placed at the image's last bytes runs past its end."""
+    data = _uncompressed()
+    used = _superblock_field(data, 40, "<Q")
+    data[48:56] = struct.pack("<Q", used - 4)  # the id table index, 8 bytes per block
+    with pytest.raises(
+        TruncatedError,
+        match=f"the id table index at {used - 4} runs past the image end",
+    ):
+        open_archive(_image(tmp_path, bytes(data))).members()
+
+
 def test_a_data_block_shorter_than_the_file_needs(tmp_path: Path) -> None:
     data = _uncompressed()
     inode = _inode_offset(data, b"blocks.bin")

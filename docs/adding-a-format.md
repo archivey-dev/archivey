@@ -82,15 +82,15 @@ class ToyReader(IndexedReader[Locator]):
         # read_struct() and read_exact() raise TruncatedError when the archive ends
         # early, where struct.unpack() would fail on the short read with an error of
         # its own.
-        (self._count,) = source.read_struct("<I", 8)
+        (self._count,) = source.read_struct(8, "<I")
 
     def iter_members(self) -> Iterator[MemberRecord[Locator]]:
         pos = 12
         for _ in range(self._count):
-            (name_len,) = self._source.read_struct("<H", pos)
+            (name_len,) = self._source.read_struct(pos, "<H")
             raw_name = self._source.read_exact(pos + 2, name_len)
             is_dir, size, crc, offset = self._source.read_struct(
-                "<BIIQ", pos + 2 + name_len
+                pos + 2 + name_len, "<BIIQ"
             )
             pos += 2 + name_len + 17
             member = ArchiveMember(
@@ -235,8 +235,9 @@ block `i` decoded. archivey takes care of the rest:
 - a block of the wrong length raises `CorruptionError`.
 
 `read_block` may return the stream `decompress()` gives rather than bytes. archivey then
-reads at most one byte more than the block's length from it, so a block that decodes to
-far more is refused without being decoded in full. The SquashFS package's `read_block`
+asks it for one byte more than the block's length and refuses the block if it gets it.
+How much the stream decodes to answer is the stream's own: a decoder that buffers decodes
+up to its buffer, so keep that buffer near the block size. The SquashFS package's `read_block`
 is short: it reads the block list as far as it needs, returns zeros for a sparse block,
 and decodes the rest. Its first branch returns the file's tail, which SquashFS keeps in a
 fragment block shared with other files: `read_block` only has to return the right bytes
@@ -431,10 +432,13 @@ archivey recognises a plugin's format by its `magic`, its `extensions`, and an o
 - An **extension** that a built-in format uses is refused at registration.
 - A **probe** is a function that takes the first bytes of the source and returns `True`
   for your format. It gets only the bytes detection has already read, and runs after
-  every built-in check. Like a built-in format's probe, it runs only when the source's
-  name has one of your extensions, or when `ArchiveyConfig(always_probe_content=True)`
-  is set. The prefix may be shorter than your format's header, and a probe that
-  raises counts as no match. Use it only for a format with no fixed signature.
+  every built-in check. Like a built-in format's probe, it runs when the source's name
+  has one of your extensions, when the source has no name at all (a stream passed to
+  `open_stream()`), or when `ArchiveyConfig(always_probe_content=True)` is set. So it
+  sees untrusted bytes that may not be your format at all. The prefix may be shorter
+  than your format's header. A probe that raises counts as no match, and the first
+  time it does archivey logs a warning on `archivey.detection`. Use a probe only for a
+  format with no fixed signature.
 
 `FormatInfo.from_plugin` is `True` when detection chose a plugin's format.
 

@@ -187,7 +187,7 @@ class PluginSource:
         view: Callable[[int, int | None], BinaryIO],
         size: int | None,
         path: Path | None,
-        read_at: Callable[[int, int], bytes] | None = None,
+        read_at: Callable[[int, int], bytes],
     ) -> None:
         self._view = view
         self._size = size
@@ -213,10 +213,7 @@ class PluginSource:
     def read_at(self, offset: int, n: int) -> bytes:
         """Up to ``n`` bytes from ``offset``; fewer only at the end of the archive.
         Cheaper than a :meth:`view` for small reads: no stream is built."""
-        if self._read_at is not None:
-            return self._read_at(offset, n)
-        with self._view(offset, n) as stream:
-            return stream.read(n)
+        return self._read_at(offset, n)
 
     def read_exact(self, offset: int, n: int) -> bytes:
         """``n`` bytes from ``offset``, or ``TruncatedError`` when the archive ends
@@ -230,7 +227,7 @@ class PluginSource:
             )
         return data
 
-    def read_struct(self, fmt: str | struct.Struct, offset: int) -> tuple[Any, ...]:
+    def read_struct(self, offset: int, fmt: str | struct.Struct) -> tuple[Any, ...]:
         """``struct.unpack(fmt, ...)`` of the bytes at ``offset``, read with
         :meth:`read_exact`: a field the archive ends inside raises ``TruncatedError``.
         ``fmt`` is a format string or a ``struct.Struct``; a bad format is the
@@ -518,8 +515,9 @@ def block_stream(
     The file is ``size`` bytes in blocks of ``block_size``, the last one shorter, as
     SquashFS, CAB, WIM and CSO store them. ``read_block(i)`` returns block ``i``
     decoded: the stream ``PluginContext.decompress`` gives, or bytes from the plugin's
-    own decoder. archivey reads a stream for at most one byte more than the block, so
-    a block that decodes to far more is refused without decoding it all. archivey
+    own decoder. archivey asks a stream for one byte more than the block, and refuses
+    the block if it gets it; a decoder that buffers decodes up to its buffer to answer,
+    so a block that decodes to far more costs no more than that. archivey
     calls ``read_block`` when a read first needs the block and keeps only the block it
     is in, so a seek decodes one block, not the file up to it. A block of another
     length than the file needs there raises ``CorruptionError``. Return the result as

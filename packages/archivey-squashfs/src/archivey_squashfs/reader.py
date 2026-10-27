@@ -22,7 +22,7 @@ import struct
 from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
-from typing import BinaryIO, NamedTuple
+from typing import Any, BinaryIO, NamedTuple
 
 from archivey import (
     ArchiveMember,
@@ -206,11 +206,11 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         if method is not None:
 
             def through_archivey(start: int, length: int, limit: int) -> bytes:
-                # One read of the block, then decode from memory: cheaper than a view
-                # the decoder reads through, and read_exact refuses a cut-off block.
+                # One locked read of the block, then decode from memory, rather than a
+                # view the decoder seeks and reads through; a cut-off block is refused.
                 # Every caller has checked ``length`` first: at most 8 KiB for a
                 # metadata block, the block size (1 MiB at most) for data.
-                raw = io.BytesIO(self._source.read_exact(start, length))
+                raw = io.BytesIO(self._read_exact(start, length, "a compressed block"))
                 with self._context.decompress(raw, method) as decoded:
                     data = decoded.read(limit + 1)
                 if len(data) > limit:
@@ -230,7 +230,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
                 ) from None
 
             def lz4_block(start: int, length: int, limit: int) -> bytes:
-                raw = self._source.read_exact(start, length)
+                raw = self._read_exact(start, length, "an LZ4 block")
                 try:
                     return lz4.block.decompress(raw, uncompressed_size=limit)
                 except lz4.block.LZ4BlockError as exc:
@@ -240,7 +240,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         if compressor == "lzo":
 
             def lzo_block(start: int, length: int, limit: int) -> bytes:
-                raw = self._source.read_exact(start, length)
+                raw = self._read_exact(start, length, "an LZO block")
                 try:
                     return lzo.decompress(raw, limit)
                 except lzo.LzoError as exc:
@@ -250,6 +250,20 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         raise UnsupportedFeatureError(
             f"{compressor.upper()}-compressed SquashFS is not supported"
         )
+
+    def _read_exact(self, start: int, length: int, what: str) -> bytes:
+        """:meth:`PluginSource.read_exact`, naming the structure the image ends in."""
+        try:
+            return self._source.read_exact(start, length)
+        except TruncatedError:
+            raise TruncatedError(f"{what} at {start} runs past the image end") from None
+
+    def _read_struct(self, pos: int, fmt: str, what: str) -> tuple[Any, ...]:
+        """:meth:`PluginSource.read_struct`, naming the structure the image ends in."""
+        try:
+            return self._source.read_struct(pos, fmt)
+        except TruncatedError:
+            raise TruncatedError(f"{what} at {pos} runs past the image end") from None
 
     def _metadata_block(self, pos: int) -> tuple[bytes, int]:
         """The decoded metadata block at absolute ``pos``, and where the next starts."""
@@ -261,14 +275,14 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
             raise CorruptionError(
                 f"a metadata block at {pos} starts past the image end"
             )
-        (header,) = self._source.read_struct("<H", pos)
+        (header,) = self._read_struct(pos, "<H", "a metadata header")
         length = header & ~_METADATA_UNCOMPRESSED
         if not 0 < length <= _METADATA_SIZE:
             raise CorruptionError(
                 f"the metadata block at {pos} declares {length} bytes"
             )
         if header & _METADATA_UNCOMPRESSED:
-            data = self._source.read_exact(pos + 2, length)
+            data = self._read_exact(pos + 2, length, "a metadata block")
         else:
             data = self._decode(pos + 2, length, _METADATA_SIZE)
         block = (data, pos + 2 + length)
@@ -285,7 +299,9 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         if count == 0:
             raise CorruptionError("the SquashFS id table is empty")
         blocks = -(-count * 4 // _METADATA_SIZE)
-        pointers = self._source.read_struct(f"<{blocks}Q", self._sb.id_table)
+        pointers = self._read_struct(
+            self._sb.id_table, f"<{blocks}Q", "the id table index"
+        )
         data = b"".join(self._metadata_block(p)[0] for p in pointers)
         if len(data) < count * 4:
             raise CorruptionError(f"the id table holds {len(data) // 4} of {count} ids")
@@ -304,7 +320,9 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         if self._sb.fragment_table == _NO_TABLE:
             raise CorruptionError("the SquashFS image has fragments but no table")
         block, within = divmod(index * _FRAGMENT_ENTRY.size, _METADATA_SIZE)
-        (pointer,) = self._source.read_struct("<Q", self._sb.fragment_table + 8 * block)
+        (pointer,) = self._read_struct(
+            self._sb.fragment_table + 8 * block, "<Q", "the fragment table index"
+        )
         data = self._metadata_block(pointer)[0]
         if within + _FRAGMENT_ENTRY.size > len(data):
             raise CorruptionError(
@@ -319,7 +337,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         if length > self._sb.block_size:
             raise CorruptionError(f"the data block at {start} declares {length} bytes")
         if stored & _BLOCK_UNCOMPRESSED:
-            data = self._source.read_exact(start, length)
+            data = self._read_exact(start, length, "a data block")
         else:
             data = self._decode(start, length, self._sb.block_size)
         if len(data) != expected:
@@ -338,7 +356,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
                     f"the fragment block at {start} declares {length_on_disk} bytes"
                 )
             if stored & _BLOCK_UNCOMPRESSED:
-                block = self._source.read_exact(start, length_on_disk)
+                block = self._read_exact(start, length_on_disk, "a fragment block")
             else:
                 block = self._decode(start, length_on_disk, self._sb.block_size)
             self._fragments[start] = block

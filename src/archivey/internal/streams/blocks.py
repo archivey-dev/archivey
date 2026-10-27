@@ -16,6 +16,7 @@ from archivey.exceptions import CorruptionError
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     check_read_size,
+    read_exact,
     resolve_seek,
 )
 
@@ -25,12 +26,15 @@ __all__ = ["BlockStream"]
 class BlockStream(ReadOnlyIOStream):
     """The ``size`` bytes of a file in blocks of ``block_size``, the last one shorter.
 
-    ``read_block(i)`` returns block ``i`` decoded, as bytes or as a stream. A stream is
-    read for at most one byte more than the block's length, then closed, so a block
-    that decodes to far more costs no more than that. It is called when a read first
-    needs the block, and again after a read has moved to another block: only the
-    current block is kept. A block of another length than the file needs there raises
-    ``CorruptionError``. Seekable; a seek decodes nothing until the next read.
+    ``read_block(i)`` returns block ``i`` decoded, as bytes or as a stream. From a
+    stream, archivey asks for one byte more than the block's length (asking again after
+    a short read, as an ``io.RawIOBase`` may give), then closes it, and a block that
+    holds that byte is refused. How much the stream decodes to answer is its own: a
+    decoder that buffers decodes up to its buffer, so a block that decodes to far more
+    costs at most that. ``read_block`` is called when a read first needs the block, and
+    again after a read has moved to another block: only the current block is kept. A
+    block of another length than the file needs there raises ``CorruptionError``.
+    Seekable; a seek decodes nothing until the next read.
     """
 
     def __init__(
@@ -77,7 +81,7 @@ class BlockStream(ReadOnlyIOStream):
                 data = bytes(block)
             else:
                 with block:
-                    data = block.read(expected + 1)
+                    data = read_exact(block, expected + 1)
             if len(data) != expected:
                 raise CorruptionError(
                     f"block {index} holds {len(data)} bytes, not the {expected} the "

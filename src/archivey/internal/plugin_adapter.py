@@ -44,6 +44,7 @@ from archivey.internal.base_reader import (
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.format_args import add_plugin_spellings, plugin_spelling_clash
+from archivey.internal.logs import detection as detection_logger
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
@@ -101,6 +102,9 @@ def _bounded(stream: object, size: int | None) -> bool:
     return length is not None and length <= size
 
 
+# Cached by type: the ABC ``issubclass`` and the module-name check otherwise run on
+# every member open (about 190-250 ns, against 70 cached). A process meets few stream
+# types; past 64 the oldest is evicted and costs the plain check again.
 @functools.lru_cache(maxsize=64)
 def _type_reads_full(cls: type) -> bool:
     return issubclass(cls, io.BufferedIOBase) or cls.__module__.startswith("archivey.")
@@ -506,8 +510,6 @@ _ALGORITHM_KEYS = frozenset(str(algorithm) for algorithm in HashAlgorithm)
 
 # The methods ``PluginContext.decompress`` decodes. PPMd, the branch filters and RAR
 # need parameters or framing a plain method name cannot carry.
-logger = logging.getLogger(__name__)
-
 _PLUGIN_CODECS: dict[CompressionAlgorithm, Codec] = {
     CompressionAlgorithm.STORED: Codec.STORED,
     CompressionAlgorithm.DEFLATE: Codec.DEFLATE,
@@ -573,16 +575,33 @@ def _prefix_probe(probe: object) -> ContentProbe:
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
     ) -> bool:
         # A probe that raises (a struct.unpack past a short prefix, say) is no match:
-        # one plugin must not change how unrelated input fails to be detected.
+        # one plugin must not change how unrelated input fails to be detected. Out of
+        # memory and OS errors are not the probe's parsing, and propagate as everywhere.
         try:
             return bool(probe(prefix))
-        except Exception:
-            logger.debug(
-                "plugin probe %r raised; taken as no match", probe, exc_info=True
-            )
+        except (MemoryError, OSError):
+            raise
+        except Exception:  # noqa: BLE001 — any parsing error is a plugin bug, logged
+            _warn_probe_raised(probe)
             return False
 
     return content_probe
+
+
+_probes_warned: set[object] = set()
+
+
+def _warn_probe_raised(probe: object) -> None:
+    """Log a raising probe at WARNING the first time, so its author sees the bug,
+    and at DEBUG after that, so a bad plugin does not flood every detection."""
+    first = probe not in _probes_warned
+    _probes_warned.add(probe)
+    detection_logger.log(
+        logging.WARNING if first else logging.DEBUG,
+        "plugin probe %r raised; taken as no match",
+        probe,
+        exc_info=True,
+    )
 
 
 def _check_plugin(plugin: type[FormatPlugin]) -> ArchiveFormat:
