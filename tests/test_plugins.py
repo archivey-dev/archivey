@@ -1218,6 +1218,10 @@ class _StatefulProbe:
 def test_a_raising_unhashable_probe_is_no_match(
     clean_registry: None, caplog: pytest.LogCaptureFixture
 ) -> None:
+    # The test's point: a probe the adapter cannot hash.
+    with pytest.raises(TypeError):
+        hash(_StatefulProbe(100))
+
     class ObjectProbe(ToyPlugin):
         magic = ()
         probe = _StatefulProbe(100)
