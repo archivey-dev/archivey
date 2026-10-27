@@ -28,6 +28,7 @@ class FormatInfo:
     cost_receipt: DetectionCostReceipt | None = None   # compare=False; see detection-cost
     unavailable_tiers: tuple[TierSkip, ...] = ()       # compare=False; see detection-cost
     prefixed: bool = False
+    payload_end: int | None = None
 ```
 
 `config=None` → library default. `confidence` = magic / structural probe /
@@ -37,7 +38,12 @@ the test for a self-extracting or otherwise prefixed archive. `payload_offset` i
 start reading the archive: never after its first member, and exactly that member when the
 detection step saw it. The two are separate facts: a ZIP whose stored offsets count from
 the start of the file can be said to start at byte 0, so it MAY report `prefixed=True`
-with `payload_offset` 0. `cost_receipt` and
+with `payload_offset` 0. `payload_end` is where the archive's region of the source ends
+when detection identified something after it: today the start of a PE's Authenticode
+certificate table (*Self-extracting (SFX) archives are detected behind an executable
+stub*), whatever tier found the archive. `None`, the common case, means the region runs
+to the end of the source. `open_archive` passes both bounds to the reader
+(`archive-reading`). `cost_receipt` and
 `unavailable_tiers` are part of this contract; `detection-cost` defines what they hold.
 `FormatInfo` also carries a provisional `corroborated: bool` for `open_archive`'s own use,
 which SHALL NOT be part of this contract: its `False` cannot tell an uncorroborated probe
@@ -76,6 +82,8 @@ format its bytes show; `open_archive` refuses it as an incomplete set.
 | RAR, 7z or ZIP found by the SFX scan at offset N | `detected_by="sfx_scan"`, `prefixed=True`, `payload_offset == N` |
 | ZIP found from its end record behind a PE stub, offsets counted from the ZIP's start | `prefixed=True`, `payload_offset` = the ZIP's first byte |
 | The same, offsets counted from the start of the file | `prefixed=True`, `payload_offset` 0 |
+| Signed PE SFX, any tier | `payload_end` = the certificate table's start |
+| Unsigned PE SFX, or no PE layout | `payload_end` is `None` |
 | Extension-only guess | `confidence=GUESS`, `detected_by="extension"` |
 | Directory path | `format=DIRECTORY`, `confidence=CERTAIN`, `detected_by="directory"`; zero `cost_receipt`; no `OSError` |
 | Empty string `""` | `ValueError`; the current directory is not detected |
@@ -263,12 +271,10 @@ signature. A record with ZIP64 placeholder values SHALL be declined. Accepted �
 `ZIP` / `PROBABLE` / `detected_by="sfx_scan"`, with `payload_offset` = `base`. No read is
 made to refine it. `base` is never after any member's local header, so `open_archive`
 reads every member from it. It is the ZIP's first byte when the ZIP's offsets count from
-its own start, and 0 when they count from the start of the file; in that case
-`prefixed` is `True` either way. A
-record with `base` 0 that lies outside the last 65 558 bytes of the source SHALL be
-declined: the reader, started at byte 0, would not find it by its own tail search, and
-its local-header walk would start at the stub. Declined → detection continues with far
-magic, as after a scan miss today.
+its own start, and 0 when they count from the start of the file; `prefixed` is `True`
+either way. The reader searches for the end record before the same payload end the probe
+used (`format-zip`), so it finds every record the probe accepts. Declined → detection
+continues with far magic, as after a scan miss today.
 
 #### Scenario: tail probe matrix
 
@@ -278,8 +284,8 @@ magic, as after a scan miss today.
 | Same, unsigned (ZIP ends at end of file) | `ZIP`, as above |
 | Same, ZIP written in place (offsets counted from byte 0) | `ZIP`, `payload_offset` 0; `open_archive` lists every member |
 | Same, ZIP's central directory not in file order | `ZIP`, `payload_offset` = the ZIP's first byte, before every member; `open_archive` lists every member |
-| Same, ZIP followed by a certificate larger than 64 KiB | `ZIP`: the search ends at the payload end; the reader, started at the ZIP's first byte, opens it through its local-header walk |
-| ZIP written in place, followed by a certificate larger than 64 KiB | Declined |
+| Same, ZIP followed by a certificate larger than 64 KiB | `ZIP`: the probe's and the reader's searches both end at the payload end; `open_archive` lists every member |
+| ZIP written in place, followed by a certificate larger than 64 KiB | `ZIP`, `payload_offset` 0; `open_archive` lists every member |
 | PE whose overlay holds only a certificate (an ordinary signed program) | No tail read |
 | PE no larger than the scan window | No tail read: the scan covered the file |
 | PE carrying `PK\x05\x06` as a string constant near its end (counts or offsets that point nowhere) | Declined |

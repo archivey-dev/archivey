@@ -101,12 +101,12 @@ gain for the common case).
 
 ### 4. Search the span before the certificate, with the reader's locator
 The probe calls `zip_parser.locate_classic_record` on a view that ends at `payload_end`.
-For a certificate under about 64 KiB this is the reader's own window. For a larger one the
-probe finds a record the reader's tail search misses, and the reader then reaches it
-through its local-header walk, so detection never promises a file the reader refuses.
-**Rejected:** search only the last 65 558 bytes of the file (misses a ZIP behind a large
-dual signature); teach the reader the certificate too (a reader change for a speed-up
-only; it can follow).
+Decision §12 gives the reader the same end, so the reader's search covers the same span
+and finds every record the probe accepts, whatever the certificate's size and whichever
+convention the ZIP's offsets use. **Rejected:** search only the last 65 558 bytes of the
+file (misses a ZIP behind a large dual signature); leave the reader on its own tail search
+and its local-header walk (the walk starts at `payload_offset`, which is the stub for a
+ZIP whose offsets count from byte 0, so that file would have to be declined).
 
 ### 5. Confirm the record before answering
 The checks in the spec cost two small reads: the first central header and the local
@@ -137,7 +137,7 @@ second tail method (two copies of the cheapness test, DR-23a).
 The `detection-cost` Purpose says a ZIP tail probe "adds its own budget and receipt
 fields". Decision §1 decides against a budget field, and the delta defines a tail
 allowance instead. Purpose text is not part of a requirement delta, so the archive step
-amends it by hand (task 3.4).
+amends it by hand (task 4.4).
 
 ### 9. Decline ZIP64 end records in this change
 ZIP64 needs the locator and the ZIP64 end record read and checked as well. No installer
@@ -160,9 +160,10 @@ it is the ZIP's first byte. For one whose offsets count from the start of the fi
 0, which reads correctly, and which is defensible as the start: the ZIP's own numbers say
 it starts there. Decision §11 moves the "was there a prefix?" question off this field.
 
-The case that does not read correctly from 0 is declined: a base-0 ZIP whose end record a
-certificate larger than 64 KiB hides from the reader's own tail search. Started at byte 0,
-the reader's fallback walk would meet the stub, not a local header.
+A base-0 ZIP whose end record a certificate larger than 64 KiB hides from a search that
+ends at end of file would not read from 0: the reader's fallback walk would meet the stub.
+Decision §12 makes the reader's search end at the payload end, so that file reads too, and
+Block 1 lands that before the probe exists.
 
 **Rejected:** the first entry the directory lists (one read, but too late when the
 directory is not in file order, which cuts members off); the minimum over the whole
@@ -192,6 +193,32 @@ test (ties the question to one evidence value of an open set); keeping
 `payload_offset > 0` and reporting a nonzero offset for a base-0 ZIP (needs the directory
 read §10 rejects, or reports a start the ZIP's own numbers contradict).
 
+### 12. A known payload end bounds the reader, and an identified certificate is silent
+**Maintainer decision (davitf, review round 1 follow-up):** detection reports the
+certificate table's start as `FormatInfo.payload_end` (`int | None`, `None` meaning the
+region runs to the end of the source), `open_archive` passes it to `open_read` beside the
+start offset, and the backend behaves as if handed a view of `[start, end)`. A backend
+never reads before its start offset to find an end itself: that would break the
+"as if a view" promise of `ReadBackend.open_read` and would not work on a stream. Under
+forced `format=` the start is 0, the stub is the backend's own first bytes, and a backend
+that scans them for its payload (RAR, 7z, the ZIP forward walk) derives the same end with
+the same helper, so both paths agree (DR-23a).
+
+With the end known, the ZIP reader's end-record search stops there, and the trailing-data
+checks of ZIP, 7z and RAR stop there too: a code-signed installer no longer warns about its
+own certificate. This reverses the recorded 7z rule that "a self-extractor's tail (the
+certificate table of a code-signed one) is reported too", by the maintainer's call: the
+warning is for bytes nobody can explain, and these are explained. A tail between the
+archive's end and the certificate is still reported. `unrar` reads the real file, so for
+RAR the end bounds archivey's own checks only.
+
+`None` is the common case here (every non-PE and every unsigned file), so code that
+forgets it fails on the first ordinary file, unlike the rare-case `None` §10 rejects.
+**Rejected:** readers reading the stub before their start offset (breaks the view
+contract; impossible on a stream); passing the end through detection only (forced
+`format=` would still warn and still miss a hidden end record); keeping the certificate
+warning (a warning on every signed installer teaches callers to ignore the diagnostic).
+
 ## Risks / Trade-offs
 
 - [The overlay-start rule changes an answer] → Only for a PE with a valid archive at its
@@ -206,7 +233,7 @@ read §10 rejects, or reports a start the ZIP's own numbers contradict).
   a base-0 tail-probe ZIP, and that shape is unlikely this far into a file: offsets counted
   from the file's start come from `zip -A` or a writer emitting the stub itself, and those
   ZIPs sit right after the stub, where the forward scan answers first. The docstring,
-  `docs/opening.md` and the changelog point callers at `prefixed` (task 1.8).
+  `docs/opening.md` and the changelog point callers at `prefixed` (task 1.7).
 - [The local-header walk for a large certificate is slow on a big ZIP] → It reads headers
   only, never member data, and has been the reader's fallback since before this change.
 
