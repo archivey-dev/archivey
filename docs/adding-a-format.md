@@ -296,7 +296,9 @@ archivey checks every member stream against what the listing said.
   other checksum, also pass a function that makes a fresh hasher, such as
   `hashlib.sha1`. A hasher is any object with `update(bytes)` and `digest()`. archivey
   feeds it the bytes as they are read, and checks the result the same way as a CRC-32.
-  For example, for a header that stores a CRC-32 and a SHA-1:
+  A CRC-32 or BLAKE2sp given this way is also added to `member.hashes` when the member
+  is opened, so callers see it. For example, for a header that stores a CRC-32 and a
+  SHA-1:
 
     ```python
     return MemberData(
@@ -312,7 +314,8 @@ archivey checks every member stream against what the listing said.
     needs a hasher; otherwise opening the member raises `ValueError`. When the index and
     the header both store a CRC-32, put each where it is read: archivey checks both, so
     a read fails when either does not match the data, rather than one replacing the
-    other.
+    other. A field the format leaves unset (a zero CRC in a header whose value comes
+    later, say) is left out, not passed: archivey compares whatever value you give it.
 
 - **Checksums the stream checks itself.** If the stream your library returns checks its
   own checksum and raises when it does not match, set `checked=True` on the

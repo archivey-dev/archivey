@@ -112,9 +112,11 @@ class MemberDigest(NamedTuple):
     Bytes read again after a backward seek are not fed twice.
 
     A checksum the index stores, known when listing, goes in ``ArchiveMember.hashes``
-    instead, where callers see it. When both hold the same algorithm, both values are
-    checked: an index and a local header that disagree make the read fail, rather than
-    one value silently replacing the other.
+    instead. A digest with a ``HashAlgorithm`` name that the listing lacks is added to
+    ``ArchiveMember.hashes`` when the member is opened, so callers see it, as a
+    built-in format adds a CRC-32 it reads from a local header. When both hold the
+    same name, both values are checked: an index and a local header that disagree make
+    the read fail, rather than one value silently replacing the other.
     """
 
     name: str

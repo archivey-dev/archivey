@@ -440,15 +440,18 @@ class PluginReaderAdapter(BaseArchiveReader):
     ) -> tuple[dict[HashAlgorithm, bytes], CustomDigests]:
         """The digests to check: the member's listed ``hashes`` and ``data.digests``.
 
-        A digest archivey computes itself joins the listed ones. When the listing
-        already holds that algorithm with another value, the archive stores two
-        values for one checksum (an index and a local header that disagree): both are
-        checked, so a read that reaches the end raises for whichever does not match,
-        instead of one silently replacing the other. Any other digest is computed
-        with the plugin's hasher.
+        A digest archivey computes itself joins the listed ones, and is published on
+        ``member.hashes`` as a built-in format publishes a CRC-32 it reads from a local
+        header. When the listing already holds that name with another value, the
+        archive stores two values for one checksum (an index and a local header that
+        disagree): both are checked, so a read that reaches the end raises for
+        whichever does not match, instead of one silently replacing the other. Any
+        other digest is computed with the plugin's hasher.
         """
         expected = dict(member.hashes)
+        listed = {str(key).lower(): value for key, value in expected.items()}
         custom: dict[str, tuple[bytes, Callable[[], Hasher]]] = {}
+        published: dict[HashAlgorithm, bytes] = {}
         seen: set[str] = set()
         for digest in data.digests:
             key = digest.name.lower()
@@ -456,20 +459,27 @@ class PluginReaderAdapter(BaseArchiveReader):
                 self._refuse_digest(digest, "which another digest of the member uses")
             seen.add(key)
             algorithm = _ALGORITHMS.get(key)
-            if algorithm is None:
-                if digest.new is None:
-                    self._refuse_digest(
-                        digest, "which archivey does not compute, with no hasher"
-                    )
-                custom[key] = (digest.expected, digest.new)
-                continue
-            listed = expected.get(algorithm)
-            if listed is None:
-                expected[algorithm] = digest.expected
-            elif listed != digest.expected:
-                factory = hasher_factory(algorithm)
-                if factory is not None:
+            if algorithm is not None:
+                # Every HashAlgorithm has a hasher of archivey's own (CRC-32, BLAKE2sp).
+                built_in = hasher_factory(algorithm)
+                assert built_in is not None
+                factory = built_in
+            elif digest.new is not None:
+                factory = digest.new
+            else:
+                self._refuse_digest(
+                    digest, "which archivey does not compute, with no hasher"
+                )
+            prior = listed.get(key)
+            if prior is not None:
+                if prior != digest.expected:
                     custom[f"{key} from open_member()"] = (digest.expected, factory)
+            elif algorithm is not None:
+                expected[algorithm] = published[algorithm] = digest.expected
+            else:
+                custom[key] = (digest.expected, factory)
+        if published:
+            member.hashes = {**member.hashes, **published}
         return expected, custom
 
     def _refuse_digest(self, digest: MemberDigest, reason: str) -> NoReturn:

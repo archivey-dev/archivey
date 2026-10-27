@@ -537,12 +537,12 @@ def test_a_crc32_from_open_member_is_checked(
 
 
 @pytest.mark.parametrize(
-    ("local", "listed", "ok"),
+    ("local", "listed", "fails"),
     [
-        ("good", None, True),
-        ("good", "good", True),
-        ("bad", "good", False),
-        ("good", "bad", False),
+        ("good", None, None),
+        ("good", "good", None),
+        ("bad", "good", "'crc32 from open_member\\(\\)'"),
+        ("good", "bad", "'crc32'"),
     ],
 )
 def test_a_listed_and_an_opened_crc32_are_both_checked(
@@ -550,7 +550,7 @@ def test_a_listed_and_an_opened_crc32_are_both_checked(
     tmp_path: Path,
     local: str,
     listed: str | None,
-    ok: bool,
+    fails: str | None,
 ) -> None:
     """An index CRC and a local-header CRC that disagree: neither replaces the other,
     so the read fails whichever of the two is wrong."""
@@ -576,12 +576,74 @@ def test_a_listed_and_an_opened_crc32_are_both_checked(
     _plugin_with("twovalues", reader=TwoValues)
     path = _write(tmp_path, build_toya(_ENTRIES), "t.twovalues")
     with open_archive(path) as reader:
-        if ok:
+        if fails is None:
             with reader.open("docs/a.txt") as stream:
                 assert stream.read() == b"alpha\n"
                 assert stream.verified is archivey.Verification.CONTENT
         else:
-            with pytest.raises(CorruptionError, match="crc32"):
+            # The error names the value that failed.
+            with pytest.raises(CorruptionError, match=fails):
+                reader.read("docs/a.txt")
+
+
+def test_an_opened_crc32_is_published_on_the_member(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """As a built-in format publishes a local header's CRC-32, so does a plugin's."""
+    crc = zlib.crc32(b"alpha\n").to_bytes(4)
+
+    class LateCrc(ToyReader):
+        def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+            for record in super().iter_members():
+                record.member.hashes = {}
+                yield record
+
+        def open_member(
+            self, member: ArchiveMember, locator: tuple[int, int]
+        ) -> MemberData:
+            data = super().open_member(member, locator)
+            return MemberData(data.stream, digests=(MemberDigest("crc32", crc),))
+
+    _plugin_with("latecrc", reader=LateCrc)
+    path = _write(tmp_path, build_toya(_ENTRIES), "t.latecrc")
+    with open_archive(path) as reader:
+        member = reader.get("docs/a.txt")
+        assert member.hashes == {}
+        assert reader.read(member) == b"alpha\n"
+        assert member.hashes == {HashAlgorithm.CRC32: crc}
+        assert reader.read(member) == b"alpha\n"
+
+
+@pytest.mark.parametrize("same", [True, False], ids=["same", "differs"])
+def test_a_listed_name_outside_hashalgorithm_is_checked_twice(
+    clean_registry: None, tmp_path: Path, same: bool
+) -> None:
+    """A listed hash keyed by a plain name (outside the typed contract, accepted at
+    runtime) and a digest of that name are both checked, as for a CRC-32."""
+    good = hashlib.sha1(b"alpha\n").digest()
+
+    class ListedSha1(ToyReader):
+        def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+            for record in super().iter_members():
+                record.member.hashes = {"sha1": good}  # type: ignore[dict-item]
+                yield record
+
+        def open_member(
+            self, member: ArchiveMember, locator: tuple[int, int]
+        ) -> MemberData:
+            data = super().open_member(member, locator)
+            value = good if same else bytes(20)
+            return MemberData(
+                data.stream, digests=(MemberDigest("SHA1", value, hashlib.sha1),)
+            )
+
+    _plugin_with("listedsha1", reader=ListedSha1)
+    path = _write(tmp_path, build_toya(_ENTRIES), "t.listedsha1")
+    with open_archive(path) as reader:
+        if same:
+            assert reader.read("docs/a.txt") == b"alpha\n"
+        else:
+            with pytest.raises(CorruptionError, match="sha1 from open_member"):
                 reader.read("docs/a.txt")
 
 

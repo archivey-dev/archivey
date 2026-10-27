@@ -256,7 +256,7 @@ class MemberVerifier:
         for name, (value, factory) in (custom_digests or {}).items():
             key = _algo_key(name)
             assert key not in self._expected, (
-                "the adapter refuses a name the member already lists"
+                "the adapter renames a digest whose name the member already lists"
             )
             self._hasher_factories[key] = factory
             self._hashers[key] = factory()
