@@ -14,7 +14,6 @@ import bz2
 import gzip
 import io
 import lzma
-import shutil
 import tarfile
 import zipfile
 from collections.abc import Callable
@@ -24,6 +23,7 @@ import pytest
 
 from archivey import open_archive
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
+from tests.conftest import has_binary
 
 try:
     import pycdlib  # noqa: F401
@@ -32,7 +32,7 @@ try:
 except ImportError:
     _HAVE_PYCDLIB = False
 
-_HAVE_UNRAR = shutil.which("unrar") is not None
+_HAVE_UNRAR = has_binary("unrar")
 
 
 def _zip(tmp: Path) -> Path:

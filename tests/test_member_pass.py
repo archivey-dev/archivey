@@ -34,7 +34,7 @@ def test_a_pass_is_an_iterator_of_member_stream_pairs() -> None:
 def test_a_paused_pass_blocks_the_reader_until_closed() -> None:
     with open_archive(_zip()) as reader:
         members = reader.stream_members()
-        member, stream = next(members)
+        _member, stream = next(members)
         with pytest.raises(ArchiveyUsageError, match="stream_members"):
             reader.read("b.txt")
         members.close()
@@ -47,10 +47,12 @@ def test_a_paused_pass_blocks_the_reader_until_closed() -> None:
 
 def test_with_block_ends_the_pass_when_the_body_raises() -> None:
     with open_archive(_zip()) as reader:
-        with pytest.raises(RuntimeError, match="boom"):
-            with reader.stream_members() as members:
-                for _member, _stream in members:
-                    raise RuntimeError("boom")
+        with (
+            pytest.raises(RuntimeError, match="boom"),
+            reader.stream_members() as members,
+        ):
+            for _member, _stream in members:
+                raise RuntimeError("boom")
         assert reader.read("b.txt") == b"second"
 
 

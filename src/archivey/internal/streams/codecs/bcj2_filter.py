@@ -48,7 +48,11 @@ from collections.abc import Sequence
 from typing import BinaryIO
 
 from archivey.exceptions import CorruptionError, TruncatedError
-from archivey.internal.streams.streamtools import ReadOnlyIOStream, is_seekable
+from archivey.internal.streams.streamtools import (
+    ReadOnlyIOStream,
+    is_seekable,
+    resolve_seek,
+)
 
 # Every input is read in blocks of this size. Output is produced a main block at a
 # time, so a read never holds more than one block's expansion (at most 5x, when every
@@ -78,7 +82,7 @@ class _RangeCoderInput:
     hot path.
     """
 
-    __slots__ = ("_stream", "_buf", "_pos")
+    __slots__ = ("_buf", "_pos", "_stream")
 
     def __init__(self, stream: BinaryIO) -> None:
         self._stream = stream
@@ -103,7 +107,7 @@ class _Targets:
     iterator step. A read that ends mid-target carries its tail into the next block.
     """
 
-    __slots__ = ("_stream", "label", "_words", "_carry")
+    __slots__ = ("_carry", "_stream", "_words", "label")
 
     def __init__(self, stream: BinaryIO, label: str) -> None:
         self._stream = stream
@@ -357,16 +361,7 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
         here = self.tell()
         if not self._seekable:
             raise io.UnsupportedOperation("seek")
-        if whence == io.SEEK_SET:
-            target = offset
-        elif whence == io.SEEK_CUR:
-            target = here + offset
-        elif whence == io.SEEK_END:
-            target = self._size + offset
-        else:
-            raise ValueError(f"Invalid whence: {whence}")
-        if target < 0:
-            raise ValueError(f"Invalid offset: {offset}")
+        target = resolve_seek(offset, whence, pos=here, end=lambda: self._size)
         if target >= self._size:
             self._past_end = target
             return target

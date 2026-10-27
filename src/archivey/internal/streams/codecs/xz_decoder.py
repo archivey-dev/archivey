@@ -22,6 +22,7 @@ XZ spec: https://tukaani.org/xz/xz-file-format.txt
 
 from __future__ import annotations
 
+import functools
 import io
 import itertools
 import lzma
@@ -1127,7 +1128,7 @@ class XzDecoder(BaseDecoder):
                         stream_comp_end,
                         stop_at=stream_comp_start,
                         start_decompressed_offset=stream_decomp_start,
-                        on_thinned=lambda: thinned.append(True),
+                        on_thinned=functools.partial(thinned.append, True),
                     )
                     if thinned:
                         emit_index_thinned(

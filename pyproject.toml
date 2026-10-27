@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "archivey"
-version = "0.2.0rc1"
+version = "0.3.0.dev0"
 description = "Python library for reading, streaming, and safely extracting archives"
 readme = "README.md"
 license = { text = "MIT" }
@@ -40,11 +40,11 @@ classifiers = [
 # Shown in the PyPI sidebar. Without these the project page links nowhere, which is
 # most of why relative README links were the only navigation.
 [project.urls]
-Homepage = "https://davitf.github.io/archivey/"
-Documentation = "https://davitf.github.io/archivey/"
-Source = "https://github.com/davitf/archivey"
-Changelog = "https://github.com/davitf/archivey/blob/main/CHANGELOG.md"
-Issues = "https://github.com/davitf/archivey/issues"
+Homepage = "https://archivey-dev.github.io/archivey/"
+Documentation = "https://archivey-dev.github.io/archivey/"
+Source = "https://github.com/archivey-dev/archivey"
+Changelog = "https://github.com/archivey-dev/archivey/blob/main/CHANGELOG.md"
+Issues = "https://github.com/archivey-dev/archivey/issues"
 
 [project.scripts]
 archivey = "archivey.cli.main:main"
@@ -67,7 +67,8 @@ recommended = [
     "inflate64>=1.0.0",
     "backports.zstd>=1.0.0; python_version < '3.14'",
     # >=1.2.0: process(output_buffer_limit=) / can_accept_more_data (CVE-2025-6176).
-    "brotli>=1.2.0",
+    # >=1.2.1: decoder buffer overflow fix (CVE-2026-111497).
+    "brotli>=1.2.1",
     "lz4>=4.4.5",
     # AES block operations only (7z, RAR headers, WinZip AES ZIP); PBKDF2/SHA/HMAC are
     # stdlib. RAR5 BLAKE2sp is native on hashlib (internal/hashing/blake2sp.py) and needs
@@ -139,8 +140,10 @@ dev = [
     # path resolves its own copy. tests/test_tooling_pins.py enforces that.
     "pyrefly==1.4.0",
     "ty==0.0.90",
-    "ruff==0.15.22",
+    "ruff==0.17.1",
     "pre-commit>=4.0.0",
+    # tests/test_release_script.py reads the workflow files with it.
+    "pyyaml>=6.0",
     "coverage[toml]>=7.6.0",
     # >=1.1: earlier releases pin pyppmd<1.3.0, the range the pyppmd>=1.3.1 floor
     # above rules out (wrong bytes on chunked PPMd decodes). Needed by
@@ -154,7 +157,7 @@ dev = [
     # Stdlib compression.zstd on 3.14+; backports only needed below that.
     "backports.zstd>=1.0.0; python_version < '3.14'",
     "lz4>=4.4.5",
-    "brotli>=1.2.0",
+    "brotli>=1.2.1",
     # pycdlib (the [iso] extra) is in the dev group like the other optional format libs, so
     # the ISO backend's tests run in the default dev env and the type checkers can resolve the
     # PyCdlibIO annotation. The core-only CI leg installs with --no-dev, so it stays absent
@@ -186,6 +189,9 @@ docs = [
     "mkdocs-autorefs>=1.2.0",
     "mkdocs-material>=9.6.0",
     "griffe-fieldz>=0.2.1",
+    # Writes llms.txt, llms-full.txt and a Markdown copy of each page for coding
+    # agents. Capped below 0.6: a 0.x release may change the output format.
+    "mkdocs-llmstxt>=0.5.1,<0.6",
 ]
 # Coverage-guided fuzz harness (Atheris / libFuzzer). CI-only: never a user-facing
 # runtime extra and never folded into `[all]` — see packaging-and-extras + threat-model O5.
@@ -196,20 +202,58 @@ fuzz = [
     "atheris>=3.0.0; python_version >= '3.12'",
 ]
 
+# The sdist carries what a build needs, plus the changelog. Without this list hatch
+# packs every tracked file (openspec/, review/, dev-docs/, .claude/, tests/ ...), which
+# made the 0.2.0rc1 sdist about 7.5 MB. tests/ stays out on purpose: it would add about
+# 2.3 MB, and dozens of its tests read files that exist only in a git checkout (scripts/,
+# review/, openspec/, .github/), so the suite does not pass from an unpacked sdist. Run
+# the tests from the git tag instead. hatch adds pyproject.toml, PKG-INFO and the
+# repo-root .gitignore. publish.yml's build job fails when the sdist holds another
+# top-level path; tests/test_sdist_contents.py ties its list to this one.
+[tool.hatch.build.targets.sdist]
+only-include = ["src", "LICENSE", "README.md", "CHANGELOG.md"]
+
 [tool.ruff]
 target-version = "py311"
 
 [tool.ruff.lint]
-extend-select = ["I", "F", "C4", "ISC", "RET", "BLE", "UP"]
+# Ruff 0.16 grew its default set from 59 rules to 413 (bugbear, simplify, RUF, a pylint
+# and a bandit subset, refurb, pie, pyi, …); we take all of it. It also dropped some
+# pycodestyle E4/E7 and pyflakes rules from the defaults. "F" on the first line already
+# selects every pyflakes rule; the second line restores the E4/E7 ones. E902 (E9) is
+# still in the default set.
+extend-select = [
+    "I", "F", "C4", "ISC", "RET", "BLE", "UP",
+    "E401", "E402", "E701", "E702", "E703", "E711", "E712", "E713", "E714", "E721",
+    "E731", "E741", "E742", "E743",
+]
+
+[tool.ruff.lint.isort]
+# One `from m import (...)` per module, aliases included (`Set as AbstractSet`).
+combine-as-imports = true
+
+[tool.ruff.lint.flake8-bugbear]
+# Immutable values, safe as argument and dataclass defaults (B008, RUF009): an enum.Flag
+# and a frozen dataclass of ints.
+# `archivey.internal.config` re-exports DecoderLimits, so both paths are listed.
+extend-immutable-calls = [
+    "archivey.types.MemberStreams",
+    "archivey.config.DecoderLimits",
+    "archivey.internal.config.DecoderLimits",
+]
 
 [tool.ruff.lint.per-file-ignores]
 # This survey promises to run on a bare Python 3.8+ interpreter, so the UP rules, which
 # assume the package's py311 floor, don't apply to it.
 "scripts/exploration/brotli_probe_field_survey.py" = ["UP"]
+# The ISO reader patches pycdlib's parsers in place and reads a few of its private
+# attributes. Through setattr/getattr the checkers see `object`; a plain assignment or
+# attribute read would need a pyrefly and a ty suppression on every line instead.
+"src/archivey/internal/backends/iso_reader.py" = ["B009", "B010"]
 
 [tool.pyrefly]
-search-path = ["src"]
-project-includes = ["src"]
+search-path = ["src", "packages/archivey-squashfs/src"]
+project-includes = ["src", "packages/archivey-squashfs/src"]
 python_version = "3.11"
 
 # pycdlib is py.typed but declares its signatures in PEP 484 type comments
@@ -228,12 +272,12 @@ untyped-def-behavior = "skip-and-infer-return-any"
 # is kept clean on both ty and Pyrefly.
 [tool.ty.environment]
 python-version = "3.11"
-root = ["src"]
+root = ["src", "packages/archivey-squashfs/src"]
 
 [tool.ty.src]
-# Type-check only the library, mirroring pyrefly's `project-includes = ["src"]`, so a
-# bare `uv run ty check` is clean — no `src/` path argument needed.
-include = ["src"]
+# Type-check the library and the in-repo plugin package, mirroring pyrefly's
+# `project-includes`, so a bare `uv run ty check` is the gate with no path arguments.
+include = ["src", "packages/archivey-squashfs/src"]
 
 [tool.coverage.run]
 source = ["archivey"]
@@ -252,7 +296,17 @@ testpaths = ["tests"]
 # --timeout: a hung test fails fast (with a traceback of all threads) instead of stalling
 # the whole job until the CI hard limit. 60s is far above any real test here (all run in
 # milliseconds), so only a genuine hang trips it.
-addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml --timeout=60 -m 'not ppmd_native_stress'"
+# --cov-branch repeats `branch = true` for child processes. It matters only on pytest-cov
+# before 7 (the lowest-direct resolution), which measures a child `python` through its
+# COV_CORE_* variables. `--cov-config` defaults to `.coveragerc`, which this repo does not
+# have, so the child searches for a config in its own working directory; one started in a
+# temporary directory finds none, writes statement-only data, and the final combine
+# refuses to merge that with branch data. Other [tool.coverage.run] keys do not reach such
+# a child either. No CI leg can catch the flag's loss (the one leg that measures coverage
+# runs pytest-cov 7, which measures no child), and it is inert once the pytest-cov floor
+# reaches 7. It sits in addopts despite the timeout_method rule below because pytest-cov
+# has no ini key, and every site that overrides addopts drops --cov along with it.
+addopts = "--cov=archivey --cov-branch --cov-report=term-missing --cov-report=xml --timeout=60 -m 'not ppmd_native_stress'"
 # thread, not pytest-timeout's POSIX default of signal. SIGALRM is delivered to the main
 # thread and only runs when it next reaches the interpreter, so a thread blocked in C or a
 # deadlock off the main thread is invisible to it: on 2026-09-21 both the free-threaded job
@@ -281,6 +335,12 @@ addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml --timeout=6
 # each new override site must remember to repeat it. The ini key is untouched by
 # `-o addopts=`, so they all inherit it and none of them names it.
 timeout_method = "thread"
+# A per-test timeout also covers fixture setup and teardown: a module-scoped fixture's
+# setup counts against the first test that uses it on a worker, and its teardown against
+# the last test of the module there, often an unrelated one on the 60 s default. A slow
+# module fixture once killed a Windows xdist worker that way, with no traceback. Keep
+# module fixtures fast, or mark the test `@pytest.mark.timeout(N, func_only=True)` so the
+# budget covers only the test body.
 
 markers = [
     "sample_archives: declarative parametrization over sample archives and config variants",

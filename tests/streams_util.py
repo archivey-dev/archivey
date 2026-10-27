@@ -763,3 +763,45 @@ def assert_no_member_tail_seek(seeks: list[MemberSeek], sizes: dict[int, int]) -
     """
     forward = [s for s in seeks if s.after > s.before]
     assert all(s.after < sizes[s.stream] - MEMBER_TAIL_BYTES for s in forward), seeks
+
+
+# Reads a gzip file with raw rapidgzip and prints how many bytes it delivered and how many
+# bits of the file it decoded (``tell_compressed``), or RAISED. It runs in a child
+# interpreter because rapidgzip 0.16 aborts the process on some cuts (see
+# test_accelerator_truncation_abort.py), and opens the file as archivey's worker does.
+_RAPIDGZIP_SOFT_END_PROBE = """
+import sys, rapidgzip
+with rapidgzip.open(sys.argv[1], parallelization=0) as f:
+    try:
+        print(len(f.read()), f.tell_compressed())
+    except ValueError:
+        print("RAISED")
+"""
+
+
+def rapidgzip_soft_end(path: str) -> tuple[int, int] | None:
+    """How many bytes raw rapidgzip delivers from the cut gzip at ``path`` before it ends
+    with no error, and how many bytes of the file it decoded to get there (rounded up);
+    ``None`` where this build raises or aborts on the cut instead.
+
+    Builds differ: the macOS wheels raise on cuts that the Linux wheels end softly, and
+    the Linux wheels abort on others. A test of what archivey does after a soft end
+    skips where there is none."""
+    proc = subprocess.run(
+        [sys.executable, "-c", _RAPIDGZIP_SOFT_END_PROBE, path],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    if proc.returncode != 0 or proc.stdout.strip() == "RAISED":
+        return None
+    delivered, bits = proc.stdout.split()
+    return int(delivered), -(-int(bits) // 8)
+
+
+def rapidgzip_soft_end_length(path: str) -> int | None:
+    """How many bytes raw rapidgzip delivers from the cut gzip at ``path`` before it ends
+    with no error; ``None`` where it raises or aborts instead (:func:`rapidgzip_soft_end`)."""
+    end = rapidgzip_soft_end(path)
+    return None if end is None else end[0]

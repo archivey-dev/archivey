@@ -415,10 +415,10 @@ def test_filter_only_run_is_never_planned_as_an_lzma_chain() -> None:
         digest_defined=False,
     )
     (stage,) = plan_folder(folder).stages
-    assert isinstance(stage, sevenzip_pipeline._FilterStage)  # noqa: SLF001
+    assert isinstance(stage, sevenzip_pipeline._FilterStage)
     assert stage.lzma_filter == {"id": lzma.FILTER_DELTA, "dist": 1}
     with pytest.raises(UnsupportedFeatureError, match="filter-only coder run"):
-        sevenzip_pipeline._lzma_chain_stage(folder.coders, cap_size=None)  # noqa: SLF001
+        sevenzip_pipeline._lzma_chain_stage(folder.coders, cap_size=None)
 
 
 @requires_binary("7z")
@@ -457,7 +457,7 @@ def test_bcj_start_offset_is_honoured_in_an_lzma2_chain() -> None:
         format=lzma.FORMAT_RAW,
         filters=[{"id": lzma.FILTER_X86, "start_offset": start}, lzma2],
     )
-    lzma2_props = lzma._encode_filter_properties(lzma2)  # noqa: SLF001
+    lzma2_props = lzma._encode_filter_properties(lzma2)
     data = _single_folder_archive(
         [
             _coder(_LZMA2, props=lzma2_props),
@@ -528,7 +528,7 @@ def test_misaligned_bcj_start_offset_is_refused_at_plan_time() -> None:
 
 def test_zero_bcj_start_offset_needs_no_option() -> None:
     (stage,) = plan_folder(_bcj_folder(_BCJ_X86, bytes(4))).stages
-    assert isinstance(stage, sevenzip_pipeline._FilterStage)  # noqa: SLF001
+    assert isinstance(stage, sevenzip_pipeline._FilterStage)
     assert stage.lzma_filter == {"id": lzma.FILTER_X86}
 
 
@@ -601,7 +601,7 @@ def test_entry_points_default_to_the_listing_limit(
     "helper",
     [
         sevenzip_parser.parse_decoded_header,
-        sevenzip_reader._decode_encoded_header_block,  # noqa: SLF001
+        sevenzip_reader._decode_encoded_header_block,
     ],
 )
 def test_decoded_header_helpers_require_max_members(

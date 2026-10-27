@@ -16,8 +16,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveFormat, ArchiveyError, open_archive
-from tests.atheris_fuzz import TARGET_NAMES
-from tests.atheris_fuzz import seeds as fuzz_seeds
+from tests.atheris_fuzz import TARGET_NAMES, seeds as fuzz_seeds
 from tests.atheris_fuzz.seeds import (
     _compressed_tar_seeds,
     _koly_block,
@@ -57,9 +56,11 @@ def test_open_detected_reads_a_zip_behind_a_stub() -> None:
 def test_open_detected_refuses_a_udif_image() -> None:
     data = _koly_block()
     open_detected_one(data)
-    with pytest.raises(ArchiveyError, match="UDIF"):
-        with open_archive(io.BytesIO(data)) as arc:
-            list(arc)
+    with (
+        pytest.raises(ArchiveyError, match="UDIF"),
+        open_archive(io.BytesIO(data)) as arc,
+    ):
+        list(arc)
 
 
 def test_open_detected_reads_a_compressed_tar_and_the_gzip_around_it() -> None:

@@ -143,7 +143,8 @@ start. The table must end the file: zeros after it hide it, and the file then se
 any other zstd file. A single-frame file, the default `zstd` output, has nothing to resume
 from, so a backward seek decodes again from the start and the rewind report says so
 ([`single-file.md`](single-file.md) §2.3). LZ4 records no resume points, so every LZ4
-backward seek does that too. A ZIP zstd member is one frame and keeps none.
+backward seek does that too. A ZIP zstd member is read as a `.zst` file is, with the
+same seek points and table.
 
 ### 2.4 Extract
 
@@ -269,18 +270,18 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
     tests/test_seekable_streams.py tests/test_zip_native_codecs.py -k "zstd or lz4 or zst"
 ```
 
-| Claim | Pinned by |
-| --- | --- |
-| Both read as one member | `tests/test_single_file.py::test_zstd_roundtrip`, `::test_lz4_roundtrip` |
-| A cut zstd frame is `TruncatedError` | `tests/test_codecs.py::test_truncated_zstd_translates_to_truncated` |
-| Skippable frames before a regular frame; alone they are not a claim; the walk stays in the prefix | `tests/test_detection.py::test_zstd_behind_one_skippable_frame`, `::test_zstd_behind_chained_skippable_frames`, `::test_zstd_skippable_frames_alone_are_not_a_zstd_claim`, `::test_zstd_skippable_frame_larger_than_the_prefix_is_not_claimed`, `::test_zstd_skippable_walk_arithmetic` |
-| Backward seeks re-decode and are reported | `tests/test_seekable_streams.py::test_zstd_rewinds_and_warns_on_backward_seek`, `::test_lz4_warns_on_rewind` |
-| Frame starts and the seekable-zstd table give resume points and the size; a bad table degrades; the table is trusted | `tests/test_zstd_seekable.py` |
-| zstd as a ZIP method | `tests/test_zip_native_codecs.py::test_zip_zstd_handbuilt_roundtrip`, `::test_zip_zstd_without_backend_raises` |
-| The zstd window is capped by `max_decoder_memory`, on `.zst` and ZIP method 93 | `tests/test_decoder_limits.py::test_zstd_window_over_libzstd_default_reads_under_the_cap`, `::test_zstd_window_against_the_cap`, `::test_zip_zstd_member_window_is_capped`, `::test_zstd_window_over_libzstd_s_ceiling` |
-| A frame after zero bytes is trailing data, and strict refuses it; zeros at the end and frames with nothing between them stay silent | `tests/test_stream_trailing_data.py::test_a_stream_after_nul_padding_is_trailing_data`, `::test_strict_refuses_a_stream_after_nul_padding`, `::test_a_seek_to_the_end_stops_at_nul_padding`, `::test_nul_padding_at_the_end_and_direct_concatenation_stay_silent` |
-| The legacy LZ4 stream: detection, blocks, concatenation, padding, the size bound, corruption and truncation | `tests/test_lz4_legacy.py` |
-| `pyzstd` is not a runtime dependency | `tests/test_extras_imported.py::test_pyzstd_and_python_xz_are_not_in_any_extra` |
+| Claim |
+| --- |
+| Both read as one member |
+| A cut zstd frame is `TruncatedError` |
+| Skippable frames before a regular frame; alone they are not a claim; the walk stays in the prefix |
+| Backward seeks re-decode and are reported |
+| Frame starts and the seekable-zstd table give resume points and the size; a bad table degrades; the table is trusted |
+| zstd as a ZIP method |
+| The zstd window is capped by `max_decoder_memory`, on `.zst` and ZIP method 93 |
+| A frame after zero bytes is trailing data, and strict refuses it; zeros at the end and frames with nothing between them stay silent |
+| The legacy LZ4 stream: detection, blocks, concatenation, padding, the size bound, corruption and truncation |
+| `pyzstd` is not a runtime dependency |
 
 The LZ4 skippable-frame gap has no test; it was measured with the tools in §3.
 

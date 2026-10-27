@@ -259,10 +259,12 @@ def test_detect_format_does_not_wait_for_the_writer(
 def test_open_archive_does_not_wait_for_the_writer(
     make: Callable[[int], bytes], expected: ArchiveFormat, buffered: bool
 ) -> None:
-    with _held_open_pipe(make(2000), buffered=buffered) as (stream, closed):
-        with open_archive(stream, streaming=True) as reader:
-            assert not closed.is_set(), "open_archive waited for the writer"
-            assert reader.format == expected
+    with (
+        _held_open_pipe(make(2000), buffered=buffered) as (stream, closed),
+        open_archive(stream, streaming=True) as reader,
+    ):
+        assert not closed.is_set(), "open_archive waited for the writer"
+        assert reader.format == expected
 
 
 @pytest.mark.parametrize("buffered", [False, True], ids=["raw", "buffered"])
@@ -275,13 +277,15 @@ def test_a_streaming_tar_yields_its_first_member_before_the_writer_closes(
     writer by design, because the trailing-data scan reads past the trailer.
     """
     payload = _tar(2000)
-    with _held_open_pipe(payload, buffered=buffered) as (stream, closed):
-        with open_archive(stream, streaming=True) as reader:
-            for member, member_stream in reader.stream_members():
-                assert member_stream is not None
-                data = member_stream.read()
-                assert not closed.is_set(), "the first member waited for the writer"
-                break
+    with (
+        _held_open_pipe(payload, buffered=buffered) as (stream, closed),
+        open_archive(stream, streaming=True) as reader,
+    ):
+        for member, member_stream in reader.stream_members():
+            assert member_stream is not None
+            data = member_stream.read()
+            assert not closed.is_set(), "the first member waited for the writer"
+            break
     assert member.name == "a.bin"
     assert data == payload[512 : 512 + 2000]
 
@@ -299,23 +303,25 @@ def _reads_to_the_last_byte_before_the_close(
     The decoder cannot tell the end of its input until the source ends: another
     member, or bytes after the stream, may follow.
     """
-    with _releasable_pipe(payload, buffered=buffered) as (stream, closed, release_in):
-        with open_archive(stream, streaming=True, format=fmt) as reader:
-            assert not closed.is_set(), "open_archive waited for the writer"
-            for _, member_stream in reader.stream_members():
-                assert member_stream is not None
-                head = member_stream.read(100)
-                assert not closed.is_set(), "the first read waited for the writer"
-                while len(head) < len(data):
-                    # No further: a read past the last byte meets the end.
-                    block = member_stream.read(min(8192, len(data) - len(head)))
-                    if not block:
-                        break  # ended early: the assertion below reports it
-                    head += block
-                assert not closed.is_set(), "a read before the end waited"
-                release_in(_RELEASE_DELAY_SECONDS)
-                rest = member_stream.read()
-                assert closed.is_set(), "the end was read before the writer closed"
+    with (
+        _releasable_pipe(payload, buffered=buffered) as (stream, closed, release_in),
+        open_archive(stream, streaming=True, format=fmt) as reader,
+    ):
+        assert not closed.is_set(), "open_archive waited for the writer"
+        for _, member_stream in reader.stream_members():
+            assert member_stream is not None
+            head = member_stream.read(100)
+            assert not closed.is_set(), "the first read waited for the writer"
+            while len(head) < len(data):
+                # No further: a read past the last byte meets the end.
+                block = member_stream.read(min(8192, len(data) - len(head)))
+                if not block:
+                    break  # ended early: the assertion below reports it
+                head += block
+            assert not closed.is_set(), "a read before the end waited"
+            release_in(_RELEASE_DELAY_SECONDS)
+            rest = member_stream.read()
+            assert closed.is_set(), "the end was read before the writer closed"
     assert head + rest == data
 
 
@@ -340,17 +346,19 @@ def test_open_stream_reads_to_the_last_byte_before_the_writer_closes(
     bare: ArchiveFormat,
 ) -> None:
     data = os.urandom(2000)
-    with _releasable_pipe(compress(data), buffered=True) as (
-        stream,
-        closed,
-        release_in,
+    with (
+        _releasable_pipe(compress(data), buffered=True) as (
+            stream,
+            closed,
+            release_in,
+        ),
+        open_stream(stream, format=bare.stream) as decoded,
     ):
-        with open_stream(stream, format=bare.stream) as decoded:
-            head = decoded.read(len(data))
-            assert not closed.is_set(), "a read before the end waited for the writer"
-            release_in(_RELEASE_DELAY_SECONDS)
-            rest = decoded.read()
-            assert closed.is_set(), "the end was read before the writer closed"
+        head = decoded.read(len(data))
+        assert not closed.is_set(), "a read before the end waited for the writer"
+        release_in(_RELEASE_DELAY_SECONDS)
+        rest = decoded.read()
+        assert closed.is_set(), "the end was read before the writer closed"
     assert head + rest == data
 
 
@@ -402,24 +410,24 @@ def test_a_zip_with_data_descriptors_ends_its_last_member_only_when_the_writer_c
     """
     datas = [os.urandom(1000), os.urandom(1000)]
     got: list[bytes] = []
-    with _releasable_pipe(_zip_with_data_descriptors(datas), buffered=buffered) as (
-        stream,
-        closed,
-        release_in,
+    with (
+        _releasable_pipe(_zip_with_data_descriptors(datas), buffered=buffered) as (
+            stream,
+            closed,
+            release_in,
+        ),
+        open_archive(stream, streaming=True) as reader,
     ):
-        with open_archive(stream, streaming=True) as reader:
-            assert not closed.is_set(), "open_archive waited for the writer"
-            for member, member_stream in reader.stream_members():
-                assert member_stream is not None
-                if member.name == "m0.bin":
-                    got.append(member_stream.read())
-                    assert not closed.is_set(), "the first member waited for the writer"
-                else:
-                    release_in(_RELEASE_DELAY_SECONDS)
-                    got.append(member_stream.read())
-                    assert closed.is_set(), (
-                        "the last member ended before the writer closed"
-                    )
+        assert not closed.is_set(), "open_archive waited for the writer"
+        for member, member_stream in reader.stream_members():
+            assert member_stream is not None
+            if member.name == "m0.bin":
+                got.append(member_stream.read())
+                assert not closed.is_set(), "the first member waited for the writer"
+            else:
+                release_in(_RELEASE_DELAY_SECONDS)
+                got.append(member_stream.read())
+                assert closed.is_set(), "the last member ended before the writer closed"
     assert got == datas
 
 
@@ -583,14 +591,16 @@ def _first_member_reads_before_the_close(
     """
     with open_archive(io.BytesIO(payload), streaming=True, format=fmt) as reader:
         expected = _read_members(reader)[0]
-    with _releasable_pipe(payload, buffered=buffered) as (stream, closed, _):
-        with open_archive(stream, streaming=True, format=fmt) as reader:
-            assert not closed.is_set(), "open_archive waited for the writer"
-            for member, member_stream in reader.stream_members():
-                assert member_stream is not None
-                got = (member.name, member_stream.read())
-                assert not closed.is_set(), "the first member waited for the writer"
-                break
+    with (
+        _releasable_pipe(payload, buffered=buffered) as (stream, closed, _),
+        open_archive(stream, streaming=True, format=fmt) as reader,
+    ):
+        assert not closed.is_set(), "open_archive waited for the writer"
+        for member, member_stream in reader.stream_members():
+            assert member_stream is not None
+            got = (member.name, member_stream.read())
+            assert not closed.is_set(), "the first member waited for the writer"
+            break
     assert got == expected
 
 
@@ -600,15 +610,17 @@ def test_a_detected_compressed_file_opens_and_reads_at_once(
 ) -> None:
     """Detection, the open and the first read all return before the close."""
     data = os.urandom(_NO_WAIT_SIZE)
-    with _releasable_pipe(compress(data), buffered=True) as (stream, closed, _):
-        with open_archive(stream, streaming=True) as reader:
-            assert not closed.is_set(), "open_archive waited for the writer"
-            assert reader.format == bare
-            for _, member_stream in reader.stream_members():
-                assert member_stream is not None
-                head = member_stream.read(100)
-                assert not closed.is_set(), "the first read waited for the writer"
-                break
+    with (
+        _releasable_pipe(compress(data), buffered=True) as (stream, closed, _),
+        open_archive(stream, streaming=True) as reader,
+    ):
+        assert not closed.is_set(), "open_archive waited for the writer"
+        assert reader.format == bare
+        for _, member_stream in reader.stream_members():
+            assert member_stream is not None
+            head = member_stream.read(100)
+            assert not closed.is_set(), "the first read waited for the writer"
+            break
     assert head == data[:100]
 
 

@@ -347,7 +347,7 @@ def _import_all_archivey_modules() -> None:
             continue
         try:
             importlib.import_module(module.name)
-        except Exception as exc:  # noqa: BLE001 - any import-time failure is this check
+        except Exception as exc:  # any import-time failure is this check
             raise ImportError(
                 f"{module.name} failed to import while walking archivey modules "
                 "for the ReadOnlyIOStream resume-offset inventory. This walk also "
@@ -395,39 +395,46 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     """
     _import_all_archivey_modules()
 
-    import archivey.internal.backends.iso_reader as iso_reader
-    import archivey.internal.backends.rar_copy_sources as rar_copy_sources
-    import archivey.internal.backends.rar_reader as rar_reader
-    import archivey.internal.backends.sevenzip_pipeline as sevenzip_pipeline
-    import archivey.internal.backends.sevenzip_reader as sevenzip_reader
-    import archivey.internal.backends.tar_parser as tar_parser
-    import archivey.internal.backends.tar_reader as tar_reader
-    import archivey.internal.backends.zip_aes as zip_aes
-    import archivey.internal.backends.zip_forward_reader as zip_forward_reader
-    import archivey.internal.backends.zip_local_walk as zip_local_walk
-    import archivey.internal.backends.zip_reader as zip_reader
-    import archivey.internal.backends.zipcrypto as zipcrypto
-    import archivey.internal.detection as detection
-    import archivey.internal.external.cli as cli
-    import archivey.internal.external.unar as unar
-    import archivey.internal.password_confirm as password_confirm
     import archivey.internal.source as source_mod
-    import archivey.internal.streams.archive_stream as archive_stream
-    import archivey.internal.streams.codecs as codecs
     import archivey.internal.streams.codecs.bcj2_filter as bcj2
-    import archivey.internal.streams.codecs.rapidgzip_child as rapidgzip_child
-    import archivey.internal.streams.counting as counting
-    import archivey.internal.streams.crypto as crypto
-    import archivey.internal.streams.decompressor_stream as decompressor_stream
-    import archivey.internal.streams.streamtools.locked as locked
-    import archivey.internal.streams.streamtools.readahead as readahead
     import archivey.internal.streams.streamtools.slice as slice_mod
-    import archivey.internal.streams.streamtools.solid as solid
-    import archivey.internal.streams.streamtools.sparse as sparse
-    import archivey.internal.streams.verify as verify
+    from archivey.internal import detection, password_confirm
+    from archivey.internal.backends import (
+        rar_copy_sources,
+        rar_reader,
+        sevenzip_pipeline,
+        sevenzip_reader,
+        tar_parser,
+        tar_reader,
+        zip_aes,
+        zip_forward_reader,
+        zip_local_walk,
+        zip_reader,
+        zipcrypto,
+    )
+    from archivey.internal.external import cli, unar
+    from archivey.internal.streams import (
+        archive_stream,
+        blocks,
+        codecs,
+        counting,
+        crypto,
+        decompressor_stream,
+        respawn,
+        verify,
+    )
+    from archivey.internal.streams.codecs import rapidgzip_child
+    from archivey.internal.streams.streamtools import (
+        fullcount,
+        locked,
+        readahead,
+        solid,
+        sparse,
+    )
 
     forwards_or_owns = {
         archive_stream.ArchiveStream,
+        blocks.BlockStream,  # owns its resume points: every block start
         bcj2.Bcj2DecoderStream,  # owns its one resume point: the folder start
         rapidgzip_child.RapidgzipChildStream,  # asks the child's rapidgzip index
         codecs.zlib_codec._DeflateEndCheckStream,
@@ -453,14 +460,15 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     }
     remaps_or_not_on_chain = {
         locked.LockedStream,
+        # Over a format plugin's own member stream, which has no table below it.
+        fullcount.FullCountStream,
         counting.CountingReader,
         counting.SeekCountingStream,
         rar_reader._UnrarOwnedStream,
-        rar_reader._RespawnStream,
+        respawn.RespawnStream,
         # Subprocess stdout, like the unrar pipe: nothing below it has a table.
         unar.UnarOutputStream,
         cli.ProcessOutputStream,  # the base of the two subprocess stdout streams
-        iso_reader._PyCdlibStream,
         solid._MemberSlice,
         # A table below it (gzip under a .tar.gz) is in stored offsets, and the map
         # from logical to stored offsets is not a contiguous shift, so a slice's
@@ -638,27 +646,29 @@ def test_delegating_stream_close_inventory() -> None:
     """
     _import_all_archivey_modules()
 
-    import archivey.internal.backends.iso_reader as iso_reader
-    import archivey.internal.backends.rar_copy_sources as rar_copy_sources
-    import archivey.internal.backends.rar_reader as rar_reader
-    import archivey.internal.backends.sevenzip_pipeline as sevenzip_pipeline
-    import archivey.internal.backends.tar_reader as tar_reader
-    import archivey.internal.backends.zip_reader as zip_reader
-    import archivey.internal.external.cli as cli
-    import archivey.internal.external.unar as unar
-    import archivey.internal.password_confirm as password_confirm
-    import archivey.internal.streams.codecs as codecs
-    import archivey.internal.streams.counting as counting
-    import archivey.internal.streams.streamtools.locked as locked
-    import archivey.internal.streams.streamtools.readahead as readahead
-    import archivey.internal.streams.streamtools.sparse as sparse
+    from archivey.internal import password_confirm
+    from archivey.internal.backends import (
+        rar_copy_sources,
+        rar_reader,
+        sevenzip_pipeline,
+        tar_reader,
+        zip_reader,
+    )
+    from archivey.internal.external import cli, unar
+    from archivey.internal.streams import codecs, counting
+    from archivey.internal.streams.streamtools import (
+        fullcount,
+        locked,
+        readahead,
+        sparse,
+    )
 
     owns_via_base = {
         locked.LockedStream,
+        fullcount.FullCountStream,
         counting.CountingReader,
         counting.OutputCountingStream,
         counting.SeekCountingStream,
-        iso_reader._PyCdlibStream,
         codecs.zlib_codec._DeflateEndCheckStream,
         codecs.gzip_codec._GzipTruncationCheckStream,
         codecs.zlib_codec._ZlibAdlerCheckStream,
@@ -806,7 +816,7 @@ def test_delegating_stream_peel_inventory() -> None:
     ``source_byte_size`` from its own ``size`` rather than by being peeled.
     """
     _import_all_archivey_modules()
-    import archivey.internal.streams.counting as counting
+    from archivey.internal.streams import counting
 
     found = _delegating_stream_subclasses()
     peels = {cls for cls in found if cls.peel_for_source_size is True}

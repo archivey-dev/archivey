@@ -32,15 +32,11 @@ Typical split inside a format: ``*ReadBackend`` (registry / ``open_read``) +
 
 from archivey.internal.backends import (
     directory_reader as _directory_reader,  # noqa: F401
-)
-from archivey.internal.backends import iso_reader as _iso_reader  # noqa: F401
-from archivey.internal.backends import rar_reader as _rar_reader  # noqa: F401
-from archivey.internal.backends import (
+    iso_reader as _iso_reader,  # noqa: F401
+    rar_reader as _rar_reader,  # noqa: F401
     sevenzip_reader as _sevenzip_reader,  # noqa: F401
-)
-from archivey.internal.backends import (
     single_file_reader as _single_file_reader,  # noqa: F401
+    tar_reader as _tar_reader,  # noqa: F401
+    udif as _udif,  # noqa: F401
+    zip_reader as _zip_reader,  # noqa: F401
 )
-from archivey.internal.backends import tar_reader as _tar_reader  # noqa: F401
-from archivey.internal.backends import udif as _udif  # noqa: F401
-from archivey.internal.backends import zip_reader as _zip_reader  # noqa: F401

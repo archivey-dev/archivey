@@ -42,6 +42,9 @@ class CountingReader(DelegatingStream):
     *pulled from the source*; with a decompressor reading fixed-size chunks it overshoots the
     strictly-decoded amount by at most one read, which is negligible against the output of a
     real decompression bomb.
+
+    It sets no ``forwards_verification``: it wraps a compressed archive input, and a raw
+    source has no check of its own to forward.
     """
 
     def __init__(self, inner: BinaryIO) -> None:
@@ -76,6 +79,9 @@ class OutputCountingStream(DelegatingStream):
     this feeds a shared :class:`~archivey.internal.measurement.ByteCounter` so folder-level
     and member-level wrappers can share one archive total when needed.
     """
+
+    # Counts bytes and changes none of them: the verification level looks through.
+    forwards_verification = True
 
     def __init__(self, inner: BinaryIO, counter: ByteCounter) -> None:
         super().__init__(inner)

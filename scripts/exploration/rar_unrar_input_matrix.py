@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """What can RARLAB ``unrar`` accept as its *archive* input, and what does it emit?
 
 Supporting ``dev-docs/formats/rar.md`` §1 (the process boundary) and §2.3.
@@ -229,7 +228,7 @@ def volume_modes(unrar: str, parts: list[Path]) -> list[dict]:
 def emission_policy(unrar: str, archive: Path) -> list[dict]:
     """Per member: stored packed/unpacked size vs bytes ``unrar p`` actually emits."""
     sys.path.insert(0, str(REPO / "src"))
-    from archivey.internal.backends.rar_parser import parse_rar_archive  # noqa: PLC0415
+    from archivey.internal.backends.rar_parser import parse_rar_archive
 
     with archive.open("rb") as handle:
         parsed = parse_rar_archive(handle)
@@ -276,7 +275,7 @@ def main() -> int:
     report["input_modes"] = rows
     for row in rows:
         print(
-            f"   {row['mode']:<52} rc={str(row['rc']):>7}  {row['bytes']:>5} B  {row['note']}"
+            f"   {row['mode']:<52} rc={row['rc']!s:>7}  {row['bytes']:>5} B  {row['note']}"
         )
 
     print("\n== 3. multi-volume (tinyvol.part1.rar + part2)")
@@ -288,7 +287,7 @@ def main() -> int:
         rows = volume_modes(unrar, parts)
         report["volume_modes"] = rows
         for row in rows:
-            print(f"   {row['mode']:<62} rc={str(row['rc']):>7}  {row['bytes']:>5} B")
+            print(f"   {row['mode']:<62} rc={row['rc']!s:>7}  {row['bytes']:>5} B")
     else:
         print("   fixtures missing — skipped")
 

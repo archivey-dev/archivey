@@ -37,6 +37,7 @@ from archivey.exceptions import (
     EncryptionError,
     LinkTargetNotFoundError,
     ResourceLimitError,
+    ResourceUnavailableError,
     UnsupportedFeatureError,
 )
 from tests.conftest import has_binary, requires_binary
@@ -331,7 +332,7 @@ def test_member_unrar_cannot_address_is_refused_not_reported_corrupt(
     ``CorruptionError``. Both tell the caller the archive is damaged, and ``unar``
     (which addresses entries by index) reads the member fine.
     """
-    path, payloads = _dot_named_archive(tmp_path)
+    path, _payloads = _dot_named_archive(tmp_path)
     with open_archive(path, config=_UNRAR_ONLY) as archive:
         member = archive.members()[1]
         with pytest.raises(UnsupportedFeatureError):
@@ -371,9 +372,11 @@ def test_solid_rar4_wrong_password_is_an_encryption_error(
         sizes = [len(s.read()) for _, s in archive.stream_members() if s is not None]
     assert sizes and all(sizes)
     # The random-access path already says "wrong password":
-    with open_archive(path, password="wrong", config=_UNRAR_ONLY) as archive:
-        with pytest.raises(EncryptionError):
-            archive.read(archive.members()[0])
+    with (
+        open_archive(path, password="wrong", config=_UNRAR_ONLY) as archive,
+        pytest.raises(EncryptionError),
+    ):
+        archive.read(archive.members()[0])
     with pytest.raises(EncryptionError):
         if via == "stream_members":
             with open_archive(path, password="wrong", config=_UNRAR_ONLY) as archive:
@@ -526,7 +529,7 @@ def test_externally_killed_decompressor_is_not_reported_as_truncation(
                     pass
     assert not isinstance(info.value, CorruptionError), repr(info.value)
     if signame == "SIGKILL":
-        assert isinstance(info.value, ResourceLimitError), repr(info.value)
+        assert isinstance(info.value, ResourceUnavailableError), repr(info.value)
 
 
 # --- R23: the RAR5 archive comment is read by its unpacked size ----------------
@@ -556,6 +559,27 @@ def test_rar5_comment_never_reads_past_its_packed_span(tmp_path: Path) -> None:
     except ArchiveyError:
         return
     assert comment in (None, "This is a\nmulti-line comment")
+
+
+def test_rar5_comment_that_is_not_utf8_keeps_its_bytes(tmp_path: Path) -> None:
+    """A byte that is not valid UTF-8 survives as a lone surrogate, as in a RAR5 name.
+
+    RARLAB ``rar`` never stores one: it maps such a byte to U+FFFE plus a private-use
+    character, which is valid UTF-8. A crafted comment gets the name's reading, not
+    U+FFFD, which would lose the byte.
+    """
+    blocks = _rar5_parse(_fixture("comment__.rar").read_bytes())
+    cmt = next(block for block in blocks if block["type"] == 3)
+    data = b"caf\xe9 \xff ok"
+    cmt["data"] = data
+    cmt["unpacked"] = len(data)
+    if cmt["crc"] is not None:
+        cmt["crc"] = struct.pack("<I", zlib.crc32(data))
+    path = tmp_path / "cmt.rar"
+    path.write_bytes(_rar5_build(blocks))
+    # encoding= does not apply: a RAR5 comment is UTF-8 by the format.
+    with open_archive(path, encoding="cp1252") as archive:
+        assert archive.info.comment == "caf\udce9 \udcff ok"
 
 
 _OPEN_UNDER_RLIMIT = textwrap.dedent(
@@ -643,6 +667,8 @@ def test_rar3_comment_huge_packed_size_is_not_a_memory_error(tmp_path: Path) -> 
 def test_stored_comment_over_the_metadata_budget_is_refused() -> None:
     """Sibling of R23: an honest stored comment is weighed like a compressed one."""
     config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=16))
-    with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
-        with open_archive(_fixture("comment__.rar"), config=config):
-            pass
+    with (
+        pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
+        open_archive(_fixture("comment__.rar"), config=config),
+    ):
+        pass

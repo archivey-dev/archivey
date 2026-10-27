@@ -13,8 +13,11 @@ import pytest
 
 from archivey.config import DecoderLimits
 from archivey.exceptions import CorruptionError, UnsupportedFeatureError
-from archivey.internal.streams.codecs import decode_lzma_filter_properties, lzma_codec
-from archivey.internal.streams.codecs import lzip_decoder as lzip
+from archivey.internal.streams.codecs import (
+    decode_lzma_filter_properties,
+    lzip_decoder as lzip,
+    lzma_codec,
+)
 
 
 @pytest.mark.parametrize(

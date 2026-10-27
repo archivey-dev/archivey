@@ -29,6 +29,7 @@ from archivey import (
     AcceleratorMode,
     ArchiveStream,
     ArchiveyConfig,
+    ArchiveyUsageError,
     StreamNotSeekableError,
     list_known_formats,
     open_archive,
@@ -869,12 +870,14 @@ def test_nested_archive_from_a_pass_handle_is_a_non_seekable_source(
             with pytest.raises(StreamNotSeekableError):
                 open_archive(stream, streaming=True)
 
-    with open_archive(outer_path, seekable_members=True) as outer:
-        with outer.open(inner_name) as f:
-            assert f.seekable() is True
-            with open_archive(f) as inner:
-                assert inner.cost.stream_capability is StreamCapability.SEEKABLE
-                assert sum(1 for m in inner.members() if m.is_file) == file_count
+    with (
+        open_archive(outer_path, seekable_members=True) as outer,
+        outer.open(inner_name) as f,
+    ):
+        assert f.seekable() is True
+        with open_archive(f) as inner:
+            assert inner.cost.stream_capability is StreamCapability.SEEKABLE
+            assert sum(1 for m in inner.members() if m.is_file) == file_count
 
 
 # Formats / mechanisms this contract should cover but cannot construct here.
@@ -932,6 +935,42 @@ def test_seekability_enrollment_covers_known_formats() -> None:
     assert not missing, (
         f"known formats absent from seek matrix: {sorted(missing, key=str)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Reader close and the streams it handed out
+# ---------------------------------------------------------------------------
+#
+# The pass-stream half of this rule lives in tests/test_concurrent_cooperative.py,
+# over RAR, solid 7z and the streaming readers (_SUSPENDED_SOURCES).
+
+
+@pytest.mark.parametrize("seekable", [False, True], ids=["forward", "seekable"])
+@pytest.mark.parametrize(("spec", "member_name"), _seek_member_params())
+def test_corpus_reader_close_mid_read_closes_the_member_stream(
+    spec: _SeekSpec, member_name: str, seekable: bool, tmp_path: Path
+) -> None:
+    """``reader.close()`` after a member's first byte is read closes that stream, on
+    every enrolled backend and codec path.
+
+    The ``archive-reading`` lifecycle rule: a member stream does not outlive its
+    reader, and a read after the close raises as for any closed stream (``ValueError``,
+    as ``zipfile`` and ``tarfile`` give). With ``zipfile`` underneath, a stored ZIP
+    member had kept serving bytes from its own handle while a deflated one refused.
+    The matrix keeps the corpus's zero-byte members: those are at EOF after the read,
+    not part-read, and still show the close reaching the stream.
+    """
+    with _open_enrolled(spec, tmp_path, seekable_members=seekable) as ar:
+        member = _resolve_file_member(ar, member_name)
+        f = ar.open(member)
+        f.read(1)
+        ar.close()
+        assert f.closed
+        with pytest.raises(ValueError, match="closed file"):
+            f.read(1)
+        with pytest.raises(ArchiveyUsageError, match="closed"):
+            ar.open(member)
+        f.close()  # idempotent
 
 
 # ---------------------------------------------------------------------------

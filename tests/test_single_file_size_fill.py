@@ -259,13 +259,13 @@ def test_gz_inside_a_tar_fills_size_without_isize(tmp_path: Path) -> None:
     with (
         open_archive(tar_path, seekable_members=True) as outer,
         outer.open("inner.txt.gz") as inner_src,
+        open_archive(inner_src) as reader,
     ):
-        with open_archive(inner_src) as reader:
-            member = reader.members()[0]
-            assert "gzip.isize" not in member.extra
-            with reader.open(member) as stream:
-                assert stream.read() == PAYLOAD
-            assert member.size == len(PAYLOAD)
+        member = reader.members()[0]
+        assert "gzip.isize" not in member.extra
+        with reader.open(member) as stream:
+            assert stream.read() == PAYLOAD
+        assert member.size == len(PAYLOAD)
 
 
 # --- gzip.isize --------------------------------------------------------------------

@@ -68,7 +68,7 @@ A floor, not the job. Everything below was verified on `8e88e4f` unless marked.
 ### Census in `src/`
 
 **Re-measured 2026-09-11 against `main` @ `fb88c1b0`.** The counts below replace the ones
-taken at `8e88e4f`: [#324](https://github.com/davitf/archivey/pull/324) merged in between and
+taken at `8e88e4f`: [#324](https://github.com/archivey-dev/archivey/pull/324) merged in between and
 closed two rows outright. See S2 and S3 for what that means — neither is work you still need
 to do.
 

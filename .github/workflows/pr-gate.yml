@@ -1,0 +1,17 @@
+# Reports `CI gate` as passed on every pull request, so a docs-only pull request (which
+# never starts ci.yml) can join the merge queue. The real `CI gate` job lives in ci.yml
+# and runs only for a merge_group, where it needs every CI job. See the comment there.
+name: PR gate
+
+on:
+  pull_request:
+
+permissions: {}
+
+jobs:
+  gate:
+    name: CI gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: echo "The merge queue runs the full CI; this pull-request check only lets the PR join it."

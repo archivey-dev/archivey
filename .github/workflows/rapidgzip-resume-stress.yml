@@ -7,13 +7,13 @@ name: rapidgzip resume stress
 # multi-GB core to the runner's crash handler while the test waited. The cause and the
 # fix are in dev-docs/investigations/rapidgzip-worker-deaths.md.
 #
-# On demand and weekly, not per PR (davitf, PR #570 review, decision D1): the main CI
-# step runs the same tests on every push, and a weekly run catches drift such as a
-# runner image changing core_pattern. It is its *own* workflow on purpose: do **not**
+# On demand and monthly (the 1st), not per PR (its own scheduled workflow per davitf,
+# PR #570 review, decision D1): the main CI step runs the same tests on every push, and a monthly run catches drift such as a runner image
+# changing core_pattern. It is its *own* workflow on purpose: do **not**
 # add this check as a required status check, and do not make the main CI depend on it.
 on:
   schedule:
-    - cron: "17 5 * * 1"
+    - cron: "17 5 1 * *"
   workflow_dispatch:
     inputs:
       iterations:

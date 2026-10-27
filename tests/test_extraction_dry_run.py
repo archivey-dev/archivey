@@ -30,6 +30,7 @@ from archivey import (
     ExtractionLimits,
     ExtractionPolicy,
     ExtractionStatus,
+    MemberType,
     NameCollisionError,
     OnError,
     OverwritePolicy,
@@ -463,7 +464,7 @@ def test_link_targets_that_name_dest_match(streaming: bool, tmp_path: Path) -> N
         }
         calls = iter((False, True))
         real, dry = _both(
-            lambda: io.BytesIO(blobs[next(calls)]),
+            lambda: io.BytesIO(blobs[next(calls)]),  # noqa: B023 - called within this iteration
             work,
             policy=policy,
             open_kwargs={"streaming": streaming},
@@ -494,7 +495,7 @@ def test_link_past_a_missing_name_meets_what_dest_holds(
         }
         calls = iter((False, True))
         real, dry = _both(
-            lambda: io.BytesIO(blobs[next(calls)]),
+            lambda: io.BytesIO(blobs[next(calls)]),  # noqa: B023 - called within this iteration
             work,
             policy=policy,
             populate=lambda dest: _put(
@@ -533,11 +534,10 @@ def test_bodies_are_read_and_verified(tmp_path: Path) -> None:
 def test_limits_still_apply(tmp_path: Path) -> None:
     blob = _tar([("big", "file", b"x" * 4096)])
     dest = tmp_path / "out"
-    with open_archive(io.BytesIO(blob)) as reader:
-        with pytest.raises(ResourceLimitError):
-            reader.extract_all(
-                dest, limits=ExtractionLimits(max_extracted_bytes=1024), dry_run=True
-            )
+    with open_archive(io.BytesIO(blob)) as reader, pytest.raises(ResourceLimitError):
+        reader.extract_all(
+            dest, limits=ExtractionLimits(max_extracted_bytes=1024), dry_run=True
+        )
     _assert_nothing_left(tmp_path, dest)
 
 
@@ -1178,6 +1178,9 @@ def _cli_both(
             "dry run: nothing was written\n",
         ):
             err = err.replace(only_dry, "")
+        if dry:
+            # Only the dry run prints it, so the real half asserts its absence.
+            err = re.sub(r"(?m)^peak use of the reader limits: .*\n", "", err)
         for would, did in (
             ("would extract into", "extracting into"),
             ("would keep in", "kept in"),
@@ -1220,9 +1223,11 @@ def test_cli_dry_run_names_where_a_root_lands_past_a_file(
 def test_destination_that_is_a_file_is_refused(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     dest.write_bytes(b"")
-    with open_archive(io.BytesIO(_tar([("a", "file", 0)]))) as reader:
-        with pytest.raises(ExtractionError, match="not a directory"):
-            reader.extract_all(dest, dry_run=True)
+    with (
+        open_archive(io.BytesIO(_tar([("a", "file", 0)]))) as reader,
+        pytest.raises(ExtractionError, match="not a directory"),
+    ):
+        reader.extract_all(dest, dry_run=True)
     assert list((tmp_path / "tmp").iterdir()) == []
 
 
@@ -1232,9 +1237,8 @@ def test_destination_under_a_file_is_refused(tmp_path: Path) -> None:
     raised = []
     for dry_run in (False, True):
         dest = tmp_path / "afile" / ("dry" if dry_run else "real") / "out"
-        with open_archive(io.BytesIO(blob)) as reader:
-            with pytest.raises(OSError) as caught:
-                reader.extract_all(dest, dry_run=dry_run)
+        with open_archive(io.BytesIO(blob)) as reader, pytest.raises(OSError) as caught:
+            reader.extract_all(dest, dry_run=dry_run)
         raised.append(caught.value)
     real, dry = raised
     if os.name != "nt":
@@ -1314,14 +1318,16 @@ def test_errors_and_warnings_name_dest(
     # The directory is locked before its file is written, so the write fails.
     blob = _tar([("ro", "dir", 0o555), ("ro/f", "file", 0)])
     dest = tmp_path / "out"
-    with caplog.at_level(logging.WARNING, logger="archivey"):
-        with open_archive(io.BytesIO(blob)) as reader:
-            report = reader.extract_all(
-                dest,
-                policy=ExtractionPolicy.TRUSTED,
-                on_error=OnError.CONTINUE,
-                dry_run=True,
-            )
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey"),
+        open_archive(io.BytesIO(blob)) as reader,
+    ):
+        report = reader.extract_all(
+            dest,
+            policy=ExtractionPolicy.TRUSTED,
+            on_error=OnError.CONTINUE,
+            dry_run=True,
+        )
     failed = report.results[-1]
     assert failed.status is ExtractionStatus.FAILED
     assert isinstance(failed.error, PermissionError)
@@ -1330,24 +1336,32 @@ def test_errors_and_warnings_name_dest(
     assert str(dest / "ro") in caplog.text
     assert "archivey-dry-run-" not in caplog.text
 
-    with open_archive(io.BytesIO(blob)) as reader:
-        with pytest.raises(PermissionError) as caught:
-            reader.extract_all(
-                dest,
-                policy=ExtractionPolicy.TRUSTED,
-                on_error=OnError.STOP,
-                dry_run=True,
-            )
+    with (
+        open_archive(io.BytesIO(blob)) as reader,
+        pytest.raises(PermissionError) as caught,
+    ):
+        reader.extract_all(
+            dest,
+            policy=ExtractionPolicy.TRUSTED,
+            on_error=OnError.STOP,
+            dry_run=True,
+        )
     assert str(dest / "ro") in str(caught.value)
     assert "archivey-dry-run-" not in str(caught.value)
     _assert_nothing_left(tmp_path, dest)
 
 
+@pytest.mark.parametrize(
+    "fd_walk",
+    [False, *([True] if dry_run_module._FD_WALK else [])],
+    ids=lambda v: "fd-walk" if v else "path-walk",
+)
 def test_scratch_is_removed_when_the_archive_locks_its_own_directories(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fd_walk: bool
 ) -> None:
     # The directories get their modes when the run ends; the scratch directory is
-    # removed after that.
+    # removed after that, by either walk.
+    monkeypatch.setattr(dry_run_module, "_FD_WALK", fd_walk)
     blob = _tar([("ro/f", "file", 0), ("ro", "dir", 0o555), ("zero", "dir", 0)])
     dest = tmp_path / "out"
     with open_archive(io.BytesIO(blob)) as reader:
@@ -1356,14 +1370,53 @@ def test_scratch_is_removed_when_the_archive_locks_its_own_directories(
     _assert_nothing_left(tmp_path, dest)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="PATH_MAX is a POSIX limit")
+def test_scratch_is_removed_when_its_tree_is_deeper_than_path_max(
+    tmp_path: Path,
+) -> None:
+    # Each directory is reached through a short symlink to it, so every member name
+    # is short while the real paths in the scratch tree are longer than PATH_MAX.
+    # Removing that tree by full path failed with ENAMETOOLONG, and the scratch
+    # directory stayed in the temp directory. The deep part covers the descriptor
+    # walk; a directory down there keeps no mode (its path is too long to set one,
+    # as in a real run). The locked ``ro`` up front covers the chmod: its file
+    # cannot be removed until ``ro`` is opened up. The last links resolve past
+    # PATH_MAX, so the filter refuses them; the members under them still go in under
+    # real directories named ``l``, so the tree stays deeper than PATH_MAX.
+    component = "d" * 250
+    depth = os.pathconf(tmp_path, "PC_PATH_MAX") // len(component) + 2
+    entries: list[tuple[str, str, object]] = [("ro/f", "file", 0), ("ro", "dir", 0o555)]
+    path = ""
+    for _ in range(depth):
+        entries.append((f"{path}{component}", "dir", None))
+        entries.append((f"{path}l", "sym", component))
+        path += "l/"
+    entries.append((f"{path}f", "file", 0))
+    entries.append((path.rstrip("/") + "/" + component, "dir", 0o555))
+    blob = _tar(entries)
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(blob)) as reader:
+        report = reader.extract_all(dest, policy=ExtractionPolicy.TRUSTED, dry_run=True)
+    blocked = [r.member for r in report.results if r.status is ExtractionStatus.BLOCKED]
+    assert blocked
+    assert all(m.type is MemberType.SYMLINK for m in blocked)
+    assert {r.status for r in report.results} == {
+        ExtractionStatus.EXTRACTED,
+        ExtractionStatus.BLOCKED,
+    }
+    _assert_nothing_left(tmp_path, dest)
+
+
 def test_scratch_is_removed_on_abort_and_the_message_names_dest(
     tmp_path: Path,
 ) -> None:
     blob = _tar([("A", "file", 0), ("a", "file", 0)])
     dest = tmp_path / "out"
-    with open_archive(io.BytesIO(blob)) as reader:
-        with pytest.raises(NameCollisionError) as caught:
-            reader.extract_all(dest, abort_on=[AbortOn.NAME_COLLISION], dry_run=True)
+    with (
+        open_archive(io.BytesIO(blob)) as reader,
+        pytest.raises(NameCollisionError) as caught,
+    ):
+        reader.extract_all(dest, abort_on=[AbortOn.NAME_COLLISION], dry_run=True)
     assert display_path(dest / "A") in str(caught.value)
     assert "archivey-dry-run-" not in str(caught.value)
     _assert_nothing_left(tmp_path, dest)
@@ -1391,6 +1444,68 @@ def test_cli_dry_run_writes_nothing(
     assert "dry run, nothing written: 1 extracted" in err
     assert sorted(p.name for p in tmp_path.iterdir()) == ["bundle.tar", "tmp"]
     assert list((tmp_path / "tmp").iterdir()) == []
+
+
+def test_cli_dry_run_reports_peak_use_of_the_reader_limits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    py7zr = pytest.importorskip("py7zr")
+    archive = tmp_path / "a.7z"
+    # Above the 16 MiB dictionary py7zr compresses the archive header with, so the
+    # member's declaration is the largest one checked.
+    filters = [{"id": py7zr.FILTER_LZMA2, "preset": 9}]
+    with py7zr.SevenZipFile(archive, "w", filters=filters) as out:
+        out.writestr(b"x" * 1000, "a.txt")
+    # The dictionary size the LZMA2 coder declares, from its one properties byte.
+    with archivey.open_archive(archive) as reader:
+        (member,) = reader.members()
+        (method,) = member.compression
+        assert method.properties is not None
+        prop = method.properties[0]
+        declared = (2 | (prop & 1)) << (prop // 2 + 11)
+    monkeypatch.chdir(tmp_path)
+    code, err = _cli(["x", "a.7z", "--dry-run", "--hide-progress"])
+    assert code == 0
+    (line,) = [
+        ln for ln in err.splitlines() if ln.startswith("peak use of the reader limits")
+    ]
+    assert f"decoder memory {declared} bytes (" in line
+    assert "LZMA2 dictionary size" in line
+    assert "listing 1 member, " in line
+    # A real run does not print it.
+    code, err = _cli(["x", "a.7z", "-d", "real", "--hide-progress"])
+    assert code == 0
+    assert "peak use of the reader limits" not in err
+
+
+def test_cli_dry_run_reports_key_derivation_rounds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    py7zr = pytest.importorskip("py7zr")
+    pytest.importorskip("cryptography")
+    archive = tmp_path / "a.7z"
+    with py7zr.SevenZipFile(archive, "w", password="pw") as out:  # type: ignore[attr-defined]
+        out.writestr(b"x" * 1000, "a.txt")
+    monkeypatch.chdir(tmp_path)
+    code, err = _cli(["x", "a.7z", "--password", "pw", "--dry-run", "--hide-progress"])
+    assert code == 0
+    (line,) = [
+        ln for ln in err.splitlines() if ln.startswith("peak use of the reader limits")
+    ]
+    # py7zr derives 7zAES keys with 2**19 SHA-256 rounds, once for the one folder.
+    assert f"{2**19} key-derivation rounds" in line
+
+
+def test_cli_dry_run_prints_no_usage_line_when_every_part_is_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with tarfile.open(tmp_path / "a.tar", "w"):
+        pass
+    monkeypatch.chdir(tmp_path)
+    code, err = _cli(["x", "a.tar", "--dry-run", "--hide-progress"])
+    assert code == 0
+    assert "dry run, nothing written: 0 extracted" in err
+    assert "peak use of the reader limits" not in err
 
 
 _SAME_AS_REAL = "same as the real run"  # the hoist line the real run printed, predicted

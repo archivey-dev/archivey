@@ -771,7 +771,9 @@ that is not a `bool` SHALL raise `ArchiveyUsageError` at the call.
 `members` is a selector (names/identities or predicate), not a transform. Streams
 are lazy: unselected/unread members are not opened/decompressed and do not request
 passwords. Yields the original mutable `ArchiveMember` so late-bound fields stay
-visible.
+visible. A yielded stream whose deferred open fails on its first read (a wrong password,
+an unsupported method) SHALL raise the same error object on every later read and SHALL
+NOT try the open again.
 
 Symlink targets stored as member data (ZIP, 7z, RAR3/4) are the one exception, and only
 while `read_link_targets` is `True` (see "Link targets stored as member data are read
@@ -1221,7 +1223,7 @@ class ListingLimits:
 class DecoderLimits:
     max_decoder_memory: int | None = 2 * 2**30
     max_key_derivation_rounds: int | None = 2**25
-    max_ppmd_in_process_input: int | None = 16 * 2**20
+    max_ppmd_held_input: int | None = 16 * 2**20
     UNLIMITED: ClassVar["DecoderLimits"]
 
 @dataclass(frozen=True)
@@ -1276,9 +1278,9 @@ candidate iteration. Under `process_isolation=KNOWN_CRASHES` (the default) and
 "Native decoders run where process_isolation puts them"), where a crash of the native
 decoder (a fault signal such as SIGSEGV, or the Windows status for the same fault) SHALL
 surface as `CorruptionError`. A child killed by SIGKILL, or one that dies allocating the
-member's model, SHALL raise `ResourceLimitError`, as SHALL a member where no child process
+member's model, SHALL raise `ResourceUnavailableError`, as SHALL a member where no child process
 can be started. A child that ends any other way (another signal, a plain exit status)
-SHALL raise `ReadError`, which is not a verdict on the data. `max_ppmd_in_process_input`
+SHALL raise `ReadError`, which is not a verdict on the data. `max_ppmd_held_input`
 SHALL bound the compressed bytes of one PPMd member the process holds to hand to pyppmd
 whole, in the child or, under `process_isolation=NONE`, in-process; a larger member, and
 one whose size is known only once it has been read (a ZIP member with bit 3 set, read from
@@ -1337,10 +1339,11 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 | `detect_format(BytesIO(zlib_bytes))`, then with `always_probe_content=True` | `FormatDetectionError`, then `ZLIB` / `content_probe` |
 | Reader opened with `read_link_targets=False` | No data-stored link target is read by listing or a pass for the reader lifetime |
 | Header-encrypted RAR5 set of four parts, one encryption record repeated, `max_key_derivation_rounds` one round short of key + PswCheck | `ResourceLimitError` at `open_archive`; at exactly key + PswCheck the set lists |
-| 7z PPMd member of 200 KB compressed, no child process possible | `ResourceLimitError` on the first read, naming `process_isolation` |
-| Same member; the child crashes / is killed by SIGKILL / by SIGTERM | `CorruptionError` / `ResourceLimitError` / `ReadError`, not `CorruptionError` |
-| Same member, `process_isolation=NONE`, `max_ppmd_in_process_input=1024` / default | In-process, fed in pieces / held and decoded whole |
-| Valid 7z PPMd member of 8 MiB that pyppmd fed in pieces stops short of, default config | Held, decoded whole in a child, read in full |
+| 7z PPMd member of 200 KB compressed, no child process possible | `ResourceUnavailableError` on the first read, naming `process_isolation` |
+| Same member; the child crashes / is killed by SIGKILL / by SIGTERM | `CorruptionError` / `ResourceUnavailableError` / `ReadError`, not `CorruptionError` |
+| Same member, `process_isolation=NONE`, `max_ppmd_held_input=1024` / default | In-process, fed in pieces / held and decoded whole |
+| Valid 7z PPMd member of 8 MiB (one random 1 MiB block, 8 times), default config | Held, decoded whole in a child, read in full |
+| Same member, `max_ppmd_held_input` of 1 MiB, in a child or with `process_isolation=NONE` | Fed in pieces, read in full |
 | `ArchiveyConfig(process_isolation="none")` | Holds `ProcessIsolation.NONE` |
 | `ArchiveyConfig(process_isolation=ProcessIsolation.NONE, use_rapidgzip=AcceleratorMode.ON)` | `ArchiveyUsageError` at construction |
 | Password list `["wrong", right]`, budget covering only the right candidate's derivations | `ResourceLimitError`, not `EncryptionError`; the list does not continue |
@@ -1493,6 +1496,22 @@ read. The buffer SHALL NOT be refused for its size, because a member flagged as 
 reparse point may turn out to hold ordinary file content. The target parsed from a
 buffer SHALL be held to the same 4096-byte cap, measured in UTF-8.
 
+Data that runs on past the buffer its header declares (the byte after it exists) SHALL
+NOT be read as a link buffer, since Windows returns exactly the header and
+`ReparseDataLength` bytes. The member SHALL be treated as data that is not a link
+buffer: a file-shaped member is re-typed to a `FILE` holding that data, with
+`SYMLINK_TARGET_UNAVAILABLE(reason="reparse_data_unrecognized")`, and its checksum is
+checked when it is read; a directory-shaped member stays a link with no target, with the
+same reason. A read that ends one byte past the buffer and fails its check is damage
+instead (`reason="target_data_damaged"`). This holds for ZIP and 7z, and for a ZIP read
+from a pipe. The pipe pass gives the same answer when its own decode finds a failed
+check after that byte, and it knows the member's size from the directory even when it
+kept no part of a buffer over its bound. When `max_metadata_bytes` makes the pass drop
+the data it keeps for link targets, it keeps whether that data is no buffer as the file
+read reads it, and gives the same answer, except for an encrypted member nobody read,
+whose dropped ciphertext it does not decrypt: that member stays a link with no target
+(`reason="target_data_dropped"`).
+
 A member whose data outruns a declared size under the cap is corrupt, not over-long:
 where the backend verifies data against the declared size (ZIP always, 7z whenever
 checksums are verified), the read SHALL fail with `CorruptionError` on reaching that
@@ -1514,8 +1533,8 @@ outside this requirement: the header parser has already allocated them, and
 | Over-long target under `DiagnosticPolicy.STRICT` | Listing raises `DiagnosticRaisedError` |
 | Over-long target, `extract_all(on_error=CONTINUE)` | That link `FAILED` with `LinkTargetNotFoundError`; other members extract |
 | Reparse buffer whose target is over 4096 UTF-8 bytes | Refused as over-long |
-| Reparse buffer followed by more data | Only the declared buffer and one byte are read |
-| Reparse-flagged member whose data is not a buffer, any size | Re-typed to its fallback with all its content readable; only its header read while listing |
+| Reparse buffer followed by more data | Only the declared buffer and one byte are read; a file-shaped member is a `FILE` with `reason="reparse_data_unrecognized"`, and a read of it checks its CRC; a directory-shaped one stays a link with no target, with the same reason |
+| Reparse-flagged member whose data is not a buffer, any size | A file-shaped member is re-typed to its fallback with all its content readable; a directory-shaped one stays a link with no target; while listing, only the header, the payload it declares and one byte are read (the header and one byte when its tag is no link's) |
 
 ### Requirement: Each member is listed once per reader
 

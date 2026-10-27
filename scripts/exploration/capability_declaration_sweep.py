@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Capability declaration vs observed behaviour, against the declarative corpus.
 
 Evidence for ``dev-docs/investigations/capability-declaration-vs-behaviour.md``.
@@ -185,7 +184,7 @@ def _bin_version(name: str) -> str:
         stripped = "".join(ch for ch in ln.strip() if ch.isprintable())
         if not stripped:
             continue
-        if stripped.startswith("ERROR") or stripped.startswith("Command Line"):
+        if stripped.startswith(("ERROR", "Command Line")):
             continue
         if any(ch.isdigit() for ch in stripped):
             return f"{path} {stripped[:80]}"
@@ -811,19 +810,18 @@ def _measure_row(entry: CorpusEntry, key: str, tmp: Path) -> Row:
     try:
         # Listing/info/access on a fresh open so payload seeks from the
         # seekability probes do not leak into io_stats.
-        with enable_measurement():
-            with open_archive(path, password=pw) as reader:
-                list(reader.members())
-                row.checks.append(_check_listing(reader))
-                row.checks.append(_check_member_count(reader))
-                row.checks.append(_check_is_encrypted(reader, entry))
-                row.checks.append(_check_is_solid(reader))
-                row.checks.append(_check_is_multivolume(reader))
-                row.checks.append(_check_source_path(reader))
-                row.checks.append(_check_access(reader))
-                mech = _check_mechanism(reader, entry, key)
-                if mech is not None:
-                    row.checks.append(mech)
+        with enable_measurement(), open_archive(path, password=pw) as reader:
+            list(reader.members())
+            row.checks.append(_check_listing(reader))
+            row.checks.append(_check_member_count(reader))
+            row.checks.append(_check_is_encrypted(reader, entry))
+            row.checks.append(_check_is_solid(reader))
+            row.checks.append(_check_is_multivolume(reader))
+            row.checks.append(_check_source_path(reader))
+            row.checks.append(_check_access(reader))
+            mech = _check_mechanism(reader, entry, key)
+            if mech is not None:
+                row.checks.append(mech)
         with open_archive(path, password=pw, seekable_members=True) as reader:
             row.checks.append(_check_seekable_opt_in(reader))
         with open_archive(path, password=pw) as reader:
@@ -946,11 +944,11 @@ def compare(current: dict[str, Any], previous: dict[str, Any], out: TextIO) -> i
 def _print_tables(payload: dict[str, Any], out: TextIO) -> None:
     machine = payload["machine"]
     out.write(f"git {machine['git']}  python {machine['python']}  {machine['date']}\n")
-    for gap in payload["registry_not_in_corpus"]:
-        out.write(
-            f"UNTESTED-NO-CORPUS  {gap['format']}  ext={gap['ext']}"
-            f"  support={gap['support']}\n"
-        )
+    out.writelines(
+        f"UNTESTED-NO-CORPUS  {gap['format']}  ext={gap['ext']}"
+        f"  support={gap['support']}\n"
+        for gap in payload["registry_not_in_corpus"]
+    )
     out.write("\n")
     header = f"{'entry':<20} {'key':<12} {'check':<26} {'verdict':<24} observed\n"
     out.write(header)

@@ -84,6 +84,7 @@ from archivey.internal.base_reader import (
     UNREADABLE_LINK_TARGET_ERRORS,
     BaseArchiveReader,
     ReadBackend,
+    SolidRun,
     pass_has_data,
 )
 from archivey.internal.config import (
@@ -95,8 +96,10 @@ from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.hashing import crc32_digest
 from archivey.internal.listing_limits import check_metadata_bytes, text_bytes
-from archivey.internal.logs import backends as backends_logger
-from archivey.internal.logs import integrity as integrity_logger
+from archivey.internal.logs import (
+    backends as backends_logger,
+    integrity as integrity_logger,
+)
 from archivey.internal.naming import (
     emit_member_name_normalized,
     infer_member_name_from_archive,
@@ -133,7 +136,11 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
 from archivey.internal.trailing_scan import first_nonzero_offset
-from archivey.internal.unix_mode import UNIX_FILE_TYPE_MASK, special_file_type
+from archivey.internal.unix_mode import (
+    UNIX_FILE_TYPE_MASK,
+    is_special_file_mode,
+    special_file_type,
+)
 from archivey.internal.windows_reparse import parse_reparse_data
 from archivey.types import (
     EXTRA_IS_REPARSE_POINT,
@@ -156,18 +163,40 @@ _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 _FILE_ATTRIBUTE_UNIX_EXTENSION = 0x8000
 
 
-def _written_on_unix(attrs: int | None) -> bool:
-    """True when 7z's attribute word carries a real Unix mode, file type included.
+def _unix_mode(attrs: int | None) -> int | None:
+    """The Unix ``st_mode`` in 7z's attribute word, or ``None`` when it holds none.
 
-    7-Zip and p7zip writing on Unix, where "Created" is filled from st_ctime, set
-    FILE_ATTRIBUTE_UNIX_EXTENSION (``0x8000``) and put ``st_mode`` in the high word.
-    Neither signal alone identifies the writer: ``0x8000`` is also Windows
-    FILE_ATTRIBUTE_INTEGRITY_STREAM (ReFS), and Windows has attributes above
-    ``0xFFFF`` (PINNED ``0x80000``, which OneDrive sets, and others) that make the
-    high word non-zero. A Windows word never has ``S_IFMT`` bits there, while every
-    Unix ``st_mode`` does, so the file type is the test.
+    Every 7z writer measured on Unix (7-Zip, p7zip and libarchive, and libarchive on
+    Windows) sets FILE_ATTRIBUTE_UNIX_EXTENSION (``0x8000``) and puts the whole
+    ``st_mode``, file type included, in the high word. Neither signal alone
+    identifies one: ``0x8000`` is also Windows FILE_ATTRIBUTE_INTEGRITY_STREAM (ReFS),
+    and Windows attributes above ``0xFFFF`` (PINNED ``0x80000``, which OneDrive sets)
+    make the high word non-zero. A Windows word has no ``S_IFMT`` bits there, while
+    every Unix ``st_mode`` does, so the file type is the test, as in 7-Zip 23.01,
+    which lists ``0xa1ff0020`` as ``lrwxrwxrwx`` without the bit and ``0x01ff8020``
+    with no Unix mode despite it.
+
+    One Windows attribute breaks that: STRICTLY_SEQUENTIAL (``0x20000000``) puts
+    ``S_IFCHR`` in the high word, and 7-Zip lists such a file as ``c---------``. Read
+    as a device, the file could not be extracted, so a special file type (device,
+    FIFO, socket, unknown) counts only with the ``0x8000`` bit that Unix writers set:
+    a high word without the bit is not special. The one Windows word that still gets
+    through is INTEGRITY_STREAM | STRICTLY_SEQUENTIAL from ReFS (``0x20008000``, and
+    ``0x20008020`` with ARCHIVE): it is a char device with mode ``0``, as in 7-Zip,
+    because nothing in the word tells it from a Unix char device with no permissions.
+
+    Every field read from the mode (``mode``, the type, ``create_system``,
+    ``extra["special_file_type"]``, which slot "Created" fills) asks this one test,
+    so no two of them disagree about a record.
     """
-    return attrs is not None and bool((attrs >> 16) & UNIX_FILE_TYPE_MASK)
+    if attrs is None:
+        return None
+    unix_mode = attrs >> 16
+    if not unix_mode & UNIX_FILE_TYPE_MASK:
+        return None
+    if is_special_file_mode(unix_mode) and not attrs & _FILE_ATTRIBUTE_UNIX_EXTENSION:
+        return None
+    return unix_mode
 
 
 def _is_unix_directory(record: SevenZipFileRecord) -> bool:
@@ -177,8 +206,10 @@ def _is_unix_directory(record: SevenZipFileRecord) -> bool:
     which extracts an entry that has data as a regular file. Typing it a directory
     would skip its data on every read without an error.
     """
-    attrs = record.attributes
-    return record.emptystream and attrs is not None and stat.S_ISDIR(attrs >> 16)
+    if not record.emptystream:
+        return False
+    unix_mode = _unix_mode(record.attributes)
+    return unix_mode is not None and stat.S_ISDIR(unix_mode)
 
 
 def _is_windows_reparse_point(attrs: int | None) -> bool:
@@ -189,16 +220,19 @@ def _is_windows_reparse_point(attrs: int | None) -> bool:
     already say `S_IFLNK`. "Flagged as" is the whole claim: the reparse *tag*, which
     separates a junction from a Windows symlink, is in the member's data, not here.
     """
-    return (
-        attrs is not None
-        and not stat.S_ISLNK(attrs >> 16)
-        and bool(attrs & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT)
-    )
+    if attrs is None or not attrs & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT:
+        return False
+    unix_mode = _unix_mode(attrs)
+    return unix_mode is None or not stat.S_ISLNK(unix_mode)
 
 
 # ``\Z``, not ``$``: ``$`` also matches before a final newline, which would strip the
 # suffix from ``name.7z\n`` and leave the newline in the member name.
-_SEVENZIP_STEM_SUFFIX_RE = re.compile(r"\.7z(?:\.\d{3})?\Z", re.IGNORECASE)
+# The part suffix has ``_NUMBERED_VOLUME_RE``'s shape, so ``big.7z.0000001`` (from
+# ``split -d -a 7``) strips too. ``re.ASCII``: see that pattern.
+_SEVENZIP_STEM_SUFFIX_RE = re.compile(
+    r"\.7z(?:\.0*[0-9]{3,6})?\Z", re.IGNORECASE | re.ASCII
+)
 
 
 # The folder settles a wrong key inside the confirm prefix when a REJECTING_CODECS
@@ -527,9 +561,9 @@ class SevenZipReader(BaseArchiveReader):
         del encoding  # 7z stores names as UTF-16LE.
         self._source = source
         self._passwords = passwords or _PasswordCandidates()
-        self._key_cache = SevenZipKeyCache(
-            budget=KeyDerivationBudget(self._config.decoder_limits)
-        )
+        kdf_budget = KeyDerivationBudget(self._config.decoder_limits)
+        self._usage.watch_key_derivation(kdf_budget)
+        self._key_cache = SevenZipKeyCache(budget=kdf_budget)
         self._folder_passwords: dict[int, bytes | None] = {}
         # Folders whose password was accepted on an INCONCLUSIVE confirm: no checksum
         # vouched for the key, so a member stream abandoned before its digest reports
@@ -561,6 +595,7 @@ class SevenZipReader(BaseArchiveReader):
             streaming=streaming,
             seekable=MemberStreams.SEEKABLE in member_streams,
             refuse_input_after_end=True,
+            usage=self._usage,
         )
         if not source.seekable():
             raise StreamNotSeekableError(
@@ -985,7 +1020,10 @@ class SevenZipReader(BaseArchiveReader):
         ``folder_prefix`` is where the member's bytes start in its folder's output,
         computed by :meth:`_build_members`; it stays 0 for a member with no folder.
         """
-        member_type = self._member_type(record)
+        attrs = record.attributes
+        unix_mode = _unix_mode(attrs)
+        special = special_file_type(unix_mode) if unix_mode is not None else None
+        member_type = self._member_type(record, unix_mode, special)
         presented_name = record.filename
         if presented_name == "":
             presented_name = _infer_nameless_member_name(self._archive_name)
@@ -1004,9 +1042,7 @@ class SevenZipReader(BaseArchiveReader):
         hashes: dict[HashAlgorithm, bytes] = {}
         if record.crc32 is not None:
             hashes[HashAlgorithm.CRC32] = crc32_digest(record.crc32)
-        attrs = record.attributes
         reparse_fallback = self._reparse_fallback_type(record)
-        unix_mode = (attrs >> 16) if attrs is not None and attrs >> 16 else None
         mode = stat.S_IMODE(unix_mode) if unix_mode is not None else None
         # Folder/substream indices live on ``_raw``; skip the unused public extra
         # bag so listing-limit accounting does not walk a per-member dict.
@@ -1029,7 +1065,7 @@ class SevenZipReader(BaseArchiveReader):
                 ts_issues.append(issue)
         # A Unix writer (7-Zip, p7zip, libarchive on Linux and macOS) fills
         # "Created" from st_ctime, which ``created`` never holds.
-        written_on_unix = _written_on_unix(attrs)
+        written_on_unix = unix_mode is not None
         if record.creation_time:
             created, issue = filetime_to_datetime(
                 record.creation_time,
@@ -1043,7 +1079,6 @@ class SevenZipReader(BaseArchiveReader):
             if _is_windows_reparse_point(attrs)
             else MemberExtra()
         )
-        special = self._special_file_type(record)
         if special is not None:
             # Whatever the type decided above, the key records what the mode said, so
             # a reparse point that settles or re-types to FILE keeps it (DR-25).
@@ -1122,18 +1157,26 @@ class SevenZipReader(BaseArchiveReader):
             )
         return member
 
-    def _member_type(self, record: SevenZipFileRecord) -> MemberType:
+    def _member_type(
+        self,
+        record: SevenZipFileRecord,
+        unix_mode: int | None,
+        special: SpecialFileType | None,
+    ) -> MemberType:
+        """The type of ``record``, given the :func:`_unix_mode` of its attribute word
+        and the special type (device, FIFO, socket) that mode stores, both computed once
+        by :meth:`_to_member` so the type and the fields beside it cannot disagree.
+        """
         if record.is_anti:
             return MemberType.ANTI
         attrs = record.attributes
         if attrs is not None:
-            unix_mode = attrs >> 16
-            if unix_mode:
+            if unix_mode is not None:
                 if stat.S_ISLNK(unix_mode):
                     return MemberType.SYMLINK
                 if _is_unix_directory(record):
                     return MemberType.DIRECTORY
-                if record.emptystream and self._special_file_type(record) is not None:
+                if record.emptystream and special is not None:
                     # A device, FIFO or socket with no stream (7-Zip and p7zip store
                     # them that way). With a stream, the special mode does not decide
                     # the type, as 7-Zip reads it: the bytes are the content (DR-25),
@@ -1147,26 +1190,6 @@ class SevenZipReader(BaseArchiveReader):
                 # when the data turns out not to be a link buffer.
                 return MemberType.SYMLINK
         return self._member_type_ignoring_reparse(record)
-
-    @staticmethod
-    def _special_file_type(record: SevenZipFileRecord) -> SpecialFileType | None:
-        """The stored special type (device, FIFO, socket) of ``record``, from the Unix
-        mode in its attribute high word, or ``None``.
-
-        Unlike the symlink and directory tests, this needs the ``0x8000`` Unix-extension
-        bit as well as the mode. A Windows attribute above 0xFFFF can land on a low
-        file-type value: STRICTLY_SEQUENTIAL (0x20000000) reads as S_IFCHR, while no
-        defined attribute reaches S_IFDIR (0x4000) or S_IFLNK (0xA000). Misreading a
-        Windows file as a device would make it unextractable, so a high word without the
-        flag is not special.
-        """
-        attrs = record.attributes
-        if attrs is None or not attrs & _FILE_ATTRIBUTE_UNIX_EXTENSION:
-            return None
-        unix_mode = attrs >> 16
-        if not unix_mode:
-            return None
-        return special_file_type(unix_mode)
 
     def _member_type_ignoring_reparse(self, record: SevenZipFileRecord) -> MemberType:
         """What the entry is by everything except the reparse-point attribute bit."""
@@ -1410,6 +1433,20 @@ class SevenZipReader(BaseArchiveReader):
             format_label="7z",
             digest="checksum",
             why="no checksum confirmed the password",
+        )
+
+    def _solid_run(self, member: ArchiveMember) -> SolidRun | None:
+        # Every open() builds its folder's decoder afresh and decodes up to the member.
+        # A member alone in its folder decodes no other member's bytes.
+        raw = member._raw
+        assert isinstance(raw, _MemberRaw)
+        if (
+            raw.folder_index is None
+            or len(self._folder_members.get(raw.folder_index, ())) <= 1
+        ):
+            return None
+        return SolidRun(
+            raw.folder_index, raw.folder_prefix, _member_stream_size(member)
         )
 
     def _member_prefix(self, member: ArchiveMember) -> int:

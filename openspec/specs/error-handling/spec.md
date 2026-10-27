@@ -39,6 +39,7 @@ ArchiveyError(Exception)
 │   ├── NameCollisionError            raised only under abort_on=
 │   └── NameRewrittenError            raised only under abort_on=
 ├── ResourceLimitError
+│   └── ResourceUnavailableError
 ├── UnsupportedFeatureError
 ├── PackageNotInstalledError
 └── DiagnosticRaisedError
@@ -74,6 +75,7 @@ the documentation SHALL NOT tell callers to branch on it.
 | `UnsupportedFeatureError` | The archive uses, or its header appears to use, a recognized feature Archivey does not implement (unsupported ZIP method, unknown 7z coder, a 7z coder graph that is not a tree of chains, a raw CD sector image), or the archive or backend cannot serve a valid request (writing any format, a RAR password with a line break for `unrar`). An unknown method, codec or version id read from a header with no checksum (such as a ZIP method) may instead mean that header is damaged; Archivey cannot tell the two apart and SHALL report it as `UnsupportedFeatureError`, with a message that says a damaged header reads the same way. |
 | `PackageNotInstalledError` | A package or external tool the format or member needs is absent: at open for a format whose backend or single codec is missing (ISO without `pycdlib`), at read for one member's codec. |
 | `ResourceLimitError` | A configured resource limit was exceeded (`ListingLimits` materialization caps, `ExtractionLimits` bomb guards, a `DecoderLimits` cap on archive-declared decoder memory or key-derivation work, or `SpoolLimits`). |
+| `ResourceUnavailableError` | A `ResourceLimitError` subclass: the system did not give a resource and no configured limit was exceeded. A decoder child or helper program ended by SIGKILL, a decoder that `process_isolation` runs only in a child when none can start, a PPMd child that cannot allocate its model. The caller acts differently (retry with more memory, or where processes can start), and catching `ResourceLimitError` still catches it. |
 
 #### Scenario: archive exception matrix
 
@@ -417,6 +419,9 @@ read raises.
 The rewritten message for a limit trip SHALL say the read was stopped by a limit
 rather than that decoding failed, since a decoder-memory refusal stops the read
 before the dictionary is allocated; it still MUST NOT imply that nothing was produced.
+A `ResourceUnavailableError` is not a limit trip: its rewritten message SHALL say the
+system ran short rather than that a limit stopped the read, and SHALL say that partial
+output may already have been produced, since a decoder process can be killed part-way.
 
 **The trigger is provenance, not confidence.** The question this signal answers is "was
 there any evidence besides one probe?", which `DetectionConfidence` does not track:
@@ -483,6 +488,7 @@ A corroborated result keeps today's type, message, and `format_unconfirmed=False
 | Probe-only Brotli result, **compressed-first** (`PROBABLE`), decode fails | Same treatment — stamped. Confidence does not gate the signal |
 | Probe-only **LZMA Alone** result (`PROBABLE`), decode fails | Same treatment — stamped |
 | Probe-only **LZMA Alone** result whose header declares a dictionary over `max_decoder_memory` | `ResourceLimitError`, stamped: `format_unconfirmed is True`; message names unconfirmed identification and a limit stop, not a decode failure; `PROBE_FORMAT_UNCONFIRMED` diagnostic |
+| Extension-only `.lzma` read whose decoder needs a child process, and none can start | `ResourceUnavailableError`, stamped: message says the system ran short rather than that a limit stopped the read, and that partial output may already have been produced |
 | Probe match corroborated by extension, decode fails | Ordinary truncation/corruption message; `format_unconfirmed is False`; no probe-unconfirmed diagnostic. A source the probe declined is not a probe match: a `.br` cut below the completion window falls to the extension-only requirement below |
 | Probe hit upgraded to `TAR_BROTLI` via an inner-TAR header, decode fails | Corroborated: `format_unconfirmed is False` |
 | Probe-only result, decode succeeds | Success; no error and no diagnostic |

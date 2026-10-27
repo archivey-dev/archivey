@@ -194,13 +194,16 @@ ZIP appended to a JPEG is still not found (§5).
 
 **Which probes run.** By default only the probe of a stream format the source's extension
 names: `.lzma`, `.zz`, `.zlib`, `.br`, `.brotli`, their `.tar.` forms, and LZMA Alone for
-`.tlz`, which lzma-utils used before lzip took the name. A source with no name or another
-extension runs no probe. Whenever the name leaves a probe out, even if another one runs,
-the step is recorded as `content_probe` / `NOT_ENABLED_BY_POLICY`.
-`ArchiveyConfig.always_probe_content=True` runs every probe, and `open_stream` always does,
-because its caller already says the source is a compressed stream; there a probe only
-picks the codec. The reason is evidence, not cost: on a nameless source a probe is the
-only evidence, and real files pass it. A scan of a backup drive
+`.tlz`, which lzma-utils used before lzip took the name. A plugin format's probe is keyed
+by the format rather than its stream, because every plugin format shares `UNCOMPRESSED`
+with ZIP, TAR and the rest: it runs only when the extension names that plugin format. A
+source with no name or another extension runs no probe. Whenever the name leaves a probe
+out, even if another one runs, the step is recorded as `content_probe` /
+`NOT_ENABLED_BY_POLICY`. `ArchiveyConfig.always_probe_content=True` runs every probe, and
+`open_stream` always does, because its caller already says the source is a compressed
+stream; there a probe only picks the codec. The reason is evidence, not cost: on a
+nameless source a probe is the only evidence, and real files pass it. A scan of a backup
+drive
 ([`investigations/2026-10-backup-scan.md`](../investigations/2026-10-backup-scan.md))
 found about 27 300 of its 57 390 "archives" through the probes: 26 681 git loose objects,
 435 non-Brotli files claimed as Brotli and 51 non-LZMA files claimed as LZMA Alone. A raw
@@ -413,8 +416,7 @@ three reasons:
 
 The distinction matters to a caller deciding whether a miss means "not an archive" or "not
 found within what I allowed". The invariant a test holds: a receipt over its budget always
-names a step as cut short. The check lives in `tests/detection_cost_util.py`; the library
-never asks it.
+names a step as cut short. The check lives in the tests; the library never asks it.
 
 When `detect_format` follows a stub to its volume, one receipt sums both passes and
 `passes` is 2. The stub's pass is usually the expensive one, a full SFX scan. A receipt
@@ -550,28 +552,28 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
     tests/test_udif.py tests/test_cli.py::test_info_detects_once
 ```
 
-| Claim | Pinned by |
-| --- | --- |
-| The bytes win over the extension, with a conflict that names the winning evidence (§3.3) | `tests/test_detection.py::test_magic_wins_over_conflicting_extension`, `::test_no_warning_when_extension_agrees`, `::test_content_probe_conflict_names_the_probe_not_magic`, `::test_sfx_conflict_names_the_stub_scan` |
-| Extension-only detection is `GUESS` (§2.6) | `::test_extension_only_is_guess`, `::test_unrecognized_extension_and_bytes_raises` |
-| An empty source says it is empty (§2.6) | `::test_empty_source_says_it_is_empty` |
-| zstd skippable frames are walked inside the peek only (§2.1) | `::test_zstd_behind_one_skippable_frame`, `::test_zstd_skippable_frame_larger_than_the_prefix_is_not_claimed`, `::test_zstd_skippable_frames_alone_are_not_a_zstd_claim` |
-| Far magic runs before the probes, and a short source never pays for it (§2.3) | `::test_bootable_iso_is_not_claimed_by_the_content_probe`, `::test_iso_detected_via_extended_window`, `::test_stream_too_short_for_iso_falls_through` |
-| The probe sample is the whole window, and small hits are re-checked whole (§2.5) | `tests/test_probe_completeness_gate.py::test_text_that_decodes_for_256_bytes_is_not_brotli`, `::test_probe_hit_under_the_completion_window_is_checked_whole`, `::test_probe_hit_above_the_completion_window_is_accepted_on_the_window` |
-| Probe-only and extension-only failures are stamped; corroborated ones are not (§2.5, §2.6) | `tests/test_probe_provenance_unconfirmed.py::test_lzma_alone_probable_failure_sets_format_unconfirmed`, `::test_inner_tar_upgrade_is_corroborated_and_probable`, `::test_br_extension_failure_does_not_stamp`, `::test_extension_only_failure_sets_format_unconfirmed`, `::test_confidence_matrix_unchanged_by_provenance` |
-| One decode allowance, shared by every decoding step (§4.1) | `tests/test_detection.py::test_content_probes_share_one_decode_allowance`, `::test_inner_tar_probe_stays_inside_the_decode_budget`, `tests/test_probe_completeness_gate.py::test_completion_the_decode_allowance_cannot_cover_is_recorded` |
-| The budget comes from the config, for every entry point and every internal detection (§4.1, §3.3) | `tests/test_detection.py::test_open_archive_detects_under_the_config_budget`, `::test_format_argument_stub_checks_detect_under_the_config_budget`, `::test_empty_listing_rescan_detects_under_the_config_budget`, `::test_empty_listing_rescan_stays_internal` |
-| A receipt over budget always names a step cut short, for one pass and two (§4.1) | `tests/test_detection_workspace.py::test_over_budget_receipt_always_names_a_cut_short_tier`, `::test_two_pass_receipt_over_budget_also_names_a_cut_short_tier` |
-| A stub-volume detection's receipt keeps the stub pass (§2.7, §4.1) | `tests/test_detection.py::test_stub_volume_fallback_keeps_the_stub_pass_cost` |
-| A path to any volume of a set is detected on the set `open_archive` reads; a gapped set raises `TruncatedError` (§2.7) | `tests/test_volumes.py::test_detect_format_on_any_numbered_part_agrees_with_open_archive`, `::test_detect_format_on_a_rar_continuation_agrees_with_open_archive`, `::test_detect_format_on_a_gapped_numbered_set_raises_truncated`, `::test_detect_format_on_a_lone_first_part_reports_its_bytes` |
-| The detection receipt is not merged into the reader's cost (§4.1) | `::test_detection_receipt_is_not_merged_into_archive_cost` |
-| One forward pass over the prefix. Gzip, ZIP and ISO fetch each byte once and seek backward only to restore the handle. A seekable bzip2 or xz file also reads the 512-byte trailer, then fetches those bytes again when a later tier reads the file (§4.2) | `tests/test_detection_workspace.py::test_seekable_detection_has_zero_backward_seeks`, `::test_seekable_bzip2_rereads_the_trailer_bytes`, `::test_seekable_koly_image_reads_the_trailer_once`, `::test_growing_prefix_fetches_each_byte_once`, `::test_seekable_stream_restored_on_error_path`, `tests/test_udif.py::test_detection_restores_the_stream_position` |
-| A zlib, bzip2 or xz first block with a `koly` trailer is the disk image (§2.4) | `tests/test_udif.py` |
-| A short archive on a pipe the writer keeps open is detected without waiting for the close, and with the answer the whole source gives (§4.3) | `tests/test_pipe_held_open.py` |
-| Detection leaves a non-seekable stream readable by the backend (§4.3) | `tests/test_detection.py::test_peekable_stream_not_consumed` |
-| A directory is decided without reading, with the zero receipt (§2.7) | `::test_detect_format_reports_directory_for_a_directory_path`, `::test_detect_format_directory_carries_a_zero_receipt` |
-| A short 7z hit costs up to the scan window (§2.2) | `tests/test_sfx.py::test_short_7z_hit_scan_cost_is_bounded_by_the_window` |
-| `archivey info` reads the open's detection instead of detecting again (§6) | `tests/test_cli.py::test_info_detects_once` |
+| Claim |
+| --- |
+| The bytes win over the extension, with a conflict that names the winning evidence (§3.3) |
+| Extension-only detection is `GUESS` (§2.6) |
+| An empty source says it is empty (§2.6) |
+| zstd skippable frames are walked inside the peek only (§2.1) |
+| Far magic runs before the probes, and a short source never pays for it (§2.3) |
+| The probe sample is the whole window, and small hits are re-checked whole (§2.5) |
+| Probe-only and extension-only failures are stamped; corroborated ones are not (§2.5, §2.6) |
+| One decode allowance, shared by every decoding step (§4.1) |
+| The budget comes from the config, for every entry point and every internal detection (§4.1, §3.3) |
+| A receipt over budget always names a step cut short, for one pass and two (§4.1) |
+| A stub-volume detection's receipt keeps the stub pass (§2.7, §4.1) |
+| A path to any volume of a set is detected on the set `open_archive` reads; a gapped set raises `TruncatedError` (§2.7) |
+| The detection receipt is not merged into the reader's cost (§4.1) |
+| One forward pass over the prefix. Gzip, ZIP and ISO fetch each byte once and seek backward only to restore the handle. A seekable bzip2 or xz file also reads the 512-byte trailer, then fetches those bytes again when a later tier reads the file (§4.2) |
+| A zlib, bzip2 or xz first block with a `koly` trailer is the disk image (§2.4) |
+| A short archive on a pipe the writer keeps open is detected without waiting for the close, and with the answer the whole source gives (§4.3) |
+| Detection leaves a non-seekable stream readable by the backend (§4.3) |
+| A directory is decided without reading, with the zero receipt (§2.7) |
+| A short 7z hit costs up to the scan window (§2.2) |
+| `archivey info` reads the open's detection instead of detecting again (§6) |
 
 To see what a detection spent, print `info.cost_receipt` and `info.unavailable_tiers` from
 `detect_format(path, config=ArchiveyConfig(detection_budget=FAST_BUDGET))`.

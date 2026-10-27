@@ -139,9 +139,9 @@ def _measure(root: Path | None, scale: str, repeats: int) -> dict[str, object]:
         data = path.read_bytes()
         makers: dict[str, Callable[[], Path | BinaryIO]] = {
             "path": lambda path=path: path,  # type: ignore[misc]  # bind the loop var
-            "file": lambda path=path: open(path, "rb"),  # type: ignore[misc]  # ditto
+            "file": lambda path=path: open(path, "rb"),  # type: ignore[misc]  # ditto  # noqa: SIM115 - the handle outlives this statement; its owner closes it
             "bytesio": lambda data=data: io.BytesIO(data),  # type: ignore[misc]  # ditto
-            "raw": lambda path=path: open(path, "rb", buffering=0),  # type: ignore[misc]  # ditto
+            "raw": lambda path=path: open(path, "rb", buffering=0),  # type: ignore[misc]  # ditto  # noqa: SIM115 - the handle outlives this statement; its owner closes it
         }
         for op_name in _OPS:
             for shape in _SHAPES:

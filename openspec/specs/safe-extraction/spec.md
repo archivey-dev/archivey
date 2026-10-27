@@ -1467,8 +1467,10 @@ keyed off `ExtractionPolicy`, so the same archive yields the same logical outcom
 rules compose with — and never bypass — the non-bypassable path-safety constraints.
 
 **Collision determinism (O2).** Under `STRICT` and `STANDARD`, the coordinator SHALL track
-a `casefold(NFC(path))` key per written destination and treat a second member resolving to
-the same key as an existing destination on **all** platforms. The key is taken on where
+a `casefold(NFC(path))` key per written destination, with a trailing dot or space dropped
+from each segment that has other characters (Win32 trims it, so `foo.` and `foo` are one
+file there), and treat a second member resolving to the same key as an existing
+destination on **all** platforms. The key is taken on where
 the entry physically lands (its parent resolved), so a member written through a
 directory symlink the archive created (`s/f` with `s -> d`) collides with `d/f`. A
 member whose destination holds an entry that no member of this run claimed by key, but that
@@ -1523,7 +1525,8 @@ legitimate archive, so under `STRICT` each path segment's trailing dot/space SHA
 every platform,
 collision-tracked as above, and recorded as `ExtractionResult.presented_name`; a
 segment that is entirely dots/spaces (e.g. `...`) has no portable spelling and SHALL be
-rejected. `STANDARD` and `TRUSTED` SHALL keep the trailing dot/space faithful (written if
+rejected under `STRICT` and `STANDARD` (Win32 would merge `a/.../b` into `a/b`).
+`STANDARD` and `TRUSTED` SHALL otherwise keep the trailing dot/space faithful (written if
 the OS allows).
 
 **Separators.** Under `STRICT` and `STANDARD`, a `\` that a member name keeps as a
@@ -1577,7 +1580,7 @@ rewritten name then collides and is renamed).
 | `longfilename.txt`, then `LONGFI~1.TXT`, on a Windows volume with 8.3 names | Second is a collision event with the first (same file identity); under `REPLACE` the first is revised to `OVERWRITTEN` | Local OS behavior (the second meets a file already there) |
 | NFC `café` and NFD `café` | Treated as a collision on all platforms | Local OS behavior |
 | Member named `NUL` / `COM1` / `COM¹` / `CONIN$` | Rejected on all platforms (typed error) | Written if the OS allows |
-| Trailing dot/space (`foo.`, `foo `) | `STRICT` strips to portable spelling (`foo`), `presented_name="foo."`, `rewrites == {PORTABLE_NAME}`; `STANDARD` keeps faithful | Written if the OS allows |
+| Trailing dot/space (`foo.`, `foo `) | `STRICT` strips to portable spelling (`foo`), `presented_name="foo."`, `rewrites == {PORTABLE_NAME}`; `STANDARD` keeps faithful; either way `foo.` beside `foo` is a collision event on all platforms | Written if the OS allows |
 | Segment of only dots/spaces (`.../x`) | Rejected on all platforms (no portable spelling) | Written if the OS allows |
 | Name containing `:` (`file:hidden`) | Rejected on all platforms | Local OS behavior (NTFS ADS) |
 | TAR name `a\b` | Written as directory `a` and file `b`; `presented_name="a\b"` | Local OS behavior (a file `a\b` on POSIX) |
@@ -1692,22 +1695,25 @@ bytes a real extraction counts for copying a hardlink across a filesystem bounda
 inside `dest` are not counted. And a directory of `dest` gains its owner's read,
 write and search bits in the scratch directory, so a refusal that comes from its
 permissions MAY appear only in a real extraction; a symlink of `dest` that the OS will
-not create there is copied as an empty file; and an entry that cannot be copied (the
-scratch filesystem is full, or the name is too long there) is left out. A `dest` that
-exists and is not a directory SHALL be refused as a real extraction refuses it. A `dest`
-that does not exist SHALL be refused with the error a real extraction gets creating it
-when the nearest part of its path that exists cannot be resolved, is not a directory, or
-cannot be written to. Whether it can be written to is a prediction made with
-`access(2)`, which checks the real user and group ids rather than the effective ones,
-and on Windows it is not made; so a refusal that comes from a process whose real and
-effective ids differ, from a change after the check, or on Windows, MAY appear only in a
-real extraction. File names in errors raised, recorded or logged SHALL be the ones a
-real extraction's errors give, spelled from `dest` as given, as `os.path.abspath`
-spells it, or resolved (a symlink loop already in `dest`), and never the scratch
-directory's, except in the warning that the scratch directory itself could not be
-removed. The scratch directory SHALL be removed before the call returns or raises,
-including when the archive stored modes that make its directories unwritable or its
-files read-only.
+not create there is copied as an empty file; an entry that cannot be copied (the
+scratch filesystem is full, or the name is too long there) is left out; and a path
+whose links expand past `PATH_MAX` cannot be resolved and is refused, so where the
+scratch directory's path and `dest`'s differ in length, a member whose resolution
+passes that limit in only one of them MAY be refused in only one of the two runs. A
+`dest` that exists and is not a directory SHALL be refused as a real extraction
+refuses it. A `dest` that does not exist SHALL be refused with the error a real
+extraction gets creating it when the nearest part of its path that exists cannot be
+resolved, is not a directory, or cannot be written to. Whether it can be written to is a
+prediction made with `access(2)`, which checks the real user and group ids rather than
+the effective ones, and on Windows it is not made; so a refusal that comes from a
+process whose real and effective ids differ, from a change after the check, or on
+Windows, MAY appear only in a real extraction. File names in errors raised, recorded or
+logged SHALL be the ones a real extraction's errors give, spelled from `dest` as given,
+as `os.path.abspath` spells it, or resolved (a symlink loop already in `dest`), and
+never the scratch directory's, except in the warning that the scratch directory itself
+could not be removed. The scratch directory SHALL be removed before the call returns or
+raises, including when the archive stored modes that make its directories unwritable or
+its files read-only.
 
 #### Scenario: dry-run matrix
 

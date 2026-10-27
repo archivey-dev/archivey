@@ -140,9 +140,11 @@ def test_two_archives_concatenated_list_the_first_and_report_the_second() -> Non
 
 def test_strict_policy_refuses_trailing_data() -> None:
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(DiagnosticRaisedError) as ei:
-        with open_archive(io.BytesIO(_stored_7z() + b"JUNK"), config=config) as reader:
-            reader.members()
+    with (
+        pytest.raises(DiagnosticRaisedError) as ei,
+        open_archive(io.BytesIO(_stored_7z() + b"JUNK"), config=config) as reader,
+    ):
+        reader.members()
     assert ei.value.diagnostic.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
     assert isinstance(ei.value.diagnostic.context, ArchiveEofContext)
     assert ei.value.diagnostic.context.observed_bytes == 0

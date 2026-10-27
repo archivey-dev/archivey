@@ -521,6 +521,7 @@ if caught:
             capture_output=True,
             text=True,
             encoding="utf-8",
+            check=False,
         )
         assert proc.returncode == 0, proc.stdout + proc.stderr
 
@@ -592,7 +593,7 @@ if caught:
 
                 def worker(info: zipfile.ZipInfo) -> None:
                     try:
-                        barrier.wait(timeout=5)
+                        barrier.wait(timeout=5)  # noqa: B023 - called within this iteration
                         with zf._lock:
                             fp = zf.fp
                             assert fp is not None
@@ -622,8 +623,8 @@ if caught:
                         )
                         assert data == payloads[info.filename]
                     except BaseException as exc:  # noqa: BLE001
-                        with err_lock:
-                            errors.append(exc)
+                        with err_lock:  # noqa: B023 - called within this iteration
+                            errors.append(exc)  # noqa: B023 - called within this iteration
 
                 threads = [
                     threading.Thread(target=worker, args=(info,)) for info in infos

@@ -24,7 +24,7 @@ notice = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = notice
 _spec.loader.exec_module(notice)
 
-REPO = "davitf/archivey"
+REPO = "archivey-dev/archivey"
 HEAD = "a" * 40
 NOW = datetime(2026, 10, 16, 13, 0, tzinfo=UTC)
 LONG_AGO = NOW - timedelta(hours=2)

@@ -30,7 +30,7 @@ member access via ``_drive_pass_streams(close_previous=True)``, so no public
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import BinaryIO
+from typing import BinaryIO, Self
 
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 
@@ -225,7 +225,7 @@ class SolidBlockReader:
         if self._close_block:
             self._block.close()
 
-    def __enter__(self) -> SolidBlockReader:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc: object) -> None:

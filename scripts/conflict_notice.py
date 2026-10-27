@@ -129,7 +129,7 @@ def _gh_list(path: str) -> list[dict]:
 
 
 def _parse_time(text: str) -> datetime:
-    return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    return datetime.fromisoformat(text)
 
 
 def label_added_at(events: list[dict]) -> datetime | None:

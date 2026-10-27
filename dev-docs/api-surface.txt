@@ -1,0 +1,1131 @@
+# The public API surface, written by scripts/api_surface.py --write.
+# tests/test_api_surface.py fails when this file is stale. Do not edit it by hand.
+module archivey
+constant archivey.ARCHIVE_INTEGRITY_CODES: frozenset
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.ARCHIVE_TRAILING_DATA
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.ARCHIVE_UNLISTED_DATA
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.DIGEST_UNVERIFIABLE
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_LINK_DATA_IGNORED
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_BIDI_CONTROL
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_NORMALIZED
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_TIMESTAMP_INVALID
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.SCAN_DIRECTORY_VANISHED
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.SCAN_ENTRY_VANISHED
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.SEEK_INDEX_DEGRADED
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+class archivey.AbortOn(StrEnum)
+enum archivey.AbortOn
+value archivey.AbortOn.BLOCKED_MEMBER = 'blocked_member'
+value archivey.AbortOn.NAME_COLLISION = 'name_collision'
+value archivey.AbortOn.NAME_SANITIZED = 'name_sanitized'
+class archivey.AcceleratorMode(Enum)
+enum archivey.AcceleratorMode
+value archivey.AcceleratorMode.AUTO = 'auto'
+value archivey.AcceleratorMode.ON = 'on'
+value archivey.AcceleratorMode.OFF = 'off'
+method archivey.AcceleratorMode.enabled_for(self, *, seekable: bool, available: bool, input_size: int | None = None, min_size: int | None = None) -> bool
+class archivey.AccessCost(Enum)
+enum archivey.AccessCost
+value archivey.AccessCost.DIRECT = 'direct'
+value archivey.AccessCost.SOLID = 'solid'
+class archivey.ArchiveFormat()
+init archivey.ArchiveFormat(container: ContainerFormat | PluginContainer, stream: StreamFormat) -> None
+field archivey.ArchiveFormat.container: ContainerFormat | PluginContainer
+field archivey.ArchiveFormat.stream: StreamFormat
+attribute archivey.ArchiveFormat.BROTLI = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.BZ2 = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.DIRECTORY = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.DMG = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.GZ = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.ISO = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.LZ4 = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.LZIP = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.LZMA_ALONE = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.RAR = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.SEVEN_Z = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.TAR = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.TAR_BZ2 = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.TAR_GZ = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.TAR_LZ4 = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.TAR_XZ = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.TAR_ZST = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.UNKNOWN = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.XZ = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.Z = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.ZIP = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.ZLIB = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.ZST = ArchiveFormat(...)
+property archivey.ArchiveFormat.display_name: str
+method archivey.ArchiveFormat.file_extension(self) -> str
+class archivey.ArchiveInfo()
+init archivey.ArchiveInfo(format: ArchiveFormat, format_version: str | None, is_solid: bool, member_count: int | None, comment: str | None, is_encrypted: bool, is_multivolume: bool, cost: CostReceipt, extra: ArchiveInfoExtra = <factory>) -> None
+field archivey.ArchiveInfo.comment: str | None
+field archivey.ArchiveInfo.cost: CostReceipt
+field archivey.ArchiveInfo.extra: ArchiveInfoExtra = <factory>
+field archivey.ArchiveInfo.format: ArchiveFormat
+field archivey.ArchiveInfo.format_version: str | None
+field archivey.ArchiveInfo.is_encrypted: bool
+field archivey.ArchiveInfo.is_multivolume: bool
+field archivey.ArchiveInfo.is_solid: bool
+field archivey.ArchiveInfo.member_count: int | None
+class archivey.ArchiveInfoExtra(dict)
+class archivey.ArchiveMember()
+init archivey.ArchiveMember(type: MemberType, name: str, raw_name: bytes | None = None, size: int | None = None, compressed_size: int | None = None, modified: datetime | None = None, accessed: datetime | None = None, created: datetime | None = None, ctime: datetime | None = None, mode: int | None = None, uid: int | None = None, gid: int | None = None, uname: str | None = None, gname: str | None = None, link_target: str | None = None, link_target_member: ArchiveMember | None = None, compression: tuple[CompressionMethod, ...] = <factory>, is_encrypted: bool = False, is_current: bool = True, is_sparse: bool = False, comment: str | None = None, create_system: CreateSystem | None = None, windows_attrs: int | None = None, hashes: Mapping[HashAlgorithm, bytes] = <factory>, extra: MemberExtra = <factory>) -> None
+field archivey.ArchiveMember.accessed: datetime | None = None
+field archivey.ArchiveMember.comment: str | None = None
+field archivey.ArchiveMember.compressed_size: int | None = None
+field archivey.ArchiveMember.compression: tuple[CompressionMethod, ...] = <factory>
+field archivey.ArchiveMember.create_system: CreateSystem | None = None
+field archivey.ArchiveMember.created: datetime | None = None
+field archivey.ArchiveMember.ctime: datetime | None = None
+field archivey.ArchiveMember.extra: MemberExtra = <factory>
+field archivey.ArchiveMember.gid: int | None = None
+field archivey.ArchiveMember.gname: str | None = None
+field archivey.ArchiveMember.hashes: Mapping[HashAlgorithm, bytes] = <factory>
+field archivey.ArchiveMember.is_current: bool = True
+field archivey.ArchiveMember.is_encrypted: bool = False
+field archivey.ArchiveMember.is_sparse: bool = False
+field archivey.ArchiveMember.link_target: str | None = None
+field archivey.ArchiveMember.link_target_member: ArchiveMember | None = None
+field archivey.ArchiveMember.mode: int | None = None
+field archivey.ArchiveMember.modified: datetime | None = None
+field archivey.ArchiveMember.name: str
+field archivey.ArchiveMember.raw_name: bytes | None = None
+field archivey.ArchiveMember.size: int | None = None
+field archivey.ArchiveMember.type: MemberType
+field archivey.ArchiveMember.uid: int | None = None
+field archivey.ArchiveMember.uname: str | None = None
+field archivey.ArchiveMember.windows_attrs: int | None = None
+property archivey.ArchiveMember.diagnostics: tuple[Diagnostic, ...]
+property archivey.ArchiveMember.is_anti: bool
+property archivey.ArchiveMember.is_dir: bool
+property archivey.ArchiveMember.is_file: bool
+property archivey.ArchiveMember.is_junction: bool
+property archivey.ArchiveMember.is_link: bool
+property archivey.ArchiveMember.is_other: bool
+property archivey.ArchiveMember.is_reparse_point: bool
+property archivey.ArchiveMember.link_target_unrecorded: bool
+property archivey.ArchiveMember.member_id: int
+property archivey.ArchiveMember.member_state_final: bool
+method archivey.ArchiveMember.modified_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None
+method archivey.ArchiveMember.replace(self, **kwargs: object) -> ArchiveMember
+class archivey.ArchiveReader(ForwardArchiveReader)
+method archivey.ArchiveReader.close(self) -> None
+property archivey.ArchiveReader.cost: CostReceipt
+property archivey.ArchiveReader.diagnostics: DiagnosticSummary
+method archivey.ArchiveReader.extract_all(self, dest: str | Path, *, members: MemberSelector = None, filter: MemberFilter | None = None, policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT, overwrite: OverwritePolicy | OverwritePolicyStr = OverwritePolicy.ERROR, on_error: OnError | OnErrorStr = OnError.STOP, abort_on: Collection[AbortOn | AbortOnStr] = (), on_progress: Callable[[ExtractionProgress], None] | None = None, limits: ExtractionLimits | None = None, dry_run: bool = False) -> ExtractionReport
+property archivey.ArchiveReader.format: ArchiveFormat
+property archivey.ArchiveReader.format_info: FormatInfo | None
+method archivey.ArchiveReader.get(self, name: str, default: ArchiveMember | None = None) -> ArchiveMember | None
+property archivey.ArchiveReader.info: ArchiveInfo
+method archivey.ArchiveReader.members(self) -> list[ArchiveMember]
+method archivey.ArchiveReader.members_report(self) -> MemberListReport
+method archivey.ArchiveReader.members_report_if_available(self) -> MemberListReport | None
+method archivey.ArchiveReader.open(self, member: str | ArchiveMember) -> ArchiveStream
+method archivey.ArchiveReader.read(self, member: str | ArchiveMember) -> bytes
+method archivey.ArchiveReader.stream_members(self, members: MemberSelector = None, *, file_copy_streams: bool = True) -> MemberPass[tuple[ArchiveMember, ArchiveStream | None]]
+class archivey.ArchiveStream(ReadOnlyIOStream)
+init archivey.ArchiveStream(open_fn: Callable[[], BinaryIO], *, translate: ExceptionTranslator, stamp: ErrorStamp | None = None, lazy: bool = False, seekable: bool = True, rewind_warning: RewindWarning | None = None, size: int | None = None, collector: DiagnosticCollector | None = None, on_close: CloseHook | None = None, expected_hashes: Mapping[HashAlgorithm, bytes] | None = None, expected_size: int | None = None, digest_transforms: Mapping[HashAlgorithm, Callable[[bytes], bytes]] | None = None, verify_member: ArchiveMember | None = None, end_check: Callable[[int], None] | None = None, fill_size: bool = False, archive_name: str | None = None, verifier: MemberVerifier | None = None, member_name: str | None = None, repeat_verdict: bool = True, checks_content: bool = False, custom_digests: CustomDigests | None = None, bounded: bool = False) -> None
+method archivey.ArchiveStream.close(self) -> None
+property archivey.ArchiveStream.diagnostics: DiagnosticSummary
+property archivey.ArchiveStream.mode: str
+property archivey.ArchiveStream.name: str
+method archivey.ArchiveStream.nearest_resume_offset(self, target: int) -> int | None
+method archivey.ArchiveStream.read(self, n: int | None = -1, /) -> bytes
+method archivey.ArchiveStream.read_ahead(self, need: int, n: int, /) -> bytes
+method archivey.ArchiveStream.readable(self) -> bool
+method archivey.ArchiveStream.readall(self) -> bytes
+method archivey.ArchiveStream.readinto(self, b: WriteableBuffer, /) -> int
+method archivey.ArchiveStream.seek(self, offset: int, whence: int = 0, /) -> int
+method archivey.ArchiveStream.seekable(self) -> bool
+property archivey.ArchiveStream.size: int | None
+method archivey.ArchiveStream.tell(self, /) -> int
+property archivey.ArchiveStream.verifiable: Verification
+property archivey.ArchiveStream.verified: Verification
+method archivey.ArchiveStream.writable(self) -> bool
+method archivey.ArchiveStream.write(self, b: object, /) -> int
+class archivey.ArchiveyConfig()
+init archivey.ArchiveyConfig(use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO, use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO, process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES, zip_unflagged_fallback_encoding: str = 'cp437', rar_allow_glob_member_concatenation: bool = False, rar_decompressor: RarDecompressor = RarDecompressor.AUTO, read_link_targets: bool = True, extraction_limits: ExtractionLimits = ExtractionLimits(...), listing_limits: ListingLimits = ListingLimits(...), decoder_limits: DecoderLimits = DecoderLimits(...), spool_limits: SpoolLimits = SpoolLimits(...), detection_budget: DetectionBudget = DetectionBudget(...), always_probe_content: bool = False, diagnostic_policy: DiagnosticPolicy = <factory>, max_retained_diagnostic_references: int = 256, on_diagnostic: OnDiagnostic | None = None) -> None
+field archivey.ArchiveyConfig.always_probe_content: bool = False
+field archivey.ArchiveyConfig.decoder_limits: DecoderLimits = DecoderLimits(...)
+field archivey.ArchiveyConfig.detection_budget: DetectionBudget = DetectionBudget(...)
+field archivey.ArchiveyConfig.diagnostic_policy: DiagnosticPolicy = <factory>
+field archivey.ArchiveyConfig.extraction_limits: ExtractionLimits = ExtractionLimits(...)
+field archivey.ArchiveyConfig.listing_limits: ListingLimits = ListingLimits(...)
+field archivey.ArchiveyConfig.max_retained_diagnostic_references: int = 256
+field archivey.ArchiveyConfig.on_diagnostic: OnDiagnostic | None = None
+field archivey.ArchiveyConfig.process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES
+field archivey.ArchiveyConfig.rar_allow_glob_member_concatenation: bool = False
+field archivey.ArchiveyConfig.rar_decompressor: RarDecompressor = RarDecompressor.AUTO
+field archivey.ArchiveyConfig.read_link_targets: bool = True
+field archivey.ArchiveyConfig.spool_limits: SpoolLimits = SpoolLimits(...)
+field archivey.ArchiveyConfig.use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
+field archivey.ArchiveyConfig.use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
+field archivey.ArchiveyConfig.zip_unflagged_fallback_encoding: str = 'cp437'
+class archivey.ArchiveyError(Exception)
+init archivey.ArchiveyError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+class archivey.ArchiveyUsageError(Exception)
+init archivey.ArchiveyUsageError(message: str, *, refused_member_type: MemberType | None = None) -> None
+class archivey.CompressionAlgorithm(Enum)
+open-enum archivey.CompressionAlgorithm
+value archivey.CompressionAlgorithm.STORED = 'stored'
+value archivey.CompressionAlgorithm.DEFLATE = 'deflate'
+value archivey.CompressionAlgorithm.DEFLATE64 = 'deflate64'
+value archivey.CompressionAlgorithm.BZIP2 = 'bzip2'
+value archivey.CompressionAlgorithm.LZMA = 'lzma'
+value archivey.CompressionAlgorithm.LZMA2 = 'lzma2'
+value archivey.CompressionAlgorithm.ZSTD = 'zstd'
+value archivey.CompressionAlgorithm.LZ4 = 'lz4'
+value archivey.CompressionAlgorithm.BROTLI = 'brotli'
+value archivey.CompressionAlgorithm.PPMD = 'ppmd'
+value archivey.CompressionAlgorithm.BCJ = 'bcj'
+value archivey.CompressionAlgorithm.BCJ2 = 'bcj2'
+value archivey.CompressionAlgorithm.DELTA = 'delta'
+value archivey.CompressionAlgorithm.RAR = 'rar'
+value archivey.CompressionAlgorithm.UNKNOWN = 'unknown'
+class archivey.CompressionMethod()
+init archivey.CompressionMethod(algo: CompressionAlgorithm, level: int | None = None, properties: bytes | None = None) -> None
+field archivey.CompressionMethod.algo: CompressionAlgorithm
+field archivey.CompressionMethod.level: int | None = None
+field archivey.CompressionMethod.properties: bytes | None = None
+class archivey.ContainerFormat(StrEnum)
+enum archivey.ContainerFormat
+value archivey.ContainerFormat.ZIP = 'zip'
+value archivey.ContainerFormat.TAR = 'tar'
+value archivey.ContainerFormat.RAR = 'rar'
+value archivey.ContainerFormat.SEVEN_Z = '7z'
+value archivey.ContainerFormat.ISO = 'iso'
+value archivey.ContainerFormat.DMG = 'dmg'
+value archivey.ContainerFormat.DIRECTORY = 'directory'
+value archivey.ContainerFormat.RAW_STREAM = 'raw_stream'
+value archivey.ContainerFormat.UNKNOWN = 'unknown'
+class archivey.CorruptionError(ReadError)
+init archivey.CorruptionError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+class archivey.CostReceipt()
+init archivey.CostReceipt(listing_cost: ListingCost, access_cost: AccessCost, stream_capability: StreamCapability, solid_block_count: int | None = None, notes: tuple[str, ...] = <factory>) -> None
+field archivey.CostReceipt.access_cost: AccessCost
+field archivey.CostReceipt.listing_cost: ListingCost
+field archivey.CostReceipt.notes: tuple[str, ...] = <factory>
+field archivey.CostReceipt.solid_block_count: int | None = None
+field archivey.CostReceipt.stream_capability: StreamCapability
+class archivey.CreateSystem(Enum)
+enum archivey.CreateSystem
+value archivey.CreateSystem.FAT = 0
+value archivey.CreateSystem.AMIGA = 1
+value archivey.CreateSystem.OPENVMS = 2
+value archivey.CreateSystem.UNIX = 3
+value archivey.CreateSystem.VM_CMS = 4
+value archivey.CreateSystem.ATARI_ST = 5
+value archivey.CreateSystem.OS2_HPFS = 6
+value archivey.CreateSystem.MACINTOSH = 7
+value archivey.CreateSystem.Z_SYSTEM = 8
+value archivey.CreateSystem.CPM = 9
+value archivey.CreateSystem.WINDOWS_NTFS = 10
+value archivey.CreateSystem.MVS = 11
+value archivey.CreateSystem.VSE = 12
+value archivey.CreateSystem.ACORN_RISC = 13
+value archivey.CreateSystem.VFAT = 14
+value archivey.CreateSystem.ALTERNATE_MVS = 15
+value archivey.CreateSystem.BEOS = 16
+value archivey.CreateSystem.TANDEM = 17
+value archivey.CreateSystem.OS_400 = 18
+value archivey.CreateSystem.OS_X_DARWIN = 19
+value archivey.CreateSystem.UNKNOWN = 255
+constant archivey.DEFAULT_ARCHIVEY_CONFIG = ArchiveyConfig(...)
+class archivey.DecoderLimits()
+init archivey.DecoderLimits(max_decoder_memory: int | None = 2147483648, max_key_derivation_rounds: int | None = 33554432, max_ppmd_held_input: int | None = 16777216) -> None
+field archivey.DecoderLimits.max_decoder_memory: int | None = 2147483648
+field archivey.DecoderLimits.max_key_derivation_rounds: int | None = 33554432
+field archivey.DecoderLimits.max_ppmd_held_input: int | None = 16777216
+attribute archivey.DecoderLimits.UNLIMITED = DecoderLimits(...)
+class archivey.DetectionConfidence(Enum)
+enum archivey.DetectionConfidence
+value archivey.DetectionConfidence.CERTAIN = 'certain'
+value archivey.DetectionConfidence.PROBABLE = 'probable'
+value archivey.DetectionConfidence.GUESS = 'guess'
+class archivey.Diagnostic()
+init archivey.Diagnostic(occurrence_id: str, code: DiagnosticCode, message: str, context: DiagnosticContext) -> None
+field archivey.Diagnostic.code: DiagnosticCode
+field archivey.Diagnostic.context: DiagnosticContext
+field archivey.Diagnostic.message: str
+field archivey.Diagnostic.occurrence_id: str
+method archivey.Diagnostic.to_dict(self) -> dict[str, object]
+class archivey.DiagnosticCode(StrEnum)
+open-enum archivey.DiagnosticCode
+value archivey.DiagnosticCode.MEMBER_NAME_NORMALIZED = 'member_name_normalized'
+value archivey.DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED = 'member_name_encoding_inferred'
+value archivey.DiagnosticCode.MEMBER_NAME_BIDI_CONTROL = 'member_name_bidi_control'
+value archivey.DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER = 'member_name_zero_width_character'
+value archivey.DiagnosticCode.MEMBER_NAME_INVISIBLE_CHARACTER = 'member_name_invisible_character'
+value archivey.DiagnosticCode.FORMAT_EXTENSION_CONFLICT = 'format_extension_conflict'
+value archivey.DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY = 'explicit_format_listed_empty'
+value archivey.DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED = 'extension_format_unconfirmed'
+value archivey.DiagnosticCode.PROBE_FORMAT_UNCONFIRMED = 'probe_format_unconfirmed'
+value archivey.DiagnosticCode.EMPTY_ARCHIVE = 'empty_archive'
+value archivey.DiagnosticCode.ENCODING_ARGUMENT_UNUSED = 'encoding_argument_unused'
+value archivey.DiagnosticCode.PASSWORD_ARGUMENT_UNUSED = 'password_argument_unused'
+value archivey.DiagnosticCode.SCAN_DIRECTORY_VANISHED = 'scan_directory_vanished'
+value archivey.DiagnosticCode.SCAN_ENTRY_VANISHED = 'scan_entry_vanished'
+value archivey.DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING = 'archive_eof_marker_missing'
+value archivey.DiagnosticCode.ARCHIVE_TRAILING_DATA = 'archive_trailing_data'
+value archivey.DiagnosticCode.ARCHIVE_UNLISTED_DATA = 'archive_unlisted_data'
+value archivey.DiagnosticCode.MEMBER_TIMESTAMP_INVALID = 'member_timestamp_invalid'
+value archivey.DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED = 'member_header_record_skipped'
+value archivey.DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE = 'symlink_target_unavailable'
+value archivey.DiagnosticCode.DIGEST_UNVERIFIABLE = 'digest_unverifiable'
+value archivey.DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED = 'member_directory_data_ignored'
+value archivey.DiagnosticCode.MEMBER_LINK_DATA_IGNORED = 'member_link_data_ignored'
+value archivey.DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED = 'encrypted_member_unverified'
+value archivey.DiagnosticCode.SEEK_INDEX_DEGRADED = 'seek_index_degraded'
+value archivey.DiagnosticCode.STREAM_REWIND_REDECOMPRESSES = 'stream_rewind_redecompresses'
+value archivey.DiagnosticCode.MEMBER_SELECTOR_UNMATCHED = 'member_selector_unmatched'
+value archivey.DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA = 'member_special_file_has_data'
+value archivey.DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS = 'member_local_name_differs'
+value archivey.DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS = 'member_local_method_differs'
+value archivey.DiagnosticCode.MEMBER_LOCAL_CRC_USED = 'member_local_crc_used'
+value archivey.DiagnosticCode.ARCHIVE_OFFSET_WRAPPED = 'archive_offset_wrapped'
+value archivey.DiagnosticCode.MEMBER_SIZE_WRAPPED = 'member_size_wrapped'
+value archivey.DiagnosticCode.MEMBER_TYPE_UNKNOWN = 'member_type_unknown'
+alias archivey.DiagnosticContext = NameNormalizationContext | NameEncodingContext | MemberNameControlsContext | UnusedArgumentContext | EmptyArchiveContext | UnconfirmedFormatContext | FormatConflictContext | ScanRaceContext | ArchiveEofContext | UnlistedDataContext | MemberTimestampContext | MemberHeaderRecordContext | SymlinkTargetContext | DigestContext | DirectoryDataContext | LinkDataContext | EncryptedVerificationContext | SeekIndexContext | StreamRewindContext | SelectorUnmatchedContext | SpecialFileDataContext | LocalHeaderContext | OffsetWrapContext | SizeWrapContext | UnknownMemberTypeContext
+class archivey.DiagnosticPolicy()
+init archivey.DiagnosticPolicy(*, ignore: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None, raise_on: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None) -> None
+field archivey.DiagnosticPolicy.ignore: frozenset[DiagnosticCode]
+field archivey.DiagnosticPolicy.raise_on: frozenset[DiagnosticCode]
+attribute archivey.DiagnosticPolicy.PEDANTIC = DiagnosticPolicy(...)
+attribute archivey.DiagnosticPolicy.STRICT = DiagnosticPolicy(...)
+class archivey.DiagnosticRaisedError(ArchiveyError)
+init archivey.DiagnosticRaisedError(message: str, *, diagnostic: Diagnostic, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None) -> None
+class archivey.DiagnosticSummary()
+init archivey.DiagnosticSummary(total_count: int, counts: Mapping[DiagnosticCode, int] = <factory>, retained: tuple[Diagnostic, ...] = (), dropped_count: int = 0) -> None
+field archivey.DiagnosticSummary.counts: Mapping[DiagnosticCode, int] = <factory>
+field archivey.DiagnosticSummary.dropped_count: int = 0
+field archivey.DiagnosticSummary.retained: tuple[Diagnostic, ...] = ()
+field archivey.DiagnosticSummary.total_count: int
+staticmethod archivey.DiagnosticSummary.empty() -> DiagnosticSummary
+class archivey.EncryptionError(ReadError)
+init archivey.EncryptionError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+class archivey.ExtractionError(ArchiveyError)
+init archivey.ExtractionError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+class archivey.ExtractionLimits()
+init archivey.ExtractionLimits(max_extracted_bytes: int | None = 2147483648, max_ratio: float | None = 1000.0, ratio_activation_threshold: int = 5242880, max_entries: int | None = 262144, live_ratio_activation_threshold: int = 268435456) -> None
+field archivey.ExtractionLimits.live_ratio_activation_threshold: int = 268435456
+field archivey.ExtractionLimits.max_entries: int | None = 262144
+field archivey.ExtractionLimits.max_extracted_bytes: int | None = 2147483648
+field archivey.ExtractionLimits.max_ratio: float | None = 1000.0
+field archivey.ExtractionLimits.ratio_activation_threshold: int = 5242880
+attribute archivey.ExtractionLimits.UNLIMITED = ExtractionLimits(...)
+class archivey.ExtractionPolicy(Enum)
+enum archivey.ExtractionPolicy
+value archivey.ExtractionPolicy.STRICT = 'strict'
+value archivey.ExtractionPolicy.STANDARD = 'standard'
+value archivey.ExtractionPolicy.TRUSTED = 'trusted'
+class archivey.ExtractionProgress()
+init archivey.ExtractionProgress(member: ArchiveMember, bytes_written: int, total_bytes_estimated: int | None, members_done: int, members_total: int | None, member_bytes_written: int, members_extracted: int, members_blocked: int) -> None
+field archivey.ExtractionProgress.bytes_written: int
+field archivey.ExtractionProgress.member: ArchiveMember
+field archivey.ExtractionProgress.member_bytes_written: int
+field archivey.ExtractionProgress.members_blocked: int
+field archivey.ExtractionProgress.members_done: int
+field archivey.ExtractionProgress.members_extracted: int
+field archivey.ExtractionProgress.members_total: int | None
+field archivey.ExtractionProgress.total_bytes_estimated: int | None
+class archivey.ExtractionReport()
+init archivey.ExtractionReport(results: tuple[ExtractionResult, ...], diagnostics: DiagnosticSummary) -> None
+field archivey.ExtractionReport.diagnostics: DiagnosticSummary
+field archivey.ExtractionReport.results: tuple[ExtractionResult, ...]
+class archivey.ExtractionResult()
+init archivey.ExtractionResult(member: ArchiveMember, path: Path | None, status: ExtractionStatus, error: ArchiveyError | OSError | None = None, requested_path: Path | None = None, presented_name: str | None = None, rewrites: frozenset[NameRewrite] = {}, failure_group_id: str | None = None, failure_group_size: int | None = None, collided_with: Path | None = None, kept_mode: int | None = None) -> None
+field archivey.ExtractionResult.collided_with: Path | None = None
+field archivey.ExtractionResult.error: ArchiveyError | OSError | None = None
+field archivey.ExtractionResult.failure_group_id: str | None = None
+field archivey.ExtractionResult.failure_group_size: int | None = None
+field archivey.ExtractionResult.kept_mode: int | None = None
+field archivey.ExtractionResult.member: ArchiveMember
+field archivey.ExtractionResult.path: Path | None
+field archivey.ExtractionResult.presented_name: str | None = None
+field archivey.ExtractionResult.requested_path: Path | None = None
+field archivey.ExtractionResult.rewrites: frozenset[NameRewrite] = {}
+field archivey.ExtractionResult.status: ExtractionStatus
+class archivey.ExtractionStatus(StrEnum)
+enum archivey.ExtractionStatus
+value archivey.ExtractionStatus.EXTRACTED = 'extracted'
+value archivey.ExtractionStatus.NOT_OVERWRITTEN = 'not_overwritten'
+value archivey.ExtractionStatus.SUPERSEDED = 'superseded'
+value archivey.ExtractionStatus.OVERWRITTEN = 'overwritten'
+value archivey.ExtractionStatus.BLOCKED = 'blocked'
+value archivey.ExtractionStatus.FAILED = 'failed'
+value archivey.ExtractionStatus.LINK_TARGET_UNAVAILABLE = 'link_target_unavailable'
+class archivey.FilterRejectionError(ExtractionError)
+init archivey.FilterRejectionError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+class archivey.FormatAvailability()
+init archivey.FormatAvailability(format: ArchiveFormat, support: FormatSupport, missing: tuple[MissingComponent, ...] = (), required_source: StreamCapability = StreamCapability.SEEKABLE) -> None
+field archivey.FormatAvailability.format: ArchiveFormat
+field archivey.FormatAvailability.missing: tuple[MissingComponent, ...] = ()
+field archivey.FormatAvailability.required_source: StreamCapability = StreamCapability.SEEKABLE
+field archivey.FormatAvailability.support: FormatSupport
+class archivey.FormatDetectionError(OpenError)
+init archivey.FormatDetectionError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+class archivey.FormatInfo()
+init archivey.FormatInfo(format: ArchiveFormat, confidence: DetectionConfidence, detected_by: DetectedBy, payload_offset: int = 0, diagnostics: DiagnosticSummary = <factory>, corroborated: bool = False, cost_receipt: DetectionCostReceipt | None = None, unavailable_tiers: tuple[TierSkip, ...] = ()) -> None
+field archivey.FormatInfo.confidence: DetectionConfidence
+field archivey.FormatInfo.corroborated: bool = False
+field archivey.FormatInfo.cost_receipt: DetectionCostReceipt | None = None
+field archivey.FormatInfo.detected_by: DetectedBy
+field archivey.FormatInfo.diagnostics: DiagnosticSummary = <factory>
+field archivey.FormatInfo.format: ArchiveFormat
+field archivey.FormatInfo.payload_offset: int = 0
+field archivey.FormatInfo.unavailable_tiers: tuple[TierSkip, ...] = ()
+property archivey.FormatInfo.from_plugin: bool
+class archivey.FormatSupport(Enum)
+enum archivey.FormatSupport
+value archivey.FormatSupport.FULL = 'full'
+value archivey.FormatSupport.PARTIAL = 'partial'
+value archivey.FormatSupport.NONE = 'none'
+class archivey.ForwardArchiveReader(ABC)
+method archivey.ForwardArchiveReader.close(self) -> None
+property archivey.ForwardArchiveReader.cost: CostReceipt
+property archivey.ForwardArchiveReader.diagnostics: DiagnosticSummary
+method archivey.ForwardArchiveReader.extract_all(self, dest: str | Path, *, members: MemberSelector = None, filter: MemberFilter | None = None, policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT, overwrite: OverwritePolicy | OverwritePolicyStr = OverwritePolicy.ERROR, on_error: OnError | OnErrorStr = OnError.STOP, abort_on: Collection[AbortOn | AbortOnStr] = (), on_progress: Callable[[ExtractionProgress], None] | None = None, limits: ExtractionLimits | None = None, dry_run: bool = False) -> ExtractionReport
+property archivey.ForwardArchiveReader.format: ArchiveFormat
+property archivey.ForwardArchiveReader.format_info: FormatInfo | None
+property archivey.ForwardArchiveReader.info: ArchiveInfo
+method archivey.ForwardArchiveReader.members_report(self) -> MemberListReport
+method archivey.ForwardArchiveReader.members_report_if_available(self) -> MemberListReport | None
+method archivey.ForwardArchiveReader.stream_members(self, members: MemberSelector = None, *, file_copy_streams: bool = True) -> MemberPass[tuple[ArchiveMember, ArchiveStream | None]]
+class archivey.HashAlgorithm(StrEnum)
+enum archivey.HashAlgorithm
+value archivey.HashAlgorithm.CRC32 = 'crc32'
+value archivey.HashAlgorithm.BLAKE2SP = 'blake2sp'
+class archivey.LinkTargetNotFoundError(ReadError)
+init archivey.LinkTargetNotFoundError(message: str, *, reason: LinkTargetNotFoundReason, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+field archivey.LinkTargetNotFoundError.reason: LinkTargetNotFoundReason
+class archivey.LinkTargetNotFoundReason(StrEnum)
+enum archivey.LinkTargetNotFoundReason
+value archivey.LinkTargetNotFoundReason.NOT_RECORDED = 'not_recorded'
+value archivey.LinkTargetNotFoundReason.UNREADABLE = 'unreadable'
+value archivey.LinkTargetNotFoundReason.UNRESOLVED = 'unresolved'
+class archivey.ListingCost(Enum)
+enum archivey.ListingCost
+value archivey.ListingCost.INDEXED = 'indexed'
+value archivey.ListingCost.REQUIRES_SCANNING = 'requires_scanning'
+value archivey.ListingCost.REQUIRES_DECOMPRESSION = 'requires_decompression'
+class archivey.ListingLimits()
+init archivey.ListingLimits(max_members: int | None = 262144, max_metadata_bytes: int | None = 67108864) -> None
+field archivey.ListingLimits.max_members: int | None = 262144
+field archivey.ListingLimits.max_metadata_bytes: int | None = 67108864
+attribute archivey.ListingLimits.UNLIMITED = ListingLimits(...)
+class archivey.MemberExtra(dict)
+alias archivey.MemberFilter = Callable[[ArchiveMember], ArchiveMember | None]
+class archivey.MemberListReport()
+init archivey.MemberListReport(members: tuple[ArchiveMember, ...], error: ArchiveyError | None, diagnostics: DiagnosticSummary) -> None
+field archivey.MemberListReport.diagnostics: DiagnosticSummary
+field archivey.MemberListReport.error: ArchiveyError | None
+field archivey.MemberListReport.members: tuple[ArchiveMember, ...]
+class archivey.MemberPass(Iterator)
+init archivey.MemberPass(items: Generator[_T, None, None]) -> None
+method archivey.MemberPass.close(self) -> None
+alias archivey.MemberSelector = Iterable[str | ArchiveMember] | Callable[[ArchiveMember], bool] | None
+class archivey.MemberType(Enum)
+enum archivey.MemberType
+value archivey.MemberType.FILE = 'file'
+value archivey.MemberType.DIRECTORY = 'directory'
+value archivey.MemberType.SYMLINK = 'symlink'
+value archivey.MemberType.HARDLINK = 'hardlink'
+value archivey.MemberType.OTHER = 'other'
+value archivey.MemberType.ANTI = 'anti'
+class archivey.MissingComponent()
+init archivey.MissingComponent(name: str, install_hint: str, unlocks: tuple[str, ...] = (), reason: str = '') -> None
+field archivey.MissingComponent.install_hint: str
+field archivey.MissingComponent.name: str
+field archivey.MissingComponent.reason: str = ''
+field archivey.MissingComponent.unlocks: tuple[str, ...] = ()
+property archivey.MissingComponent.advice: str
+method archivey.MissingComponent.message(self, purpose: str, *, note: str = '') -> str
+class archivey.NameCollisionError(ExtractionError)
+init archivey.NameCollisionError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+class archivey.NameRewrite(StrEnum)
+enum archivey.NameRewrite
+value archivey.NameRewrite.REROOTED = 'rerooted'
+value archivey.NameRewrite.PORTABLE_NAME = 'portable_name'
+class archivey.NameRewrittenError(ExtractionError)
+init archivey.NameRewrittenError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+alias archivey.OnDiagnostic = Callable[[Diagnostic], None]
+class archivey.OnError(Enum)
+enum archivey.OnError
+value archivey.OnError.STOP = 'stop'
+value archivey.OnError.CONTINUE = 'continue'
+class archivey.OpenError(ArchiveyError)
+init archivey.OpenError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+class archivey.OverwritePolicy(Enum)
+enum archivey.OverwritePolicy
+value archivey.OverwritePolicy.ERROR = 'error'
+value archivey.OverwritePolicy.SKIP = 'skip'
+value archivey.OverwritePolicy.REPLACE = 'replace'
+value archivey.OverwritePolicy.RENAME = 'rename'
+class archivey.PackageNotInstalledError(ArchiveyError)
+init archivey.PackageNotInstalledError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+alias archivey.PasswordInput = str | bytes | Sequence[str | bytes] | Callable[[PasswordRequest], str | bytes | None] | None
+alias archivey.PasswordProvider = Callable[[PasswordRequest], str | bytes | None]
+class archivey.PasswordRequest()
+init archivey.PasswordRequest(member: ArchiveMember | None, attempt: int) -> None
+field archivey.PasswordRequest.attempt: int
+field archivey.PasswordRequest.member: ArchiveMember | None
+class archivey.PluginContainer(StrEnum)
+enum archivey.PluginContainer
+class archivey.ProcessIsolation(Enum)
+enum archivey.ProcessIsolation
+value archivey.ProcessIsolation.KNOWN_CRASHES = 'known_crashes'
+value archivey.ProcessIsolation.NATIVE_DECODERS = 'native_decoders'
+value archivey.ProcessIsolation.NONE = 'none'
+class archivey.RarDecompressor(Enum)
+enum archivey.RarDecompressor
+value archivey.RarDecompressor.UNRAR = 'unrar'
+value archivey.RarDecompressor.UNAR = 'unar'
+value archivey.RarDecompressor.AUTO = 'auto'
+value archivey.RarDecompressor.NONE = 'none'
+class archivey.ReadError(ArchiveyError)
+init archivey.ReadError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+class archivey.ResourceLimitError(ArchiveyError)
+init archivey.ResourceLimitError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+class archivey.ResourceUnavailableError(ResourceLimitError)
+init archivey.ResourceUnavailableError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+class archivey.SpoolLimits()
+init archivey.SpoolLimits(max_bytes: int | None = 1073741824) -> None
+field archivey.SpoolLimits.max_bytes: int | None = 1073741824
+attribute archivey.SpoolLimits.UNLIMITED = SpoolLimits(...)
+class archivey.StreamCapability(Enum)
+enum archivey.StreamCapability
+value archivey.StreamCapability.SEEKABLE = 'seekable'
+value archivey.StreamCapability.FORWARD_ONLY = 'forward_only'
+class archivey.StreamFormat(StrEnum)
+enum archivey.StreamFormat
+value archivey.StreamFormat.UNCOMPRESSED = 'uncompressed'
+value archivey.StreamFormat.GZIP = 'gz'
+value archivey.StreamFormat.BZIP2 = 'bz2'
+value archivey.StreamFormat.XZ = 'xz'
+value archivey.StreamFormat.ZSTD = 'zst'
+value archivey.StreamFormat.LZ4 = 'lz4'
+value archivey.StreamFormat.LZIP = 'lz'
+value archivey.StreamFormat.LZMA_ALONE = 'lzma'
+value archivey.StreamFormat.ZLIB = 'zz'
+value archivey.StreamFormat.BROTLI = 'br'
+value archivey.StreamFormat.UNIX_COMPRESS = 'Z'
+class archivey.StreamNotSeekableError(OpenError)
+init archivey.StreamNotSeekableError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+class archivey.TruncatedError(CorruptionError)
+init archivey.TruncatedError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+class archivey.UnsupportedFeatureError(ArchiveyError)
+init archivey.UnsupportedFeatureError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+class archivey.Verification(IntEnum)
+enum archivey.Verification
+value archivey.Verification.NONE = 0
+value archivey.Verification.KEY = 1
+value archivey.Verification.STRUCTURE = 2
+value archivey.Verification.CONTENT = 3
+function archivey.detect_format(source: str | Path | BinaryIO, *, config: ArchiveyConfig | None = None, follow_stub_volumes: bool = True) -> FormatInfo
+function archivey.format_availability(fmt: ArchiveFormat | str, *, check_programs: bool = True) -> FormatAvailability
+function archivey.list_known_formats() -> list[ArchiveFormat]
+function archivey.list_supported_formats() -> list[ArchiveFormat]
+function archivey.open_archive(source: OpenSourceInput, *, format: ArchiveFormat | str | None = None, streaming: bool = False, seekable_members: bool = False, concurrent_operations: bool = False, password: PasswordInput = None, encoding: str | None = None, config: ArchiveyConfig | None = None) -> ForwardArchiveReader
+function archivey.open_stream(source: str | Path | BinaryIO, *, format: StreamFormat | ArchiveFormat | str | None = None, seekable: bool = False, config: ArchiveyConfig | None = None) -> ArchiveStream
+function archivey.sanitize_names(member: ArchiveMember) -> ArchiveMember
+module archivey.detection_cost
+constant archivey.detection_cost.BALANCED_BUDGET = DetectionBudget(...)
+class archivey.detection_cost.DetectionBudget()
+init archivey.detection_cost.DetectionBudget(max_prefix_bytes: int, max_far_bytes: int, max_scan_bytes: int, max_decode_input: int, max_decode_output: int, completion_window_bytes: int) -> None
+field archivey.detection_cost.DetectionBudget.completion_window_bytes: int
+field archivey.detection_cost.DetectionBudget.max_decode_input: int
+field archivey.detection_cost.DetectionBudget.max_decode_output: int
+field archivey.detection_cost.DetectionBudget.max_far_bytes: int
+field archivey.detection_cost.DetectionBudget.max_prefix_bytes: int
+field archivey.detection_cost.DetectionBudget.max_scan_bytes: int
+classmethod archivey.detection_cost.DetectionBudget.for_preset(cls, preset: DetectionBudgetPreset) -> DetectionBudget
+class archivey.detection_cost.DetectionBudgetPreset(Enum)
+enum archivey.detection_cost.DetectionBudgetPreset
+value archivey.detection_cost.DetectionBudgetPreset.BALANCED = 'balanced'
+value archivey.detection_cost.DetectionBudgetPreset.FAST = 'fast'
+value archivey.detection_cost.DetectionBudgetPreset.THOROUGH = 'thorough'
+class archivey.detection_cost.DetectionCostReceipt()
+init archivey.detection_cost.DetectionCostReceipt(prefix_bytes: int = 0, unique_bytes_read: int = 0, far_bytes: int = 0, scanned_bytes: int = 0, decode_input: int = 0, decode_output: int = 0, passes: int = 1) -> None
+field archivey.detection_cost.DetectionCostReceipt.decode_input: int = 0
+field archivey.detection_cost.DetectionCostReceipt.decode_output: int = 0
+field archivey.detection_cost.DetectionCostReceipt.far_bytes: int = 0
+field archivey.detection_cost.DetectionCostReceipt.passes: int = 1
+field archivey.detection_cost.DetectionCostReceipt.prefix_bytes: int = 0
+field archivey.detection_cost.DetectionCostReceipt.scanned_bytes: int = 0
+field archivey.detection_cost.DetectionCostReceipt.unique_bytes_read: int = 0
+constant archivey.detection_cost.FAST_BUDGET = DetectionBudget(...)
+constant archivey.detection_cost.THOROUGH_BUDGET = DetectionBudget(...)
+class archivey.detection_cost.TierSkip()
+init archivey.detection_cost.TierSkip(tier: str, reason: TierSkipReason) -> None
+field archivey.detection_cost.TierSkip.reason: TierSkipReason
+field archivey.detection_cost.TierSkip.tier: str
+class archivey.detection_cost.TierSkipReason(Enum)
+enum archivey.detection_cost.TierSkipReason
+value archivey.detection_cost.TierSkipReason.NOT_ENABLED_BY_POLICY = 'not_enabled_by_policy'
+value archivey.detection_cost.TierSkipReason.CAPABILITY_UNAVAILABLE = 'capability_unavailable'
+value archivey.detection_cost.TierSkipReason.BUDGET_EXHAUSTED = 'budget_exhausted'
+module archivey.diagnostics
+reexport archivey.diagnostics.ARCHIVE_INTEGRITY_CODES = archivey.ARCHIVE_INTEGRITY_CODES
+class archivey.diagnostics.ArchiveEofContext(_JsonSafeContext)
+init archivey.diagnostics.ArchiveEofContext(kind: Literal['archive_eof'] = 'archive_eof', archive_name: str | None = None, format: str = '', expected_marker: str = '', expected_bytes: int = 0, observed_bytes: int = 0, observed_kind: Literal['absent', 'short', 'nonzero'] = 'absent') -> None
+field archivey.diagnostics.ArchiveEofContext.archive_name: str | None = None
+field archivey.diagnostics.ArchiveEofContext.expected_bytes: int = 0
+field archivey.diagnostics.ArchiveEofContext.expected_marker: str = ''
+field archivey.diagnostics.ArchiveEofContext.format: str = ''
+field archivey.diagnostics.ArchiveEofContext.kind: Literal['archive_eof'] = 'archive_eof'
+field archivey.diagnostics.ArchiveEofContext.observed_bytes: int = 0
+field archivey.diagnostics.ArchiveEofContext.observed_kind: Literal['absent', 'short', 'nonzero'] = 'absent'
+method archivey.diagnostics.ArchiveEofContext.to_dict(self) -> dict[str, object]
+reexport archivey.diagnostics.Diagnostic = archivey.Diagnostic
+reexport archivey.diagnostics.DiagnosticCode = archivey.DiagnosticCode
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_name_normalized'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-name-normalized'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_name_encoding_inferred'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-name-encoding-inferred'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_name_bidi_control'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-name-bidi-control'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_name_zero_width_character'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-name-zero-width-character'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_name_invisible_character'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-name-invisible-character'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'format_extension_conflict'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'format-extension-conflict'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'explicit_format_listed_empty'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'explicit-format-listed-empty'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'extension_format_unconfirmed'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'extension-format-unconfirmed'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'probe_format_unconfirmed'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'probe-format-unconfirmed'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'empty_archive'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'empty-archive'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'encoding_argument_unused'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'encoding-argument-unused'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'password_argument_unused'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'password-argument-unused'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'scan_directory_vanished'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'scan-directory-vanished'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'scan_entry_vanished'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'scan-entry-vanished'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'archive_eof_marker_missing'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'archive-eof-marker-missing'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'archive_trailing_data'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'archive-trailing-data'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'archive_unlisted_data'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'archive-unlisted-data'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_timestamp_invalid'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-timestamp-invalid'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_header_record_skipped'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-header-record-skipped'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'symlink_target_unavailable'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'symlink-target-unavailable'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'digest_unverifiable'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'digest-unverifiable'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'encrypted_member_unverified'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'encrypted-member-unverified'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'seek_index_degraded'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'seek-index-degraded'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'stream_rewind_redecompresses'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'stream-rewind-redecompresses'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_selector_unmatched'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-selector-unmatched'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_special_file_has_data'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-special-file-has-data'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_local_name_differs'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-local-name-differs'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_local_method_differs'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-local-method-differs'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_local_crc_used'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-local-crc-used'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_directory_data_ignored'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-directory-data-ignored'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_link_data_ignored'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-link-data-ignored'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'archive_offset_wrapped'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'archive-offset-wrapped'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_size_wrapped'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-size-wrapped'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_type_unknown'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-type-unknown'
+reexport archivey.diagnostics.DiagnosticContext = archivey.DiagnosticContext
+reexport archivey.diagnostics.DiagnosticPolicy = archivey.DiagnosticPolicy
+reexport archivey.diagnostics.DiagnosticSummary = archivey.DiagnosticSummary
+class archivey.diagnostics.DigestContext(_JsonSafeContext)
+init archivey.diagnostics.DigestContext(kind: Literal['digest'] = 'digest', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, algorithm: str = '', reason: str = '') -> None
+field archivey.diagnostics.DigestContext.algorithm: str = ''
+field archivey.diagnostics.DigestContext.archive_name: str | None = None
+field archivey.diagnostics.DigestContext.kind: Literal['digest'] = 'digest'
+field archivey.diagnostics.DigestContext.member_id: int | None = None
+field archivey.diagnostics.DigestContext.member_name: str = ''
+field archivey.diagnostics.DigestContext.reason: str = ''
+method archivey.diagnostics.DigestContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.DirectoryDataContext(_JsonSafeContext)
+init archivey.diagnostics.DirectoryDataContext(kind: Literal['directory_data'] = 'directory_data', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, size: int = 0, compressed_size: int | None = None) -> None
+field archivey.diagnostics.DirectoryDataContext.archive_name: str | None = None
+field archivey.diagnostics.DirectoryDataContext.compressed_size: int | None = None
+field archivey.diagnostics.DirectoryDataContext.kind: Literal['directory_data'] = 'directory_data'
+field archivey.diagnostics.DirectoryDataContext.member_id: int | None = None
+field archivey.diagnostics.DirectoryDataContext.member_name: str = ''
+field archivey.diagnostics.DirectoryDataContext.size: int = 0
+method archivey.diagnostics.DirectoryDataContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.EmptyArchiveContext(_JsonSafeContext)
+init archivey.diagnostics.EmptyArchiveContext(kind: Literal['empty_archive'] = 'empty_archive', archive_name: str | None = None, format: str = '') -> None
+field archivey.diagnostics.EmptyArchiveContext.archive_name: str | None = None
+field archivey.diagnostics.EmptyArchiveContext.format: str = ''
+field archivey.diagnostics.EmptyArchiveContext.kind: Literal['empty_archive'] = 'empty_archive'
+method archivey.diagnostics.EmptyArchiveContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.EncryptedVerificationContext(_JsonSafeContext)
+init archivey.diagnostics.EncryptedVerificationContext(kind: Literal['encrypted_verification'] = 'encrypted_verification', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, check: str = '', reason: str = '') -> None
+field archivey.diagnostics.EncryptedVerificationContext.archive_name: str | None = None
+field archivey.diagnostics.EncryptedVerificationContext.check: str = ''
+field archivey.diagnostics.EncryptedVerificationContext.kind: Literal['encrypted_verification'] = 'encrypted_verification'
+field archivey.diagnostics.EncryptedVerificationContext.member_id: int | None = None
+field archivey.diagnostics.EncryptedVerificationContext.member_name: str = ''
+field archivey.diagnostics.EncryptedVerificationContext.reason: str = ''
+method archivey.diagnostics.EncryptedVerificationContext.to_dict(self) -> dict[str, object]
+reexport archivey.diagnostics.ExtractionReport = archivey.ExtractionReport
+class archivey.diagnostics.FormatConflictContext(_JsonSafeContext)
+init archivey.diagnostics.FormatConflictContext(kind: Literal['format_conflict'] = 'format_conflict', source_name: str | None = None, extension: str | None = None, extension_format: str = '', detected_format: str = '') -> None
+field archivey.diagnostics.FormatConflictContext.detected_format: str = ''
+field archivey.diagnostics.FormatConflictContext.extension: str | None = None
+field archivey.diagnostics.FormatConflictContext.extension_format: str = ''
+field archivey.diagnostics.FormatConflictContext.kind: Literal['format_conflict'] = 'format_conflict'
+field archivey.diagnostics.FormatConflictContext.source_name: str | None = None
+method archivey.diagnostics.FormatConflictContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.LinkDataContext(_JsonSafeContext)
+init archivey.diagnostics.LinkDataContext(kind: Literal['link_data'] = 'link_data', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, size: int = 0) -> None
+field archivey.diagnostics.LinkDataContext.archive_name: str | None = None
+field archivey.diagnostics.LinkDataContext.kind: Literal['link_data'] = 'link_data'
+field archivey.diagnostics.LinkDataContext.member_id: int | None = None
+field archivey.diagnostics.LinkDataContext.member_name: str = ''
+field archivey.diagnostics.LinkDataContext.size: int = 0
+method archivey.diagnostics.LinkDataContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.LocalHeaderContext(_JsonSafeContext)
+init archivey.diagnostics.LocalHeaderContext(kind: Literal['local_header'] = 'local_header', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, field: Literal['name', 'method', 'crc32'] = 'name', local_raw_name_base64: str | None = None, local_crc32: int | None = None, local_method: int | None = None, central_method: int | None = None) -> None
+field archivey.diagnostics.LocalHeaderContext.archive_name: str | None = None
+field archivey.diagnostics.LocalHeaderContext.central_method: int | None = None
+field archivey.diagnostics.LocalHeaderContext.field: Literal['name', 'method', 'crc32'] = 'name'
+field archivey.diagnostics.LocalHeaderContext.kind: Literal['local_header'] = 'local_header'
+field archivey.diagnostics.LocalHeaderContext.local_crc32: int | None = None
+field archivey.diagnostics.LocalHeaderContext.local_method: int | None = None
+field archivey.diagnostics.LocalHeaderContext.local_raw_name_base64: str | None = None
+field archivey.diagnostics.LocalHeaderContext.member_id: int | None = None
+field archivey.diagnostics.LocalHeaderContext.member_name: str = ''
+method archivey.diagnostics.LocalHeaderContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.MemberHeaderRecordContext(_JsonSafeContext)
+init archivey.diagnostics.MemberHeaderRecordContext(kind: Literal['member_header_record'] = 'member_header_record', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, record: str = '', record_id: int | None = None, reason: str = '', list_truncated: bool = False) -> None
+field archivey.diagnostics.MemberHeaderRecordContext.archive_name: str | None = None
+field archivey.diagnostics.MemberHeaderRecordContext.kind: Literal['member_header_record'] = 'member_header_record'
+field archivey.diagnostics.MemberHeaderRecordContext.list_truncated: bool = False
+field archivey.diagnostics.MemberHeaderRecordContext.member_id: int | None = None
+field archivey.diagnostics.MemberHeaderRecordContext.member_name: str = ''
+field archivey.diagnostics.MemberHeaderRecordContext.reason: str = ''
+field archivey.diagnostics.MemberHeaderRecordContext.record: str = ''
+field archivey.diagnostics.MemberHeaderRecordContext.record_id: int | None = None
+method archivey.diagnostics.MemberHeaderRecordContext.to_dict(self) -> dict[str, object]
+reexport archivey.diagnostics.MemberListReport = archivey.MemberListReport
+class archivey.diagnostics.MemberNameControlsContext(_JsonSafeContext)
+init archivey.diagnostics.MemberNameControlsContext(kind: Literal['member_name_controls'] = 'member_name_controls', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, raw_name_base64: str | None = None, controls: str = '', field: Literal['name', 'link_target'] = 'name', category: Literal['bidi', 'zero_width', 'invisible'] = 'bidi') -> None
+field archivey.diagnostics.MemberNameControlsContext.archive_name: str | None = None
+field archivey.diagnostics.MemberNameControlsContext.category: Literal['bidi', 'zero_width', 'invisible'] = 'bidi'
+field archivey.diagnostics.MemberNameControlsContext.controls: str = ''
+field archivey.diagnostics.MemberNameControlsContext.field: Literal['name', 'link_target'] = 'name'
+field archivey.diagnostics.MemberNameControlsContext.kind: Literal['member_name_controls'] = 'member_name_controls'
+field archivey.diagnostics.MemberNameControlsContext.member_id: int | None = None
+field archivey.diagnostics.MemberNameControlsContext.member_name: str = ''
+field archivey.diagnostics.MemberNameControlsContext.raw_name_base64: str | None = None
+method archivey.diagnostics.MemberNameControlsContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.MemberTimestampContext(_JsonSafeContext)
+init archivey.diagnostics.MemberTimestampContext(kind: Literal['member_timestamp'] = 'member_timestamp', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, field: str = '', source: str = '', value_repr: str = '') -> None
+field archivey.diagnostics.MemberTimestampContext.archive_name: str | None = None
+field archivey.diagnostics.MemberTimestampContext.field: str = ''
+field archivey.diagnostics.MemberTimestampContext.kind: Literal['member_timestamp'] = 'member_timestamp'
+field archivey.diagnostics.MemberTimestampContext.member_id: int | None = None
+field archivey.diagnostics.MemberTimestampContext.member_name: str = ''
+field archivey.diagnostics.MemberTimestampContext.source: str = ''
+field archivey.diagnostics.MemberTimestampContext.value_repr: str = ''
+method archivey.diagnostics.MemberTimestampContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.NameEncodingContext(_JsonSafeContext)
+init archivey.diagnostics.NameEncodingContext(kind: Literal['name_encoding'] = 'name_encoding', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, raw_name_base64: str | None = None, inferred_encoding: str = '', declared_encoding: str = '') -> None
+field archivey.diagnostics.NameEncodingContext.archive_name: str | None = None
+field archivey.diagnostics.NameEncodingContext.declared_encoding: str = ''
+field archivey.diagnostics.NameEncodingContext.inferred_encoding: str = ''
+field archivey.diagnostics.NameEncodingContext.kind: Literal['name_encoding'] = 'name_encoding'
+field archivey.diagnostics.NameEncodingContext.member_id: int | None = None
+field archivey.diagnostics.NameEncodingContext.member_name: str = ''
+field archivey.diagnostics.NameEncodingContext.raw_name_base64: str | None = None
+method archivey.diagnostics.NameEncodingContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.NameNormalizationContext(_JsonSafeContext)
+init archivey.diagnostics.NameNormalizationContext(kind: Literal['name_normalization'] = 'name_normalization', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, raw_name_base64: str | None = None, presented_name: str = '', normalized_name: str = '') -> None
+field archivey.diagnostics.NameNormalizationContext.archive_name: str | None = None
+field archivey.diagnostics.NameNormalizationContext.kind: Literal['name_normalization'] = 'name_normalization'
+field archivey.diagnostics.NameNormalizationContext.member_id: int | None = None
+field archivey.diagnostics.NameNormalizationContext.member_name: str = ''
+field archivey.diagnostics.NameNormalizationContext.normalized_name: str = ''
+field archivey.diagnostics.NameNormalizationContext.presented_name: str = ''
+field archivey.diagnostics.NameNormalizationContext.raw_name_base64: str | None = None
+method archivey.diagnostics.NameNormalizationContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.OffsetWrapContext(_JsonSafeContext)
+init archivey.diagnostics.OffsetWrapContext(kind: Literal['offset_wrap'] = 'offset_wrap', archive_name: str | None = None, format: str = '', member_name: str = '', member_id: int | None = None, record: Literal['local_header', 'central_directory'] = 'local_header', stored_offset: int = 0, corrected_offset: int = 0) -> None
+field archivey.diagnostics.OffsetWrapContext.archive_name: str | None = None
+field archivey.diagnostics.OffsetWrapContext.corrected_offset: int = 0
+field archivey.diagnostics.OffsetWrapContext.format: str = ''
+field archivey.diagnostics.OffsetWrapContext.kind: Literal['offset_wrap'] = 'offset_wrap'
+field archivey.diagnostics.OffsetWrapContext.member_id: int | None = None
+field archivey.diagnostics.OffsetWrapContext.member_name: str = ''
+field archivey.diagnostics.OffsetWrapContext.record: Literal['local_header', 'central_directory'] = 'local_header'
+field archivey.diagnostics.OffsetWrapContext.stored_offset: int = 0
+method archivey.diagnostics.OffsetWrapContext.to_dict(self) -> dict[str, object]
+reexport archivey.diagnostics.OnDiagnostic = archivey.OnDiagnostic
+class archivey.diagnostics.ScanRaceContext(_JsonSafeContext)
+init archivey.diagnostics.ScanRaceContext(kind: Literal['scan_race'] = 'scan_race', archive_name: str | None = None, relative_path: str = '', entry_kind: Literal['directory', 'entry'] = 'entry') -> None
+field archivey.diagnostics.ScanRaceContext.archive_name: str | None = None
+field archivey.diagnostics.ScanRaceContext.entry_kind: Literal['directory', 'entry'] = 'entry'
+field archivey.diagnostics.ScanRaceContext.kind: Literal['scan_race'] = 'scan_race'
+field archivey.diagnostics.ScanRaceContext.relative_path: str = ''
+method archivey.diagnostics.ScanRaceContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.SeekIndexContext(_JsonSafeContext)
+init archivey.diagnostics.SeekIndexContext(kind: Literal['seek_index'] = 'seek_index', archive_name: str | None = None, member_name: str | None = None, member_id: int | None = None, codec: str = '', scan: str = '', error_type: str = '') -> None
+field archivey.diagnostics.SeekIndexContext.archive_name: str | None = None
+field archivey.diagnostics.SeekIndexContext.codec: str = ''
+field archivey.diagnostics.SeekIndexContext.error_type: str = ''
+field archivey.diagnostics.SeekIndexContext.kind: Literal['seek_index'] = 'seek_index'
+field archivey.diagnostics.SeekIndexContext.member_id: int | None = None
+field archivey.diagnostics.SeekIndexContext.member_name: str | None = None
+field archivey.diagnostics.SeekIndexContext.scan: str = ''
+method archivey.diagnostics.SeekIndexContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.SelectorUnmatchedContext(_JsonSafeContext)
+init archivey.diagnostics.SelectorUnmatchedContext(kind: Literal['selector_unmatched'] = 'selector_unmatched', archive_name: str | None = None, entry: str = '', entry_kind: Literal['name', 'member'] = 'name') -> None
+field archivey.diagnostics.SelectorUnmatchedContext.archive_name: str | None = None
+field archivey.diagnostics.SelectorUnmatchedContext.entry: str = ''
+field archivey.diagnostics.SelectorUnmatchedContext.entry_kind: Literal['name', 'member'] = 'name'
+field archivey.diagnostics.SelectorUnmatchedContext.kind: Literal['selector_unmatched'] = 'selector_unmatched'
+method archivey.diagnostics.SelectorUnmatchedContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.SizeWrapContext(_JsonSafeContext)
+init archivey.diagnostics.SizeWrapContext(kind: Literal['size_wrap'] = 'size_wrap', archive_name: str | None = None, format: str = '', member_name: str = '', member_id: int | None = None, stored_compressed_size: int = 0, compressed_size: int = 0, stored_size: int = 0, size: int | None = None) -> None
+field archivey.diagnostics.SizeWrapContext.archive_name: str | None = None
+field archivey.diagnostics.SizeWrapContext.compressed_size: int = 0
+field archivey.diagnostics.SizeWrapContext.format: str = ''
+field archivey.diagnostics.SizeWrapContext.kind: Literal['size_wrap'] = 'size_wrap'
+field archivey.diagnostics.SizeWrapContext.member_id: int | None = None
+field archivey.diagnostics.SizeWrapContext.member_name: str = ''
+field archivey.diagnostics.SizeWrapContext.size: int | None = None
+field archivey.diagnostics.SizeWrapContext.stored_compressed_size: int = 0
+field archivey.diagnostics.SizeWrapContext.stored_size: int = 0
+method archivey.diagnostics.SizeWrapContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.SpecialFileDataContext(_JsonSafeContext)
+init archivey.diagnostics.SpecialFileDataContext(kind: Literal['special_file_data'] = 'special_file_data', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, special_file_type: str = '', size: int | None = None) -> None
+field archivey.diagnostics.SpecialFileDataContext.archive_name: str | None = None
+field archivey.diagnostics.SpecialFileDataContext.kind: Literal['special_file_data'] = 'special_file_data'
+field archivey.diagnostics.SpecialFileDataContext.member_id: int | None = None
+field archivey.diagnostics.SpecialFileDataContext.member_name: str = ''
+field archivey.diagnostics.SpecialFileDataContext.size: int | None = None
+field archivey.diagnostics.SpecialFileDataContext.special_file_type: str = ''
+method archivey.diagnostics.SpecialFileDataContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.StreamRewindContext(_JsonSafeContext)
+init archivey.diagnostics.StreamRewindContext(kind: Literal['stream_rewind'] = 'stream_rewind', archive_name: str | None = None, member_name: str | None = None, member_id: int | None = None, codec: str = '', from_offset: int = 0, to_offset: int = 0, accelerator: str | None = None) -> None
+field archivey.diagnostics.StreamRewindContext.accelerator: str | None = None
+field archivey.diagnostics.StreamRewindContext.archive_name: str | None = None
+field archivey.diagnostics.StreamRewindContext.codec: str = ''
+field archivey.diagnostics.StreamRewindContext.from_offset: int = 0
+field archivey.diagnostics.StreamRewindContext.kind: Literal['stream_rewind'] = 'stream_rewind'
+field archivey.diagnostics.StreamRewindContext.member_id: int | None = None
+field archivey.diagnostics.StreamRewindContext.member_name: str | None = None
+field archivey.diagnostics.StreamRewindContext.to_offset: int = 0
+method archivey.diagnostics.StreamRewindContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.SymlinkTargetContext(_JsonSafeContext)
+init archivey.diagnostics.SymlinkTargetContext(kind: Literal['symlink_target'] = 'symlink_target', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, reason: str = '') -> None
+field archivey.diagnostics.SymlinkTargetContext.archive_name: str | None = None
+field archivey.diagnostics.SymlinkTargetContext.kind: Literal['symlink_target'] = 'symlink_target'
+field archivey.diagnostics.SymlinkTargetContext.member_id: int | None = None
+field archivey.diagnostics.SymlinkTargetContext.member_name: str = ''
+field archivey.diagnostics.SymlinkTargetContext.reason: str = ''
+method archivey.diagnostics.SymlinkTargetContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.UnconfirmedFormatContext(_JsonSafeContext)
+init archivey.diagnostics.UnconfirmedFormatContext(kind: Literal['unconfirmed_format'] = 'unconfirmed_format', archive_name: str | None = None, format: str = '', chosen_by: Literal['argument', 'extension', 'content_probe'] = 'argument', detected_format: str | None = None) -> None
+field archivey.diagnostics.UnconfirmedFormatContext.archive_name: str | None = None
+field archivey.diagnostics.UnconfirmedFormatContext.chosen_by: Literal['argument', 'extension', 'content_probe'] = 'argument'
+field archivey.diagnostics.UnconfirmedFormatContext.detected_format: str | None = None
+field archivey.diagnostics.UnconfirmedFormatContext.format: str = ''
+field archivey.diagnostics.UnconfirmedFormatContext.kind: Literal['unconfirmed_format'] = 'unconfirmed_format'
+method archivey.diagnostics.UnconfirmedFormatContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.UnknownMemberTypeContext(_JsonSafeContext)
+init archivey.diagnostics.UnknownMemberTypeContext(kind: Literal['unknown_member_type'] = 'unknown_member_type', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, stored_type: str = '', size: int | None = None) -> None
+field archivey.diagnostics.UnknownMemberTypeContext.archive_name: str | None = None
+field archivey.diagnostics.UnknownMemberTypeContext.kind: Literal['unknown_member_type'] = 'unknown_member_type'
+field archivey.diagnostics.UnknownMemberTypeContext.member_id: int | None = None
+field archivey.diagnostics.UnknownMemberTypeContext.member_name: str = ''
+field archivey.diagnostics.UnknownMemberTypeContext.size: int | None = None
+field archivey.diagnostics.UnknownMemberTypeContext.stored_type: str = ''
+method archivey.diagnostics.UnknownMemberTypeContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.UnlistedDataContext(_JsonSafeContext)
+init archivey.diagnostics.UnlistedDataContext(kind: Literal['unlisted_data'] = 'unlisted_data', archive_name: str | None = None, format: str = '', member_name: str = '', member_id: int | None = None, offset: int = 0, compressed_size: int | None = None) -> None
+field archivey.diagnostics.UnlistedDataContext.archive_name: str | None = None
+field archivey.diagnostics.UnlistedDataContext.compressed_size: int | None = None
+field archivey.diagnostics.UnlistedDataContext.format: str = ''
+field archivey.diagnostics.UnlistedDataContext.kind: Literal['unlisted_data'] = 'unlisted_data'
+field archivey.diagnostics.UnlistedDataContext.member_id: int | None = None
+field archivey.diagnostics.UnlistedDataContext.member_name: str = ''
+field archivey.diagnostics.UnlistedDataContext.offset: int = 0
+method archivey.diagnostics.UnlistedDataContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.UnusedArgumentContext(_JsonSafeContext)
+init archivey.diagnostics.UnusedArgumentContext(kind: Literal['unused_argument'] = 'unused_argument', archive_name: str | None = None, argument: Literal['encoding', 'password'] = 'encoding', format: str = '', reason: str = '') -> None
+field archivey.diagnostics.UnusedArgumentContext.archive_name: str | None = None
+field archivey.diagnostics.UnusedArgumentContext.argument: Literal['encoding', 'password'] = 'encoding'
+field archivey.diagnostics.UnusedArgumentContext.format: str = ''
+field archivey.diagnostics.UnusedArgumentContext.kind: Literal['unused_argument'] = 'unused_argument'
+field archivey.diagnostics.UnusedArgumentContext.reason: str = ''
+method archivey.diagnostics.UnusedArgumentContext.to_dict(self) -> dict[str, object]
+function archivey.diagnostics.format_path_name(path: str | Path | None) -> str | None
+function archivey.diagnostics.raw_name_to_base64(raw_name: bytes | None) -> str | None
+function archivey.diagnostics.validate_code_context(code: DiagnosticCode, context: DiagnosticContext) -> None
+module archivey.paths
+function archivey.paths.match_glob(*patterns: str, with_contents: bool = False) -> Callable[[ArchiveMember | str], bool]
+function archivey.paths.match_tar_glob(*patterns: str) -> Callable[[ArchiveMember | str], bool]
+function archivey.paths.numbered_name(name: str, n: int, *, is_dir: bool) -> str
+module archivey.plugins
+class archivey.plugins.FormatPlugin(ABC)
+attribute archivey.plugins.FormatPlugin.extensions = ()
+attribute archivey.plugins.FormatPlugin.install_hint = None
+attribute archivey.plugins.FormatPlugin.magic = ()
+method archivey.plugins.FormatPlugin.open(self, source: PluginSource, context: PluginContext) -> PluginReader
+attribute archivey.plugins.FormatPlugin.probe = None
+attribute archivey.plugins.FormatPlugin.requires = ()
+method archivey.plugins.FormatPlugin.translate_exception(self, exc: Exception) -> ArchiveyError | None
+attribute archivey.plugins.FormatPlugin.uses_encoding = False
+class archivey.plugins.Hasher(Protocol)
+init archivey.plugins.Hasher(*args, **kwargs)
+method archivey.plugins.Hasher.digest(self) -> bytes
+method archivey.plugins.Hasher.update(self, data: bytes, /) -> None
+class archivey.plugins.IndexedReader(PluginReader, Generic[LocatorT])
+method archivey.plugins.IndexedReader.archive_info(self) -> PluginArchiveInfo
+method archivey.plugins.IndexedReader.close(self) -> None
+method archivey.plugins.IndexedReader.iter_members(self) -> Iterator[MemberRecord[LocatorT]]
+attribute archivey.plugins.IndexedReader.member_list_upfront = True
+method archivey.plugins.IndexedReader.open_member(self, member: ArchiveMember, locator: LocatorT) -> MemberData
+method archivey.plugins.IndexedReader.translate_exception(self, exc: Exception) -> ArchiveyError | None
+class archivey.plugins.Magic(tuple)
+field archivey.plugins.Magic.data: bytes
+field archivey.plugins.Magic.offset: int
+class archivey.plugins.MemberData(tuple)
+field archivey.plugins.MemberData.bounded: bool
+field archivey.plugins.MemberData.checked: bool
+field archivey.plugins.MemberData.digests: tuple[MemberDigest, ...]
+field archivey.plugins.MemberData.stream: BinaryIO | io.RawIOBase
+class archivey.plugins.MemberDigest(tuple)
+field archivey.plugins.MemberDigest.expected: bytes
+field archivey.plugins.MemberDigest.name: str
+field archivey.plugins.MemberDigest.new: Callable[[], Hasher] | None
+class archivey.plugins.MemberRecord(tuple, Generic[LocatorT])
+field archivey.plugins.MemberRecord.locator: LocatorT
+field archivey.plugins.MemberRecord.member: ArchiveMember
+field archivey.plugins.MemberRecord.stored_name: str | None
+class archivey.plugins.PluginArchiveInfo(tuple)
+field archivey.plugins.PluginArchiveInfo.comment: str | None
+field archivey.plugins.PluginArchiveInfo.extra: Mapping[str, object]
+field archivey.plugins.PluginArchiveInfo.format_version: str | None
+field archivey.plugins.PluginArchiveInfo.is_solid: bool
+reexport archivey.plugins.PluginContainer = archivey.PluginContainer
+class archivey.plugins.PluginContext()
+property archivey.plugins.PluginContext.archive_name: str | None
+property archivey.plugins.PluginContext.config: ArchiveyConfig
+method archivey.plugins.PluginContext.decode_name(self, raw: bytes) -> str
+method archivey.plugins.PluginContext.decompress(self, data: BinaryIO, method: CompressionAlgorithm | StreamFormat, *, size: int | None = None, properties: bytes | None = None) -> BinaryIO
+property archivey.plugins.PluginContext.encoding: str | None
+method archivey.plugins.PluginContext.link_target_unavailable(self, member: ArchiveMember, *, reason: str, message: str, target_in_archive: bool) -> None
+method archivey.plugins.PluginContext.normalize_name(self, name: str, member_type: MemberType) -> str
+method archivey.plugins.PluginContext.report(self, code: DiagnosticCode, message: str, details: DiagnosticContext, *, member: ArchiveMember | None = None) -> None
+class archivey.plugins.PluginReader(ABC)
+method archivey.plugins.PluginReader.archive_info(self) -> PluginArchiveInfo
+method archivey.plugins.PluginReader.close(self) -> None
+method archivey.plugins.PluginReader.translate_exception(self, exc: Exception) -> ArchiveyError | None
+class archivey.plugins.PluginSource()
+property archivey.plugins.PluginSource.path: Path | None
+method archivey.plugins.PluginSource.read_at(self, offset: int, n: int) -> bytes
+method archivey.plugins.PluginSource.read_exact(self, offset: int, n: int) -> bytes
+method archivey.plugins.PluginSource.read_struct(self, offset: int, fmt: str | struct.Struct) -> tuple[Any, ...]
+property archivey.plugins.PluginSource.size: int | None
+method archivey.plugins.PluginSource.view(self, start: int, length: int | None = None) -> BinaryIO
+function archivey.plugins.block_stream(size: int, block_size: int, read_block: Callable[[int], bytes | BinaryIO]) -> BinaryIO
+function archivey.plugins.buffered_stream(stream: BinaryIO | io.RawIOBase) -> BinaryIO
+function archivey.plugins.register_format(plugin: type[FormatPlugin]) -> None
+module archivey.terminal
+function archivey.terminal.display_path(path: str | os.PathLike[str]) -> str
+function archivey.terminal.escape_control_chars(text: str) -> str
+function archivey.terminal.quoted(text: str) -> str
+cli-exit EXIT_BROKEN_PIPE = 141
+cli-exit EXIT_FAIL = 1
+cli-exit EXIT_INTERRUPTED = 130
+cli-exit EXIT_OK = 0
+cli-exit EXIT_POLICY = 3
+cli-exit EXIT_USAGE = 2
+cli-option (global) --help, -h [action=Help nargs=0]
+cli-option (global) --password [action=Store]
+cli-option (global) --verbose, -v [action=StoreTrue nargs=0 default=False]
+cli-option (global) --hide-progress [action=StoreTrue nargs=0 default=False]
+cli-option (global) --track-io [action=StoreTrue nargs=0 default=False]
+cli-option (global) --probe-content [action=StoreTrue nargs=0 default=False]
+cli-option (global) --salvage [action=StoreTrue nargs=0 default=False]
+cli-option (global) --version [action=StoreTrue nargs=0 default=False]
+cli-verb cat
+cli-option cat --help, -h [action=Help nargs=0]
+cli-option cat --password [action=Store]
+cli-option cat --verbose, -v [action=StoreTrue nargs=0]
+cli-option cat --hide-progress [action=StoreTrue nargs=0]
+cli-option cat --track-io [action=StoreTrue nargs=0]
+cli-option cat --probe-content [action=StoreTrue nargs=0]
+cli-option cat --salvage [action=StoreTrue nargs=0]
+cli-arg cat archive [action=Store]
+cli-option cat --outer [action=StoreTrue nargs=0 default=False]
+cli-arg cat patterns [action=Store nargs='*']
+cli-option cat --exclude [action=Append default=[]]
+cli-verb convert
+cli-option convert --help, -h [action=Help nargs=0]
+cli-option convert --password [action=Store]
+cli-option convert --verbose, -v [action=StoreTrue nargs=0]
+cli-option convert --hide-progress [action=StoreTrue nargs=0]
+cli-option convert --track-io [action=StoreTrue nargs=0]
+cli-option convert --probe-content [action=StoreTrue nargs=0]
+cli-option convert --salvage [action=StoreTrue nargs=0]
+cli-arg convert archive [action=Store nargs='?']
+cli-verb create
+cli-option create --help, -h [action=Help nargs=0]
+cli-option create --password [action=Store]
+cli-option create --verbose, -v [action=StoreTrue nargs=0]
+cli-option create --hide-progress [action=StoreTrue nargs=0]
+cli-option create --track-io [action=StoreTrue nargs=0]
+cli-option create --probe-content [action=StoreTrue nargs=0]
+cli-option create --salvage [action=StoreTrue nargs=0]
+cli-arg create archive [action=Store nargs='?']
+cli-verb detect
+cli-option detect --help, -h [action=Help nargs=0]
+cli-option detect --password [action=Store]
+cli-option detect --verbose, -v [action=StoreTrue nargs=0]
+cli-option detect --hide-progress [action=StoreTrue nargs=0]
+cli-option detect --track-io [action=StoreTrue nargs=0]
+cli-option detect --probe-content [action=StoreTrue nargs=0]
+cli-option detect --salvage [action=StoreTrue nargs=0]
+cli-arg detect archive [action=Store]
+cli-verb extract
+cli-option extract --help, -h [action=Help nargs=0]
+cli-option extract --password [action=Store]
+cli-option extract --verbose, -v [action=StoreTrue nargs=0]
+cli-option extract --hide-progress [action=StoreTrue nargs=0]
+cli-option extract --track-io [action=StoreTrue nargs=0]
+cli-option extract --probe-content [action=StoreTrue nargs=0]
+cli-option extract --salvage [action=StoreTrue nargs=0]
+cli-arg extract archive [action=Store]
+cli-option extract --dest, -d [action=Store]
+cli-option extract --policy [action=Store type=fold choices={standard, strict, trusted} default='strict']
+cli-option extract --overwrite [action=Store type=fold choices={error, rename, replace, skip} default='rename']
+cli-option extract --stop-on-error [action=StoreTrue nargs=0 default=False]
+cli-option extract --abort-on [action=Append type=fold choices={blocked-member, name-collision, name-sanitized}]
+cli-option extract --dry-run [action=StoreTrue nargs=0 default=False]
+cli-option extract --outer [action=StoreTrue nargs=0 default=False]
+cli-arg extract patterns [action=Store nargs='*']
+cli-option extract --exclude [action=Append default=[]]
+cli-verb hash
+cli-option hash --help, -h [action=Help nargs=0]
+cli-option hash --password [action=Store]
+cli-option hash --verbose, -v [action=StoreTrue nargs=0]
+cli-option hash --hide-progress [action=StoreTrue nargs=0]
+cli-option hash --track-io [action=StoreTrue nargs=0]
+cli-option hash --probe-content [action=StoreTrue nargs=0]
+cli-option hash --salvage [action=StoreTrue nargs=0]
+cli-arg hash archive [action=Store nargs='?']
+cli-verb i
+cli-option i --help, -h [action=Help nargs=0]
+cli-option i --password [action=Store]
+cli-option i --verbose, -v [action=StoreTrue nargs=0]
+cli-option i --hide-progress [action=StoreTrue nargs=0]
+cli-option i --track-io [action=StoreTrue nargs=0]
+cli-option i --probe-content [action=StoreTrue nargs=0]
+cli-option i --salvage [action=StoreTrue nargs=0]
+cli-arg i archive [action=Store]
+cli-verb info
+cli-option info --help, -h [action=Help nargs=0]
+cli-option info --password [action=Store]
+cli-option info --verbose, -v [action=StoreTrue nargs=0]
+cli-option info --hide-progress [action=StoreTrue nargs=0]
+cli-option info --track-io [action=StoreTrue nargs=0]
+cli-option info --probe-content [action=StoreTrue nargs=0]
+cli-option info --salvage [action=StoreTrue nargs=0]
+cli-arg info archive [action=Store]
+cli-verb l
+cli-option l --help, -h [action=Help nargs=0]
+cli-option l --password [action=Store]
+cli-option l --verbose, -v [action=StoreTrue nargs=0]
+cli-option l --hide-progress [action=StoreTrue nargs=0]
+cli-option l --track-io [action=StoreTrue nargs=0]
+cli-option l --probe-content [action=StoreTrue nargs=0]
+cli-option l --salvage [action=StoreTrue nargs=0]
+cli-arg l archive [action=Store]
+cli-arg l patterns [action=Store nargs='*']
+cli-option l --exclude [action=Append default=[]]
+cli-option l --digests [action=StoreTrue nargs=0 default=False]
+cli-option l --long [action=StoreTrue nargs=0 default=False]
+cli-option l --details [action=StoreTrue nargs=0 default=False]
+cli-verb list
+cli-option list --help, -h [action=Help nargs=0]
+cli-option list --password [action=Store]
+cli-option list --verbose, -v [action=StoreTrue nargs=0]
+cli-option list --hide-progress [action=StoreTrue nargs=0]
+cli-option list --track-io [action=StoreTrue nargs=0]
+cli-option list --probe-content [action=StoreTrue nargs=0]
+cli-option list --salvage [action=StoreTrue nargs=0]
+cli-arg list archive [action=Store]
+cli-arg list patterns [action=Store nargs='*']
+cli-option list --exclude [action=Append default=[]]
+cli-option list --digests [action=StoreTrue nargs=0 default=False]
+cli-option list --long [action=StoreTrue nargs=0 default=False]
+cli-option list --details [action=StoreTrue nargs=0 default=False]
+cli-verb t
+cli-option t --help, -h [action=Help nargs=0]
+cli-option t --password [action=Store]
+cli-option t --verbose, -v [action=StoreTrue nargs=0]
+cli-option t --hide-progress [action=StoreTrue nargs=0]
+cli-option t --track-io [action=StoreTrue nargs=0]
+cli-option t --probe-content [action=StoreTrue nargs=0]
+cli-option t --salvage [action=StoreTrue nargs=0]
+cli-arg t archive [action=Store]
+cli-option t --outer [action=StoreTrue nargs=0 default=False]
+cli-arg t patterns [action=Store nargs='*']
+cli-option t --exclude [action=Append default=[]]
+cli-verb test
+cli-option test --help, -h [action=Help nargs=0]
+cli-option test --password [action=Store]
+cli-option test --verbose, -v [action=StoreTrue nargs=0]
+cli-option test --hide-progress [action=StoreTrue nargs=0]
+cli-option test --track-io [action=StoreTrue nargs=0]
+cli-option test --probe-content [action=StoreTrue nargs=0]
+cli-option test --salvage [action=StoreTrue nargs=0]
+cli-arg test archive [action=Store]
+cli-option test --outer [action=StoreTrue nargs=0 default=False]
+cli-arg test patterns [action=Store nargs='*']
+cli-option test --exclude [action=Append default=[]]
+cli-verb x
+cli-option x --help, -h [action=Help nargs=0]
+cli-option x --password [action=Store]
+cli-option x --verbose, -v [action=StoreTrue nargs=0]
+cli-option x --hide-progress [action=StoreTrue nargs=0]
+cli-option x --track-io [action=StoreTrue nargs=0]
+cli-option x --probe-content [action=StoreTrue nargs=0]
+cli-option x --salvage [action=StoreTrue nargs=0]
+cli-arg x archive [action=Store]
+cli-option x --dest, -d [action=Store]
+cli-option x --policy [action=Store type=fold choices={standard, strict, trusted} default='strict']
+cli-option x --overwrite [action=Store type=fold choices={error, rename, replace, skip} default='rename']
+cli-option x --stop-on-error [action=StoreTrue nargs=0 default=False]
+cli-option x --abort-on [action=Append type=fold choices={blocked-member, name-collision, name-sanitized}]
+cli-option x --dry-run [action=StoreTrue nargs=0 default=False]
+cli-option x --outer [action=StoreTrue nargs=0 default=False]
+cli-arg x patterns [action=Store nargs='*']
+cli-option x --exclude [action=Append default=[]]

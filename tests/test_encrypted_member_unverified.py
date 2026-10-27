@@ -229,7 +229,7 @@ def test_large_compressed_member_ambiguous_candidates_budget_exhausted(
         (context,) = _unverified(reader)
         assert context.check == "confirm_budget_exhausted"
         # A survivor of an ambiguous set without a CRC match stays out of known-good.
-        assert reader._passwords._known_good == []  # noqa: SLF001
+        assert reader._passwords._known_good == []
 
 
 # --- RAR ---------------------------------------------------------------------------

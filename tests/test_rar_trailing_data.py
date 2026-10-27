@@ -98,9 +98,11 @@ def test_junk_past_the_scan_bound_goes_unseen() -> None:
 def test_strict_policy_refuses_trailing_data() -> None:
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     data = _data("basic_nonsolid__.rar") + b"JUNK"
-    with pytest.raises(DiagnosticRaisedError) as ei:
-        with open_archive(io.BytesIO(data), config=config) as reader:
-            reader.members()
+    with (
+        pytest.raises(DiagnosticRaisedError) as ei,
+        open_archive(io.BytesIO(data), config=config) as reader,
+    ):
+        reader.members()
     assert ei.value.diagnostic.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
 
 

@@ -404,9 +404,11 @@ def test_overlong_five_byte_name_does_not_refuse_later_reads(tmp_path: Path) -> 
         for member in later:
             assert reader.read(member) == expected[member.name]
     path = _rar4_with_name(tmp_path, b"caf\xf8\x88\x80\x80\x80")
-    with open_archive(path, config=_UNRAR_ONLY) as reader:
-        with pytest.raises(ArchiveyError, match="earlier member's name"):
-            reader.read([m for m in reader.members()[1:] if m.is_file][0])
+    with (
+        open_archive(path, config=_UNRAR_ONLY) as reader,
+        pytest.raises(ArchiveyError, match="earlier member's name"),
+    ):
+        reader.read(next(m for m in reader.members()[1:] if m.is_file))
 
 
 # --- listing an 8-bit RAR 1.5-4 name -------------------------------------------

@@ -514,11 +514,13 @@ def test_numbered_neighbour_is_not_read_as_the_next_volume(tmp_path: Path) -> No
 @requires_binary("unar")
 def test_seekable_member_respawns_unar() -> None:
     path = _RAR / "seek_respawn_solid__.rar"
-    with open_archive(path, config=_UNAR, seekable_members=True) as archive:
-        with archive.open("tail.txt") as stream:
-            first = stream.read()
-            stream.seek(0)
-            assert stream.read() == first
+    with (
+        open_archive(path, config=_UNAR, seekable_members=True) as archive,
+        archive.open("tail.txt") as stream,
+    ):
+        first = stream.read()
+        stream.seek(0)
+        assert stream.read() == first
 
 
 # --- selection is explicit -----------------------------------------------------------
@@ -619,11 +621,13 @@ def test_auto_with_neither_names_unrar(
 
 @requires_binary("unar")
 def test_wrong_password_is_an_encryption_error() -> None:
-    with open_archive(
-        _RAR / "encryption__.rar", config=_UNAR, password="wrong"
-    ) as archive:
-        with pytest.raises(EncryptionError):
-            archive.read("secret.txt")
+    with (
+        open_archive(
+            _RAR / "encryption__.rar", config=_UNAR, password="wrong"
+        ) as archive,
+        pytest.raises(EncryptionError),
+    ):
+        archive.read("secret.txt")
 
 
 @requires_binary("unar")
@@ -636,11 +640,13 @@ def test_empty_pipe_for_encrypted_data_is_a_password_error(
     skipped here to let one reach unar.
     """
     monkeypatch.setattr(rar_reader, "_psw_check_usable", lambda _enc: False)
-    with open_archive(
-        _RAR / "encryption__.rar", config=_UNAR, password="wrong"
-    ) as archive:
-        with pytest.raises(EncryptionError, match="missing or wrong"):
-            archive.read("secret.txt")
+    with (
+        open_archive(
+            _RAR / "encryption__.rar", config=_UNAR, password="wrong"
+        ) as archive,
+        pytest.raises(EncryptionError, match="missing or wrong"),
+    ):
+        archive.read("secret.txt")
 
 
 @requires_binary("unar", "rar")
@@ -718,8 +724,10 @@ def test_argv_refuses_an_empty_or_negative_selection(indexes: list[int]) -> None
         ),
         (
             # Homebrew's bottle (XADMaster 1.10.8) prints its build date.
-            "unar v1.10.7 (Oct 10 2023), a tool for extracting the contents of "
-            "archive files.",
+            (
+                "unar v1.10.7 (Oct 10 2023), a tool for extracting the contents of "
+                "archive files."
+            ),
             cli.Banner(identified=True, version=(1, 10, 7)),
         ),
         ("unar v1.10.1\n", cli.Banner(identified=False, version=None)),
@@ -941,11 +949,13 @@ def test_digest_checked_pipe_ignores_the_exit_status() -> None:
 
 @requires_binary("unar")
 def test_refusal_names_the_way_out() -> None:
-    with open_archive(
-        _RAR / "encryption__rar4.rar", config=_UNAR, password="password"
-    ) as archive:
-        with pytest.raises(UnsupportedFeatureError) as info:
-            archive.read("secret.txt")
+    with (
+        open_archive(
+            _RAR / "encryption__rar4.rar", config=_UNAR, password="password"
+        ) as archive,
+        pytest.raises(UnsupportedFeatureError) as info,
+    ):
+        archive.read("secret.txt")
     assert "rar_decompressor to 'unrar'" in str(info.value)
 
 

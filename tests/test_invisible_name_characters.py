@@ -86,9 +86,11 @@ def test_zero_width_space_is_reported_and_both_files_extract(
 
 def test_strict_refuses_a_zero_width_character(tmp_path: Path) -> None:
     archive = _archive(tmp_path, "zip", ["invoice.pdf", "invoice\u200b.pdf"])
-    with archivey.open_archive(archive, config=_policy(DiagnosticPolicy.STRICT)) as r:
-        with pytest.raises(DiagnosticRaisedError) as excinfo:
-            r.members()
+    with (
+        archivey.open_archive(archive, config=_policy(DiagnosticPolicy.STRICT)) as r,
+        pytest.raises(DiagnosticRaisedError) as excinfo,
+    ):
+        r.members()
     assert excinfo.value.diagnostic.code is _ZERO_WIDTH
 
 
@@ -103,18 +105,22 @@ def test_strict_does_not_refuse_an_invisible_character(tmp_path: Path) -> None:
 
 def test_pedantic_refuses_an_invisible_character(tmp_path: Path) -> None:
     archive = _archive(tmp_path, "zip", ["a\u200db.txt"])
-    with archivey.open_archive(archive, config=_policy(DiagnosticPolicy.PEDANTIC)) as r:
-        with pytest.raises(DiagnosticRaisedError) as excinfo:
-            r.members()
+    with (
+        archivey.open_archive(archive, config=_policy(DiagnosticPolicy.PEDANTIC)) as r,
+        pytest.raises(DiagnosticRaisedError) as excinfo,
+    ):
+        r.members()
     assert excinfo.value.diagnostic.code is _INVISIBLE
 
 
 def test_raise_on_refuses_an_invisible_character(tmp_path: Path) -> None:
     archive = _archive(tmp_path, "zip", ["a\u200db.txt"])
     policy = DiagnosticPolicy(raise_on=frozenset({"member_name_invisible_character"}))
-    with archivey.open_archive(archive, config=_policy(policy)) as reader:
-        with pytest.raises(DiagnosticRaisedError) as excinfo:
-            reader.members()
+    with (
+        archivey.open_archive(archive, config=_policy(policy)) as reader,
+        pytest.raises(DiagnosticRaisedError) as excinfo,
+    ):
+        reader.members()
     assert excinfo.value.diagnostic.code is _INVISIBLE
 
 

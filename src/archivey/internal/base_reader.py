@@ -11,13 +11,14 @@ from collections.abc import (
     Callable,
     Collection,
     Generator,
+    Hashable,
     Iterator,
     Mapping,
     Sequence,
-    Set,
+    Set as AbstractSet,
 )
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -62,6 +63,7 @@ from archivey.exceptions import (
     PackageNotInstalledError,
     ReadError,
     ResourceLimitError,
+    ResourceUnavailableError,
     UnsupportedFeatureError,
     _UsageTypeError,
     _UsageValueError,
@@ -83,8 +85,7 @@ from archivey.internal.enum_args import coerce_enum, coerce_enum_collection
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.format_provenance import FormatProvenance
 from archivey.internal.listing_limits import ListingLimitTracker
-from archivey.internal.logs import backends as logger
-from archivey.internal.logs import integrity as integrity_logger
+from archivey.internal.logs import backends as logger, integrity as integrity_logger
 from archivey.internal.measurement import (
     ByteCounter,
     IoStats,
@@ -105,6 +106,7 @@ from archivey.internal.reader_state import (
     LiveStreamReservation,
     ReaderState,
 )
+from archivey.internal.resource_usage import ResourceUsage, ResourceUsageRecorder
 from archivey.internal.selection import (
     CollectionSelector,
     normalize_member_selector,
@@ -130,6 +132,7 @@ from archivey.internal.streams.streamtools import (
     read_exact,
     source_byte_size,
 )
+from archivey.internal.streams.verify import CustomDigests
 from archivey.internal.timestamps import TimestampIssue
 from archivey.internal.windows_reparse import (
     REPARSE_HEADER_BYTES,
@@ -286,6 +289,19 @@ def _settle_listing(
             member._size_unread = False
 
 
+class SolidRun(NamedTuple):
+    """Where an ``open()`` starts decoding: :meth:`BaseArchiveReader._solid_run`.
+
+    ``key`` names the run (a 7z folder, a solid RAR archive), and every open of a member
+    in it decodes from the run's start: ``offset`` is the member's first byte in the
+    run's decoded output, ``size`` its length.
+    """
+
+    key: Hashable
+    offset: int
+    size: int
+
+
 @dataclass(frozen=True)
 class _Materialized:
     """The published member listing: the report, frozen when the walk is published.
@@ -417,6 +433,10 @@ class ReadBackend(ABC):
     # Name of the optional dependency this backend needs (e.g. "pycdlib"); the registry
     # derives availability centrally from whether it imports. ``None`` for core backends.
     OPTIONAL_DEPENDENCY: str | None = None
+    # More modules the backend imports, checked after ``OPTIONAL_DEPENDENCY`` the same
+    # way. Only plugin backends set it (``FormatPlugin.requires``); ``INSTALL_HINT``
+    # covers them all.
+    REQUIRED_MODULES: tuple[str, ...] = ()
     # Human-readable install hint surfaced when the dependency is absent
     # (e.g. "pip install archivey[recommended]").
     INSTALL_HINT: str | None = None
@@ -471,6 +491,35 @@ class ReadBackend(ABC):
         ...
 
 
+def special_file_has_data_report(
+    member: ArchiveMember,
+) -> tuple[DiagnosticCode, str, SpecialFileDataContext]:
+    """The ``MEMBER_SPECIAL_FILE_HAS_DATA`` report for a ``FILE`` whose stored type is
+    a device, FIFO or socket (``extra["special_file_type"]`` is set): its code, message
+    and context, without the archive name or member id."""
+    special = member.extra.get(EXTRA_SPECIAL_FILE_TYPE)
+    assert isinstance(special, str)
+    size = member.size
+    stored = "data" if size is None else f"{size} bytes"
+    # "unknown" stands for file-type bits no Unix type uses; the four named
+    # kinds read as nouns.
+    kind = (
+        "an unrecognized file type"
+        if special == "unknown"
+        else f"a {special.replace('_', ' ')}"
+    )
+    return (
+        DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA,
+        (
+            f"Member {quoted(member.name)} is listed as a file: the archive marks it "
+            f"as {kind} and stores {stored} for it."
+        ),
+        SpecialFileDataContext(
+            member_name=member.name, special_file_type=special, size=size
+        ),
+    )
+
+
 class BaseArchiveReader(ArchiveReader):
     """Internal helper base for all format readers — the backend contract lives here.
 
@@ -511,6 +560,9 @@ class BaseArchiveReader(ArchiveReader):
 
     **MAY override**:
 
+    - ``_solid_run(member)`` — where ``open()`` starts decoding for ``member``, for a
+      backend whose every open decodes a shared run from its start. Feeds the
+      once-per-reader re-decode record; the default (``None``) never logs.
     - ``_iter_with_data()`` — see its own docstring. The default is correct for
       random-access / indexed backends only; **streaming / solid backends MUST override
       it** (correctness, not just efficiency). Streaming backends that override
@@ -564,6 +616,12 @@ class BaseArchiveReader(ArchiveReader):
         # pass another reader's identity check; and not a plain counter, whose small
         # sequential values invite confusion with member_id or hardcoding).
         self._archive_id = uuid.uuid4().hex
+        # How far open() has decoded each solid run (``_solid_run``), until one open
+        # decodes again bytes an earlier one decoded: that logs the advice once (an
+        # INFO record by ruling, not a diagnostic or a warnings.warn), and counting
+        # stops (``None``).
+        self._solid_decoded: dict[Hashable, tuple[int, int]] | None = {}
+        self._solid_decoded_lock = threading.Lock()
         # The archive's source, recorded by every backend's constructor. The reader owns
         # it: teardown closes it after ``_close_archive``. Also backs
         # ``compressed_source_size`` below.
@@ -649,6 +707,10 @@ class BaseArchiveReader(ArchiveReader):
         # Makes the test-and-set of ``_unconfirmed_failure_emitted`` one step.
         self._unconfirmed_failure_lock = threading.Lock()
         self._listing_tracker = ListingLimitTracker(self._config.listing_limits)
+        # How close this reader came to each reader-lifetime limit (private; read by
+        # the scan script and ``archivey extract --dry-run``).
+        self._usage = ResourceUsageRecorder()
+        self._usage.watch_listing(self._listing_tracker)
         self._forward_pass_started: bool = False
         self._progressive_gen: Iterator[ArchiveMember] | None = None
         self._closed = False
@@ -1082,9 +1144,20 @@ class BaseArchiveReader(ArchiveReader):
         fill_size: bool = False,
         rewind_warning: RewindWarning | None = None,
         translate: ExceptionTranslator | None = None,
+        checks_content: bool = False,
+        custom_digests: CustomDigests | None = None,
+        bounded: bool = False,
     ) -> ArchiveStream:
         """Wrap a raw member stream so read/seek errors route through the backend's
         translator and are stamped with format/archive/member context.
+
+        ``checks_content`` says that ``inner`` checks every byte against a checksum of
+        its own when read from the start to the end, and raises on a mismatch (a
+        plugin's ``MemberData.checked``): such a read counts as ``CONTENT``.
+        ``custom_digests`` are digests whose hasher the caller supplies (a plugin's
+        ``MemberData.digests``), checked as ``expected_hashes`` are. ``bounded`` says
+        ``inner`` never returns a byte past ``expected_size`` (a plugin's
+        ``MemberData.bounded``): the read past the end that looks for one is skipped.
 
         Backends return ``_wrap_member_stream(raw, member.name, size=member.size)`` from
         ``_open_member`` so a decode error surfaces as a stamped ``ArchiveyError`` rather
@@ -1166,6 +1239,9 @@ class BaseArchiveReader(ArchiveReader):
                 archive_name=self._archive_name,
                 rewind_warning=rewind_warning,
                 member_name=member_name,
+                checks_content=checks_content,
+                custom_digests=custom_digests,
+                bounded=bounded,
             )
 
         assert inner is not None
@@ -1192,6 +1268,9 @@ class BaseArchiveReader(ArchiveReader):
             archive_name=self._archive_name,
             rewind_warning=rewind_warning,
             member_name=member_name,
+            checks_content=checks_content,
+            custom_digests=custom_digests,
+            bounded=bounded,
         )
 
     @abstractmethod
@@ -1313,7 +1392,14 @@ class BaseArchiveReader(ArchiveReader):
                 f"Format identification was unconfirmed ({evidence_short}); "
                 f"the source may not be {stamped_format}."
             )
-            if isinstance(exc, ResourceLimitError):
+            if isinstance(exc, ResourceUnavailableError):
+                # The system ran short, maybe part-way through (a decoder process
+                # killed from outside), so no limit is to blame and output may exist.
+                new_msg = (
+                    f"{unconfirmed} The read was stopped because the system ran short: "
+                    f"{detail}. Partial output may already have been produced"
+                )
+            elif isinstance(exc, ResourceLimitError):
                 # A limit stops the read rather than the decoder failing on it, and a
                 # decoder-memory refusal stops it before anything is decoded, so
                 # neither "decode failed" nor "partial output" would be true of it.
@@ -2238,29 +2324,12 @@ class BaseArchiveReader(ArchiveReader):
         ``member``. ``member_id`` is the walk position, as for
         :meth:`_emit_timestamp_invalid`, or ``None`` when neither the caller nor the
         member has one (a re-type in :meth:`_apply_reparse_data`)."""
-        special = member.extra.get(EXTRA_SPECIAL_FILE_TYPE)
-        assert isinstance(special, str)
-        size = member.size
-        stored = "data" if size is None else f"{size} bytes"
-        # "unknown" stands for file-type bits no Unix type uses; the four named
-        # kinds read as nouns.
-        kind = (
-            "an unrecognized file type"
-            if special == "unknown"
-            else f"a {special.replace('_', ' ')}"
-        )
+        code, message, context = special_file_has_data_report(member)
         self._diagnostics_collector.emit(
-            code=DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA,
-            message=(
-                f"Member {quoted(member.name)} is listed as a file: the archive marks "
-                f"it as {kind} and stores {stored} for it."
-            ),
-            context=SpecialFileDataContext(
-                archive_name=self._archive_name,
-                member_name=member.name,
-                member_id=member_id,
-                special_file_type=special,
-                size=size,
+            code=code,
+            message=message,
+            context=replace(
+                context, archive_name=self._archive_name, member_id=member_id
             ),
             member=member,
             attach_to_member=True,
@@ -2350,8 +2419,15 @@ class BaseArchiveReader(ArchiveReader):
                 logger=integrity_logger,
             )
 
+        def key_in_doubt() -> bool:
+            return (check() if callable(check) else check) is not None
+
         return UnverifiedPasswordReadWatch(
-            stream, size=size, on_unverified=report, seek_forfeits=seek_forfeits
+            stream,
+            size=size,
+            on_unverified=report,
+            seek_forfeits=seek_forfeits,
+            key_in_doubt=key_in_doubt,
         )
 
     def _read_link_target_data(
@@ -2384,7 +2460,8 @@ class BaseArchiveReader(ArchiveReader):
 
         Both reads ask for one byte past what they need. On a member that is exactly
         that long, the extra byte reaches end of stream, so its checksum is verified as
-        a whole read would.
+        a whole read would. On a reparse buffer, a byte there means the data runs on
+        past the buffer, which then does not parse as one.
         """
         if not self._link_data_refused_by_size(
             member, is_reparse_point=is_reparse_point
@@ -2637,7 +2714,7 @@ class BaseArchiveReader(ArchiveReader):
         else:
             index[member.name] = [held, member]
 
-    def _unindex_members(self, name: str, gone: Set[int]) -> None:
+    def _unindex_members(self, name: str, gone: AbstractSet[int]) -> None:
         """Take the members whose ``id()`` is in ``gone`` out of ``name``'s entry.
 
         By identity: a duplicate can compare equal to the member being removed. ``gone``
@@ -3272,9 +3349,20 @@ class BaseArchiveReader(ArchiveReader):
             bound = False
             stream: ArchiveStream | None = None
             try:
-                stream = self._open_with_link_follow(member, visited=set())
+                opened: list[ArchiveMember] = []
+                stream = self._open_with_link_follow(
+                    member, visited=set(), opened=opened
+                )
+                # Asked before the bind: from here a raise still closes the stream.
+                run = (
+                    self._solid_run(opened[0])
+                    if self._solid_decoded is not None
+                    else None
+                )
                 registered = self._register_public_stream(stream, token=reservation)
                 bound = True
+                if run is not None:
+                    self._note_solid_open(opened[0], run)
                 return registered
             finally:
                 if not bound:
@@ -3282,7 +3370,7 @@ class BaseArchiveReader(ArchiveReader):
                     if stream is not None:
                         try:
                             stream.close()
-                        except Exception as close_exc:  # noqa: BLE001 - attach, don't replace
+                        except Exception as close_exc:
                             # Don't replace the in-flight open/register error.
                             if pending is not None:
                                 pending.add_note(
@@ -3299,12 +3387,74 @@ class BaseArchiveReader(ArchiveReader):
         finally:
             self._state.release_worker(token)
 
+    def _resource_usage(self) -> ResourceUsage:
+        """How close this reader has come to each reader-lifetime limit so far."""
+        return self._usage.snapshot()
+
+    def _solid_run(self, member: ArchiveMember) -> SolidRun | None:
+        """Where ``open(member)`` starts decoding, when it decodes a shared run.
+
+        ``None`` (the default) when the open does not decode bytes of other members:
+        a member of its own, or a backend that keeps one decoder position across opens
+        (compressed TAR, whose backward seeks ``STREAM_REWIND_REDECOMPRESSES``
+        reports). A backend whose every open decodes the member's solid run from its
+        start (7z folders, solid RAR) returns that run. Must not raise or decode: it
+        reads the member's listed position only.
+        """
+        del member
+        return None
+
+    def _note_solid_open(self, member: ArchiveMember, run: SolidRun) -> None:
+        """Log once per reader when an ``open()`` decodes again what an earlier did.
+
+        ``run`` is ``member``'s :meth:`_solid_run`, and the open already succeeded, so
+        this only counts and logs: it must not raise. The open decoded the run from its
+        start through ``run.offset + run.size``. Per run the reader keeps how far opens
+        have decoded and how far they discarded (the largest ``offset``). This open
+        decodes again the part of its discarded prefix that an earlier open decoded,
+        plus the part of its own member an earlier open decoded and discarded. A
+        member's own bytes do not count when the same member is read again, since a
+        non-solid archive pays that too; the prefix it decodes again does. On the
+        first open that decodes anything again the record is INFO on
+        ``archivey.backends``: the caller may have chosen the pattern, and
+        ``reader.cost`` and the ``open()`` docstring already carry the cost.
+        """
+        end = run.offset + run.size
+        with self._solid_decoded_lock:
+            decoded = self._solid_decoded
+            if decoded is None:
+                return
+            decoded_to, discarded_to = decoded.get(run.key, (0, 0))
+            again = min(run.offset, decoded_to) + max(
+                0, min(end, discarded_to) - run.offset
+            )
+            if again <= 0:
+                decoded[run.key] = (
+                    max(decoded_to, end),
+                    max(discarded_to, run.offset),
+                )
+                return
+            self._solid_decoded = None
+        logger.info(
+            "Archive %r is solid: opening %r decoded again %d bytes an earlier open() "
+            "on this reader had decoded, because each open() or read() decodes its "
+            "member's solid block from the start. Reading many members this way is "
+            "quadratic in the block size; stream_members() decodes each block once. "
+            "Logged once per reader.",
+            self._archive_name or "(unnamed source)",
+            member.name,
+            again,
+        )
+
     def _open_with_link_follow(
         self,
         member: ArchiveMember,
         visited: set[int],
+        opened: list[ArchiveMember] | None = None,
     ) -> ArchiveStream:
         """Open ``member``, following links hop by hop until a non-link member.
+
+        ``opened``, when given, receives the member whose data the stream reads.
 
         A loop, not recursion: an archive's chain can be longer than the interpreter's
         recursion limit, and ``RecursionError`` is outside the library's error contract.
@@ -3373,6 +3523,8 @@ class BaseArchiveReader(ArchiveReader):
                 "declares no data (not a file)",
                 refused_member_type=current.type,
             )
+        if opened is not None:
+            opened.append(current)
         return self._open_member(current)
 
     def read(self, member: str | ArchiveMember) -> bytes:
@@ -3597,16 +3749,23 @@ class BaseArchiveReader(ArchiveReader):
             _dry_run_top_level=coordinator.dry_run_top_level,
             _dry_run_links=coordinator.dry_run_links,
             _dry_run_entries=coordinator.dry_run_entries,
+            _resource_usage=self._resource_usage(),
         )
 
     def close(self) -> None:
         """Close the reader.
 
-        Idempotent. With declared concurrency, blocks until in-flight worker
-        ``open()`` / ``read()`` / ``get()`` / ``members()`` calls return, then marks the
-        reader closed. Still-open member streams are then closed, matching
-        ``zipfile.ZipFile.close()`` / ``tarfile.TarFile.close()``: a member stream does
-        not outlive the reader it came from.
+        Idempotent. With declared concurrency, blocks until in-flight worker ``open()``
+        / ``get()`` / ``members()`` calls return (``read()`` is one only while it opens
+        the member), then marks the reader closed. Still-open member streams are then
+        closed, matching ``zipfile.ZipFile.close()`` / ``tarfile.TarFile.close()``: a
+        member stream does not outlive the reader it came from.
+
+        In both modes, a member stream's own ``read()`` is not a worker call:
+        ``close()`` closes the stream under it, and the stream's next ``read()`` raises
+        ``ValueError``, as for any closed file. A read already running when the stream
+        closes returns what it had or raises the same ``ValueError``, never a damage
+        error.
 
         Without ``CONCURRENT``, ``close()`` still raises if a worker call or reader-wide
         pass is actively executing, and the reader stays open. A ``stream_members()`` or
@@ -3872,7 +4031,7 @@ class _TranslatedErrorBoundary:
     chained via ``from``.
     """
 
-    __slots__ = ("_reader", "_member_name", "_stamp_encryption")
+    __slots__ = ("_member_name", "_reader", "_stamp_encryption")
 
     def __init__(
         self,

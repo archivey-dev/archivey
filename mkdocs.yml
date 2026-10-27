@@ -1,17 +1,20 @@
 site_name: Archivey
 site_description: Read, stream, and safely extract archives behind one uniform interface.
-site_url: https://davitf.github.io/archivey/
+site_url: https://archivey-dev.github.io/archivey/
 
 nav:
   - Home: index.md
   - Install: install.md
+  - Cheat sheet: cheat-sheet.md
   - Opening an archive: opening.md
   - Choosing how to read: reading.md
   - Extracting: extracting.md
   - Security: security.md
   - Errors and diagnostics: errors-and-diagnostics.md
   - Command line: cli.md
+  - Recipes: recipes.md
   - Formats and extras: formats.md
+  - Adding a format: adding-a-format.md
   - Migrating from other libraries: migrating.md
   - Philosophy: philosophy.md
   - How it works: how-it-works.md
@@ -41,6 +44,46 @@ plugins:
               - griffe_fieldz
               - scripts/griffe_extensions.py
   - autorefs
+  # llms.txt (https://llmstxt.org) at the site root, llms-full.txt with every page
+  # below in one file, and a Markdown copy of each listed page next to its HTML
+  # (opening/index.md beside opening/index.html), for coding agents. A page missing
+  # from `sections` gets no copy, so every page of `nav` is listed here too;
+  # scripts/check_docs_nav.py fails on one that is not.
+  - llmstxt:
+      full_output: llms-full.txt
+      # Points `page/#anchor` links at the Markdown copy, as the plugin already does
+      # for `page/`.
+      preprocess: scripts/llmstxt_preprocess.py
+      markdown_description: >-
+        Archivey is a Python library (`pip install archivey`, `import archivey`) that
+        reads ZIP, TAR, 7z, RAR, ISO and single compressed files through one API:
+        `archivey.open_archive(path)` returns a reader with `members()`, `get()`,
+        `read()`, `open()`, `stream_members()` and `extract_all()`. It is not a
+        wrapper around zipfile or tarfile, and their method names do not apply. Start
+        with the cheat sheet; the API reference has every signature.
+      sections:
+        Start here:
+          - index.md: Install, open, list, read, stream and extract in five short examples
+          - cheat-sheet.md: The main calls, what they return and raise, safe defaults, and zipfile/tarfile equivalents
+          - install.md: PyPI extras, the unrar or unar program RAR needs, supported Pythons
+        Using archivey:
+          - opening.md: open_archive and open_stream sources, formats, passwords, name encodings, configuration
+          - reading.md: Solid archives, streaming=True, seekable_members and concurrent_operations
+          - extracting.md: extract_all arguments, extraction policies, overwrite, limits, filters
+          - security.md: What safe extraction guarantees, where it stops, and resource limits
+          - errors-and-diagnostics.md: The exception hierarchy, damaged archives, and non-fatal diagnostics
+          - cli.md: The archivey command (list, test, extract, info) and its exit codes
+          - recipes.md: Complete scripts for dataset downloads, HTTP streams, and checking uploaded archives
+          - formats.md: Per-format behaviour, extras each format needs, and format-specific member fields
+          - adding-a-format.md: Adding a read-only format from outside archivey with the provisional archivey.plugins API
+          - migrating.md: Equivalent calls and behaviour differences from zipfile, tarfile, py7zr and rarfile
+        Reference:
+          - api.md: Every public class, function and exception, generated from the docstrings
+        Background:
+          - philosophy.md: What archivey is for and the design choices behind its defaults
+          - how-it-works.md: How formats are recognized, structures read and member data decoded
+          - how-it-is-built.md: How changes are specified, reviewed and tested
+          - acknowledgements.md: Projects archivey adapts code from, learned from or depends on
 
 theme:
   name: material

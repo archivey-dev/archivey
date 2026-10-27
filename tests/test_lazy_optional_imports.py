@@ -131,6 +131,7 @@ def test_isolated_decoders_are_not_imported_by_the_caller() -> None:
         capture_output=True,
         text=True,
         timeout=120,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "imported=", proc.stdout

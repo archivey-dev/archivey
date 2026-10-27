@@ -26,7 +26,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.backends import rar_reader, rar_unrar
-from tests.conftest import requires, requires_binary
+from tests.conftest import requires, requires_binary, requires_unrar_cli
 
 _RAR = Path(__file__).parent / "fixtures" / "rar"
 _RAR5 = _RAR / "encryption_stored_sizes__.rar"
@@ -83,16 +83,18 @@ def test_members_decrypt_without_a_program(
 def test_decrypted_member_seeks(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
     _refuse_processes(monkeypatch)
     expected = _payload(3001)
-    with open_archive(
-        path, config=_NONE, password="password", seekable_members=True
-    ) as archive:
-        with archive.open("size_3001.bin") as stream:
-            assert stream.seekable()
-            assert stream.read(100) == expected[:100]
-            # Back, into the middle of a block, and past the last block boundary.
-            for offset in (37, 2999, 2992, 0, 3001):
-                stream.seek(offset)
-                assert stream.read() == expected[offset:]
+    with (
+        open_archive(
+            path, config=_NONE, password="password", seekable_members=True
+        ) as archive,
+        archive.open("size_3001.bin") as stream,
+    ):
+        assert stream.seekable()
+        assert stream.read(100) == expected[:100]
+        # Back, into the middle of a block, and past the last block boundary.
+        for offset in (37, 2999, 2992, 0, 3001):
+            stream.seek(offset)
+            assert stream.read() == expected[offset:]
 
 
 @requires("cryptography")
@@ -100,9 +102,11 @@ def test_rar5_wrong_password_is_refused_before_any_byte(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _refuse_processes(monkeypatch)
-    with open_archive(_RAR5, config=_NONE, password="wrong") as archive:
-        with pytest.raises(EncryptionError, match="Wrong password"):
-            archive.open("size_3000.bin")
+    with (
+        open_archive(_RAR5, config=_NONE, password="wrong") as archive,
+        pytest.raises(EncryptionError, match="Wrong password"),
+    ):
+        archive.open("size_3000.bin")
 
 
 @requires("cryptography")
@@ -136,9 +140,11 @@ def test_password_list_picks_the_right_one(
 @pytest.mark.parametrize("path", [_RAR5, _RAR4], ids=["rar5", "rar4"])
 def test_no_password_is_refused(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
     _refuse_processes(monkeypatch)
-    with open_archive(path, config=_NONE) as archive:
-        with pytest.raises(EncryptionError, match="Password required"):
-            archive.read("size_7.bin")
+    with (
+        open_archive(path, config=_NONE) as archive,
+        pytest.raises(EncryptionError, match="Password required"),
+    ):
+        archive.read("size_7.bin")
 
 
 @requires("cryptography")
@@ -155,11 +161,13 @@ def test_damaged_ciphertext_fails_the_checksum(
         offset = raw.data_offset + 1000
     data = bytearray(path.read_bytes())
     data[offset] ^= 0xFF
-    with open_archive(
-        io.BytesIO(bytes(data)), config=_NONE, password="password"
-    ) as archive:
-        with pytest.raises(CorruptionError, match="Digest mismatch"):
-            archive.read("size_3000.bin")
+    with (
+        open_archive(
+            io.BytesIO(bytes(data)), config=_NONE, password="password"
+        ) as archive,
+        pytest.raises(CorruptionError, match="Digest mismatch"),
+    ):
+        archive.read("size_3000.bin")
 
 
 def test_without_cryptography_under_none_names_the_package(
@@ -195,9 +203,11 @@ def test_without_cryptography_or_unrar_names_both(
     _refuse_processes(monkeypatch)
     _without_unrar(monkeypatch)
     monkeypatch.setattr(rar_reader, "_crypto_available", lambda: False)
-    with open_archive(_RAR5, config=_UNRAR, password="password") as archive:
-        with pytest.raises(PackageNotInstalledError) as info:
-            archive.read("size_7.bin")
+    with (
+        open_archive(_RAR5, config=_UNRAR, password="password") as archive,
+        pytest.raises(PackageNotInstalledError) as info,
+    ):
+        archive.read("size_7.bin")
     assert "unrar" in str(info.value)
     assert "cryptography" in str(info.value)
 
@@ -215,11 +225,13 @@ def test_without_unrar_reads_it(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_split_member_is_left_to_a_program(monkeypatch: pytest.MonkeyPatch) -> None:
     """Each part of a split member has its own encryption record."""
     _refuse_processes(monkeypatch)
-    with open_archive(
-        _RAR / "tinyvol_enc.part1.rar", config=_NONE, password="password"
-    ) as archive:
-        with pytest.raises(UnsupportedFeatureError, match="does not decrypt itself"):
-            archive.read("payload.bin")
+    with (
+        open_archive(
+            _RAR / "tinyvol_enc.part1.rar", config=_NONE, password="password"
+        ) as archive,
+        pytest.raises(UnsupportedFeatureError, match="does not decrypt itself"),
+    ):
+        archive.read("payload.bin")
 
 
 @requires_binary("unrar")
@@ -231,7 +243,7 @@ def test_split_member_reads_through_unrar() -> None:
 
 
 @requires("cryptography")
-@requires_binary("unrar")
+@requires_unrar_cli()
 @pytest.mark.parametrize("path", [_RAR5, _RAR4], ids=["rar5", "rar4"])
 def test_bytes_match_unrar(path: Path) -> None:
     with open_archive(path, config=_UNRAR, password="password") as archive:
@@ -325,10 +337,12 @@ def test_encrypted_rar4_symlink_target_under_a_wrong_password_is_not_damage(
 def test_encrypted_rar4_symlink_targets_without_cryptography() -> None:
     from unittest import mock
 
-    with mock.patch.object(rar_reader, "_crypto_available", lambda: False):
-        with open_archive(_SYMLINKS_RAR4, config=_NONE, password="password") as a:
-            assert set(_link_targets(a).values()) == {None}
-            assert _unavailable_reasons(a) == ["target_data_encrypted"] * 4
+    with (
+        mock.patch.object(rar_reader, "_crypto_available", lambda: False),
+        open_archive(_SYMLINKS_RAR4, config=_NONE, password="password") as a,
+    ):
+        assert set(_link_targets(a).values()) == {None}
+        assert _unavailable_reasons(a) == ["target_data_encrypted"] * 4
 
 
 @requires("cryptography")

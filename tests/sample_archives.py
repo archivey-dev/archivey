@@ -763,12 +763,12 @@ READER_PACKAGES: dict[str, tuple[str, ...]] = {
 }
 
 # External binaries the *reader* needs for member DATA. RAR lists natively but reads
-# member data through RARLAB ``unrar`` (only a stored, unencrypted member takes the
-# direct sliced view — see ``rar_reader``). ``format_availability(RAR)`` names
-# ``unrar`` as missing but reports PARTIAL, so RAR stays in list_supported_formats()
-# and these rows need their own gate. Unlike BUILDER_BINARIES, a committed fixture
-# does **not** substitute for these: it saves you from writing the archive, not from
-# reading it.
+# member data through RARLAB ``unrar`` or ``rar`` 6.0+ (only a stored, unencrypted
+# member takes the direct sliced view — see ``rar_reader``).
+# ``format_availability(RAR)`` names ``unrar`` as missing but reports PARTIAL, so RAR
+# stays in list_supported_formats() and these rows need their own gate. Unlike
+# BUILDER_BINARIES, a committed fixture does **not** substitute for these: it saves you
+# from writing the archive, not from reading it.
 READER_BINARIES: dict[str, tuple[str, ...]] = {
     "rar": ("unrar",),
 }
@@ -792,7 +792,7 @@ def skip_unless_runnable(entry: CorpusEntry, key: str) -> None:
     import pytest
 
     from archivey import FormatSupport, format_availability
-    from tests.conftest import _has_zstd_backend
+    from tests.conftest import _has_zstd_backend, binary_refusal
 
     availability = format_availability(FORMAT_KEYS[key])
     if availability.support is FormatSupport.NONE:
@@ -803,8 +803,9 @@ def skip_unless_runnable(entry: CorpusEntry, key: str) -> None:
         if importlib.util.find_spec(package) is None:
             pytest.skip(f"reader needs package {package!r}")
     for binary in READER_BINARIES.get(key, ()):
-        if shutil.which(binary) is None:
-            pytest.skip(f"reader needs binary {binary!r}")
+        # archivey's own rule for the program, not just a name on PATH.
+        if (refusal := binary_refusal(binary)) is not None:
+            pytest.skip(f"reader needs binary {binary!r}: {refusal}")
     for package in BUILDER_PACKAGES.get(key, ()):
         if package == "_zstd_backend":
             if not _has_zstd_backend():

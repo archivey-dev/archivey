@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Find the shortest member that Debian's patched ``unar`` writes as nothing.
 
 Usage (from the repo root)::

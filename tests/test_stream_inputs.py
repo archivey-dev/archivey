@@ -178,7 +178,7 @@ def _tar_member(compression: str) -> Callable[[Path], BinaryIO]:
             info.size = len(CONTENT)
             t.addfile(info, io.BytesIO(CONTENT))
         buf.seek(0)
-        member = tarfile.open(fileobj=buf, mode="r:*").extractfile("m.bin")
+        member = tarfile.open(fileobj=buf, mode="r:*").extractfile("m.bin")  # noqa: SIM115 - the handle outlives this statement; its owner closes it
         assert member is not None
         return member
 
@@ -256,7 +256,7 @@ def _short_read_bytesio(_tmp_path: Path) -> BinaryIO:
 
 def _spooled_tempfile(_tmp_path: Path) -> BinaryIO:
     # Common for buffering uploads/downloads in memory then spilling to disk.
-    f = tempfile.SpooledTemporaryFile(max_size=len(CONTENT) // 2)  # forced to spill
+    f = tempfile.SpooledTemporaryFile(max_size=len(CONTENT) // 2)  # forced to spill  # noqa: SIM115 - the handle outlives this statement; its owner closes it
     f.write(CONTENT)
     f.seek(0)
     return f
@@ -265,7 +265,7 @@ def _spooled_tempfile(_tmp_path: Path) -> BinaryIO:
 def _named_tempfile(_tmp_path: Path) -> BinaryIO:
     # _TemporaryFileWrapper: fully duck-types BinaryIO but is NOT an io.IOBase, so this
     # exercises the duck-typed branch of is_stream() on a real-world object.
-    f = tempfile.NamedTemporaryFile()
+    f = tempfile.NamedTemporaryFile()  # noqa: SIM115 - the handle outlives this statement; its owner closes it
     f.write(CONTENT)
     f.seek(0)
     return f
@@ -624,8 +624,8 @@ def test_windows_pipe_seek_characterization() -> None:
     lines: list[str] = []
     raw_correct: bool | None = None
     for label, factory in (
-        ("buffered", lambda fd: open(fd, "rb")),
-        ("raw", lambda fd: open(fd, "rb", buffering=0)),
+        ("buffered", lambda fd: open(fd, "rb")),  # noqa: SIM115 - the handle outlives this statement; its owner closes it
+        ("raw", lambda fd: open(fd, "rb", buffering=0)),  # noqa: SIM115 - the handle outlives this statement; its owner closes it
     ):
         stream = factory(_patterned_pipe())
         try:
@@ -680,7 +680,7 @@ def test_nested_tar_member_feeds_zipfile() -> None:
         t.addfile(info, io.BytesIO(inner_bytes))
     tar_buf.seek(0)
 
-    member = tarfile.open(fileobj=tar_buf, mode="r").extractfile("inner.zip")
+    member = tarfile.open(fileobj=tar_buf, mode="r").extractfile("inner.zip")  # noqa: SIM115 - the handle outlives this statement; its owner closes it
     assert member is not None
     assert is_seekable(member)
     with zipfile.ZipFile(ensure_binaryio(member)) as inner:

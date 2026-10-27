@@ -332,9 +332,11 @@ def _lying_descriptor(field: str, value: int) -> bytes:
     """One bit-3 deflated member with 8-byte descriptor sizes, its descriptor's
     ``field`` (``"size"`` or ``"crc"``) set to ``value``, cut inside the directory."""
     out = NonSeekableSink()
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
-        with zf.open("a.txt", "w", force_zip64=True) as member:
-            member.write(b"hello world")
+    with (
+        zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf,
+        zf.open("a.txt", "w", force_zip64=True) as member,
+    ):
+        member.write(b"hello world")
     data = bytearray(out.getvalue())
     at = data.index(b"PK\x07\x08")
     if field == "size":

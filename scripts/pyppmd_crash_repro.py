@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Minimal ``pyppmd`` native-abort repro (no archivey / no py7zr).
 
 For upstream bug reports and version bisects. Only needs ``pyppmd`` (+ stdlib).

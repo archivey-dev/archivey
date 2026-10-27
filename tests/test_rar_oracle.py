@@ -12,7 +12,7 @@ from archivey.types import (
     EXTRA_RAR_EXTRACT_VERSION,
     CompressionAlgorithm,
 )
-from tests.conftest import requires, requires_binary
+from tests.conftest import requires, requires_unrar_cli
 from tests.sample_archives import CORPUS, CorpusEntry, corpus_archive_path
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
@@ -89,7 +89,7 @@ def _assert_timestamps_match(member, info) -> None:
 
 
 @requires("rarfile")
-@requires_binary("unrar")
+@requires_unrar_cli()
 @pytest.mark.parametrize(("name", "password"), _ORACLE_FIXTURES)
 def test_native_rar_matches_rarfile_metadata_and_bytes(
     name: str, password: str | None
@@ -145,7 +145,7 @@ def test_native_rar_matches_rarfile_metadata_and_bytes(
 
 
 @requires("rarfile")
-@requires_binary("unrar")
+@requires_unrar_cli()
 @pytest.mark.parametrize(
     "entry",
     [

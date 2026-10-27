@@ -265,7 +265,7 @@ def test_passes_side_by_side(tmp_path: Path, make: Callable[[Path], Path]) -> No
     path = make(tmp_path)
     expected = _expected(path)
 
-    def drain(it):  # noqa: ANN001, ANN202 - test helper
+    def drain(it):
         return {m.name: s.read() for m, s in it if s is not None and m.is_current}
 
     with open_archive(path, concurrent_operations=True) as reader:
@@ -543,8 +543,8 @@ def test_7z_link_opened_from_another_thread_leaves_the_pass_decoder_alone() -> N
                 assert pass_link[0] is member
                 used: list[str] = []
 
-                def counted(opener=pass_link[1]):  # noqa: ANN202 - test shim
-                    used.append(threading.current_thread().name)
+                def counted(opener=pass_link[1]):
+                    used.append(threading.current_thread().name)  # noqa: B023 - called within this iteration
                     return opener()
 
                 reader._pass_link = (member, counted, *pass_link[2:])  # type: ignore[attr-defined]
@@ -673,7 +673,7 @@ def test_call_during_the_pass_listing_waits_for_it(
     listing, release = threading.Event(), threading.Event()
     real_iter = reader._iter_members
 
-    def slow_iter():  # noqa: ANN202 - test shim
+    def slow_iter():
         members = real_iter()
         first = next(members)
         listing.set()

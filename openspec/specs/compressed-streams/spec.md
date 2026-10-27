@@ -598,30 +598,51 @@ output SHALL be re-decoded by the non-accelerated decoder over a fresh view of t
 source, which raises or confirms the empty stream. A seek before that first read does not
 bypass the check: on such a stream the accelerator clamps the seek to 0. Accelerator mode
 is a performance choice and SHALL NOT be observable as a difference in whether a corrupt
-source raises, with one exception. Where every byte of output is covered by checks the
-data itself declares, those checks give the verdict, and an accelerator MAY differ from
-the standard-library decoder on a stream-boundary malformation they cannot see: for a
-standalone multi-member gzip, a wrong ISIZE on a member other than the last, when every
-member's CRC-32 is still checked.
+source raises, with two exceptions. First, where every byte of output is covered by
+checks the data itself declares, those checks give the verdict, and an accelerator MAY
+differ from the standard-library decoder on a stream-boundary malformation they cannot
+see: for a standalone multi-member gzip, a wrong ISIZE on a member other than the last,
+when every member's CRC-32 is still checked. Second, rapidgzip on a container member's
+raw DEFLATE data MAY read a second stream as content (below).
 
 A container member's compressed data (a ZIP member's, a 7z coder's declared input) is
 one stream of its codec and nothing else. A byte of it the codec leaves after the
-stream's end, a zero byte too, and a second stream there SHALL raise
-`CorruptionError`, after the output before that end has been delivered, whatever the
-declared size and CRC cover, with the accelerator on or off: an accelerator that reads
-on past the first stream hands the read to the standard-library decoder there, which
-refuses it. 7-Zip 23.01 fails such a member ("There are some data after the end of the
-payload data", or "Data Error"), and the bytes may hide a second payload. A ZIP
-Zstd member is one frame, so a second frame there SHALL raise too. The exception is a
-7z Zstd or LZ4 coder, whose concatenated frames are read as one stream: a further frame
-is content that counts against the declared size and CRC, and only bytes after the
-last frame that start no frame SHALL raise. A codec that
-stops at a declared output size (LZMA1 without an end marker, PPMd) SHALL raise the
-same way when its input goes on past that size; such a cut leaves input over, so it is
-not a `TruncatedError`. A standalone compressed file keeps reporting the bytes after its
+stream's end, a zero byte too, and a second stream there SHALL raise `CorruptionError`,
+after the output before that end has been delivered, whatever the declared size and CRC
+cover, with the accelerator on or off: an accelerator that reads on past the first
+stream hands the read to the standard-library decoder there, which refuses it. 7-Zip
+23.01 fails such a member ("There are some data after the end of the payload data", or
+"Data Error"), and the bytes may hide a second payload. The exception is a ZIP Zstd
+member and a 7z Zstd or LZ4 coder, whose concatenated frames are read as one stream, as
+RFC 8878 defines Zstd data as one or more frames and the LZ4 frame format lets frames be
+appended: a further frame is content that counts against the declared size and CRC, and
+only bytes after the last frame that start no frame SHALL raise. A codec that stops at a
+declared output size (LZMA1 without an end marker, PPMd) SHALL raise the same way when
+its input goes on past that size; such a cut leaves input over, so it is not a
+`TruncatedError`. A standalone compressed file keeps reporting the bytes after its
 streams as `ARCHIVE_TRAILING_DATA` instead.
 
-A wrong ISIZE on the last member of a one-member gzip is not among them, whatever follows
+rapidgzip on a container member's raw DEFLATE data is the second exception, to that
+rule and to the parity above. rapidgzip does not report where a stream ends, and it
+reads on into a second stream. When its output ends, zlib SHALL decode only the tail,
+from the last point of rapidgzip's complete index before the end (or from the start
+when there is none), to find a final block and any input after it. A decode from the
+start would cost as much as the standard-library read that the accelerator replaces;
+where the index has no point the check is that decode, and the read costs what it did
+without the tail check. So when a second DEFLATE stream holds that point, the check
+sees only that stream's end, and the member MAY read as both streams when its declared
+size and CRC cover both. With the accelerator off it raises `CorruptionError`, and
+7-Zip and Info-ZIP read the first stream and fail the CRC. No known writer makes such a
+member. Where rapidgzip places its points, and so which stream holds the last one,
+depends on the data, on how many threads it runs (which follows the core count) and on
+the platform: on Linux and macOS a member of a few MiB had several, and on the
+windows-latest CI runner a ZIP member's index held none past 0. A second stream that
+does not hold it, junk, zero bytes and a cut stream keep the standard library's
+verdict. zlib parses only the tail: the output before the point is rapidgzip's, checked
+by the member's CRC where the container declares one.
+
+A wrong ISIZE on the last member of a one-member gzip is not among the stream-boundary
+malformations of the first exception, whatever follows
 the member. The accelerator reads the output through a CRC-32 and finds the trailer as the
 one place near the end of the file where that CRC-32 occurs: it looks from 72 bytes before
 the end of the non-zero data to 12 bytes after it, and takes the file as ending with the
@@ -631,15 +652,36 @@ trailer, overlapping it or reaching back into the compressed data, leaves the re
 as a second occurrence, so it does not stand in for the trailer. Not excluded: a copy more
 than 56 bytes after the end of the real trailer, which needs rapidgzip to read past that
 many bytes that are not a further member without an error; rapidgzip 0.16 raises on ten or
-more. Two limitations remain, both of the further-member scan that decides a multi-member
-file (the CRC-32 of the whole output is not the last member's, so it finds no trailer
-there): the scan stands down at the first further member it confirms, so with three or
-more members a wrong ISIZE on the last one reads clean too; and a further member counts
-once zlib has decoded 64 KiB of its input without an error, so a large last member's wrong
-ISIZE is not seen either. These hold where the rapidgzip build does not compare the size
-itself; one that does (its own chunk decoder, as in the macOS wheels) raises, and the
-accelerator gives the standard library's error. When a seek has skipped output, there is
-no CRC-32 of it, and the last four bytes of the file stand in as the ISIZE.
+more. In a file of several members the CRC-32 of the whole output is not the last
+member's, so it finds no trailer there. A further member that zlib confirms says only that
+the file has several members, not that the last one is whole: rapidgzip ends a last member
+cut right after its header with no error, at the end of the file. So the accelerator SHALL
+also find the last member's trailer, the eight bytes that end the file but for zero
+padding, and SHALL accept the file only when they hold the CRC-32 and the length mod 2**32
+of the last that-many bytes of the output. A wrong ISIZE or a cut on the last member,
+after any number of members before it and whatever its size, then gives the standard
+library's error. An empty last member (bgzip's end-of-file member) counts when zlib
+decodes it from a header in the 1 KiB before the end of the non-zero data, with only
+zeros after it. That CRC-32 SHALL come from the running CRC-32 of the output, saved every
+4 MiB of output, as `C(A + B) ^ crc32_combine(C(A), 0, len(B))` for the last `len(B)`
+bytes `B`, with `C(A)` carried on from the checkpoint before it by a read-back from the
+accelerator: at most four candidates, tried shortest first, each a read-back of at most
+4 MiB, whatever the size of the last member or the length a forged trailer states. A
+valid file of any size is so decided with no handover to the standard-library decoder.
+Not excluded: a crafted cut whose last eight bytes are made the CRC-32 and length of the
+end of the output, which takes choosing four bytes of the content. A last member of 4 GiB
+or more of output does not match, as its length is wrapped, and is read by the
+standard-library decoder, at the cost of a second decode.
+
+When a seek short of the end has skipped output, there is no CRC-32 of the whole output,
+and the last four bytes of the file stand in as the ISIZE of a file with no further
+member. In a file with a further member, the last member's trailer SHALL still be checked
+as above whatever the last four bytes say, and no candidate SHALL be accepted unchecked: a
+CRC-32 kept from where reading resumed covers a candidate that starts after that point,
+and for one that starts before it the skipped part is read back from the accelerator.
+That read-back SHALL be bounded, at most 64 MiB of output in all; a candidate past it
+hands the read to the standard-library decoder, which gives the right result at the cost
+of a second decode.
 
 #### Scenario: accelerator error parity
 
@@ -656,15 +698,19 @@ no CRC-32 of it, and the last four bytes of the file stand in as the ISIZE.
 | Case | Expected |
 | --- | --- |
 | `open_archive(corrupt.bz2, seekable_members=True).read(member)` | Raises, matching `seekable_members=False` |
-| A capability flag (`seekable_members`) | Never changes whether a corrupt source raises, except through the accelerator on the stream-boundary malformation listed above |
+| A capability flag (`seekable_members`) | Never changes whether a corrupt source raises, except through the accelerator on the stream-boundary malformations listed above |
 
 #### Scenario: a container member with input after its stream
 
 | Member | Accelerator `OFF` | Accelerator `ON` |
 | --- | --- | --- |
-| Two DEFLATE or bzip2 streams; declared size and CRC cover both, or the first only | `CorruptionError` | `CorruptionError` |
+| Two bzip2 streams; declared size and CRC cover both, or the first only | `CorruptionError` | `CorruptionError` |
+| Two DEFLATE streams; declared size and CRC cover the first only | `CorruptionError` | `CorruptionError` |
+| Two DEFLATE streams; declared size and CRC cover both, the last rapidgzip index point in the first | `CorruptionError` | `CorruptionError` |
+| Two DEFLATE streams; declared size and CRC cover both, the last rapidgzip index point in the second | `CorruptionError` | Decodes both |
 | One DEFLATE or bzip2 stream, then junk or zero bytes | `CorruptionError` | `CorruptionError` |
-| ZIP Zstd member with two frames | `CorruptionError` | — |
+| ZIP Zstd member with two frames; declared size and CRC cover both | Decodes both | — |
+| ZIP Zstd member with two frames; declared size and CRC cover the first only, or junk after the last | `CorruptionError` | — |
 | ZIP LZMA without an end marker, or 7z LZMA1, whose declared size is 1000 bytes short of its data | `CorruptionError` (not `TruncatedError`) | — |
 | ZIP PPMd8 or 7z PPMd, then junk, or a declared size 1000 bytes short of its data | `CorruptionError` (not `TruncatedError`) | — |
 | A `.bz2` file with junk after its stream | Content, and `ARCHIVE_TRAILING_DATA` | Content, and `ARCHIVE_TRAILING_DATA` |
@@ -748,7 +794,7 @@ inherited decoder leaves the parent's child alone, and a call on one SHALL raise
 
 A decoder child that ends during a request SHALL be reported by how it ended, and every
 later call on that decoder SHALL raise the same error: a fault signal (or its Windows
-status) SHALL raise `CorruptionError`; SIGKILL SHALL raise `ResourceLimitError`; any other
+status) SHALL raise `CorruptionError`; SIGKILL SHALL raise `ResourceUnavailableError`; any other
 end SHALL raise `ReadError`, which is not a verdict on the data. An exception the
 decoder raises in the child SHALL reach the codec's translator as the same type it
 would raise in-process, so a corrupt or truncated stream raises the same archivey
@@ -758,7 +804,7 @@ error under every value.
 
 | Case | Expected |
 | --- | --- |
-| The decoder child crashes / is killed by SIGKILL / by SIGTERM during a read | `CorruptionError` / `ResourceLimitError` / `ReadError`; every later read raises it again |
+| The decoder child crashes / is killed by SIGKILL / by SIGTERM during a read | `CorruptionError` / `ResourceUnavailableError` / `ReadError`; every later read raises it again |
 | A corrupt deflate stream under `NATIVE_DECODERS` | `CorruptionError`, the same message as `KNOWN_CRASHES`; that child is not reused |
 
 ### Requirement: Start failures, NONE and time limits
@@ -767,7 +813,7 @@ Under `NATIVE_DECODERS`, and for PPMd and rapidgzip `ON` under `KNOWN_CRASHES`, 
 child process can be started (a frozen application,
 an interpreter without `sys.executable`, an archivey imported from a zip with no worker
 script on disk, a spawn the operating system refuses), opening a decoder SHALL raise
-`ResourceLimitError` naming the reason and `process_isolation`; it MUST NOT decode
+`ResourceUnavailableError` naming the reason and `process_isolation`; it MUST NOT decode
 in-process. A decoder that needs a fresh child part-way through a member (a re-run, or
 the move past the replay record's bound) SHALL raise the same error the same failure
 raises at open. rapidgzip `AUTO` under `KNOWN_CRASHES` keeps falling back to the standard
@@ -775,7 +821,7 @@ library with one warning.
 
 Under `NONE` no child process SHALL be started for decoding. PPMd SHALL decode
 in-process at any size, a ZIP member with bit 3 set read from a non-seekable source
-included: as in a child, a member up to `max_ppmd_in_process_input` is held and handed
+included: as in a child, a member up to `max_ppmd_held_input` is held and handed
 to pyppmd whole, and a larger one, or one whose size is not known, is fed to it in pieces,
 which can crash the process on corrupt input. That risk is the one `NONE` accepts. rapidgzip SHALL NOT be used: `use_rapidgzip=AUTO` and `use_indexed_bzip2=AUTO`
 SHALL decode with the standard library without the warning that a child that cannot
@@ -788,8 +834,8 @@ The system SHALL NOT bound the time a decoder takes under any value.
 
 | Case | Expected |
 | --- | --- |
-| `NATIVE_DECODERS`, no child process can be started | `ResourceLimitError` naming `process_isolation`; nothing decoded in-process |
-| 7z PPMd member of 1 KB, default config, no child process can be started | `ResourceLimitError` naming `process_isolation` on the first read |
-| A decoder needs a fresh child part-way through a member, and none can start / the fresh child cannot allocate the PPMd model | `ResourceLimitError` naming `process_isolation` / `ResourceLimitError` "Decoder limit reached" |
-| 7z PPMd member of 200 KB compressed, `max_ppmd_in_process_input=1024`, `NONE` | Decoded in-process |
+| `NATIVE_DECODERS`, no child process can be started | `ResourceUnavailableError` naming `process_isolation`; nothing decoded in-process |
+| 7z PPMd member of 1 KB, default config, no child process can be started | `ResourceUnavailableError` naming `process_isolation` on the first read |
+| A decoder needs a fresh child part-way through a member, and none can start / the fresh child cannot allocate the PPMd model | `ResourceUnavailableError` naming `process_isolation` / `ResourceUnavailableError` saying the decoder process could not allocate the model |
+| 7z PPMd member of 200 KB compressed, `max_ppmd_held_input=1024`, `NONE` | Decoded in-process |
 | gzip stream opened seekable, `use_rapidgzip=AUTO`, `NONE` | Standard library decoder; no warning |

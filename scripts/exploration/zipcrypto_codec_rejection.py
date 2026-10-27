@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Measure how quickly stdlib ZIP codecs reject wrong-key / random input.
 
 Used to evidence-back the ZipCrypto multi-password confirmation bound
@@ -84,7 +83,7 @@ def _percentile(values: list[int], pct: float) -> float:
     ordered = sorted(values)
     if not ordered:
         return 0.0
-    idx = min(len(ordered) - 1, int(round((pct / 100.0) * (len(ordered) - 1))))
+    idx = min(len(ordered) - 1, round((pct / 100.0) * (len(ordered) - 1)))
     return float(ordered[idx])
 
 
@@ -233,21 +232,20 @@ def reject_via_zipfile(
     """Open an encrypted member with ``password`` and read until error or ``max_out``."""
     produced = 0
     try:
-        with zipfile.ZipFile(io.BytesIO(blob)) as zf:
-            with zf.open(name, pwd=password) as fh:
-                while produced < max_out:
-                    chunk = fh.read(64 * 1024)
-                    if not chunk:
-                        return RejectionSample(
-                            -1,  # zipfile doesn't expose ciphertext cursor
-                            produced,
-                            "eof_ok",
-                            "member read completed (CRC passed — false accept risk)",
-                        )
-                    produced += len(chunk)
-                return RejectionSample(
-                    -1, produced, "max_out", "hit decompressed bound without error"
-                )
+        with zipfile.ZipFile(io.BytesIO(blob)) as zf, zf.open(name, pwd=password) as fh:
+            while produced < max_out:
+                chunk = fh.read(64 * 1024)
+                if not chunk:
+                    return RejectionSample(
+                        -1,  # zipfile doesn't expose ciphertext cursor
+                        produced,
+                        "eof_ok",
+                        "member read completed (CRC passed — false accept risk)",
+                    )
+                produced += len(chunk)
+            return RejectionSample(
+                -1, produced, "max_out", "hit decompressed bound without error"
+            )
     except Exception as exc:  # noqa: BLE001 — record whatever zipfile/codec raises
         return RejectionSample(-1, produced, type(exc).__name__, str(exc)[:100])
 

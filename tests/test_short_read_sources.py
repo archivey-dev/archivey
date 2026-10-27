@@ -31,8 +31,13 @@ from archivey.exceptions import ArchiveyError
 from archivey.internal.backends.rar_parser import parse_rar_archive
 from archivey.internal.format_args import outer_stream_format
 from archivey.types import ArchiveFormat, ContainerFormat, MemberType
-from tests.sample_archives import CORPUS, FORMAT_KEYS, CorpusEntry, skip_unless_runnable
-from tests.sample_archives import corpus_archive_path as _corpus_archive_path
+from tests.sample_archives import (
+    CORPUS,
+    FORMAT_KEYS,
+    CorpusEntry,
+    corpus_archive_path as _corpus_archive_path,
+    skip_unless_runnable,
+)
 from tests.streams_util import (
     NonSeekableBytesIO,
     ShortReadBytesIO,

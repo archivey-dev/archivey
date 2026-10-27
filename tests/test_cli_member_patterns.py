@@ -204,8 +204,9 @@ def test_a_matching_pattern_wins_over_the_dash_d_hint(
 
 # --- One pass, and an empty selection fails the same way -------------------------
 
-# Larger than the 1 MiB rewind that the library warns about, so a second pass over
-# the compressed TAR shows on stderr. Zeros, so the file stays small.
+# Larger than the 1 MiB rewind that the library reports, so a second pass over the
+# compressed TAR shows on stderr. The report is an INFO record, which reaches stderr
+# only under ``-v``, so the test passes it. Zeros, so the file stays small.
 _BIG = b"\0" * (2 * 1024 * 1024)
 
 
@@ -219,7 +220,7 @@ def test_a_pattern_on_a_compressed_tar_reads_it_once(
         tmp_path / "t.tar.gz", [("a.txt", b"a"), ("big.bin", _BIG), ("z.txt", b"z")]
     )
     dest = tmp_path / "out"
-    args = [verb, str(archive), "a.txt", "missing"]
+    args = [verb, "-v", str(archive), "a.txt", "missing"]
     if verb == "x":
         args += ["-d", str(dest)]
     assert main(args) == EXIT_OK
@@ -234,8 +235,10 @@ _EMPTY_SELECTIONS = {
     "every include match excluded": (
         ["docs"],
         ["docs"],
-        "warning: no members selected: --exclude removed every member the "
-        "patterns matched",
+        (
+            "warning: no members selected: --exclude removed every member the "
+            "patterns matched"
+        ),
     ),
     "exclude only": (
         [],

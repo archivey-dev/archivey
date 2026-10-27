@@ -29,7 +29,9 @@ header before decoding). Each probe is a function the backends declare as data â
 stream codecs, on the codec descriptor â€” so the detector stays format-agnostic. Unless
 ``ArchiveyConfig.always_probe_content`` is set (``open_stream`` sets it), only the probe of
 a format the source's extension names runs: on a nameless source a probe would be the only
-evidence, and real binary files pass them. The probes also do not run on a prefix that is
+evidence, and real binary files pass them. A built-in probe is matched by its stream; a
+plugin format's, by the format itself, since every plugin format shares its stream with
+ZIP and TAR. The probes also do not run on a prefix that is
 evidence of a non-archive file: a structurally confirmed executable
 (``ExecutableCue.STRONG``) or a known non-archive signature (``_PROBE_STOPPING_SIGNATURES``,
 today OLE compound files), and the error then names that evidence. A non-archive signature
@@ -75,7 +77,6 @@ from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
-    AcceleratorMode,
     ProcessIsolation,
 )
 from archivey.detection import DetectedBy, DetectionConfidence, FormatInfo
@@ -135,6 +136,7 @@ from archivey.types import (
     ArchiveFormat,
     ContainerFormat,
     MagicSignature,
+    PluginContainer,
     StreamFormat,
     TrailerSignature,
 )
@@ -171,8 +173,10 @@ _INNER_TAR_MAX_PROBE_BYTES = 1 << 20
 _PROBE_STOPPING_SIGNATURES: tuple[tuple[bytes, str], ...] = (
     (
         bytes.fromhex("d0cf11e0a1b11ae1"),
-        "an OLE compound file signature (.doc, .xls, .ppt, .msi, Thumbs.db), "
-        "which is not an archive format",
+        (
+            "an OLE compound file signature (.doc, .xls, .ppt, .msi, Thumbs.db), "
+            "which is not an archive format"
+        ),
     ),
 )
 
@@ -410,7 +414,11 @@ def _probe_inner_tar(
     that cannot cover the probe (``BUDGET_EXHAUSTED``).
     """
     # Imported here rather than at module load to avoid a detection<->codecs import cycle.
-    from archivey.internal.config import DecoderLimits, StreamConfig
+    from archivey.internal.config import (
+        DecoderLimits,
+        StreamConfig,
+        without_accelerators,
+    )
     from archivey.internal.streams.codecs import (
         codec_for_stream_format,
         is_codec_available,
@@ -471,18 +479,18 @@ def _probe_inner_tar(
         with open_codec_stream(
             codec,
             codec_input,
-            config=StreamConfig(
-                streaming=True,
-                seekable=not view_arrived,
-                use_rapidgzip=AcceleratorMode.OFF,
-                use_indexed_bzip2=AcceleratorMode.OFF,
-                decoder_limits=DecoderLimits.UNLIMITED,
-                probe_read_bound=_INNER_TAR_PROBE_BYTES,
-                process_isolation=(
-                    workspace.isolation
-                    if workspace is not None
-                    else ProcessIsolation.KNOWN_CRASHES
-                ),
+            config=without_accelerators(
+                StreamConfig(
+                    streaming=True,
+                    seekable=not view_arrived,
+                    decoder_limits=DecoderLimits.UNLIMITED,
+                    probe_read_bound=_INNER_TAR_PROBE_BYTES,
+                    process_isolation=(
+                        workspace.isolation
+                        if workspace is not None
+                        else ProcessIsolation.KNOWN_CRASHES
+                    ),
+                )
             ),
         ) as stream:
             head = stream.read(_INNER_TAR_PROBE_BYTES)
@@ -614,6 +622,20 @@ def _streams_named_by(
     return frozenset({fmt.stream} if also is None else {fmt.stream, also})
 
 
+def _probe_named(
+    fmt: ArchiveFormat, ext_match: tuple[ArchiveFormat, str] | None
+) -> bool:
+    """Whether the source's extension allows ``fmt``'s content probe to run.
+
+    A built-in probe is keyed by its stream, so ``.tlz`` can name two. Every plugin
+    format shares the ``UNCOMPRESSED`` stream with ZIP, TAR and the rest, so its probe
+    runs only when the extension names that format itself.
+    """
+    if isinstance(fmt.container, PluginContainer):
+        return ext_match is not None and ext_match[0] == fmt
+    return fmt.stream in _streams_named_by(ext_match)
+
+
 def _brotli_probe_confidence(
     prefix: bytes,
     ext_match: tuple[ArchiveFormat, str] | None,
@@ -656,17 +678,14 @@ def _resolve_single_file_or_tar(
     if (
         fmt.container == ContainerFormat.RAW_STREAM
         and fmt.stream != StreamFormat.UNCOMPRESSED
-    ):
-        if _probe_inner_tar(
-            fmt.stream, peek_more, workspace, view_arrived=view_arrived
-        ):
-            tar_fmt = ArchiveFormat(ContainerFormat.TAR, fmt.stream)
-            return FormatInfo(
-                tar_fmt,
-                DetectionConfidence.PROBABLE,
-                "content_probe",
-                corroborated=True,
-            )
+    ) and _probe_inner_tar(fmt.stream, peek_more, workspace, view_arrived=view_arrived):
+        tar_fmt = ArchiveFormat(ContainerFormat.TAR, fmt.stream)
+        return FormatInfo(
+            tar_fmt,
+            DetectionConfidence.PROBABLE,
+            "content_probe",
+            corroborated=True,
+        )
     corroborated = base_detected_by == "content_probe" and _extension_corroborates(
         ext_match, fmt
     )
@@ -964,6 +983,15 @@ def detect_format(
     confidence and ``detected_by="directory"``, matching ``open_archive``, which reads
     it as a directory archive. Nothing is read to decide that, so ``cost_receipt`` is
     the zero receipt (one pass, no bytes).
+
+    Raises:
+        FormatDetectionError: No format matches the source's contents or name.
+        TruncatedError: The path names part of a numbered split set with a gap.
+        DiagnosticRaisedError: A diagnostic that the :class:`~archivey.DiagnosticPolicy`
+            in the config raises on, recorded during detection.
+        ArchiveyUsageError: One argument has a type or value the call cannot use (then
+            also a ``TypeError`` or ``ValueError``).
+        FileNotFoundError: The path does not exist.
     """
     return detect_format_into(
         source, config=config, collector=None, follow_stub_volumes=follow_stub_volumes
@@ -1242,8 +1270,7 @@ def _detect_format_body(
             )
         probes = registry.content_probes()
         if not always_probe:
-            named = _streams_named_by(ext_match)
-            named_probes = [(f, p) for f, p in probes if f.stream in named]
+            named_probes = [(f, p) for f, p in probes if _probe_named(f, ext_match)]
             # Recorded whenever the name left a probe out, even if another one runs: a
             # .zz source still skips the LZMA Alone and Brotli probes.
             if len(named_probes) < len(probes):

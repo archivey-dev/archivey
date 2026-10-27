@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import gzip
 import io
 import json
@@ -183,7 +184,7 @@ def test_context_json_safe_and_immutable() -> None:
     json.dumps(payload)  # must not raise
     assert payload["code"] == "member_name_normalized"
     assert payload["context"]["kind"] == "name_normalization"
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         d.message = "mutated"  # type: ignore[misc]
 
 
@@ -762,13 +763,15 @@ def test_eof_marker_raise_yields_diagnostic_error() -> None:
 
     data = _tar_missing_eof_block()
     policy = DiagnosticPolicy(raise_on={DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING})
-    with pytest.raises(DiagnosticRaisedError) as ei:
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError) as ei,
+        open_archive(
             io.BytesIO(data),
             format=ArchiveFormat.TAR,
             config=ArchiveyConfig(diagnostic_policy=policy),
-        ) as ar:
-            ar.members()
+        ) as ar,
+    ):
+        ar.members()
     assert ei.value.diagnostic.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
 
 
@@ -799,7 +802,7 @@ def test_extraction_report_results_frozen(tmp_path: Path) -> None:
     dest.mkdir()
     report = open_and_extract(src, dest)
     assert isinstance(report.results, tuple)
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         report.results[0].status = ExtractionStatus.FAILED  # type: ignore[misc]
     # Member remains live/mutable
     report.results[0].member.comment = "late"
@@ -981,13 +984,15 @@ def test_strict_preset_raises_on_archive_integrity() -> None:
     from archivey.types import ArchiveFormat
     from tests.test_tar import _tar_missing_eof_block
 
-    with pytest.raises(DiagnosticRaisedError) as ei:
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError) as ei,
+        open_archive(
             io.BytesIO(_tar_missing_eof_block()),
             format=ArchiveFormat.TAR,
             config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
-        ) as ar:
-            ar.members()
+        ) as ar,
+    ):
+        ar.members()
     assert ei.value.diagnostic.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
 
 
@@ -1013,14 +1018,16 @@ def test_strict_preset_does_not_raise_on_argument_hygiene(tmp_path: Path) -> Non
         ar.members()
         assert DiagnosticCode.PASSWORD_ARGUMENT_UNUSED in ar.diagnostics.counts
     # PEDANTIC is the preset that does raise on it.
-    with pytest.raises(DiagnosticRaisedError) as ei:
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError) as ei,
+        open_archive(
             io.BytesIO(data),
             format=ArchiveFormat.TAR,
             password="unused",
             config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.PEDANTIC),
-        ) as ar:
-            ar.members()
+        ) as ar,
+    ):
+        ar.members()
     assert ei.value.diagnostic.code is DiagnosticCode.PASSWORD_ARGUMENT_UNUSED
 
 

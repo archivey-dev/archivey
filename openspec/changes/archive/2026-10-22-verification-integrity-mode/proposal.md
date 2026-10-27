@@ -1,8 +1,10 @@
 # An opt-in mode that guarantees a verdict however the caller reads
 
-> **Parked, not part of 0.2.0** (maintainer decision, 2026-10-07). No further work is
-> scheduled. The release does not need this change, and the drafted design stays here so a
-> later change can pick it up. It is tracked internally.
+> **Closed, not implemented** (maintainer ruling, 2026-10-22). A member stream reports the
+> verification it has reached instead (`verification-level`): `stream.verified` and
+> `stream.verifiable`. Reading a member to its end already gives a verdict after any seeks,
+> so the level and that rule cover the need without a second way to read. Kept as a record
+> of the design that was weighed. Earlier status: parked, not part of 0.2.0 (2026-10-07).
 
 ## Why
 

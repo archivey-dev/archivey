@@ -42,6 +42,6 @@ machine. If you trust your archives, you can relax the limits and the checks on 
 permissions, but not the check that keeps extraction inside the folder.
 [Extracting](extracting.md#archives-you-trust) and [Security](security.md) have the details.
 
-[VISION.md](https://github.com/davitf/archivey/blob/main/VISION.md) explains these principles in more
-depth, and the [design rules](https://github.com/davitf/archivey/blob/main/dev-docs/design-rules.md)
+[VISION.md](https://github.com/archivey-dev/archivey/blob/main/VISION.md) explains these principles in more
+depth, and the [design rules](https://github.com/archivey-dev/archivey/blob/main/dev-docs/design-rules.md)
 show how they settle specific cases.

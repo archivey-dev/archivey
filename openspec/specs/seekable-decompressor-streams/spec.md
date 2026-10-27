@@ -24,15 +24,16 @@ forward-only streams free of seek machinery.
 The system SHALL construct seek support only when seekability is declared:
 `seekable_members=True` on `open_archive()` or `seekable=True` on the
 single-stream API. Undeclared streams SHALL NOT parse XZ footers, scan lzip
-trailers, instantiate rapidgzip accelerators, retain rewind buffers, or retain
-seek-point tables; they are forward-only.
+trailers, retain rewind buffers, or retain seek-point tables, and SHALL NOT
+instantiate rapidgzip accelerators except for the large sequential DEFLATE-family
+read below; they are forward-only, whichever decoder reads them.
 
 `use_rapidgzip` and `use_indexed_bzip2` SHALL resolve their `AUTO` / `ON` / `OFF`
 configuration against declared seek demand, not the `streaming` access-mode
 proxy. For declared-seekable streams, native XZ/lzip indexes, rapidgzip-backed
 gzip/bzip2 indexes, and stdlib fallback rewinds retain their contracts. The
 stdlib O(n)-per-rewind path MAY serve the seek but MUST emit the documented
-slow-rewind diagnostic/warning.
+slow-rewind diagnostic (`STREAM_REWIND_REDECOMPRESSES`).
 
 Under `AUTO`, the system SHALL additionally require the known compressed input size to reach a
 documented minimum threshold before selecting rapidgzip for any DEFLATE-family stream (deflate,
@@ -44,6 +45,15 @@ when otherwise eligible). `ON` ignores the threshold; `OFF` never selects rapidg
 (`INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`), fixed by benchmark the same way, with the same
 rules for an unknown size, `ON` and `OFF`.
 
+Without declared seek demand, `use_rapidgzip=AUTO` SHALL select rapidgzip for a
+DEFLATE-family stream only when it is otherwise eligible, the platform is Linux or macOS, the
+source can seek, the compressed input size is known and reaches the same threshold, and the
+decoded size (container-declared, else the gzip ISIZE trailer as an estimate) is at most three
+times the compressed size (an ISIZE below 99% of the compressed size counts as unknown).
+rapidgzip decodes in parallel, which repays the child process on a full read only for data
+that is not very compressible, and not on Windows, where the child costs more than it saves
+(`formats/gzip.md` §2.3). The stream stays forward-only.
+
 Over a ZipCrypto decrypt stage `AUTO` SHALL resolve to `OFF` for the codec that reads
 it, because every backward seek restarts decryption from the member's start.
 
@@ -51,7 +61,8 @@ it, because every backward seek restarts decryption from the member's start.
 
 | Case | Expected |
 | --- | --- |
-| gzip/xz/bzip2/lzip opened without seekability under `AUTO` | No index, no accelerator, forward-only |
+| gzip/xz/bzip2/lzip opened without seekability under `AUTO` | No index, no accelerator, forward-only, except as the next row says |
+| DEFLATE-family stream opened without seekability under `AUTO`, on Linux or macOS, seekable source, known size ≥ threshold, decoded size ≤ 3× compressed | rapidgzip decodes it; the stream stays forward-only |
 | Same stream opened with seekability, `AUTO`, accelerator installed, size ≥ threshold | Accelerator or native index provides random access |
 | Declared-seekable deflate/zlib/gzip under `AUTO`, known size < threshold | rapidgzip not selected; stdlib backend used |
 | Declared-seekable DEFLATE-family stream, `use_rapidgzip=ON`, size below threshold | rapidgzip still selected (threshold ignored) |
@@ -96,7 +107,7 @@ requirement): the child opens a path source itself, a stream source stays in the
 process, a child that dies on the data is a verdict the standard library takes over from,
 and where no child can be started `AUTO` decodes with the stdlib backend, logging one
 warning per process that names `use_indexed_bzip2=OFF`, and `ON` raises
-`ResourceLimitError`. No crash of that decoder has been seen; it is isolated as a precaution,
+`ResourceUnavailableError`. No crash of that decoder has been seen; it is isolated as a precaution,
 because it comes from the same library as the DEFLATE decoder, whose crashes cannot always be
 avoided. A maintainer script SHALL run each rapidgzip decoder
 in-process on damaged input in a watched process and report every crash by its
@@ -109,7 +120,7 @@ signature, so that whether the isolation is still needed stays measurable.
 | `use_rapidgzip` enabled and package installed | gzip seeks without full re-decompression |
 | `use_indexed_bzip2` enabled and rapidgzip installed | bzip2 uses `rapidgzip.IndexedBzip2File` in a child process; the caller's process imports neither rapidgzip nor standalone `indexed_bzip2` |
 | `use_indexed_bzip2=AUTO`, no child process can start | stdlib decoder; one warning per process naming `use_indexed_bzip2=OFF` |
-| `use_indexed_bzip2=ON`, no child process can start | `ResourceLimitError`; never decoded in-process |
+| `use_indexed_bzip2=ON`, no child process can start | `ResourceUnavailableError`; never decoded in-process |
 | rapidgzip absent or flag `OFF` | stdlib decoder; backward seek re-decompresses from the start, or from a known gzip member start, and warns when it re-decodes past the threshold |
 
 ### Requirement: DEFLATE-family random access uses rapidgzip
@@ -119,9 +130,10 @@ random-access/parallel backend for raw DEFLATE (`deflate` codec) and zlib-wrappe
 (`zlib` codec), in addition to gzip. rapidgzip auto-detects `GZIP`/`ZLIB`/`DEFLATE`, so the
 codec SHALL pass the stream through unwrapped — no synthetic gzip header/footer. Selection is
 gated identically to gzip (`use_rapidgzip` × declared seekability × availability, plus the
-`AUTO` minimum-input-size threshold). The default sequential backend is unchanged: when
-rapidgzip is unavailable, `OFF`, or below the `AUTO` threshold, deflate/zlib decode through
-stdlib `zlib`.
+`AUTO` minimum-input-size threshold, and the large sequential read of the demand
+requirement above). The default sequential backend is stdlib `zlib`, except for that large
+sequential read. When rapidgzip is unavailable, `OFF`, or below the `AUTO` threshold,
+deflate/zlib always decode through stdlib `zlib`.
 
 Because rapidgzip auto-detects the format, the codec SHALL decode with the stdlib backend a
 source rapidgzip could take for another format: a `deflate` source that starts with `1f 8b`, a
@@ -157,7 +169,7 @@ temporary file the operating system refuses, a child that cannot import rapidgzi
 SHALL decode with the stdlib backend, as it does when rapidgzip is absent, and SHALL log one
 warning per process on the `archivey.streams` logger naming the reason and
 `use_rapidgzip=OFF` (none where rapidgzip is absent). `ON` in that case SHALL raise
-`ResourceLimitError` naming the reason and `use_rapidgzip=OFF`; it MUST NOT decode
+`ResourceUnavailableError` naming the reason and `use_rapidgzip=OFF`; it MUST NOT decode
 in-process.
 
 rapidgzip keeps decoded chunks in memory, so its memory grows with what the data decodes to,
@@ -184,7 +196,7 @@ the member's compressed length); an unbounded or over-long stream MAY raise a sp
 | rapidgzip absent, `OFF`, or size < `AUTO` threshold | stdlib `zlib` (`-15` / `MAX_WBITS`); backward seek re-decompresses from start |
 | Accelerator fed an over-long/unbounded slice | May raise a spurious decode error on trailing bytes; callers MUST bound the input |
 | No child can be started (frozen interpreter, zip import, refused spawn or temporary file), `AUTO` | stdlib backend |
-| No child can be started, `ON` | `ResourceLimitError` at open |
+| No child can be started, `ON` | `ResourceUnavailableError` at open |
 | A `deflate` source that starts like gzip, zlib or bzip2, or a `zlib` source with no valid zlib header or with a preset dictionary, `ON` | The bytes and error of `OFF` (`CorruptionError` at the header) |
 | A raw DEFLATE stream cut before any output (`03`), `ON`, with or without a declared size | `TruncatedError`, as with `OFF` |
 | A raw DEFLATE stream cut after a whole block or inside its last one, `ON`, with or without a declared size equal to the output before the cut | `TruncatedError`, as with `OFF` |
@@ -229,7 +241,10 @@ short size, and a read after a seek past the end never returns bytes from offset
 mismatch the read SHALL be handed to the standard library decoder, whose verdict it then
 gives (`TruncatedError` for a cut, `CorruptionError` for a wrong ISIZE, a trailing-data
 report for appended bytes), except where a further gzip member follows the first: then the
-trailer records only the last member, and the backstop SHALL stand down. Before it compares
+trailer records only the last member, and the backstop SHALL stand down when that trailer
+holds the CRC-32 and the length of the end of the output (`compressed-streams`, *An
+accelerator preserves the error contract*). A further member alone SHALL NOT stand it down,
+since rapidgzip ends a last member cut right after its header with no error. Before it compares
 the length or stands down, the backstop SHALL check that rapidgzip's decode reached the end
 of the source; a decode that stopped short of it SHALL be handed to the standard library
 decoder the same way. A `1f 8b 08` in the file SHALL count as a further member only when
@@ -246,7 +261,7 @@ translated `compressed-streams` error rather than aborting the process.
 A DEFLATE-family child process that ends during a request SHALL be reported by how it ended,
 and every later call on the child stream SHALL raise the same error: a fault signal (or its
 Windows status) is a verdict on the data — `TruncatedError` when rapidgzip's abort names the
-truncation, else `CorruptionError`; SIGKILL is `ResourceLimitError`; any other end is
+truncation, else `CorruptionError`; SIGKILL is `ResourceUnavailableError`; any other end is
 `ReadError`.
 
 A fault signal, like a data error rapidgzip reports on a read or a seek, SHALL hand the read
@@ -313,7 +328,7 @@ inside a DEFLATE block SHALL still surface as `CorruptionError`.
 | Truncated gzip/zlib/deflate that aborts rapidgzip, any source, any access pattern | The process survives; the bytes and the error of the standard library decoder (`TruncatedError`) |
 | A fault signal ends the child on a valid stream | The standard library reads on from the delivered position; the caller loses nothing |
 | A resumed standard-library decode reaches the end of a DEFLATE stream (a later member, bytes after the data) | It starts over from the start of the stream; the stream's checksum is checked |
-| DEFLATE-family child killed by SIGKILL / ended by SIGTERM | `ResourceLimitError` / `ReadError`; later calls raise the same |
+| DEFLATE-family child killed by SIGKILL / ended by SIGTERM | `ResourceUnavailableError` / `ReadError`; later calls raise the same |
 | Caller-owned source raises while the child reads it | That exception, unchanged; a later child death is `ReadError` |
 | Caller-owned source after the archivey stream closes | Still open and readable; accelerator/wrapper closed only its own view |
 | Damaged standalone zlib through rapidgzip, read to its end | `CorruptionError`; never a silent wrong read (Adler-32 check) |
@@ -323,6 +338,9 @@ inside a DEFLATE block SHALL still surface as `CorruptionError`.
 | Truncated/corrupt container DEFLATE member (e.g. ZIP) | Container CRC mismatch → `CorruptionError`/`TruncatedError` via the verifying stage |
 | Valid concatenated multi-member gzip | Decompresses fully without false truncation |
 | A gzip member cut short and followed by a complete member, through rapidgzip, with the last trailer right or forged to match the bytes delivered | The error of the accelerator `OFF` |
+| Concatenated gzip or BGZF through rapidgzip whose last member is cut anywhere, right after its header included, or has a wrong ISIZE, however many members come before it | The bytes and the error of the accelerator `OFF` |
+| Valid concatenated gzip or BGZF through rapidgzip, an empty last member included, whatever the size of the last member | Read by rapidgzip to the end, with no handover to the standard library and a read-back of at most 4 MiB per trailer candidate; an empty last member whose header starts more than 1 KiB before the end of the non-zero data (a long `FNAME`) is handed over, with the same bytes and no error |
+| Concatenated gzip through rapidgzip whose last member is cut, with its last four bytes forged to the length, read after a seek that skipped output, the forged length starting before or after the seek target, or after a `SEEK_SET` to exactly the length of the output | `TruncatedError`, as with the accelerator `OFF`; a candidate starting before the seek target reads back the skipped part, up to 64 MiB in all, past which the standard library decides |
 | Cut or wrong-ISIZE one-member gzip through rapidgzip, after any seek, or with `1f 8b 08` in its body | The error of the accelerator `OFF`; after a seek short of the end that skipped output, then a read to the end, a wrong ISIZE hidden by four appended bytes equal to the length is the one exception |
 | Cut gzip whose last four bytes are forged to the length rapidgzip delivers: `seek(0, SEEK_END)`, or that seek, then `seek(0)` and a read | `TruncatedError`, as with the accelerator `OFF` |
 | Valid gzip with NUL padding, seek through rapidgzip | Lands and reads as with the accelerator `OFF` |
@@ -405,7 +423,7 @@ SHALL be reported the same way.
 | Single-block xz / one-member lzip / `.Z` with no CLEAR codes | the origin | yes, same as above |
 | Multi-block xz, multi-member lzip | the containing block | only when the progress since that block passes the threshold |
 | Multi-frame zstd; multi-member gzip or BGZF on the stdlib engine | the containing frame, member or block | as above |
-| One-frame zstd, zstd ZIP member (`single_stream`), one-member gzip on the stdlib engine | the origin | yes, once progress passes the threshold |
+| One-frame zstd (a ZIP member too), one-member gzip on the stdlib engine | the origin | yes, once progress passes the threshold |
 | Accelerated gzip/bzip2, dense index | the containing block | as above |
 | Accelerated gzip/bzip2, sparse index | up to a block back | yes, once past the threshold |
 | Any codec, less progress discarded than the threshold | — | no |
@@ -420,8 +438,7 @@ The event SHALL live on the stream operation and cumulative owning-reader
 aggregate, never on `CostReceipt` or `ArchiveInfo`. Gzip/bzip2/deflate/zlib context names the
 `[seekable]` accelerator when a rapidgzip path was eligible; brotli, lz4, and zstd record no
 accelerator. A zstd stream SHALL rewind in place: from the nearest frame start it knows
-(§"zstd frame starts are seek points"), or from the start when it has one frame or is a
-container member that is one frame (`single_stream`). When a
+(§"zstd frame starts are seek points"), or from the start when it has one frame. When a
 deflate/zlib stream falls back to stdlib `zlib` (accelerator absent, `OFF`, or below the
 `AUTO` threshold), its rewind SHALL name the `[seekable]` accelerator, consistent with the
 gzip fallback.
@@ -485,7 +502,14 @@ BGZF walk), and a point recorded by a decode that resumed at such a point, SHALL
 marked as the index's. When two points name the same compressed offset with the same
 resume state but different decompressed offsets, and either is the index's, the index
 is wrong; so is it when a decode reaches the end with another total than the index
-gave. Only points the seek table holds SHALL be compared, so the check costs no more
+gave, and when a decoder that resumed at an index point fails before giving any output
+there (a zstd seek table whose sizes add up but put a frame start inside a frame). That
+last check counts only a verdict on the data, not an `OSError`, a `MemoryError`, a
+child decoder ended from outside or one that could not start; a `DecoderLimits`
+refusal of a size the bytes there declare is a verdict, and so, on purpose, is an
+exception the stream does not know, which costs at most the index. It cannot tell a wrong index from damaged data at an honest
+point, so damage there costs a decode of the prefix before its `CorruptionError`.
+Only points the seek table holds SHALL be compared, so the check costs no more
 memory than the table. The stream SHALL then drop every point that is the index's,
 forget a size the index gave (or a decode that resumed at an index point reached), and
 emit
@@ -515,6 +539,9 @@ decoded point is kept (an empty lzip member makes such a pair in an honest file)
 | XZ blocks after a resume point decode to a size other than the stream index declares | `CorruptionError` |
 | A forward read finds a frame or member start at another output offset than the zstd seek table or BGZF walk gave it | `SEEK_INDEX_DEGRADED` (scan `decode_check`, `SeekIndexContradicted`); index points and size dropped; later seeks and the size match a read from the start |
 | The same, found by a decode that resumed at an index point | That read, seek or size query restarts from a decoded point and returns the right bytes |
+| A decode that resumed at a zstd seek-table point fails there before any output (the point is inside a frame) | `SEEK_INDEX_DEGRADED` (`SeekIndexContradicted`); the read or seek restarts from a decoded point and returns the right bytes, no `CorruptionError` |
+| The same failure at an honest index point over damaged data (a BGZF block whose deflate data is damaged at its start) | `SEEK_INDEX_DEGRADED` (`SeekIndexContradicted`), then a decode from a decoded point raises `CorruptionError` at the damage |
+| An `OSError` from the source in the first decode after a resume at an index point | The `OSError` propagates; no diagnostic, the index stays |
 | Lzip file with an empty member; size query before or after a forward read | Every read right; no collision error, no diagnostic |
 
 ### Requirement: Unix-compress uses CLEAR seek points
@@ -563,8 +590,8 @@ Unknown reserved header flag bits (`0x60` in the third header byte) SHALL raise
 
 On declared seek demand, every regular zstd frame after the first SHALL be a seek
 point, recorded when a forward read reaches it. A skippable frame holds no output and
-SHALL NOT be one. A stream opened without seek demand, or a container coder that is one
-frame (`single_stream`), SHALL keep no points.
+SHALL NOT be one. A stream opened without seek demand SHALL keep no points. A ZIP or 7z
+zstd coder keeps them as a `.zst` file does.
 
 #### Scenario: frame point matrix
 
@@ -573,7 +600,7 @@ frame (`single_stream`), SHALL keep no points.
 | Multi-frame file, read forward, then seek back | Resumes at the frame start before the target |
 | Skippable frame before each frame (pzstd) | Points at the regular frames only |
 | Stream opened without seek demand | No points kept, no table read |
-| ZIP zstd member (`single_stream`) ending in a seek table, seek declared | No table read; the only point stays at offset 0 |
+| ZIP zstd member of two frames ending in a seek table, seek declared | The table's frame starts are the seek points, as in a `.zst` file |
 
 ### Requirement: zstd reads the Seekable Zstandard seek table
 

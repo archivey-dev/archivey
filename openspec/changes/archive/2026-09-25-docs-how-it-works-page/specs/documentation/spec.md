@@ -16,7 +16,7 @@ and the API reference. Each page SHALL do one job, stated in
 its opening lines. Gotchas SHALL sit immediately after `reading-members.md` in
 primary navigation. A published page SHALL NOT link to a path outside `docs/`;
 where maintainer depth is worth preserving the link MUST be an absolute
-`https://github.com/davitf/archivey/blob/main/…` URL.
+`https://github.com/archivey-dev/archivey/blob/main/…` URL.
 
 #### Scenario: docs information architecture
 
@@ -27,4 +27,4 @@ where maintainer depth is worth preserving the link MUST be an absolute
 | User wants to know what to install | `install.md` answers it, including formats needing an external binary |
 | Contributor looks up “why not py7zr” | The full record is in `dev-docs/decisions/` in the repository; `how-it-works.md` gives the reasons in a paragraph and links the maintainer handbook |
 | User wants to know how the library is built | `how-it-works.md` explains the design philosophy, the architecture and how the library is tested, linking to maintainer depth on GitHub |
-| Published page needs maintainer depth | Absolute `github.com/davitf/archivey/blob/main/dev-docs/…` URL, never a site-relative path into unpublished material |
+| Published page needs maintainer depth | Absolute `github.com/archivey-dev/archivey/blob/main/dev-docs/…` URL, never a site-relative path into unpublished material |

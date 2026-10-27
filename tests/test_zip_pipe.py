@@ -12,7 +12,6 @@ import dataclasses
 import io
 import random
 import struct
-import tracemalloc
 import zipfile
 import zlib
 from collections.abc import Callable, Iterator
@@ -46,6 +45,7 @@ from archivey.internal.backends.zip_forward_reader import (
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
 from archivey.types import ArchiveMember, ExtractionStatus, MemberType
 from tests.conftest import importorskip
+from tests.memory_util import traced_peak
 from tests.sample_archives import (
     CORPUS,
     CorpusEntry,
@@ -275,9 +275,11 @@ def test_a_damaged_member_fails_when_read_and_not_when_skipped(method: int) -> N
     payload = b"payload bytes " * 100
     data = _zip([("bad.bin", payload), ("ok.txt", b"fine")], method=method)
     data = _corrupt_data(data, method)
-    with archivey.open_archive(io.BytesIO(data)) as reader:
-        with pytest.raises(CorruptionError):
-            reader.read(reader.get("bad.bin"))
+    with (
+        archivey.open_archive(io.BytesIO(data)) as reader,
+        pytest.raises(CorruptionError),
+    ):
+        reader.read(reader.get("bad.bin"))
     with archivey.open_archive(_pipe(data), streaming=True) as reader:
         for member, stream in reader.stream_members():
             if member.name == "bad.bin":
@@ -416,10 +418,12 @@ def test_a_bit3_stored_member_with_two_damaged_descriptor_fields_ends_the_pass()
         info = zf.getinfo("bad.bin")
     usize = 30 + len("bad.bin") + info.compress_size + 4 + 8
     data[usize] ^= 0x01
-    with archivey.open_archive(_pipe(bytes(data)), streaming=True) as reader:
-        with pytest.raises(UnsupportedFeatureError, match="data descriptor"):
-            for _ in reader.stream_members():
-                pass
+    with (
+        archivey.open_archive(_pipe(bytes(data)), streaming=True) as reader,
+        pytest.raises(UnsupportedFeatureError, match="data descriptor"),
+    ):
+        for _ in reader.stream_members():
+            pass
 
 
 def test_a_deflated_member_whose_descriptor_crc_differs_fails_when_read() -> None:
@@ -516,10 +520,12 @@ def test_max_members_counts_the_directory_entries(source: str) -> None:
     data = _repeat_directory(_zip([("a.txt", b"one")], method=zipfile.ZIP_STORED), 50)
     config = archivey.ArchiveyConfig(listing_limits=ListingLimits(max_members=10))
     opened = _pipe(data) if source == "pipe" else io.BytesIO(data)
-    with pytest.raises(ResourceLimitError, match="max_members=10"):
-        with archivey.open_archive(opened, streaming=True, config=config) as reader:
-            for _ in reader.stream_members():
-                pass
+    with (
+        pytest.raises(ResourceLimitError, match="max_members=10"),
+        archivey.open_archive(opened, streaming=True, config=config) as reader,
+    ):
+        for _ in reader.stream_members():
+            pass
 
 
 def test_two_entries_for_one_local_header_are_named_as_such() -> None:
@@ -541,12 +547,16 @@ def test_directory_comments_count_toward_max_metadata_bytes() -> None:
     config = archivey.ArchiveyConfig(
         listing_limits=ListingLimits(max_metadata_bytes=100_000)
     )
-    with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
-        with archivey.open_archive(io.BytesIO(data), config=config) as reader:
-            reader.members()
-    with archivey.open_archive(_pipe(data), streaming=True, config=config) as reader:
-        with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
-            reader.members_report()
+    with (
+        pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
+        archivey.open_archive(io.BytesIO(data), config=config) as reader,
+    ):
+        reader.members()
+    with (
+        archivey.open_archive(_pipe(data), streaming=True, config=config) as reader,
+        pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
+    ):
+        reader.members_report()
 
 
 def _small_files_then_link(count: int, size: int, target: str) -> bytes:
@@ -669,10 +679,12 @@ def test_the_archive_comment_counts_toward_max_metadata_bytes(source: str) -> No
     once it reaches the end record."""
     data = _zip([("a.txt", b"one")], comment=b"c" * 65_000)
     opened = _pipe(data) if source == "pipe" else io.BytesIO(data)
-    with archivey.open_archive(opened, streaming=True, config=_limited(1000)) as reader:
-        with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
-            for _ in reader.stream_members():
-                pass
+    with (
+        archivey.open_archive(opened, streaming=True, config=_limited(1000)) as reader,
+        pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
+    ):
+        for _ in reader.stream_members():
+            pass
 
 
 @pytest.mark.parametrize(
@@ -722,10 +734,12 @@ def test_a_field_running_past_the_directory_is_damage_as_from_a_file(
     last = data.rindex(b"PK\x01\x02")
     struct.pack_into("<H", data, last + at, 3000)
     yielded = []
-    with archivey.open_archive(_pipe(bytes(data)), streaming=True) as reader:
-        with pytest.raises(CorruptionError, match=f"'s {field} runs"):
-            for member, _ in reader.stream_members():
-                yielded.append(member.name)
+    with (
+        archivey.open_archive(_pipe(bytes(data)), streaming=True) as reader,
+        pytest.raises(CorruptionError, match=f"'s {field} runs"),
+    ):
+        for member, _ in reader.stream_members():
+            yielded.append(member.name)
     assert yielded == ["a.txt", "b.txt"]
 
 
@@ -807,6 +821,8 @@ def test_a_name_that_differs_between_the_two_headers_takes_the_directory_name() 
         "field": "name",
         "local_raw_name_base64": "Yi50eHQ=",
         "local_crc32": None,
+        "local_method": None,
+        "central_method": None,
     }
 
 
@@ -824,32 +840,36 @@ def test_a_name_that_differs_between_the_two_headers_is_refused_under_strict(
         for _ in range(2):
             with pytest.raises(DiagnosticRaisedError, match="local header stores"):
                 reader.read(member)
-    with archivey.open_archive(
-        _pipe(bytes(data)), streaming=True, config=config
-    ) as reader:
-        with pytest.raises(DiagnosticRaisedError, match="local header stores"):
-            reader.members_report()
+    with (
+        archivey.open_archive(
+            _pipe(bytes(data)), streaming=True, config=config
+        ) as reader,
+        pytest.raises(DiagnosticRaisedError, match="local header stores"),
+    ):
+        reader.members_report()
     # Extraction stops where each read finds it: a file read at the member, the pass
     # at the directory. The pass never learned which members are links, so it takes
     # back every file it wrote that could be one (all of them here).
     for piped, expected in ((False, ["a.txt"]), (True, [])):
         dest = tmp_path / ("pipe" if piped else "file")
         source = _pipe(bytes(data)) if piped else io.BytesIO(bytes(data))
-        with pytest.raises(DiagnosticRaisedError):
-            with archivey.open_archive(
-                source, streaming=piped, config=config
-            ) as reader:
-                reader.extract_all(dest)
+        with (
+            pytest.raises(DiagnosticRaisedError),
+            archivey.open_archive(source, streaming=piped, config=config) as reader,
+        ):
+            reader.extract_all(dest)
         assert sorted(p.name for p in dest.iterdir()) == expected
 
 
 def test_too_many_local_headers_name_what_was_counted() -> None:
     data = _zip([(f"{i}.txt", b"x") for i in range(5)])
     config = archivey.ArchiveyConfig(listing_limits=ListingLimits(max_members=3))
-    with archivey.open_archive(_pipe(data), streaming=True, config=config) as reader:
-        with pytest.raises(ResourceLimitError, match="local headers"):
-            for _ in reader.stream_members():
-                pass
+    with (
+        archivey.open_archive(_pipe(data), streaming=True, config=config) as reader,
+        pytest.raises(ResourceLimitError, match="local headers"),
+    ):
+        for _ in reader.stream_members():
+            pass
 
 
 def test_a_directory_entry_with_no_local_header_fails_after_the_members() -> None:
@@ -876,10 +896,12 @@ def test_max_members_is_charged_under_streaming(source: str) -> None:
     data = _zip([(f"{i}.txt", b"x") for i in range(5)])
     config = archivey.ArchiveyConfig(listing_limits=ListingLimits(max_members=3))
     opened = _pipe(data) if source == "pipe" else io.BytesIO(data)
-    with pytest.raises(ResourceLimitError, match="max_members=3"):
-        with archivey.open_archive(opened, streaming=True, config=config) as reader:
-            for _ in reader.stream_members():
-                pass
+    with (
+        pytest.raises(ResourceLimitError, match="max_members=3"),
+        archivey.open_archive(opened, streaming=True, config=config) as reader,
+    ):
+        for _ in reader.stream_members():
+            pass
 
 
 @pytest.mark.parametrize("junk", [b"junk", b"\x01" * (1 << 20)], ids=["short", "long"])
@@ -924,9 +946,11 @@ def test_an_encrypted_member_fails_when_read_as_from_a_file_and_is_skipped() -> 
         (None, EncryptionError, "Password required"),
         ("pw", CorruptionError, "too short"),
     ):
-        with archivey.open_archive(io.BytesIO(bytes(data)), password=password) as rd:
-            with pytest.raises(error, match=match):
-                rd.read(rd.members()[0])
+        with (
+            archivey.open_archive(io.BytesIO(bytes(data)), password=password) as rd,
+            pytest.raises(error, match=match),
+        ):
+            rd.read(rd.members()[0])
         with archivey.open_archive(
             _pipe(bytes(data)), streaming=True, password=password
         ) as reader:
@@ -1121,12 +1145,12 @@ def test_an_unlisted_local_entry_is_refused_under_strict() -> None:
     hand.local(b"a.txt", b"one")
     hand.local(b"planted.txt", b"not listed")
     data = hand.directory(0)
-    with archivey.open_archive(
-        _pipe(data), streaming=True, config=archivey.ArchiveyConfig(
-            diagnostic_policy=DiagnosticPolicy.STRICT)
-    ) as reader:  # fmt: skip
-        with pytest.raises(DiagnosticRaisedError):
-            reader.members_report()
+    strict = archivey.ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with (
+        archivey.open_archive(_pipe(data), streaming=True, config=strict) as reader,
+        pytest.raises(DiagnosticRaisedError),
+    ):
+        reader.members_report()
 
 
 # -- Bytes after a member that are no local header -----------------------------------
@@ -1241,12 +1265,14 @@ def test_a_member_past_the_bytes_the_pass_holds_is_a_resource_limit() -> None:
     config = archivey.ArchiveyConfig(
         listing_limits=ListingLimits(max_members=4, max_metadata_bytes=200)
     )
-    with archivey.open_archive(
-        _pipe(first + second), streaming=True, format="zip", config=config
-    ) as reader:
-        with pytest.raises(ResourceLimitError, match="past the members"):
-            for _ in reader.stream_members():
-                pass
+    with (
+        archivey.open_archive(
+            _pipe(first + second), streaming=True, format="zip", config=config
+        ) as reader,
+        pytest.raises(ResourceLimitError, match="past the members"),
+    ):
+        for _ in reader.stream_members():
+            pass
 
 
 def _overlapping_held_members(n: int) -> bytes:
@@ -1354,12 +1380,14 @@ def test_held_entries_read_the_kept_bytes_at_most_twice(
     data = build(1000)
     read = _count_held_reads(monkeypatch)
     config = archivey.ArchiveyConfig(listing_limits=limits)
-    with archivey.open_archive(
-        _pipe(data), streaming=True, format="zip", config=config
-    ) as reader:
-        with pytest.raises(CorruptionError, match="overlap"):
-            for _ in reader.stream_members():
-                pass
+    with (
+        archivey.open_archive(
+            _pipe(data), streaming=True, format="zip", config=config
+        ) as reader,
+        pytest.raises(CorruptionError, match="overlap"),
+    ):
+        for _ in reader.stream_members():
+            pass
     assert read[0] <= 2 * len(data)
 
 
@@ -1396,17 +1424,18 @@ def test_a_rejected_held_header_keeps_no_frames() -> None:
     n = 2000
 
     def peak(data: bytes) -> int:
-        tracemalloc.start()
-        try:
+        def list_members() -> None:
             with archivey.open_archive(
                 _pipe(data), streaming=True, format="zip"
             ) as reader:
                 report = reader.members_report()
             assert isinstance(report.error, CorruptionError)
-            return tracemalloc.get_traced_memory()[1]
-        finally:
-            tracemalloc.stop()
 
+        return traced_peak(list_members)
+
+    # traced_peak leaves first-use costs (lazy imports, caches) to its caller; a warm-up
+    # pass keeps them off the first measurement, which is the larger side.
+    peak(_cheap_rejected_held_headers(1))
     rejected = peak(_cheap_rejected_held_headers(n))
     missing = peak(_cheap_rejected_held_headers(n, header=False))
     assert rejected - missing < n * 2048
@@ -1448,12 +1477,14 @@ def test_a_held_member_is_numbered_after_the_walked_ones() -> None:
     )
     # c.txt's local header claims more data than the stream holds.
     struct.pack_into("<II", second, 18, 1_000_000, 1_000_000)
-    with archivey.open_archive(
-        _pipe(first + bytes(second)), streaming=True, format="zip"
-    ) as reader:
-        with pytest.raises(CorruptionError, match=r"member #1\b"):
-            for _ in reader.stream_members():
-                pass
+    with (
+        archivey.open_archive(
+            _pipe(first + bytes(second)), streaming=True, format="zip"
+        ) as reader,
+        pytest.raises(CorruptionError, match=r"member #1\b"),
+    ):
+        for _ in reader.stream_members():
+            pass
 
 
 def test_a_stub_before_an_archive_with_no_local_header_opens_empty() -> None:
@@ -1683,12 +1714,12 @@ def test_a_directory_further_back_than_the_listing_limits_allow_is_a_limit() -> 
         (whole, "ZIP64 end of central directory record starts"),
     )
     for data, what in cases:
-        with pytest.raises(ResourceLimitError, match=f"^{what}.*listing limits"):
-            with archivey.open_archive(
-                _pipe(data), streaming=True, config=config
-            ) as reader:
-                for _ in reader.stream_members():
-                    pass
+        with (
+            pytest.raises(ResourceLimitError, match=f"^{what}.*listing limits"),
+            archivey.open_archive(_pipe(data), streaming=True, config=config) as reader,
+        ):
+            for _ in reader.stream_members():
+                pass
 
 
 def _zip64_record_in_member_data() -> bytes:
@@ -1727,10 +1758,12 @@ def test_a_zip64_end_record_among_the_members_data_is_refused() -> None:
     # listing only.
     assert [m["name"] for m in _seekable_view(data, read=False)[0]] == ["x.txt"]
     message = "ZIP64 end of central directory record.* inside the members' data"
-    with pytest.raises(CorruptionError, match=message):
-        with archivey.open_archive(_pipe(data), streaming=True) as reader:
-            for _ in reader.stream_members():
-                pass
+    with (
+        pytest.raises(CorruptionError, match=message),
+        archivey.open_archive(_pipe(data), streaming=True) as reader,
+    ):
+        for _ in reader.stream_members():
+            pass
 
 
 @pytest.mark.parametrize("field", ["disks", "disk_with_record"])
@@ -1749,10 +1782,12 @@ def test_a_split_set_locator_is_refused_before_the_record_is_looked_for(
         (io.BytesIO(bytes(data)), False),
         (_pipe(bytes(data)), True),
     ):
-        with pytest.raises(UnsupportedFeatureError, match="Multi-volume"):
-            with archivey.open_archive(source, streaming=streaming) as reader:
-                for _ in reader.stream_members():
-                    pass
+        with (
+            pytest.raises(UnsupportedFeatureError, match="Multi-volume"),
+            archivey.open_archive(source, streaming=streaming) as reader,
+        ):
+            for _ in reader.stream_members():
+                pass
 
 
 def test_a_zip64_archive_behind_a_stub_lists_from_a_pipe() -> None:
@@ -1785,9 +1820,11 @@ def test_a_record_hidden_by_the_stub_is_read_only_by_a_file_read_told_the_format
     names = ["a.txt", "b.txt"]
     assert [m["name"] for m in _seekable_view(data)[0]] == names
     assert [m["name"] for m in _piped_view(data)[0]] == names
-    with pytest.raises(CorruptionError, match="Bad magic number"):
-        with archivey.open_archive(io.BytesIO(data), format="zip") as reader:
-            reader.members()
+    with (
+        pytest.raises(CorruptionError, match="Bad magic number"),
+        archivey.open_archive(io.BytesIO(data), format="zip") as reader,
+    ):
+        reader.members()
 
 
 def test_a_header_offset_past_what_the_array_holds_is_a_missing_member() -> None:
@@ -1805,10 +1842,12 @@ def test_a_header_offset_past_what_the_array_holds_is_a_missing_member() -> None
     eocd = data.rindex(b"PK\x05\x06")
     (cd_size,) = struct.unpack_from("<I", data, eocd + 12)
     struct.pack_into("<I", data, eocd + 12, cd_size + len(extra))
-    with pytest.raises(CorruptionError) as caught:
-        with archivey.open_archive(_pipe(bytes(data)), streaming=True) as reader:
-            for _ in reader.stream_members():
-                pass
+    with (
+        pytest.raises(CorruptionError) as caught,
+        archivey.open_archive(_pipe(bytes(data)), streaming=True) as reader,
+    ):
+        for _ in reader.stream_members():
+            pass
     assert str(1 << 63) in str(caught.value)
 
 
@@ -2157,10 +2196,12 @@ def test_a_descriptor_planted_in_a_bit3_member_nobody_read_fails_it() -> None:
     from_file, _ = _seekable_view(data, read=False)
     assert [m["name"] for m in from_file] == ["a.bin", "b.txt"]
     assert _pipe_reads(data) == {"a.bin": content, "b.txt": b"after"}
-    with archivey.open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
-        with pytest.raises(CorruptionError, match="data descriptor after its data"):
-            for _ in reader.stream_members():
-                pass
+    with (
+        archivey.open_archive(NonSeekableBytesIO(data), streaming=True) as reader,
+        pytest.raises(CorruptionError, match="data descriptor after its data"),
+    ):
+        for _ in reader.stream_members():
+            pass
 
 
 @pytest.mark.parametrize("read", [True, False], ids=["read", "unread"])

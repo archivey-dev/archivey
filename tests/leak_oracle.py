@@ -343,7 +343,7 @@ def _close_quietly(stream: object) -> None:
         return
     try:
         close()
-    except Exception:  # noqa: BLE001 - teardown cleanup; the fail message is the report
+    except Exception:  # noqa: BLE001, S110 - teardown cleanup; the fail message is the report
         pass
 
 
@@ -467,7 +467,7 @@ def _archivey_leak_oracle(request: pytest.FixtureRequest) -> Iterator[None]:
         }
         try:
             _cleanup_leaks(_leaked_procs(), _leaked_streams(), extra_children)
-        except Exception:  # noqa: BLE001 - marker path must not raise
+        except Exception:  # noqa: BLE001, S110 - marker path must not raise
             pass
         return
 
@@ -494,6 +494,6 @@ def _archivey_leak_oracle(request: pytest.FixtureRequest) -> Iterator[None]:
     message = _report(procs, streams, extra_fds, extra_children)
     try:
         _cleanup_leaks(procs, streams, extra_children)
-    except Exception:  # noqa: BLE001 - never hide the leak report behind cleanup
+    except Exception:  # noqa: BLE001, S110 - never hide the leak report behind cleanup
         pass
     pytest.fail(message)

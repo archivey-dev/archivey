@@ -668,18 +668,22 @@ def test_lzma_alone_refuses_on_read_not_on_open() -> None:
     """
     written = lzma.compress(_LZMA_MEMBER, format=lzma.FORMAT_ALONE)
     # 8 MiB (-6's dictionary) is over a 1 MiB cap.
-    with open_codec_stream(
-        Codec.LZMA_ALONE, NonSeekableBytesIO(written), config=_stream_config(2**20)
-    ) as stream:
-        with pytest.raises(ResourceLimitError, match="max_decoder_memory=1048576"):
-            stream.read()
+    with (
+        open_codec_stream(
+            Codec.LZMA_ALONE, NonSeekableBytesIO(written), config=_stream_config(2**20)
+        ) as stream,
+        pytest.raises(ResourceLimitError, match="max_decoder_memory=1048576"),
+    ):
+        stream.read()
     # A caller that sizes the member by seeking to its end meets the refusal too,
     # rather than reading the stream as empty.
-    with open_codec_stream(
-        Codec.LZMA_ALONE, io.BytesIO(written), config=_stream_config(2**20)
-    ) as stream:
-        with pytest.raises(ResourceLimitError, match="max_decoder_memory=1048576"):
-            stream.seek(0, io.SEEK_END)
+    with (
+        open_codec_stream(
+            Codec.LZMA_ALONE, io.BytesIO(written), config=_stream_config(2**20)
+        ) as stream,
+        pytest.raises(ResourceLimitError, match="max_decoder_memory=1048576"),
+    ):
+        stream.seek(0, io.SEEK_END)
     with open_codec_stream(
         Codec.LZMA_ALONE, NonSeekableBytesIO(written), config=DEFAULT_STREAM_CONFIG
     ) as stream:
@@ -695,11 +699,13 @@ def test_lzma_alone_second_stream_over_the_cap_is_refused() -> None:
     cap = 2**20
     first = _alone_stream(b"first stream\n" * 20, 1 << 16)
     second = _alone_stream(b"second stream\n" * 20, 64 * 2**20)
-    with open_codec_stream(
-        Codec.LZMA_ALONE, io.BytesIO(first + second), config=_stream_config(cap)
-    ) as stream:
-        with pytest.raises(ResourceLimitError, match=f"max_decoder_memory={cap}"):
-            stream.read()
+    with (
+        open_codec_stream(
+            Codec.LZMA_ALONE, io.BytesIO(first + second), config=_stream_config(cap)
+        ) as stream,
+        pytest.raises(ResourceLimitError, match=f"max_decoder_memory={cap}"),
+    ):
+        stream.read()
     # Under a cap that admits both, the two streams are one payload.
     with open_codec_stream(Codec.LZMA_ALONE, io.BytesIO(first + second)) as stream:
         assert stream.read() == b"first stream\n" * 20 + b"second stream\n" * 20
@@ -780,9 +786,11 @@ def test_refused_before_any_decoder_is_built(
     params: CodecParams,
 ) -> None:
     # Raw LZMA refuses on open, before any decoder is built.
-    with pytest.raises(ResourceLimitError):
-        with open_codec_stream(codec, io.BytesIO(payload), params=params) as stream:
-            stream.read()
+    with (
+        pytest.raises(ResourceLimitError),
+        open_codec_stream(codec, io.BytesIO(payload), params=params) as stream,
+    ):
+        stream.read()
     assert lzma_decoders_built == []
 
 
@@ -1028,11 +1036,13 @@ def test_zstd_window_against_the_cap(tmp_path: Path, cap: int, refused: bool) ->
 @requires_zstd()
 def test_zstd_window_cap_on_the_codec_stream() -> None:
     frame = _zstd_frame_with_window_log(28)
-    with pytest.raises(ResourceLimitError, match="max_decoder_memory"):
-        with open_codec_stream(
+    with (
+        pytest.raises(ResourceLimitError, match="max_decoder_memory"),
+        open_codec_stream(
             Codec.ZSTD, io.BytesIO(frame), config=_stream_config(2**27)
-        ) as stream:
-            stream.read()
+        ) as stream,
+    ):
+        stream.read()
     for cap in (None, 2**40):
         with open_codec_stream(
             Codec.ZSTD, io.BytesIO(frame), config=_stream_config(cap)
@@ -1047,14 +1057,16 @@ def test_zstd_cap_below_libzstd_s_smallest_limit_acts_as_one_kib() -> None:
     Handing the cap over unclamped raised ``ValueError`` from the decoder's options.
     """
     frame = _zstd_frame_with_window_log(11)
-    with pytest.raises(
-        ResourceLimitError,
-        match="max_decoder_memory=512 .*over 1024 bytes, the smallest",
-    ):
-        with open_codec_stream(
+    with (
+        pytest.raises(
+            ResourceLimitError,
+            match="max_decoder_memory=512 .*over 1024 bytes, the smallest",
+        ),
+        open_codec_stream(
             Codec.ZSTD, io.BytesIO(frame), config=_stream_config(512)
-        ) as stream:
-            stream.read()
+        ) as stream,
+    ):
+        stream.read()
 
 
 @requires_zstd()
@@ -1082,18 +1094,24 @@ def test_zstd_window_over_libzstd_s_ceiling() -> None:
     """
     frame = bytearray(_zstd_frame_with_window_log(28))
     frame[5] = (32 - 10) << 3
-    with pytest.raises(UnsupportedFeatureError, match="largest window") as default:
-        with open_codec_stream(Codec.ZSTD, io.BytesIO(bytes(frame))) as stream:
-            stream.read()
+    with (
+        pytest.raises(UnsupportedFeatureError, match="largest window") as default,
+        open_codec_stream(Codec.ZSTD, io.BytesIO(bytes(frame))) as stream,
+    ):
+        stream.read()
     assert "max_decoder_memory" not in str(default.value)
-    with pytest.raises(UnsupportedFeatureError, match="largest window"):
-        with open_codec_stream(
+    with (
+        pytest.raises(UnsupportedFeatureError, match="largest window"),
+        open_codec_stream(
             Codec.ZSTD, io.BytesIO(bytes(frame)), config=_stream_config(None)
-        ) as stream:
-            stream.read()
+        ) as stream,
+    ):
+        stream.read()
     # Under a cap below the ceiling the same frame is the cap's refusal.
-    with pytest.raises(ResourceLimitError, match=f"max_decoder_memory={2**30}"):
-        with open_codec_stream(
+    with (
+        pytest.raises(ResourceLimitError, match=f"max_decoder_memory={2**30}"),
+        open_codec_stream(
             Codec.ZSTD, io.BytesIO(bytes(frame)), config=_stream_config(2**30)
-        ) as stream:
-            stream.read()
+        ) as stream,
+    ):
+        stream.read()

@@ -3,6 +3,11 @@
 Archivey reads ZIP, TAR, 7z, RAR, ISO and single compressed files from Python, with one
 simple API. Untrusted archives extract safely by default. Archive formats hide some slow and
 error-prone ways of reading, and archivey's defaults steer around them whenever possible.
+The [cheat sheet](cheat-sheet.md) has the main calls on one page, with the zipfile and tarfile
+equivalents.
+Coding agents can read these docs as Markdown, starting from
+[llms.txt](https://archivey-dev.github.io/archivey/llms.txt), or all in one file from
+[llms-full.txt](https://archivey-dev.github.io/archivey/llms-full.txt).
 
 ## Install
 
@@ -99,3 +104,6 @@ data, `EncryptionError` for a missing or wrong password, `PackageNotInstalledErr
 format needs the extra. Archivey raises these the same way for every format, including where
 the underlying library would stop quietly and hand back short data.
 [Errors](errors-and-diagnostics.md) has the full list.
+
+If archivey reads, lists or extracts an archive wrongly, please
+[open a bug report](https://github.com/archivey-dev/archivey/issues/new/choose).

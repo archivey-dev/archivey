@@ -320,7 +320,7 @@ def test_a_cut_rar4_member_does_not_judge_the_password_candidates(
     with open_archive(cut, password=["wrong", "password"]) as reader:
         intact, short = reader.members_report().members
         assert short.size < intact.size  # the smallest, as the judge is chosen
-        reference = reader._unchecked_reference_member()  # noqa: SLF001
+        reference = reader._unchecked_reference_member()
         assert reference is not None and reference.name == intact.name
         with reader.open(intact) as stream:
             assert stream.read() == b"This is also secret"

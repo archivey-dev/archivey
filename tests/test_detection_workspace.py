@@ -1042,9 +1042,11 @@ def test_peek_prefix_until_reads_a_seekable_source_in_one_full_read() -> None:
 
 def test_peek_prefix_until_refuses_a_stall() -> None:
     make = dict(_forward_sources(b"abc", None))["raw"]
-    with PrefixWorkspace(make(), BALANCED_BUDGET) as ws:
-        with pytest.raises(BlockingIOError, match="non-blocking"):
-            ws.peek_prefix_until(4096, lambda head: False)
+    with (
+        PrefixWorkspace(make(), BALANCED_BUDGET) as ws,
+        pytest.raises(BlockingIOError, match="non-blocking"),
+    ):
+        ws.peek_prefix_until(4096, lambda head: False)
 
 
 def test_peek_prefix_until_refuses_a_negative_length() -> None:

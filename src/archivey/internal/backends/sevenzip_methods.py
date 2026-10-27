@@ -7,9 +7,9 @@
   batch into the same liblzma staging run as LZMA1/2
 
 BCJ entries carry both short and long on-disk method ids (``aliases``) — 7-Zip
-has historically written either form. ARM64 (``0x0A``) has only the short id, and is
-the one branch filter Python's ``lzma`` will not build (``in_liblzma_chain`` False):
-it is decoded in Python, always as its own stage.
+has historically written either form. ARM64 (``0x0A``) and RISC-V (``0x0B``) have
+only the short id, and are the branch filters Python's ``lzma`` will not build
+(``in_liblzma_chain`` False): they are decoded in Python, always as their own stage.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from enum import Enum, auto
 from archivey.exceptions import UnsupportedFeatureError
 from archivey.internal.streams.codecs import Codec
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64
+from archivey.internal.streams.codecs.riscv_filter import FILTER_RISCV
 from archivey.types import CompressionAlgorithm
 
 
@@ -52,8 +53,8 @@ class SevenZipMethod:
 
     @property
     def is_filter(self) -> bool:
-        """Delta or a branch filter (BCJ, ARM64). Like COPY, it outputs as many bytes
-        as it reads."""
+        """Delta or a branch filter (BCJ, ARM64, RISC-V). Like COPY, it outputs as many
+        bytes as it reads."""
         return self.algorithm is CompressionAlgorithm.DELTA or self.is_branch_filter
 
 
@@ -113,6 +114,7 @@ _METHODS: tuple[SevenZipMethod, ...] = (
     _bcj(b"\x08", b"\x03\x03\x07\x01", Codec.BCJ_ARMT, lzma.FILTER_ARMTHUMB),
     _bcj(b"\x09", b"\x03\x03\x08\x05", Codec.BCJ_SPARC, lzma.FILTER_SPARC),
     _bcj(b"\x0a", None, Codec.BCJ_ARM64, FILTER_ARM64, in_liblzma_chain=False),
+    _bcj(b"\x0b", None, Codec.BCJ_RISCV, FILTER_RISCV, in_liblzma_chain=False),
     SevenZipMethod(b"\x03\x03\x01\x1b", CompressionAlgorithm.BCJ2, MethodKind.BCJ2),
     _single(b"\x04\x01\x08", CompressionAlgorithm.DEFLATE, Codec.DEFLATE),
     _single(b"\x04\x01\x09", CompressionAlgorithm.DEFLATE64, Codec.DEFLATE64),

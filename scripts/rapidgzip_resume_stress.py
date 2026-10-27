@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Stress the rapidgzip child-process path under pytest, and catch a stalled test.
 
 gzip, zlib and raw DEFLATE decode through rapidgzip in a child process, which rapidgzip
@@ -300,7 +299,12 @@ def _capture_one(pid: int, out: list[str], *, python_dump: Path | None) -> None:
             continue
         try:
             done = subprocess.run(
-                argv, capture_output=True, text=True, errors="replace", timeout=120
+                argv,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=120,
+                check=False,
             )
             out.append(f"--- {tool} (rc={done.returncode})")
             out.append(done.stdout.strip())
@@ -511,11 +515,16 @@ def summarize(
         f"- python: `{sys.version.split()[0]}`",
         f"- {core_settings()}",
         f"- PYTHONFAULTHANDLER: `{'unset' if args.no_faulthandler else '1'}`",
-        f"- per-test timeout: {args.timeout} s ({args.timeout_method}); "
-        f"stall capture after {args.stall:.0f} s",
+        (
+            f"- per-test timeout: {args.timeout} s ({args.timeout_method}); "
+            f"stall capture after {args.stall:.0f} s"
+        ),
         "",
-        "| scenario | iterations | ok | failed | worker died | stalled | timed out "
-        "| slowest test (s) | slowest child death (s) | children | child deaths | peak RSS (MiB) |",
+        (
+            "| scenario | iterations | ok | failed | worker died | stalled | timed out "
+            "| slowest test (s) | slowest child death (s) | children | child deaths "
+            "| peak RSS (MiB) |"
+        ),
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]  # fmt: skip
     for scenario in scenarios:

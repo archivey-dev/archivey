@@ -167,14 +167,16 @@ def test_rar4_uow_data_reads_as_unrar_reads_it(
 
 def test_rar4_uow_without_an_owner_is_refused_under_strict() -> None:
     data = _with_uow_header(b"root")
-    with pytest.raises(
-        ArchiveyError, match="UOW owner header has no NUL in its owner data, so"
-    ):
-        with open_archive(
+    with (
+        pytest.raises(
+            ArchiveyError, match="UOW owner header has no NUL in its owner data, so"
+        ),
+        open_archive(
             io.BytesIO(data),
             config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
-        ) as archive:
-            archive.members()
+        ) as archive,
+    ):
+        archive.members()
 
 
 def test_rar4_stacked_uow_headers_report_once() -> None:

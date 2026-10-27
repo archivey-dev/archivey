@@ -115,6 +115,7 @@ Seek-respawn (named `unrar p` with `seekable_members=True`):
 | Files | Notes |
 | --- | --- |
 | `seek_respawn_solid__.rar` | RAR5 `-s -m3 -ds`; add-order `prefix.bin` (1 MiB repeating) then `tail.txt`. `-ds` keeps that order so the later-member rewind sees a 1 MiB prefix. The prefix also fills the pipe so a mid-stream seek hits a live process |
+| `solid_groups__.rar` | RAR5 `-s2 -m3`; `a.txt` … `d.txt` (840 bytes each) in solid groups of two, so `c.txt` starts a second solid stream (solid flag clear). `tests/test_rar_unknown_compression.py` sets `a.txt` to an unknown compression version |
 
 (`-m0` store archives do not set the solid bit even with `-s`; the flags still
 match the regeneration commands in `scripts/gen_rar_fixtures.py`.)

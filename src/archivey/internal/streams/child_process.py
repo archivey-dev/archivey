@@ -19,7 +19,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import IO
 
-from archivey.exceptions import ArchiveyError, ReadError, ResourceLimitError
+from archivey.exceptions import ArchiveyError, ReadError, ResourceUnavailableError
 
 # Seconds a child has to exit after it is told to end (its pipes closed, or a signal
 # sent) before it is killed.
@@ -77,10 +77,12 @@ def spawn(
     stderr: int | IO[bytes],
     bufsize: int = -1,
     env: Mapping[str, str] | None = None,
+    pass_fds: Sequence[int] = (),
 ) -> subprocess.Popen[bytes]:
     """Start ``argv`` with its stdout on a pipe. An ``OSError`` raises ``fail(str(exc))``.
 
     ``env`` replaces the child's environment; ``None`` inherits this process's.
+    ``pass_fds`` are descriptors the child inherits under the same numbers (POSIX only).
     """
     try:
         return subprocess.Popen(
@@ -90,6 +92,7 @@ def spawn(
             stderr=stderr,
             bufsize=bufsize,
             env=env,
+            pass_fds=pass_fds,
         )
     except OSError as exc:
         raise fail(str(exc)) from exc
@@ -176,7 +179,7 @@ def outside_death(returncode: int | None, what: str) -> tuple[type[ArchiveyError
 
     ``what`` says which process ended and how, such as ``describe_exit``'s text. The
     end came from outside the decoder, so it is no verdict on the data:
-    ``ResourceLimitError`` for SIGKILL (most often the out-of-memory killer), and
+    ``ResourceUnavailableError`` for SIGKILL (most often the out-of-memory killer), and
     ``ReadError`` for any other end.
 
     ``signal_exit_error`` in ``archivey.internal.external.cli`` classifies the end of
@@ -187,16 +190,45 @@ def outside_death(returncode: int | None, what: str) -> tuple[type[ArchiveyError
     """
     if is_system_kill(returncode):
         return (
-            ResourceLimitError,
-            f"{what}. SIGKILL comes from outside the decoder, most often the "
-            "system's out-of-memory killer, so the data may be valid; read it "
-            "again with more memory available.",
+            ResourceUnavailableError,
+            (
+                f"{what}. SIGKILL comes from outside the decoder, most often the "
+                "system's out-of-memory killer, so the data may be valid; read it "
+                "again with more memory available."
+            ),
         )
     return (
         ReadError,
-        f"{what}. The decoder did not crash: something outside it ended the "
-        "process, so the data may be valid; try reading it again.",
+        (
+            f"{what}. The decoder did not crash: something outside it ended the "
+            "process, so the data may be valid; try reading it again."
+        ),
     )
+
+
+# Set on an error that says nothing about the data a decoder child was given: the child
+# ended from outside (:func:`outside_death_error`) or could not start. Read by the seek
+# index check, which drops an index only for a verdict on the data
+# (``decompressor_stream._is_data_verdict``).
+_NO_VERDICT = "_archivey_no_verdict_on_the_data"
+
+
+def mark_no_verdict(exc: ArchiveyError) -> ArchiveyError:
+    """``exc``, marked as no verdict on the data (:func:`is_no_verdict`)."""
+    setattr(exc, _NO_VERDICT, True)
+    return exc
+
+
+def is_no_verdict(exc: BaseException) -> bool:
+    """Whether ``exc`` was marked by :func:`mark_no_verdict`."""
+    return getattr(exc, _NO_VERDICT, False) is True
+
+
+def outside_death_error(returncode: int | None, what: str) -> ArchiveyError:
+    """The error :func:`outside_death` describes, built and marked as no verdict on the
+    data (:func:`mark_no_verdict`)."""
+    cls, message = outside_death(returncode, what)
+    return mark_no_verdict(cls(message))
 
 
 def describe_exit(returncode: int | None) -> str:

@@ -8,6 +8,7 @@ are ``dev-docs/topics/exception-handlers.md``.
 from __future__ import annotations
 
 import io
+import itertools
 import struct
 import subprocess
 import sys
@@ -93,11 +94,13 @@ def test_overrun_probe_reads_a_closed_source_as_the_end(n: int) -> None:
     ) as stream:
         assert stream.read(n) == b"x" * 10
     bad = (zlib.crc32(b"x" * 10) ^ 1).to_bytes(4, "big")
-    with VerifyingStream(
-        _ExactThenFails(b"x" * 10, closed), {"crc32": bad}, expected_size=10
-    ) as stream:
-        with pytest.raises(CorruptionError):
-            stream.read(n)
+    with (
+        VerifyingStream(
+            _ExactThenFails(b"x" * 10, closed), {"crc32": bad}, expected_size=10
+        ) as stream,
+        pytest.raises(CorruptionError),
+    ):
+        stream.read(n)
 
 
 @pytest.mark.parametrize("n", [-1, 10])
@@ -108,9 +111,11 @@ def test_overrun_probe_raises_a_decoder_error_past_the_end(n: int) -> None:
     size returned its bytes as verified and only a later read raised.
     """
     inner = _ExactThenFails(b"x" * 10, zlib.error("invalid block type"))
-    with VerifyingStream(inner, {}, expected_size=10) as stream:
-        with pytest.raises(zlib.error):
-            stream.read(n)
+    with (
+        VerifyingStream(inner, {}, expected_size=10) as stream,
+        pytest.raises(zlib.error),
+    ):
+        stream.read(n)
 
 
 def _stored_block(data: bytes) -> bytes:
@@ -129,9 +134,7 @@ def _zip_with_bad_block_after_declared_size() -> tuple[bytes, int]:
     payload = bytes(range(256)) * (size // 256) + bytes(range(size % 256))
     step = size // blocks
     bounds = [i * step for i in range(blocks)] + [size]
-    raw = b"".join(
-        _stored_block(payload[a:b]) for a, b in zip(bounds, bounds[1:], strict=False)
-    )
+    raw = b"".join(_stored_block(payload[a:b]) for a, b in itertools.pairwise(bounds))
     assert len(raw) == compressed_len
     raw += b"\x07\x00\x00"
     crc = zlib.crc32(payload)
@@ -262,7 +265,11 @@ def test_bzip2_accelerator_traps_a_failing_caller_source() -> None:
         """
     )
     proc = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=120
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     assert "raised disk gone" in proc.stdout

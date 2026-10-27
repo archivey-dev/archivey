@@ -112,9 +112,11 @@ def test_rar5_stored_member_read_also_charges_the_data_key() -> None:
     enough = _RAR5_CHECK + _RAR5_HASH_KEY + _RAR5_KEY
     with open_archive(path, password="password", config=_config(enough)) as archive:
         assert archive.read("secret.txt") == b"This is secret"
-    with open_archive(path, password="password", config=_config(enough - 1)) as archive:
-        with pytest.raises(ResourceLimitError, match="RAR5 key derivation"):
-            archive.read("secret.txt")
+    with (
+        open_archive(path, password="password", config=_config(enough - 1)) as archive,
+        pytest.raises(ResourceLimitError, match="RAR5 key derivation"),
+    ):
+        archive.read("secret.txt")
 
 
 @requires("cryptography")
@@ -183,6 +185,8 @@ def test_sevenzip_folder_confirm_reports_the_budget_not_a_wrong_password(
         check=True,
         capture_output=True,
     )
-    with open_archive(archive, password=password, config=_config(rounds)) as a:
-        with pytest.raises(ResourceLimitError, match="7z key derivation"):
-            a.read("a.txt")
+    with (
+        open_archive(archive, password=password, config=_config(rounds)) as a,
+        pytest.raises(ResourceLimitError, match="7z key derivation"),
+    ):
+        a.read("a.txt")

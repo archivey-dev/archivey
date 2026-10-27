@@ -68,9 +68,10 @@ UNAR_VERSION_FLOOR: tuple[int, int] = (1, 10)
 # ``unar -h`` opens with ``unar v1.10.1, a tool for extracting the contents of archive
 # files.`` (Debian). Homebrew's build adds its build date: ``unar v1.10.7 (Oct 10
 # 2023), a tool for extracting …``. The digit runs are bounded so ``int()`` cannot hit
-# CPython's digit limit.
+# CPython's digit limit, and ``[0-9]``, not ``\d``, which matches Unicode digits too
+# (``tests/test_src_regex_ascii.py`` holds the rule).
 _UNAR_BANNER_RE = re.compile(
-    r"^unar v(\d{1,4})\.(\d{1,4})(?:\.(\d{1,4}))?(?: \([^)\n]{0,64}\))?, "
+    r"^unar v([0-9]{1,4})\.([0-9]{1,4})(?:\.([0-9]{1,4}))?(?: \([^)\n]{0,64}\))?, "
     r"a tool for extracting",
     re.MULTILINE,
 )

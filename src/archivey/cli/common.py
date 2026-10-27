@@ -184,16 +184,18 @@ def open_for_cli(
         source, streaming = archive, is_read_once(archive)
     err = err if err is not None else sys.stderr
     if track_io:
-        with enable_measurement():
-            with _open(
+        with (
+            enable_measurement(),
+            _open(
                 source,
                 password=password,
                 streaming=streaming,
                 config=config,
                 format=format,
-            ) as reader:
-                yield reader
-                _report_track_io(reader, err)
+            ) as reader,
+        ):
+            yield reader
+            _report_track_io(reader, err)
     else:
         with _open(
             source,

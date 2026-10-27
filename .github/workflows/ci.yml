@@ -21,8 +21,8 @@ on:
     # globs with `!`, then the two doc paths that tests read, re-included (later
     # patterns win): docs/api.md (test_public_api) and review/problem-catalogue/
     # (test_review_problem_catalogue). Add a path there when a test starts reading
-    # another doc file. atheris-fuzz.yml and ppmd-native-stress.yml carry the same list;
-    # tests/test_ci_doc_paths.py checks that the three match and the re-includes come last.
+    # another doc file. atheris-fuzz.yml carries the same list;
+    # tests/test_ci_doc_paths.py checks that the two match and the re-includes come last.
     # Two cases skip this workflow although code changed, both from GitHub's filter: a
     # rename is seen under its new name only, so moving code into docs/ alone skips it;
     # and a diff over 3,000 files whose matches fall past the first 3,000 skips it too.
@@ -42,6 +42,9 @@ on:
       - "!LICENSE"
       - docs/api.md
       - review/problem-catalogue/**
+  # The merge queue. Path filters do not apply to merge_group, so every queued group runs
+  # the whole workflow, and the `CI gate` job below is the check the ruleset requires.
+  merge_group:
   workflow_dispatch:
 
 # Cancel an in-progress run when a newer commit arrives for the same PR/branch, so
@@ -72,9 +75,9 @@ jobs:
         # the everyday recommended install; core-only is covered by the test matrix.
         run: uv sync --group dev --extra all
       - name: Ruff lint
-        run: uv run ruff check src/ tests/ scripts/ benchmarks/
+        run: uv run ruff check src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/
       - name: Ruff format
-        run: uv run ruff format --check src/ tests/ scripts/ benchmarks/
+        run: uv run ruff format --check src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/
       - name: Pyrefly
         run: uv run pyrefly check
       - name: ty
@@ -271,6 +274,23 @@ jobs:
         run: |
           DEST="${RUNNER_TEMP}/unar-1.10.8"
           ./scripts/install-unar-from-source.sh --dest "$DEST"
+          echo "$DEST" >> "$GITHUB_PATH"
+      # 7-Zip 26.05: the runner's 7z predates the RISC-V filter (7-Zip 24), which
+      # tests/test_sevenzip_riscv.py writes with a live 7-Zip as its oracle; without one
+      # those checks skip. Built from the pinned ip7z/7zip commit; the binary links
+      # against the image's libstdc++, so the key names the image too. The script
+      # refuses a binary whose `7zz i` does not list RISCV, cached or not.
+      - name: Cache 7-Zip 26.05 built from source (Linux)
+        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/7zip-26.05
+          key: 7zip-26.05-${{ hashFiles('scripts/install-7zip-from-source.sh') }}-${{ steps.unar-image.outputs.image }}-${{ runner.arch }}
+      - name: Build 7-Zip 26.05 and put 7zz on PATH (Linux)
+        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
+        run: |
+          DEST="${RUNNER_TEMP}/7zip-26.05"
+          ./scripts/install-7zip-from-source.sh --dest "$DEST"
           echo "$DEST" >> "$GITHUB_PATH"
       # Homebrew disabled the `rar` cask on 2026-09-01 (official binaries fail
       # Gatekeeper notarization). Compile RARLAB UnRAR from a pinned git commit
@@ -573,11 +593,13 @@ jobs:
       # it is an ini option in pyproject.toml, which `-o addopts=` does not touch. This
       # job hung outright four times on 2026-09-21 with the timeout armed and never
       # fired, which is why that method is set at all.
+      # `-n auto` as in the other legs: run single-process, this job was the slowest in
+      # the workflow (two full suites, about 15 minutes).
       - name: Run full suite (core-only)
         run: >
           uv run --python ${{ matrix.python }} --no-sync
-          --with pytest --with pytest-timeout
-          pytest tests/ -q --timeout=120 -o addopts=
+          --with pytest --with pytest-timeout --with pytest-xdist
+          pytest tests/ -q -n auto --timeout=120 -o addopts=
 
       - name: Sync GIL-safe extras
         # [free-threaded] IS this list, so the job now installs the documented extra
@@ -592,8 +614,8 @@ jobs:
       - name: Run full suite + concurrent_reader (GIL-safe extras)
         run: >
           uv run --python ${{ matrix.python }} --no-sync
-          --with pytest --with pytest-timeout
-          pytest tests/ -q --timeout=120 -o addopts=
+          --with pytest --with pytest-timeout --with pytest-xdist
+          pytest tests/ -q -n auto --timeout=120 -o addopts=
       - name: Assert the GIL-re-enabling packages stay unimported
         # pyppmd, inflate64, brotli and rapidgzip re-enable the GIL when imported, so
         # archivey imports each one only when a stream needs it. With all four installed,
@@ -648,8 +670,12 @@ jobs:
       - name: Assert zero-dependency core
         if: ${{ !cancelled() }}
         run: uv run --python ${{ matrix.python }} --no-sync python tests/check_zero_dep_core.py
+      # Core-only on PyPy runs on each push to main and on a dispatched run (a release gate,
+      # scripts/release.py), not on pull requests or in the merge queue: it is about five
+      # of this job's fifteen minutes, and the CPython core-only legs already cover the
+      # fallback paths on every pull request.
       - name: Run full suite (core-only)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && github.event_name != 'merge_group' }}
         env:
           PYTHONFAULTHANDLER: "1"
         run: >
@@ -658,7 +684,7 @@ jobs:
           pytest tests/ -q -n auto --timeout=300 -o addopts= --tb=no -p no:warnings
           -m 'not ppmd_native_stress' --junitxml=pypy-core.xml -o junit_family=xunit1
       - name: Failures (core-only), one line each
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && github.event_name != 'merge_group' }}
         run: python3 scripts/junit_failure_lines.py pypy-core.xml
       - name: Install what installs (runtime extras, then test-only packages)
         if: ${{ !cancelled() }}
@@ -728,3 +754,48 @@ jobs:
           path: benchmark-structural.json
       - name: Pytest structural gate + measurement unit tests
         run: uv run --no-sync pytest tests/test_benchmark_gate.py tests/test_measurement.py -q
+
+  # The SquashFS reader in packages/archivey-squashfs: a format added from outside the
+  # library, through the public plugin API only. Its own tests, against images
+  # mksquashfs wrote (tests/data/make-images.sh), with lz4 for the LZ4 image and
+  # python-lzo for the second LZO decoder.
+  squashfs-plugin:
+    name: archivey-squashfs plugin
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Set up Python
+        run: uv python install 3.11
+      - name: Install liblzo2, which python-lzo builds against
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends liblzo2-dev
+      - name: Sync, then install the package over it
+        # python-lzo too, so the tests check the package's LZO decoder against liblzo2.
+        run: |
+          uv sync --group dev --extra all
+          uv pip install -e packages/archivey-squashfs --no-deps
+          uv pip install python-lzo
+      - name: Pytest
+        run: uv run --no-sync pytest packages/archivey-squashfs/tests -q --no-cov -rs
+
+  # The one required check of the merge queue (ruleset on main). It runs only for a
+  # merge_group and fails when any job above failed or was cancelled; a matrix leg with
+  # continue-on-error does not count. On a pull request it is skipped, and the
+  # always-run pr-gate.yml reports the same name as passed, so a docs-only pull request,
+  # which never starts this workflow, can still join the queue. The queue run is the gate.
+  gate:
+    name: CI gate
+    if: ${{ always() && github.event_name == 'merge_group' }}
+    needs: [lint, test, unar-distro-packages, free-threaded-concurrency, pypy, benchmark, squashfs-plugin]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every job passed
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: exit 1
+      - run: echo "All CI jobs passed."

@@ -67,7 +67,7 @@ how provenance stops being trustworthy.
 Two failure classes, both already present or introduced here:
 
 1. A file under `docs/` with no nav entry — six today, invisible to `--strict`.
-2. An absolute `github.com/davitf/archivey/blob/main/<path>` URL pointing at a file
+2. An absolute `github.com/archivey-dev/archivey/blob/main/<path>` URL pointing at a file
    that does not exist. This change *introduces* that class (D3 converts five site
    links to absolute URLs), and they point at files this migration is itself
    moving, so they are exactly the links that rot silently.

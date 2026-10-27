@@ -190,12 +190,40 @@ def unrar_refusal() -> str | None:
     return None
 
 
+def unrar_cli_refusal() -> str | None:
+    """Why a test cannot run the ``unrar`` command itself, or ``None`` when it can.
+
+    A test that runs ``unrar`` as an oracle needs that command to be the RARLAB
+    ``unrar`` archivey accepts; such a test is marked :func:`requires_unrar_cli`.
+    :func:`unrar_refusal` alone is not enough: it also accepts ``rar`` 6.0+ when
+    ``unrar`` is missing or a lookalike, and the test would then run the wrong program.
+    """
+    from archivey.internal.backends.rar_unrar import find_rarlab_unrar
+
+    on_path = shutil.which("unrar")
+    if on_path is None:
+        return "unrar is not on PATH"
+    refusal = unrar_refusal()
+    if refusal is not None:
+        return refusal
+    # find_rarlab_unrar returns an absolute path already; abspath both sides anyway,
+    # so a relative PATH entry cannot make the two spellings differ.
+    accepted = find_rarlab_unrar()
+    if os.path.normcase(os.path.abspath(on_path)) != os.path.normcase(
+        os.path.abspath(accepted)
+    ):
+        return f"archivey refuses the unrar at {on_path} and uses rar instead"
+    return None
+
+
 def binary_refusal(name: str) -> str | None:
     """Why a test cannot use ``name``, or ``None`` when it can.
 
     For ``unar`` and ``unrar`` this is archivey's own policy (:func:`unar_refusal`,
     :func:`unrar_refusal`), so a binary on ``PATH`` that archivey refuses reads as
-    missing. Any other name only has to be on ``PATH``.
+    missing. Any other name only has to be on ``PATH``. A test that runs the
+    ``unrar`` command itself uses :func:`unrar_cli_refusal` or
+    :func:`requires_unrar_cli` instead.
     """
     if name == "unar":
         return unar_refusal()
@@ -215,16 +243,35 @@ def requires_binary(*names: str) -> pytest.MarkDecorator:
     The oracle-availability rule (``testing-contract`` spec): a test that shells out to an external
     binary must *skip*, not fail, where that binary is absent, so CI legs and dev
     machines without it stay green. ``unar`` also skips where archivey refuses the one
-    on ``PATH`` (:func:`unar_refusal`), and the reason says why.
+    on ``PATH`` (:func:`unar_refusal`). ``unrar`` means archivey's RARLAB data program
+    (:func:`unrar_refusal`) rather than the command: ``rar`` 6.0+ alone runs the test,
+    and so does a lookalike ``unrar`` beside it. A test that runs the ``unrar`` command
+    itself is marked :func:`requires_unrar_cli` instead.
     """
-    missing = [n for n in names if shutil.which(n) is None]
+    missing = [n for n in names if n != "unrar" and shutil.which(n) is None]
     reason = f"requires external binary(ies): {', '.join(missing)}"
-    if not missing and "unar" in names:
-        refusal = unar_refusal()
-        if refusal is not None:
-            missing = ["unar"]
-            reason = f"requires a unar archivey will use: {refusal}"
+    if not missing:
+        for name, refuse in (("unar", unar_refusal), ("unrar", unrar_refusal)):
+            if name not in names:
+                continue
+            refusal = refuse()
+            if refusal is not None:
+                missing = [name]
+                reason = f"requires a {name} archivey will use: {refusal}"
+                break
     return pytest.mark.skipif(bool(missing), reason=reason)
+
+
+def requires_unrar_cli() -> pytest.MarkDecorator:
+    """Skip a test that runs the ``unrar`` command unless archivey accepts that command.
+
+    For an oracle test that spawns ``unrar`` itself (:func:`unrar_cli_refusal`). A test
+    that only needs archivey to read RAR data uses ``requires_binary("unrar")``.
+    """
+    refusal = unrar_cli_refusal()
+    return pytest.mark.skipif(
+        refusal is not None, reason=f"requires a unrar archivey will use: {refusal}"
+    )
 
 
 SEVEN_ZIP_CLI_TIMEOUT = 30.0
@@ -240,6 +287,7 @@ def run_7z(
     text: Literal[False] = False,
     input: bytes | None = None,
     timeout: float = SEVEN_ZIP_CLI_TIMEOUT,
+    program: str = "7z",
 ) -> subprocess.CompletedProcess[bytes]: ...
 
 
@@ -252,6 +300,7 @@ def run_7z(
     text: Literal[True],
     input: str | None = None,
     timeout: float = SEVEN_ZIP_CLI_TIMEOUT,
+    program: str = "7z",
 ) -> subprocess.CompletedProcess[str]: ...
 
 
@@ -263,6 +312,7 @@ def run_7z(
     text: bool = False,
     input: bytes | str | None = None,
     timeout: float = SEVEN_ZIP_CLI_TIMEOUT,
+    program: str = "7z",
 ) -> subprocess.CompletedProcess[bytes] | subprocess.CompletedProcess[str]:
     """Run the ``7z`` CLI with ``args``, capture its output, and bound how long it runs.
 
@@ -273,10 +323,10 @@ def run_7z(
     ``timeout`` the hang becomes a ``subprocess.TimeoutExpired`` in the test that
     caused it. Stdin is ``subprocess.DEVNULL`` unless ``input`` is given, so a prompt
     (for example a password or overwrite question) gets end-of-file instead of
-    waiting.
+    waiting. ``program`` names another 7-Zip CLI, such as ``7zz``.
     """
     return subprocess.run(
-        ["7z", *args],
+        [program, *args],
         cwd=cwd,
         check=check,
         capture_output=True,
@@ -305,6 +355,27 @@ def sevenzip_lists_arm64() -> bool:
         print(f"7z i did not finish: {exc}", file=sys.stderr)
         return False
     return re.search(r"\bARM64\b", listing) is not None
+
+
+@functools.cache
+def sevenzip_with_riscv() -> str | None:
+    """The first of ``7zz`` and ``7z`` on ``PATH`` whose ``7z i`` lists RISCV, or None.
+
+    7-Zip 24 added the RISC-V filter; Ubuntu's ``7z`` (23.01) and p7zip predate it.
+    ``scripts/install-7zip-from-source.sh`` builds a ``7zz`` that has it. A run that
+    does not finish counts as not listing it and is written to stderr once.
+    """
+    for program in ("7zz", "7z"):
+        if shutil.which(program) is None:
+            continue
+        try:
+            listing = run_7z(["i"], text=True, program=program).stdout
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"{program} i did not finish: {exc}", file=sys.stderr)
+            continue
+        if re.search(r"\bRISCV\b", listing):
+            return program
+    return None
 
 
 def requires_zstd() -> pytest.MarkDecorator:

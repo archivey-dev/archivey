@@ -62,11 +62,14 @@ _UNRAR_VERSION_FLOOR: tuple[int, int] = (6, 0)
 # under a different PATH name (Ubuntu ``apt install rar`` Suggests ``unrar``
 # and does not put ``unrar`` on PATH).
 _RARLAB_BINARY_NAMES: tuple[str, ...] = ("unrar", "rar")
-# Bound the digit runs: unbounded ``\d+`` then ``int()`` raises ``ValueError``
+# Bound the digit runs: an unbounded run then ``int()`` raises ``ValueError``
 # past CPython's 4300-digit limit, and that must not cross ``open_archive``.
+# ``[0-9]`` and ``[ \t]``, not ``\d`` and ``\s``: those match Unicode digits and
+# spaces, and ``\s`` also a newline, which would pair a token with a version on the
+# next line (``tests/test_src_regex_ascii.py`` holds the rule).
 # ``(?<![A-Za-z])`` so ``RAR`` does not match inside ``UNRAR``.
-_UNRAR_VERSION_RE = re.compile(r"(?<![A-Za-z])UNRAR\s+(\d{1,4})\.(\d{1,4})")
-_RAR_VERSION_RE = re.compile(r"(?<![A-Za-z])RAR\s+(\d{1,4})\.(\d{1,4})")
+_UNRAR_VERSION_RE = re.compile(r"(?<![A-Za-z])UNRAR[ \t]+([0-9]{1,4})\.([0-9]{1,4})")
+_RAR_VERSION_RE = re.compile(r"(?<![A-Za-z])RAR[ \t]+([0-9]{1,4})\.([0-9]{1,4})")
 _UNRAR_TOKEN_RE = re.compile(r"(?<![A-Za-z])UNRAR(?![A-Za-z])")
 _RAR_TOKEN_RE = re.compile(r"(?<![A-Za-z])RAR(?![A-Za-z])")
 

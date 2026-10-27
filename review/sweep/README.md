@@ -1,7 +1,7 @@
 # `sweep/` — the whole-codebase reading pass (#315)
 
 A cold **whole-file** reading pass over `src/`, run one batch at a time by a fresh agent,
-posting to [#315](https://github.com/davitf/archivey/pull/315). Not a diff review: the point
+posting to [#315](https://github.com/archivey-dev/archivey/pull/315). Not a diff review: the point
 is the code nobody has read, not the code someone just changed. #315 is the hub — its head
 *is* `main` and its base is an orphan branch, so inline comments re-anchor against current
 code and it is never merged.

@@ -41,8 +41,8 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64, arm64_decode
 from archivey.internal.streams.codecs.bcj2_filter import Bcj2DecoderStream
-from archivey.internal.streams.codecs.gzip_codec import _MEMBER_PROBE_INPUT
 from archivey.internal.streams.codecs.lzma_filter_decoder import FilterStream
+from archivey.internal.streams.codecs.riscv_filter import FILTER_RISCV, riscv_decode
 from archivey.types import FormatSupport
 from tests.atheris_fuzz.crc_fixup import (
     fixup_rar_header_crcs,
@@ -424,8 +424,8 @@ def _open_sampled(
         return
 
 
-# liblzma branch filters whose start offset of 0 it accepts. ARM64 is separate:
-# Python's lzma refuses that id, and the decoder here is archivey's.
+# liblzma branch filters whose start offset of 0 it accepts. ARM64 and RISC-V are
+# separate: Python's lzma refuses those ids, and the decoders here are archivey's.
 _LIBLZMA_BRANCHES = (
     lzma.FILTER_X86,
     lzma.FILTER_POWERPC,
@@ -434,15 +434,17 @@ _LIBLZMA_BRANCHES = (
     lzma.FILTER_ARMTHUMB,
     lzma.FILTER_SPARC,
 )
-# Byte 0 of a filter input selects one of these: BCJ2, ARM64, Delta, then each
-# liblzma branch. ``filter_seeds`` builds one seed per value.
-FILTER_KIND_COUNT = 3 + len(_LIBLZMA_BRANCHES)
+# Byte 0 of a filter input selects one of these: BCJ2, ARM64, Delta, each liblzma
+# branch, then RISC-V. ``filter_seeds`` builds one seed per value. RISC-V is last so
+# the kinds before it keep the numbers existing corpora use.
+_RISCV_KIND = 3 + len(_LIBLZMA_BRANCHES)
+FILTER_KIND_COUNT = _RISCV_KIND + 1
 
 
 def filters_one(data: bytes) -> None:
     """Run one filter decoder. Byte 0 picks which.
 
-    A 7z mutation does not assemble a BCJ2 folder or an ARM64 property block, so
+    A 7z mutation does not assemble a BCJ2 folder or an ARM64 or RISC-V coder, so
     those decoders stay dark unless a seed already has them. This target feeds
     them hostile payloads directly.
     """
@@ -457,6 +459,10 @@ def filters_one(data: bytes) -> None:
             pc = int.from_bytes(body[:4], "little") & ~3
             arm64_decode(body[4 : 4 + _MAX_FILTER_BYTES], pc)
             _fuzz_filter_stream(body[4:], {"id": FILTER_ARM64, "start_offset": pc})
+        elif kind == _RISCV_KIND:
+            pc = int.from_bytes(body[:4], "little") & ~1
+            riscv_decode(body[4 : 4 + _MAX_FILTER_BYTES], pc)
+            _fuzz_filter_stream(body[4:], {"id": FILTER_RISCV, "start_offset": pc})
         elif kind == 2:
             dist = 1 + (body[0] % 256 if body else 0)
             _fuzz_filter_stream(body[1:], {"id": lzma.FILTER_DELTA, "dist": dist})
@@ -651,13 +657,9 @@ def _gzip_ignoring_lengths(data: bytes) -> bytes | None:
     rapidgzip checks each member's CRC-32, and the spec accepts a wrong ISIZE over data
     the CRC-32 confirms in a file of several members: a malformed trailer, not damaged
     data. That is a member another member follows. The last member's is checked by the
-    backstop, and missed only when the further-member scan stands down early: with three
-    or more members (an earlier one can confirm), or a last member whose input is longer
-    than the scan's probe (``_MEMBER_PROBE_INPUT``). With two members and a small last one
-    the backstop catches it, so it is not excused here and the target keeps noticing.
-    A file of one member is never excused, with or without padding or other bytes after
-    it. The test for the last member is looser than the scan: it does not ask whether an
-    earlier member is itself right.
+    backstop, against the end of the output, whatever comes before it, so a wrong ISIZE
+    there is never excused, nor in a file of one member, with or without padding or other
+    bytes after it.
     zlib checks the CRC-32 before the length, so a member that fails only "incorrect
     length check" has its data confirmed. Fed a byte at a time so the output before that
     error is kept and the member's end is known; only called on the rare input where the
@@ -665,12 +667,12 @@ def _gzip_ignoring_lengths(data: bytes) -> bytes | None:
     """
     out = bytearray()
     pos = 0
-    members: list[tuple[bool, int]] = []  # (failed the length check, bytes it spans)
+    members: list[bool] = []  # whether each failed the length check
     while pos < len(data):
         if not any(data[pos:]):
             break  # zero padding after the last member, as GzipFile skips it
         decoder = zlib.decompressobj(31)
-        start, bad_length = pos, False
+        bad_length = False
         while True:
             if pos >= len(data):
                 return None  # cut inside a member
@@ -685,11 +687,8 @@ def _gzip_ignoring_lengths(data: bytes) -> bytes | None:
             pos += 1
             if decoder.eof:
                 break
-        members.append((bad_length, pos - start))
-    if len(members) < 2:
-        return None
-    last_bad, last_size = members[-1]
-    if last_bad and len(members) < 3 and last_size <= _MEMBER_PROBE_INPUT:
+        members.append(bad_length)
+    if len(members) < 2 or members[-1]:
         return None
     return bytes(out)
 

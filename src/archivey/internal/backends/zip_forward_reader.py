@@ -36,6 +36,7 @@ from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
     ResourceLimitError,
+    ResourceUnavailableError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -45,8 +46,11 @@ from archivey.internal.backends.zip_aes import (
     ZIP_WRONG_PASSWORD_MSG,
     WinZipAesForwardStream,
     WinZipAesInfo,
+    aes_record_differences,
+    local_first,
     open_winzip_aes_forward,
     open_winzip_aes_member,
+    parse_winzip_aes_extra,
 )
 from archivey.internal.backends.zip_local_walk import (
     _CODEC_RETAIN,
@@ -68,6 +72,7 @@ from archivey.internal.backends.zip_parser import (
 from archivey.internal.backends.zip_reader import (
     _STRONG_ENCRYPTION_MSG,
     _UNCONFIRMED_PASSWORD_FAILURE,
+    _WINZIP_AES_METHOD,
     _ZIP_KEYED_SETTINGS_METHODS,
     _ZIP_MASK_COMPRESSED_PATCHED_DATA,
     _ZIP_MASK_LZMA_EOS_MARKER,
@@ -123,6 +128,7 @@ from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.internal.trailing_scan import first_nonzero_offset
 from archivey.internal.windows_reparse import (
     REPARSE_HEADER_BYTES,
+    parse_reparse_data,
     reparse_payload_length,
 )
 from archivey.terminal import quoted
@@ -150,6 +156,9 @@ _MAX_KEPT_CIPHERTEXT = 2 * MAX_LINK_TARGET_BYTES
 #: Why a member's kept data was dropped (``ZipForwardReader._hold``): the pass held
 #: ``max_metadata_bytes`` of short members' data, and this member's was the longest.
 _DROPPED = "dropped"
+#: What a link's read is given for data the pass knows is no reparse buffer but did
+#: not keep (``ZipForwardReader._link_target_opener``).
+_NOT_A_REPARSE_BUFFER = b"\0"
 #: The data a member read with several possible passwords keeps to confirm one on
 #: (``_PassData._confirm_password``): the compressed input a bounded confirm may take
 #: (``PASSWORD_CONFIRM_MAX_INPUT_BYTES``), and room for the encryption header.
@@ -222,11 +231,25 @@ def _header_disagreements(
     them (no bit 3): a data descriptor's are checked by :func:`_contradicts`. The CRC
     counts only when a read checks it (``crc_used``: not WinZip AE-2). The method does
     not count: the data the pass decoded matched the CRC and size the directory gives,
-    so it is the data the directory describes, whichever codec produced it.
+    and a file read decodes by the local method too, reporting
+    ``MEMBER_LOCAL_METHOD_DIFFERS`` as the pass does. WinZip AES (method 99) on one side
+    only counts, as a file read refuses it: the two headers disagree on the encryption.
+    So do two AES records that differ in any field, or a missing or unparseable record
+    on one side (:func:`aes_record_differences`): the pass decoded by the local record, and a file
+    read refuses the member.
     """
     flags, crc = local.flags, local.crc
     compressed_size, file_size = local.compressed_size, local.file_size
     differ = []
+    if local.method != central.method and _WINZIP_AES_METHOD in (
+        local.method,
+        central.method,
+    ):
+        differ.append(f"compression method {local.method} against {central.method}")
+    elif local.method == central.method == _WINZIP_AES_METHOD:
+        differ.extend(
+            aes_record_differences(local.aes, parse_winzip_aes_extra(central.extra))
+        )
     encrypted = _is_encrypted_entry(flags, local.method)
     if encrypted != _is_encrypted_entry(central.flags, central.method):
         differ.append(
@@ -255,11 +278,9 @@ def _header_disagreements(
 
 
 def _header_error(member: ArchiveMember, differ: list[str]) -> CorruptionError:
-    # Which side of an "X against Y" pair is the local header's.
-    order = ", local first" if any(" against " in item for item in differ) else ""
     return CorruptionError(
         f"ZIP member {quoted(member.name)}: its local header and its central "
-        f"directory entry disagree ({', '.join(differ)}{order}); the data the "
+        f"directory entry disagree ({', '.join(differ)}{local_first(differ)}); the data the "
         "stream held for it was read as the local header describes it, and a read "
         "that follows the directory reads it differently",
         member_name=member.name,
@@ -650,6 +671,8 @@ class _PassData:
         except ResourceLimitError as exc:
             # The LZMA or PPMd settings a ZipCrypto key decrypted ask for more than
             # the cap: the password may be wrong, or the size real (as from a file).
+            # Only the settings are read here, no decoder is built, so this is never
+            # a ResourceUnavailableError, which the decode below lets through.
             if not keyed or not note_limit:
                 raise
             noted = _unconfirmed_resource_limit(exc)
@@ -892,6 +915,10 @@ class _PassData:
         try:
             try:
                 decoded = self._decode(loc, body, keyed=keyed, note_limit=False)
+            except ResourceUnavailableError:
+                # A shortage, not what the decrypted settings asked for: it must not
+                # become a candidate failure below.
+                raise
             except ResourceLimitError as exc:
                 if not keyed:
                     raise
@@ -1431,10 +1458,13 @@ class _PassData:
         return True
 
     @property
-    def uncaptured(self) -> str | int | ArchiveyError | _KeptCiphertext | None:
+    def uncaptured(
+        self,
+    ) -> str | int | ArchiveyError | _KeptCiphertext | _UnverifiedData | None:
         """Why a drained member's bytes were not kept, when not for their length:
         what the read of an encrypted member raised, its kept ciphertext, the length
-        of a reparse buffer over ``_MAX_REPARSE_PREFIX``, or ``"damaged"`` (see
+        of a reparse buffer over ``_MAX_REPARSE_PREFIX``, or ``"damaged"``, with the
+        data when all of it was kept (``_UnverifiedData``; see
         ``ZipForwardReader._link_target_opener``).
         """
         if self._failure is not None:
@@ -1453,6 +1483,9 @@ class _PassData:
             or header.file_size <= MAX_LINK_TARGET_BYTES
             or self._size >= header.file_size
         ):
+            capture = self._capture
+            if capture is not None and self._prefix_want is None:
+                return _UnverifiedData(bytes(capture))
             return "damaged"
         return None
 
@@ -1460,6 +1493,54 @@ class _PassData:
         """Release the decoder of a pass that will not read on."""
         self.done = True
         self._close_decoded()
+
+
+class _UnverifiedData:
+    """A member's whole decoded data, within the target cap, that failed its check.
+
+    Kept because a file read of a Windows reparse buffer stops one byte past the
+    buffer: when the data runs on past that, the file read never meets the failed
+    check, and the data is no link buffer, so the member is a file
+    (``ZipForwardReader._link_target_opener``). Any other link reports the damage.
+    """
+
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+
+    def __len__(self) -> int:
+        return len(self.data)
+
+
+#: What ``ZipForwardReader._hold`` leaves for dropped data that is no reparse buffer
+#: as a file read reads one: the header, the payload it declares and one byte
+#: (``_file_read_parses_no_buffer``). A reparse point's answer is then decided without
+#: the bytes: the parse rejects the data, so the member is a file, or a
+#: directory-shaped link with no target, as from a file
+#: (``ZipForwardReader._link_target_opener``). Any other link has lost its data as the
+#: reason each maps to says: dropped, or damaged for data that failed its check.
+_DROPPED_NO_BUFFER = "dropped, no buffer"
+_DAMAGED_NO_BUFFER = "damaged, no buffer"
+_NO_BUFFER_REASONS = {_DROPPED_NO_BUFFER: _DROPPED, _DAMAGED_NO_BUFFER: "damaged"}
+
+
+def _file_read_parses_no_buffer(data: bytes, *, check_failed: bool) -> bool:
+    """Whether a file read of a reparse point holding ``data`` finds no link buffer.
+
+    The file read reads the header, the payload it declares and one byte. Without
+    ``check_failed``, ``data`` is what ``_captured`` holds: the whole data, which
+    passed its check, or the start a file read reads of longer data
+    (``_PassData.reparse_prefix``, which keeps none of data that ended within it and
+    failed its check). Either way it holds every byte the file read parses, so that
+    parse decides, verified or not. With ``check_failed``, ``data`` is the whole data
+    of a member that failed its check (``_UnverifiedData``): it is no buffer only when
+    it runs on past that read, which then never meets the failed check, and the parse
+    rejects data longer than the buffer it declares; data ending within that read is
+    damage instead.
+    """
+    reach = REPARSE_HEADER_BYTES + reparse_payload_length(data) + 1
+    if check_failed:
+        return len(data) > reach
+    return parse_reparse_data(data[:reach]) is None
 
 
 class _KeptCiphertext:
@@ -1683,14 +1764,19 @@ class ZipForwardReader(ZipReader):
         # links. Bounded with the kept ciphertext by ``_hold``, not charged to the
         # listing: most of it is files' data, which a file read does not keep.
         self._captured: dict[int, bytes] = {}
-        # What ``_captured`` and the kept ciphertext hold, in bytes, and a heap of
-        # (-length, member id) over them, so ``_hold`` drops the longest first.
+        # What ``_captured``, the kept ciphertext and the data held as
+        # ``_UnverifiedData`` hold, in bytes, and a heap of (-length, member id) over
+        # them, so ``_hold`` drops the longest first.
         self._kept_bytes = 0
         self._kept_heap: list[tuple[int, int]] = []
-        # Member id -> why its bytes were not kept, when not for their length
-        # (``_PassData.uncaptured``, or ``_DROPPED`` by ``_hold``), so a link's
-        # missing target says why.
-        self._uncaptured: dict[int, str | int | ArchiveyError | _KeptCiphertext] = {}
+        # Member id -> why its data is not in ``_captured``, when not for its length
+        # (``_PassData.uncaptured``), so a link's missing target says why. Two values
+        # carry bytes rather than a reason: the kept ciphertext and the data that failed
+        # its check (``_UnverifiedData``). ``_hold`` replaces what it drops with
+        # ``_DROPPED``, ``"damaged"`` or one of ``_NO_BUFFER_REASONS``.
+        self._uncaptured: dict[
+            int, str | int | ArchiveyError | _KeptCiphertext | _UnverifiedData
+        ] = {}
         # Local header offset -> what the data descriptor after a bit-3 member's data
         # said (CRC, compressed size, size), for the directory to confirm at the end.
         self._descriptors: dict[int, tuple[int, int, int]] = {}
@@ -1863,7 +1949,7 @@ class ZipForwardReader(ZipReader):
             self._hold(member._member_id, len(captured))
         elif (why := current.uncaptured) is not None:
             self._uncaptured[member._member_id] = why
-            if isinstance(why, _KeptCiphertext):
+            if isinstance(why, _KeptCiphertext | _UnverifiedData):
                 self._hold(member._member_id, len(why))
 
     def _hold(self, member_id: int, length: int) -> None:
@@ -1878,6 +1964,13 @@ class ZipForwardReader(ZipReader):
         longest data goes first: a link loses its target only behind
         ``max_metadata_bytes`` of kept data no longer than its own, and is then listed
         without one (``_ensure_link_target``).
+
+        A drop keeps no bytes. It leaves the reason, and for data that a reparse
+        buffer's parse would reject as the file read reads it, that verdict
+        (``_NO_BUFFER_REASONS``), so a reparse point whose data the bound dropped is
+        still re-typed as from a file. The verdict costs one parse of at most the
+        dropped data, at the drop, and nothing held: the verdict is a constant
+        reason string, as the plain reason is.
         """
         budget = self._config.listing_limits.max_metadata_bytes
         if budget is None:
@@ -1888,8 +1981,19 @@ class ZipForwardReader(ZipReader):
         while self._kept_bytes > budget:
             negative, dropped = heapq.heappop(heap)
             self._kept_bytes += negative
-            self._captured.pop(dropped, None)
-            self._uncaptured[dropped] = _DROPPED
+            kept = self._captured.pop(dropped, None)
+            was = self._uncaptured.get(dropped)
+            # Data that failed its check stays damaged without its bytes, for a link
+            # that is no reparse point; kept ciphertext is not decoded to decide.
+            if isinstance(was, _UnverifiedData):
+                no_buffer = _file_read_parses_no_buffer(was.data, check_failed=True)
+                why = _DAMAGED_NO_BUFFER if no_buffer else "damaged"
+            else:
+                no_buffer = kept is not None and _file_read_parses_no_buffer(
+                    kept, check_failed=False
+                )
+                why = _DROPPED_NO_BUFFER if no_buffer else _DROPPED
+            self._uncaptured[dropped] = why
 
     # -- the directory -------------------------------------------------------------
 
@@ -1983,6 +2087,7 @@ class ZipForwardReader(ZipReader):
         # Members whose local header named them differently, by member id: the name
         # the local header gave.
         renamed: dict[int, bytes] = {}
+        remethoded: dict[int, int] = {}
         matched: set[int] = set()
         order: list[ArchiveMember] = []
         # Entries pointing at a local header an earlier entry already took (by
@@ -2022,6 +2127,10 @@ class ZipForwardReader(ZipReader):
                 # Reported once the member has the directory's name, below.
                 assert member._member_id is not None
                 renamed[member._member_id] = local_name
+            local_method = cast("_ZipLocator", member._raw).method
+            if central.method != local_method:
+                assert member._member_id is not None
+                remethoded[member._member_id] = local_method
             updates.append((member, central))
             # ``_raw`` still holds the local header's fields: the directory replaces
             # it only in ``_update_from_directory``, after this loop.
@@ -2052,6 +2161,25 @@ class ZipForwardReader(ZipReader):
                 # A file or link only, as from a file (``_report_local_name``).
                 self._report_local_name(
                     cast("_ZipLocator", member._raw), member, local_name
+                )
+            local_method = remethoded.get(cast("int", member._member_id))
+            if local_method is not None and _WINZIP_AES_METHOD not in (
+                local_method,
+                central.method,
+            ):
+                # The pass decoded by the local method, as a file read does
+                # (``_with_local_method``); a file or link only, as from a file. A
+                # file read reports once its local-header checks pass and before it
+                # decodes, so it reports a member whose data then fails on a CRC-32
+                # or size the directory contradicts, and so does the pass, which
+                # fails that member at the end. It reports nothing for a member those
+                # checks refuse: WinZip AES on one side, skipped here, and a central
+                # compressed size the overlap guard refuses, not skipped. The pass
+                # would have to rebuild the guard's bound (the next local header or
+                # the directory, per member) to tell those apart, so it reports
+                # them: a crafted-only difference (DR-5a), in the spec and zip.md.
+                self._report_local_method(
+                    cast("_ZipLocator", member._raw), member, local_method
                 )
         if any_missing:
             # A missing entry has a name too, and takes part in last-entry-wins as the
@@ -2352,11 +2480,17 @@ class ZipForwardReader(ZipReader):
 
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         member_id = member._member_id
+        why = None if member_id is None else self._uncaptured.get(member_id)
+        if (
+            isinstance(why, str)
+            and why in _NO_BUFFER_REASONS
+            and cast("_ZipLocator", member._raw).reparse_fallback is None
+        ):
+            why = _NO_BUFFER_REASONS[why]
         if (
             member.type is not MemberType.SYMLINK
             or member.link_target is not None
-            or member_id is None
-            or self._uncaptured.get(member_id) != _DROPPED
+            or why != _DROPPED
         ):
             super()._ensure_link_target(member)
             return
@@ -2388,6 +2522,35 @@ class ZipForwardReader(ZipReader):
         assert member_id is not None
         captured = self._captured.get(member_id)
         why = self._uncaptured.get(member_id)
+        if (
+            captured is None
+            and isinstance(why, int)
+            and member.size is not None
+            and member.size > why
+        ):
+            # The pass kept nothing of a buffer over its bound, but the member's data
+            # runs on past the buffer its header declares, so it is no link buffer
+            # (``parse_reparse_data``) and the file read makes it a file. One byte, too
+            # short for any buffer's header, gets the same answer from the same parse.
+            # The report names the member's size from the directory (checked above),
+            # not this byte's.
+            captured = _NOT_A_REPARSE_BUFFER
+        if isinstance(why, str) and why in _NO_BUFFER_REASONS:
+            # ``_hold`` dropped the data, having found it no buffer as the file read
+            # reads one: the same stand-in gets the same answer.
+            if cast("_ZipLocator", member._raw).reparse_fallback is not None:
+                captured = _NOT_A_REPARSE_BUFFER
+            why = _NO_BUFFER_REASONS[why]
+        if isinstance(why, _UnverifiedData):
+            if cast("_ZipLocator", member._raw).reparse_fallback is not None:
+                # What the file read reads of a reparse buffer: the header, the
+                # payload it declares and one byte. Data longer than that is never
+                # read to its failed check there, and parses as no buffer.
+                data = why.data
+                reach = REPARSE_HEADER_BYTES + reparse_payload_length(data) + 1
+                if len(data) > reach:
+                    captured = data[:reach]
+            why = "damaged"
 
         def missing() -> ArchiveyError:
             if isinstance(why, ArchiveyError):

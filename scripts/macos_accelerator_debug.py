@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Standalone reproduction for the macOS accelerator shutdown abort.
 
 Background
@@ -177,7 +176,7 @@ def _scn_arch_seek(module: str) -> None:
         f.read(2000)
         f.seek(len(PAYLOAD) // 2)
         f.read(1000)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110
         pass
     _LEAKED.append(f)
 
@@ -237,7 +236,7 @@ def _install_tracer() -> None:
     that effect. For the real thing, run a single scenario under ``coverage run`` (see --help).
     """
 
-    def _tracer(frame, event, arg):  # noqa: ANN001
+    def _tracer(frame, event, arg):
         return _tracer
 
     threading.settrace(_tracer)
@@ -255,7 +254,7 @@ def _spawn(name: str, module: str, trace: bool) -> tuple[int, str]:
     cmd = [sys.executable, __file__, "--run", name, "--module", module]
     if trace:
         cmd.append("--trace")
-    proc = subprocess.run(cmd, capture_output=True, timeout=120)
+    proc = subprocess.run(cmd, capture_output=True, timeout=120, check=False)
     stderr = proc.stderr.decode("utf-8", "replace").strip()
     # Keep only the interesting tail (the abort banner), not the whole traceback.
     tail = " | ".join(line for line in stderr.splitlines() if line.strip())[-300:]

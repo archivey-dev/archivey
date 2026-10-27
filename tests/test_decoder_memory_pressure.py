@@ -9,6 +9,7 @@ with ``ENOMEM`` against the grown process heap.
 from __future__ import annotations
 
 import lzma
+import os
 import random
 import subprocess
 import sys
@@ -156,15 +157,27 @@ def test_closing_an_archive_member_ends_its_liblzma_decoder(
     assert any(type(d) is lzma.LZMADecompressor for d in ended), kind
 
 
-# Run in a fresh interpreter. In an xdist worker the same 800 drops once grew 3,725 MiB
-# (PR 901, a docs-only change) and passed on a re-run. The likely reason, inferred from
-# how the failure varies between runs and not reproduced, is that PyPy's major-collection
-# threshold scales with the heap the last collection left, so a worker that earlier tests
-# grew lets more pressure build before collecting. A fresh process measures the
-# add_memory_pressure accounting itself, not what earlier tests left behind. The cap only
-# has to tell accounting from none (6.4 GB without it, dev-docs/known-issues.md); the
-# estimates themselves are pinned exactly by the tests above.
-_PILE_UP_CHILD = """
+# With the accounting, dropped decoders pile up only until PyPy's next major collection
+# frees them, and glibc reuses that memory for the next ones: growth levels off at however
+# much pressure PyPy lets build first, which is large and varies from run to run. After
+# 800 drops it reached 3,725 MiB in an xdist worker (PR 901) and 2,120 MiB in a fresh
+# interpreter (PR 951), and both passed on re-runs. Without the accounting nothing frees
+# them and growth is linear, 8 MiB per drop (6.4 GB measured for 800 in PR 927).
+#
+# So the test asserts the shape, not a height: of _DROPS drops, the second half must add
+# under 2 GiB. Derived, not run, since the test needs PyPy and no session could run one:
+# without the add_memory_pressure call growth is linear again, so the second 800 would
+# add about 6,400 MiB against that bound, and 2 GiB of headroom over a levelled curve is
+# itself unmeasured until the job summary shows real curves. A curve that is flat at any
+# height passes, short of the loose 10 GiB ceiling. The drops run in a fresh interpreter
+# because the worker reading was 1.76 times the fresh one, likely because PyPy's threshold
+# scales with the heap the last collection left (inferred, not reproduced). The estimates
+# themselves are pinned exactly by the tests above. The child prints each sample as it
+# takes it, so a crashed or timed-out child still shows its curve, and a CI run records
+# the curve in the job summary whether the test passes or not.
+_DROPS = 1600
+_EVERY = 200
+_PILE_UP_CHILD = f"""
 import lzma
 from pathlib import Path
 
@@ -183,9 +196,10 @@ def private_writable_mib():
 
 data = lzma.compress(b"x" * 100)
 before = private_writable_mib()
-for _ in range(800):
+for i in range(1, {_DROPS + 1}):
     IN_PROCESS.lzma_decompressor(format=lzma.FORMAT_XZ).decompress(data)
-print(private_writable_mib() - before)
+    if i % {_EVERY} == 0:
+        print(private_writable_mib() - before, flush=True)
 """
 
 
@@ -195,13 +209,29 @@ print(private_writable_mib() - before)
 )
 @pytest.mark.timeout(300, func_only=True)
 def test_dropped_xz_decoders_do_not_pile_up_on_pypy() -> None:
-    """800 default-preset decoders hold 6.4 GiB if nothing frees them between drops."""
-    done = subprocess.run(
-        [sys.executable, "-c", _PILE_UP_CHILD],
-        capture_output=True,
-        text=True,
-        timeout=240,
-        check=False,
-    )
-    assert done.returncode == 0, done.stderr
-    assert int(done.stdout) < 2048, done.stdout
+    """Dropped xz decoders level off; without the accounting they climb 8 MiB a drop."""
+    try:
+        done = subprocess.run(
+            [sys.executable, "-c", _PILE_UP_CHILD],
+            capture_output=True,
+            text=True,
+            timeout=240,
+            check=False,
+        )
+        stdout, stderr, returncode = done.stdout, done.stderr, done.returncode
+    except subprocess.TimeoutExpired as exc:
+        out = exc.stdout or b""  # bytes even with text=True
+        stdout = out.decode() if isinstance(out, bytes) else out
+        stderr, returncode = "timed out", None
+    # One short line: CI prints only the first line of a failure, cut at 220 characters.
+    curve = f"MiB per {_EVERY} drops: {' '.join(stdout.split())}"
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a", encoding="utf-8") as out:
+            out.write(f"PyPy xz decoder pile-up, {curve}\n\n")
+    last_err = stderr.strip().splitlines()[-1:] or [""]
+    assert returncode == 0, f"{curve}; child: {last_err[0][:120]}"
+    growth = [int(mib) for mib in stdout.split()]
+    assert len(growth) == _DROPS // _EVERY, curve
+    assert growth[-1] - growth[len(growth) // 2 - 1] < 2048, curve
+    assert max(growth) < 10240, curve

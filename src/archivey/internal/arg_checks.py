@@ -301,9 +301,7 @@ def check_limit(
         )
     if isinstance(value, bool):
         number: int | float | None = None
-    elif isinstance(value, int):
-        number = value
-    elif allow_float and isinstance(value, float):
+    elif isinstance(value, int) or (allow_float and isinstance(value, float)):
         number = value
     else:
         number = None

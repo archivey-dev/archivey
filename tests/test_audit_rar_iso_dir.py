@@ -734,14 +734,16 @@ def no_spawn(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _stream_all(path: Path, config: ArchiveyConfig) -> dict[str, bytes]:
-    with open_archive(path, config=config) as archive:
-        # Closed before the archive is, also when a read raises.
-        with contextlib.closing(archive.stream_members()) as members:
-            return {
-                member.name: stream.read()
-                for member, stream in members
-                if stream is not None
-            }
+    # Closed before the archive is, also when a read raises.
+    with (
+        open_archive(path, config=config) as archive,
+        contextlib.closing(archive.stream_members()) as members,
+    ):
+        return {
+            member.name: stream.read()
+            for member, stream in members
+            if stream is not None
+        }
 
 
 @requires_binary("unrar")
@@ -759,9 +761,11 @@ def test_unar_refuses_a_small_nonsolid_member_declaring_4_gib(
 ) -> None:
     """unar writes to the whole declared dictionary, whatever the member's size."""
     path = _declaring_dictionary(tmp_path, "hostile_argv__.rar", 0, _RAR5_DICT_4GIB)
-    with open_archive(path, config=_config("unar")) as archive:
-        with pytest.raises(ResourceLimitError, match="max_decoder_memory"):
-            archive.read("canary.txt")
+    with (
+        open_archive(path, config=_config("unar")) as archive,
+        pytest.raises(ResourceLimitError, match="max_decoder_memory"),
+    ):
+        archive.read("canary.txt")
 
 
 @requires_binary("unrar")
@@ -770,9 +774,11 @@ def test_unrar_refuses_a_nonsolid_member_over_a_lowered_limit(
 ) -> None:
     """The cap is the unpacked size: 1408 bytes is over a 1 KiB limit."""
     path = _declaring_dictionary(tmp_path, "hostile_argv__.rar", 0, _RAR5_DICT_4GIB)
-    with open_archive(path, config=_config("unrar", 1024)) as archive:
-        with pytest.raises(ResourceLimitError, match="max_decoder_memory=1024"):
-            archive.read("canary.txt")
+    with (
+        open_archive(path, config=_config("unrar", 1024)) as archive,
+        pytest.raises(ResourceLimitError, match="max_decoder_memory=1024"),
+    ):
+        archive.read("canary.txt")
 
 
 @requires_binary("unrar")
@@ -787,11 +793,13 @@ def test_unrar_refuses_a_nonsolid_member_declaring_4_gib_and_3_gib_by_default(
     path = _declaring_dictionary(
         tmp_path, "hostile_argv__.rar", 0, _RAR5_DICT_4GIB, unpacked=_3_GIB
     )
-    with open_archive(path, config=_UNRAR_ONLY) as archive:
-        with pytest.raises(
+    with (
+        open_archive(path, config=_UNRAR_ONLY) as archive,
+        pytest.raises(
             ResourceLimitError, match=f"max_decoder_memory={_DEFAULT_LIMIT}"
-        ) as excinfo:
-            archive.read("canary.txt")
+        ) as excinfo,
+    ):
+        archive.read("canary.txt")
     message = str(excinfo.value)
     assert (
         f"is {_3_GIB} bytes, counted from the {4 * 2**30}-byte dictionary its own "
@@ -807,11 +815,13 @@ def test_unrar_refuses_a_solid_member_behind_a_big_declared_prefix_by_default(
     path = _declaring_dictionary(
         tmp_path, "seek_respawn_solid__.rar", 0, _RAR5_DICT_4GIB, unpacked=_3_GIB
     )
-    with open_archive(path, config=_UNRAR_ONLY) as archive:
-        with pytest.raises(
+    with (
+        open_archive(path, config=_UNRAR_ONLY) as archive,
+        pytest.raises(
             ResourceLimitError, match=f"max_decoder_memory={_DEFAULT_LIMIT}"
-        ) as excinfo:
-            archive.read("tail.txt")
+        ) as excinfo,
+    ):
+        archive.read("tail.txt")
     # tail.txt's own header declares a different dictionary: the numbers are
     # prefix.bin's, and the message says so.
     assert (
@@ -847,9 +857,11 @@ def test_a_stored_solid_member_is_sliced_without_paying_the_window_ahead(
     tail["cinfo"] &= ~(7 << 7)  # method 0, stored; the solid flag stays
     path = tmp_path / "stored_tail.rar"
     path.write_bytes(_rar5_build(blocks))
-    with open_archive(path, config=_UNRAR_ONLY) as archive:
-        with pytest.raises(CorruptionError, match="crc32"):
-            archive.read("tail.txt")
+    with (
+        open_archive(path, config=_UNRAR_ONLY) as archive,
+        pytest.raises(CorruptionError, match="crc32"),
+    ):
+        archive.read("tail.txt")
     # unar does not decode the stream ahead of a stored member (measured, rar.md 7).
     with path.open("rb") as f:
         assert unar_dictionary_costs(parse_rar_archive(f))[1] == (0, -1)
@@ -965,9 +977,11 @@ def test_unrar_refuses_a_solid_member_whose_decoded_prefix_is_over_the_limit(
         tmp_path, "seek_respawn_solid__.rar", 0, _RAR5_DICT_4GIB
     )
     config = _config("unrar", 512 * 1024)
-    with open_archive(path, config=config) as archive:
-        with pytest.raises(ResourceLimitError, match="max_decoder_memory=524288"):
-            archive.read("tail.txt")
+    with (
+        open_archive(path, config=config) as archive,
+        pytest.raises(ResourceLimitError, match="max_decoder_memory=524288"),
+    ):
+        archive.read("tail.txt")
     with pytest.raises(ResourceLimitError, match="max_decoder_memory=524288"):
         _stream_all(path, config)
 
@@ -1009,11 +1023,11 @@ def test_rar3_dictionary_counts_the_same_way(no_spawn: None) -> None:
     ``file1.txt`` is 13 bytes into the solid stream, ``subdir/file2.txt`` ends at 29.
     """
     path = _fixture("basic_solid__rar4.rar")
-    with open_archive(path, config=_config("unrar", 16)) as archive:
-        with pytest.raises(
-            ResourceLimitError, match="max_decoder_memory=16"
-        ) as excinfo:
-            archive.read("subdir/file2.txt")
+    with (
+        open_archive(path, config=_config("unrar", 16)) as archive,
+        pytest.raises(ResourceLimitError, match="max_decoder_memory=16") as excinfo,
+    ):
+        archive.read("subdir/file2.txt")
     # The count is 29 bytes. Every member declares 1 MiB, the one read included, so
     # the message points at its own header, not at the first member to declare it.
     assert (

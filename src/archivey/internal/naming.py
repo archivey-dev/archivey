@@ -241,7 +241,7 @@ def _is_usable_stem(stem: str) -> bool:
     The name is chosen at listing time, before any extraction policy is known, so it
     has to satisfy the strictest one. ``.`` and ``..`` are refused by
     ``filters.check_universal`` under every policy; an all-dots/spaces segment such as
-    ``...`` is refused by ``_strip_trailing_dot_space`` under ``STRICT`` only.
+    ``...`` is refused by ``_strip_trailing_dot_space`` under ``STRICT`` and ``STANDARD``.
     Producing any of them here costs the caller the payload under at least one policy
     and gives an unusable member name under the others.
     """

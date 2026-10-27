@@ -933,7 +933,8 @@ raw PPMd with no 7z container. In-process PPMd7 create/destroy loops and
 workflow covers them.
 
 The non-blocking **PPMd native stress** workflow
-(`.github/workflows/ppmd-native-stress.yml`) runs on every PR and main push, on
+(`.github/workflows/ppmd-native-stress.yml`) runs weekly and on a PR that touches the PPMd
+code, its tests or its scripts (the `paths:` list in the workflow), on
 `windows-latest` and `ubuntu-latest` × Python 3.11 and 3.14: `scripts/ppmd_native_stress.py`
 plus `pytest -m ppmd_native_stress`, a `--repeat 20` soak of `tests/test_ppmd_raw_streams.py`
 through `scripts/ci_run_native_modules.py` that hard-fails on an exit-after-green abort,

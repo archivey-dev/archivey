@@ -23,6 +23,7 @@ from archivey import MemberType, open_archive
 from archivey.config import (
     AcceleratorMode,
     ArchiveyConfig,
+    DecoderLimits,
     ProcessIsolation,
 )
 from archivey.exceptions import ArchiveyUsageError
@@ -59,8 +60,14 @@ def _empty_pool():
     POOL.close_idle()
 
 
-def _contents(path: Path, isolation: ProcessIsolation) -> dict[str, bytes]:
-    config = ArchiveyConfig(process_isolation=isolation)
+def _contents(
+    path: Path,
+    isolation: ProcessIsolation,
+    decoder_limits: DecoderLimits | None = None,
+) -> dict[str, bytes]:
+    config = ArchiveyConfig(
+        process_isolation=isolation, decoder_limits=decoder_limits or DecoderLimits()
+    )
     with open_archive(path, config=config) as ar:
         return {m.name: ar.read(m) for m in ar.members() if m.type is MemberType.FILE}
 
@@ -158,12 +165,16 @@ def test_gzip_under_none_reads_with_no_warning(tmp_path: Path) -> None:
 
 
 @requires_binary("7z")
-def test_a_ppmd_member_pyppmd_cannot_take_in_pieces_reads_under_every_value(
-    tmp_path: Path,
+@pytest.mark.parametrize("feed", ["whole", "pieces"])
+def test_a_ppmd_member_pyppmd_stopped_short_of_in_pieces_reads_under_every_value(
+    tmp_path: Path, feed: str
 ) -> None:
-    """Fed to pyppmd in pieces, this valid member stops at a false end about 28 KiB
-    short (pyppmd 1.3.1). Under the limit every setting hands it over whole, in the
-    child or in this process, and it reads in full."""
+    """Fed to pyppmd in pieces, this valid member used to stop at a false end about
+    28 KiB short (pyppmd 1.3.1: a resumed worker counted its earlier output against
+    the new request; ``PpmdDecoder._native_decode``). Under the limit every setting
+    hands it over whole, and with a 1 MiB limit it is fed in pieces, in the child or
+    in this process; it reads in full either way."""
+    limits = None if feed == "whole" else DecoderLimits(max_ppmd_held_input=2**20)
     importorskip("pyppmd")
     block = random.Random(8).randbytes(1 << 20)
     (tmp_path / "repeats.bin").write_bytes(block * 8)
@@ -173,8 +184,18 @@ def test_a_ppmd_member_pyppmd_cannot_take_in_pieces_reads_under_every_value(
     )
     if result.returncode != 0:
         pytest.skip("7z cannot write PPMd")
-    for isolation in ProcessIsolation:
-        assert _contents(archive, isolation) == {"repeats.bin": block * 8}, isolation
+    # In pieces, NATIVE_DECODERS takes the KNOWN_CRASHES path for PPMd: a child.
+    values = (
+        list(ProcessIsolation)
+        if feed == "whole"
+        else [
+            ProcessIsolation.KNOWN_CRASHES,
+            ProcessIsolation.NONE,
+        ]
+    )
+    for isolation in values:
+        got = _contents(archive, isolation, limits)
+        assert got == {"repeats.bin": block * 8}, isolation
 
 
 _SINGLE_FILE = [

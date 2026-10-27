@@ -172,9 +172,11 @@ def test_missing_eof_marker_warns_by_default(
     from tests.test_tar import _tar_missing_eof_block
 
     data = _tar_missing_eof_block()
-    with caplog.at_level(logging.WARNING, logger="archivey.backends"):
-        with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
-            ar.members()
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey.backends"),
+        open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar,
+    ):
+        ar.members()
     assert any("truncated" in r.getMessage().lower() for r in caplog.records)
 
 

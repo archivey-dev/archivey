@@ -532,7 +532,7 @@ def _with_central_extra(data: bytes, index: int, extra: bytes, **fields: int) ->
         "header_offset": (42, "<L"),
     }
     eocd = data.rindex(b"PK\x05\x06")
-    cd_size, cd_offset = struct.unpack_from("<LL", data, eocd + 12)
+    _cd_size, cd_offset = struct.unpack_from("<LL", data, eocd + 12)
     out = bytearray()
     pos = cd_offset
     for i in range(struct.unpack_from("<H", data, eocd + 10)[0]):
@@ -812,12 +812,12 @@ def _lists_member_then_zip64_truncation(
 ) -> str:
     """Names listed before the ZIP64 size fault, and the fault's message."""
     names: list[str] = []
-    with pytest.raises(
-        TruncatedError, match="ZIP64 end of central directory"
-    ) as raised:
-        with open_archive(source, streaming=streaming) as reader:
-            for member in reader:
-                names.append(member.name)
+    with (
+        pytest.raises(TruncatedError, match="ZIP64 end of central directory") as raised,
+        open_archive(source, streaming=streaming) as reader,
+    ):
+        for member in reader:
+            names.append(member.name)
     assert names == ["a.txt"]
     text = str(raised.value)
     assert str((1 << 64) - 1) in text

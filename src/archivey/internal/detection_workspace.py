@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import BinaryIO, Protocol
+from typing import BinaryIO, Protocol, Self
 
 from archivey.config import ProcessIsolation
 from archivey.detection_cost import (
@@ -130,7 +130,8 @@ class PrefixWorkspace:
         )
 
         if isinstance(source, (str, Path)):
-            self._handle = open(source, "rb")
+            # The handle outlives this statement; its owner closes it.
+            self._handle = open(source, "rb")  # noqa: SIM115
             self._owns_handle = True
             self._entry_pos = 0
         elif isinstance(source, ArchiveSource) and not source.seekable():
@@ -467,7 +468,7 @@ class PrefixWorkspace:
                 self._owned_source.close()
                 self._owned_source = None
 
-    def __enter__(self) -> PrefixWorkspace:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc: object) -> None:

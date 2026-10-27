@@ -182,16 +182,18 @@ def test_tar_xz_unsupported_check_type_is_not_silent(streaming: bool) -> None:
         diagnostics = dict(ar.diagnostics.counts)
     assert read != [payload], "fixture premise: the flipped byte reaches the member"
     assert DiagnosticCode.DIGEST_UNVERIFIABLE in diagnostics
-    with pytest.raises(DiagnosticRaisedError):  # noqa: PT012
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError),
+        open_archive(
             io.BytesIO(damaged),
             format=ArchiveFormat.TAR_XZ,
             streaming=streaming,
             config=_STRICT,
-        ) as ar:
-            for _m, s in ar.stream_members():
-                if s is not None:
-                    s.read()
+        ) as ar,
+    ):
+        for _m, s in ar.stream_members():
+            if s is not None:
+                s.read()
 
 
 # ---------------------------------------------------------------------------
@@ -434,16 +436,18 @@ def test_gzip_accelerator_reads_a_header_with_a_good_crc() -> None:
 def _single_member_stream_positions(
     data: bytes, fmt: ArchiveFormat, config: ArchiveyConfig
 ) -> tuple[object, object]:
-    with open_archive(
-        io.BytesIO(data), format=fmt, config=config, seekable_members=True
-    ) as ar:
-        with ar.open(ar.members()[0]) as stream:
-            past_end = stream.seek(1500)
-            stream.seek(100)
-            try:
-                underflow: object = stream.seek(-500, io.SEEK_CUR)
-            except Exception as exc:  # noqa: BLE001 - the type is what is compared
-                underflow = type(exc)
+    with (
+        open_archive(
+            io.BytesIO(data), format=fmt, config=config, seekable_members=True
+        ) as ar,
+        ar.open(ar.members()[0]) as stream,
+    ):
+        past_end = stream.seek(1500)
+        stream.seek(100)
+        try:
+            underflow: object = stream.seek(-500, io.SEEK_CUR)
+        except Exception as exc:  # noqa: BLE001 - the type is what is compared
+            underflow = type(exc)
     return past_end, underflow
 
 

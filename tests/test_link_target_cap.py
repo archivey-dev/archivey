@@ -333,9 +333,11 @@ def test_the_read_stops_one_byte_past_the_cap_when_the_size_is_unknown() -> None
 def test_a_strict_policy_refuses_the_archive(streaming: bool) -> None:
     data = _zip_with_links(b"c" * (MAX_LINK_TARGET_BYTES + 1))
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with open_archive(io.BytesIO(data), streaming=streaming, config=config) as reader:
-        with pytest.raises(DiagnosticRaisedError):
-            _list(reader, streaming)
+    with (
+        open_archive(io.BytesIO(data), streaming=streaming, config=config) as reader,
+        pytest.raises(DiagnosticRaisedError),
+    ):
+        _list(reader, streaming)
 
 
 def test_extraction_fails_only_the_over_long_link(tmp_path: Path) -> None:
@@ -356,9 +358,8 @@ def test_extraction_fails_only_the_over_long_link(tmp_path: Path) -> None:
     assert isinstance(by_name["link1"].error, LinkTargetNotFoundError)
     assert not (dest / "link1").exists()
 
-    with open_archive(archive) as reader:
-        with pytest.raises(LinkTargetNotFoundError):
-            reader.extract_all(tmp_path / "stop")
+    with open_archive(archive) as reader, pytest.raises(LinkTargetNotFoundError):
+        reader.extract_all(tmp_path / "stop")
 
 
 # --------------------------------------------------------------------------------
@@ -379,9 +380,11 @@ def test_resolved_targets_count_against_max_metadata_bytes(streaming: bool) -> N
     """
     data = _zip_with_links(*_MANY_TARGETS)
     config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=20_000))
-    with open_archive(io.BytesIO(data), streaming=streaming, config=config) as reader:
-        with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
-            _list(reader, streaming)
+    with (
+        open_archive(io.BytesIO(data), streaming=streaming, config=config) as reader,
+        pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
+    ):
+        _list(reader, streaming)
 
 
 def test_resolved_targets_fit_a_cap_that_holds_them() -> None:

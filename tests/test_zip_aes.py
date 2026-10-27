@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import hmac
 import io
@@ -186,6 +187,7 @@ def test_handbuilt_ae1_is_accepted_by_7z(tmp_path: Path) -> None:
             ["7z", "t", f"-p{_PASSWORD.decode()}", str(archive)],
             capture_output=True,
             text=True,
+            check=False,
         ).returncode
 
     ae1 = _build_aes_zip(
@@ -224,9 +226,11 @@ def test_aes_wrong_password_fails_fast() -> None:
     data = _build_aes_zip(
         payload=_PAYLOAD, password=_PASSWORD, vendor_version=2, strength=3, method=8
     )
-    with open_archive(io.BytesIO(data), password=b"wrong") as ar:
-        with pytest.raises(EncryptionError, match="Wrong password"):
-            ar.read(ar.members()[0])
+    with (
+        open_archive(io.BytesIO(data), password=b"wrong") as ar,
+        pytest.raises(EncryptionError, match="Wrong password"),
+    ):
+        ar.read(ar.members()[0])
 
 
 @pytest.mark.parametrize("method", [0, 8], ids=["stored", "deflate"])
@@ -240,9 +244,11 @@ def test_aes_tampered_hmac_raises_corruption(method: int) -> None:
         method=method,
         tamper_hmac=True,
     )
-    with open_archive(io.BytesIO(data), password=_PASSWORD) as ar:
-        with raises_corruption_not_truncation(match="HMAC"):
-            ar.read(ar.members()[0])
+    with (
+        open_archive(io.BytesIO(data), password=_PASSWORD) as ar,
+        raises_corruption_not_truncation(match="HMAC"),
+    ):
+        ar.read(ar.members()[0])
 
 
 @pytest.mark.parametrize("method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
@@ -257,19 +263,19 @@ def test_aes_hmac_mismatch_keeps_raising_after_a_seek_back(method: int) -> None:
         method=method,
         tamper_hmac=True,
     )
-    with open_archive(
-        io.BytesIO(data), password=_PASSWORD, seekable_members=True
-    ) as ar:
-        with ar.open(ar.members()[0]) as stream:
-            with raises_corruption_not_truncation(match="HMAC"):
-                stream.read()
-            stream.seek(0)
-            with raises_corruption_not_truncation(match="HMAC"):
-                stream.read()
-            # Asking for exactly the member returns in full, and still raises.
-            stream.seek(0)
-            with raises_corruption_not_truncation(match="HMAC"):
-                stream.read(len(_PAYLOAD))
+    with (
+        open_archive(io.BytesIO(data), password=_PASSWORD, seekable_members=True) as ar,
+        ar.open(ar.members()[0]) as stream,
+    ):
+        with raises_corruption_not_truncation(match="HMAC"):
+            stream.read()
+        stream.seek(0)
+        with raises_corruption_not_truncation(match="HMAC"):
+            stream.read()
+        # Asking for exactly the member returns in full, and still raises.
+        stream.seek(0)
+        with raises_corruption_not_truncation(match="HMAC"):
+            stream.read(len(_PAYLOAD))
 
 
 @requires("cryptography")
@@ -371,10 +377,12 @@ def test_aes_tampered_hmac_partial_read_then_close_is_quiet(method: int) -> None
         method=method,
         tamper_hmac=True,
     )
-    with open_archive(io.BytesIO(data), password=_PASSWORD) as ar:
-        with ar.open(ar.members()[0]) as stream:
-            assert len(stream.read(16)) == 16
-            stream.close()  # must not raise CorruptionError
+    with (
+        open_archive(io.BytesIO(data), password=_PASSWORD) as ar,
+        ar.open(ar.members()[0]) as stream,
+    ):
+        assert len(stream.read(16)) == 16
+        stream.close()  # must not raise CorruptionError
 
 
 class _CloseCounter(io.BytesIO):
@@ -676,7 +684,7 @@ def _collide_pw_verify(monkeypatch: pytest.MonkeyPatch) -> None:
     A real collision takes ~65 000 PBKDF2 runs to find, so the test forges one: the
     reader's cheap check then admits a wrong password, as it does for 1 in 65 536.
     """
-    import archivey.internal.backends.zip_aes as zip_aes
+    from archivey.internal.backends import zip_aes
 
     original = zip_aes.derive_winzip_aes_keys
 
@@ -726,9 +734,11 @@ def test_aes_only_colliding_candidates_report_damage(
         method=method,
     )
     _collide_pw_verify(monkeypatch)
-    with open_archive(io.BytesIO(data), password=[_COLLIDER, b"plain-wrong"]) as ar:
-        with raises_corruption_not_truncation(match="most likely damaged"):
-            ar.read(ar.members()[0])
+    with (
+        open_archive(io.BytesIO(data), password=[_COLLIDER, b"plain-wrong"]) as ar,
+        raises_corruption_not_truncation(match="most likely damaged"),
+    ):
+        ar.read(ar.members()[0])
 
 
 @requires("cryptography")
@@ -740,9 +750,11 @@ def test_aes_lone_colliding_password_fails_on_the_hmac(
         payload=_PAYLOAD, password=_PASSWORD, vendor_version=2, strength=3, method=0
     )
     _collide_pw_verify(monkeypatch)
-    with open_archive(io.BytesIO(data), password=_COLLIDER) as ar:
-        with raises_corruption_not_truncation(match="HMAC"):
-            ar.read(ar.members()[0])
+    with (
+        open_archive(io.BytesIO(data), password=_COLLIDER) as ar,
+        raises_corruption_not_truncation(match="HMAC"),
+    ):
+        ar.read(ar.members()[0])
 
 
 def _ctr_stream(payload: bytes, *, tamper_mac: bool = False) -> WinZipAesDecryptStream:
@@ -766,7 +778,7 @@ def test_aes_decrypt_stream_seeks_at_every_block_phase() -> None:
     # bytes; every phase of the first blocks, and backward after forward.
     payload = os.urandom(100)
     stream = _ctr_stream(payload)
-    for target in [*range(0, 50), 99, 100, 17, 0, 64, 3]:
+    for target in [*range(50), 99, 100, 17, 0, 64, 3]:
         assert stream.seek(target) == target
         assert stream.tell() == target
         assert stream.read(7) == payload[target : target + 7]
@@ -899,17 +911,17 @@ def test_aes_member_seeks(method: int) -> None:
         strength=3,
         method=method,
     )
-    with open_archive(
-        io.BytesIO(data), password=_PASSWORD, seekable_members=True
-    ) as ar:
-        with ar.open(ar.members()[0]) as stream:
-            assert stream.seekable()
-            stream.seek(4099)
-            assert stream.read(100) == payload[4099:4199]
-            stream.seek(17)
-            assert stream.read() == payload[17:]
-            stream.seek(0)
-            assert stream.read() == payload
+    with (
+        open_archive(io.BytesIO(data), password=_PASSWORD, seekable_members=True) as ar,
+        ar.open(ar.members()[0]) as stream,
+    ):
+        assert stream.seekable()
+        stream.seek(4099)
+        assert stream.read(100) == payload[4099:4199]
+        stream.seek(17)
+        assert stream.read() == payload[17:]
+        stream.seek(0)
+        assert stream.read() == payload
 
 
 @requires("cryptography")
@@ -926,18 +938,20 @@ def test_aes_stored_out_of_range_seeks_match_an_unencrypted_member() -> None:
         zf.writestr("x.txt", payload)
     results = []
     for blob in (encrypted, buf.getvalue()):
-        with open_archive(
-            io.BytesIO(blob), password=_PASSWORD, seekable_members=True
-        ) as ar:
-            with ar.open(ar.members()[0]) as stream:
-                out: list[object] = []
-                for offset, whence in (
-                    (-10, io.SEEK_END),
-                    (-100, io.SEEK_CUR),
-                    (1000, io.SEEK_SET),
-                ):
-                    out += [stream.seek(offset, whence), stream.tell(), stream.read(2)]
-                results.append(out)
+        with (
+            open_archive(
+                io.BytesIO(blob), password=_PASSWORD, seekable_members=True
+            ) as ar,
+            ar.open(ar.members()[0]) as stream,
+        ):
+            out: list[object] = []
+            for offset, whence in (
+                (-10, io.SEEK_END),
+                (-100, io.SEEK_CUR),
+                (1000, io.SEEK_SET),
+            ):
+                out += [stream.seek(offset, whence), stream.tell(), stream.read(2)]
+            results.append(out)
     assert results[0] == results[1] == [0, 0, b"he", 0, 0, b"he", 1000, 1000, b""]
 
 
@@ -958,9 +972,11 @@ def test_aes_tampered_hmac_with_candidates_raises_corruption(method: int) -> Non
         method=method,
         tamper_hmac=True,
     )
-    with open_archive(io.BytesIO(data), password=[b"nope", _PASSWORD]) as ar:
-        with raises_corruption_not_truncation(match="most likely damaged"):
-            ar.read(ar.members()[0])
+    with (
+        open_archive(io.BytesIO(data), password=[b"nope", _PASSWORD]) as ar,
+        raises_corruption_not_truncation(match="most likely damaged"),
+    ):
+        ar.read(ar.members()[0])
 
 
 @pytest.mark.parametrize(
@@ -987,9 +1003,11 @@ def test_aes_short_payload_is_truncated_on_both_password_paths(
     )
     for signature, size_at in ((b"PK\x03\x04", 22), (b"PK\x01\x02", 24)):
         struct.pack_into("<I", data, data.index(signature) + size_at, 100)
-    with open_archive(io.BytesIO(bytes(data)), password=passwords) as ar:
-        with pytest.raises(TruncatedError):
-            ar.read(ar.members()[0])
+    with (
+        open_archive(io.BytesIO(bytes(data)), password=passwords) as ar,
+        pytest.raises(TruncatedError),
+    ):
+        ar.read(ar.members()[0])
 
 
 @pytest.mark.parametrize("method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
@@ -1017,9 +1035,11 @@ def test_aes_short_payload_is_truncated_whichever_candidate_fails_first(
         struct.pack_into("<I", data, data.index(signature) + size_at, 100_000)
     _collide_pw_verify(monkeypatch)
     passwords = [_COLLIDER, _PASSWORD] if collider_first else [_PASSWORD, _COLLIDER]
-    with open_archive(io.BytesIO(bytes(data)), password=passwords) as ar:
-        with pytest.raises(TruncatedError):
-            ar.read(ar.members()[0])
+    with (
+        open_archive(io.BytesIO(bytes(data)), password=passwords) as ar,
+        pytest.raises(TruncatedError),
+    ):
+        ar.read(ar.members()[0])
 
 
 @requires("cryptography")
@@ -1180,3 +1200,23 @@ def test_aes_hmac_mismatch_keeps_withholding_the_last_chunk(forward: bool) -> No
             stage.read(1 << 16)
     # A zero-length read carries no verdict, as on any ``io`` stream.
     assert stage.read(0) == b""
+
+
+def test_aes_record_differences_compares_every_record_field() -> None:
+    """``aes_record_differences`` names each field it compares. A field added to
+    ``WinZipAesInfo`` must be compared there too, or its difference comes out only as
+    the generic fallback item."""
+    compared = {"vendor_version", "strength", "actual_method"}
+    assert {field.name for field in dataclasses.fields(WinZipAesInfo)} == compared
+    local, central = WinZipAesInfo(1, 1, 0), WinZipAesInfo(2, 3, 8)
+    differ = zip_aes.aes_record_differences(local, central)
+    assert differ == [
+        "AE-1 against AE-2",
+        "AES key strength 1 against 3",
+        "AES compression method 0 against 8",
+    ]
+    assert zip_aes.local_first(differ) == ", local first"
+    assert zip_aes.aes_record_differences(local, local) == []
+    missing = zip_aes.aes_record_differences(None, central)
+    assert missing == ["the local header holds no valid WinZip AES record"]
+    assert zip_aes.local_first(missing) == ""

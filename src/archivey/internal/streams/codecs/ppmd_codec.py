@@ -95,7 +95,7 @@ class PpmdCodec(StreamCodec):
         pack_size = params.pack_size
         if pack_size is None:
             pack_size = config.compressed_input_size
-        in_process_max_input = config.decoder_limits.max_ppmd_in_process_input
+        max_held_input = config.decoder_limits.max_ppmd_held_input
         if params.ppmd_order is not None:
             if params.ppmd_mem_size is None:
                 raise ValueError("ZIP PPMd requires ppmd_order and ppmd_mem_size")
@@ -103,6 +103,7 @@ class PpmdCodec(StreamCodec):
                 params.ppmd_mem_size,
                 limits=config.decoder_limits,
                 what="ZIP PPMd8 memory size",
+                usage=config.usage,
             )
             return PpmdDecompressorStream(
                 source,
@@ -112,7 +113,7 @@ class PpmdCodec(StreamCodec):
                 restore_method=params.ppmd_restore_method,
                 unpack_size=params.unpack_size,
                 pack_size=pack_size,
-                in_process_max_input=in_process_max_input,
+                max_held_input=max_held_input,
                 collector=config.collector,
                 refuse_input_after_end=config.refuse_input_after_end,
                 input_runs_on=params.input_runs_on,
@@ -122,7 +123,10 @@ class PpmdCodec(StreamCodec):
             raise ValueError("input_runs_on needs PPMd8: PPMd7 has no end mark")
         order, mem_size = parse_ppmd_var_h_properties(params.properties)
         check_decoder_memory(
-            mem_size, limits=config.decoder_limits, what="7z PPMd var.H memory size"
+            mem_size,
+            limits=config.decoder_limits,
+            what="7z PPMd var.H memory size",
+            usage=config.usage,
         )
         # After the cap, so a declaration over it still names the cap.
         _check_ppmd7_properties(order, mem_size)
@@ -132,7 +136,7 @@ class PpmdCodec(StreamCodec):
             mem_size=mem_size,
             unpack_size=params.unpack_size,
             pack_size=pack_size,
-            in_process_max_input=in_process_max_input,
+            max_held_input=max_held_input,
             collector=config.collector,
             refuse_input_after_end=config.refuse_input_after_end,
             isolation=config.process_isolation,

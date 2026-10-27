@@ -43,8 +43,7 @@ from archivey.internal.config import (
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.hashing import crc32_digest
-from archivey.internal.streams import codecs as codecs_module
-from archivey.internal.streams import crypto
+from archivey.internal.streams import codecs as codecs_module, crypto
 from archivey.internal.streams.codecs import (
     Codec,
     CodecParams,
@@ -387,7 +386,7 @@ def test_aes_ctr_big_endian_agrees_with_cryptography_ctr_mode() -> None:
                 crypto.AesCtrParams(
                     b"x" * 16, initial_counter=1, counter_byteorder="big"
                 ),
-                **{"counter_byteorder": "middle"},
+                counter_byteorder="middle",
             ),
             "byteorder",
             id="byteorder",
@@ -437,11 +436,13 @@ def test_sevenzip_kdf_rejects_cycles_above_24() -> None:
 def test_corrupt_gzip_translates_to_corruption_with_cause() -> None:
     corrupt = bytearray(gzip.compress(CONTENT))
     corrupt[1] = 0x00  # break the gzip magic
-    with open_codec_stream(
-        Codec.GZIP, io.BytesIO(bytes(corrupt)), config=_STDLIB_GZIP
-    ) as stream:
-        with raises_corruption_not_truncation() as excinfo:
-            stream.read()
+    with (
+        open_codec_stream(
+            Codec.GZIP, io.BytesIO(bytes(corrupt)), config=_STDLIB_GZIP
+        ) as stream,
+        raises_corruption_not_truncation() as excinfo,
+    ):
+        stream.read()
     # Stdlib path uses zlib's gzip window (not GzipFile); bad magic → zlib.error.
     assert isinstance(excinfo.value.__cause__, zlib.error)
 
@@ -452,11 +453,13 @@ def test_mid_stream_corrupt_gzip_translates_to_corruption_with_cause() -> None:
     # CorruptionError, not leak a raw zlib.error.
     corrupt = bytearray(gzip.compress(CONTENT))
     corrupt[len(corrupt) // 2] ^= 0xFF  # flip a byte well past the 10-byte header
-    with open_codec_stream(
-        Codec.GZIP, io.BytesIO(bytes(corrupt)), config=_STDLIB_GZIP
-    ) as stream:
-        with raises_corruption_not_truncation() as excinfo:
-            stream.read()
+    with (
+        open_codec_stream(
+            Codec.GZIP, io.BytesIO(bytes(corrupt)), config=_STDLIB_GZIP
+        ) as stream,
+        raises_corruption_not_truncation() as excinfo,
+    ):
+        stream.read()
     assert isinstance(excinfo.value.__cause__, zlib.error)
     # zlib's own text, not the Python repr of its exception ("error('...')").
     assert str(excinfo.value).startswith(
@@ -467,11 +470,13 @@ def test_mid_stream_corrupt_gzip_translates_to_corruption_with_cause() -> None:
 def test_truncated_gzip_translates_to_truncated() -> None:
     compressed = gzip.compress(CONTENT)
     truncated = compressed[: len(compressed) // 2]
-    with open_codec_stream(
-        Codec.GZIP, io.BytesIO(truncated), config=_STDLIB_GZIP
-    ) as stream:
-        with pytest.raises(TruncatedError):
-            stream.read()
+    with (
+        open_codec_stream(
+            Codec.GZIP, io.BytesIO(truncated), config=_STDLIB_GZIP
+        ) as stream,
+        pytest.raises(TruncatedError),
+    ):
+        stream.read()
 
 
 def test_accelerator_path_translates_errors_no_raw_leak() -> None:
@@ -481,22 +486,26 @@ def test_accelerator_path_translates_errors_no_raw_leak() -> None:
     corrupt = bytearray(gzip.compress(CONTENT))
     corrupt[1] = 0x00
     config = StreamConfig(use_rapidgzip=AcceleratorMode.ON, seekable=True)
-    with open_codec_stream(
-        Codec.GZIP, io.BytesIO(bytes(corrupt)), config=config
-    ) as stream:
-        with pytest.raises(ArchiveyError):  # never a raw rapidgzip ValueError
-            stream.read()
+    with (
+        open_codec_stream(
+            Codec.GZIP, io.BytesIO(bytes(corrupt)), config=config
+        ) as stream,
+        pytest.raises(ArchiveyError),
+    ):  # never a raw rapidgzip ValueError
+        stream.read()
 
 
 def test_corrupt_lzma2_translates_to_corruption() -> None:
     corrupt = bytearray(compress_lzma2_raw(CONTENT))
     corrupt[len(corrupt) // 2] ^= 0xFF
     params = CodecParams(filters=lzma2_raw_filters())
-    with open_codec_stream(
-        Codec.LZMA2, io.BytesIO(bytes(corrupt)), params=params
-    ) as stream:
-        with raises_corruption_not_truncation():
-            stream.read()
+    with (
+        open_codec_stream(
+            Codec.LZMA2, io.BytesIO(bytes(corrupt)), params=params
+        ) as stream,
+        raises_corruption_not_truncation(),
+    ):
+        stream.read()
 
 
 @requires("brotli")
@@ -505,9 +514,11 @@ def test_corrupt_brotli_translates_to_corruption_with_cause() -> None:
 
     corrupt = bytearray(brotli.compress(CONTENT))
     corrupt[len(corrupt) // 2] ^= 0xFF
-    with open_codec_stream(Codec.BROTLI, io.BytesIO(bytes(corrupt))) as stream:
-        with raises_corruption_not_truncation() as excinfo:
-            stream.read()
+    with (
+        open_codec_stream(Codec.BROTLI, io.BytesIO(bytes(corrupt))) as stream,
+        raises_corruption_not_truncation() as excinfo,
+    ):
+        stream.read()
     assert isinstance(excinfo.value.__cause__, brotli.error)
     # brotli's own text, not the Python repr of its exception ("error('...')").
     assert str(excinfo.value).startswith(
@@ -522,9 +533,11 @@ def test_truncated_brotli_translates_to_truncated() -> None:
 
     compressed = brotli.compress(CONTENT)
     truncated = compressed[: len(compressed) // 2]
-    with open_codec_stream(Codec.BROTLI, io.BytesIO(truncated)) as stream:
-        with pytest.raises(TruncatedError):
-            stream.read()
+    with (
+        open_codec_stream(Codec.BROTLI, io.BytesIO(truncated)) as stream,
+        pytest.raises(TruncatedError),
+    ):
+        stream.read()
 
 
 @requires_zstd()
@@ -532,33 +545,41 @@ def test_truncated_zstd_translates_to_truncated() -> None:
     zstd = zstd_backend()
     compressed = zstd.compress(CONTENT)
     truncated = compressed[: len(compressed) // 2]
-    with open_codec_stream(Codec.ZSTD, io.BytesIO(truncated)) as stream:
-        with pytest.raises(TruncatedError):
-            stream.read()
+    with (
+        open_codec_stream(Codec.ZSTD, io.BytesIO(truncated)) as stream,
+        pytest.raises(TruncatedError),
+    ):
+        stream.read()
 
 
 @requires("ncompress")
 def test_corrupt_unix_compress_translates_to_corruption() -> None:
     corrupt = bytearray(make_unix_compress(CONTENT))
     corrupt[10] ^= 0xFF  # break the LZW bitstream
-    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(bytes(corrupt))) as stream:
-        with raises_corruption_not_truncation():
-            stream.read()
+    with (
+        open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(bytes(corrupt))) as stream,
+        raises_corruption_not_truncation(),
+    ):
+        stream.read()
 
 
 @pytest.mark.parametrize("data", [b"", b"\x1f", b"\x1f\x9d"])
 def test_unix_compress_source_cut_inside_the_header_is_truncated(data: bytes) -> None:
     """An empty source is a .Z with no header, not a valid empty stream."""
-    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(data)) as stream:
-        with pytest.raises(TruncatedError, match="header"):
-            stream.read()
+    with (
+        open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(data)) as stream,
+        pytest.raises(TruncatedError, match="header"),
+    ):
+        stream.read()
 
 
 @pytest.mark.parametrize("data", [b"a", b"ab", b"\x1fa"])
 def test_unix_compress_short_source_that_is_not_z_is_corrupt(data: bytes) -> None:
-    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(data)) as stream:
-        with raises_corruption_not_truncation(match="missing header"):
-            stream.read()
+    with (
+        open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(data)) as stream,
+        raises_corruption_not_truncation(match="missing header"),
+    ):
+        stream.read()
 
 
 def test_unix_compress_cut_inside_clear_padding_is_truncated() -> None:
@@ -635,9 +656,11 @@ def test_unix_compress_truncated_readall_raises() -> None:
     """Single-shot read()/readall() must raise TruncatedError (not swallow it)."""
     compressed = make_unix_compress(CONTENT)
     truncated = compressed[: len(compressed) // 2]
-    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(truncated)) as stream:
-        with pytest.raises(TruncatedError, match="leftover bits"):
-            stream.read()
+    with (
+        open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(truncated)) as stream,
+        pytest.raises(TruncatedError, match="leftover bits"),
+    ):
+        stream.read()
 
 
 # --- a stream that raised its truncation stays truncated -------------------------------
@@ -689,9 +712,11 @@ def test_truncated_readall_then_rewind_raises_again(codec: Codec, cut: str) -> N
     if cut == "head":
         # The case this cut exists for: the failed read decoded nothing, so a rewind to
         # 0 does not move the position.
-        with open_codec_stream(codec, source, config=_STDLIB_SEEKABLE) as stream:
-            with pytest.raises(TruncatedError):
-                stream.read(1)
+        with (
+            open_codec_stream(codec, source, config=_STDLIB_SEEKABLE) as stream,
+            pytest.raises(TruncatedError),
+        ):
+            stream.read(1)
         source.seek(0)
     with open_codec_stream(codec, source, config=_STDLIB_SEEKABLE) as stream:
         with pytest.raises(TruncatedError):
@@ -836,9 +861,11 @@ def test_unix_compress_maxbits_above_16_rejected(maxbits: int) -> None:
     gzip and ncompress call it unsupported ("compressed with 17 bits, can only handle
     16 bits"), so it is UnsupportedFeatureError, not corruption."""
     header = bytes([0x1F, 0x9D, 0x80 | maxbits])
-    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(header)) as stream:
-        with pytest.raises(UnsupportedFeatureError, match=f"width {maxbits}"):
-            stream.read()
+    with (
+        open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(header)) as stream,
+        pytest.raises(UnsupportedFeatureError, match=f"width {maxbits}"),
+    ):
+        stream.read()
 
 
 @requires("ncompress")
@@ -1315,7 +1342,7 @@ def test_unix_compress_read_one_bounds_internal_buffer() -> None:
     with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(compressed)) as stream:
         assert stream.read(1) == b"A"
         # DecompressorStream buffer after a budgeted feed.
-        assert len(getattr(stream, "_inner")._buffer) < 64_000
+        assert len(stream._inner._buffer) < 64_000
 
 
 @requires("brotli")
@@ -1369,11 +1396,11 @@ def test_deflate64_read_one_bounds_internal_buffer(tmp_path: Path) -> None:
 def test_unix_compress_reserved_header_flags_unsupported() -> None:
     compressed = bytearray(make_unix_compress(CONTENT))
     compressed[2] |= 0x60  # classic compress reserved flag bits
-    with open_codec_stream(
-        Codec.UNIX_COMPRESS, io.BytesIO(bytes(compressed))
-    ) as stream:
-        with pytest.raises(UnsupportedFeatureError, match="reserved flags"):
-            stream.read()
+    with (
+        open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(bytes(compressed))) as stream,
+        pytest.raises(UnsupportedFeatureError, match="reserved flags"),
+    ):
+        stream.read()
 
 
 @requires("ncompress")
@@ -1664,7 +1691,7 @@ def test_verify_sized_readall_gathers_across_short_reads() -> None:
     """read(-1) must drain a short-reading BinaryIO and still fire the EOF verdict."""
 
     class ShortReading(io.BytesIO):
-        def read(self, n: int = -1) -> bytes:  # noqa: A003
+        def read(self, n: int = -1) -> bytes:
             if n is None or n < 0:
                 n = 3
             return super().read(min(3, n) if n else 0)
@@ -1718,7 +1745,7 @@ def test_verify_bounded_read_stops_on_short_inner() -> None:
     class FillOrEof(io.BytesIO):
         """Returns at most 3 bytes per read, but empty only at true EOF."""
 
-        def read(self, n: int = -1) -> bytes:  # noqa: A003
+        def read(self, n: int = -1) -> bytes:
             if n is None or n < 0:
                 return super().read(n)
             if n == 0:
@@ -2188,7 +2215,7 @@ def test_verify_sized_readall_propagates_oserror_not_truncation() -> None:
     """Resource errors on the sized drain must not be relabeled TruncatedError."""
 
     class Boom(io.BytesIO):
-        def read(self, n: int = -1) -> bytes:  # noqa: A003
+        def read(self, n: int = -1) -> bytes:
             raise OSError("disk died")
 
     stream = VerifyingStream(Boom(b""), {}, expected_size=10)
@@ -2199,7 +2226,7 @@ def test_verify_sized_readall_propagates_oserror_not_truncation() -> None:
 
 def test_verify_sized_readall_propagates_memoryerror_not_truncation() -> None:
     class Boom(io.BytesIO):
-        def read(self, n: int = -1) -> bytes:  # noqa: A003
+        def read(self, n: int = -1) -> bytes:
             raise MemoryError("oom")
 
     stream = VerifyingStream(Boom(b""), {}, expected_size=10)
@@ -2621,11 +2648,13 @@ def test_truncated_gzip_large_read_recovers_prefix_like_read1() -> None:
 def test_truncated_gzip_readall_raises() -> None:
     compressed = gzip.compress(CONTENT)
     truncated = compressed[: len(compressed) // 2]
-    with open_codec_stream(
-        Codec.GZIP, io.BytesIO(truncated), config=_STDLIB_GZIP
-    ) as stream:
-        with pytest.raises(TruncatedError):
-            stream.read()
+    with (
+        open_codec_stream(
+            Codec.GZIP, io.BytesIO(truncated), config=_STDLIB_GZIP
+        ) as stream,
+        pytest.raises(TruncatedError),
+    ):
+        stream.read()
 
 
 def test_truncated_gzip_seek_end_does_not_report_clean_size() -> None:
@@ -2657,9 +2686,11 @@ def test_truncated_zlib_deflate_large_read_recovers_prefix() -> None:
             with pytest.raises(TruncatedError):
                 stream.read(1)
             stream.close()
-        with ZlibDecompressorStream(io.BytesIO(truncated), wbits=wbits) as stream:
-            with pytest.raises(TruncatedError):
-                stream.read()
+        with (
+            ZlibDecompressorStream(io.BytesIO(truncated), wbits=wbits) as stream,
+            pytest.raises(TruncatedError),
+        ):
+            stream.read()
 
 
 def test_gzip_multi_member_and_padding_parity() -> None:
@@ -3182,9 +3213,11 @@ def test_gzip_unsupported_member_header_is_unsupported(
     data = bytearray(gzip.compress(CONTENT, mtime=0))
     data[byte] = value if byte == 2 else data[byte] | value
     config = StreamConfig(use_rapidgzip=accel, seekable=True)
-    with open_codec_stream(Codec.GZIP, io.BytesIO(bytes(data)), config=config) as s:
-        with pytest.raises(UnsupportedFeatureError, match="gzip member header"):
-            s.read()
+    with (
+        open_codec_stream(Codec.GZIP, io.BytesIO(bytes(data)), config=config) as s,
+        pytest.raises(UnsupportedFeatureError, match="gzip member header"),
+    ):
+        s.read()
 
 
 def test_gzip_later_member_with_unknown_method_is_unsupported() -> None:
@@ -3192,9 +3225,11 @@ def test_gzip_later_member_with_unknown_method_is_unsupported() -> None:
     second = bytearray(member)
     second[2] = 7
     source = io.BytesIO(member + bytes(second))
-    with open_codec_stream(Codec.GZIP, source, config=_STDLIB_GZIP) as stream:
-        with pytest.raises(UnsupportedFeatureError):
-            stream.read()
+    with (
+        open_codec_stream(Codec.GZIP, source, config=_STDLIB_GZIP) as stream,
+        pytest.raises(UnsupportedFeatureError),
+    ):
+        stream.read()
 
 
 def _zlib_with_method(method: int) -> bytes:
@@ -3212,9 +3247,11 @@ def test_zlib_unknown_compression_method_is_corruption() -> None:
     unsupported feature as gzip's refused method is: RFC 1950 defines no zlib method
     but 8. The message names the stream zlib."""
     source = io.BytesIO(_zlib_with_method(7))
-    with open_codec_stream(Codec.ZLIB, source, config=_STDLIB_GZIP) as stream:
-        with pytest.raises(CorruptionError, match="zlib stream") as excinfo:
-            stream.read()
+    with (
+        open_codec_stream(Codec.ZLIB, source, config=_STDLIB_GZIP) as stream,
+        pytest.raises(CorruptionError, match="zlib stream") as excinfo,
+    ):
+        stream.read()
     assert is_corruption_not_truncation(excinfo.value)
 
 
@@ -3244,9 +3281,11 @@ def test_zlib_decompressor_stream_raises_typed_errors(wbits: int) -> None:
 
     label = "zlib" if wbits > 0 else "deflate"
     bad = b"\xff" * 64 if wbits < 0 else zlib.compress(b"x")[:2] + b"\xff" * 64
-    with ZlibDecompressorStream(io.BytesIO(bad), wbits=wbits) as stream:
-        with pytest.raises(CorruptionError, match=f"Error reading {label} stream"):
-            stream.read()
+    with (
+        ZlibDecompressorStream(io.BytesIO(bad), wbits=wbits) as stream,
+        pytest.raises(CorruptionError, match=f"Error reading {label} stream"),
+    ):
+        stream.read()
     resumed = ZlibDecoder(wbits).recreate(
         SeekPoint(0, 0, DeflateResume(0, b"")), io.BytesIO()
     )
@@ -3274,9 +3313,11 @@ def test_a_cut_stream_names_its_format(codec: Codec, label: str) -> None:
     else:
         data = _truncated(codec, "tail")
     source = io.BytesIO(data)
-    with open_codec_stream(codec, source, config=_STDLIB_GZIP) as stream:
-        with pytest.raises(TruncatedError, match=f"^{label} stream is truncated"):
-            stream.read()
+    with (
+        open_codec_stream(codec, source, config=_STDLIB_GZIP) as stream,
+        pytest.raises(TruncatedError, match=f"^{label} stream is truncated"),
+    ):
+        stream.read()
 
 
 @pytest.mark.parametrize(
@@ -3312,9 +3353,11 @@ def test_lz4_frame_version_other_than_01_is_unsupported(version_bits: int) -> No
 
     data = bytearray(lz4.frame.compress(CONTENT))
     data[4] = (data[4] & 0x3F) | (version_bits << 6)  # FLG: version in bits 7-6
-    with open_codec_stream(Codec.LZ4, io.BytesIO(bytes(data))) as stream:
-        with pytest.raises(UnsupportedFeatureError, match="lz4 frame version"):
-            stream.read()
+    with (
+        open_codec_stream(Codec.LZ4, io.BytesIO(bytes(data))) as stream,
+        pytest.raises(UnsupportedFeatureError, match="lz4 frame version"),
+    ):
+        stream.read()
 
 
 @requires_zstd()
@@ -3325,9 +3368,11 @@ def test_zstd_frame_needing_a_dictionary_is_unsupported() -> None:
     samples = [bytes([i]) * 50 + b"common prefix %d" % i for i in range(200)]
     dictionary = zstd.train_dict(samples, 4096)
     data = zstd.compress(CONTENT, zstd_dict=dictionary)
-    with open_codec_stream(Codec.ZSTD, io.BytesIO(data)) as stream:
-        with pytest.raises(UnsupportedFeatureError, match="dictionary"):
-            stream.read()
+    with (
+        open_codec_stream(Codec.ZSTD, io.BytesIO(data)) as stream,
+        pytest.raises(UnsupportedFeatureError, match="dictionary"),
+    ):
+        stream.read()
 
 
 def _outcome(open_and_read: Callable[[], bytes]) -> tuple[str, str]:

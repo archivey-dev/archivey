@@ -489,15 +489,17 @@ def test_streaming_tar_disables_random_access(plain_tar: Path) -> None:
 
 def test_streaming_tar_does_not_call_getmembers() -> None:
     data = _build_tar()
-    with open_archive(
-        NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
-    ) as ar:
-        with mock.patch.object(
+    with (
+        open_archive(
+            NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
+        ) as ar,
+        mock.patch.object(
             tarfile.TarFile,
             "getmembers",
             side_effect=AssertionError("getmembers called"),
-        ):
-            list(ar.stream_members())
+        ),
+    ):
+        list(ar.stream_members())
 
 
 def test_non_seekable_tar_gz_streaming(tmp_path: Path) -> None:
@@ -574,9 +576,11 @@ def _eof_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
 def test_valid_tar_eof_silent(
     plain_tar: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    with caplog.at_level(logging.WARNING, logger="archivey.backends"):
-        with open_archive(plain_tar) as ar:
-            ar.members()
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey.backends"),
+        open_archive(plain_tar) as ar,
+    ):
+        ar.members()
     assert _eof_warnings(caplog) == []
 
 
@@ -584,9 +588,11 @@ def test_missing_eof_blocks_warns_by_default(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     data = _tar_missing_eof_block()
-    with caplog.at_level(logging.WARNING, logger="archivey.backends"):
-        with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
-            ar.members()
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey.backends"),
+        open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar,
+    ):
+        ar.members()
     warnings = _eof_warnings(caplog)
     assert len(warnings) == 1
     assert "truncated" in warnings[0].lower()
@@ -594,13 +600,15 @@ def test_missing_eof_blocks_warns_by_default(
 
 def test_missing_eof_blocks_raise_disposition_raises() -> None:
     data = _tar_missing_eof_block()
-    with pytest.raises(DiagnosticRaisedError):
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError),
+        open_archive(
             io.BytesIO(data),
             format=ArchiveFormat.TAR,
             config=_RAISE_ON_MISSING_EOF,
-        ) as ar:
-            ar.members()
+        ) as ar,
+    ):
+        ar.members()
 
 
 def test_members_report_recovers_prefix_on_corrupt_header() -> None:
@@ -668,35 +676,41 @@ def test_members_report_raises_a_raised_eof_diagnostic() -> None:
     # so members_report() raises it rather than folding it into report.error. This was
     # TruncatedError-as-report under the removed ``strict_archive_eof`` flag.
     data = _tar_missing_eof_block()
-    with open_archive(
-        io.BytesIO(data), format=ArchiveFormat.TAR, config=_RAISE_ON_MISSING_EOF
-    ) as ar:
-        with pytest.raises(DiagnosticRaisedError):
-            ar.members_report()
+    with (
+        open_archive(
+            io.BytesIO(data), format=ArchiveFormat.TAR, config=_RAISE_ON_MISSING_EOF
+        ) as ar,
+        pytest.raises(DiagnosticRaisedError),
+    ):
+        ar.members_report()
 
 
 def test_missing_eof_blocks_streaming_warns(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     data = _tar_missing_eof_block()
-    with caplog.at_level(logging.WARNING, logger="archivey.backends"):
-        with open_archive(
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey.backends"),
+        open_archive(
             NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
-        ) as ar:
-            list(ar.stream_members())
+        ) as ar,
+    ):
+        list(ar.stream_members())
     assert len(_eof_warnings(caplog)) == 1
 
 
 def test_missing_eof_blocks_streaming_raise_disposition_raises() -> None:
     data = _tar_missing_eof_block()
-    with pytest.raises(DiagnosticRaisedError):
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError),
+        open_archive(
             NonSeekableBytesIO(data),
             format=ArchiveFormat.TAR,
             streaming=True,
             config=_RAISE_ON_MISSING_EOF,
-        ) as ar:
-            list(ar.stream_members())
+        ) as ar,
+    ):
+        list(ar.stream_members())
 
 
 def test_minimal_eof_trailer_silent(caplog: pytest.LogCaptureFixture) -> None:
@@ -704,9 +718,11 @@ def test_minimal_eof_trailer_silent(caplog: pytest.LogCaptureFixture) -> None:
     # padding) must not be flagged: tarfile consumes the first block detecting EOF, so the
     # check must only require the second block, not two more. Random-access path.
     data = _tar_minimal_eof()
-    with caplog.at_level(logging.WARNING, logger="archivey.backends"):
-        with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
-            ar.members()
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey.backends"),
+        open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar,
+    ):
+        ar.members()
     assert _eof_warnings(caplog) == []
 
 
@@ -715,11 +731,13 @@ def test_minimal_eof_trailer_streaming_silent(
 ) -> None:
     # Same minimal-but-valid trailer over the forward-only streaming path.
     data = _tar_minimal_eof()
-    with caplog.at_level(logging.WARNING, logger="archivey.backends"):
-        with open_archive(
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey.backends"),
+        open_archive(
             NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
-        ) as ar:
-            list(ar.stream_members())
+        ) as ar,
+    ):
+        list(ar.stream_members())
     assert _eof_warnings(caplog) == []
 
 
@@ -749,28 +767,34 @@ def test_corrupt_final_header_raises_corruption_by_default() -> None:
     # raised says the header was rejected, so it is CorruptionError — even under the
     # default (non-strict) config, because a complete tar never stops on one.
     data = _tar_corrupt_final_header()
-    with raises_corruption_not_truncation():
-        with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
-            ar.members()
+    with (
+        raises_corruption_not_truncation(),
+        open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar,
+    ):
+        ar.members()
 
 
 def test_corrupt_mid_header_raises_corruption_by_default() -> None:
     # A rejected non-first header with valid data still following: caught by default in
     # both access modes.
     data = _tar_corrupt_mid_header()
-    with raises_corruption_not_truncation():
-        with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
-            ar.members()
+    with (
+        raises_corruption_not_truncation(),
+        open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar,
+    ):
+        ar.members()
 
 
 def test_corrupt_mid_header_streaming_raises_corruption() -> None:
     # The same rejected mid-archive header over the forward-only path.
     data = _tar_corrupt_mid_header()
-    with raises_corruption_not_truncation():
-        with open_archive(
+    with (
+        raises_corruption_not_truncation(),
+        open_archive(
             NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
-        ) as ar:
-            list(ar.stream_members())
+        ) as ar,
+    ):
+        list(ar.stream_members())
 
 
 def test_corrupt_final_header_streaming_raises_corruption() -> None:
@@ -778,11 +802,13 @@ def test_corrupt_final_header_streaming_raises_corruption() -> None:
     # absent, so only the error tarfile's last header parse raised tells this from a
     # missing trailer. Streaming used to warn here; it now agrees with random access.
     data = _tar_corrupt_final_header()
-    with raises_corruption_not_truncation():
-        with open_archive(
+    with (
+        raises_corruption_not_truncation(),
+        open_archive(
             NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
-        ) as ar:
-            list(ar.stream_members())
+        ) as ar,
+    ):
+        list(ar.stream_members())
 
 
 def _tar_rejected_header_then_zero_block(tail: list[str]) -> bytes:
@@ -878,10 +904,12 @@ def test_rejected_header_raises_corruption_in_both_modes(
     data = build()
     source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
     names: list[str] = []
-    with raises_corruption_not_truncation():
-        with open_archive(source, format=ArchiveFormat.TAR, streaming=streaming) as ar:
-            for member, _stream in ar.stream_members():
-                names.append(member.name)
+    with (
+        raises_corruption_not_truncation(),
+        open_archive(source, format=ArchiveFormat.TAR, streaming=streaming) as ar,
+    ):
+        for member, _stream in ar.stream_members():
+            names.append(member.name)
     assert names == ["a"]
 
 
@@ -891,9 +919,11 @@ def test_corrupt_final_header_extract_raises(tmp_path: Path) -> None:
     # written: those stay on disk, whole, and the call still raises.
     data = _tar_corrupt_final_header()
     dest = tmp_path / "out"
-    with raises_corruption_not_truncation():
-        with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
-            ar.extract_all(dest)
+    with (
+        raises_corruption_not_truncation(),
+        open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar,
+    ):
+        ar.extract_all(dest)
     assert (dest / "hello.txt").read_bytes() == b"hello world"
 
 
@@ -902,17 +932,21 @@ def test_corrupt_final_header_sparse_raises_corruption() -> None:
     # offset_data+roundup(size) check miss the stop block, so a rejected final header
     # after a GNU sparse member warned as absent instead of raising CorruptionError.
     data = _tar_corrupt_final_header_sparse()
-    with raises_corruption_not_truncation():
-        with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
-            ar.members()
+    with (
+        raises_corruption_not_truncation(),
+        open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar,
+    ):
+        ar.members()
 
 
 def test_sparse_tar_eof_no_false_positive(caplog: pytest.LogCaptureFixture) -> None:
     # A well-formed GNU sparse tar with a valid trailer must stay silent.
     data = _tar_sparse_gnu()
-    with caplog.at_level(logging.WARNING, logger="archivey.backends"):
-        with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
-            members = ar.members()
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey.backends"),
+        open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar,
+    ):
+        members = ar.members()
     assert members
     assert members[0].is_sparse
     assert _eof_warnings(caplog) == []
@@ -1153,22 +1187,23 @@ def test_corrupt_final_header_gzip_raises_corruption(tmp_path: Path) -> None:
 
     path = tmp_path / "bad.tar.gz"
     path.write_bytes(gzip.compress(_tar_corrupt_final_header()))
-    with raises_corruption_not_truncation():
-        with open_archive(path) as ar:
-            ar.members()
+    with raises_corruption_not_truncation(), open_archive(path) as ar:
+        ar.members()
 
 
 def test_corrupt_mid_header_raise_disposition_still_corruption() -> None:
     # A RAISE disposition does not change the type for a rejected header: the nonzero
     # case escalates as CorruptionError, which outranks DiagnosticRaisedError.
     data = _tar_corrupt_mid_header()
-    with raises_corruption_not_truncation():
-        with open_archive(
+    with (
+        raises_corruption_not_truncation(),
+        open_archive(
             io.BytesIO(data),
             format=ArchiveFormat.TAR,
             config=_RAISE_ON_MISSING_EOF,
-        ) as ar:
-            ar.members()
+        ) as ar,
+    ):
+        ar.members()
 
 
 def test_corrupt_final_header_ignore_disposition_still_raises() -> None:
@@ -1180,13 +1215,15 @@ def test_corrupt_final_header_ignore_disposition_still_raises() -> None:
 
     data = _tar_corrupt_final_header()
     policy = DiagnosticPolicy(ignore={DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING})
-    with raises_corruption_not_truncation():
-        with open_archive(
+    with (
+        raises_corruption_not_truncation(),
+        open_archive(
             io.BytesIO(data),
             format=ArchiveFormat.TAR,
             config=ArchiveyConfig(diagnostic_policy=policy),
-        ) as ar:
-            ar.members()
+        ) as ar,
+    ):
+        ar.members()
 
 
 def test_corrupt_mid_header_streaming_extract_writes_then_raises(
@@ -1195,11 +1232,13 @@ def test_corrupt_mid_header_streaming_extract_writes_then_raises(
     # Streaming extract writes salvageable members, then raises at end-of-pass.
     data = _tar_corrupt_mid_header()
     dest = tmp_path / "out"
-    with raises_corruption_not_truncation():
-        with open_archive(
+    with (
+        raises_corruption_not_truncation(),
+        open_archive(
             NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
-        ) as ar:
-            ar.extract_all(dest)
+        ) as ar,
+    ):
+        ar.extract_all(dest)
     assert (dest / "a.txt").exists()
     assert (dest / "a.txt").read_bytes() == b"aaa"
     assert not (dest / "b.txt").exists()
@@ -1301,9 +1340,11 @@ def test_bad_gzip_crc_is_reported_after_a_damaged_second_eof_block(
         plain = _tar_damaged_second_eof_block(_DAMAGED_SECOND_BLOCKS["stray_byte"])
     path = tmp_path / "bad-crc.tar.gz"
     path.write_bytes(_gzip_with_bad_crc(plain + b"\x00" * (64 * 1024)))
-    with raises_corruption_not_truncation():
-        with open_archive(path, streaming=streaming) as ar:
-            list(ar.stream_members())
+    with (
+        raises_corruption_not_truncation(),
+        open_archive(path, streaming=streaming) as ar,
+    ):
+        list(ar.stream_members())
 
 
 def test_damaged_second_eof_block_then_junk_reports_trailing_data() -> None:
@@ -1329,11 +1370,13 @@ def test_damaged_second_eof_block_refused_under_strict(streaming: bool) -> None:
     data = _tar_damaged_second_eof_block(_DAMAGED_SECOND_BLOCKS["stray_byte"])
     source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
     strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with open_archive(
-        source, format=ArchiveFormat.TAR, streaming=streaming, config=strict
-    ) as ar:
-        with pytest.raises(DiagnosticRaisedError):
-            list(ar.stream_members())
+    with (
+        open_archive(
+            source, format=ArchiveFormat.TAR, streaming=streaming, config=strict
+        ) as ar,
+        pytest.raises(DiagnosticRaisedError),
+    ):
+        list(ar.stream_members())
 
 
 @pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
@@ -1357,9 +1400,11 @@ def test_zero_block_then_junk_with_no_member_stays_corruption(
     # that is a zero block and then junk is not shown to be a tar at all.
     data = b"\x00" * 512 + b"A" * 100 + b"\x00" * (512 * 9 - 100)
     source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
-    with raises_corruption_not_truncation() as excinfo:
-        with open_archive(source, format=ArchiveFormat.TAR, streaming=streaming) as ar:
-            list(ar.stream_members())
+    with (
+        raises_corruption_not_truncation() as excinfo,
+        open_archive(source, format=ArchiveFormat.TAR, streaming=streaming) as ar,
+    ):
+        list(ar.stream_members())
     # There is no member header and no listing to shorten, so the message says what
     # is actually wrong.
     assert "has no member" in str(excinfo.value)
@@ -1370,9 +1415,11 @@ def test_padded_tar_eof_no_false_positive(caplog: pytest.LogCaptureFixture) -> N
     # tarfile writes 10240-byte record padding (many trailing null blocks past the two
     # required ones). The end check must not read that padding as a rejected block.
     data = _build_tar()  # full tarfile output, padded
-    with caplog.at_level(logging.WARNING, logger="archivey.backends"):
-        with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
-            ar.members()
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey.backends"),
+        open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar,
+    ):
+        ar.members()
     assert _eof_warnings(caplog) == []
 
 
@@ -1386,9 +1433,11 @@ def test_truncated_tar_raises() -> None:
     # Cut into the body so the header scan hits "unexpected end of data" (tarfile pads the
     # whole archive to a 10 KiB record, so cut well inside the real member region).
     truncated = full[:800]
-    with pytest.raises(TruncatedError):
-        with open_archive(io.BytesIO(truncated), format=ArchiveFormat.TAR) as ar:
-            ar.members()
+    with (
+        pytest.raises(TruncatedError),
+        open_archive(io.BytesIO(truncated), format=ArchiveFormat.TAR) as ar,
+    ):
+        ar.members()
 
 
 def _cut_plain_tar() -> tuple[bytes, bytes]:
@@ -1438,7 +1487,7 @@ def test_a_cut_plain_tar_member_raises_on_read_without_a_listing(
 ) -> None:
     # The lookup stops at the first match, so the walk never reaches the cut: the
     # member read itself has to find it, whether or not the source size is known.
-    cut, payload = _cut_plain_tar()
+    cut, _payload = _cut_plain_tar()
     with open_archive(_CUT_SOURCES[source](cut), format=ArchiveFormat.TAR) as ar:
         with (
             ar.open("a") as stream,
@@ -1471,9 +1520,11 @@ def test_corrupt_tar_header_raises() -> None:
     raw = bytearray(_build_tar())
     # Corrupt the checksum field (offset 148, 8 bytes) of the first header.
     raw[148:156] = b"\xff\xff\xff\xff\xff\xff\xff\xff"
-    with raises_corruption_not_truncation():
-        with open_archive(io.BytesIO(bytes(raw)), format=ArchiveFormat.TAR) as ar:
-            ar.members()
+    with (
+        raises_corruption_not_truncation(),
+        open_archive(io.BytesIO(bytes(raw)), format=ArchiveFormat.TAR) as ar,
+    ):
+        ar.members()
 
 
 def _raw_tar_header(
@@ -1639,14 +1690,16 @@ def test_old_style_directory_data_is_refused_by_strict_policy(
     typeflag: bytes, streaming: bool
 ) -> None:
     data = _tar_entry_with_data(typeflag)
-    with pytest.raises(DiagnosticRaisedError) as excinfo:
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError) as excinfo,
+        open_archive(
             NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
             format=ArchiveFormat.TAR,
             streaming=streaming,
             config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
-        ) as ar:
-            list(ar.stream_members())
+        ) as ar,
+    ):
+        list(ar.stream_members())
     assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
 
 
@@ -1673,9 +1726,11 @@ def test_old_style_slash_name_without_data_is_a_plain_directory(
         assert DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED not in ar.diagnostics.counts
     # Random access only: open() takes a member by name, which a streaming walk has
     # no index for.
-    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
-        with pytest.raises(ArchiveyUsageError, match="declares no data"):
-            ar.open(ar.members()[0])
+    with (
+        open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar,
+        pytest.raises(ArchiveyUsageError, match="declares no data"),
+    ):
+        ar.open(ar.members()[0])
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -1749,9 +1804,11 @@ def test_size_past_filesystem_limit_is_truncation(
     path = tmp_path / "big.tar"
     path.write_bytes(data)
     source = path if from_file else io.BytesIO(data)
-    with pytest.raises(TruncatedError):
-        with open_archive(source, format=ArchiveFormat.TAR) as ar:
-            ar.members()
+    with (
+        pytest.raises(TruncatedError),
+        open_archive(source, format=ArchiveFormat.TAR) as ar,
+    ):
+        ar.members()
 
 
 class _SeekRefusingBytesIO(io.BytesIO):
@@ -1794,9 +1851,11 @@ def test_refused_seek_through_open_archive_is_truncation(typeflag: bytes) -> Non
     size_field = b"\x80" + (2**62).to_bytes(11, "big")
     data = _tar_entry_with_data(typeflag, size_field=size_field)
     source = _SeekRefusingBytesIO(data, err=errno.EINVAL)
-    with pytest.raises(TruncatedError, match="past the end of the archive"):
-        with open_archive(source, format=ArchiveFormat.TAR) as ar:
-            ar.members()
+    with (
+        pytest.raises(TruncatedError, match="past the end of the archive"),
+        open_archive(source, format=ArchiveFormat.TAR) as ar,
+    ):
+        ar.members()
 
 
 @pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS)
@@ -1910,14 +1969,16 @@ def test_dirtype_zero_span_is_reported(payload: bytes, streaming: bool) -> None:
 @pytest.mark.parametrize("streaming", [False, True])
 def test_dirtype_zero_span_is_refused_by_strict_policy(streaming: bool) -> None:
     data = _tar_entry_with_data(tarfile.DIRTYPE, data=b"\0" * 1024)
-    with pytest.raises(DiagnosticRaisedError) as excinfo:
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError) as excinfo,
+        open_archive(
             NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
             format=ArchiveFormat.TAR,
             streaming=streaming,
             config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
-        ) as ar:
-            list(ar.stream_members())
+        ) as ar,
+    ):
+        list(ar.stream_members())
     assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
 
 
@@ -2347,14 +2408,16 @@ def test_link_data_is_refused_by_strict_policy(
     typeflag: bytes, streaming: bool
 ) -> None:
     data = _tar_link_with_data(typeflag, b"\0" * 1024)
-    with pytest.raises(DiagnosticRaisedError) as excinfo:
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError) as excinfo,
+        open_archive(
             NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
             format=ArchiveFormat.TAR,
             streaming=streaming,
             config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
-        ) as ar:
-            list(ar.stream_members())
+        ) as ar,
+    ):
+        list(ar.stream_members())
     assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_LINK_DATA_IGNORED
 
 
@@ -2532,11 +2595,10 @@ def test_corrupt_compressed_tar_surfaces_codec_corruption(tmp_path: Path) -> Non
     raw = bytearray(_build_tar("w:gz"))
     raw[len(raw) // 2] ^= 0xFF  # flip a byte inside the deflate stream
     path.write_bytes(bytes(raw))
-    with raises_corruption_not_truncation():
-        with open_archive(path) as ar:
-            for _member, stream in ar.stream_members():
-                if stream is not None:
-                    stream.read()
+    with raises_corruption_not_truncation(), open_archive(path) as ar:
+        for _member, stream in ar.stream_members():
+            if stream is not None:
+                stream.read()
 
 
 # ---------------------------------------------------------------------------
@@ -2571,7 +2633,6 @@ def test_password_provider_ok_on_unencrypted_format() -> None:
 
     def provider(_request: object) -> None:
         called["n"] += 1
-        return
 
     with open_archive(
         io.BytesIO(_build_tar()), format=ArchiveFormat.TAR, password=provider
@@ -2904,9 +2965,11 @@ def test_link_cycle_raises_read_error() -> None:
             ("sym", "b", "a"),
         ]
     )
-    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
-        with pytest.raises(ReadError, match="cycle"):
-            ar.read("a")
+    with (
+        open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar,
+        pytest.raises(ReadError, match="cycle"),
+    ):
+        ar.read("a")
 
 
 def test_chain_through_same_named_members_not_false_cycle() -> None:
@@ -3073,9 +3136,11 @@ def test_extended_header_size_does_not_drive_the_allocation(
     # bound is what this pins.
     config = ArchiveyConfig(listing_limits=ListingLimits.UNLIMITED)
     # The archive ends inside the header's data, as it is cut short anywhere else.
-    with pytest.raises(TruncatedError):
-        with open_archive(source, format=ArchiveFormat.TAR, config=config) as reader:
-            reader.members()
+    with (
+        pytest.raises(TruncatedError),
+        open_archive(source, format=ArchiveFormat.TAR, config=config) as reader,
+    ):
+        reader.members()
 
     assert source.requested, "the source was never read"
     # A raw source sits under a ``BufferedReader``, whose refill size is a constant of
@@ -3102,9 +3167,11 @@ def test_extended_header_over_the_metadata_cap_is_refused_unread(
     the header declares, not what the cap allows."""
     data = _tar_with_oversized_metadata_header(typeflag, 6 * 1024**3)
     source = ReadSizeRecorder(data, advertise_size=False)
-    with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
-        with open_archive(source, format=ArchiveFormat.TAR, streaming=streaming):
-            pass
+    with (
+        pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
+        open_archive(source, format=ArchiveFormat.TAR, streaming=streaming),
+    ):
+        pass
     assert max(source.requested) <= max(
         DEFAULT_UNKNOWN_LENGTH_READ_STEP, io.DEFAULT_BUFFER_SIZE, 10240
     )
@@ -3492,9 +3559,11 @@ def test_close_releases_the_codec_stream_when_its_buffer_close_raises(
     codec = ar._owned_codec_stream
     # Streaming buffers the codec stream; random access buffers the walk's view.
     buffer = ar._owned_stream if streaming else ar._walker_view
-    with mock.patch.object(buffer, "close", side_effect=OSError("boom")):
-        with pytest.raises(OSError):
-            ar.close()
+    with (
+        mock.patch.object(buffer, "close", side_effect=OSError("boom")),
+        pytest.raises(OSError),
+    ):
+        ar.close()
     assert codec.closed
 
 
@@ -3922,9 +3991,11 @@ def test_hardlink_resolves_to_an_earlier_member_only(
     assert (tmp_path / "out" / "hu").read_bytes() == b"FIRST-U"
     assert (tmp_path / "out" / "t").read_bytes() == b"LATER-T"
     if not streaming:
-        with open_archive(io.BytesIO(data)) as reader:
-            with pytest.raises(LinkTargetNotFoundError):
-                reader.read("h")
+        with (
+            open_archive(io.BytesIO(data)) as reader,
+            pytest.raises(LinkTargetNotFoundError),
+        ):
+            reader.read("h")
 
 
 @pytest.mark.parametrize("codec", ["gz", "bz2", "xz"])
@@ -4354,10 +4425,12 @@ def test_old_gnu_sparse_realsize_out_of_range_stops_the_walk(streaming: bool) ->
     _patch_header(data, 1024, 483, b"\xff" * 12)
     source = NonSeekableBytesIO(bytes(data)) if streaming else io.BytesIO(bytes(data))
     names = []
-    with open_archive(source, format=ArchiveFormat.TAR, streaming=streaming) as ar:
-        with pytest.raises(CorruptionError):
-            for member, _ in ar.stream_members():
-                names.append(member.name)
+    with (
+        open_archive(source, format=ArchiveFormat.TAR, streaming=streaming) as ar,
+        pytest.raises(CorruptionError),
+    ):
+        for member, _ in ar.stream_members():
+            names.append(member.name)
     assert names == ["a.txt"]
 
 
@@ -4508,3 +4581,37 @@ def test_volume_typeflags_are_known(typeflag: bytes, streaming: bool) -> None:
         member = next(m for m, _ in ar.stream_members() if m.name == "f")
         assert member.size is None
         assert not _unknown_type_diagnostics(ar.diagnostics.retained)
+
+
+def test_a_rewind_in_a_compressed_tar_logs_at_info(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Opening an earlier member of a ``.tar.gz`` decodes the stream again from the
+    start. ``STREAM_REWIND_REDECOMPRESSES`` reports it as a diagnostic, and its log
+    record is INFO, not WARNING: it describes the caller's access pattern, not the
+    archive (``logging`` spec). The record carries the code and the occurrence id."""
+    rng = random.Random(0)
+    size = REWIND_REDECODE_WARN_BYTES + 1024
+    path = tmp_path / "a.tar.gz"
+    with tarfile.open(path, mode="w:gz") as tar:
+        for name in ("a", "b"):
+            info = tarfile.TarInfo(name)
+            info.size = size
+            tar.addfile(info, io.BytesIO(rng.randbytes(size)))
+    with caplog.at_level(logging.DEBUG, logger="archivey"), open_archive(path) as ar:
+        members = {m.name: m for m in ar.members()}
+        for name in ("b", "a"):
+            with ar.open(members[name]) as stream:
+                stream.read()
+        counts = ar.diagnostics.counts
+        (diagnostic,) = [
+            d
+            for d in ar.diagnostics.retained
+            if d.code is DiagnosticCode.STREAM_REWIND_REDECOMPRESSES
+        ]
+    assert counts[DiagnosticCode.STREAM_REWIND_REDECOMPRESSES] == 1
+    rewinds = [r for r in caplog.records if "Backward seek" in r.getMessage()]
+    assert [r.levelno for r in rewinds] == [logging.INFO]
+    (record,) = rewinds
+    assert record.diagnostic_code is DiagnosticCode.STREAM_REWIND_REDECOMPRESSES
+    assert record.diagnostic_occurrence_id == diagnostic.occurrence_id

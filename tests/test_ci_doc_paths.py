@@ -1,10 +1,10 @@
 """The `pull_request: paths:` filter that keeps docs-only pull requests off the code CI.
 
-`ci.yml`, `atheris-fuzz.yml` and `ppmd-native-stress.yml` each carry the same list. A
-pull request whose files all fall outside it starts none of the three, and reports no
+`ci.yml` and `atheris-fuzz.yml` each carry the same list. A
+pull request whose files all fall outside it starts neither of them, and reports no
 check from them at all, so a careless edit here shows up as nothing rather than as a
 red check. This cannot run GitHub's matcher; it pins the two edits that would break the
-scheme silently: the three copies drifting apart, and a doc file that a test reads
+scheme silently: the two copies drifting apart, and a doc file that a test reads
 losing its re-include (or the re-include moving above the `!` entries, where GitHub's
 in-order evaluation would exclude it again).
 """
@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
-FILTERED = ("ci.yml", "atheris-fuzz.yml", "ppmd-native-stress.yml")
+FILTERED = ("ci.yml", "atheris-fuzz.yml")
 # Doc paths a test reads, and the test that reads each one.
 TEST_READ = {
     "docs/api.md": "test_public_api",
@@ -51,7 +51,7 @@ def lists() -> dict[str, list[str]]:
     }
 
 
-def test_the_three_lists_are_identical(lists: dict[str, list[str]]) -> None:
+def test_the_two_lists_are_identical(lists: dict[str, list[str]]) -> None:
     reference = lists["ci.yml"]
     assert reference, "ci.yml has no pull_request paths filter"
     for name, entries in lists.items():

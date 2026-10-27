@@ -127,6 +127,7 @@ def _run(fmt: str, opener: str, variant: str, cleanup: str) -> int:
         [sys.executable, "-c", _script(fmt, opener, variant, cleanup)],
         capture_output=True,
         timeout=30,
+        check=False,
     )
     return proc.returncode
 
@@ -217,6 +218,7 @@ def test_archivey_uses_single_accelerator_library() -> None:
         [sys.executable, "-c", _SINGLE_LIBRARY_SCRIPT],
         capture_output=True,
         timeout=30,
+        check=False,
     )
     assert proc.returncode == 0, (
         f"using both codecs through archivey did not exit cleanly (rc={proc.returncode}): "

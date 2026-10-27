@@ -48,8 +48,10 @@ def test_a_blocked_member_is_reported_once(tmp_path: Path) -> None:
     assert code == EXIT_POLICY, err
     about_bad = [line for line in err.splitlines() if "'../../etc/passwd'" in line]
     assert about_bad == [
-        "blocked: bad: Symlink target escapes destination"
-        " (member='bad', target='../../etc/passwd')"
+        (
+            "blocked: bad: Symlink target escapes destination"
+            " (member='bad', target='../../etc/passwd')"
+        )
     ], err
 
 

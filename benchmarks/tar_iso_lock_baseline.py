@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Non-gating TAR/ISO lock baseline (wall time under concurrent opens).
 
 Records representative wall-clock samples for concurrent member opens under

@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/archivey-dev/archivey/security/advisories/new
+    about: Report it privately here, not in a public issue. SECURITY.md says what is in scope.

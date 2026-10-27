@@ -29,7 +29,7 @@ for arg in "$@"; do
   esac
 done
 
-PATHS=(src/ tests/ scripts/ benchmarks/)
+PATHS=(src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/)
 FAILED=()
 
 # The gates below run with `--no-sync`, which assumes this tree already has an
@@ -68,6 +68,12 @@ run "ruff check"          uv run --no-sync ruff check "${PATHS[@]}"
 run "ruff format --check" uv run --no-sync ruff format --check "${PATHS[@]}"
 run "pyrefly"             uv run --no-sync pyrefly check
 run "ty"                  uv run --no-sync ty check
+
+# --- API surface (tests/test_api_surface.py in CI) ------------------------------------
+if [ "$FIX" -eq 1 ]; then
+  uv run --no-sync python scripts/api_surface.py --write
+fi
+run "api surface" uv run --no-sync python scripts/api_surface.py --check
 
 # --- CI job: openspec --------------------------------------------------------------
 # Stdlib-only, same as CI. `openspec validate` needs the npm CLI, which the setup script

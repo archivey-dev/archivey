@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Does loading BOTH rapidgzip and indexed_bzip2 in one process corrupt the heap on macOS?
 
 The full-suite macOS abort turned out NOT to be archivey leaving streams unclosed (the leak
@@ -89,7 +88,7 @@ def _run(name: str, code: str) -> tuple[int, int, str]:
     sample = ""
     for _ in range(ITERS):
         proc = subprocess.run(
-            [sys.executable, "-c", code], capture_output=True, timeout=60
+            [sys.executable, "-c", code], capture_output=True, timeout=60, check=False
         )
         err = proc.stderr.decode("utf-8", "replace")
         crashed = proc.returncode != 0 or any(m in err for m in _CRASH_MARKERS)

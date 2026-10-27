@@ -53,9 +53,10 @@ Formats covered here: ZIP (deflate / LZMA / WinZip AES / ZipCrypto), TAR, gzip,
 tar.gz/tar.bz2 (+ accelerators), in-ZIP accelerated deflate, solid 7z, and RAR
 data paths on committed fixtures when RARLAB ``unrar`` is present (large solid
 RAR when the ``rar`` writer can build one). Listing wall peers: ``zipfile`` /
-``tarfile`` / ``py7zr`` / ``rarfile`` (Q1 bands). ISO and directory backends are
-instrumented for measurement but deliberately out of scope for this harness —
-see ``benchmarks/tar_iso_lock_baseline.py`` for ISO.
+``tarfile`` / ``py7zr`` / ``rarfile`` (Q1 bands); ``benchmarks/peers.py`` reports
+list, read and extract against py7zr / rarfile / libarchive-c, outside the gate.
+ISO and directory backends are instrumented for measurement but deliberately out
+of scope for this harness — see ``benchmarks/tar_iso_lock_baseline.py`` for ISO.
 """
 
 from __future__ import annotations
@@ -190,12 +191,11 @@ def _accel_skipped_case(case: str, fmt: str) -> CaseResult:
 
 
 def _op_open_list(path: Path) -> tuple[int, int]:
-    with enable_measurement():
-        with open_archive(path) as reader:
-            base = _as_base(reader)
-            _ = reader.info
-            list(reader.members())
-            return base.bytes_decompressed, base.source_seek_count
+    with enable_measurement(), open_archive(path) as reader:
+        base = _as_base(reader)
+        _ = reader.info
+        list(reader.members())
+        return base.bytes_decompressed, base.source_seek_count
 
 
 def _accel_config(*, enabled: bool) -> ArchiveyConfig:
@@ -216,17 +216,19 @@ def _op_read_all(
     seekable_members: bool = False,
     password: bytes | str | None = None,
 ) -> tuple[int, int, int]:
-    with enable_measurement():
-        with open_archive(
+    with (
+        enable_measurement(),
+        open_archive(
             path, config=config, seekable_members=seekable_members, password=password
-        ) as reader:
-            base = _as_base(reader)
-            unpacked = 0
-            for member, stream in reader.stream_members():
-                if stream is not None:
-                    data = stream.read()
-                    unpacked += len(data)
-            return base.bytes_decompressed, base.source_seek_count, unpacked
+        ) as reader,
+    ):
+        base = _as_base(reader)
+        unpacked = 0
+        for member, stream in reader.stream_members():
+            if stream is not None:
+                data = stream.read()
+                unpacked += len(data)
+        return base.bytes_decompressed, base.source_seek_count, unpacked
 
 
 _extract_n = 0
@@ -237,11 +239,10 @@ def _op_extract(path: Path, dest_root: Path) -> tuple[int, int]:
     _extract_n += 1
     dest = dest_root / f"run-{_extract_n}"
     dest.mkdir(parents=True, exist_ok=True)
-    with enable_measurement():
-        with open_archive(path) as reader:
-            base = _as_base(reader)
-            reader.extract_all(dest)
-            return base.bytes_decompressed, base.source_seek_count
+    with enable_measurement(), open_archive(path) as reader:
+        base = _as_base(reader)
+        reader.extract_all(dest)
+        return base.bytes_decompressed, base.source_seek_count
 
 
 def _op_read_all_unmeasured(
@@ -263,13 +264,12 @@ def _op_read_all_unmeasured(
 def _op_random_read_all(
     path: Path, *, password: bytes | str | None = None
 ) -> tuple[int, int]:
-    with enable_measurement():
-        with open_archive(path, password=password) as reader:
-            base = _as_base(reader)
-            names = [m.name for m in reader.members() if m.is_file]
-            for name in reversed(names):
-                reader.read(name)
-            return base.bytes_decompressed, base.source_seek_count
+    with enable_measurement(), open_archive(path, password=password) as reader:
+        base = _as_base(reader)
+        names = [m.name for m in reader.members() if m.is_file]
+        for name in reversed(names):
+            reader.read(name)
+        return base.bytes_decompressed, base.source_seek_count
 
 
 def _timed(fn: Callable[[], Any]) -> tuple[float, Any]:
@@ -688,16 +688,23 @@ def run_cases(
     _m_wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
         lambda: _op_read_all(fixtures.zip_path, config=cfg_zip_off)
     )
+    # Wall time unmeasured, as for the ON row below, so the pair compares.
+    wall, _ = timed_with_optional_warmup(
+        lambda: _op_read_all_unmeasured(fixtures.zip_path, config=cfg_zip_off)
+    )
     results.append(
         CaseResult(
             "zip_read_all_accel_off",
             "zip",
             "read_all",
-            _m_wall,
+            wall,
             bdec,
             seeks,
             unpacked_bytes=unpacked,
-            notes="stdlib deflate codec; accelerators forced OFF",
+            notes=(
+                "stdlib deflate codec; accelerators forced OFF; counts from the "
+                "measured route, wall time from the unmeasured one"
+            ),
         )
     )
     if has_accel:
@@ -707,18 +714,30 @@ def run_cases(
                 fixtures.zip_path, config=cfg_zip_on, seekable_members=True
             )
         )
+        # Two routes. With measurement on, the seek counter wraps the archive handle,
+        # so the child reads each member through the parent and every seek is counted
+        # (``file_region`` finds no file under the counter). Without it, on POSIX, the
+        # child reads the archive file itself: the route callers get, timed here.
+        wall, _ = timed_with_optional_warmup(
+            lambda: _op_read_all_unmeasured(
+                fixtures.zip_path, config=cfg_zip_on, seekable_members=True
+            )
+        )
         results.append(
             CaseResult(
                 "zip_read_all_accel_on",
                 "zip",
                 "read_all",
-                _m_wall,
+                wall,
                 bdec,
                 seeks,
                 unpacked_bytes=unpacked,
                 notes=(
                     "rapidgzip accelerator ON for in-ZIP deflate ([seekable]); count "
-                    "depends on the rapidgzip version, so the gate checks only ON > OFF"
+                    "depends on the rapidgzip version, so the gate checks only ON > OFF; "
+                    "counts are from the measured route (child reads through the "
+                    "parent), wall time from the unmeasured one (on POSIX, the child "
+                    "reads the file)"
                 ),
             )
         )
@@ -1328,24 +1347,27 @@ def _structural_checks(
                         f"{r.case}: bytes_decompressed={r.bytes_decompressed} "
                         f"> baseline×{SOLID_RANDOM_BYTES_FACTOR}={limit}"
                     )
-        if r.operation == "read_all" and r.unpacked_bytes is not None:
-            # zip/tar/gzip count at member output. Under-decode is a silent short
-            # read; over-decode catches decode-twice-deliver-once (each open still
-            # increments the shared ByteCounter even when only the second handle
-            # is delivered to the caller).
-            if r.format in ("zip", "tar", "gzip", "Z", "tar.gz", "tar.bz2", "rar"):
-                if r.bytes_decompressed < r.unpacked_bytes:
-                    failures.append(
-                        f"{r.case}: bytes_decompressed={r.bytes_decompressed} "
-                        f"< unpacked={r.unpacked_bytes}"
-                    )
-                over_limit = int(r.unpacked_bytes * NONSOLID_DECODE_FACTOR)
-                if r.bytes_decompressed > over_limit:
-                    failures.append(
-                        f"{r.case}: bytes_decompressed={r.bytes_decompressed} "
-                        f"> unpacked×{NONSOLID_DECODE_FACTOR}={over_limit} "
-                        f"(non-solid re-decode?)"
-                    )
+        # zip/tar/gzip count at member output. Under-decode is a silent short
+        # read; over-decode catches decode-twice-deliver-once (each open still
+        # increments the shared ByteCounter even when only the second handle
+        # is delivered to the caller).
+        if (
+            r.operation == "read_all"
+            and r.unpacked_bytes is not None
+            and r.format in ("zip", "tar", "gzip", "Z", "tar.gz", "tar.bz2", "rar")
+        ):
+            if r.bytes_decompressed < r.unpacked_bytes:
+                failures.append(
+                    f"{r.case}: bytes_decompressed={r.bytes_decompressed} "
+                    f"< unpacked={r.unpacked_bytes}"
+                )
+            over_limit = int(r.unpacked_bytes * NONSOLID_DECODE_FACTOR)
+            if r.bytes_decompressed > over_limit:
+                failures.append(
+                    f"{r.case}: bytes_decompressed={r.bytes_decompressed} "
+                    f"> unpacked×{NONSOLID_DECODE_FACTOR}={over_limit} "
+                    f"(non-solid re-decode?)"
+                )
         # Seek counts: two-sided vs committed baseline ± slack. Upper bound catches
         # silent re-open churn; lower bound catches paths that characteristically
         # seek *more* silently falling back. Missing baseline = skip. Only
@@ -1380,13 +1402,17 @@ def _structural_checks(
         # A skipped ON row seeks 0 times because it never ran; that is not evidence
         # the accelerator failed to engage (this check predates skip rows, when a
         # missing rapidgzip omitted the case entirely).
-        if accel_off is not None and accel_on is not None and not accel_on.skipped:
-            if accel_on.source_seek_count <= accel_off.source_seek_count:
-                failures.append(
-                    f"zip_read_all_accel_on: source_seek_count="
-                    f"{accel_on.source_seek_count} <= accel_off "
-                    f"{accel_off.source_seek_count} (accelerator not engaged?)"
-                )
+        if (
+            accel_off is not None
+            and accel_on is not None
+            and not accel_on.skipped
+            and accel_on.source_seek_count <= accel_off.source_seek_count
+        ):
+            failures.append(
+                f"zip_read_all_accel_on: source_seek_count="
+                f"{accel_on.source_seek_count} <= accel_off "
+                f"{accel_off.source_seek_count} (accelerator not engaged?)"
+            )
     return failures
 
 
@@ -1595,13 +1621,19 @@ def format_text_report(payload: dict[str, Any]) -> str:
                 "",
                 "## Corpus",
                 "",
-                f"- common members: {detail.get('common_members', '?')} × "
-                f"{_fmt_bytes(detail.get('common_member_size'))}",
+                (
+                    f"- common members: {detail.get('common_members', '?')} × "
+                    f"{_fmt_bytes(detail.get('common_member_size'))}"
+                ),
                 f"- gzip size: {_fmt_bytes(detail.get('gzip_size'))}",
-                f"- solid members: {detail.get('solid_members', '?')} × "
-                f"{_fmt_bytes(detail.get('solid_member_size'))}",
-                f"- 7z/RAR list members: {detail.get('list_members', '?')} solid "
-                f"tiny / {detail.get('nonsolid_list_members', '?')} nonsolid",
+                (
+                    f"- solid members: {detail.get('solid_members', '?')} × "
+                    f"{_fmt_bytes(detail.get('solid_member_size'))}"
+                ),
+                (
+                    f"- 7z/RAR list members: {detail.get('list_members', '?')} solid "
+                    f"tiny / {detail.get('nonsolid_list_members', '?')} nonsolid"
+                ),
             ]
         )
 
@@ -1674,16 +1706,22 @@ def format_text_report(payload: dict[str, Any]) -> str:
             "",
             "## Policy reminder",
             "",
-            f"- VISION target ≤{WALL_RATIO_VISION}× stdlib on common paths "
-            f"(~{WALL_RATIO_VISION_SAFETY}× safety band is informational on nightly).",
+            (
+                f"- VISION target ≤{WALL_RATIO_VISION}× stdlib on common paths "
+                f"(~{WALL_RATIO_VISION_SAFETY}× safety band is informational on nightly)."
+            ),
             f"- Sanity ceiling {WALL_RATIO_BUDGET:.0f}× fails the job.",
-            f"- Nightly also fails on wall-ratio *drift* vs the last measured run's "
-            f"JSON, pass or fail (>{WALL_RATIO_DRIFT_FACTOR:.2f}×, "
-            f"+{WALL_RATIO_DRIFT_MIN_ABS:.2f} abs and "
-            f"≥{WALL_RATIO_DRIFT_MIN_EXTRA_S * 1e3:.0f} ms extra wall time) — not on "
-            "absolute VISION bands.",
-            "- Quiet nights re-publish the previous artifact (preserving "
-            "`measured_at`); a full re-measure is forced at least every ~30 days.",
+            (
+                f"- Nightly also fails on wall-ratio *drift* vs the last measured run's "
+                f"JSON, pass or fail (>{WALL_RATIO_DRIFT_FACTOR:.2f}×, "
+                f"+{WALL_RATIO_DRIFT_MIN_ABS:.2f} abs and "
+                f"≥{WALL_RATIO_DRIFT_MIN_EXTRA_S * 1e3:.0f} ms extra wall time) — not on "
+                "absolute VISION bands."
+            ),
+            (
+                "- Quiet nights re-publish the previous artifact (preserving "
+                "`measured_at`); a full re-measure is forced at least every ~30 days."
+            ),
             "- Structural seek/bytes gates live on the PR path (`ci.yml`), not here.",
             "",
         ]

@@ -257,6 +257,7 @@ verification stage as data is read.
 | Delta | `0x03` | `lzma.FILTER_DELTA` | core |
 | BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | `0x04`-`0x09`, `0x03030103`... | `lzma` BCJ filters | core |
 | BCJ ARM64 | `0x0A` | archivey's own decoder (pure Python) | core |
+| BCJ RISC-V | `0x0B` | archivey's own decoder (pure Python) | core |
 | Deflate | `0x040108` | raw `zlib` | core |
 | BZip2 | `0x040202` | `bz2` | core |
 | Zstd | `0x04f71101` | stdlib `compression.zstd` / `backports.zstd` | core on 3.14+; otherwise `[recommended]` |
@@ -296,9 +297,11 @@ out-streams, the limits 7-Zip applies (`k_Scan_NumCoders_MAX` and
 raise `UnsupportedFeatureError` at header parse, as 7-Zip reports it unsupported.
 
 An LZMA1 or LZMA2 coder SHALL share a liblzma raw chain only with the Delta and BCJ
-filters decoded after it, ARM64 excepted: stdlib `lzma` does not build that filter,
-so ARM64, and every filter decoded after it in its run, SHALL be decoded as its own
-stage. A filter decoded before any LZMA1/LZMA2 coder, and a second LZMA1/LZMA2 coder
+filters decoded after it, ARM64 and RISC-V excepted: stdlib `lzma` does not build
+those filters, so ARM64 or RISC-V, and every filter decoded after it in its run, SHALL
+be decoded as its own stage. An ARM64 coder whose start offset is not a multiple of 4,
+or a RISC-V coder whose start offset is not a multiple of 2, SHALL raise
+`UnsupportedFeatureError` when the folder is planned, as 7-Zip refuses it. A filter decoded before any LZMA1/LZMA2 coder, and a second LZMA1/LZMA2 coder
 in the same run, SHALL be decoded as its own stage, because a liblzma raw chain must
 end, in encode order, in its only LZMA1/LZMA2 filter.
 
@@ -335,7 +338,9 @@ size and CRC count, as 7-Zip 23.01 reports a data error ("Data Error", or "There
 some data after the end of the payload data"). The exception is Zstd and LZ4, whose
 decoders read concatenated frames as one stream: a further frame is output that counts
 against the unpack size (below), and only bytes after the last frame that start no
-frame SHALL raise. The coder's input is its declared input
+frame SHALL raise. rapidgzip on a Deflate coder is the other exception
+(`compressed-streams`): a second Deflate stream that holds the last point of rapidgzip's index, with
+an unpack size and CRC that cover both, reads as both. The coder's input is its declared input
 size (its pack size, or the size the coder before it declares), so AES padding past it
 is not such a byte. An LZMA1 or PPMd coder ends at its declared size: its input SHALL
 end there too, or after an end marker right at that size, and a declared size short of
@@ -355,6 +360,8 @@ where a further stream starts, so the verdict is the standard library's.
 | BCJ + LZMA2 folder | Shared `lzma` raw filter chain returns original bytes |
 | BCJ + LZMA1 folder | Staged LZMA1 then a staged liblzma BCJ returns original bytes |
 | ARM64 + LZMA2 folder (7-Zip 23's default for an AArch64 executable), with or without a start offset | LZMA2 chain, then a staged ARM64 filter, returns original bytes |
+| RISC-V + LZMA2 folder written by 7-Zip 24+ (`-mf=RISCV`), with or without a start offset | LZMA2 chain, then a staged RISC-V filter, returns original bytes; the member CRC32 verifies |
+| RISC-V coder with an odd start offset | `UnsupportedFeatureError` when the folder is planned |
 | Member with stored CRC32 | Terminal verification raises `CorruptionError` on mismatch |
 | PPMd without `pyppmd` | `PackageNotInstalledError` names `pyppmd` and the `[recommended]` extra |
 | AES + LZMA2 folder | Crypto stage decrypts before LZMA2 decompression |
@@ -384,7 +391,9 @@ where a further stream starts, so the verdict is the standard library's.
 | AES then LZMA or LZMA2, decrypted input ending in AES padding | Original bytes; the pad is past the coder's input size |
 | LZMA1 coder without an end marker, with input after its data | `CorruptionError` (`7z t`: Data Error), except one zero byte |
 | 7-Zip's own LZMA, LZMA:eos, LZMA2, PPMd, `-mhe=on`, solid, `-ms=off` and BCJ2 archives | Read clean |
-| Two BZip2 or Deflate streams under rapidgzip (`use_rapidgzip` or `use_indexed_bzip2` `ON`), whatever the size and CRC count | `CorruptionError`, as with the accelerator off |
+| Two BZip2 streams under rapidgzip (`use_indexed_bzip2` `ON`), whatever the size and CRC count | `CorruptionError`, as with the accelerator off |
+| Two Deflate streams under `use_rapidgzip=ON`, the unpack size covering the first only, or the last index point in the first | `CorruptionError`, as with the accelerator off |
+| Two Deflate streams under `use_rapidgzip=ON`, the last index point in the second, the unpack size covering both | Decodes both streams |
 
 ### Requirement: Reject unsupported codecs without fallback
 
@@ -539,7 +548,13 @@ is `True` when any folder packs more than one file, `CostReceipt.solid_block_cou
 is the folder count, and non-solid archives report `AccessCost.DIRECT`. Each
 member's parsed coder chain SHALL map to `tuple[CompressionMethod, ...]` in compress
 order: pre-filters first, packing codec last. If a POSIX attribute block is absent,
-`mode`, `uid`, and `gid` SHALL be `None`, never guessed defaults.
+`mode`, `uid`, and `gid` SHALL be `None`, never guessed defaults. The attribute word
+holds a Unix mode when its high 16 bits hold a Unix file type (`S_IFMT` bits), as 7-Zip
+reads it; a special file type (device, FIFO, socket, unknown) counts only with the
+`0x8000` bit (FILE_ATTRIBUTE_UNIX_EXTENSION) set, because the Windows attribute
+STRICTLY_SEQUENTIAL reads as `S_IFCHR`. `mode`, the type a mode gives (symlink,
+directory, special file), `extra["special_file_type"]`, `create_system` and the slot
+"Created" fills SHALL all use that one test.
 
 #### Scenario: metadata matrix
 
@@ -549,9 +564,13 @@ order: pre-filters first, packing codec last. If a POSIX attribute block is abse
 | Every folder packs one file | `ArchiveInfo.is_solid` false; access cost is `DIRECT` |
 | BCJ pre-filter followed by LZMA2 | `member.compression` is `(BCJ, LZMA2)`, not the decode order the folder stores |
 | No POSIX attribute block | `member.mode`, `member.uid`, and `member.gid` are all `None` |
-| "Created" stored, attribute high word holds a Unix mode with a file type (`S_IFMT` bits) | `created is None`; `ctime` holds it (7-Zip on Linux and p7zip store `st_ctime`) |
-| "Created" stored, no Unix file type in the high word (`0x8000` alone or Windows attributes above `0xFFFF` included) | `created` holds it; `ctime is None` |
-| "Created" out of range | Both `None`; `MEMBER_TIMESTAMP_INVALID` with `field` `ctime` when the high word holds a Unix file type, else `created` |
+| "Created" stored, the attribute word holds a Unix mode (below) | `created is None`; `ctime` holds it (7-Zip on Linux and p7zip store `st_ctime`) |
+| "Created" stored, no Unix mode (`0x8000` alone, Windows attributes above `0xFFFF`) | `created` holds it; `ctime is None` |
+| "Created" out of range | Both `None`; `MEMBER_TIMESTAMP_INVALID` with `field` `ctime` when the word holds a Unix mode, else `created` |
+| Unix mode `0x8000 \| 0x20 \| (0o100644 << 16)` | `mode == 0o644`; `create_system` is `UNIX` |
+| ARCHIVE \| PINNED (`0x80020`), with or without `0x8000`, or ARCHIVE \| STRICTLY_SEQUENTIAL (`0x20000020`) | `mode is None`; type `FILE`; `create_system` is `WINDOWS_NTFS` |
+| `0o120777 << 16` without `0x8000` | `mode == 0o777`; type `SYMLINK`, as 7-Zip lists it |
+| `0o010644 << 16` (FIFO) without `0x8000` | `mode is None`; type `FILE`; no `special_file_type` |
 
 ### Requirement: Infer presented names for nameless 7z members
 

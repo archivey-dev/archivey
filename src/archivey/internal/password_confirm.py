@@ -44,6 +44,10 @@ from archivey.internal.password import _PasswordCandidates
 from archivey.internal.streams.codecs import Codec
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools.base import DelegatingStream
+from archivey.internal.streams.verification import (
+    VerificationProofs,
+    ask_verification_proofs,
+)
 from archivey.internal.streams.verify import ask_digest_intact
 from archivey.types import ArchiveMember
 
@@ -346,6 +350,11 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
     for a digest that survives seeks (the WinZip AES HMAC, which the decrypt stage
     completes over the ciphertext at the end): only a read that reaches ``size`` counts
     there, wherever it started.
+
+    ``key_in_doubt`` says whether the password is still unconfirmed, for the stream's
+    verification level (``_verification_proofs``). Reaching ``size`` does not clear it:
+    the digest can run on a later read (the over-run probe drives the WinZip AES HMAC),
+    and only its match, which the layers below report, proves the key.
     """
 
     readinto_passthrough = False
@@ -357,6 +366,7 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         size: int,
         on_unverified: Callable[[str], None],
         seek_forfeits: bool = True,
+        key_in_doubt: Callable[[], bool] | None = None,
     ) -> None:
         # Set before the base constructor, which ``close()`` must survive: IOBase's
         # finalizer calls ``close()`` on an instance whose ``__init__`` raised.
@@ -369,7 +379,16 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         self._reached = size <= 0
         self._forfeited = False
         self._seek_forfeits = seek_forfeits
+        self._key_in_doubt = key_in_doubt
         super().__init__(inner)
+
+    def _verification_proofs(self) -> VerificationProofs:
+        below = ask_verification_proofs(self._inner)
+        # A watch exists because a weak check took the password: without a callable
+        # to say otherwise, the key stays in doubt.
+        if self._key_in_doubt is not None and not self._key_in_doubt():
+            return below
+        return VerificationProofs(key_in_doubt=True).combine(below)
 
     def _digest_lost(self) -> bool:
         """Whether a read on to the end would no longer run the digest."""
@@ -415,15 +434,14 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
             # the frontier stays. A verifier below answers for itself (it may have read
             # them through), and ``_digest_lost`` asks it first.
             self._note_position()
-        if n < 0 or (not data and n != 0):
-            # EOF, seen or read through (``read(-1)`` returns at it). This assumes the
-            # inner has run its end-of-stream check by then, and a mismatch would have
-            # raised above: true of a stream whose ``read(-1)`` reads on to its empty
-            # read (a ZIP pass's member stream, whose check runs there), and of one
-            # that checks on reaching its size. As for ``_note_position``, check a new
-            # wrap target against it.
-            if not self._digest_lost():
-                self._reached = True
+        # EOF, seen or read through (``read(-1)`` returns at it). This assumes the
+        # inner has run its end-of-stream check by then, and a mismatch would have
+        # raised above: true of a stream whose ``read(-1)`` reads on to its empty
+        # read (a ZIP pass's member stream, whose check runs there), and of one
+        # that checks on reaching its size. As for ``_note_position``, check a new
+        # wrap target against it.
+        if (n < 0 or (not data and n != 0)) and not self._digest_lost():
+            self._reached = True
         return data
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:

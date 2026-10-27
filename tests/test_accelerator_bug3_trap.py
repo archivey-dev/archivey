@@ -99,7 +99,7 @@ _TRAPPED = _SETUP + textwrap.dedent(
 
 def _run(script: str) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, timeout=60
+        [sys.executable, "-c", script], capture_output=True, timeout=60, check=False
     )
 
 

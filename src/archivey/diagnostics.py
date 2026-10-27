@@ -26,6 +26,7 @@ from typing import ClassVar, Literal, TypeVar
 
 from archivey.exceptions import ArchiveyError, _UsageTypeError, _UsageValueError
 from archivey.internal.enum_args import coerce_enum_collection
+from archivey.internal.resource_usage import ResourceUsage
 from archivey.terminal import escape_control_chars
 from archivey.types import ArchiveMember, ExtractionResult
 
@@ -118,7 +119,11 @@ class DiagnosticCode(StrEnum):
     """A stored timestamp could not be used, so that time is left unset."""
     MEMBER_HEADER_RECORD_SKIPPED = "member_header_record_skipped"
     """An optional record in a member's header could not be read and was dropped, so
-    the field it would fill is left unset rather than wrong."""
+    the field it would fill is left unset rather than wrong. RAR also reports two
+    faults here that drop no record, because they too are header damage a strict
+    policy should refuse: bytes in a RAR5 header that belong to no record, and a RAR5
+    quick-open record holding FILE header copies that match no header the walk reached.
+    The context's ``record`` tells them apart."""
     SYMLINK_TARGET_UNAVAILABLE = "symlink_target_unavailable"
     """A link's target could not be read: it is empty, too long, damaged, or needs a
     codec or package that is missing. The link stays listed with ``link_target``
@@ -150,6 +155,10 @@ class DiagnosticCode(StrEnum):
     """A ZIP member's local header stores another name than its central directory
     entry. The member keeps the central directory's name, as unzip and 7-Zip read it;
     a tool that trusts the local header shows the other one."""
+    MEMBER_LOCAL_METHOD_DIFFERS = "member_local_method_differs"
+    """A ZIP member's local header names another compression method than its central
+    directory entry. The member is decoded by the local header's method, the one a
+    read from a pipe uses, and the data is still checked against its CRC-32."""
     MEMBER_LOCAL_CRC_USED = "member_local_crc_used"
     """A ZIP member's central directory entry stores CRC-32 0 and its local header
     another value, which the data is checked against. Adobe AIR writes such files."""
@@ -226,6 +235,8 @@ DiagnosticCodeStr = Literal[
     "member-special-file-has-data",
     "member_local_name_differs",
     "member-local-name-differs",
+    "member_local_method_differs",
+    "member-local-method-differs",
     "member_local_crc_used",
     "member-local-crc-used",
     "member_directory_data_ignored",
@@ -498,32 +509,42 @@ class MemberTimestampContext(_JsonSafeContext):
 class MemberHeaderRecordContext(_JsonSafeContext):
     """An optional metadata record inside a member header was unreadable.
 
-    The record was dropped and the member listed without whatever it carried, so
-    the field it would have populated is absent rather than wrong. ``record`` names
-    the record as the format calls it (a RAR5 extra area's ``hash``, ``time``,
-    ``redir``, ``version``; ZIP's Unicode Path extra field, ``unicode_path``, and its
-    Unix owner extra fields, ``unix_owner``; ISO's Rock Ridge records, ``rock_ridge``;
-    a TAR device header's ``device_numbers``, when its devmajor or devminor field is
-    not a number);
-    ``record_id`` is its numeric type where the format has one (0x7075 for
-    ``unicode_path``, the field's tag for ``unix_owner``), so an unnamed record is
+    The record was dropped and the member listed without whatever it carried, so the
+    field it would have populated is absent rather than wrong. ``record`` names the
+    record as the format calls it (a RAR5 extra area's ``hash``, ``time``, ``redir``,
+    ``version``; ZIP's Unicode Path extra field, ``unicode_path``, its Unicode Comment
+    extra field, ``unicode_comment``, and its Unix owner extra fields, ``unix_owner``;
+    ISO's Rock Ridge records, ``rock_ridge``; a TAR device header's ``device_numbers``,
+    when its devmajor or devminor field is not a number); ``record_id`` is its numeric
+    type where the format has one (0x7075 for ``unicode_path``, 0x6375 for
+    ``unicode_comment``, the field's tag for ``unix_owner``), so an unnamed record is
     still identifiable.
 
-    A RAR5 member header is attacker-sized, so how many records one member may drop
-    is capped and reaching the cap stops the header being read; an ISO Rock Ridge
-    entry list stops at its first malformed entry. ``list_truncated`` is true on the
-    one diagnostic reporting either cut — it is the *record* list that was cut
-    short, not the archive's listing; ``record`` names nothing on that one.
-    Everywhere else it is false. ZIP never sets it: a member reports at most one
-    ``unicode_path`` and one ``unix_owner`` record.
+    Two RAR5 ``record`` values name no dropped record, and nothing is left unset for
+    them. ``"unplaced bytes"`` is bytes between a header's fixed fields and its
+    declared extra area, which were skipped. ``"unmatched copies"`` is on the ``QO``
+    quick-open service header, whose payload was read whole: some of its cached FILE
+    header copies match no header the walk reached, which ``rar`` never writes, so the
+    record is damaged or crafted. The listing comes from the headers the walk read, as
+    with ``unrar``. ``reason`` says how many copies; ``record_id`` is ``None``.
+
+    A RAR5 member header is attacker-sized, so how many records one member may drop is
+    capped and reaching the cap stops the header being read; an ISO Rock Ridge entry
+    list stops at its first malformed entry. ``list_truncated`` is true on the one
+    diagnostic reporting either cut — it is the *record* list that was cut short, not
+    the archive's listing; ``record`` names nothing on that one. Everywhere else it is
+    false. ZIP never sets it: a member reports at most one ``unicode_path``, one
+    ``unicode_comment`` and one ``unix_owner`` record.
 
     A RAR5 archive's own ``CMT`` and ``QO`` service headers carry the same records
-    and are reported the same way, and they are not members: those diagnostics
+    and are reported the same way, plus the ``QO`` header's ``"unmatched copies"``
+    above, and they are not members: those diagnostics
     carry an empty ``member_name`` and a ``member_id`` of ``None``, and the message
     names the header and what the archive therefore does without. How many such
-    headers one archive describes is bounded, so there is one further shape: a
-    single diagnostic, in the same empty-``member_name`` shape but naming no header
-    and with ``list_truncated`` false, saying how many were left undescribed.
+    damaged headers one archive describes is bounded, so there is one further shape:
+    a single diagnostic, in the same empty-``member_name`` shape but naming no header
+    and with ``list_truncated`` false, saying how many were left undescribed. The
+    ``"unmatched copies"`` diagnostic is never one of those left out.
     """
 
     kind: Literal["member_header_record"] = "member_header_record"
@@ -708,6 +729,12 @@ class LocalHeaderContext(_JsonSafeContext):
     (``local_raw_name_base64``), such as another code page or ``\\`` for ``/``. The
     member keeps the central directory's name, as unzip and 7-Zip read it; a tool that
     trusts the local header shows another name, so ``STRICT`` refuses the member.
+    ``"method"`` (``MEMBER_LOCAL_METHOD_DIFFERS``): the local header names another
+    compression method (``local_method``) than the directory (``central_method``). The
+    member is decoded by the local method, which sits next to the data and is the one
+    a read from a pipe uses, so a file and a pipe read the same bytes; the CRC-32 still
+    checks them. A tool that trusts the directory decodes other bytes or fails, so
+    ``STRICT`` refuses the member.
     ``"crc32"`` (``MEMBER_LOCAL_CRC_USED``): the central directory stores CRC-32 0 and
     the local header a non-zero value (``local_crc32``). The data is checked against
     the local value, as unzip checks it, and ``hashes`` holds it. Every Adobe AIR
@@ -718,9 +745,11 @@ class LocalHeaderContext(_JsonSafeContext):
     archive_name: str | None = None
     member_name: str = ""
     member_id: int | None = None
-    field: Literal["name", "crc32"] = "name"
+    field: Literal["name", "method", "crc32"] = "name"
     local_raw_name_base64: str | None = None
     local_crc32: int | None = None
+    local_method: int | None = None
+    central_method: int | None = None
 
 
 @dataclass(frozen=True)
@@ -872,6 +901,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.MEMBER_SELECTOR_UNMATCHED: "selector_unmatched",
         DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA: "special_file_data",
         DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS: "local_header",
+        DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS: "local_header",
         DiagnosticCode.MEMBER_LOCAL_CRC_USED: "local_header",
         DiagnosticCode.ARCHIVE_OFFSET_WRAPPED: "offset_wrap",
         DiagnosticCode.MEMBER_SIZE_WRAPPED: "size_wrap",
@@ -900,6 +930,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.MEMBER_LINK_DATA_IGNORED,
         DiagnosticCode.SEEK_INDEX_DEGRADED,
         DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS,
+        DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS,
     }
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
@@ -944,8 +975,9 @@ and the reasons are part of the contract rather than an oversight:
   and ``STRICT`` would refuse a well-formed archive over it. The code is still recorded.
 - ``MEMBER_LOCAL_CRC_USED`` — a common packager (Adobe AIR) writes the shape, and the
   data is still checked, against the local header's CRC-32, so nothing is left
-  unverified. Its sibling ``MEMBER_LOCAL_NAME_DIFFERS`` is **in** the set: there a tool
-  that trusts the local header shows the member under another name.
+  unverified. Its siblings ``MEMBER_LOCAL_NAME_DIFFERS`` and
+  ``MEMBER_LOCAL_METHOD_DIFFERS`` are **in** the set: there a tool that trusts the
+  other header shows the member under another name, or decodes other bytes.
 - ``ARCHIVE_OFFSET_WRAPPED`` — macOS Archive Utility (Finder's Compress) writes a ZIP
   past 4 GiB this way by default and reads it back, and a correction is kept only when
   a local header with the member's name is there, with the CRC-32 still checked.
@@ -958,6 +990,18 @@ and the reasons are part of the contract rather than an oversight:
 - ``MEMBER_TYPE_UNKNOWN`` — a TAR typeflag archivey does not know. GNU tar extracts
   such a member as a regular file with a warning, and archivey lists its data as a
   ``FILE``, so nothing is hidden. ``STRICT`` would refuse an archive GNU tar extracts.
+"""
+
+
+_INFO_LOG_CODES: frozenset[DiagnosticCode] = frozenset(
+    {DiagnosticCode.STREAM_REWIND_REDECOMPRESSES}
+)
+"""Codes whose log record is INFO rather than WARNING (``logging`` spec).
+
+They report the caller's access pattern, not the archive: the reason
+``STREAM_REWIND_REDECOMPRESSES`` is out of :data:`ARCHIVE_INTEGRITY_CODES` too, and the
+reason the solid re-decode record on ``archivey.backends`` is INFO (maintainer,
+2026-10-23). The policy still collects, counts and raises them like any other code.
 """
 
 
@@ -1025,6 +1069,10 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
                 frozenset({"zeros_to_eof", "end_of_stream"}),
             ),
             DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS: ("field", frozenset({"name"})),
+            DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS: (
+                "field",
+                frozenset({"method"}),
+            ),
             DiagnosticCode.MEMBER_LOCAL_CRC_USED: ("field", frozenset({"crc32"})),
         }
     )
@@ -1173,8 +1221,9 @@ class DiagnosticPolicy:
     - ``DiagnosticPolicy.STRICT`` is ``DiagnosticPolicy(raise_on=ARCHIVE_INTEGRITY_CODES)``:
       RAISE on the codes about the archive's own bytes, COLLECT on everything else. It is
       the recommended strict mode because it is version-stable in the way that matters:
-      new codes MAY be added in a minor release, and the set's membership is versioned
-      alongside the taxonomy, so each addition is a deliberate decision.
+      a patch release may add new codes but adds none to ``ARCHIVE_INTEGRITY_CODES``,
+      unless the new code reports damage archivey should already have caught. A minor
+      release may add to the set, and each addition is a deliberate decision.
     - ``DiagnosticPolicy.PEDANTIC`` is ``DiagnosticPolicy(raise_on=frozenset(DiagnosticCode))``:
       RAISE on every code, including the argument-hygiene and access-pattern ones.
       ``frozenset(DiagnosticCode)`` is every code of the installed version, so it raises
@@ -1260,6 +1309,14 @@ class ExtractionReport:
     # and ``None`` when it is. Private, for the same prediction: the CLI checks the
     # hoist's merge against them as its hoist checks a real tree.
     _dry_run_entries: tuple[tuple[str, bool], ...] | None = field(
+        default=None, repr=False, compare=False
+    )
+    # How close the reader came to each reader-lifetime limit, taken when the call
+    # ended. Private, for the backup-scan script and ``archivey extract --dry-run``:
+    # ``extract_all()`` (the function) closes its reader, so the report is where a
+    # caller of it can read the numbers. Public later, if a corpus scan shows which
+    # numbers are worth keeping.
+    _resource_usage: ResourceUsage | None = field(
         default=None, repr=False, compare=False
     )
 

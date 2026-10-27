@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import inspect
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -148,17 +147,12 @@ def test_type_checker_refuses_random_access_on_a_streaming_reader(
         f"search-path = [{json.dumps(src.as_posix())}]\n"
         f"python_version = {json.dumps(python_version)}\n"
     )
-    # Both checkers start the Python interpreter to find its search paths. pytest-cov
-    # before 7 measures such a child through its COV_CORE_* variables, and from
-    # tmp_path the child cannot find this repo's coverage config, so it writes
-    # statement-only data that the branch-coverage parent then refuses to combine.
-    env = {k: v for k, v in os.environ.items() if not k.startswith("COV_CORE_")}
     result = subprocess.run(
         _checker_command(checker, exe, src, python_version),
         capture_output=True,
         text=True,
         cwd=tmp_path,
-        env=env,
+        check=False,
     )
     refused_line = _OPEN_ARCHIVE_TYPING_SAMPLE.splitlines().index(
         "        forward.members()"

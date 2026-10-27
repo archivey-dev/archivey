@@ -106,8 +106,10 @@ from archivey.internal.base_reader import (
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
-from archivey.internal.logs import backends as backends_logger
-from archivey.internal.logs import integrity as integrity_logger
+from archivey.internal.logs import (
+    backends as backends_logger,
+    integrity as integrity_logger,
+)
 from archivey.internal.naming import (
     COMPRESSED_TAR_SHORT_SUFFIXES,
     emit_member_name_normalized,
@@ -631,6 +633,7 @@ class TarReader(BaseArchiveReader):
                         self._config,
                         streaming=streaming,
                         seekable=MemberStreams.SEEKABLE in member_streams,
+                        usage=self._usage,
                     ),
                     report_trailing_data=True,
                 ),

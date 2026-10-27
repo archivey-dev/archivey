@@ -192,7 +192,7 @@ def _skip_unless_runnable(chain: tuple[str, ...]) -> None:
         if fmt == "rar":
             # The writer is replaced by committed fixtures (see _chain_bytes); the
             # reader still needs unrar or unar for member data.
-            if shutil.which("unrar") is None and not has_binary("unar"):
+            if not has_binary("unrar") and not has_binary("unar"):
                 pytest.skip("reading RAR member data needs unrar or unar")
             continue
         skip_unless_runnable(entry, fmt)
@@ -274,11 +274,13 @@ def _walk(
             _open_level(source, fmt, seek=False, streaming=True, config=config)
         return
     if forward_only and fmt == "zip" and config.use_rapidgzip is AcceleratorMode.ON:
-        with archivey.open_archive(source, streaming=True, config=config) as reader:
-            with pytest.raises(StreamNotSeekableError, match="use_rapidgzip"):
-                for _member, stream in reader.stream_members():
-                    if stream is not None:
-                        stream.read()
+        with (
+            archivey.open_archive(source, streaming=True, config=config) as reader,
+            pytest.raises(StreamNotSeekableError, match="use_rapidgzip"),
+        ):
+            for _member, stream in reader.stream_members():
+                if stream is not None:
+                    stream.read()
         return
     opened = _open_level(source, fmt, seek=seek, streaming=forward_only, config=config)
     if fmt in STREAMS:
@@ -582,14 +584,16 @@ def test_auto_uses_rapidgzip_for_a_large_gz_in_a_gz(
     config = _config("auto")
 
     def go() -> None:
-        with archivey.open_stream(path, seekable=True, config=config) as outer:
-            with archivey.open_stream(outer, seekable=True, config=config) as stream:
-                stream.seek(12_000_000)
-                assert stream.read(4096) == big_payload[12_000_000:12_004_096]
-                stream.seek(100)
-                assert stream.read(100) == big_payload[100:200]
-                stream.seek(0)
-                assert stream.read() == big_payload
+        with (
+            archivey.open_stream(path, seekable=True, config=config) as outer,
+            archivey.open_stream(outer, seekable=True, config=config) as stream,
+        ):
+            stream.seek(12_000_000)
+            assert stream.read(4096) == big_payload[12_000_000:12_004_096]
+            stream.seek(100)
+            assert stream.read(100) == big_payload[100:200]
+            stream.seek(0)
+            assert stream.read() == big_payload
 
     peak = _peak_children(go)
     assert peak in (None, 2)
@@ -617,19 +621,17 @@ def test_ppmd_child_decodes_a_7z_nested_in_a_ppmd_7z(tmp_path: Path) -> None:
     path.write_bytes(
         _zip_of({"o.7z": ppmd_7z("inner.7z", ppmd_7z("text.txt", payload))})
     )
-    config = _config(
-        "off", decoder_limits=DecoderLimits(max_ppmd_in_process_input=1024)
-    )
+    config = _config("off", decoder_limits=DecoderLimits(max_ppmd_held_input=1024))
 
     def go() -> None:
-        with archivey.open_archive(path, seekable_members=True, config=config) as r1:
-            with r1.open("o.7z") as s1:
-                with archivey.open_archive(
-                    s1, seekable_members=True, config=config
-                ) as r2:
-                    with r2.open("inner.7z") as s2:
-                        with archivey.open_archive(s2, config=config) as r3:
-                            assert r3.read("text.txt") == payload
+        with (
+            archivey.open_archive(path, seekable_members=True, config=config) as r1,
+            r1.open("o.7z") as s1,
+            archivey.open_archive(s1, seekable_members=True, config=config) as r2,
+            r2.open("inner.7z") as s2,
+            archivey.open_archive(s2, config=config) as r3,
+        ):
+            assert r3.read("text.txt") == payload
 
     peak = _peak_children(go)
     assert peak in (None, 2)
@@ -660,12 +662,14 @@ def test_two_nested_archives_read_from_threads(mode: str) -> None:
         def work(name: str, expected: dict[str, bytes]) -> None:
             try:
                 for _ in range(3):
-                    with reader.open(name) as stream:
-                        with archivey.open_archive(
+                    with (
+                        reader.open(name) as stream,
+                        archivey.open_archive(
                             stream, seekable_members=True, config=config
-                        ) as inner:
-                            for member_name, data in expected.items():
-                                assert inner.read(member_name) == data
+                        ) as inner,
+                    ):
+                        for member_name, data in expected.items():
+                            assert inner.read(member_name) == data
             except BaseException as exc:  # noqa: BLE001 - reported below
                 errors.append(exc)
 
@@ -724,10 +728,12 @@ def test_damaged_inner_archive_raises_an_archivey_error(
     path = tmp_path / "outer.zip"
     path.write_bytes(_zip_of({f"inner.{inner}": inner_bytes}))
     config = _config(mode)
-    with archivey.open_archive(path, seekable_members=True, config=config) as reader:
-        with reader.open(f"inner.{inner}") as stream:
-            with pytest.raises(ArchiveyError):
-                _read_everything(stream, inner, config)
+    with (
+        archivey.open_archive(path, seekable_members=True, config=config) as reader,
+        reader.open(f"inner.{inner}") as stream,
+        pytest.raises(ArchiveyError),
+    ):
+        _read_everything(stream, inner, config)
 
 
 # ---------------------------------------------------------------------------
@@ -740,7 +746,7 @@ def test_committed_rar_fixtures_hold_the_current_leaf() -> None:
     contents check were skipped; this names the stale file instead."""
     if not RAR_FIXTURES.exists():
         pytest.skip("no committed nested RAR fixtures")
-    if shutil.which("unrar") is None and not has_binary("unar"):
+    if not has_binary("unrar") and not has_binary("unar"):
         pytest.skip("reading RAR member data needs unrar or unar")
     for chain in RAR_FIXTURE_CHAINS:
         fixture = _rar_fixture(chain)
@@ -755,10 +761,12 @@ def test_committed_rar_fixtures_hold_the_current_leaf() -> None:
     assert got == {m.name: m.contents for m in LEAF}, f"{leaf.name} {stale}"
     # The stream-format chains carry SINGLE_LEAF instead; check one of them too.
     stream_leaf = _rar_fixture(("rar", "gz"))
-    with archivey.open_archive(stream_leaf) as reader:
-        with reader.open("inner.gz") as member:
-            with archivey.open_stream(member, format="gz") as stream:
-                payload = stream.read()
+    with (
+        archivey.open_archive(stream_leaf) as reader,
+        reader.open("inner.gz") as member,
+        archivey.open_stream(member, format="gz") as stream,
+    ):
+        payload = stream.read()
     assert payload == SINGLE_LEAF[0].contents, f"{stream_leaf.name} {stale}"
 
 

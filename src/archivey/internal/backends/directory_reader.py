@@ -619,9 +619,12 @@ class DirectoryReader(BaseArchiveReader):
                 raise _changed_since_listing(
                     name, f"changed size ({listed_size} to {st.st_size} bytes)"
                 )
-            if expected is None and not _HAS_NOFOLLOW:
-                if _file_attributes(path) & FILE_ATTRIBUTE_REPARSE_POINT:
-                    raise _changed_since_listing(name, "is now a reparse point")
+            if (
+                expected is None
+                and not _HAS_NOFOLLOW
+                and _file_attributes(path) & FILE_ATTRIBUTE_REPARSE_POINT
+            ):
+                raise _changed_since_listing(name, "is now a reparse point")
         except BaseException:
             os.close(fd)
             raise

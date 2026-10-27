@@ -38,6 +38,7 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         timeout=300,
+        check=False,
     )
 
 
@@ -46,8 +47,10 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
     [
         (
             -6,
-            b"terminate called after throwing an instance of 'std::logic_error'\n"
-            b"  what():  The bit buffer should not contain more data\n",
+            (
+                b"terminate called after throwing an instance of 'std::logic_error'\n"
+                b"  what():  The bit buffer should not contain more data\n"
+            ),
             "The bit buffer should not contain more data",
         ),
         (-6, b"terminate called without an active exception\n", None),

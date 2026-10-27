@@ -49,7 +49,7 @@ investigation beyond what the claim rows already touched.
 - **Symptom:** Reader on the guide hits a dead reference.
 - **Evidence:** `docs/access-and-cost.md:33`; `docs/acknowledgements.md:55`;
   `dev-docs/IDEAS.md` exists; `documentation` requires absolute
-  `github.com/davitf/archivey/blob/main/…` URLs for maintainer paths; I-24.
+  `github.com/archivey-dev/archivey/blob/main/…` URLs for maintainer paths; I-24.
 
 ### 6. Home single-file codec list omits LZMA Alone
 

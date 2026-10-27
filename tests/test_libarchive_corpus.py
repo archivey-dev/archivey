@@ -45,7 +45,6 @@ import binascii
 import io
 import os
 import re
-import shutil
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -54,7 +53,7 @@ import pytest
 
 from archivey import FormatDetectionError, MemberType, detect_format, open_archive
 from archivey.types import ArchiveFormat, ContainerFormat, StreamFormat
-from tests.conftest import ARCHIVEY_TEST_CACHE, requires
+from tests.conftest import ARCHIVEY_TEST_CACHE, binary_refusal, requires
 from tests.sample_archives import publish_cached
 
 _ENV = "ARCHIVEY_LIBARCHIVE_TEST_FILES"
@@ -460,8 +459,10 @@ def test_native_matches_libarchive_on_libarchive_corpus(
     if archive is None:
         pytest.skip(f"unsupported or undecodable fixture {uu_source.name}")
 
-    if archive.suffix.lower() == ".rar" and shutil.which("unrar") is None:
-        pytest.skip("RAR data tests require the unrar binary")
+    if archive.suffix.lower() == ".rar" and (
+        (refusal := binary_refusal("unrar")) is not None
+    ):
+        pytest.skip(f"RAR data tests need a RARLAB data program: {refusal}")
 
     try:
         oracle_infos, oracle_bytes, oracle_link_targets = _collect_libarchive_oracle(

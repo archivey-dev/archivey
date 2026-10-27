@@ -13,7 +13,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "archivey-cli"
-version = "0.2.0rc1"
+version = "0.3.0.dev0"
 description = "The archivey command-line tool, with archivey's recommended optional packages"
 readme = "README.md"
 license = { text = "MIT" }
@@ -36,15 +36,15 @@ classifiers = [
     "Topic :: System :: Archiving :: Compression",
 ]
 dependencies = [
-    "archivey[recommended]==0.2.0rc1",
+    "archivey[recommended]==0.3.0.dev0",
 ]
 
 [project.urls]
-Homepage = "https://davitf.github.io/archivey/"
-Documentation = "https://davitf.github.io/archivey/cli/"
-Source = "https://github.com/davitf/archivey"
-Changelog = "https://github.com/davitf/archivey/blob/main/CHANGELOG.md"
-Issues = "https://github.com/davitf/archivey/issues"
+Homepage = "https://archivey-dev.github.io/archivey/"
+Documentation = "https://archivey-dev.github.io/archivey/cli/"
+Source = "https://github.com/archivey-dev/archivey"
+Changelog = "https://github.com/archivey-dev/archivey/blob/main/CHANGELOG.md"
+Issues = "https://github.com/archivey-dev/archivey/issues"
 
 # `archivey-cli` is there so `uvx archivey-cli` works: uvx runs the command named after
 # the package. `archivey` is the name people type after `pipx install archivey-cli`.

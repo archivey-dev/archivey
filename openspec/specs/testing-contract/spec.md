@@ -105,13 +105,15 @@ the standard library) and the library SHALL NOT import any of them at runtime.
 Oracle-backed tests SHALL skip, not fail, when the oracle library or CLI is unavailable.
 
 The 7z corpus MUST cover core codecs supported without extras (LZMA1, LZMA2, simple
-BCJ filters other than ARM64, Delta, BZip2, Deflate, STORED), optional PPMd /
+BCJ filters other than ARM64 and RISC-V, Delta, BZip2, Deflate, STORED), optional PPMd /
 Deflate64 and AES-encrypted archives under `[recommended]`, and BCJ2 folders written
-by the `7z` CLI. Two codecs are exceptions to the rule that the `7z` CLI is not an
+by the `7z` CLI. Three codecs are exceptions to the rule that the `7z` CLI is not an
 oracle, because `py7zr` cannot read them and so the CLI is the only oracle for them:
-BCJ2, and the ARM64 branch filter (`py7zr` decodes BCJ filters through `pybcj`, which
-has no ARM64 filter). ARM64 is covered by dedicated tests that compare against the
-bytes `7z` stores, not by the declarative corpus. Unrecognized method IDs MUST raise
+BCJ2, and the ARM64 and RISC-V branch filters (`py7zr` decodes BCJ filters through
+`pybcj`, which has neither). ARM64 and RISC-V are covered by dedicated tests that
+compare against the bytes `7z` stores, not by the declarative corpus. RISC-V needs
+7-Zip 24 or later, which Ubuntu does not package, so two archives 7-Zip 26.05 wrote
+are committed and always run. Unrecognized method IDs MUST raise
 the documented unsupported-codec error rather than returning bytes that diverge from
 the oracle.
 
@@ -136,6 +138,7 @@ cross-check metadata and bytes against rarfile/`unrar`.
 | RAR corpus entry read by native reader and `rarfile`/`unrar` | Metadata and bytes match; skipped if oracle unavailable |
 | 7z entry uses BCJ2 | Bytes match `7z x`; `py7zr` is not consulted |
 | 7z entry uses the ARM64 filter | Bytes match what `7z` stored; `py7zr` is not consulted; skipped if `7z` cannot write ARM64 |
+| 7z entry uses the RISC-V filter | Committed 7-Zip archives read with their CRC; bytes match what a 7-Zip 24 or later stored, skipped if none on `PATH` can write RISC-V |
 | 7z entry uses unknown method ID | Documented unsupported-codec error; no guessed output |
 | RAR solid+links / multi-volume / header-encrypted entry | Exercised once native RAR is registered; skip only if `unrar`/crypto/oracle absent |
 | RAR5 `-ver` history members | Native exposes `path;n` + live path; bytes match `unrar p` exact name / `-ver`; rarfile list equality not required for history rows |
@@ -162,8 +165,8 @@ The corpus mutation harness SHALL exercise at least one **solid** RAR4 and one
 **solid** RAR5 archive under the same typed-error-or-success invariant as
 declarative-corpus mutations (truncate, bitflip, zero, junk). Static curated
 fixtures MAY supply those archives when the declarative builder does not emit
-solid RAR. When `unrar` is absent, solid-RAR mutation cases SHALL skip cleanly
-rather than fail.
+solid RAR. When no RARLAB data program (`unrar`, or `rar` 6.0+) is available,
+solid-RAR mutation cases SHALL skip cleanly rather than fail.
 
 #### Scenario: solid RAR mutation matrix
 
@@ -171,7 +174,7 @@ rather than fail.
 | --- | --- |
 | Solid RAR5 fixture × each mutation kind | Success or typed `ArchiveyError`; never raw third-party exception / hang |
 | Solid RAR4 fixture × each mutation kind | Same invariant |
-| `unrar` not on PATH | Solid-RAR mutation cases skipped |
+| No RARLAB `unrar` or `rar` 6.0+ on PATH | Solid-RAR mutation cases skipped |
 | Declarative nonsolid CORPUS RAR | Unchanged existing coverage |
 
 ### Requirement: Non-seekable stream coverage for streaming backends
@@ -370,7 +373,7 @@ use a per-input wall-clock kill timeout.
 | Native RAR header parse | Deep coverage of the pure-Python RAR3/RAR5 metadata parser (CRC mutate-then-fixup) |
 | RAR `open_archive` + member list + bounded member read | Reader/spine path after parse, including the external decoder. MUST pass password candidates |
 | `open_archive` with format detection, then a bounded member read | SFX payload offset, the single-file reader, compressed tar, and UDIF refusal. A pipe pass MUST run when the detected format can be read from a non-seekable source |
-| Filter decoders (BCJ2, ARM64, Delta, liblzma branch filters) | Hostile payloads for filters a container mutation does not assemble |
+| Filter decoders (BCJ2, ARM64, RISC-V, Delta, liblzma branch filters) | Hostile payloads for filters a container mutation does not assemble |
 | Stream/codec: unix-compress, xz, lzip, gzip, bzip2, lzma-alone, zlib | Direct `open_codec_stream` hostile input per standalone archivey-owned codec; seekable indexing on when the codec supports it; MUST use a per-input wall-clock kill timeout when hang classes are known |
 | Stream/codec optional extras (zstd, brotli, lz4, deflate64) | Same pattern when the backend is installed; skip-clean when absent |
 | Accelerators: gzip, zlib, raw DEFLATE (rapidgzip), bzip2 (rapidgzip's bzip2 decoder) | Accelerator `ON` against `OFF` on the same input; skip-clean when the accelerator cannot run |
@@ -419,7 +422,7 @@ installed only via the CI `fuzz` dependency group (`packaging-and-extras`).
 | ZIP target with fixup + bounded read | Post-CRC / post-local-header path reaches archivey codec or AES+codec stream; the forward reader runs on the same bytes; typed errors only |
 | 7z / RAR / ISO open target | Bounded member reads run; typed errors only |
 | Auto-detect open target | A prefixed archive opens at the payload; a UDIF image is refused with a typed error; a compressed tar is read as tar and as a single-file stream |
-| Filter target | BCJ2, ARM64, Delta and a liblzma branch filter each run; typed errors only |
+| Filter target | BCJ2, ARM64, RISC-V, Delta and a liblzma branch filter each run; typed errors only |
 | Each required stream/codec target | Hostile inputs exercise decode (and seek-index when enabled) without raw exceptions; hang → slice failure with artifact |
 | Optional stream extra backend absent | That codec's target skipped; required stream targets still run |
 | Accelerator target, accelerated bytes differ from `OFF` at an offset, or a clean end where `OFF` raised | Slice failure with artifact |

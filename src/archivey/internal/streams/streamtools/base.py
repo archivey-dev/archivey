@@ -255,7 +255,7 @@ class DelegatingStream(ReadOnlyIOStream):
             return
         try:
             old.close()
-        except Exception:  # noqa: BLE001 - best-effort; the new inner took over
+        except Exception:  # noqa: BLE001, S110 - best-effort; the new inner took over
             pass
 
     def read(self, n: int = -1, /) -> bytes:

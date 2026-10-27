@@ -261,8 +261,7 @@ class _MemberGlob:
             # Every directory name ends in "/" except the root entry ".", which a
             # "tar cf x.tar ." archive lists; is_dir is what marks that one.
             is_dir = member.is_dir or name.endswith("/")
-        if name.endswith("/"):
-            name = name[:-1]
+        name = name.removesuffix("/")
         if self._any is not None and self._any.fullmatch(name):
             return True
         return bool(

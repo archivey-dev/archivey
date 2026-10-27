@@ -2,7 +2,7 @@
 
 The sweep is a cold whole-file reading pass over `src/`, run in batches, posting its
 findings as review threads on
-[#315](https://github.com/davitf/archivey/pull/315). Coverage used to be counted by
+[#315](https://github.com/archivey-dev/archivey/pull/315). Coverage used to be counted by
 eyeballing those threads, and it was wrong twice in a row — 24% and then 35% against a
 truth of 12% and 23% — because a file with no findings looks exactly like a file nobody
 opened. Both snapshots also counted fifteen maintainer questions as sweep output.
@@ -18,7 +18,7 @@ This script reads those lines and reports coverage against the tree it is run in
 takes whole comment bodies and ignores everything that is not a marker, so you can pipe
 the #315 comments in unfiltered:
 
-    gh api --paginate repos/davitf/archivey/issues/315/comments --jq '.[].body' \
+    gh api --paginate repos/archivey-dev/archivey/issues/315/comments --jq '.[].body' \
       | python3 scripts/sweep_coverage.py
 
 `--paginate` is what makes that correct rather than merely usually correct: the endpoint
@@ -29,7 +29,7 @@ Without `gh` — a Claude Code session has none — page explicitly, and raise t
 until the last page prints nothing:
 
     for p in 1 2 3; do \
-      curl -s "https://api.github.com/repos/davitf/archivey/issues/315/comments?per_page=100&page=$p" \
+      curl -s "https://api.github.com/repos/archivey-dev/archivey/issues/315/comments?per_page=100&page=$p" \
       | python3 -c 'import json,sys; [print(c["body"]) for c in json.load(sys.stdin)]'; \
     done | python3 scripts/sweep_coverage.py
 

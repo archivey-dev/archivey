@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import os
+import sys
 import threading
 from collections.abc import Callable
 from typing import BinaryIO
@@ -15,7 +16,7 @@ from archivey.config import RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE, ProcessIsolation
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
-    ResourceLimitError,
+    ResourceUnavailableError,
     StreamNotSeekableError,
     TruncatedError,
     exception_detail,
@@ -96,7 +97,8 @@ def _warn_child_fallback(why: str, setting: str = "use_rapidgzip") -> None:
 
 def _rapidgzip_wanted(config: StreamConfig, *, available: bool) -> bool:
     """Resolve ``use_rapidgzip`` including the DEFLATE-family AUTO size gate, before
-    asking whether a child process can run it.
+    asking whether a child process can run it. ``AUTO`` counts a large sequential read
+    whose data is not very compressible as seek demand (:func:`_sequential_read_pays`).
 
     AUTO also requires truncation to be verifiable: a container-declared
     ``expected_decompressed_size``, or (gzip only) a readable ISIZE trailer flagged
@@ -114,11 +116,50 @@ def _rapidgzip_wanted(config: StreamConfig, *, available: bool) -> bool:
     ):
         return False
     return config.use_rapidgzip.enabled_for(
-        seekable=config.seekable,
+        seekable=config.seekable or _sequential_read_pays(config),
         available=available,
         input_size=config.compressed_input_size,
         min_size=RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE,
     )
+
+
+# AUTO takes a sequential read through rapidgzip only up to this ratio of decoded to
+# compressed size. The child's cost grows with the bytes it hands back, the decoding it
+# saves with the bytes it reads, so the gain shrinks as data gets more compressible: on 4
+# cores, a full read under ON took a third to a half of the standard library's time from
+# 1.2:1 to 2.6:1, the same time at 6:1, and 2.4 times as long at 17:1
+# (dev-docs/formats/gzip.md §2.3).
+_SEQUENTIAL_MAX_RATIO = 3
+# Whether this platform takes a sequential read through rapidgzip at all: Linux and
+# macOS, where it was measured to pay. Windows was measured not to
+# (:func:`_sequential_read_pays`); other platforms were not measured.
+_SEQUENTIAL_PLATFORM = sys.platform in ("linux", "darwin")
+
+
+def _sequential_read_pays(config: StreamConfig) -> bool:
+    """Whether ``AUTO`` takes a read with no declared seek demand through rapidgzip.
+
+    Only on Linux and macOS, and only for a large stream of a known size whose source
+    can seek and that compresses ``_SEQUENTIAL_MAX_RATIO``:1 or less. On Windows the
+    child takes longer to start and reads its source through a pipe, and a full read was
+    slower under ``ON`` than with the standard library at 40 MiB, on a 16-core machine.
+    The ratio uses the declared decoded size, else the gzip ISIZE trailer, an estimate
+    (it is mod 2**32, and covers only the last member). An ISIZE below 99% of the
+    compressed size is no estimate at all: DEFLATE never shrinks data that much below its
+    input, so the trailer is a last member's (a BGZF file ends with an empty one, and
+    reads 0), or a wrapped one. The read then stays on the standard library.
+    """
+    if not (_SEQUENTIAL_PLATFORM and config.source_seekable):
+        return False
+    compressed = config.compressed_input_size
+    if compressed is None or compressed < RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE:
+        return False
+    decoded = config.expected_decompressed_size
+    if decoded is None:
+        decoded = config.gzip_isize
+        if decoded is not None and decoded * 100 < compressed * 99:
+            return False
+    return decoded is not None and decoded <= _SEQUENTIAL_MAX_RATIO * compressed
 
 
 def _auto_without_child(config: StreamConfig, *, available: bool) -> str | None:
@@ -292,6 +333,30 @@ def _refuse_forward_only_accelerator(
     )
 
 
+def _accelerator_field(label: str) -> str:
+    """The config setting that turns rapidgzip on for a ``label`` stream."""
+    return "use_indexed_bzip2" if label == "bzip2" else "use_rapidgzip"
+
+
+def _no_child_reason(label: str) -> str:
+    """The start of the ``ResourceUnavailableError`` message for a ``label`` stream whose
+    rapidgzip child cannot run."""
+    field_name = _accelerator_field(label)
+    return (
+        f"the rapidgzip accelerator runs in a child process, and none can be started "
+        f"here to decode this {label} stream. Set {field_name}=AcceleratorMode.OFF to "
+        "decode it with the standard library"
+    )
+
+
+def _require_rapidgzip_child(label: str) -> None:
+    """Raise ``ResourceUnavailableError`` where no rapidgzip child process can run here
+    (:func:`rapidgzip_child_unavailable_reason`). Starts nothing."""
+    unavailable = rapidgzip_child_unavailable_reason()
+    if unavailable is not None:
+        raise ResourceUnavailableError(f"{_no_child_reason(label)} ({unavailable}).")
+
+
 def _open_rapidgzip(
     source: CodecSource, label: str, config: StreamConfig
 ) -> RapidgzipChildStream | None:
@@ -301,16 +366,19 @@ def _open_rapidgzip(
     rapidgzip 0.16 aborts the process on a gzip, zlib or raw DEFLATE stream that ends
     early, so it never decodes one in this process: see ``rapidgzip_child``. Its bzip2
     decoder runs in a child too, as a precaution: no abort has been seen in it, but it
-    comes from the same library. A path source is opened by the child; a stream source is
-    read for the child here, so the caller's own exception from it still reaches the
-    caller.
+    comes from the same library. A path source is opened by the child. On POSIX, a stream
+    that is a byte range of a regular file (``file_region``: a ZIP member of an archive on
+    disk) is read by the child from an inherited descriptor; the parent still checks
+    before each call that the stream could be read, and raises what that read would. Any
+    other stream source is read for the child here, so the caller's own exception from
+    it still reaches the caller.
 
     Where no child can be started (the spawn or its temporary file refused: a process
     cap, no writable temporary directory, too many open files, a child that cannot
     import rapidgzip), ``AUTO`` returns ``None`` and the caller decodes with the
     standard library, as ``AUTO`` does when rapidgzip is absent. Each of those fails
     before the child reads any of ``source``, so the caller's source is where it was.
-    ``ON`` raises ``ResourceLimitError`` rather than decode in-process.
+    ``ON`` raises ``ResourceUnavailableError`` rather than decode in-process.
 
     The child's memory is capped at ``DecoderLimits.max_decoder_memory``: rapidgzip
     keeps decoded chunks, so a small file that decodes to gigabytes would otherwise
@@ -318,15 +386,9 @@ def _open_rapidgzip(
     the rest of the stream (``_StdlibOnAcceleratorError``).
     """
     bzip2 = label == "bzip2"
-    field_name = "use_indexed_bzip2" if bzip2 else "use_rapidgzip"
-    reason = (
-        f"the rapidgzip accelerator runs in a child process, and none can be started "
-        f"here to decode this {label} stream. Set {field_name}=AcceleratorMode.OFF to "
-        "decode it with the standard library"
-    )
-    unavailable = rapidgzip_child_unavailable_reason()
-    if unavailable is not None:
-        raise ResourceLimitError(f"{reason} ({unavailable}).")
+    field_name = _accelerator_field(label)
+    reason = _no_child_reason(label)
+    _require_rapidgzip_child(label)
     try:
         return RapidgzipChildStream(
             source,
@@ -336,7 +398,7 @@ def _open_rapidgzip(
         )
     except RapidgzipChildStartError as exc:
         if getattr(config, field_name) is not AcceleratorMode.AUTO:
-            raise ResourceLimitError(f"{reason} ({exc}).") from exc
+            raise ResourceUnavailableError(f"{reason} ({exc}).") from exc
         _warn_child_fallback(str(exc), field_name)
         return None
 
@@ -348,8 +410,8 @@ def _translate_child_or_stdlib(
     ``stdlib`` for an ``AUTO`` open whose child could not start and so decodes with the
     stdlib (:func:`_open_rapidgzip`) after this translator was chosen.
 
-    An exception from the caller's own source, which the child's reads were served from,
-    is neither: it reaches the caller unchanged.
+    An exception from the caller's own source (``from_callers_source``) is neither: it
+    reaches the caller unchanged.
     """
     if from_callers_source(exc):
         return None

@@ -8,6 +8,7 @@ import dataclasses
 import gzip
 import importlib.util
 import io
+import itertools
 import lzma
 import random
 import struct
@@ -321,9 +322,11 @@ def test_xz_block_resume_hands_off_before_a_stream_without_blocks(
 
 def test_xz_truncated_raises() -> None:
     compressed = lzma.compress(CONTENT, format=lzma.FORMAT_XZ)
-    with XzDecompressorStream(io.BytesIO(compressed[: len(compressed) // 2])) as stream:
-        with pytest.raises(TruncatedError):
-            stream.read()
+    with (
+        XzDecompressorStream(io.BytesIO(compressed[: len(compressed) // 2])) as stream,
+        pytest.raises(TruncatedError),
+    ):
+        stream.read()
 
 
 def test_xz_truncated_large_read_recovers_prefix() -> None:
@@ -652,16 +655,20 @@ def test_xz_megabytes_of_stream_padding_decode_in_one_strip() -> None:
 
 @pytest.mark.parametrize("data", [b"", b"\xfd", b"\xfd7zXZ", b"\xfd7zXZ\x00"])
 def test_xz_source_cut_inside_the_first_header_is_truncated(data: bytes) -> None:
-    with XzDecompressorStream(io.BytesIO(data)) as stream:
-        with pytest.raises(TruncatedError):
-            stream.read()
+    with (
+        XzDecompressorStream(io.BytesIO(data)) as stream,
+        pytest.raises(TruncatedError),
+    ):
+        stream.read()
 
 
 @pytest.mark.parametrize("data", [b"a", b"abc", b"\x00" * 4, b"\xfd7zXY"])
 def test_xz_short_source_that_is_not_xz_is_corrupt(data: bytes) -> None:
-    with XzDecompressorStream(io.BytesIO(data)) as stream:
-        with raises_corruption_not_truncation(match="no streams found"):
-            stream.read()
+    with (
+        XzDecompressorStream(io.BytesIO(data)) as stream,
+        raises_corruption_not_truncation(match="no streams found"),
+    ):
+        stream.read()
 
 
 def test_xz_index_with_room_for_more_records_is_rejected() -> None:
@@ -724,9 +731,11 @@ def test_lzip_trailer_member_size_mismatch_raises_on_forward_read() -> None:
     the next member's seek point, so ``seek(256)`` then served member 2's bytes.
     """
     bad = _lzip_with_lying_member_size()
-    with LzipDecompressorStream(io.BytesIO(bad)) as stream:
-        with raises_corruption_not_truncation(match="member size mismatch"):
-            stream.read()
+    with (
+        LzipDecompressorStream(io.BytesIO(bad)) as stream,
+        raises_corruption_not_truncation(match="member size mismatch"),
+    ):
+        stream.read()
 
 
 @pytest.mark.parametrize("index_first", [False, True])
@@ -775,14 +784,18 @@ def test_lzip_cold_seek_trusts_a_self_consistent_trailer_chain() -> None:
         assert stream.read() == b"C" * 256  # the index's answer, not member 1
         assert stream.tell() == 512
 
-    with LzipDecompressorStream(io.BytesIO(bad)) as stream:
-        with raises_corruption_not_truncation(match="member size mismatch"):
-            stream.seek(100)
-            stream.read(16)  # the lying trailer is reached within the first feed
+    with (
+        LzipDecompressorStream(io.BytesIO(bad)) as stream,
+        raises_corruption_not_truncation(match="member size mismatch"),
+    ):
+        stream.seek(100)
+        stream.read(16)  # the lying trailer is reached within the first feed
 
-    with LzipDecompressorStream(io.BytesIO(bad)) as stream:
-        with raises_corruption_not_truncation(match="member size mismatch"):
-            stream.read()
+    with (
+        LzipDecompressorStream(io.BytesIO(bad)) as stream,
+        raises_corruption_not_truncation(match="member size mismatch"),
+    ):
+        stream.read()
 
 
 @pytest.mark.skipif(
@@ -833,9 +846,11 @@ def test_xz_cold_seek_trusts_a_self_consistent_block_index() -> None:
         with raises_corruption_not_truncation():
             stream.read()
 
-    with XzDecompressorStream(io.BytesIO(bad)) as stream:
-        with raises_corruption_not_truncation():
-            stream.read()
+    with (
+        XzDecompressorStream(io.BytesIO(bad)) as stream,
+        raises_corruption_not_truncation(),
+    ):
+        stream.read()
 
 
 def test_lzip_multi_member_seek_after_forward_read_serves_the_right_bytes() -> None:
@@ -892,17 +907,21 @@ def test_lzip_index_backwards_parses_members() -> None:
 @pytest.mark.parametrize("data", [b"", b"L", b"LZI", b"LZIP", b"LZIPx"])
 def test_lzip_source_cut_inside_the_first_header_is_truncated(data: bytes) -> None:
     """Nothing, or the start of the magic, is an lzip file that was cut short."""
-    with LzipDecompressorStream(io.BytesIO(data)) as stream:
-        with pytest.raises(TruncatedError):
-            stream.read()
+    with (
+        LzipDecompressorStream(io.BytesIO(data)) as stream,
+        pytest.raises(TruncatedError),
+    ):
+        stream.read()
 
 
 @pytest.mark.parametrize("data", [b"a", b"abc", b"LZIx", b"xLZIP"])
 def test_lzip_short_source_that_is_not_lzip_is_corrupt(data: bytes) -> None:
     """Trailing data is allowed only after a member, so this must not decode to b''."""
-    with LzipDecompressorStream(io.BytesIO(data)) as stream:
-        with raises_corruption_not_truncation(match="expected magic"):
-            stream.read()
+    with (
+        LzipDecompressorStream(io.BytesIO(data)) as stream,
+        raises_corruption_not_truncation(match="expected magic"),
+    ):
+        stream.read()
 
 
 @pytest.mark.parametrize("trailing", [b"a", b"abc", b"abcde"])
@@ -964,9 +983,11 @@ def test_lzip_version_0_member_is_unsupported_on_forward_read(case: str) -> None
     for each of these layouts, after printing the members before it; a full ``LZIP``
     magic always starts a member here.
     """
-    with LzipDecompressorStream(io.BytesIO(_V0_CASES[case]())) as stream:
-        with pytest.raises(UnsupportedFeatureError, match="lzip version 0 "):
-            stream.read()
+    with (
+        LzipDecompressorStream(io.BytesIO(_V0_CASES[case]())) as stream,
+        pytest.raises(UnsupportedFeatureError, match="lzip version 0 "),
+    ):
+        stream.read()
 
 
 @pytest.mark.parametrize("case", sorted(set(_V0_CASES) - _V0_UNREACHABLE))
@@ -1007,12 +1028,14 @@ def test_lzip_seek_past_a_version_0_member_is_unsupported(case: str) -> None:
     from archivey.diagnostics import DiagnosticCode
 
     collector, seen = _collect_diagnostics()
-    with LzipDecompressorStream(
-        io.BytesIO(_V0_CASES[case]()), collector=collector
-    ) as stream:
-        with pytest.raises(UnsupportedFeatureError, match="lzip version 0 "):
-            stream.seek(0, io.SEEK_END)
-            stream.read()
+    with (
+        LzipDecompressorStream(
+            io.BytesIO(_V0_CASES[case]()), collector=collector
+        ) as stream,
+        pytest.raises(UnsupportedFeatureError, match="lzip version 0 "),
+    ):
+        stream.seek(0, io.SEEK_END)
+        stream.read()
     degraded = [d for d in seen if d.code is DiagnosticCode.SEEK_INDEX_DEGRADED]
     assert bool(degraded) == (case in _V0_UNREACHABLE)
 
@@ -1023,26 +1046,34 @@ def test_lzip_cut_header_after_a_member_is_truncated_on_every_path() -> None:
     A sequential read calls the file truncated, and a seek must too.
     """
     data = make_lzip_member(b"x" * 4000) + b"LZIP\x00"
-    with LzipDecompressorStream(io.BytesIO(data)) as stream:
-        with pytest.raises(TruncatedError):
-            stream.read()
-    with LzipDecompressorStream(io.BytesIO(data)) as stream:
-        with pytest.raises(TruncatedError):
-            stream.seek(0, io.SEEK_END)
-            stream.read()
-    with LzipDecompressorStream(io.BytesIO(data)) as stream:
-        with pytest.raises(TruncatedError):
-            stream.seek(3000)
-            stream.read()
+    with (
+        LzipDecompressorStream(io.BytesIO(data)) as stream,
+        pytest.raises(TruncatedError),
+    ):
+        stream.read()
+    with (
+        LzipDecompressorStream(io.BytesIO(data)) as stream,
+        pytest.raises(TruncatedError),
+    ):
+        stream.seek(0, io.SEEK_END)
+        stream.read()
+    with (
+        LzipDecompressorStream(io.BytesIO(data)) as stream,
+        pytest.raises(TruncatedError),
+    ):
+        stream.seek(3000)
+        stream.read()
 
 
 @pytest.mark.parametrize("version", [2, 255])
 def test_lzip_future_version_is_unsupported(version: int) -> None:
     member = bytearray(make_lzip_member(b"x"))
     member[4] = version
-    with LzipDecompressorStream(io.BytesIO(bytes(member))) as stream:
-        with pytest.raises(UnsupportedFeatureError, match=f"lzip version {version} "):
-            stream.read()
+    with (
+        LzipDecompressorStream(io.BytesIO(bytes(member))) as stream,
+        pytest.raises(UnsupportedFeatureError, match=f"lzip version {version} "),
+    ):
+        stream.read()
 
 
 def test_lzip_peek_index_summary_matches_the_payload() -> None:
@@ -1119,7 +1150,7 @@ def test_spaced_collector_stays_within_the_cap_and_spreads_what_it_keeps(
     kept = collector.items
     assert kept[0] == 0  # the first item always survives
     assert collector.thinned
-    gaps = [b - a for a, b in zip(kept, kept[1:])]
+    gaps = [b - a for a, b in itertools.pairwise(kept)]
     # Greedy spacing: no kept gap is wider than the spacing plus one step.
     assert all(g <= collector.spacing + step for g in gaps), (gaps, collector.spacing)
     if step:
@@ -1451,29 +1482,35 @@ def test_a_degraded_seek_index_reaches_the_readers_collector(
         raise_on=ARCHIVE_INTEGRITY_CODES - {DiagnosticCode.ARCHIVE_TRAILING_DATA}
     )
     strict = ArchiveyConfig(diagnostic_policy=policy)
-    with open_archive(path, config=strict, seekable_members=True) as reader:
-        with reader.open(reader.members()[0]) as stream:
-            with pytest.raises(DiagnosticRaisedError) as info:
-                stream.seek(500)
-            # The raise came after the seek finished: a caller who catches it still
-            # has a working handle at the position it asked for.
-            assert stream.tell() == 500
-            assert stream.read() == data[500:]
+    with (
+        open_archive(path, config=strict, seekable_members=True) as reader,
+        reader.open(reader.members()[0]) as stream,
+    ):
+        with pytest.raises(DiagnosticRaisedError) as info:
+            stream.seek(500)
+        # The raise came after the seek finished: a caller who catches it still
+        # has a working handle at the position it asked for.
+        assert stream.tell() == 500
+        assert stream.read() == data[500:]
     assert info.value.diagnostic.code is DiagnosticCode.SEEK_INDEX_DEGRADED
 
-    with open_archive(path, config=strict, seekable_members=True) as reader:
-        with reader.open(reader.members()[0]) as stream:
-            with pytest.raises(DiagnosticRaisedError):
-                stream.seek(0, io.SEEK_END)
-            stream.seek(0)
-            assert stream.read() == data
+    with (
+        open_archive(path, config=strict, seekable_members=True) as reader,
+        reader.open(reader.members()[0]) as stream,
+    ):
+        with pytest.raises(DiagnosticRaisedError):
+            stream.seek(0, io.SEEK_END)
+        stream.seek(0)
+        assert stream.read() == data
 
-    with open_archive(path, config=strict, seekable_members=True) as reader:
-        with reader.open(reader.members()[0]) as stream:
-            with pytest.raises(DiagnosticRaisedError):
-                stream.size  # noqa: B018 - the size query is what raises
-            assert stream.read() == data
-            assert stream.size == len(data)
+    with (
+        open_archive(path, config=strict, seekable_members=True) as reader,
+        reader.open(reader.members()[0]) as stream,
+    ):
+        with pytest.raises(DiagnosticRaisedError):
+            stream.size  # noqa: B018 - the size query is what raises
+        assert stream.read() == data
+        assert stream.size == len(data)
 
 
 @pytest.mark.parametrize("source_kind", ["path", "bytesio"])
@@ -1789,45 +1826,45 @@ def test_open_codec_stream_hands_the_collector_to_a_unix_compress_stream(
 # --- accelerator backends present / absent ---------------------------------------------
 
 
-def test_gzip_accelerator_off_warns_on_rewind_but_still_seeks(
+def test_gzip_accelerator_off_reports_a_rewind_but_still_seeks(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """With the accelerator OFF, gzip still seeks (slowly); a rewind logs one warning.
+    """With the accelerator OFF, gzip still seeks (slowly); a rewind is reported once.
 
     Forward consumption and forward seeks stay quiet — only a backward seek, which
-    re-decompresses from the start, triggers the warning.
+    re-decompresses from the start, is reported.
     """
     config = StreamConfig(use_rapidgzip=AcceleratorMode.OFF, seekable=True)
     compressed = gzip.compress(REWIND_CONTENT)
     with open_codec_stream(Codec.GZIP, io.BytesIO(compressed), config=config) as stream:
-        with caplog.at_level("WARNING", logger="archivey.streams"):
+        with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.read(REWIND_READ) == REWIND_CONTENT[:REWIND_READ]
             assert (
                 stream.seek(REWIND_READ + 100) == REWIND_READ + 100
-            )  # forward seek: no rewind, no warning
+            )  # forward seek: no rewind, no report
             assert (
                 stream.read(10) == REWIND_CONTENT[REWIND_READ + 100 : REWIND_READ + 110]
             )
         assert not caplog.records
 
-        with caplog.at_level("WARNING", logger="archivey.streams"):
+        with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.seek(0) == 0  # rewind → slow re-decompression
             assert stream.read(10) == REWIND_CONTENT[:10]  # still returns correct data
     assert sum("re-decompresses" in r.getMessage() for r in caplog.records) == 1
     assert any("rapidgzip" in r.getMessage() for r in caplog.records)
 
 
-def test_bzip2_accelerator_off_warns_on_rewind(
+def test_bzip2_accelerator_off_reports_a_rewind(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The bz2 stdlib path mirrors gzip: a rewind warns and still seeks."""
+    """The bz2 stdlib path mirrors gzip: a rewind is reported and still seeks."""
     config = StreamConfig(use_indexed_bzip2=AcceleratorMode.OFF, seekable=True)
     compressed = bz2.compress(REWIND_CONTENT)
     with open_codec_stream(
         Codec.BZIP2, io.BytesIO(compressed), config=config
     ) as stream:
         assert stream.read(REWIND_READ) == REWIND_CONTENT[:REWIND_READ]
-        with caplog.at_level("WARNING", logger="archivey.streams"):
+        with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.seek(0) == 0
             assert stream.read(10) == REWIND_CONTENT[:10]
     (message,) = [r.getMessage() for r in caplog.records]
@@ -1836,34 +1873,34 @@ def test_bzip2_accelerator_off_warns_on_rewind(
     assert "Decoding restarts from the start of the stream" in message
 
 
-# --- forward-only codecs without an accelerator: warn (generically) on a rewind ---------
+# --- forward-only codecs without an accelerator: report a rewind (generically) -------
 
 
-def test_zlib_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
-    """Stdlib-fallback zlib: a rewind warns and names the ``[seekable]`` accelerator."""
-    # Force stdlib (OFF) so the warning path is deterministic regardless of payload size /
-    # whether rapidgzip is installed — the accelerator path itself emits no rewind warning.
+def test_zlib_reports_a_rewind(caplog: pytest.LogCaptureFixture) -> None:
+    """Stdlib-fallback zlib: a rewind is reported and names the ``[seekable]`` accelerator."""
+    # Force stdlib (OFF) so the report path is deterministic regardless of payload size /
+    # whether rapidgzip is installed — the accelerator path itself emits no rewind report.
     compressed = zlib.compress(REWIND_CONTENT)
     config = StreamConfig(use_rapidgzip=AcceleratorMode.OFF, seekable=True)
     with open_codec_stream(Codec.ZLIB, io.BytesIO(compressed), config=config) as stream:
-        with caplog.at_level("WARNING", logger="archivey.streams"):
+        with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.read(REWIND_READ) == REWIND_CONTENT[:REWIND_READ]
             assert (
                 stream.seek(REWIND_READ + 100) == REWIND_READ + 100
-            )  # forward seek: no warning
+            )  # forward seek: no report
             assert (
                 stream.read(10) == REWIND_CONTENT[REWIND_READ + 100 : REWIND_READ + 110]
             )
         assert not caplog.records
 
-        with caplog.at_level("WARNING", logger="archivey.streams"):
+        with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.seek(0) == 0  # rewind → re-decode from start
             assert stream.read(10) == REWIND_CONTENT[:10]  # still correct
     msgs = [r.getMessage() for r in caplog.records]
     assert sum("rapidgzip" in m and "re-decompresses" in m for m in msgs) == 1
 
 
-def test_deflate_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
+def test_deflate_reports_a_rewind(caplog: pytest.LogCaptureFixture) -> None:
     """Stdlib-fallback raw deflate names the rapidgzip accelerator on rewind."""
     co = zlib.compressobj(wbits=-15)
     compressed = co.compress(REWIND_CONTENT) + co.flush()
@@ -1872,7 +1909,7 @@ def test_deflate_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
         Codec.DEFLATE, io.BytesIO(compressed), config=config
     ) as stream:
         assert stream.read(REWIND_READ) == REWIND_CONTENT[:REWIND_READ]
-        with caplog.at_level("WARNING", logger="archivey.streams"):
+        with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.seek(0) == 0
             assert stream.read(10) == REWIND_CONTENT[:10]
     assert (
@@ -1885,7 +1922,7 @@ def test_deflate_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
 
 
 @requires("brotli")
-def test_brotli_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
+def test_brotli_reports_a_rewind(caplog: pytest.LogCaptureFixture) -> None:
     import brotli
 
     compressed = brotli.compress(REWIND_CONTENT)
@@ -1893,7 +1930,7 @@ def test_brotli_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
         Codec.BROTLI, io.BytesIO(compressed), config=StreamConfig(seekable=True)
     ) as stream:
         assert stream.read(REWIND_READ) == REWIND_CONTENT[:REWIND_READ]
-        with caplog.at_level("WARNING", logger="archivey.streams"):
+        with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.seek(0) == 0
             assert stream.read(10) == REWIND_CONTENT[:10]
     assert (
@@ -1906,7 +1943,7 @@ def test_brotli_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
 
 
 @requires("lz4")
-def test_lz4_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
+def test_lz4_reports_a_rewind(caplog: pytest.LogCaptureFixture) -> None:
     import lz4.frame
 
     compressed = lz4.frame.compress(REWIND_CONTENT)
@@ -1914,7 +1951,7 @@ def test_lz4_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
         Codec.LZ4, io.BytesIO(compressed), config=StreamConfig(seekable=True)
     ) as stream:
         assert stream.read(REWIND_READ) == REWIND_CONTENT[:REWIND_READ]
-        with caplog.at_level("WARNING", logger="archivey.streams"):
+        with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.seek(0) == 0
             assert stream.read(10) == REWIND_CONTENT[:10]
     assert (
@@ -1943,7 +1980,7 @@ def _resume_point_rewind_messages(
         codec, io.BytesIO(compressed), config=StreamConfig(seekable=True)
     ) as stream:
         assert stream.read() == REWIND_CONTENT
-        with caplog.at_level("WARNING", logger="archivey.streams"):
+        with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.seek(target) == target
         assert stream.read(10) == REWIND_CONTENT[target : target + 10]
     return [r.getMessage() for r in caplog.records]
@@ -1997,23 +2034,23 @@ def test_multi_block_xz_rewind_message_names_the_resume_point(
 
 
 @requires_zstd()
-def test_zstd_rewinds_and_warns_on_backward_seek(
+def test_zstd_rewinds_and_reports_a_backward_seek(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """zstd has no index; a backward seek re-decompresses from the start and warns once."""
+    """zstd has no index; a backward seek re-decompresses from the start and reports it once."""
     zstd = zstd_backend()
     compressed = zstd.compress(REWIND_CONTENT)
     with open_codec_stream(
         Codec.ZSTD, io.BytesIO(compressed), config=StreamConfig(seekable=True)
     ) as stream:
-        with caplog.at_level("WARNING", logger="archivey.streams"):
+        with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.read(REWIND_READ) == REWIND_CONTENT[:REWIND_READ]
             ahead = REWIND_READ + 300
-            assert stream.seek(ahead) == ahead  # forward: no rewind, no warning
+            assert stream.seek(ahead) == ahead  # forward: no rewind, no report
             assert stream.read(10) == REWIND_CONTENT[ahead : ahead + 10]
         assert not caplog.records
 
-        with caplog.at_level("WARNING", logger="archivey.streams"):
+        with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.seek(0) == 0  # backward → re-decode from start
             assert stream.read(REWIND_READ) == REWIND_CONTENT[:REWIND_READ]
     assert (
@@ -2076,8 +2113,7 @@ def test_accelerator_mode_auto_resolution() -> None:
 
 
 hypothesis = pytest.importorskip("hypothesis")
-from hypothesis import given  # noqa: E402
-from hypothesis import strategies as st  # noqa: E402
+from hypothesis import given, strategies as st  # noqa: E402
 
 
 def _seek_interleaving_ops(stream: Any, plaintext: bytes, ops: list[str]) -> None:

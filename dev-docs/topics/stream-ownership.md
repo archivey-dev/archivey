@@ -35,9 +35,7 @@ above it has to be right for the contract to hold. The reader owns that source a
 closes it after its own teardown (`BaseArchiveReader._maybe_teardown`); if a backend
 constructor raises first, `open_archive` closes it. `open_stream` builds one too: the
 `ArchiveStream` it returns closes the source when it is closed (`on_close`), and a
-refusal before that point closes it on the way out. `tests/test_source_ownership.py`
-is the end-to-end check, `tests/test_archive_source.py` the unit one, and the
-inventories below the per-class one.
+refusal before that point closes it on the way out.
 
 `AesDecryptStream` is a `ReadOnlyIOStream`, so it is absent from the
 `DelegatingStream` inventory and from the leak oracle's pinned population
@@ -59,22 +57,20 @@ Flipping it to borrow was the tempting unification: then swapping
 catches that swap (`tests/leak_oracle.py` pins `owns_inner=True` slices and
 live children). The remaining risk is the other direction.
 
-Fourteen production subclasses, each classified by the inventory in
-`tests/test_stream_bases.py::test_delegating_stream_close_inventory`. Ten ride the
-owning default with no keyword. Counting wrappers (`CountingReader`,
-`OutputCountingStream`, `SeekCountingStream`) are spliced mid-chain, and their inner must
-therefore be a wrapper rather than the caller's own object.
+Every production subclass is classified by the close-inventory test
+(`test_delegating_stream_close_inventory`), and most ride the owning default with no
+keyword. Counting wrappers (`CountingReader`, `OutputCountingStream`,
+`SeekCountingStream`) are spliced mid-chain, and their inner must therefore be a wrapper
+rather than the caller's own object.
 
 That inner is never the caller's own object, because every source crosses the
 boundary before any backend sees it, and what comes out is an `ArchiveSource`. Closing
 it never closes the caller's stream, so the owning default has nothing of the caller's
-to reach. `tests/test_source_ownership.py` checks that end to end, over every format,
-both common stream shapes, and measurement on and off.
+to reach.
 
 | Class | Close must reach |
 | --- | --- |
-| `LockedStream` | tar `extractfile` / the `_PyCdlibStream` underneath |
-| `_PyCdlibStream` | `PyCdlibIO.__exit__` via `inner.close()` |
+| `LockedStream` | tar `extractfile` / the stream a plugin's `open_member` returned |
 | `_GzipTruncationCheckStream` | the rapidgzip accelerator |
 | `OutputCountingStream` | mid-chain; inner is already a non-closing wrapper (see above) |
 | `SeekCountingStream` | mid-chain; inner is already a non-closing wrapper (see above) |
@@ -90,7 +86,7 @@ The other three own too, but close themselves and tell the base to skip the seco
 | --- | --- |
 | `ProcessOutputStream` (`_UnrarOwnedStream`, `UnarOutputStream`) | close the pipe, then reap the process, then mark closed |
 
-The ten that ride the default would need `owns_inner=True` after a flip. A missed one
+The ones that ride the default would need `owns_inner=True` after a flip. A missed one
 leaks a handle the oracle does not pin: default `DelegatingStream` constructors wrap
 `BytesIO` by the thousand and are excluded on purpose. The oracle catching the
 #336 shape is not a reason to create a new silent-miss on `LockedStream`.
@@ -120,7 +116,7 @@ think" into "typed `False` without thinking"; the oracle now fails the leak
 instead.
 
 A new `DelegatingStream` subclass is forced to pick a close contract by
-`test_delegating_stream_close_inventory`, which asserts the class-level
+the close-inventory test, which asserts the class-level
 `_SUBCLASS_CLOSES_INNER` flag (same idiom as the resume-offset inventory)
 and rejects a production `__init__` that still passes the kwarg. That is
 per-class, which is the right grain for this type. The constructor kwarg
@@ -174,8 +170,8 @@ Neither is ownership.
 keyed on the resolved `_subclass_closes_inner` instance flag — the class-level
 `_SUBCLASS_CLOSES_INNER` default, or a constructor kwarg that overrides it.
 An `ArchiveSource` is not pinned: it is neither a `SlicingStream` nor a
-`DelegatingStream`, and what it owns is closed by the reader's teardown, which
-`tests/test_archive_source.py` and `tests/test_source_ownership.py` check directly.
+`DelegatingStream`, and what it owns is closed by the reader's teardown, which the
+tests check directly.
 Renaming those without updating `tests/leak_oracle.py` pins nothing, and the
 tests being edited are the ones that would have caught it.
 

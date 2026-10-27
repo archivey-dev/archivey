@@ -30,7 +30,7 @@ and RAR5 ConvertHashToMAC when checksums are tweaked.
 from __future__ import annotations
 
 import hashlib
-import io
+import itertools
 import os
 import shutil
 import subprocess
@@ -74,6 +74,7 @@ from archivey.internal.backends.rar_parser import (
     _RAR5_XREDIR_REPARSE_POINTS,
     RAR3_UOW_NAME,
     RAR5_ID,
+    RAR5_QO_UNMATCHED_COPIES,
     RAR5_UNPLACED_BYTES,
     RAR_ID,
     DamagedServiceHeader,
@@ -100,6 +101,8 @@ from archivey.internal.backends.rar_unar import (
     REFUSE_NON_ASCII_PASSWORD,
     UNAR_PURPOSE,
     UnarRarPolicy,
+    solid_after_unknown_compression,
+    solid_after_unknown_compression_reason,
     unar_dictionary_costs,
     uses_no_dictionary,
 )
@@ -122,6 +125,7 @@ from archivey.internal.base_reader import (
     MAX_LINK_TARGET_BYTES,
     BaseArchiveReader,
     ReadBackend,
+    SolidRun,
     pass_has_data,
 )
 from archivey.internal.config import KeyDerivationBudget, check_decoder_memory
@@ -136,8 +140,7 @@ from archivey.internal.external.unar import (
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.hashing import crc32_digest
 from archivey.internal.listing_limits import check_metadata_budget
-from archivey.internal.logs import backends as logger
-from archivey.internal.logs import integrity as integrity_logger
+from archivey.internal.logs import backends as logger, integrity as integrity_logger
 from archivey.internal.naming import (
     emit_member_name_normalized,
     normalize_member_name,
@@ -172,19 +175,19 @@ from archivey.internal.streams.crypto import (
     open_aes_decrypt_stage,
     open_aes_decrypt_stream,
 )
+from archivey.internal.streams.respawn import RespawnStream
 from archivey.internal.streams.streamtools import (
-    ReadOnlyIOStream,
     SharedSource,
     SlicingStream,
     SolidBlockReader,
     is_seekable,
-    resolve_seek,
     skip_forward,
 )
 from archivey.internal.streams.verify import build_member_verifier
 from archivey.internal.unix_mode import special_file_type
 from archivey.internal.volumes import (
     ConcatenatedFile,
+    JoinedViews,
     discover_volume_siblings,
     next_rar_volume_name,
     rar_volume_name,
@@ -296,7 +299,7 @@ def _gapped_volume_numbers(paths: list[Path]) -> list[int] | None:
     if any(number is None for number in numbers):
         return None
     known = [number for number in numbers if number is not None]
-    if any(later <= earlier for earlier, later in zip(known, known[1:])):
+    if any(later <= earlier for earlier, later in itertools.pairwise(known)):
         return None
     if known == list(range(1, len(known) + 1)):
         return None
@@ -367,23 +370,6 @@ def _data_is_reachable(info: RarMemberInfo) -> bool:
     return _data_is_in_one_place(info) or (
         bool(info.data_parts) and not info.split_before and not info.split_after
     )
-
-
-class _JoinedParts(ConcatenatedFile):
-    """The parts of a split stored member read as one stream; closes its views."""
-
-    def __init__(self, views: list[BinaryIO]) -> None:
-        self._views = views
-        super().__init__(views)
-
-    def close(self) -> None:
-        if self.closed:
-            return
-        try:
-            super().close()
-        finally:
-            for view in self._views:
-                view.close()
 
 
 def _link_file(src: Path, dest: Path) -> None:
@@ -466,8 +452,10 @@ def _bounded_copy_notes(
         )
         return (_stream_copy_refused_note(program, reason),)
     return (
-        f"{note} An archive over SpoolLimits.max_bytes={limit} is refused instead "
-        f"of copied.",
+        (
+            f"{note} An archive over SpoolLimits.max_bytes={limit} is refused instead "
+            f"of copied."
+        ),
     )
 
 
@@ -975,149 +963,6 @@ class _UnrarOwnedStream(ProcessOutputStream):
             )
 
 
-class _RespawnStream(ReadOnlyIOStream):
-    """Seekable view of a one-member decompressor pipe (``unrar p`` or ``unar``).
-
-    The inner handle is a pipe, so a backward seek cannot reposition it. Close it
-    and spawn a fresh process on the next ``read()`` that needs bytes; skip to the
-    logical offset then. Forward seeks do not drain the pipe until a later
-    ``read()`` needs those bytes. Past-end seeks leave the pipe where it is: a
-    read with ``pos > size`` is empty, and a read at ``pos == size`` still
-    reaches the pipe so fused verify's one-byte overrun probe can see trailing
-    output — that boundary read is clamped to one byte.
-
-    ``_pos`` is the logical offset. ``_pipe_pos`` is pipe progress clamped to
-    ``_size``: the fused-verify overrun probe's extra byte advances ``_pos``
-    but not ``_pipe_pos``, so a no-op ``SEEK_CUR`` after it does not kill the
-    process. Re-probing after seeking back to ``_size`` is then not
-    byte-exact; that path is unreachable while the first probe raises
-    ``CorruptionError`` on any trailing byte (``verify.py`` ``_conclude``).
-    Respawn is keyed on the pipe, so ``seek(0, SEEK_END); seek(0)`` before any
-    read costs nothing.
-
-    ``spawn`` must return a stream that owns the process (``_UnrarOwnedStream``,
-    ``_bounded_member_pipe`` wrapping one, or a ``UnarOutputStream``), so
-    close/respawn reaps it.
-
-    Same restart-on-rewind shape as ``DecompressorStream`` /
-    ``Decoder.recreate`` with a one-point index at origin. It does not use
-    that engine: ``Decoder`` is a push interface fed compressed bytes, while
-    unrar produces plaintext on stdout from a path. ``AesDecryptStream`` is
-    a different shape — O(1) CBC restart, no replay — and does not count
-    toward extracting a shared restart-and-replay base. A third pull-shaped
-    replay producer would be that point.
-    """
-
-    def __init__(
-        self,
-        spawn: Callable[[], BinaryIO],
-        inner: BinaryIO,
-        *,
-        size: int,
-    ) -> None:
-        super().__init__()
-        self._spawn = spawn
-        self._inner: BinaryIO | None = inner
-        self._size = size
-        self._pos = 0
-        self._pipe_pos = 0
-
-    def seekable(self) -> bool:
-        return True
-
-    def tell(self) -> int:
-        if self.closed:
-            raise ValueError("I/O operation on closed file.")
-        return self._pos
-
-    def _close_inner(self) -> None:
-        inner = self._inner
-        self._inner = None
-        # A replacement process always starts at byte 0. Reset even if close
-        # raises, so a later read cannot label those bytes with the old offset.
-        self._pipe_pos = 0
-        if inner is not None:
-            inner.close()
-
-    def _ensure(self) -> BinaryIO:
-        if self._inner is None:
-            self._inner = self._spawn()
-        return self._inner
-
-    def _pipe_needed(self, logical: int) -> int:
-        return min(logical, self._size)
-
-    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        if self.closed:
-            raise ValueError("I/O operation on closed file.")
-        target = resolve_seek(offset, whence, pos=self._pos, end=lambda: self._size)
-        needed = self._pipe_needed(target)
-        if needed < self._pipe_pos:
-            # Close first; set the logical cursor only if close succeeds, so a
-            # failed seek leaves tell() unchanged (Python IO). Spawn is lazy —
-            # _sync_pipe calls _ensure on the next read. Spawning here would
-            # start a process that close-without-read would kill.
-            self._close_inner()
-        self._pos = target
-        return self._pos
-
-    def nearest_resume_offset(self, target: int) -> int:
-        """Where the output restarts to reach ``target``: the live pipe's position when
-        ``target`` is at or past it, else 0 (a fresh process). A member's verifier asks
-        this to see that reaching a forward target decodes the skipped bytes anyway."""
-        if self._inner is not None and self._pipe_needed(target) >= self._pipe_pos:
-            return self._pipe_pos
-        return 0
-
-    def _sync_pipe(self) -> BinaryIO:
-        inner = self._ensure()
-        want = self._pipe_needed(self._pos)
-        if want > self._pipe_pos:
-            try:
-                skip_forward(inner, want - self._pipe_pos)
-            except EOFError as exc:
-                raise TruncatedError(
-                    f"unrar output ended after {self._pipe_pos} of {self._size} bytes"
-                ) from exc
-            self._pipe_pos = want
-        return inner
-
-    def read(self, n: int = -1, /) -> bytes:
-        if self.closed:
-            raise ValueError("I/O operation on closed file.")
-        if self._pos > self._size:
-            return b""
-        inner = self._sync_pipe()
-        if self._pos < self._size:
-            remaining = self._size - self._pos
-            if n < 0 or n > remaining:
-                n = remaining
-        else:
-            # At declared size the overrun probe must reach the pipe, but only
-            # for one byte — read(-1) here would pull the rest of a corrupt
-            # member into memory.
-            n = 1 if n < 0 else min(n, 1)
-        data = inner.read(n)
-        self._pos += len(data)
-        # Overrun probe at pos == size can return one extra byte. Count it in
-        # _pos (so pos > size reads are empty) but not as pipe progress past
-        # _size, or the next seek including SEEK_CUR would kill the process.
-        self._pipe_pos = min(self._pipe_pos + len(data), self._size)
-        return data
-
-    def close(self) -> None:
-        if self.closed:
-            return
-        close_error: BaseException | None = None
-        try:
-            self._close_inner()
-        except BaseException as exc:  # noqa: BLE001 - mark closed even if inner.close fails
-            close_error = exc
-        super().close()
-        if close_error is not None:
-            raise close_error
-
-
 def _bounded_member_pipe(inner: BinaryIO, *, prefix: int, size: int) -> BinaryIO:
     """Own an ``unrar`` pipe, skip a glob-match prefix, then EOF at ``size``.
 
@@ -1129,7 +974,7 @@ def _bounded_member_pipe(inner: BinaryIO, *, prefix: int, size: int) -> BinaryIO
     The skip is eager at construction. A seekable wrapper respawns lazily on the
     next ``read()``, so this factory — and the skip — runs then, not inside
     ``seek()``. ``seek(0, SEEK_END); seek(0)`` before any read still costs
-    nothing: ``_pipe_pos`` stays 0 and no new pipe is built.
+    nothing: ``RespawnStream._inner_pos`` stays 0 and no new pipe is built.
 
     The bound itself is a non-seekable :class:`SlicingStream` (same shape as the
     7z folder-pipe member slice). ``SharedView`` is the locked re-seek door and
@@ -1213,9 +1058,9 @@ class RarReader(BaseArchiveReader):
         # Every RAR key this reader derives: the header parse, each PswCheck and each
         # tweaked-digest HashKey. An ``-hp`` archive's members repeat the header's
         # salt, so their PswCheck is the header's own derivation.
-        self._kdf_cache = RarKdfCache(
-            budget=KeyDerivationBudget(self._config.decoder_limits)
-        )
+        kdf_budget = KeyDerivationBudget(self._config.decoder_limits)
+        self._usage.watch_key_derivation(kdf_budget)
+        self._kdf_cache = RarKdfCache(budget=kdf_budget)
         # The first member whose PswCheck can judge a candidate, found once on first
         # use; ``False`` until looked for, ``None`` when there is none.
         self._archive_check_member: ArchiveMember | None | Literal[False] = False
@@ -1340,6 +1185,8 @@ class RarReader(BaseArchiveReader):
                 )
         if self._in_set:
             self._volume_count = max(self._volume_count, self._volume_set_size() or 1)
+        # Each compressed member's solid run under unar (``_unar_solid_runs``).
+        self._unar_runs: dict[int, SolidRun] | None = None
         # Built once from the parse, and only when the caller chose unar: it holds the
         # refusals and the pipe layout, and none of it applies to unrar.
         self._unar_policy: UnarRarPolicy | None = (
@@ -1347,6 +1194,10 @@ class RarReader(BaseArchiveReader):
             if self._decompressor is RarDecompressor.UNAR
             else None
         )
+        # Members an unknown-version member ahead of them keeps from being decoded:
+        # by any program in its solid stream, by ``unrar`` in the rest of a solid
+        # archive. Keyed by ``id`` of the parsed member.
+        self._solid_after_unknown = solid_after_unknown_compression(self._archive)
         if (
             self._unar_policy is not None
             and source.path is not None
@@ -1749,6 +1600,7 @@ class RarReader(BaseArchiveReader):
                 source_format=ArchiveFormat.RAR,
                 **remedy,
             )
+            self._usage.watch_spool(self._spool)
         if what is not None:
             self._spool.describe(
                 f"reading this member needs {program}, which reads only files, "
@@ -3252,19 +3104,20 @@ class RarReader(BaseArchiveReader):
 
         def _plan(
             member: ArchiveMember, raw: RarMemberInfo, size: int, _: bool
-        ) -> int | Callable[[], BinaryIO]:
+        ) -> int | Callable[[], BinaryIO] | None:
             unknown_version = raw.unknown_compression_version()
             if unknown_version is not None:
-                # ``unrar p`` writes nothing for it ("Unknown method"), so it
-                # takes no room in the pipe and raises on its first read. In a
-                # solid archive ``unrar`` stops at this member, so the members
-                # after it in the same stream fail as well, whatever offset they
-                # get: a known limit (dev-docs/formats/rar.md, the unknown
-                # compression version row).
+                # ``unrar p`` writes nothing for it ("Unknown method") and raises
+                # on its first read.
                 def _refused() -> BinaryIO:
                     raise self._unknown_compression_error(member, unknown_version)
 
                 return _refused
+            if id(raw) in self._solid_after_unknown:
+                # ``unrar p`` stopped at the unknown member, so the pipe holds
+                # nothing for this one. Served as ``open()`` serves it: read by
+                # archivey when stored, refused as unsupported otherwise.
+                return None
             # ``unrar p`` writes every other payload member, in listing order.
             nonlocal pipe_offset
             member_offset = pipe_offset
@@ -3278,23 +3131,28 @@ class RarReader(BaseArchiveReader):
         copies: FileCopyPass,
         spawn: Callable[[], BinaryIO],
         plan: Callable[
-            [ArchiveMember, RarMemberInfo, int, bool], int | Callable[[], BinaryIO]
+            [ArchiveMember, RarMemberInfo, int, bool],
+            int | Callable[[], BinaryIO] | None,
         ],
     ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         """The solid pass over one process's output, demultiplexed by offset.
 
         ``spawn`` starts the process and returns its output stream. ``plan`` gets each
         payload member, its stream size and whether it has a digest to check, and
-        returns the member's offset in that output, or an ``open_fn`` that serves it
-        some other way. A plain ``int | Callable`` is enough for that answer; no slot
-        type is needed.
+        returns the member's offset in that output, an ``open_fn`` that serves it
+        some other way, or ``None`` to serve it exactly as ``open()`` does (a member
+        the output does not hold). A plain ``int | Callable | None`` is enough for
+        that answer; no slot type is needed.
 
-        ``plan`` may keep a running cursor (the ``unrar`` pass does). So this driver
-        calls it exactly once per member the shared output carries, in listing
-        order. It never calls it for a file copy, a non-payload member, or a member
-        that runs into a missing volume (only the last member present can, so
-        skipping it shifts no later offset). Calling it for any member the output
-        does not carry would shift every later offset.
+        ``plan`` may keep a running cursor (the ``unrar`` pass does). This driver
+        calls it once for every payload member that gets past the earlier branches,
+        in listing order. It never calls it for a file copy, a non-payload member,
+        or a member that runs into a missing volume (only the last member present
+        can, so skipping it shifts no later offset). The rule a cursor-keeping
+        ``plan`` must keep is that it advances the cursor only for a member the
+        output carries, and answers ``None`` (or an ``open_fn``) without advancing
+        it for one the output does not; advancing it for such a member would shift
+        every later offset.
         """
         solid: SolidBlockReader | None = None
         sources = self._file_copy_sources(copies)
@@ -3360,13 +3218,17 @@ class RarReader(BaseArchiveReader):
 
                 slot = _refused
             else:
-                slot = plan(member, raw, size, bool(hashes))
+                planned = plan(member, raw, size, bool(hashes))
+                if planned is None:
+                    return self._lazy_member_stream(member)
+                slot = planned
                 # The pass has no native-decrypt or unsettled-plaintext branch: every
-                # member it does not slice directly is served from the program's
-                # output, stored encrypted ones included. So this one test is the
-                # whole of "a member a program would decode". ``plan`` still runs
-                # for a cut member, so the offsets of any member listed after it
-                # do not move.
+                # member it does not slice directly and ``plan`` does not hand back
+                # to ``open()`` (above) is served from the program's output, stored
+                # encrypted ones included. So for the members that reach here this
+                # one test is the whole of "a member a program would decode".
+                # ``plan`` still runs for a cut member, so the offsets of any member
+                # listed after it do not move.
                 if (
                     not self._can_direct_read(raw)
                     and self._cut_data_error(member, raw) is not None
@@ -3498,8 +3360,9 @@ class RarReader(BaseArchiveReader):
         member: ArchiveMember | None,
         member_id: int | None = None,
     ) -> None:
-        """Report what a RAR5 extra-area walk dropped, and why it stopped, and a
-        RAR 1.5-4 ``UOW`` owner header that held no owner.
+        """Report what a RAR5 extra-area walk dropped, and why it stopped, a
+        RAR 1.5-4 ``UOW`` owner header that held no owner, and a ``QO`` header whose
+        FILE copies matched no header the walk reached.
 
         ``member`` is ``None`` for a SERVICE header (``CMT``, ``QO``), which is not
         a listed member and so has nothing to attach to. It still comes through
@@ -3529,6 +3392,13 @@ class RarReader(BaseArchiveReader):
                     if member is not None
                     else f"This archive's {name} service header has {reason}, "
                     "which no writer leaves; they were not read."
+                )
+            elif record == RAR5_QO_UNMATCHED_COPIES:
+                message = (
+                    f"This archive's {name} quick-open service header holds "
+                    f"{reason}. rar writes no copy that matches no header, so this "
+                    "record is damaged or crafted. The listing comes from the "
+                    "headers the walk read, which is what unrar lists too."
                 )
             elif record == RAR3_UOW_NAME:
                 message = (
@@ -3598,7 +3468,8 @@ class RarReader(BaseArchiveReader):
             )
 
     def _emit_service_header_diagnostics(self) -> None:
-        """Report the SERVICE headers (``CMT``, ``QO``) whose walk did not finish.
+        """Report the SERVICE headers (``CMT``, ``QO``) whose walk did not finish,
+        and a ``QO`` header whose copies matched no header the walk reached.
 
         Emitted after the members, so the two kinds are not interleaved in file
         order: a strict policy raises at emit time, so it refuses on a member's
@@ -3607,8 +3478,8 @@ class RarReader(BaseArchiveReader):
         order would need each header's offset, which ``DamagedServiceHeader``
         deliberately does not keep.
 
-        The parser caps how many it keeps, so the count of the rest is reported
-        too: a cap that silently swallowed the remainder would reopen the hole this
+        The parser caps how many unfinished headers it keeps, so the count of the
+        rest is reported too: a cap that silently swallowed the remainder would reopen the hole this
         reporting exists to close.
         """
         for damaged in self._archive.damaged_service_headers:
@@ -3823,7 +3694,7 @@ class RarReader(BaseArchiveReader):
             remaining -= take
         if not views:
             return self._shared.view(info.data_offset, 0)
-        return _JoinedParts(views)
+        return JoinedViews(views)
 
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         if member.type != MemberType.SYMLINK or member.link_target is not None:
@@ -4066,6 +3937,59 @@ class RarReader(BaseArchiveReader):
             source_format=ArchiveFormat.RAR,
         )
 
+    def _solid_run(self, member: ArchiveMember) -> SolidRun | None:
+        # Each open() of a solid member runs a fresh process. Through its include
+        # mask, unrar decodes the archive from its first payload member. unar decodes
+        # only the member's solid stream, which starts at a compressed member without
+        # the solid flag, and skips stored members (``unar_dictionary_costs``). The
+        # rare unar read of a name unrar cannot address under AUTO is counted as
+        # unrar's.
+        raw = member._raw
+        if (
+            not self._archive.is_solid
+            or not isinstance(raw, RarMemberInfo)
+            or not raw.is_payload_file()
+            or raw.is_file_copy()
+            or self._can_direct_read(raw)
+            or self._decrypts_natively(raw)
+        ):
+            return None
+        if self._unar_policy is None:
+            return SolidRun(
+                None, self._solid_prefix(member), _member_stream_size(member)
+            )
+        if uses_no_dictionary(raw):
+            return None
+        return self._unar_solid_runs().get(id(member))
+
+    def _unar_solid_runs(self) -> dict[int, SolidRun]:
+        """Each compressed member's :class:`SolidRun` under ``unar``, by ``id``.
+
+        The key is the archive index of the member that starts the solid stream, and
+        the offset counts the earlier compressed entries of that stream. Streams are
+        cut on :func:`uses_no_dictionary` alone, as ``unar_dictionary_costs`` cuts
+        them, so a compressed entry that is not a payload file (a RAR3/4 symlink
+        target) still starts a stream and counts toward the offset. Built once.
+        """
+        runs = self._unar_runs
+        if runs is not None:
+            return runs
+        runs = {}
+        start = -1
+        offset = 0
+        for index, member in enumerate(self._members):
+            raw = member._raw
+            if not isinstance(raw, RarMemberInfo) or uses_no_dictionary(raw):
+                continue
+            if not raw.file_solid or start < 0:
+                start, offset = index, 0
+            size = raw.file_size
+            if raw.is_payload_file():
+                runs[id(member)] = SolidRun(start, offset, size)
+            offset += size
+        self._unar_runs = runs
+        return runs
+
     def _solid_prefix(self, target: ArchiveMember) -> int:
         """Unpacked bytes of earlier payload members in a solid archive.
 
@@ -4112,6 +4036,32 @@ class RarReader(BaseArchiveReader):
             "neither RAR decompressor archivey runs is known to decode (unrar 7.00 "
             'reports "Unknown method"), so switching decompressors does not help; it '
             "may need a newer version of RAR.",
+            archive_name=self._archive_name,
+            member_name=member.name,
+            source_format=ArchiveFormat.RAR,
+        )
+
+    def _solid_after_unknown_error(
+        self, member: ArchiveMember, raw: RarMemberInfo, *, masked_unrar: bool
+    ) -> UnsupportedFeatureError | None:
+        """The refusal for a member that an unknown-version member ahead of it keeps
+        from being decoded, or ``None``.
+
+        When that member is in its solid stream, no program decodes it: decoding it
+        means decoding that member first. With ``masked_unrar``, the read is the
+        ``unrar`` one, addressed through an include mask, and a member in a later
+        solid stream is refused too: with a mask, ``unrar`` decodes a solid archive
+        from its start, stops at that member and writes nothing more
+        (:func:`solid_after_unknown_compression`). Either used to surface as a
+        truncation. Like :meth:`_unknown_compression_error`, this is
+        ``UnsupportedFeatureError``, raised before any process is spawned.
+        """
+        block = self._solid_after_unknown.get(id(raw))
+        if block is None or not (block.same_stream or masked_unrar):
+            return None
+        return UnsupportedFeatureError(
+            f"RAR member {quoted(member.name)} cannot be decoded: "
+            + solid_after_unknown_compression_reason(block),
             archive_name=self._archive_name,
             member_name=member.name,
             source_format=ArchiveFormat.RAR,
@@ -4168,6 +4118,7 @@ class RarReader(BaseArchiveReader):
             limits=self._config.decoder_limits,
             what=f"the RAR dictionary {program} needs for member {quoted(member.name)}",
             counted_from=counted_from,
+            usage=self._usage,
         )
 
     def _pass_dictionary_costs(self) -> dict[int, _DictionaryCost]:
@@ -4246,6 +4197,14 @@ class RarReader(BaseArchiveReader):
         cut = self._cut_data_error(member, raw)
         if cut is not None:
             raise cut
+
+        # Only here, on the way to a program: archivey's own reads above do not
+        # decode the members before this one. A member of a later solid stream is
+        # refused only once the read is known to be ``unrar``'s
+        # (:meth:`_open_member_with_program`).
+        after_unknown = self._solid_after_unknown_error(member, raw, masked_unrar=False)
+        if after_unknown is not None:
+            raise after_unknown
 
         if self._decompressor is RarDecompressor.NONE:
             raise self._no_decompressor_refused(member, raw)
@@ -4361,6 +4320,10 @@ class RarReader(BaseArchiveReader):
             return self._open_member_with_unar(
                 member, raw, policy, dictionary_cost=cost
             )
+        # ``unrar`` it is, through an include mask; nothing has been spawned yet.
+        after_unknown = self._solid_after_unknown_error(member, raw, masked_unrar=True)
+        if after_unknown is not None:
+            raise after_unknown
         # Picked before anything is copied for ``unrar``: a RAR5 PswCheck rejects a
         # wrong candidate without spooling a stream source to disk. A RAR3/4 candidate
         # list is judged by running ``unrar``, so that one does copy.
@@ -4551,7 +4514,12 @@ class RarReader(BaseArchiveReader):
         try:
             rewind: RewindWarning | None = None
             if self._seek_declared():
-                inner = _RespawnStream(spawn, inner, size=_member_stream_size(member))
+                inner = RespawnStream(
+                    spawn,
+                    inner,
+                    size=_member_stream_size(member),
+                    what="unrar output",
+                )
                 rewind = RewindWarning(
                     codec_name="rar",
                     suggest_install=False,
@@ -4796,7 +4764,13 @@ class RarReader(BaseArchiveReader):
 
         def _plan(
             member: ArchiveMember, raw: RarMemberInfo, size: int, has_digest: bool
-        ) -> int | Callable[[], BinaryIO]:
+        ) -> int | Callable[[], BinaryIO] | None:
+            block = self._solid_after_unknown.get(id(raw))
+            if block is not None and block.same_stream:
+                # Left out of the run (``member_refusal``) and served as ``open()``
+                # serves it, as in the ``unrar`` pass. A member of a later stream
+                # is in the run: ``unar`` reads it.
+                return None
             refusal = policy.solid_pass_refusal(raw)
             if refusal is not None:
                 return lambda: _refuse(member, refusal)

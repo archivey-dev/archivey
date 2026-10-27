@@ -61,8 +61,14 @@ points at a stored, unencrypted `QO` SERVICE, the parser SHALL parse those
 FILE copies, seek back to after MAIN, and walk. FILE headers whose offsets
 appear in `QO` SHALL be emitted from the copies and skipped; FILE headers
 `QO` omitted SHALL still be parsed. `CMT` after MAIN SHALL be consumed as a
-normal SERVICE on that walk. Extract SHALL use the same table. Otherwise the
-parser SHALL walk FILE headers. A `QO` that is missing, packed, split,
+normal SERVICE on that walk. A copy whose offset the walk never lands on SHALL NOT
+be listed. When the walk ends cleanly, at an end block read whole, and copies are
+left unmatched, the `QO` header SHALL report `MEMBER_HEADER_RECORD_SKIPPED` saying
+how many, with the listing unchanged; a walk that was cut, stopped at a damaged
+header or ended at a damaged end block, or one that did not use `QO`, SHALL NOT
+report it. The report SHALL NOT count toward the cap on damaged service headers. Extract SHALL use the
+same table. Otherwise the parser SHALL walk FILE headers. A `QO` that is missing,
+packed, split,
 encrypted, CRC-invalid, or behind header encryption SHALL fall back to the
 walk. Only the first MAIN header of a volume SHALL have its locator followed: a
 repeated MAIN SHALL still be parsed for its flags, but SHALL NOT read the `QO`
@@ -80,6 +86,10 @@ its PACK_SIZE (with HIGH_PACK_SIZE when set) whether or not LONG_BLOCK is set, a
 | Open RAR4 archive | Members and metadata come from native headers |
 | Open RAR5 archive | Members, flags, hashes, and redirect metadata come from native headers |
 | Open RAR5 with a stored unencrypted `QO` reachable from MAIN's locator | FILE headers in `QO` are emitted from the copies and skipped on the walk; omitted FILE headers and `CMT` after MAIN are parsed |
+| Open RAR5 whose `QO` holds a copy no FILE header the walk reaches matches, walk ending at a whole end block | Members listed as the walk finds them; one `MEMBER_HEADER_RECORD_SKIPPED` on the `QO` header with the count |
+| Same, but the walk is cut | Members before the cut listed; no unmatched-copy report |
+| Same, but a FILE header the walk reads fails its CRC | Members before it listed; no unmatched-copy report |
+| Same, but the end block fails its CRC and only zeros follow it | Members listed as the walk finds them; no unmatched-copy report |
 | Open RAR5 with no `QO`, locator offset 0, packed/encrypted/`QO` CRC failure, or header encryption | Member table is filled by the FILE-header walk |
 | Open RAR5 whose MAIN header is repeated, each copy's locator pointing at one `QO` | The `QO` payload is read once; later MAIN headers are parsed for their flags only |
 | Open RAR4 whose FILE header has LONG_BLOCK clear and whose data holds another FILE header | Only the outer member is listed, as `unrar lb` lists it |
@@ -132,21 +142,29 @@ name.
 
 ### Requirement: Decode RAR 1.5-4 comments in the order names use
 
-A RAR5 comment is UTF-8 by the format and SHALL ignore `encoding=`. A RAR 2.9-4 `CMT`
-SERVICE header with `SUBHEAD_FLAGS_CMT_UNICODE` set SHALL decode as UTF-16LE. Every other
-RAR 1.5-4 comment (an unflagged `CMT` or an old-style COMMENT subblock, each stored or
-compressed) records no code page. It SHALL be cut at the first NUL, as `unrar` reads it,
-and SHALL decode as strict UTF-8 when the bytes are valid UTF-8, else with the caller's
-`encoding=` when one was passed, else as windows-1252. A byte the chosen code page
-leaves undefined SHALL survive as a lone surrogate, as it does in a name. The system MUST
-NOT decode an 8-bit comment as UTF-16LE. A comment is not a name, so decoding it SHALL NOT
-emit `MEMBER_NAME_ENCODING_INFERRED`.
+A RAR5 comment is UTF-8 by the format and SHALL ignore `encoding=`; a byte that is not
+valid UTF-8 SHALL survive as a lone surrogate, as it does in a RAR5 name. A RAR 2.9-4
+`CMT` SERVICE header with `SUBHEAD_FLAGS_CMT_UNICODE` set SHALL decode as UTF-16LE, a
+surrogate unit without its partner kept as that unit, as in a RAR3 Unicode name. Every
+other RAR 1.5-4 comment (an unflagged `CMT` or an old-style COMMENT subblock, each stored
+or compressed) records no code page. It SHALL be cut at the first NUL, as `unrar` reads
+it, and SHALL decode as strict UTF-8 when the bytes are valid UTF-8, else with the
+caller's `encoding=` when one was passed, else as windows-1252. A byte the chosen code
+page leaves undefined SHALL survive as a lone surrogate, as it does in a name. The system
+MUST NOT decode an 8-bit comment as UTF-16LE. A comment is not a name, so decoding it
+SHALL NOT emit `MEMBER_NAME_ENCODING_INFERRED`.
 
 #### Scenario: An undecodable comment byte survives
 
 - **WHEN** an 8-bit comment holds `b"a\x98b"` and the archive is opened with
   `encoding="cp1251"`, which leaves 0x98 undefined
 - **THEN** the comment is `"a\udc98b"`, the same string a ZIP comment with those bytes gives
+
+#### Scenario: A RAR5 comment byte that is not UTF-8 survives
+
+- **WHEN** a RAR5 comment holds `b"caf\xe9 \xff ok"` and the archive is opened with
+  `encoding="cp1252"`
+- **THEN** the comment is `"caf\udce9 \udcff ok"`, never U+FFFD
 
 ### Requirement: Accept a non-zero archive start offset (SFX)
 
@@ -225,6 +243,7 @@ it. It recomputes the total rather than reusing the walk's, which is kept per li
 | RAR4 or RAR5 archive under `max_members` whose stored names weigh more than `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at parse (`open_archive`), including `stream_members()` / `streaming=True` |
 | Volume set whose members are split across volumes, `max_metadata_bytes` at exactly what registration weighs | Opens and lists: a split member's name is weighed once |
 | RAR 1.5-4 member whose stored `CMT` comment, attached after the member was weighed, takes the total past `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` from the header walk at parse (`open_archive`); at exactly the total, opens and lists the comment |
+| RAR 1.5-4 or RAR5 `CMT` comment the walk reads (its bytes in the file, within the 256 KiB compressed cap, not encrypted or split) whose packed bytes alone are over `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at parse, before its bytes are read |
 | Solid compressed `CMT` comments that each declare 1 byte over up to 256 KiB of packed data | Weighed by their packed bytes: `ResourceLimitError` naming `max_metadata_bytes` at parse once their sum passes it |
 
 ### Requirement: Expose RAR file-version history members
@@ -660,7 +679,15 @@ SHALL raise `UnsupportedFeatureError` when its data is read, before any decompre
 runs, with either decompressor and in a solid pass. The versions it decodes are RAR5
 compression-info versions 0 and 1 and RAR 1.5-4 `UNP_VER` 13 to 29; outside them
 `unrar` reports "Unknown method" and writes nothing, which is not a truncation. A stored
-member reads whatever version it declares, as in `unrar`.
+member reads whatever version it declares, as in `unrar`. A later compressed member of
+the same solid stream (by the members' solid flags) SHALL raise `UnsupportedFeatureError`
+naming the unknown member, in the same way and with either decompressor, since decoding it
+means decoding that member first. With `unrar`, in an archive whose main header has the
+solid bit, every later member that `unrar` would decode SHALL raise it too, a later solid
+stream included: archivey addresses a member through an include mask, and with one
+`unrar` decodes the archive from its start. That message SHALL say so, and SHALL NOT
+say the archive needs the unknown member decoded. With `unar`, which reads a later stream
+on its own, a member of a later stream SHALL be read.
 
 #### Scenario: unsupported variant matrix
 
@@ -673,6 +700,8 @@ member reads whatever version it declares, as in `unrar`.
 | Compressed RAR5 member with compression-info version 2 or more | Listing succeeds; read raises `UnsupportedFeatureError` |
 | Compressed RAR 1.5-4 member with `UNP_VER` below 13 or above 29 | Listing succeeds; read raises `UnsupportedFeatureError` |
 | Stored member declaring an unknown version | Reads normally |
+| Solid archive, compressed member after one with an unknown version, same solid stream | Read raises `UnsupportedFeatureError` naming that member, with either decompressor |
+| Solid archive, member of a later solid stream after one with an unknown version | `unrar`: read raises `UnsupportedFeatureError` naming that member and the include mask; `unar`: reads normally |
 
 ### Requirement: Support multi-volume RAR sets
 
@@ -1297,9 +1326,10 @@ SHALL open and list the members whose headers precede that header. The cut SHALL
 reported as `TruncatedError`: as `members_report().error`, and raised by `members()` and
 `stream_members()` after the listed members. This SHALL hold for RAR 1.5-4 and RAR5, in
 both access modes, and for a RAR5 header cut inside its CRC or its size field. It is the
-same rule as a walk whose skip over packed data lands past the end of the file. In a
-multi-volume set the message SHALL name the volume, because its byte offset is within
-that volume.
+same rule as a walk whose skip over packed data lands past the end of the file, and a
+`CMT` comment whose data runs past the end, stored or compressed, is such packed data:
+the comment SHALL be `None` and the members before it SHALL still list. In a multi-volume
+set the message SHALL name the volume, because its byte offset is within that volume.
 
 Only a file that ends before the bytes a header declares is a cut. A declared size that
 is invalid while its bytes are present SHALL stay `CorruptionError` at open.
@@ -1309,9 +1339,12 @@ whole cipher block, is a cut as above. A cut after that block is a cut only once
 password is proven: in RAR5 by the archive's password check value, in RAR 1.5-4 by an
 earlier encrypted header whose CRC16 matched. Before that proof, a wrong key also
 decrypts a size that reads to the end of the file, so the open SHALL raise
-`EncryptionError`. That happens inside the first encrypted header of a RAR 1.5-4
-archive, and inside any header of a RAR5 archive whose encryption record has no check
-value.
+`EncryptionError`. When that header's read ran out of ciphertext, the message SHALL
+also name a cut in that header, or damage to it, as the cause if the password is right,
+and in a volume set SHALL name the volume its byte offset is in; a header whose read did
+not run out of ciphertext SHALL NOT be named as a cut. That happens inside the first
+encrypted header of a RAR 1.5-4 archive, and inside any header of a RAR5 archive whose
+encryption record has no check value.
 
 A file that ends exactly at a header boundary is not a cut: RAR 1.5-4 lists as complete,
 and RAR5 lists and then emits `ARCHIVE_EOF_MARKER_MISSING`.
@@ -1325,8 +1358,8 @@ and RAR5 lists and then emits `ARCHIVE_EOF_MARKER_MISSING`.
 | RAR3 size below 7, RAR5 size over 2 MiB, RAR5 size field over 10 bytes | `CorruptionError` at open |
 | `-hp` RAR5 with a check value, cut inside any header | Members before it listed; `TruncatedError` after them |
 | `-hp` RAR 1.5-4, cut inside a header after one whose CRC16 matched | Members before it listed; `TruncatedError` after them |
-| `-hp` RAR 1.5-4, cut after the first encrypted header's first cipher block | `EncryptionError` at open |
-| `-hp` RAR5 without a check value, cut after a header's first cipher block | `EncryptionError` at open |
+| `-hp` RAR 1.5-4, cut after the first encrypted header's first cipher block | `EncryptionError` at open, its message naming a cut in that header or damage to it as the cause if the password is right |
+| `-hp` RAR5 without a check value, cut after a header's first cipher block | `EncryptionError` at open, its message naming a cut in that header or damage to it as the cause if the password is right |
 | Later volume of a set cut inside a header | `TruncatedError` naming that volume |
 
 ### Requirement: A damaged end-of-archive block SHALL keep the listing
@@ -1444,7 +1477,9 @@ open (see the cut requirement above).
 
 With encrypted headers the damage is reported this way only once the header password is
 proven, as for a cut. Before that proof a CRC mismatch reads the same as a wrong key, so
-the open SHALL raise the wrong-password `EncryptionError`.
+the open SHALL raise the wrong-password `EncryptionError`. When that header's read ran
+out of ciphertext, its message also names a cut in that header or damage to it, under
+the condition the cut requirement above sets.
 
 #### Scenario: damaged header matrix
 
@@ -1456,7 +1491,7 @@ the open SHALL raise the wrong-password `EncryptionError`.
 | The same set with volume 2 missing | Volume 1's members listed; `TruncatedError` naming volume 2 and the damaged header |
 | `-hp` RAR 1.5-4, a FILE header damaged after one whose CRC16 matched | Members before it listed; `CorruptionError` after them |
 | `-hp` RAR 1.5-4 set, volume 2's first header damaged after volume 1 proved the key | `CorruptionError` naming volume 2 |
-| The same damage with a wrong password | `EncryptionError` ("wrong password?") at open |
+| The same damage with a wrong password | `EncryptionError` ("wrong password?") at open; when the read ran out of ciphertext, its message also names a cut or damage, and the volume |
 
 ### Requirement: Serve a solid pass's file copies from the source it decoded
 

@@ -14,8 +14,8 @@ Decode order within a chain (packed → unpacked)::
 not “is LZMA”: Delta and BCJ are batched with LZMA1/2 here.
 
 - LZMA2 then Delta/BCJ (decode order) → one stdlib ``lzma`` raw filter chain, except
-  ARM64: stdlib ``lzma`` will not build it, so ARM64 and every filter decoded after it
-  in the run are each their own stage
+  ARM64 and RISC-V: stdlib ``lzma`` will not build them, so such a filter and every
+  filter decoded after it in the run are each their own stage
 - LZMA1 then Delta → one capped chain; a BCJ after LZMA1 is its own stage
   (BPO-21872 truncation)
 - A Delta/BCJ decoded before any LZMA1/LZMA2 → one filter stage per coder (a liblzma
@@ -88,6 +88,7 @@ from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64
 from archivey.internal.streams.codecs.bcj2_filter import Bcj2DecoderStream
 from archivey.internal.streams.codecs.isolated import IN_PROCESS, natives_for
 from archivey.internal.streams.codecs.lzma_filter_decoder import FilterStream
+from archivey.internal.streams.codecs.riscv_filter import FILTER_RISCV
 from archivey.internal.streams.codecs.zstd_framing import (
     MAX_FRAME_HEADER_SIZE,
     frame_window_size,
@@ -181,12 +182,13 @@ class _LzmaChainStage:
 class _FilterStage:
     """One filter-only coder staged on its own, outside any liblzma chain: a BCJ after
     LZMA1, a Delta/BCJ decoded before any LZMA1/LZMA2 in its run or past liblzma's
-    filter limit, or ARM64 and any filter decoded after it.
+    filter limit, or ARM64 / RISC-V and any filter decoded after it.
 
     ``lzma_filter`` is the liblzma filter dict with its options (BCJ
     ``start_offset``, Delta ``dist``). :class:`FilterStream` picks the decoder by
-    filter id: ``Arm64FilterDecoder`` decodes ARM64 in Python, and ``FilterDecoder``
-    runs every other filter through liblzma over its own LZMA2 framing.
+    filter id: ``PythonBranchFilterDecoder`` decodes ARM64 and RISC-V in Python, and
+    ``FilterDecoder`` runs every other filter through liblzma over its own LZMA2
+    framing.
     """
 
     lzma_filter: dict
@@ -452,7 +454,8 @@ def _plan_lzma_family(
     filters decoded after it, up to liblzma's filter limit. A filter decoded before
     any codec of its segment (``7z a -m0=LZMA2 -m1=BCJ`` stores BCJ first in decode
     order), or past the limit, runs as its own stage. So does a filter Python's
-    ``lzma`` will not build (ARM64), and every filter decoded after it in its segment.
+    ``lzma`` will not build (ARM64, RISC-V), and every filter decoded after it in its
+    segment.
 
     ``input_size`` is the run's input length (``None`` over a pack stream); each
     chain's input is the output of the coder before it.
@@ -541,6 +544,11 @@ def _lzma_filter(coder: SevenZipCoder) -> dict:
     )
 
 
+# The start-offset alignment 7-Zip requires of the branch filters decoded in Python:
+# its ``REGISTER_FILTER_E_BRANCH`` alignment masks (3 for ARM64, 1 for RISC-V) plus one.
+_PYTHON_FILTER_ALIGNMENT = {FILTER_ARM64: 4, FILTER_RISCV: 2}
+
+
 def _bcj_filter(coder: SevenZipCoder, filter_id: int) -> dict:
     """liblzma dict for a 7z BCJ coder, carrying its start offset when it has one.
 
@@ -552,9 +560,10 @@ def _bcj_filter(coder: SevenZipCoder, filter_id: int) -> dict:
     their position from it the same way liblzma seeds ``now_pos``). For the filters
     liblzma decodes, that equivalence is from reading both sources: the 7-Zip CLI
     cannot write a non-zero offset for them, so no 7-Zip-written archive checks it,
-    and the tests encode their fixtures with liblzma. ARM64 is the exception:
-    ``7z a -m0=ARM64:<n>`` writes an offset, and ``tests/test_sevenzip_arm64.py``
-    checks the ARM64 offset against the bytes 7-Zip stores.
+    and the tests encode their fixtures with liblzma. ARM64 and RISC-V are the
+    exceptions: ``7z a -m0=ARM64:<n>`` and ``-m0=RISCV:<n>`` write an offset, and
+    ``tests/test_sevenzip_arm64.py`` and ``tests/test_sevenzip_riscv.py`` check it
+    against the bytes 7-Zip stores.
     """
     if not coder.properties:
         return {"id": filter_id}
@@ -566,12 +575,14 @@ def _bcj_filter(coder: SevenZipCoder, filter_id: int) -> dict:
     if start_offset == 0:
         return {"id": filter_id}
     lzma_filter = {"id": filter_id, "start_offset": start_offset}
-    if filter_id == FILTER_ARM64:
+    alignment = _PYTHON_FILTER_ALIGNMENT.get(filter_id)
+    if alignment is not None:
         # Decoded in Python (Python's lzma refuses the id). 7-Zip refuses an offset
-        # that is not a multiple of 4 (E_NOTIMPL), and so does liblzma.
-        if start_offset % 4:
+        # that is not a multiple of the instruction alignment (E_NOTIMPL), and so
+        # does liblzma.
+        if start_offset % alignment:
             raise _unsupported_start_offset(
-                coder, start_offset, "it must be a multiple of 4"
+                coder, start_offset, f"it must be a multiple of {alignment}"
             )
         return lzma_filter
     try:
@@ -899,6 +910,7 @@ def open_folder_pipeline(
             limits=config.decoder_limits,
             what=f"the sum over a {folder_kind}'s decoders "
             "(LZMA dictionaries, PPMd memory, zstd windows)",
+            usage=config.usage,
         )
 
     def open_chain(chain: _Chain, *, seekable: bool) -> BinaryIO:
@@ -1041,9 +1053,12 @@ def decode_folder_to_bytes(
         decoded = read_exact(stream, uncompressed_size)
         if len(decoded) != uncompressed_size:
             raise TruncatedError("7z folder is truncated after decoding")
-        if folder.digest_defined and folder.crc is not None:
-            if zlib.crc32(decoded) & 0xFFFFFFFF != folder.crc & 0xFFFFFFFF:
-                raise CorruptionError("Decoded 7z folder CRC mismatch")
+        if (
+            folder.digest_defined
+            and folder.crc is not None
+            and zlib.crc32(decoded) & 0xFFFFFFFF != folder.crc & 0xFFFFFFFF
+        ):
+            raise CorruptionError("Decoded 7z folder CRC mismatch")
         return decoded
     finally:
         stream.close()

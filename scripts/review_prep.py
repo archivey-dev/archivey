@@ -358,6 +358,7 @@ def red_on_base(base: str, test_ids: list[str]) -> int:
             env=env,
             capture_output=True,
             text=True,
+            check=False,
         )
         if probe.returncode != 0:
             sys.exit(
@@ -374,6 +375,7 @@ def red_on_base(base: str, test_ids: list[str]) -> int:
             env=env,
             capture_output=True,
             text=True,
+            check=False,
         ).stdout.strip()
         if not Path(where).resolve().is_relative_to((tree / "src").resolve()):
             sys.exit(
@@ -398,6 +400,7 @@ def red_on_base(base: str, test_ids: list[str]) -> int:
                 env=env,
                 capture_output=True,
                 text=True,
+                check=False,
             )
             rows.append((test_id, _outcome(proc.returncode, proc.stdout + proc.stderr)))
     finally:
@@ -405,6 +408,7 @@ def red_on_base(base: str, test_ids: list[str]) -> int:
             ["git", "worktree", "remove", "--force", str(tree)],
             cwd=ROOT,
             capture_output=True,
+            check=False,
         )
         shutil.rmtree(tmp, ignore_errors=True)
     print(f"New tests against `src/` at the merge base ({merge_base[:10]}):\n")

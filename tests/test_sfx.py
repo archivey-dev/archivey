@@ -613,13 +613,13 @@ def test_start_offset_on_a_path_equals_an_offset_view_on_a_stream(
             m.name: by_offset.read(m) for m in by_offset.members() if m.is_file
         }
 
-    with path.open("rb") as handle:
-        with _open_with(
+    with (
+        path.open("rb") as handle,
+        _open_with(
             SlicingStream(handle, start=len(_STUB)), password=password
-        ) as by_view:
-            by_view_read = {
-                m.name: by_view.read(m) for m in by_view.members() if m.is_file
-            }
+        ) as by_view,
+    ):
+        by_view_read = {m.name: by_view.read(m) for m in by_view.members() if m.is_file}
 
     assert by_offset_read == by_view_read == _FILES
 
@@ -987,11 +987,11 @@ def test_auto_open_matches_an_explicitly_sliced_stream(
         assert auto.format == expected
         auto_read = {m.name: auto.read(m) for m in auto.members() if m.is_file}
 
-    with path.open("rb") as handle:
-        with open_archive(SlicingStream(handle, start=len(_STUB))) as sliced:
-            sliced_read = {
-                m.name: sliced.read(m) for m in sliced.members() if m.is_file
-            }
+    with (
+        path.open("rb") as handle,
+        open_archive(SlicingStream(handle, start=len(_STUB))) as sliced,
+    ):
+        sliced_read = {m.name: sliced.read(m) for m in sliced.members() if m.is_file}
 
     assert auto_read == sliced_read == _FILES
 

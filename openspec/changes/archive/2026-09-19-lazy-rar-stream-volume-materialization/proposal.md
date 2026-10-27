@@ -27,7 +27,7 @@ single stream source has never behaved this way: its copy waits for the first me
 `unrar` has to serve (`_ensure_archive_path`). The two stream shapes reported their
 disk cost at different times for no reason other than where the call sat.
 
-Recorded as `dev-docs/formats/rar.md` §10 #21 when [#314](https://github.com/davitf/archivey/pull/314)
+Recorded as `dev-docs/formats/rar.md` §10 #21 when [#314](https://github.com/archivey-dev/archivey/pull/314)
 was reviewed.
 
 ## What Changes

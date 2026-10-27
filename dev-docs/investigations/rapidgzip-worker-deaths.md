@@ -156,5 +156,5 @@ before anything is killed. The rapidgzip and PPMd children are not dumpable (§4
 them `wchan` (it reads `0`), the task stacks, `gdb` and `py-spy` all need root or
 `CAP_SYS_PTRACE`; without either, only `/proc/<pid>/status` is left, whose `State` line
 shows that a child sleeps, not where. `.github/workflows/rapidgzip-resume-stress.yml` runs it on ubuntu py3.11
-and py3.14, weekly and on demand (davitf, PR #570 review, decision D1); it is not a
-required check.
+and py3.14, monthly and on demand (its own scheduled workflow per davitf, PR #570 review,
+decision D1); it is not a required check.

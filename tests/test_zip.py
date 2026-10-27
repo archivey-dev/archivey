@@ -172,6 +172,34 @@ def test_none_mode_when_external_attr_zero() -> None:
         assert ar.get("plain.txt").mode is None
 
 
+@pytest.mark.parametrize(
+    ("external_attr", "mode"),
+    [
+        # A Unix host with only DOS attribute bits (here ARCHIVE): no mode was stored.
+        # unzip 6.00 falls back to the DOS bits too, rather than chmod the file 000.
+        (0x20, None),
+        (0x10 | 0x01, None),
+        # Permission bits without a file type, as `ZipInfo.external_attr = 0o644 << 16`
+        # writes them, are a mode.
+        (0o644 << 16, 0o644),
+        ((0o100755 << 16) | 0x20, 0o755),
+    ],
+)
+def test_unix_mode_needs_a_non_zero_high_word(
+    external_attr: int, mode: int | None
+) -> None:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        info = zipfile.ZipInfo("a.txt")
+        info.create_system = 3
+        info.external_attr = external_attr
+        z.writestr(info, b"x")
+    with open_archive(io.BytesIO(buf.getvalue())) as ar:
+        member = ar.get("a.txt")
+        assert member.mode == mode
+        assert member.type is MemberType.FILE
+
+
 def test_directory_member_type(simple_zip: Path) -> None:
     with open_archive(simple_zip) as ar:
         by_name = {m.name: m for m in ar.members()}
@@ -249,9 +277,11 @@ def test_truncated_symlink_target_is_typed_error(tmp_path: Path) -> None:
     # and classify the member as a symlink (then fail while reading the target).
     assert len(data) > 40
     truncated = bytes(data[: max(40, len(data) // 2)])
-    with pytest.raises(CorruptionError):
-        with open_archive(io.BytesIO(truncated), format=ArchiveFormat.ZIP) as ar:
-            list(ar)
+    with (
+        pytest.raises(CorruptionError),
+        open_archive(io.BytesIO(truncated), format=ArchiveFormat.ZIP) as ar,
+    ):
+        list(ar)
 
 
 @pytest.mark.parametrize(
@@ -421,7 +451,7 @@ def test_unencrypted_codec_indexerror_is_not_truncated(
     the codec opener (``open_codec_raw`` for an unencrypted member) still fails the
     Atheris zip target rather than being swallowed as TruncatedError.
     """
-    import archivey.internal.backends.zip_reader as zip_reader
+    from archivey.internal.backends import zip_reader
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
@@ -431,9 +461,11 @@ def test_unencrypted_codec_indexerror_is_not_truncated(
         raise IndexError("index out of range")
 
     monkeypatch.setattr(zip_reader, "open_codec_raw", _boom)
-    with open_archive(io.BytesIO(buf.getvalue()), format=ArchiveFormat.ZIP) as ar:
-        with pytest.raises(IndexError, match="index out of range"):
-            ar.open(next(iter(ar)))
+    with (
+        open_archive(io.BytesIO(buf.getvalue()), format=ArchiveFormat.ZIP) as ar,
+        pytest.raises(IndexError, match="index out of range"),
+    ):
+        ar.open(next(iter(ar)))
 
 
 def test_lzma_member_with_invalid_properties_is_corrupt_at_open() -> None:
@@ -449,9 +481,11 @@ def test_lzma_member_with_invalid_properties_is_corrupt_at_open() -> None:
     props_at = 30 + name_len + extra_len + 4
     assert raw[props_at] == 0x5D
     raw[props_at] = 0xFF
-    with open_archive(io.BytesIO(bytes(raw)), format=ArchiveFormat.ZIP) as ar:
-        with pytest.raises(CorruptionError) as info:
-            ar.open(ar.get("a.txt"))
+    with (
+        open_archive(io.BytesIO(bytes(raw)), format=ArchiveFormat.ZIP) as ar,
+        pytest.raises(CorruptionError) as info,
+    ):
+        ar.open(ar.get("a.txt"))
     assert info.value.member_name == "a.txt"
 
 
@@ -485,7 +519,7 @@ def test_unencrypted_member_read_indexerror_is_not_truncated(
     opaque-accelerator catch first. A short ZipCrypto header is checked by length in
     the decrypt stage, so no IndexError mapping exists anywhere.
     """
-    import archivey.internal.backends.zip_reader as zip_reader
+    from archivey.internal.backends import zip_reader
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
@@ -508,7 +542,7 @@ def test_member_read_unsupported_operation_other_than_seek_is_not_corruption(
     """``io.UnsupportedOperation`` is also a ``ValueError``. One that is not about
     seeking says nothing about the archive, so it propagates as itself instead of
     reaching the ValueError arm, which reports corruption."""
-    import archivey.internal.backends.zip_reader as zip_reader
+    from archivey.internal.backends import zip_reader
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
@@ -898,9 +932,11 @@ def test_damaged_owner_field_is_dropped_with_a_diagnostic(
     assert diagnostic.context.record_id == tag
     assert diagnostic.context.reason == reason
     strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(DiagnosticRaisedError):
-        with open_archive(io.BytesIO(data), config=strict) as ar:
-            ar.members()
+    with (
+        pytest.raises(DiagnosticRaisedError),
+        open_archive(io.BytesIO(data), config=strict) as ar,
+    ):
+        ar.members()
 
 
 def _local_only_owner_zip(field: bytes) -> bytes:
@@ -1380,9 +1416,8 @@ def test_plain_prefixed_and_empty_zip_still_open(tmp_path: Path) -> None:
 
 
 def test_open_returns_stream(simple_zip: Path) -> None:
-    with open_archive(simple_zip) as ar:
-        with ar.open("hello.txt") as f:
-            assert f.read() == b"hello world"
+    with open_archive(simple_zip) as ar, ar.open("hello.txt") as f:
+        assert f.read() == b"hello world"
 
 
 def test_stream_members(simple_zip: Path) -> None:
@@ -1822,9 +1857,11 @@ def _members_raise_corruption(data: bytes) -> None:
     A damaged directory lists the entries before the damage, then raises, as a cut
     TAR does; here there is none before it.
     """
-    with open_archive(io.BytesIO(data), format=ArchiveFormat.ZIP) as reader:
-        with raises_corruption_not_truncation(match="central directory"):
-            reader.members()
+    with (
+        open_archive(io.BytesIO(data), format=ArchiveFormat.ZIP) as reader,
+        raises_corruption_not_truncation(match="central directory"),
+    ):
+        reader.members()
 
 
 def test_record_inside_a_damaged_zip64_directory_is_not_read_as_encryption() -> None:
@@ -2323,11 +2360,13 @@ def test_name_flagged_utf8_that_is_not_decodes_as_unflagged(
 
 def test_strict_refuses_a_name_flagged_utf8_that_is_not() -> None:
     strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(DiagnosticRaisedError, match="UTF-8 flag is set"):
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError, match="UTF-8 flag is set"),
+        open_archive(
             io.BytesIO(_stored_zip(b"caf\xe9.txt", utf8_flag=True)), config=strict
-        ) as ar:
-            ar.members()
+        ) as ar,
+    ):
+        ar.members()
 
 
 def test_two_stored_names_that_decode_alike_are_duplicates(tmp_path: Path) -> None:
@@ -2561,11 +2600,11 @@ def test_encoding_inference_is_escalatable() -> None:
 
     policy = DiagnosticPolicy(raise_on={DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED})
     cfg = ArchiveyConfig(diagnostic_policy=policy)
-    with pytest.raises(DiagnosticRaisedError):
-        with open_archive(
-            _EXTERNAL_DIR / "encoding_infozip_jules.zip", config=cfg
-        ) as ar:
-            ar.members()
+    with (
+        pytest.raises(DiagnosticRaisedError),
+        open_archive(_EXTERNAL_DIR / "encoding_infozip_jules.zip", config=cfg) as ar,
+    ):
+        ar.members()
 
 
 # ---------------------------------------------------------------------------
@@ -2923,9 +2962,11 @@ def test_ae2_directory_data_is_checked_by_its_hmac(tmp_path: Path) -> None:
     tampered.write_bytes(
         build_aes_zip([(b"d/", b"hidden data!")], password=b"secret", tamper_hmac=True)
     )
-    with open_archive(tampered, password="secret") as ar:
-        with pytest.raises(CorruptionError, match="HMAC"):
-            ar.read("d/")
+    with (
+        open_archive(tampered, password="secret") as ar,
+        pytest.raises(CorruptionError, match="HMAC"),
+    ):
+        ar.read("d/")
     # AE-1 keeps the plaintext CRC, so a directory under it carries the digest.
     ae1 = tmp_path / "ae1-dir.zip"
     ae1.write_bytes(
@@ -2955,9 +2996,11 @@ def test_ae2_directory_data_is_checked_by_its_hmac(tmp_path: Path) -> None:
         tamper_hmac=True,
     ).replace(crc, b"\0\0\0\0")
     (tmp_path / "ae1-dir-tampered.zip").write_bytes(tampered_ae1)
-    with open_archive(tmp_path / "ae1-dir-tampered.zip", password="secret") as ar:
-        with pytest.raises(CorruptionError, match="HMAC"):
-            ar.read("d/")
+    with (
+        open_archive(tmp_path / "ae1-dir-tampered.zip", password="secret") as ar,
+        pytest.raises(CorruptionError, match="HMAC"),
+    ):
+        ar.read("d/")
 
 
 def test_directory_data_with_a_zero_crc_reads_unchecked(tmp_path: Path) -> None:
@@ -3130,11 +3173,13 @@ def test_relative_seek_before_0_after_a_deferred_seek_clamps() -> None:
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("a.bin", data)
     buf.seek(0)
-    with open_archive(buf, seekable_members=True) as reader:
-        with reader.open("a.bin") as stream:
-            stream.seek(100)
-            assert stream.seek(-500, io.SEEK_CUR) == 0
-            assert stream.read() == data
+    with (
+        open_archive(buf, seekable_members=True) as reader,
+        reader.open("a.bin") as stream,
+    ):
+        stream.seek(100)
+        assert stream.seek(-500, io.SEEK_CUR) == 0
+        assert stream.read() == data
 
 
 @pytest.mark.parametrize(
@@ -3154,7 +3199,7 @@ def test_member_decoder_config_matches_the_codec_openers_own(
     reader's base member config itself, not a copy: the openers do no config work
     for a stored stream source.
     """
-    import archivey.internal.backends.zip_reader as zip_reader
+    from archivey.internal.backends import zip_reader
     from archivey.internal.streams.codecs import open_codec_raw
     from archivey.internal.streams.codecs.registry import _decoder_config
     from archivey.internal.streams.streamtools import fix_stream_start_position

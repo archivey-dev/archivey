@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Regenerate ``tests/fixtures/rar/`` archives with the RARLAB ``rar`` CLI.
 
 Usage (from the repo root)::
@@ -200,6 +199,12 @@ _SEEK_RESPAWN: tuple[_File, ...] = (
     _File("tail.txt", b"tail-member\n"),
 )
 
+# ``-s2``: solid groups of two files, so ``c.txt`` starts a second solid stream (its
+# solid flag is clear) and ``d.txt`` continues it.
+_SOLID_GROUPS: tuple[_File, ...] = tuple(
+    _File(f"{name}.txt", f"member {name} text\n".encode() * 60) for name in "abcd"
+)
+
 
 def _touch_times(path: Path, *, mtime: str, atime: str) -> None:
     env = os.environ.copy()
@@ -311,7 +316,8 @@ def _fetch_rar623() -> Path:
 
     dest_dir.mkdir(parents=True, exist_ok=True)
     print(f"Downloading {_RAR623_DEB_URL}", file=sys.stderr)
-    with urllib.request.urlopen(_RAR623_DEB_URL) as response:  # noqa: S310 - pinned
+    # A fixed https URL naming one package version (_RAR623_DEB_URL above).
+    with urllib.request.urlopen(_RAR623_DEB_URL) as response:
         package = response.read()
     digest = hashlib.sha256(package).hexdigest()
     if digest != _RAR623_DEB_SHA256:
@@ -749,6 +755,7 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
     # --- RAR5 ---
     build(rar5_bin, "basic_nonsolid__.rar", _BASIC, extra=("-m0",))
     build(rar5_bin, "basic_solid__.rar", _BASIC, extra=("-s", "-m3"))
+    build(rar5_bin, "solid_groups__.rar", _SOLID_GROUPS, extra=("-s2", "-m3"))
     build(
         rar5_bin,
         "seek_respawn_solid__.rar",

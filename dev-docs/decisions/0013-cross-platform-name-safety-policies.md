@@ -64,6 +64,11 @@ conflicts rather than open space.
    precise: **a member either extracts to a byte-identical portable result on every OS, or is
    refused — and refusal is reserved for structures that cannot be safely written (traversal,
    symlink escape, special files, reserved names, `:`), never for a merely-awkward name.**
+   **Revised (2026-10-21):** `STANDARD` refuses an all-dots/spaces segment too, as the
+   safe-extraction spec's name matrix already required: Win32 merges `a/.../b` into `a/b`,
+   so the outcome would differ by OS (DR-17). In the same change, `foo.` beside `foo`
+   became a collision under `STANDARD` through the collision key. Reopen if a real producer
+   writes such folders and users need them under `STANDARD`.
 
 5. **`OverwritePolicy.RENAME` lands here (resolves a doc conflict).** An earlier design draft
    listed a full implementation as a Non-Goal; the proposal, tasks, spec delta, and brief all

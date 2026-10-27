@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypeVar
 
 from archivey.diagnostics import (
+    _INFO_LOG_CODES,
     Diagnostic,
     DiagnosticCode,
     DiagnosticContext,
@@ -567,7 +568,16 @@ class DiagnosticCollector:
 
         try:
             if not ignored:
-                log.warning("%s", diagnostic.message)
+                level = logging.INFO if code in _INFO_LOG_CODES else logging.WARNING
+                log.log(
+                    level,
+                    "%s",
+                    diagnostic.message,
+                    extra={
+                        "diagnostic_code": code,
+                        "diagnostic_occurrence_id": diagnostic.occurrence_id,
+                    },
+                )
                 if self._on_diagnostic is not None:
                     try:
                         self._on_diagnostic(diagnostic)
@@ -664,7 +674,7 @@ def resolve_collector(collector: DiagnosticCollector | None) -> DiagnosticCollec
     - is judged by the **library default** policy, not the caller's, so a caller on
       ``DiagnosticPolicy.STRICT`` does not get the raise it asked for;
     - never reaches ``reader.diagnostics`` or the caller's ``on_diagnostic`` callback.
-      Only the WARNING log line survives.
+      Only the log record survives.
 
     Codec streams get the caller's collector through ``StreamConfig.collector``, which
     :func:`~archivey.internal.streams.codecs.open_codec_stream` fills from its

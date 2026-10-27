@@ -72,7 +72,10 @@ binds.
   **Environment trouble falls back; explicit requests fail loudly.** An `AUTO` choice
   falls back on environment trouble; an explicit request fails loudly.
 - [DR-12](#dr-12-before-the-first-release-remove-rather-than-keep). **Before the first
-  release, remove rather than keep.** Until 0.2.0 ships, a breaking cleanup goes in now.
+  release, remove rather than keep.** Applied until 0.2.0; DR-12a replaced it.
+- [DR-12a](#dr-12a-after-the-first-release-deprecate-before-removing). **After the first
+  release, deprecate before removing.** A removal or rename warns for one minor release;
+  a break that can't be phased in gets a **Breaking:** changelog line.
 - [DR-13](#dr-13-a-public-name-earns-its-place). **A public name earns its place.** A
   public name or exception type exists only if a caller would use it differently.
 - [DR-14](#dr-14-one-obvious-way-and-one-mechanism-per-job). **One obvious way, and one
@@ -291,7 +294,8 @@ verified (DR-1 wins).
 
 **Rule.**
 - Leftover compressed input inside a member's declared data is a `CorruptionError` by
-  default.
+  default. rapidgzip on a DEFLATE member is the one exception, for a long second stream
+  (DR-5a).
 - Bytes after the end of an archive or stream are reported as `ARCHIVE_TRAILING_DATA`: a
   warning by default, refused under strict.
 - Zero padding is silent.
@@ -385,9 +389,10 @@ where the reads had reached completes a paused digest, maintainer 2026-10-13.
 - **Access mode.** Streaming and random access end up the same on disk "unless there's a
   strong reason that makes it impossible" (2026-09-25).
 - **Operating system.** The same archive extracts the same way on Linux, macOS and
-  Windows, or is refused everywhere.
+  Windows, or is refused everywhere, but for the same crafted shape under rapidgzip
+  (DR-5a).
 - **Accelerators and extras.** An accelerator changes speed, never the result or the
-  error type.
+  error type, but for one crafted shape (DR-5a).
 - **Entry point.** Public functions agree with each other (`detect_format` recognises
   what `open_archive` opens).
 - **When and where a call is made.** A call that works on one archive, or at one point in
@@ -453,6 +458,15 @@ meaning instead of 7-Zip's three bytes, because matching would mean carrying eac
 origin through the filters "for a name nobody writes on purpose" (2026-10-03, PR 564).
 The quadratic crafted hard-link shape was settled by the simpler backward-only rule
 rather than more memo state (2026-10-02, PR 532).
+rapidgzip on a ZIP or 7z DEFLATE member checks only the tail after the last point of its
+index, so a second stream that holds that point, with a size and CRC that cover both
+streams, reads as both; with the accelerator off it raises. Finding the first stream's
+end takes a decode from the start, which "negates the whole point of accelerators", so
+the limitation is accepted and documented (2026-10-24). Whether the second stream holds
+the point depends on the data, rapidgzip's thread count and the platform, so the same
+member may read on one machine and be refused on another; that is accepted as well, and
+the docs say "may" (2026-10-25). It does not relax DR-1: the output is what the member's
+own size and CRC describe.
 
 **Reopen if** a real producer writes the shape.
 
@@ -674,7 +688,9 @@ footgun on TAR/7z" (ADR 0003). Blocking a cheap read too catches the mistake dur
 development, not in production on a different archive (2026-09-29).
 
 **Rulings.** ADR 0003, 0004, 0010. `stream_members()` is never seekable (2026-09-26).
-The gzip AUTO accelerator stays seek-only for 0.2.0 (2026-09-27). `ListingCost` names
+The gzip AUTO accelerator stays seek-only for 0.2.0 (2026-09-27); after it, AUTO also
+takes a large sequential DEFLATE-family read at 3:1 or less, on Linux and macOS, and the
+stream stays forward-only (2026-10-26). `ListingCost` names
 how the member list is read through the source the archive was opened on (index, header
 walk or decompression), not the work of finding the index or when it is paid: RAR
 reports `REQUIRES_SCANNING` although it walks its headers inside `open_archive`
@@ -714,12 +730,11 @@ whatever the setting (ADR 0002 amendment, 2026-10-01).
 
 ### DR-12. Before the first release, remove rather than keep
 
-**Rule.** Until 0.2.0 ships, any breaking cleanup goes in now: deleting a name, renaming
+**Rule.** Before 0.2.0, any breaking cleanup went in at once: deleting a name, renaming
 a field, changing an exception's base class. If a public name has a single value, no
 caller, or an obvious two-line alternative, delete it. Offer "remove it" as an option on
-every API question. The maintainer still reviews every removal or rename of a public
-name, before 0.2.0 too: he is for the cleanup and wants to check it and know it happened
-(2026-10-09). Propose it, don't hold it back.
+every API question. The maintainer still reviewed every removal or rename of a public
+name: he was for the cleanup and wanted to check it and know it happened (2026-10-09).
 
 **Why.** Removing a public name after the release breaks callers. Adding it back later
 breaks no one ("no need to delay until after release", 2026-09-27).
@@ -739,6 +754,49 @@ In several of these the maintainer went further than the recommendation, toward
 removal.
 
 **Reopen if** a removed name is needed by a real caller; add it back then.
+
+0.2.0 shipped on 2026-10-23, and DR-12a replaced this rule. It stays as the record of
+the rulings above.
+
+### DR-12a. After the first release, deprecate before removing
+
+**Rule.** From 0.2.0 until 1.0:
+- A patch release adds, removes and changes no public function, class, parameter or
+  attribute. It may read input it used to refuse, add a `DiagnosticCode`, or add a value
+  to an enum documented as open-ended (`CompressionAlgorithm`); the maintainer allowed
+  new codes and enum values in a patch on 2026-10-23. It adds to
+  `ARCHIVE_INTEGRITY_CODES`, which `DiagnosticPolicy.STRICT` raises, only a code for
+  damage archivey should already have caught; any other addition to that set waits for
+  a minor release. It may add a line to the command's human-readable output, but changes
+  or removes none; the maintainer allowed that on 2026-10-24 (PR 1033).
+- A minor release may remove or rename a public name, but the old spelling keeps working
+  for one minor release first and emits a `DeprecationWarning` naming the replacement,
+  with `stacklevel=2` so Python attributes it to the caller's line; at the default level
+  it is attributed to archivey and hidden from every caller. The release after that
+  removes it. This warning is about the caller's code, not about
+  an archive, so the diagnostics-as-data rule (VISION, "queryable as data") does not
+  govern it: there is no `Diagnostic` for a deprecated call.
+- A break that can't be phased in that way (the same call gives a different result, an
+  exception changes type) goes in a minor release, and its changelog line starts with
+  **Breaking:**. The GitHub release mirrors the changelog.
+- The `archivey` command's verbs, options and exit codes are public names under the
+  same rule (maintainer, 2026-10-22). The command prints its own deprecation notice
+  for an old spelling: a command-line user has no Python call site to attribute a
+  `DeprecationWarning` to. The text it prints for people may change in a
+  minor release. A minor release may add a verb, which then wins over a file of that
+  name; `archivey list <path>` and `./<path>` always reach the file (`cli` spec).
+- `archivey.internal` is not public and changes freely.
+
+Public docs: `docs/how-it-is-built.md` §Versioning and stability.
+
+**Why.** 1.0 waits until early users have run archivey for a while (maintainer,
+2026-10-21), so those users are who the 0.x line serves. A warning release keeps their
+code running while they update, and a shim costs a few lines that the next minor release
+deletes. Chosen over breaking in any minor with only a changelog note, and over freezing
+the API until 1.0 (2026-10-21).
+
+**Reopen if** keeping a shim would mean keeping wrong behaviour (DR-1 wins), or when 1.0
+ships and the rule becomes semver's major-version rule.
 
 ### DR-13. A public name earns its place
 
@@ -893,7 +951,9 @@ naming question to a permissions decision (ADR 0013).
 
 **Rulings.** Absolute names re-root under STANDARD and TRUSTED, and STRICT refuses. The
 caller filter runs first, so `sanitize_names` can fix them; it was picked over a fourth
-policy (2026-09-30, PR 524). Bidi overrides are policy-keyed (ADR 0017).
+policy (2026-09-30, PR 524). Bidi overrides are policy-keyed (ADR 0017). A segment of
+only dots or spaces (`a/.../b`) is refused under STANDARD as under STRICT, because Win32
+merges it into its parent (2026-10-21, PR 955, ADR 0013 decision 4).
 
 ### DR-18. Extraction never damages what it did not create
 
@@ -1083,7 +1143,8 @@ reaches him.
   copies did not survive "how hard is it to count?" (2026-10-07).
 - **Did a later change make this code redundant?** The gzip size-check fallback "was
   useful at first but became redundant" (2026-10-06).
-- **Is it a breaking change after release?** If yes, do it now (DR-12).
+- **Does it break callers?** Then it waits for a minor release, behind a deprecation
+  warning where one can phase it in (DR-12a).
 - **Could these bytes hide something?** (DR-3)
 - **Can the user still get what they need through a filter or an opt-in?**
 - **Is it actually simpler?** For a large design, ask for a fresh review before building
@@ -1097,15 +1158,15 @@ reaches him.
 ## What still goes to the maintainer
 
 - A **default limit value** or any number users will see as a default.
-- A **new public name**, or **removing or renaming** one, before 0.2.0 as well as after
-  (DR-12). Expect a yes; the point is that he checks and knows.
+- A **new public name**, or **removing or renaming** one, an `archivey` verb or option
+  included (DR-12a). Expect a yes; the point is that he checks and knows.
 - Accepting a **residual risk** in the threat model.
 - **Reversing** an earlier ruling. This needs a new argument, not a restatement (ADR 0019).
 - A **clash between consistency and the official tool** where the factors split.
 - Anything **outside the repo**: upstream bug reports (agents draft them, the maintainer
   files them), repository settings, publishing.
 - Merging a **tricky** pull request: a behaviour trade-off, a design reversal, removing
-  or renaming a public name (before 0.2.0 too), a very large diff, or anything an open
+  or renaming a public name (DR-12a), a very large diff, or anything an open
   decision touches. A straightforward one an agent may merge once its review approves and
   CI is green.
 

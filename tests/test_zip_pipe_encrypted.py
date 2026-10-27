@@ -267,7 +267,7 @@ def _ppmd(data: bytes) -> bytes:
     return struct.pack("<H", word) + encoder.encode(data) + encoder.flush(True)
 
 
-def _aes_precompressed(method: int, encode, *, vendor_version: int) -> bytes:  # noqa: ANN001
+def _aes_precompressed(method: int, encode, *, vendor_version: int) -> bytes:
     from tests.zip_aes_fixture import build_aes_zip
 
     return build_aes_zip(
@@ -279,7 +279,7 @@ def _aes_precompressed(method: int, encode, *, vendor_version: int) -> bytes:  #
     )
 
 
-def _zipcrypto_precompressed(method: int, encode, *, bit3: bool) -> bytes:  # noqa: ANN001
+def _zipcrypto_precompressed(method: int, encode, *, bit3: bool) -> bytes:
     """``_LONG`` under ZipCrypto, compressed with a codec stdlib cannot write: the two
     whose decoders cannot say how much of their last input they used."""
     data = build_zipcrypto_zip(
@@ -442,7 +442,7 @@ def _pipe_read(data: bytes, password: object) -> dict[str, object]:
 
 
 @pytest.mark.parametrize("build", _fixtures())
-def test_a_pipe_decrypts_as_the_file_read_does(build) -> None:  # noqa: ANN001
+def test_a_pipe_decrypts_as_the_file_read_does(build) -> None:
     data = _with_plain_member(build())
     expected = _file_read(data, _PASSWORD)
     assert expected["plain.txt"] == b"plain"
@@ -451,7 +451,7 @@ def test_a_pipe_decrypts_as_the_file_read_does(build) -> None:  # noqa: ANN001
 
 
 @pytest.mark.parametrize("build", _fixtures())
-def test_a_wrong_or_missing_password_fails_as_from_a_file(build) -> None:  # noqa: ANN001
+def test_a_wrong_or_missing_password_fails_as_from_a_file(build) -> None:
     data = _with_plain_member(build())
     for password in (b"not the password", None):
         expected = _file_read(data, password)
@@ -521,7 +521,7 @@ def test_damage_in_an_unread_bit3_codec_member_does_not_end_the_pass() -> None:
 @pytest.mark.parametrize("password", [_PASSWORD, b"not the password", None])
 @pytest.mark.parametrize("signed", [True, False], ids=["signed", "unsigned"])
 def test_an_unread_bit3_codec_member_is_passed_without_its_key(
-    build,  # noqa: ANN001
+    build,
     password: bytes | None,
     signed: bool,
 ) -> None:
@@ -564,7 +564,7 @@ def test_an_unread_bit3_member_is_passed_with_its_password(compression: int) -> 
         ),
     ],
 )
-def test_a_bit3_codec_member_cut_inside_its_header_is_truncated(build) -> None:  # noqa: ANN001
+def test_a_bit3_codec_member_cut_inside_its_header_is_truncated(build) -> None:
     data = build()
     name_len, extra_len = struct.unpack_from("<HH", data, 26)
     cut = data[: 30 + name_len + extra_len + 5]
@@ -590,7 +590,7 @@ def test_a_bit3_codec_member_cut_inside_its_header_is_truncated(build) -> None: 
     ],
 )
 def test_a_bit3_codec_member_cut_after_its_codec_ends_the_pass_as_truncated(
-    build,  # noqa: ANN001
+    build,
 ) -> None:
     """The codec ends; the code or the descriptor after it does not come. Going on
     past the member is a truncation too: the scan on the ciphertext finds no
@@ -651,9 +651,11 @@ def test_a_password_that_only_passes_the_check_byte_fails_as_unverified() -> Non
     """``wrong896`` passes ``stored.txt``'s one-byte check (fixture README); only the
     CRC at the end shows it is wrong, and then it may be a wrong password or damage."""
     data = _COLLISION.read_bytes()
-    with archivey.open_archive(io.BytesIO(data), password="wrong896") as reader:
-        with pytest.raises(EncryptionError) as from_file:
-            reader.read(next(m for m in reader.members() if m.name == "stored.txt"))
+    with (
+        archivey.open_archive(io.BytesIO(data), password="wrong896") as reader,
+        pytest.raises(EncryptionError) as from_file,
+    ):
+        reader.read(next(m for m in reader.members() if m.name == "stored.txt"))
     with archivey.open_archive(
         NonSeekableBytesIO(data), streaming=True, password="wrong896"
     ) as reader:
@@ -684,7 +686,7 @@ def test_damage_under_a_zipcrypto_password_fails_as_from_a_file(method: int) -> 
     ],
 )
 @pytest.mark.parametrize("method", [0, 8])
-def test_a_tampered_aes_hmac_fails_as_from_a_file(build, method: int) -> None:  # noqa: ANN001
+def test_a_tampered_aes_hmac_fails_as_from_a_file(build, method: int) -> None:
     data = _with_plain_member(
         build(_aes_zip(vendor_version=2, method=method, tamper_hmac=True))
     )
@@ -713,7 +715,7 @@ _LISTS = [
 
 @pytest.mark.parametrize("passwords", _LISTS)
 @pytest.mark.parametrize("build", _fixtures())
-def test_several_passwords_read_as_from_a_file(build, passwords) -> None:  # noqa: ANN001
+def test_several_passwords_read_as_from_a_file(build, passwords) -> None:
     """The confirm runs on the kept first bytes of the data: a candidate it rejects
     is skipped, as from a file."""
     data = _with_plain_member(build())
@@ -768,7 +770,7 @@ def _confirmable() -> list[pytest.ParameterSet]:
 
 @pytest.mark.parametrize("build", _confirmable())
 def test_a_wrong_password_past_the_check_byte_is_rejected_as_from_a_file(
-    build,  # noqa: ANN001
+    build,
 ) -> None:
     """The confirm on the kept bytes rejects it (a CRC within them, or the codec),
     so the right one after it reads the member."""
@@ -891,7 +893,7 @@ def test_a_cut_stream_is_damage_with_several_passwords_too() -> None:
         ),
     ],
 )
-def test_several_inconclusive_passwords_take_the_first(build) -> None:  # noqa: ANN001
+def test_several_inconclusive_passwords_take_the_first(build) -> None:
     """Past the kept bytes nothing tells a STORED member's candidates apart, and the
     data goes by once, so the first that passed is read and its CRC at the end is
     the test: a wrong one fails there, as one unconfirmed password does. The file
@@ -1125,7 +1127,7 @@ def _link_targets(data: bytes, password: object, *, pipe: bool) -> list[object]:
     [_PASSWORD, b"not the password", None, [b"not the password", _PASSWORD]],
     ids=["right", "wrong", "none", "list"],
 )
-def test_an_encrypted_link_target_is_read_as_from_a_file(build, password) -> None:  # noqa: ANN001
+def test_an_encrypted_link_target_is_read_as_from_a_file(build, password) -> None:
     """The pass keeps a short member's ciphertext and decrypts it for the target
     once the directory says it is a link, or decrypts it as it drains when the
     stored data is larger than the ciphertext it keeps; either way without the
@@ -1176,7 +1178,7 @@ def test_an_encrypted_link_target_is_read_as_from_a_file(build, password) -> Non
     ids=["right", "wrong", "none", "list"],
 )
 def test_a_bit3_codec_link_target_is_read_as_from_a_file(
-    build,  # noqa: ANN001
+    build,
     target: str | None,
     password: bytes | None,
 ) -> None:
@@ -1248,7 +1250,7 @@ def _counted_decrypts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     calls: list[str] = []
     original = zip_forward_reader._PassData._decrypted
 
-    def counted(self, loc, decode):  # noqa: ANN001, ANN202
+    def counted(self, loc, decode):
         calls.append(self.member.name)
         return original(self, loc, decode)
 
@@ -1269,12 +1271,16 @@ def test_a_link_whose_codec_is_refused_says_so_as_from_a_file(
     assert from_file[0] == [("link", archivey.MemberType.SYMLINK, None)]
     assert from_file[1] == ["target_data_unsupported"]
     assert calls == ["link"]
-    with archivey.open_archive(io.BytesIO(data), password=_PASSWORD) as reader:
-        with pytest.raises(UnsupportedFeatureError) as opened:
-            reader.open(reader.get("link"))
+    with (
+        archivey.open_archive(io.BytesIO(data), password=_PASSWORD) as reader,
+        pytest.raises(UnsupportedFeatureError) as opened,
+    ):
+        reader.open(reader.get("link"))
     assert from_file[2] == [
-        "The symlink target of 'link' could not be read: "
-        f"{raw_message_of(opened.value).rstrip('.')}. Leaving link_target unset."
+        (
+            "The symlink target of 'link' could not be read: "
+            f"{raw_message_of(opened.value).rstrip('.')}. Leaving link_target unset."
+        )
     ]
 
 
@@ -1307,9 +1313,11 @@ def test_a_failed_open_is_not_retried_on_the_data_past_the_header(
     twelve bytes as one. The caller's error stands, for the link target too."""
     data = _method_6_link()
     calls = _counted_decrypts(monkeypatch)
-    with archivey.open_archive(io.BytesIO(data), password=_PASSWORD) as reader:
-        with pytest.raises(UnsupportedFeatureError) as from_file:
-            reader.read(reader.members()[0])
+    with (
+        archivey.open_archive(io.BytesIO(data), password=_PASSWORD) as reader,
+        pytest.raises(UnsupportedFeatureError) as from_file,
+    ):
+        reader.read(reader.members()[0])
     with archivey.open_archive(
         NonSeekableBytesIO(data), streaming=True, password=_PASSWORD
     ) as reader:
@@ -1380,7 +1388,7 @@ def test_no_key_is_derived_for_a_member_nobody_reads(
     ],
 )
 def test_no_key_is_derived_for_a_bit3_member_nobody_reads(
-    build,  # noqa: ANN001
+    build,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Its scan finds the end on the ciphertext."""

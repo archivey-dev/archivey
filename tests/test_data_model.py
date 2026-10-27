@@ -183,9 +183,9 @@ def test_extra_is_an_open_mapping() -> None:
     # ``__slots__ = ()`` drops the per-instance ``__dict__``; the contract is the
     # key space, so an attribute write must not silently succeed.
     with pytest.raises(AttributeError):
-        setattr(MemberExtra(), "not_a_key", True)
+        MemberExtra().not_a_key = True
     with pytest.raises(AttributeError):
-        setattr(ArchiveInfoExtra(), "not_a_key", True)
+        ArchiveInfoExtra().not_a_key = True
 
     m = ArchiveMember(
         type=MemberType.FILE, name="a", extra=MemberExtra({"third.party": 1})

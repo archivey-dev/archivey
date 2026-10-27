@@ -48,7 +48,7 @@ def test_open_during_stream_members_raises(tmp_path: Path) -> None:
     root = _dir_with_files(tmp_path)
     with open_archive(root) as reader:
         it = reader.stream_members()
-        member, stream = next(it)
+        _member, stream = next(it)
         assert stream is not None
         with pytest.raises(ArchiveyUsageError, match="already active"):
             reader.open("b.txt")
@@ -100,13 +100,12 @@ def test_iterate_and_get_inside_loop(tmp_path: Path) -> None:
 def test_iterate_default_single_live_stream_gate_preserved(tmp_path: Path) -> None:
     """The fix must not weaken the default single-live-stream gate during iteration."""
     root = _dir_with_files(tmp_path)
-    with open_archive(root) as reader:
-        with pytest.raises(ArchiveyUsageError):
-            held = []
-            for member in reader:
-                if member.is_file:
-                    # Keep each stream open (never closed) → the second overlaps the first.
-                    held.append(reader.open(member))
+    with open_archive(root) as reader, pytest.raises(ArchiveyUsageError):
+        held = []
+        for member in reader:
+            if member.is_file:
+                # Keep each stream open (never closed) → the second overlaps the first.
+                held.append(reader.open(member))
 
 
 def test_iterate_rejected_during_active_pass(tmp_path: Path) -> None:
@@ -168,18 +167,41 @@ _SUSPENDED_SOURCES = [
     pytest.param(_sevenzip_fixture, True, id="7z-solid-streaming"),
 ]
 
+# Reading a member of the RAR fixture runs RARLAB unrar, which a core-only install
+# may lack. Listing it does not, so only the tests that read are gated, keyed on the
+# fixture function rather than the row id. binary_refusal("unrar") is archivey's own
+# rule, met by RARLAB unrar or rar 6.0+.
+_UNRAR_REFUSAL = binary_refusal("unrar")
+_READ_SOURCES = [
+    pytest.param(
+        *p.values,
+        id=p.id,
+        marks=pytest.mark.skipif(
+            _UNRAR_REFUSAL is not None, reason=f"needs unrar: {_UNRAR_REFUSAL}"
+        ),
+    )
+    if p.values[0] is _rar_fixture
+    else p
+    for p in _SUSPENDED_SOURCES
+]
 
-@pytest.mark.parametrize(("make_source", "streaming"), _SUSPENDED_SOURCES)
+
+@pytest.mark.parametrize(("make_source", "streaming"), _READ_SOURCES)
 def test_close_while_stream_members_suspended_closes_reader(
     tmp_path: Path, make_source, streaming: bool
 ) -> None:
     reader = open_archive(make_source(tmp_path), streaming=streaming)
     it = reader.stream_members()
-    # Stop at the first file, so a stream is open mid-pass.
-    stream = next(s for _m, s in it if s is not None)
+    # Stop at the first file with data and read one byte of it, so a stream is part-read
+    # mid-pass (a solid block or an unrar pipe in flight).
+    stream = next(s for m, s in it if s is not None and m.size)
+    assert len(stream.read(1)) == 1
     reader.close()
-    # The yielded stream went with the reader, and the reader takes no new calls.
+    # The yielded stream went with the reader, reads as any closed stream does, and the
+    # reader takes no new calls.
     assert stream.closed
+    with pytest.raises(ValueError, match="closed file"):
+        stream.read(1)
     with pytest.raises(ArchiveyUsageError, match="closed"):
         reader.stream_members()
     # Resuming the suspended pass reports the close instead of reading on.
@@ -209,11 +231,13 @@ def test_body_exception_survives_with_exit_over_suspended_stream_members(
     tmp_path: Path, make_source, streaming: bool
 ) -> None:
     """A wrapped pass held in a variable is still alive at exit; the body's error wins."""
-    with pytest.raises(RuntimeError, match="boom") as excinfo:  # noqa: PT012
-        with open_archive(make_source(tmp_path), streaming=streaming) as reader:
-            numbered = enumerate(reader.stream_members())
-            for _i, (_member, _stream) in numbered:
-                raise RuntimeError("boom")
+    with (
+        pytest.raises(RuntimeError, match="boom") as excinfo,
+        open_archive(make_source(tmp_path), streaming=streaming) as reader,
+    ):
+        numbered = enumerate(reader.stream_members())
+        for _i, (_member, _stream) in numbered:
+            raise RuntimeError("boom")
     assert excinfo.value.__context__ is None
     with pytest.raises(ArchiveyUsageError, match="closed"):
         reader.stream_members()
@@ -233,25 +257,6 @@ def test_close_while_streaming_iteration_suspended_closes_reader(
     reader.close()
     with pytest.raises(ArchiveyUsageError, match="closed"):
         next(it)
-
-
-# Reading a member of the RAR fixture runs RARLAB unrar, which a core-only install
-# may lack. Listing it does not, so only the tests that read are gated, keyed on the
-# fixture function rather than the row id. Not requires_binary("unrar"): that checks
-# only shutil.which, and binary_refusal also applies archivey's RARLAB policy.
-_UNRAR_REFUSAL = binary_refusal("unrar")
-_READ_SOURCES = [
-    pytest.param(
-        *p.values,
-        id=p.id,
-        marks=pytest.mark.skipif(
-            _UNRAR_REFUSAL is not None, reason=f"needs unrar: {_UNRAR_REFUSAL}"
-        ),
-    )
-    if p.values[0] is _rar_fixture
-    else p
-    for p in _SUSPENDED_SOURCES
-]
 
 
 @dataclass
@@ -284,7 +289,7 @@ def _open_under_suspended_pass(
     real_close_streams = reader._close_public_streams
     real_close_archive = reader._close_archive
 
-    def recorded_pass(*args, **kwargs):  # noqa: ANN202 - a generator wrapper
+    def recorded_pass(*args, **kwargs):  # a generator wrapper
         try:
             yield from real_pass(*args, **kwargs)
         finally:
@@ -365,7 +370,7 @@ def test_close_tears_down_when_a_close_step_fails(
     p = _open_under_suspended_pass(
         make_source(tmp_path), streaming, monkeypatch, fail=_FAILING_STEPS[fail]
     )
-    with pytest.raises(Exception) as excinfo:  # noqa: PT011 - checked per case below
+    with pytest.raises(Exception) as excinfo:  # checked per case below
         p.reader.close()
     exc = excinfo.value
     if fail == "wind-down":
@@ -615,9 +620,8 @@ def test_reader_close_closes_member_streams(tmp_path: Path) -> None:
 
 def test_caller_owned_source_not_closed_by_reader() -> None:
     buf = io.BytesIO(gzip.compress(b"payload"))
-    with open_archive(buf) as reader:
-        with reader.open(reader.members()[0]) as stream:
-            assert stream.read() == b"payload"
+    with open_archive(buf) as reader, reader.open(reader.members()[0]) as stream:
+        assert stream.read() == b"payload"
     assert not buf.closed
 
 
@@ -639,7 +643,7 @@ def test_usage_errors_escape_archivey_error(tmp_path: Path) -> None:
 def test_password_provider_reentry_raises() -> None:
     box: dict[str, _PasswordCandidates] = {}
 
-    def provider(req):  # noqa: ANN001
+    def provider(req):
         # Same-reader reentry while the provider lock marks depth > 0.
         with pytest.raises(ArchiveyUsageError, match="reentered"):
             box["c"]._call_provider(None, 99)
@@ -662,7 +666,7 @@ def test_password_provider_second_thread_waits_instead_of_raising() -> None:
     max_active = 0
     lock = threading.Lock()
 
-    def provider(req):  # noqa: ANN001
+    def provider(req):
         nonlocal active, max_active
         with lock:
             active += 1
@@ -712,7 +716,7 @@ def test_password_provider_reentry_from_a_context_carrying_thread_raises() -> No
         except ArchiveyUsageError as exc:
             box["result"] = exc
 
-    def provider(req):  # noqa: ANN001
+    def provider(req):
         context = contextvars.copy_context()
         worker = threading.Thread(target=context.run, args=(helper,), daemon=True)
         worker.start()
@@ -730,7 +734,7 @@ def test_password_provider_reentry_from_a_context_carrying_thread_raises() -> No
 def test_password_provider_turn_released_when_provider_raises() -> None:
     calls = 0
 
-    def provider(req):  # noqa: ANN001
+    def provider(req):
         nonlocal calls
         calls += 1
         if calls == 1:

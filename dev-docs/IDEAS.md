@@ -75,9 +75,6 @@ Each idea carries a status:
   still refused ([`formats/rar.md`](formats/rar.md) §2.3). Lifting them means measuring
   those shapes in `tests/test_rar_unrar_names.py`, on Windows too. The names involved are
   adversarial, and a wrong model returns the wrong member's bytes.
-- **Report RAR5 quick-open copies the listing never reached.** *Needs design.* The quick-
-  open listing drops copies whose `header_offset` the walk does not land on. They could be
-  reported; whether as a diagnostic, a cost note or a log line is undecided.
 
 ## Detection
 
@@ -121,13 +118,15 @@ Each idea carries a status:
 
 ## Reading and verification
 
-- **Verification state as data.** *Needs design.* A member stream does not say whether
-  its stored digest was checked. For ZipCrypto and 7z AES, an unchecked partial read can
-  be garbage decrypted with the wrong key. The proposed shape is an ordered level on the
-  stream (`NONE`, `KEY`, `STRUCTURE`, `CONTENT`), paired with the highest level that
-  member can reach, and a `verify(at_least=…)` method. It would replace the
-  `ENCRYPTED_MEMBER_UNVERIFIED` diagnostic. The `verification-integrity-mode` change under
-  `openspec/changes/` depends on this design.
+- **Raise a stream's verification level on demand.** *Open idea.* A member stream
+  reports `verified` and `verifiable` (`Verification`: `NONE`, `KEY`, `STRUCTURE`,
+  `CONTENT`). A `verify(at_least=…)` method could read what is left to reach a level,
+  and a `reader.verify(member)` could check a member without handing out its bytes.
+  Retiring `ENCRYPTED_MEMBER_UNVERIFIED` in favour of the level is a separate call.
+- **Count the xz, zstd and LZ4 checksums in the level.** *Open idea.* These formats
+  carry a checksum per stream or frame only when the writer added one, so their
+  streams stop at `STRUCTURE` today. Each decoder would report, per frame, that a check
+  was present and passed.
 - **Say when a WinZip AES seek re-reads the ciphertext.** *Open idea.* **Good first
   contribution.** To keep the HMAC across seeks, the read that returns an AES member's last
   byte first reads the ciphertext the seeks skipped. The user docs don't state this, and
@@ -186,6 +185,12 @@ Each idea carries a status:
   rounds, and possibly a lower `max_members`. The name is open (`UNTRUSTED` is the
   suggestion). It may also want to be a mode, for example refusing a decode that could
   take the process down.
+- **Predefined `ArchiveyConfig` objects for safety and for speed.** *Needs design.* Like
+  `DiagnosticPolicy.STRICT`: one tuned for safety (accelerators `OFF`, so results do not
+  depend on the machine, and possibly the stricter limits above) and one for speed
+  (accelerators `AUTO`). Until then, "The same result everywhere" in
+  `docs/reading.md` shows the settings by hand. Not to be built yet (maintainer,
+  2026-10-26).
 - **Resource usage against the limits, as data.** *Open idea.* A caller cannot ask how
   close an archive came to each limit. A usage record on the reader and on the extraction
   report would help tune limits against a real corpus. `scripts/scan_archives.py` shows

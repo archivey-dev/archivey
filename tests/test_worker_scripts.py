@@ -16,7 +16,11 @@ from archivey.internal.streams.codecs import decoder_child
 
 def _run(probe: str) -> str:
     proc = subprocess.run(
-        [sys.executable, "-P", "-c", probe], capture_output=True, text=True, timeout=60
+        [sys.executable, "-P", "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     return proc.stdout.strip()

@@ -21,6 +21,7 @@ from __future__ import annotations
 import errno
 import os
 import re
+import stat
 import string
 import sys
 import unicodedata
@@ -62,7 +63,7 @@ def _has_drive_letter(name: str) -> bool:
 
 def _is_absolute(name: str) -> bool:
     """Whether ``name`` is an absolute path: a POSIX root, a UNC share, or a drive letter."""
-    if name.startswith("/") or name.startswith("\\"):
+    if name.startswith(("/", "\\")):
         return True  # POSIX root or UNC / rooted-backslash
     return _has_drive_letter(name)
 
@@ -143,26 +144,91 @@ _ERROR_CANT_RESOLVE_FILENAME = 1921
 
 
 def resolve_or_raise_on_loop(path: Path) -> Path:
-    """``path.resolve()``, raising ``OSError`` (``ELOOP``) when a symlink loop is on
-    the way, on every Python version.
+    """``path`` with every symlink on the way followed, raising ``OSError`` when that
+    cannot be done exactly: ``ELOOP`` for a symlink loop, on every Python version, and
+    the error itself when a component exists but cannot be looked at.
 
-    A missing component is kept as a name, as ``resolve()`` does, and any other error
-    from the ``stat`` (``ENOENT`` for a dangling link) is ignored. Before Python 3.13,
-    ``resolve()`` raised ``RuntimeError`` on a loop; from 3.13 it returns a path that
-    still contains the looping link. The ``RuntimeError`` is turned into an ``OSError``
-    and the ``stat`` finds the loop on 3.13+, so callers catch ``OSError`` alone and
-    one archive gets the same outcome on every version. The error names ``path``.
+    A missing component is kept as a name, as ``os.path.realpath`` does, and so is a
+    component under a file (``ENOTDIR``), which no path lookup can go through either.
+    Any other error is raised, because ``realpath`` would keep that component as a
+    name too and carry on with the rest of the path, while the kernel may still follow
+    it. ``ENAMETOOLONG`` is the one that matters: a chain of links whose expansion is
+    longer than ``PATH_MAX`` cannot be looked up as one string, but the kernel follows
+    it one link at a time, so a check that kept the long name would see a path inside
+    the destination where the kernel goes outside (CVE-2025-4517 in ``tarfile``).
+    Python's own fix, ``realpath(strict=ALLOW_MISSING)``, is missing from older
+    patch releases and also raises for ``ENOTDIR``, so the walk is done here on POSIX.
 
-    The errno is ``ELOOP`` on every platform too: Windows reports a loop as
-    ``ERROR_CANT_RESOLVE_FILENAME``, which Python maps to ``EINVAL``. The platform's
-    own error stays on the chain as ``__cause__``.
+    On Windows ``Path.resolve()`` is used, as the platform resolves links itself:
+    before Python 3.13 it raised ``RuntimeError`` on a loop, from 3.13 it returns a
+    path that still contains the looping link. The ``RuntimeError`` is turned into an
+    ``OSError`` and a ``stat`` finds the loop on 3.13+. Windows reports a loop as
+    ``ERROR_CANT_RESOLVE_FILENAME``, which Python maps to ``EINVAL``, so it is raised
+    as ``ELOOP``, with the platform's own error on the chain as ``__cause__``. A path
+    past ``MAX_PATH`` is resolved in the extended form (``long_paths``), so a link
+    deep in the tree is followed as it is for a short path, and the result is given
+    without the prefix, for comparison with a plain root.
 
-    On Windows a path past ``MAX_PATH`` is resolved in the extended form
-    (``long_paths``), so a link deep in the tree is followed as it is for a short
-    path, and the result is given without the prefix, for comparison with a plain
-    root. A short path whose links lead past ``MAX_PATH`` comes back from Windows with
-    the prefix too, and loses it the same way.
+    Either way the error names ``path``, and callers catch ``OSError`` alone.
     """
+    if os.name == "nt":
+        return _resolve_with_pathlib(path)
+    # Joined with the working directory, not ``os.path.abspath``, which would drop a
+    # ``name/..`` pair before ``name`` is looked at.
+    return Path(_realpath_posix(os.path.join(os.getcwd(), path), str(path)))
+
+
+# Links followed in one resolution before it counts as a loop: Linux's own limit
+# (``MAXSYMLINKS``), so a chain the kernel follows is followed here too. The dry run's
+# ``_MAX_LINK_HOPS`` and the CLI hoist's walk use the same bound for the same reason;
+# ``link_watch._MAX_FOLLOWS`` is 64 on purpose, as a walk that records dependencies must
+# go past every kernel's limit.
+_MAX_LINK_FOLLOWS = 40
+
+
+def _realpath_posix(path: str, asked: str) -> str:
+    """``os.path.realpath(path)`` that raises instead of guessing (see
+    :func:`resolve_or_raise_on_loop`). ``path`` is absolute; ``asked`` is the path
+    the caller passed, for the error."""
+    rest = path.split("/")[::-1]
+    resolved = ""
+    follows = 0
+    while rest:
+        name = rest.pop()
+        if name in ("", "."):
+            continue
+        if name == "..":
+            resolved = resolved[: resolved.rfind("/")]
+            continue
+        candidate = f"{resolved}/{name}"
+        try:
+            # Every filesystem call under the destination goes through ``long_path``
+            # (identity on POSIX; ``test_filesystem_calls_take_the_long_path_form``
+            # checks the routing). Safe here because no candidate holds a ``..``.
+            mode = os.lstat(long_path(candidate)).st_mode
+        except (FileNotFoundError, NotADirectoryError):
+            resolved = candidate
+            continue
+        except OSError as exc:
+            raise OSError(exc.errno, exc.strerror, asked) from exc
+        if not stat.S_ISLNK(mode):
+            resolved = candidate
+            continue
+        follows += 1
+        if follows > _MAX_LINK_FOLLOWS:
+            raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), asked)
+        try:
+            target = os.readlink(long_path(candidate))
+        except OSError as exc:
+            raise OSError(exc.errno, exc.strerror, asked) from exc
+        if target.startswith("/"):
+            resolved = ""
+        rest.extend(target.split("/")[::-1])
+    return resolved or "/"
+
+
+def _resolve_with_pathlib(path: Path) -> Path:
+    """The Windows half of :func:`resolve_or_raise_on_loop`."""
     try:
         resolved = Path(plain(os.fspath(Path(long_path(path)).resolve())))
     except RuntimeError as exc:
@@ -398,13 +464,21 @@ def check_universal(
                     member_name=name,
                 )
     except OSError as exc:
-        # A symlink loop the destination already had, in dest or below it. Links this
-        # run creates never loop: one that would is removed as an escape. The member
-        # cannot be placed, and that is the destination's state, not a policy decision.
+        # A path in dest or below it that the resolver cannot follow exactly: a symlink
+        # loop the destination already had (links this run creates never loop: one that
+        # would is removed as an escape), or a component it cannot look at, such as a
+        # directory it may not search or a link chain past PATH_MAX
+        # (``resolve_or_raise_on_loop``). The member cannot be placed, and that is the
+        # destination's state, not a policy decision.
         if show_os_error is not None:
             show_os_error(exc)
+        cause = (
+            "a symlink loop"
+            if exc.errno == errno.ELOOP
+            else "a path that cannot be looked up"
+        )
         raise ExtractionError(
-            f"A path in the destination does not resolve (a symlink loop?): {exc}",
+            f"A path in the destination does not resolve ({cause}): {exc}",
             member_name=name,
         ) from exc
 
@@ -659,7 +733,8 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
     ``TRUSTED`` returns the member unchanged (faithful bytes, defer to the local OS).
     ``STRICT``/``STANDARD`` **reject** only the unsafe name shapes — Windows-reserved device
     names, ``:`` (NTFS alternate data stream), and bidi overrides, in the name and in a
-    symlink's target — and **rewrite** the merely-non-portable ones: ``STRICT`` strips
+    symlink's target, and a name segment of only dots and spaces, which Win32 would merge
+    into its parent — and **rewrite** the merely-non-portable ones: ``STRICT`` strips
     trailing dots/spaces (O3), and both levels write a ``\\`` as ``/`` (in a link target
     too) and escape bytes that are not UTF-8 and the characters Windows refuses,
     ``<>"|?*`` and 0x01-0x1F (O7). A lone surrogate outside U+DC80-U+DCFF is escaped too,
@@ -706,9 +781,12 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
     # A trailing dot/space is silently stripped by Win32 — a legitimate macOS/Linux name
     # (e.g. a folder ending in '.'), not an attack. STRICT rewrites it to the portable
     # spelling so extraction succeeds and is identical on every OS; STANDARD/TRUSTED keep it
-    # faithful. The O2 collision map catches any clash the rewrite creates.
+    # faithful. The O2 collision map catches any clash the rewrite creates. A segment of
+    # only dots and spaces has no spelling Win32 keeps (``a/.../b`` would merge into
+    # ``a/b``), so STANDARD refuses it as STRICT does.
+    stripped = _strip_trailing_dot_space(name)  # refuses an all-dots segment under both
     if policy is ExtractionPolicy.STRICT:
-        name = _strip_trailing_dot_space(name)
+        name = stripped
     # A TAR name keeps ``\`` as a literal character, and Windows writes it as a
     # separator. Writing it as ``/`` everywhere gives the tree Windows would create, on
     # every OS. The collision key already treats the two separators as one.
@@ -865,8 +943,19 @@ def collision_key(name: str, policy: ExtractionPolicy) -> str:
     ``STRICT``/``STANDARD`` fold case and Unicode normalization so ``README``/``readme`` and
     NFC/NFD ``café`` collide on every platform; ``TRUSTED`` keys on the exact name (defer to
     the local OS). Separators are normalized so ``a/b`` and ``a\\b`` share a key.
+
+    A trailing dot or space on a segment is dropped from the key too: Win32 trims it, so
+    ``foo.`` and ``foo`` are one file on Windows. ``STRICT`` has already rewritten the name;
+    ``STANDARD`` keeps it, and without this the second member would silently replace the
+    first on Windows and land beside it elsewhere. A segment with nothing else left keeps
+    its spelling: ``.``, ``..``, and a segment of only dots and spaces, which
+    ``apply_name_policy`` refuses under both policies but which reaches ``_physical_key``
+    under ``TRUSTED`` (it keys as ``STANDARD``).
     """
     rel = name.replace("\\", "/").rstrip("/")
     if policy is ExtractionPolicy.TRUSTED:
         return rel
-    return unicodedata.normalize("NFC", rel).casefold()
+    folded = unicodedata.normalize("NFC", rel).casefold()
+    if not folded.endswith((".", " ")) and "./" not in folded and " /" not in folded:
+        return folded
+    return "/".join(segment.rstrip(". ") or segment for segment in folded.split("/"))

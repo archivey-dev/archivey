@@ -65,7 +65,7 @@ A published page **must not link into unpublished docs**. In order:
    the wrong place. For ADR citations specifically: inline the end-user one-liner
    and drop the link (D2), unless the ADR still has uninlinable user-relevant depth.
 2. **If the extra context is genuinely worth keeping**, link the file on GitHub:
-   `https://github.com/davitf/archivey/blob/main/dev-docs/<file>.md` — the pattern
+   `https://github.com/archivey-dev/archivey/blob/main/dev-docs/<file>.md` — the pattern
    `README.md:20-22` already uses.
 3. **Never** a bare repo path in prose standing in for a link.
 
@@ -178,7 +178,7 @@ determines whether this review is worth doing twice." Three checks, cheapest fir
 2. **Link checking**, three halves now that D3 is decided: internal relative links
    (`mkdocs --strict` covers cross-references but not arbitrary relative paths);
    the **absolute** `davitf.github.io` URLs in `README.md`, which nothing checks
-   today and which freeze at the tag; and the **`github.com/davitf/archivey/blob/main/`
+   today and which freeze at the tag; and the **`github.com/archivey-dev/archivey/blob/main/`
    URLs that D3 introduces into `docs/**`** — those point at files this migration
    is itself moving, so they are exactly the class that rots silently. D3 raises
    this guardrail from precautionary to load-bearing.

@@ -465,7 +465,7 @@ second pass never writes a refused member's bytes under the link's name. A middl
 refused for its own name does not refuse the links after it, and a hardlink to a
 symlink is written as that symlink. A hardlink to a symlink with an empty `linkname`
 fails as a link to a non-file, refused symlink or not. A filter's change to a link's
-`link_target` does nothing. `tests/test_hardlink_target_rule.py` has the matrix.
+`link_target` does nothing.
 
 **Special files are blocked.** A device, FIFO or socket member is `OTHER`, and the
 default filter records it as `BLOCKED` with `FilterRejectionError` rather than creating it.
@@ -638,55 +638,55 @@ ours.
     tests/test_detection.py tests/test_concurrent_multithread.py
 ```
 
-| Claim | Pinned by |
-| --- | --- |
-| A member seek past its end returns the target, as in every other format | `tests/test_tar.py::test_a_member_stream_seeks_past_its_end_like_a_file` |
-| A sized read of a cut compressed member gives its whole readable prefix before `TruncatedError`, in any chunk size, streaming or random access | `tests/test_tar.py::test_a_cut_compressed_member_delivers_its_prefix_in_both_modes`; `tests/test_readahead_stream.py` |
-| A `read()` with no size on a cut member raises and returns nothing, plain or compressed, in every mode | `tests/test_tar.py::test_a_whole_read_of_a_cut_member_raises_with_nothing_in_every_mode` |
-| A plain tar member cut by the end of the archive raises `TruncatedError` through `read` and `open`, with no listing first, on a file and on a seekable source with no cheap size | `tests/test_tar.py::test_a_cut_plain_tar_member_raises_on_read_without_a_listing`, `::test_a_cut_plain_tar_member_delivers_its_prefix_then_raises` |
-| Cost matrix, plain and compressed | `tests/test_tar.py::test_plain_tar_cost`, `::test_compressed_tar_cost_and_read` |
-| No member count and no report peek before a pass | `::test_member_list_not_available_without_scan`; `tests/test_review_simplicity_consistency.py::test_tar_has_no_report_peek_before_a_pass` |
-| Random access needs a seekable source; streaming works on a pipe, plain and compressed | `::test_non_seekable_tar_fails_fast`, `::test_non_seekable_tar_streaming_opens_without_scanning`, `::test_non_seekable_plain_tar_stream_members`, `::test_non_seekable_tar_gz_streaming` |
-| Metadata mapping, PAX `mtime`, PAX `atime` and `ctime`, libarchive birth time | `::test_member_metadata`, `::test_pax_mtime_override`, `::test_pax_atime_ctime`, `::test_pax_libarchive_creationtime_is_created` |
-| `raw_name` for PAX and ustar names under a non-UTF-8 `encoding` | `::test_pax_raw_name_is_the_stored_utf8_whatever_the_encoding`, `::test_ustar_raw_name_follows_the_archive_encoding`, `::test_pax_raw_name_with_undecodable_bytes_round_trips`, `::test_pax_member_repeating_a_global_binary_charset_reads_as_binary`, `::test_global_pax_path_wins_over_a_gnu_long_name` |
-| ustar and GNU names, link targets, `uname` and `gname` are UTF-8 by default, not the locale's codec; `encoding=` decodes only bytes that are not valid UTF-8; a PAX record that is not UTF-8 falls back to that same codec | `::test_utf8_name_decodes_as_utf8_under_a_non_utf8_locale`, `::test_utf8_link_target_and_owner_decode_as_utf8_under_a_non_utf8_locale`, `::test_invalid_utf8_name_is_surrogate_escaped_under_a_non_utf8_locale`, `::test_utf8_header_name_wins_over_the_caller_encoding`, `::test_utf8_link_target_and_owner_win_over_the_caller_encoding`, `::test_caller_encoding_decodes_header_fields_that_are_not_utf8`, `::test_mixed_header_names_each_decode_by_their_own_bytes`, `::test_binary_pax_path_that_is_valid_utf8_wins_over_the_caller_encoding`, `::test_pax_raw_name_with_undecodable_bytes_round_trips`, `::test_pax_path_that_is_not_utf8_falls_back_to_the_caller_encoding` |
-| Out-of-range `mtime` degrades | `::test_out_of_range_mtime_degrades_to_none` |
-| A bad PAX `mtime`, `atime`, `ctime` or `LIBARCHIVE.creationtime` is `None` and reported, each once; a PAX `mtime` of `0` stays the epoch | `::test_bad_pax_time_is_reported`, `::test_several_bad_pax_times_on_one_member_are_each_reported`, `::test_pax_mtime_zero_is_the_epoch` |
-| Old GNU and PAX 0.0, 0.1 and 1.0 sparse members list as sparse and read back logically | `::test_sparse_tar_eof_no_false_positive`, `::test_pax_sparse_member_is_reported_sparse` (one case per PAX encoding) |
-| A sparse member cut in its stored data, inside a chunk or at a chunk's first byte, delivers its prefix, then raises `TruncatedError`, in every encoding and both modes | `::test_a_cut_sparse_member_delivers_its_prefix_then_raises`, `::test_a_cut_sparse_member_read_whole_raises_truncated` |
-| A PAX size past `int()`'s digit limit is `CorruptionError`, not `ValueError`; such a `uid` or `gid` is ignored | `::test_pax_number_past_the_int_digit_limit_is_corruption`, `::test_pax_number_with_many_leading_zeros_reads` |
-| A PAX member with a major of 1 or more is 1.0 whatever 0.x records it carries | `tests/test_tar_parser.py::test_pax_sparse_major_chooses_1_0_over_0_x_records` |
-| A size field past what the filesystem can seek to is `TruncatedError` naming the offset, from a path, a `BytesIO` and a stream that refuses the seek as ext4 does; another errno propagates | `::test_size_past_filesystem_limit_is_truncation`, `::test_refused_seek_through_open_archive_is_truncation`, `::test_refused_seek_is_truncation_naming_the_offset`, `::test_refused_seek_with_other_errno_propagates` |
-| End classification: good, minimal and padded trailers stay silent | `::test_valid_tar_eof_silent`, `::test_minimal_eof_trailer_silent`, `::test_padded_tar_eof_no_false_positive` |
-| Missing trailer warns, and raises under `RAISE` | `::test_missing_eof_blocks_warns_by_default`, `::test_missing_eof_blocks_raise_disposition_raises`, and the `_streaming_` pair |
-| Rejected header, mid-archive and last block, plain, gzip and sparse | `::test_corrupt_mid_header_raises_corruption_by_default`, `::test_corrupt_final_header_raises_corruption_by_default`, `::test_corrupt_final_header_gzip_raises_corruption`, `::test_corrupt_final_header_sparse_raises_corruption` |
-| A zero block then a damaged block lists and reads every member, warns, extracts everything, and raises under `STRICT`, in both modes | `::test_damaged_second_eof_block_lists_every_member`, `::test_damaged_second_eof_block_gzip_lists_every_member`, `::test_damaged_second_eof_block_extracts_every_member`, `::test_damaged_second_eof_block_refused_under_strict`, `::test_zero_block_then_junk_with_no_member_stays_corruption` |
-| After a damaged second block the trailing scan still runs: a bad gzip CRC raises and junk is trailing data | `::test_bad_gzip_crc_is_reported_after_a_damaged_second_eof_block`, `::test_damaged_second_eof_block_then_junk_reports_trailing_data` |
-| A rejected header raises in both modes whatever follows it: members, nothing, a zero block; a negative PAX or base-256 size; a malformed PAX header as the last thing in the file | `::test_corrupt_final_header_streaming_raises_corruption`, `::test_rejected_header_raises_corruption_in_both_modes` |
-| A device or FIFO header declaring data is `CorruptionError` at the header, in both modes, and a sized header over a null payload no longer ends the listing early | `::test_a_sized_fifo_header_is_corruption` |
-| Rejected header wins over `IGNORE` and `RAISE` | `::test_corrupt_final_header_ignore_disposition_still_raises`, `::test_corrupt_mid_header_raise_disposition_still_corruption` |
-| `extract_all` writes the salvageable members, then raises, in both modes | `::test_corrupt_final_header_extract_raises`, `::test_corrupt_mid_header_streaming_extract_writes_then_raises` |
-| `extract_all` on `.tar.gz`/`.bz2`/`.xz` decodes once; limits still bind | `::test_extract_compressed_tar_decodes_once`, `::test_extract_enforces_listing_limits_as_members_arrive` |
-| Truncation inside member data raises during iteration | `::test_truncated_tar_raises` |
-| Trailing data reported, bounded, no error on an undecodable tail; zeros pass | `tests/test_review_simplicity_consistency.py::test_trailing_data_is_reported`, `::test_trailing_data_scan_is_bounded`, `::test_compressed_tail_that_will_not_decode_ends_the_scan_without_error`, `::test_zero_padding_after_the_trailer_still_passes`, `::test_wrong_explicit_format_on_iso_reports_trailing_data` |
-| Zero-filled files are empty tars; detection refuses them | `::test_legitimately_empty_tar_stays_valid`, `::test_every_block_aligned_zero_length_is_a_valid_empty_tar`, `::test_zero_filled_dot_tar_opens_empty_via_extension`, `::test_content_detection_refuses_a_zero_filled_file` |
-| A PAX header's size does not drive an allocation (O15); a chain of extended headers draws on one budget, charged before each read | `tests/test_tar.py::test_extended_header_size_does_not_drive_the_allocation`, `::test_extended_header_over_the_metadata_cap_is_refused_unread`; `tests/test_tar_parser.py::test_extended_header_is_charged_before_it_is_read`, `::test_extended_header_chain_shares_one_budget` |
-| The parser reads each header encoding and refuses each damaged one; the walk ends cleanly on an extended header before the end marker and with `TruncatedError` on one at the end of the stream | `tests/test_tar_parser.py` (a table per encoding and per rejection reason), `::test_extended_header_before_the_end_marker_ends_the_walk`, `::test_extended_header_at_the_end_of_the_stream_is_truncation`; fuzzed by `tests/fuzz_tar_parser.py` |
-| On well-formed archives written by `tarfile` and GNU tar, the walker lists the same members and bytes as `tarfile`. Where it follows GNU tar on purpose (no `prefix` outside the ustar magic, a GNU dumpdir as a directory, a PAX `uid` that is not a number ignored), a test pins the difference | `tests/test_tar_parser_differential.py`, `::test_gnu_incremental_names_have_no_prefix`; `tests/test_tar.py::test_gnu_dumpdir_entry_is_a_directory`, `::test_pax_id_that_is_not_a_number_keeps_the_header_value` |
-| A sparse member serves its logical bytes, holes as zeros, over seekable and forward-only stored streams; each map is checked against exact sizes | `tests/test_sparse_stream.py`; `tests/test_tar_parser.py::test_validate_sparse_map` |
-| The listing stops reading headers at `max_members` and `max_metadata_bytes`, and keeps its prefix when the walk fails; a pass keeps no parsed entry or header block, only each member's data span | `tests/test_listing_limits.py::test_tar_listing_stops_reading_headers_at_max_members`, `::test_tar_listing_stops_reading_headers_at_max_metadata_bytes`, `::test_tar_extract_all_enforces_listing_limits`; `tests/test_tar.py::test_a_pass_keeps_no_parsed_entries`; `tests/test_tar.py::test_members_report_keeps_the_prefix_when_the_walk_raises`; extended-header chains, sparse maps, shared and read-only global records in both modes: `tests/test_tar_header_memory.py` |
-| A link header with a size: declared blocks skipped and reported, later members kept, in both modes and on a compressed tar; a member header right after it lists whole with no report; an all-zero span with no member header after it is read as the trailer, with the report (10 and 600 bytes before a 1024-byte trailer included); other cut-short blocks are truncation; extraction makes the link; `STRICT` refuses | `tests/test_tar.py::test_link_data_is_skipped_and_reported`, `::test_link_with_size_and_no_blocks_lists_whole`, `::test_link_with_size_before_the_trailer_is_reported_not_truncated`, `::test_link_with_size_inside_the_trailer_keeps_the_trailer_whole`, `::test_link_with_size_inside_the_trailer_before_junk_is_trailing_data`, `::test_link_zero_span_in_a_large_tar_gz_does_not_rewind`, `::test_link_with_size_before_a_one_block_trailer_misses_the_marker`, `::test_link_data_cut_short_is_truncation_after_the_link`, `::test_link_data_in_a_compressed_tar`, `::test_link_data_extraction_makes_the_link_and_later_members`, `::test_link_data_is_refused_by_strict_policy` |
-| Links: relative, `..`, absolute, archive-relative hardlinks, duplicate names, cycles | `tests/test_tar.py::test_relative_symlink_resolves_against_link_directory` through `::test_chain_through_same_named_members_not_false_cycle` |
-| Hardlink extraction: one pass, orphans, cross-device, past the link-count limit | `tests/test_extraction.py::test_tar_hardlink_shares_inode`, `::test_tar_hardlink_orphan_recovered_seekable`, `::test_tar_hardlink_orphan_forward_only_onerror`, `::test_cross_device_hardlink_reuses_sibling`; `tests/test_cross_os_extraction.py::test_hard_link_past_the_link_limit_is_copied` |
-| `\` in a name or link target under `STRICT`/`STANDARD` | `tests/test_cross_os_extraction.py::test_tar_backslash_is_written_as_a_separator`, `::test_hardlink_target_backslash_becomes_a_separator`, `::test_hardlink_resolves_by_its_stored_target`, `::test_symlink_to_a_member_named_with_a_backslash_resolves`, `::test_symlink_target_backslash_cannot_climb_out` |
-| A hardlink resolves backward only, in both modes | `tests/test_tar.py::test_hardlink_resolves_to_an_earlier_member_only`, `tests/test_extraction.py::test_hardlink_before_source_is_not_linked_forward` |
-| `stream_members()` on a random-access compressed tar decodes once | `tests/test_audit_cross_format.py::test_compressed_tar_stream_members_decodes_once` |
-| Ratio guard: static for a path, live for a piped `.tar.gz`, no live check on a plain tar | `::test_seekable_targz_uses_static_not_live`, `::test_streaming_targz_bomb_caught_by_live_ratio`, `::test_streaming_plain_tar_no_live_ratio_trip` |
-| Concurrent reads through the handle lock | `tests/test_concurrent_multithread.py::test_multithread_plain_tar_open_read`, `::test_multithread_gzip_tar_open_read` |
-| Inner-TAR detection over each codec, and its budget | `tests/test_detection.py::test_inner_tar_over_gzip_is_tar_gz` and its siblings, `::test_inner_tar_probe_stays_inside_the_decode_budget` |
-| Passwords accepted and never consulted | `tests/test_tar.py::test_password_is_accepted_in_every_form` |
-| A sparse member's extraction and its ratio (holes count, §6) | **Nothing pins it.** The page's measurement is the reproduction below |
-| Pre-1970 times, on every platform | `tests/test_tar.py::test_pre_1970_mtime_lists_its_date` (PAX and GNU base-256, with a `fromtimestamp` that rejects negatives as Windows' does), `::test_pre_1970_pax_atime_lists_its_date`; `tests/test_timestamps.py` for the shared helper |
+| Claim |
+| --- |
+| A member seek past its end returns the target, as in every other format |
+| A sized read of a cut compressed member gives its whole readable prefix before `TruncatedError`, in any chunk size, streaming or random access |
+| A `read()` with no size on a cut member raises and returns nothing, plain or compressed, in every mode |
+| A plain tar member cut by the end of the archive raises `TruncatedError` through `read` and `open`, with no listing first, on a file and on a seekable source with no cheap size |
+| Cost matrix, plain and compressed |
+| No member count and no report peek before a pass |
+| Random access needs a seekable source; streaming works on a pipe, plain and compressed |
+| Metadata mapping, PAX `mtime`, PAX `atime` and `ctime`, libarchive birth time |
+| `raw_name` for PAX and ustar names under a non-UTF-8 `encoding` |
+| ustar and GNU names, link targets, `uname` and `gname` are UTF-8 by default, not the locale's codec; `encoding=` decodes only bytes that are not valid UTF-8; a PAX record that is not UTF-8 falls back to that same codec |
+| Out-of-range `mtime` degrades |
+| A bad PAX `mtime`, `atime`, `ctime` or `LIBARCHIVE.creationtime` is `None` and reported, each once; a PAX `mtime` of `0` stays the epoch |
+| Old GNU and PAX 0.0, 0.1 and 1.0 sparse members list as sparse and read back logically |
+| A sparse member cut in its stored data, inside a chunk or at a chunk's first byte, delivers its prefix, then raises `TruncatedError`, in every encoding and both modes |
+| A PAX size past `int()`'s digit limit is `CorruptionError`, not `ValueError`; such a `uid` or `gid` is ignored |
+| A PAX member with a major of 1 or more is 1.0 whatever 0.x records it carries |
+| A size field past what the filesystem can seek to is `TruncatedError` naming the offset, from a path, a `BytesIO` and a stream that refuses the seek as ext4 does; another errno propagates |
+| End classification: good, minimal and padded trailers stay silent |
+| Missing trailer warns, and raises under `RAISE` |
+| Rejected header, mid-archive and last block, plain, gzip and sparse |
+| A zero block then a damaged block lists and reads every member, warns, extracts everything, and raises under `STRICT`, in both modes |
+| After a damaged second block the trailing scan still runs: a bad gzip CRC raises and junk is trailing data |
+| A rejected header raises in both modes whatever follows it: members, nothing, a zero block; a negative PAX or base-256 size; a malformed PAX header as the last thing in the file |
+| A device or FIFO header declaring data is `CorruptionError` at the header, in both modes, and a sized header over a null payload no longer ends the listing early |
+| Rejected header wins over `IGNORE` and `RAISE` |
+| `extract_all` writes the salvageable members, then raises, in both modes |
+| `extract_all` on `.tar.gz`/`.bz2`/`.xz` decodes once; limits still bind |
+| Truncation inside member data raises during iteration |
+| Trailing data reported, bounded, no error on an undecodable tail; zeros pass |
+| Zero-filled files are empty tars; detection refuses them |
+| A PAX header's size does not drive an allocation (O15); a chain of extended headers draws on one budget, charged before each read |
+| The parser reads each header encoding and refuses each damaged one; the walk ends cleanly on an extended header before the end marker and with `TruncatedError` on one at the end of the stream |
+| On well-formed archives written by `tarfile` and GNU tar, the walker lists the same members and bytes as `tarfile`. Where it follows GNU tar on purpose (no `prefix` outside the ustar magic, a GNU dumpdir as a directory, a PAX `uid` that is not a number ignored), the two differ |
+| A sparse member serves its logical bytes, holes as zeros, over seekable and forward-only stored streams; each map is checked against exact sizes |
+| The listing stops reading headers at `max_members` and `max_metadata_bytes`, and keeps its prefix when the walk fails; a pass keeps no parsed entry or header block, only each member's data span |
+| A link header with a size: declared blocks skipped and reported, later members kept, in both modes and on a compressed tar; a member header right after it lists whole with no report; an all-zero span with no member header after it is read as the trailer, with the report (10 and 600 bytes before a 1024-byte trailer included); other cut-short blocks are truncation; extraction makes the link; `STRICT` refuses |
+| Links: relative, `..`, absolute, archive-relative hardlinks, duplicate names, cycles |
+| Hardlink extraction: one pass, orphans, cross-device, past the link-count limit |
+| `\` in a name or link target under `STRICT`/`STANDARD` |
+| A hardlink resolves backward only, in both modes |
+| `stream_members()` on a random-access compressed tar decodes once |
+| Ratio guard: static for a path, live for a piped `.tar.gz`, no live check on a plain tar |
+| Concurrent reads through the handle lock |
+| Inner-TAR detection over each codec, and its budget |
+| Passwords accepted and never consulted |
+| A sparse member's extraction and its ratio (holes count, §6) |
+| Pre-1970 times, on every platform |
 
 **Building fixtures.** Most TAR tests build their archives with stdlib `tarfile` in
 memory, and corrupt them by hand: a header checksum byte, a truncation, a block of junk

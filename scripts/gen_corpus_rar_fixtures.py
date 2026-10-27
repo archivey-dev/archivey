@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Regenerate the committed RAR archives for the declarative corpus.
 
 Usage (from the repo root, on a machine with the RARLAB ``rar`` binary)::

@@ -39,6 +39,7 @@ import functools
 import hashlib
 import hmac
 import io
+import itertools
 import struct
 import zlib
 from collections.abc import Sequence
@@ -108,6 +109,12 @@ _MAX_SKIPPED_HEADER_RECORDS = 16
 # header's fixed fields and its declared extra area. They are not a record, so the
 # reader words that diagnostic on its own.
 RAR5_UNPLACED_BYTES = "unplaced bytes"
+# The ``record`` of the entry on the ``QO`` service header for its FILE copies whose
+# ``header_offset`` a clean walk never reached (:func:`_qo_unmatched_copies`). Not a
+# dropped record either: the QO payload parsed whole, and the reader words this
+# diagnostic on its own. At most one per volume and it retains nothing
+# attacker-sized, so :data:`_MAX_DAMAGED_SERVICE_HEADERS` does not count it.
+RAR5_QO_UNMATCHED_COPIES = "unmatched copies"
 # RAR 1.5-4 service header holding the preceding file's Unix owner (``rar -ow``),
 # and the ``reason`` of the ``skipped_header_records`` entry for one whose data holds
 # no NUL, which ``unrar`` applies no owner from.
@@ -119,13 +126,11 @@ RAR3_UOW_NO_NUL = "no NUL in its owner data"
 # headers retained 80 MB before this cap. Counting them as members instead would
 # refuse an archive ``unrar`` lists, which is the opposite of this walk's posture,
 # so they get their own cap and the overflow is reported as a count. Structural
-# for the same reason as the cap above.
+# for the same reason as the cap above. It counts only headers whose walk did not
+# finish: the overflow message says so, and a ``QO`` unmatched-copies entry is not one.
 _MAX_DAMAGED_SERVICE_HEADERS = 16
 # BytesIO/file seek offsets must fit in a C ssize_t; hostile RAR5 vints can exceed that.
 _MAX_SEEK = (1 << 63) - 1
-# A stored comment is read in pieces of this size, so a declared size past the end of
-# the file fails there instead of in one allocation of the declared size.
-_COMMENT_READ_CHUNK = 1 << 20
 # Same default as ListingLimits.max_members. None is the explicit UNLIMITED opt-out.
 _DEFAULT_MAX_MEMBERS = ListingLimits().max_members
 _DEFAULT_MAX_METADATA_BYTES = ListingLimits().max_metadata_bytes
@@ -546,7 +551,9 @@ class RarMemberInfo:
 
 @dataclass(slots=True, frozen=True)
 class DamagedServiceHeader:
-    """A SERVICE header whose extra-area walk dropped a record or gave up.
+    """A SERVICE header whose extra-area walk dropped a record or gave up, or a ``QO``
+    header whose FILE copies matched no header a clean walk reached
+    (:data:`RAR5_QO_UNMATCHED_COPIES`).
 
     Not a :class:`RarMemberInfo`: a service header is not a member, nothing lists
     it, and keeping the whole parse of one both says otherwise and retains far more
@@ -574,7 +581,9 @@ class RarArchive:
     #: ``name.partN.rar`` sets. Taken from volume 1.
     old_volume_naming: bool = False
     #: SERVICE headers (``CMT``, ``QO``) whose extra-area walk dropped a record or
-    #: gave up, in file order, at most ``_MAX_DAMAGED_SERVICE_HEADERS`` of them.
+    #: gave up, in file order, at most ``_MAX_DAMAGED_SERVICE_HEADERS`` of them, plus
+    #: at most one ``QO`` entry per volume for copies that matched no header the walk
+    #: reached, which the cap does not count.
     #: They are not members, so nothing lists them and the reader's per-member
     #: diagnostics never see them — yet the same leniency applies to their headers,
     #: and the argument that leniency is not silent rests on a diagnostic being
@@ -745,8 +754,7 @@ def parse_rar_volumes(
     if (
         len(volume_numbers) != len(volumes)
         or any(
-            later <= earlier
-            for earlier, later in zip(volume_numbers, volume_numbers[1:])
+            later <= earlier for earlier, later in itertools.pairwise(volume_numbers)
         )
         or volume_numbers[0] < 1
     ):
@@ -764,17 +772,31 @@ def parse_rar_volumes(
         if gap and previous:
             missing.extend(range(previous + 1, number))
         previous = number
-        part = _parse_rar_volume(
-            volume,
-            password=password,
-            kdf_cache=kdf_cache,
-            volume_index=number - 1,
-            use_qo=use_qo,
-            max_members=max_members,
-            max_metadata_bytes=max_metadata_bytes,
-            name_encoding=name_encoding,
-            password_proven=password_proven,
+        # The walk's byte offsets are within this volume, not the concatenated space
+        # the member offsets below use, so a message that gives one names the volume.
+        where = (
+            f" (volume {number} of the set; the offset is within that volume)"
+            if len(volumes) > 1
+            else ""
         )
+        try:
+            part = _parse_rar_volume(
+                volume,
+                password=password,
+                kdf_cache=kdf_cache,
+                volume_index=number - 1,
+                use_qo=use_qo,
+                max_members=max_members,
+                max_metadata_bytes=max_metadata_bytes,
+                name_encoding=name_encoding,
+                password_proven=password_proven,
+            )
+        except EncryptionError as exc:
+            if not where or not getattr(exc, _OFFSET_IN_VOLUME, False):
+                raise
+            # Still the wrong-password error, so a password list moves on.
+            located = wrong_password_error(exc.raw_message + where)
+            raise located.with_traceback(exc.__traceback__) from exc.__cause__
         password_proven = part.password_proven
 
         for member in part.members:
@@ -783,10 +805,7 @@ def parse_rar_volumes(
             member.data_parts = [
                 (offset + base_offset, size) for offset, size in member.data_parts
             ]
-        if len(volumes) > 1:
-            # The walk's byte offsets are within this volume, not the concatenated
-            # space the member offsets above use, so the message names the volume.
-            where = f" (volume {number} of the set; the offset is within that volume)"
+        if where:
             if part.truncated is not None:
                 part.truncated += where
             if part.damaged is not None:
@@ -810,7 +829,8 @@ def parse_rar_volumes(
             # field, so leaving this out made a damaged header past volume 1
             # silent — the archive opened clean and nothing said a header could
             # not be finished. The cap applies to the merged list for the same
-            # reason it applies to one volume's.
+            # reason it applies to one volume's, and passes QO unmatched-copies
+            # entries through as it does there.
             for damaged in part.damaged_service_headers:
                 if not _append_damaged_service_header(
                     merged.damaged_service_headers, damaged
@@ -902,9 +922,13 @@ def _append_damaged_service_header(
     another volume, and narrows it here rather than at the call sites, so nothing
     is built for a header the cap is about to turn away. The caller counts what
     this refuses: nothing is dropped silently, because the reader reports the
-    count alongside the headers it does describe.
+    count alongside the headers it does describe. A ``QO`` unmatched-copies entry
+    is always kept and never counted: the overflow message says each counted
+    header was not read to the end, which is not true of it.
     """
-    if len(headers) >= _MAX_DAMAGED_SERVICE_HEADERS:
+    if len(headers) >= _MAX_DAMAGED_SERVICE_HEADERS and not _is_qo_unmatched_copies(
+        source
+    ):
         return False
     headers.append(
         source
@@ -916,6 +940,13 @@ def _append_damaged_service_header(
         )
     )
     return True
+
+
+def _is_qo_unmatched_copies(source: RarMemberInfo | DamagedServiceHeader) -> bool:
+    return isinstance(source, DamagedServiceHeader) and any(
+        record == RAR5_QO_UNMATCHED_COPIES
+        for record, _, _ in source.skipped_header_records
+    )
 
 
 # The two RAR5 redirect types that are Windows reparse points. RAR is the one format
@@ -1167,22 +1198,28 @@ def _require_exact(stream: BinaryIO, n: int, what: str) -> bytes:
     return data
 
 
-def _read_stored_comment(stream: BinaryIO, n: int, what: str) -> bytes:
-    """A stored comment's ``n`` packed bytes, read in pieces.
+def _read_comment(
+    stream: BinaryIO, n: int, what: str, max_metadata_bytes: int | None
+) -> bytes:
+    """A comment's ``n`` packed bytes, refused before the read when ``n`` alone is
+    over ``max_metadata_bytes``.
 
-    A declared size past the end of the file raises ``CorruptionError`` there,
-    having held no more than the file, where one read of ``n`` would first ask for
-    all of it. What the comment then weighs is judged against ``max_metadata_bytes``
-    with its member's names (:func:`_append_member`), or, for the archive comment,
-    by ``RarReader._check_header_metadata_budget``.
+    The walks call it only for a span inside the file (:func:`_span_in_file`), so a
+    cut comment is reported as a cut and the read gets every byte it asks for. A
+    stored comment has no size cap of its own, and its packed bytes are what the
+    read holds, so they are weighed here, before the cost is paid (DR-9). The later
+    total weighs the comment too: for a member's comment, the ``_charge_metadata``
+    call in :func:`_parse_rar3`'s ``file_solid`` arm, which charges it to the member
+    it attaches to; for the archive comment, ``RarReader._check_header_metadata_budget``.
+    This check weighs the packed bytes and that total weighs the decoded text
+    (:func:`comment_metadata_bytes`), so this one is stricter wherever the text is
+    smaller than its packed bytes: a UTF-16LE comment, about half as many characters
+    as it packs, and one whose text stops at a NUL. Those bytes are held all the
+    same, as a compressed comment's packed bytes are weighed.
     """
-    parts: list[bytes] = []
-    left = n
-    while left > 0:
-        part = _require_exact(stream, min(left, _COMMENT_READ_CHUNK), what)
-        parts.append(part)
-        left -= len(part)
-    return b"".join(parts)
+    if max_metadata_bytes is not None and n > max_metadata_bytes:
+        raise metadata_limit_error(max_metadata_bytes, f"a RAR comment packs {n} bytes")
+    return _require_exact(stream, n, what)
 
 
 def _packed_span_end(data_offset: int, add_size: int) -> int:
@@ -1301,6 +1338,20 @@ def _data_past_end(source: BinaryIO) -> str | None:
     )
 
 
+def _span_in_file(source: BinaryIO, data_offset: int, size: int) -> bool:
+    """Whether the ``size`` bytes at ``data_offset`` all lie inside the file.
+
+    The read position is kept. A comment whose data runs past the end is not read:
+    the walk skips its span as it skips any packed data, and the next header read
+    finds the cut (:func:`_data_past_end`), so the members before it still list.
+    """
+    end = _packed_span_end(data_offset, size)
+    here = source.tell()
+    file_end = source.seek(0, io.SEEK_END)
+    source.seek(here)
+    return end <= file_end
+
+
 def _encrypted_header_cut(start: int) -> str:
     """Why the walk stopped at an encrypted header that the file holds only part of.
 
@@ -1308,10 +1359,18 @@ def _encrypted_header_cut(start: int) -> str:
     ciphertext blocks, so a file that ends anywhere after its first byte and before
     its last cannot be a clean end: the writer never stops part-way.
     """
-    return (
-        f"RAR archive is truncated: the file ends inside the encrypted header "
-        f"that starts at byte {start}"
-    )
+    return f"RAR archive is truncated: {_ends_inside_encrypted_header(start)}"
+
+
+# Set on a raised error whose message gives a byte offset within one volume, so that
+# ``parse_rar_volumes`` can name the volume, as it does for the returned strings.
+_OFFSET_IN_VOLUME = "_archivey_rar_offset_in_volume"
+
+
+def _ends_inside_encrypted_header(start: int) -> str:
+    """The clause that places a cut in an encrypted header, shared by the proven cut
+    and the unproven wrong-password message so the two say it the same way."""
+    return f"the file ends inside the encrypted header that starts at byte {start}"
 
 
 class _RarHeaderCrcError(CorruptionError):
@@ -1422,7 +1481,10 @@ def _header_failure(
     :class:`EncryptionError` and password candidates keep iterating. Once the key is
     proven (a matching CRC16 in RAR3, a check value in RAR5), a failure there is
     damage, and one that ran out of ciphertext is a cut. Unproven, a garbage size
-    reads to the end of the file as well, so that stays a wrong password. A plain
+    reads to the end of the file as well, so that stays a wrong password; when the
+    read did run out, the message also names a cut or a damaged header, because
+    with the right password one of those is the cause (damage can garble the size
+    just as a wrong key does) and nothing here can tell them apart. A plain
     header the file holds only part of is a cut: unrar lists the members before it
     and reports an unexpected end of archive.
 
@@ -1431,9 +1493,21 @@ def _header_failure(
     """
     if isinstance(header_fd, _HeaderDecryptStream):
         if not proven:
-            raise wrong_password_error(
-                f"Failed to decrypt {version} headers (wrong password?)"
-            ) from exc
+            message = f"Failed to decrypt {version} headers (wrong password?)"
+            if header_fd.hit_eof:
+                # A wrong key's garbage size runs to the end of a small archive as
+                # well, so the cut is the second reading, not the first; a damaged
+                # header garbles the size the same way, so it is named too.
+                message += (
+                    "; if the password is right, "
+                    f"{_ends_inside_encrypted_header(start)}, "
+                    "or that header is damaged"
+                )
+                error = wrong_password_error(message)
+                # The offset is within this volume; ``parse_rar_volumes`` names it.
+                setattr(error, _OFFSET_IN_VOLUME, True)
+                raise error from exc
+            raise wrong_password_error(message) from exc
         if header_fd.hit_eof:
             return _encrypted_header_cut(start)
     elif isinstance(exc, _RarHeaderCutError):
@@ -1481,8 +1555,7 @@ def load_vint(buf: bytes | bytearray | memoryview, pos: int) -> tuple[int, int]:
     if b < 0x80:
         return b, pos + 1
     limit = pos + 11
-    if limit > length:
-        limit = length
+    limit = min(limit, length)
     res = b & 0x7F
     ofs = 7
     pos += 1
@@ -1629,13 +1702,14 @@ def decode_rar3_cmt_text(raw: bytes, *, utf16: bool, encoding: str | None) -> st
     ``utf16`` is ``_RAR3_SUBHEAD_CMT_UNICODE`` from a ``CMT`` header's attribute field.
     With it, unrar converts ``CmtSize / 2`` units, so an odd trailing byte is
     dropped rather than shown as U+FFFD, and the text is cut at the first NUL
-    *character*: ASCII text in UTF-16LE is full of NUL bytes. Without it, the
-    payload is 8-bit text (:func:`_decode_comment_text`).
+    *character*: ASCII text in UTF-16LE is full of NUL bytes. A unit without its
+    partner stays as that unit (``surrogatepass``), as it does in a RAR3 Unicode name.
+    Without it, the payload is 8-bit text (:func:`_decode_comment_text`).
     """
     if not utf16:
         return _decode_comment_text(raw, encoding=encoding)
     even = raw[: len(raw) - len(raw) % 2]
-    return even.decode("utf-16le", "replace").split("\0", 1)[0]
+    return even.decode("utf-16le", "surrogatepass").split("\0", 1)[0]
 
 
 def _decode_comment_text(raw: bytes, *, encoding: str | None) -> str:
@@ -2560,12 +2634,15 @@ def _parse_rar3(
                         and packed_size <= RAR3_MAX_COMMENT_SIZE
                     )
                 )
+                and _span_in_file(source, data_offset, packed_size)
             ):
                 # The span the walk skips below, so no byte is read both as
                 # comment data and as a later header, which let a stack of small
                 # CMT headers each re-read the rest of the archive.
                 source.seek(data_offset)
-                raw = _read_stored_comment(source, packed_size, "RAR3 comment")
+                raw = _read_comment(
+                    source, packed_size, "RAR3 comment", max_metadata_bytes
+                )
                 utf16 = bool(
                     member.mode is not None and member.mode & _RAR3_SUBHEAD_CMT_UNICODE
                 )
@@ -2999,7 +3076,13 @@ def _is_stored_rar5_cmt(member: RarMemberInfo) -> bool:
 
 
 def _decode_rar5_cmt_bytes(raw: bytes) -> str:
-    return raw.split(b"\0", 1)[0].decode("utf8", "replace")
+    """Decode a RAR5 comment: UTF-8 by the format, cut at the first NUL.
+
+    A byte that is not valid UTF-8 survives as a lone surrogate, as it does in a RAR5
+    name (``surrogateescape``), so the comment keeps every stored byte. RARLAB ``rar``
+    never writes one; only a crafted comment has it.
+    """
+    return raw.split(b"\0", 1)[0].decode("utf-8", "surrogateescape")
 
 
 def _parse_rar5_qo_payload(
@@ -3263,6 +3346,39 @@ def _emit_and_skip_qo_run(
     return needs_next
 
 
+def _qo_unmatched_copies(
+    qo_by_off: dict[int, RarMemberInfo], seen_file_offsets: set[int]
+) -> DamagedServiceHeader | None:
+    """The ``QO`` header's report of copies a clean walk never reached, or ``None``.
+
+    Listing follows the walk: a copy is used only when the walk lands on its
+    ``header_offset``, as ``unrar`` substitutes a copy only for a FILE header it
+    reaches, so an unmatched copy is not a member and the listing is unchanged.
+    ``rar`` writes one copy per FILE header it caches, so a copy that matches none is
+    a damaged or crafted record, which a strict policy should be able to refuse. It
+    rides on the ``MEMBER_HEADER_RECORD_SKIPPED`` channel of a damaged service header.
+    The caller asks only after a clean end. A walk that was cut or stopped at a
+    damaged header leaves copies unreached for that reason alone. A damaged end block
+    stops nothing, but it already makes the archive corrupt, and a claim that the QO
+    record is crafted would then rest on a walk whose last header failed its check.
+    """
+    count = sum(1 for offset in qo_by_off if offset not in seen_file_offsets)
+    if not count:
+        return None
+    noun = "copy" if count == 1 else "copies"
+    return DamagedServiceHeader(
+        name=_RAR5_QO_NAME,
+        skipped_header_records=(
+            (
+                RAR5_QO_UNMATCHED_COPIES,
+                None,
+                f"{count} FILE header {noun} that matched no header the walk reached",
+            ),
+        ),
+        header_walk_stop_reason=None,
+    )
+
+
 def _parse_rar5(
     source: BinaryIO,
     *,
@@ -3486,18 +3602,24 @@ def _parse_rar5(
                         needs_next_volume = True
                     seen_file_offsets.add(member.header_offset)
             elif block_type == _RAR5_SERVICE:
-                if member.skipped_header_records or member.header_walk_stop_reason:
-                    if not _append_damaged_service_header(
-                        damaged_service_headers, member
-                    ):
-                        damaged_service_headers_omitted += 1
-                if _is_stored_rar5_cmt(member):
+                if (
+                    member.skipped_header_records or member.header_walk_stop_reason
+                ) and not _append_damaged_service_header(
+                    damaged_service_headers, member
+                ):
+                    damaged_service_headers_omitted += 1
+                if _is_stored_rar5_cmt(member) and _span_in_file(
+                    source, data_offset, member.compress_size
+                ):
                     source.seek(data_offset)
                     # The packed size, as for any stored payload: the unpacked one
                     # is only a claim, and bytes past the packed span belong to the
                     # next header.
-                    raw = _read_stored_comment(
-                        source, member.compress_size, "RAR5 comment"
+                    raw = _read_comment(
+                        source,
+                        member.compress_size,
+                        "RAR5 comment",
+                        max_metadata_bytes,
                     )
                     comment = _decode_rar5_cmt_bytes(raw)
             _seek_after_packed(source, data_offset, add_size)
@@ -3505,6 +3627,17 @@ def _parse_rar5(
 
         # Unknown block — skip data area.
         _seek_after_packed(source, data_offset, add_size)
+
+    # A cut or a damaged header stops the walk early, so copies past it are unreached
+    # for that reason alone; both break out of the loop before ``end_block_seen`` is
+    # set, so that flag alone withholds the report for them. A damaged end block
+    # stops nothing, but the archive is already corrupt and the QO claim would rest
+    # on a header whose CRC failed, so it is withheld there too. The entry bypasses
+    # the cap (_is_qo_unmatched_copies).
+    if end_block_seen and end_block_damaged_at is None:
+        unmatched = _qo_unmatched_copies(qo_by_off, seen_file_offsets)
+        if unmatched is not None:
+            damaged_service_headers.append(unmatched)
 
     return RarArchive(
         version=5,
@@ -3873,8 +4006,10 @@ def _parse_rar5_file_block(
             (
                 RAR5_UNPLACED_BYTES,
                 None,
-                f"{unplaced_bytes} bytes between its fixed fields and its "
-                "declared extra area",
+                (
+                    f"{unplaced_bytes} bytes between its fixed fields and its "
+                    "declared extra area"
+                ),
             ),
         )
 

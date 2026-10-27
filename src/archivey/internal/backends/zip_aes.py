@@ -38,6 +38,7 @@ from archivey.internal.streams.streamtools import (
     read_exact,
     resolve_seek,
 )
+from archivey.internal.streams.verification import VerificationProofs
 
 # The wrong-password message of every ZIP decrypt path (ZipCrypto and WinZip AES), so
 # the paths cannot drift apart.
@@ -138,6 +139,50 @@ def split_extra_fields(extra: bytes) -> tuple[ExtraField, ...]:
     return tuple(fields)
 
 
+def aes_record_differences(
+    local: WinZipAesInfo | None, central: WinZipAesInfo | None
+) -> list[str]:
+    """How a member's local WinZip AES record differs from its central one: empty
+    when the two are equal, else one item per differing field, each "local against
+    central" (:func:`local_first` words the order), or the side that holds no valid
+    record. Unequal records always give at least one item.
+
+    Every field decides what a read yields: the version whether the CRC is checked,
+    the strength the key and salt lengths, the method the codec. A file read decodes
+    by the central record and the forward pass by the local one, so any difference
+    refuses the member on both (``ZipReader._with_local_method``,
+    ``_header_disagreements``).
+    """
+    if local == central:
+        return []
+    if local is None:
+        return ["the local header holds no valid WinZip AES record"]
+    if central is None:
+        return ["the directory holds no valid WinZip AES record"]
+    differ = []
+    if local.vendor_version != central.vendor_version:
+        differ.append(f"AE-{local.vendor_version} against AE-{central.vendor_version}")
+    if local.strength != central.strength:
+        differ.append(f"AES key strength {local.strength} against {central.strength}")
+    if local.actual_method != central.actual_method:
+        differ.append(
+            f"AES compression method {local.actual_method} against "
+            f"{central.actual_method}"
+        )
+    if not differ:
+        # Unequal records whose compared fields all match: a field added to
+        # WinZipAesInfo and not compared above. Still a difference, so both reads
+        # still refuse; test_zip_aes pins the fields compared.
+        differ.append("the WinZip AES records differ")
+    return differ
+
+
+def local_first(differ: list[str]) -> str:
+    """The suffix that says which side of an "X against Y" item is the local
+    header's, for a message listing ``differ``; empty when no item is a pair."""
+    return ", local first" if any(" against " in item for item in differ) else ""
+
+
 def parse_winzip_aes_extra(extra: bytes) -> WinZipAesInfo | None:
     """Return AE info from a ZIP extra field blob, or ``None`` when absent/malformed."""
     for field in iter_extra_fields(extra):
@@ -221,6 +266,7 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
         self._hashed = 0  # length of the ciphertext prefix the HMAC has taken in
         self._authenticated = False
         self._mac_failed = False
+        self._mac_matched = False
         self._cipher_len = cipher_len
         # The plaintext length, exactly (CTR adds no bytes). ``source_byte_size`` reads
         # it, so the codec layer's accelerator threshold and source bound see the true
@@ -285,6 +331,12 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
             # Every later read raises too: the last chunk it withheld stays withheld.
             self._mac_failed = True
             raise _mac_mismatch()
+        self._mac_matched = True
+
+    def _verification_proofs(self) -> VerificationProofs:
+        # The HMAC covers the whole ciphertext, so its match covers every byte decoded
+        # from it, below any codec. The source is ciphertext: nothing below counts.
+        return VerificationProofs(content=self._mac_matched, content_possible=True)
 
     def read(self, size: int | None = -1) -> bytes:
         if size is None:  # read to EOF, as on any ``io`` stream
@@ -398,6 +450,7 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
         self._buf = bytearray()
         self._ended = False
         self._mac_failed = False
+        self._mac_matched = False
 
     def _pull(self) -> None:
         chunk = self._source.read(FORWARD_READ)
@@ -423,6 +476,12 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
             # Every later read raises too: the last chunk it withheld stays withheld.
             self._mac_failed = True
             raise _mac_mismatch()
+        self._mac_matched = True
+
+    def _verification_proofs(self) -> VerificationProofs:
+        # The HMAC covers the whole ciphertext, so its match covers every byte decoded
+        # from it, below any codec. The source is ciphertext: nothing below counts.
+        return VerificationProofs(content=self._mac_matched, content_possible=True)
 
     def readall(self) -> bytes:
         # Through ``read(-1)``, so a ``hold_back`` stream refuses it too.

@@ -1,6 +1,6 @@
 # archivey
 
-[![CI](https://github.com/davitf/archivey/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/davitf/archivey/actions/workflows/ci.yml?query=branch%3Amain)
+[![CI](https://github.com/archivey-dev/archivey/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/archivey-dev/archivey/actions/workflows/ci.yml?query=branch%3Amain)
 
 Python library for reading, streaming, and safely extracting archives (ZIP, TAR, RAR, 7z, ISO, and more) through a unified interface.
 
@@ -31,7 +31,9 @@ Python library for reading, streaming, and safely extracting archives (ZIP, TAR,
   plus an `archivey` command for listing, testing and extracting from the shell.
 - Tested on Python 3.11 to 3.14 on Linux, and on 3.11 and 3.14 on macOS and Windows.
 
-The API is not frozen until 1.0, but no major changes are expected.
+The API is not frozen until 1.0, but no large changes are expected. Until then, a removed or
+renamed name warns for one minor release before it goes ([versioning and
+stability](https://archivey-dev.github.io/archivey/how-it-is-built/#versioning-and-stability)).
 
 ## Install and use
 
@@ -56,16 +58,22 @@ with archivey.open_archive("photos.tar.gz") as reader:
 
 ## Documentation
 
-**<https://davitf.github.io/archivey/>**
+**<https://archivey-dev.github.io/archivey/>**
 
-[Install](https://davitf.github.io/archivey/install/) ·
-[Opening an archive](https://davitf.github.io/archivey/opening/) ·
-[Choosing how to read](https://davitf.github.io/archivey/reading/) ·
-[Extracting](https://davitf.github.io/archivey/extracting/) ·
-[Security](https://davitf.github.io/archivey/security/) ·
-[Formats and extras](https://davitf.github.io/archivey/formats/) ·
-[Migrating from other libraries](https://davitf.github.io/archivey/migrating/) ·
-[API reference](https://davitf.github.io/archivey/api/)
+The [cheat sheet](https://archivey-dev.github.io/archivey/cheat-sheet/) has the main calls, their errors
+and the zipfile and tarfile equivalents on one page.
+Coding agents can read the docs as Markdown, starting from
+[llms.txt](https://archivey-dev.github.io/archivey/llms.txt), or all in one file from
+[llms-full.txt](https://archivey-dev.github.io/archivey/llms-full.txt).
+
+[Install](https://archivey-dev.github.io/archivey/install/) ·
+[Opening an archive](https://archivey-dev.github.io/archivey/opening/) ·
+[Choosing how to read](https://archivey-dev.github.io/archivey/reading/) ·
+[Extracting](https://archivey-dev.github.io/archivey/extracting/) ·
+[Security](https://archivey-dev.github.io/archivey/security/) ·
+[Formats and extras](https://archivey-dev.github.io/archivey/formats/) ·
+[Migrating from other libraries](https://archivey-dev.github.io/archivey/migrating/) ·
+[API reference](https://archivey-dev.github.io/archivey/api/)
 
 ## How it is built
 
@@ -75,11 +83,12 @@ directs the work and reviews the code, especially the architecture and the trick
 Changes are tested on Linux, macOS and Windows and reviewed by a separate AI session
 that reads them from zero, and several reviews of the whole codebase hunt for bugs,
 unclear or dead code, and API problems. If you are wary of AI-written code, that is
-reasonable: [How it is built](https://davitf.github.io/archivey/how-it-is-built/) says
+reasonable: [How it is built](https://archivey-dev.github.io/archivey/how-it-is-built/) says
 how changes are made and checked, and what the process does not promise.
 
 ## Contributing and security
 
-- **[CONTRIBUTING.md](https://github.com/davitf/archivey/blob/main/CONTRIBUTING.md)** — coding / testing standards
-- **[VISION.md](https://github.com/davitf/archivey/blob/main/VISION.md)** — priorities and trade-offs; authoritative contracts live in `openspec/specs/`
-- **[SECURITY.md](https://github.com/davitf/archivey/blob/main/SECURITY.md)** — private vulnerability reporting
+- **[CONTRIBUTING.md](https://github.com/archivey-dev/archivey/blob/main/CONTRIBUTING.md)** — coding / testing standards
+- **[VISION.md](https://github.com/archivey-dev/archivey/blob/main/VISION.md)** — priorities and trade-offs; authoritative contracts live in `openspec/specs/`
+- **[SECURITY.md](https://github.com/archivey-dev/archivey/blob/main/SECURITY.md)** — private vulnerability reporting
+- **[Issues](https://github.com/archivey-dev/archivey/issues/new/choose)** — bug reports and feature requests, each with its own form

@@ -9,6 +9,7 @@ import contextlib
 import io
 import os
 import struct
+import subprocess
 from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import IO, Any
@@ -33,11 +34,15 @@ from archivey.exceptions import (
     StreamNotSeekableError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends.iso_reader import IsoReader, _strip_version
+from archivey.internal.backends.iso_reader import IsoPlugin, _strip_version
+from archivey.internal.plugin_adapter import PluginReaderAdapter
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
+from archivey.internal.streams.streamtools import (
+    DEFAULT_UNKNOWN_LENGTH_READ_STEP,
+    SharedView,
+)
 from archivey.types import FormatSupport
-from tests.conftest import requires
+from tests.conftest import requires, requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import (
     FactSizedReadRecorder,
@@ -188,6 +193,54 @@ def test_plain_iso_namespace_and_fidelity(tmp_path: Path) -> None:
         assert ar.get("FILE.TXT").mode is None  # no POSIX metadata
 
 
+_PVD_VOLUME_ID = slice(16 * 2048 + 40, 16 * 2048 + 72)
+
+
+@requires_binary("xorriso")
+def test_volume_id_written_as_utf8_is_the_comment(tmp_path: Path) -> None:
+    """xorriso 1.5.6 stores ``-V`` as UTF-8 in the primary descriptor (its Joliet copy
+    turns each non-ASCII byte into ``_``), so the comment reads it as a name is read."""
+    (tmp_path / "a.txt").write_bytes(b"hi")
+    path = tmp_path / "v.iso"
+    subprocess.run(
+        ["xorriso", "-as", "mkisofs", "-quiet", "-R", "-J", "-V", "Café vol"]
+        + ["-o", str(path), str(tmp_path / "a.txt")],
+        check=True,
+        capture_output=True,
+    )
+    assert path.read_bytes()[_PVD_VOLUME_ID].startswith("Café vol".encode())
+    with open_archive(path) as ar:
+        assert ar.info.comment == "Café vol"
+
+
+@pytest.mark.parametrize(
+    ("encoding", "expected"),
+    [(None, "caf\udce9 vol"), ("cp1252", "café vol"), ("utf-8", "caf\udce9 vol")],
+)
+def test_volume_id_decodes_as_a_byte_name(
+    tmp_path: Path, encoding: str | None, expected: str
+) -> None:
+    # Not UTF-8: encoding= decodes it, as for a Rock Ridge or ISO 9660 name, and a byte
+    # nothing decodes survives as a lone surrogate rather than U+FFFD.
+    image = bytearray(_build_iso(rock_ridge=True, joliet=True))
+    image[_PVD_VOLUME_ID] = b"caf\xe9 vol".ljust(32, b" ")
+    path = tmp_path / "v.iso"
+    path.write_bytes(image)
+    with open_archive(path, encoding=encoding) as ar:
+        assert ar.info.comment == expected
+
+
+def test_volume_id_keeps_its_own_trailing_character(tmp_path: Path) -> None:
+    # Only the standard's space padding is removed: a label ending in a no-break space
+    # keeps it, though Python counts it as whitespace.
+    image = bytearray(_build_iso(rock_ridge=True, joliet=True))
+    image[_PVD_VOLUME_ID] = "Café\xa0".encode().ljust(32, b" ")
+    path = tmp_path / "v.iso"
+    path.write_bytes(image)
+    with open_archive(path) as ar:
+        assert ar.info.comment == "Café\xa0"
+
+
 # ---------------------------------------------------------------------------
 # Reading
 # ---------------------------------------------------------------------------
@@ -217,13 +270,15 @@ def test_read_empty_member(rock_ridge_iso: Path) -> None:
 
 
 def test_seek_within_opened_member(rock_ridge_iso: Path) -> None:
-    # The opened member stream is seekable (PyCdlibIO via _PyCdlibStream/DelegatingStream)
-    # once SEEKABLE is declared.
-    with open_archive(rock_ridge_iso, seekable_members=True) as ar:
-        with ar.open("file.txt") as f:
-            assert f.read(5) == b"hello"
-            f.seek(0)
-            assert f.read() == b"hello world"
+    # The opened member stream (a view of the file's extent) is seekable once
+    # SEEKABLE is declared.
+    with (
+        open_archive(rock_ridge_iso, seekable_members=True) as ar,
+        ar.open("file.txt") as f,
+    ):
+        assert f.read(5) == b"hello"
+        f.seek(0)
+        assert f.read() == b"hello world"
 
 
 def test_streaming_over_seekable_iso(rock_ridge_iso: Path) -> None:
@@ -385,9 +440,11 @@ def test_a_parser_error_is_named_without_its_repr() -> None:
     # Byte 140 of the primary descriptor is the low byte of the type L path table's
     # location.
     image[16 * 2048 + 140] = 0
-    with raises_corruption_not_truncation() as excinfo:
-        with open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO):
-            pass
+    with (
+        raises_corruption_not_truncation() as excinfo,
+        open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO),
+    ):
+        pass
     assert isinstance(excinfo.value.__cause__, struct.error)
     message = str(excinfo.value)
     cause = excinfo.value.__cause__
@@ -400,9 +457,8 @@ def test_a_parser_error_is_named_without_its_repr() -> None:
 
 
 def test_an_error_from_this_backends_own_code_is_not_called_damage() -> None:
-    reader = IsoReader.__new__(IsoReader)
     exc = AttributeError("'NoneType' object has no attribute 'ce_entries'")
-    translated = reader._translate_exception(exc)
+    translated = IsoPlugin().translate_exception(exc)
     assert isinstance(translated, CorruptionError)
     assert str(translated) == (
         "Error reading ISO image: a structure in the image could not be parsed "
@@ -787,10 +843,12 @@ def test_a_path_source_is_read_through_the_archive_source(
     source that can record what was asked of it.
     """
     with open_archive(rock_ridge_iso) as reader:
-        assert isinstance(reader, IsoReader)
+        assert isinstance(reader, PluginReaderAdapter)
         assert isinstance(reader._source, ArchiveSource)
         assert reader._source.path == rock_ridge_iso
-        assert reader._iso._cdfp is reader._source
+        # pycdlib reads a view of the shared source, which reads the archive source.
+        assert isinstance(reader._reader._iso._cdfp, SharedView)
+        assert reader._shared._handle is reader._source
         assert [m.name for m in reader.members()]
 
 
@@ -1248,8 +1306,8 @@ def test_the_record_walk_descends_each_directory_extent_once() -> None:
 
     with open_archive(io.BytesIO(out.getvalue())) as ar:
         reader: Any = ar
-        a = reader._iso.get_record(iso_path="/A")
-        b = reader._iso.get_record(iso_path="/A/B")
+        a = reader._reader._iso.get_record(iso_path="/A")
+        b = reader._reader._iso.get_record(iso_path="/A/B")
         b.children.append(a)  # B now lists its own parent A as a child
         names = [m.name for m in ar.members()]
     assert sorted(names) == ["A/", "A/B/", "A/B/A/", "A/B/F"]
@@ -1369,7 +1427,8 @@ def _split_into_extents(
     multi-extent flag when ``flags[i]`` is true. With every flag set, the records are
     one file, as a writer stores it. A record without the flag ends its file, so the
     next record with the same identifier is an unrelated file. The second record
-    starts ``gap`` blocks after the first ends. All the records fit in the root
+    starts ``gap`` blocks after the first ends, and the last is ``gap`` blocks
+    shorter, so the records still end where the file did. All the records fit in the root
     directory's sector, whose padding absorbs the new ones.
     """
     buf = bytearray(image)
@@ -1400,7 +1459,7 @@ def _split_into_extents(
         records.append(bytes(chunk))
     last = bytearray(record)
     both_endian(last, 2, extent + len(flags) + gap)
-    both_endian(last, 10, size - 2048 * len(flags))
+    both_endian(last, 10, size - 2048 * (len(flags) + gap))
     records.append(bytes(last))
     sector_end = root + 2048
     rest = bytes(buf[offset + length : sector_end])
@@ -1435,13 +1494,28 @@ def test_a_multi_extent_file_lists_and_reads_every_extent() -> None:
         assert ar.read("Z.TXT") == b"hi"
 
 
-def test_a_multi_extent_file_with_a_gap_is_refused() -> None:
-    """Extents that are not back to back are refused rather than read as one run."""
-    image = _split_into_extents(_image_with_two_block_file(), b"BIG.BIN;1", gap=1)
-    with open_archive(io.BytesIO(image)) as ar:
+def test_a_multi_extent_file_with_a_gap_reads_each_extent_where_it_is() -> None:
+    """Extents need not be back to back: each is read where its record puts it, and
+    the block between them is skipped. Read as one run from the first extent, the
+    skipped ``b`` block came back as file data."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new()
+    content = b"a" * 2048 + b"b" * 2048 + b"c" * 1000
+    iso.add_fp(io.BytesIO(content), len(content), "/BIG.BIN;1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    image = _split_into_extents(out.getvalue(), b"BIG.BIN;1", gap=1)
+    with open_archive(io.BytesIO(image), seekable_members=True) as ar:
         assert ar.get("BIG.BIN").size == 3048
-        with pytest.raises(UnsupportedFeatureError, match="not contiguous"):
-            ar.read("BIG.BIN")
+        assert ar.read("BIG.BIN") == b"a" * 2048 + b"c" * 1000
+        with ar.open("BIG.BIN") as stream:
+            stream.seek(2040)
+            assert stream.read(16) == b"a" * 8 + b"c" * 8
+            stream.seek(0)
+            assert stream.read(4) == b"aaaa"
 
 
 def test_a_repeated_identifier_without_the_flag_lists_each_file(tmp_path: Path) -> None:
@@ -1523,8 +1597,8 @@ def test_records_sharing_an_extent_keep_their_own_multi_extent_flags() -> None:
         first_member, second_member = ar.members()
         assert [first_member.size, second_member.size] == [4096, 1000]
         assert ar.read(second_member) == b"c" * 1000
-        # The first member's two extents are the same block, so not back to back.
-        with pytest.raises(UnsupportedFeatureError, match="not contiguous"):
+        # The first member's two extents are the same block, so they overlap.
+        with pytest.raises(CorruptionError, match="overlap"):
             ar.read(first_member)
 
 
@@ -2089,11 +2163,13 @@ def test_a_zisofs_member_lists_its_decoded_size_and_reads_decoded(
 
 def test_a_zisofs_member_seeks_across_blocks() -> None:
     data = _zisofs_image(_ZISOFS_PLAIN)
-    with open_archive(io.BytesIO(data), seekable_members=True) as ar:
-        with ar.open("zzz") as stream:
-            for offset in (70_000, 5, 54_000, len(_ZISOFS_PLAIN) - 3):
-                stream.seek(offset)
-                assert stream.read(10) == _ZISOFS_PLAIN[offset : offset + 10]
+    with (
+        open_archive(io.BytesIO(data), seekable_members=True) as ar,
+        ar.open("zzz") as stream,
+    ):
+        for offset in (70_000, 5, 54_000, len(_ZISOFS_PLAIN) - 3):
+            stream.seek(offset)
+            assert stream.read(10) == _ZISOFS_PLAIN[offset : offset + 10]
 
 
 def test_a_zisofs_member_seeks_relative_and_clamps_underflow_to_zero() -> None:
@@ -2101,19 +2177,21 @@ def test_a_zisofs_member_seeks_relative_and_clamps_underflow_to_zero() -> None:
     before the start clamps to 0 as every member stream does; it is the caller's
     seek, not damage in the image."""
     data = _zisofs_image(_ZISOFS_PLAIN)
-    with open_archive(io.BytesIO(data), seekable_members=True) as ar:
-        with ar.open("zzz") as stream:
-            assert stream.seek(-4, io.SEEK_END) == len(_ZISOFS_PLAIN) - 4
-            assert stream.read() == b"tail"
-            stream.seek(70_000)
-            assert stream.seek(-60_000, io.SEEK_CUR) == 10_000
-            assert stream.read(10) == _ZISOFS_PLAIN[10_000:10_010]
-            assert stream.seek(-(10**7), io.SEEK_CUR) == 0
-            assert stream.read(10) == _ZISOFS_PLAIN[:10]
-            assert stream.seek(-(10**7), io.SEEK_END) == 0
-            assert stream.read(10) == _ZISOFS_PLAIN[:10]
-            stream.seek(0)
-            assert_seek_underflow_matches_bytesio(stream)
+    with (
+        open_archive(io.BytesIO(data), seekable_members=True) as ar,
+        ar.open("zzz") as stream,
+    ):
+        assert stream.seek(-4, io.SEEK_END) == len(_ZISOFS_PLAIN) - 4
+        assert stream.read() == b"tail"
+        stream.seek(70_000)
+        assert stream.seek(-60_000, io.SEEK_CUR) == 10_000
+        assert stream.read(10) == _ZISOFS_PLAIN[10_000:10_010]
+        assert stream.seek(-(10**7), io.SEEK_CUR) == 0
+        assert stream.read(10) == _ZISOFS_PLAIN[:10]
+        assert stream.seek(-(10**7), io.SEEK_END) == 0
+        assert stream.read(10) == _ZISOFS_PLAIN[:10]
+        stream.seek(0)
+        assert_seek_underflow_matches_bytesio(stream)
 
 
 def test_the_zisofs_stream_refuses_a_negative_absolute_seek_and_a_bad_whence() -> None:
@@ -2164,9 +2242,11 @@ def test_a_damaged_zisofs_block_is_corruption() -> None:
     at = data.index(stored)
     first_block = at + struct.unpack_from("<I", stored, 16)[0]  # pointer 0
     data[first_block : first_block + 8] = b"\xff" * 8
-    with open_archive(io.BytesIO(bytes(data))) as ar:
-        with raises_corruption_not_truncation():
-            ar.read("zzz")
+    with (
+        open_archive(io.BytesIO(bytes(data))) as ar,
+        raises_corruption_not_truncation(),
+    ):
+        ar.read("zzz")
 
 
 @pytest.mark.parametrize(
@@ -2231,9 +2311,11 @@ def test_a_zisofs_block_that_inflates_past_the_block_size_is_corruption() -> Non
         _build_rr_iso(populate), b"zzz", _zf_entry(32 * 1024) + _UNKNOWN_ENTRY
     )
     assert pointers == struct.pack("<II", 24, len(good))
-    with open_archive(io.BytesIO(data)) as ar:
-        with raises_corruption_not_truncation(match="block 0"):
-            ar.read("zzz")
+    with (
+        open_archive(io.BytesIO(data)) as ar,
+        raises_corruption_not_truncation(match="block 0"),
+    ):
+        ar.read("zzz")
 
 
 def test_pycdlib_used_directly_is_not_filtered() -> None:
@@ -2271,6 +2353,59 @@ def test_a_malformed_rock_ridge_entry_costs_its_own_member_only() -> None:
         assert diagnostic.context.record == ""
         assert "version 99" in diagnostic.context.reason
         assert by_name["bbb"].diagnostics == ()
+
+
+def test_a_report_made_while_listing_names_the_member_as_listed() -> None:
+    """A directory's name ends in ``/`` once normalized; a report made while the
+    member was typed names it the same way, so the two can be matched."""
+    from archivey import DiagnosticCode
+
+    def populate(iso: Any) -> None:
+        iso.add_directory("/DDD", rr_name="ddd")
+
+    data = _cut_after(_build_rr_iso(populate), b"ddd")
+    with open_archive(io.BytesIO(data)) as ar:
+        ddd = {m.name: m for m in ar.members()}["ddd/"]
+        [diagnostic] = ddd.diagnostics
+        assert diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        assert diagnostic.context.member_name == "ddd/"
+        assert "ddd/" in diagnostic.message
+
+
+def test_a_directory_record_without_entries_is_named_as_listed() -> None:
+    """The report for a record with no Rock Ridge entries names a directory with its
+    ``/``, in the message as in the context."""
+    from archivey import DiagnosticCode
+
+    def populate(iso: Any) -> None:
+        iso.add_directory("/DDD", rr_name="ddd")
+
+    data = bytearray(_build_rr_iso(populate))
+    # The directory record, not the path table entry: its identifier length sits
+    # at offset 32 and the identifier at 33.
+    at = next(
+        i
+        for i in range(len(data))
+        if data.startswith(b"DDD", i)
+        and i >= 33
+        and data[i - 1] == 3
+        and data[i - 33] >= 33 + 3
+    )
+    start = at - 33
+    extent = int.from_bytes(data[start + 2 : start + 6], "little") * 2048
+    # The directory's own ``.`` and ``..`` records lose their entries too, or pycdlib
+    # refuses children with Rock Ridge under a parent without it.
+    dot = extent
+    dotdot = dot + data[dot]
+    for record, ident_len in ((start, 3), (dot, 1), (dotdot, 1)):
+        su = record + 33 + ident_len + (1 if ident_len % 2 == 0 else 0)
+        data[su : record + data[record]] = bytes(record + data[record] - su)
+    with open_archive(io.BytesIO(bytes(data))) as ar:
+        ddd = {m.name: m for m in ar.members()}["DDD/"]
+        [diagnostic] = ddd.diagnostics
+        assert diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        assert diagnostic.context.member_name == "DDD/"
+        assert "'DDD/'" in diagnostic.message
 
 
 def test_an_area_cut_before_its_nm_entry_lists_under_the_iso_name() -> None:
@@ -2342,9 +2477,11 @@ def test_a_strict_policy_refuses_a_cut_rock_ridge_area() -> None:
 
     data = _cut_after(_build_rr_iso(_two_rr_files), b"aaa")
     strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(ArchiveyError):
-        with open_archive(io.BytesIO(data), config=strict) as ar:
-            ar.members()
+    with (
+        pytest.raises(ArchiveyError),
+        open_archive(io.BytesIO(data), config=strict) as ar,
+    ):
+        ar.members()
 
 
 # --- names that are not UTF-8 ----------------------------------------------------------
@@ -2650,6 +2787,9 @@ def test_a_utf8_rock_ridge_name_ignores_encoding() -> None:
         # A final newline is part of the name, so no version follows it.
         ("FOO;1\n", True, ("FOO;1\n", None)),
         ("FOO;1\n", False, ("FOO;1\n", None)),
+        # A version is ASCII digits; an Arabic-Indic one is part of the name.
+        ("FOO;\u0661", True, ("FOO;\u0661", None)),
+        ("FOO;\u0661", False, ("FOO;\u0661", None)),
     ],
 )
 def test_strip_version_rules(

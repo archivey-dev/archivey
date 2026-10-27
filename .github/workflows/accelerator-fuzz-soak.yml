@@ -1,20 +1,21 @@
-# Accelerator fuzz soak (twice a week)
+# Accelerator fuzz soak (weekly)
 #
 # The four accelerator targets in tests/atheris_fuzz (gzip_accel, zlib_accel,
 # deflate_accel, bzip2_accel) decode each input with the accelerator forced on and
 # forced off and fail when the accelerated bytes differ or the accelerated read ends
 # cleanly where the plain one raised. atheris-fuzz.yml runs them for 1 to 2 seconds on a
 # pull request and 10 to 15 seconds on the nightly (a few hundred inputs), which finds
-# only shallow differences. This job gives each target a long run twice a week, one runner
+# only shallow differences. This job gives each target a long run once a week, one runner
 # per target, and keeps each target's corpus between runs so the next run starts where
-# this one stopped. Twice a week, not once, because GitHub evicts a cache entry nobody has
-# read for 7 days; a cold start from the seeds can still happen and only costs depth.
+# this one stopped. GitHub evicts a cache entry nobody has read for 7 days, and a weekly
+# run reads it with only minutes to spare, so a cold start from the seeds is common and
+# the carry-forward is best effort. A cold start costs only depth.
 #
-# accelerator-crash-search.yml is the other scheduled accelerator job (weekly): it looks
+# accelerator-crash-search.yml is the other scheduled accelerator job (monthly): it looks
 # for native crashes in-process, not for wrong data. Not a required check: a red run is the signal.
 on:
   schedule:
-    - cron: "41 4 * * 2,5"
+    - cron: "41 4 * * 2"
   pull_request:
     paths:
       - ".github/workflows/accelerator-fuzz-soak.yml"

@@ -19,7 +19,7 @@ installed without its `archivey` command. A plain `pip install archivey` then re
 already installed and writes nothing, so reinstall it to get the command back
 (`pip install --force-reinstall archivey`).
 
-The [command-line guide](https://davitf.github.io/archivey/cli/) lists every command and
+The [command-line guide](https://archivey-dev.github.io/archivey/cli/) lists every command and
 option. Compressed RAR archives also need an outside program, which no Python package can
-install; the [install page](https://davitf.github.io/archivey/install/) explains how to get
+install; the [install page](https://archivey-dev.github.io/archivey/install/) explains how to get
 one.

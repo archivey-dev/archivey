@@ -11,10 +11,11 @@ Atheris lives in the PEP 735 `fuzz` dependency group (`atheris`) and runs via
 
 The four accelerator targets (`gzip_accel`, `zlib_accel`, `deflate_accel`,
 `bzip2_accel`) get only 1 to 2 seconds each there on a pull request and 10 to 15 on the
-nightly. `.github/workflows/accelerator-fuzz-soak.yml` runs them again twice a week for 20
+nightly. `.github/workflows/accelerator-fuzz-soak.yml` runs them again once a week for 20
 minutes each, one runner per target, and keeps each target's corpus in the Actions cache
 so the next run starts from it (`workflow_dispatch` takes `seconds`). GitHub evicts a
-cache entry unread for 7 days, so a run can still start cold from the seeds.
+cache entry unread for 7 days, and a weekly run reads it with only minutes to spare, so a
+cold start from the seeds is common; the carry-forward is best effort.
 
 Mutation fuzz (`tests/test_mutation_fuzz.py`) and `ARCHIVEY_FUZZ=1` /
 `tests/fuzz_sevenzip_parser.py` / `tests/fuzz_rar_parser.py` stay as they are.
@@ -43,8 +44,8 @@ uv run --no-sync python -m tests.atheris_fuzz --target filters
 ```
 
 `open_detected` opens whatever `detect_format` names (SFX payload offset, single-file
-readers, compressed tar, UDIF refusal). `filters` feeds BCJ2, ARM64, Delta and the
-liblzma branch filters directly. The TAR target recomputes header checksums before
+readers, compressed tar, UDIF refusal). `filters` feeds BCJ2, ARM64, RISC-V, Delta and
+the liblzma branch filters directly. The TAR target recomputes header checksums before
 parsing. 7z, RAR and ISO open targets read a few member payloads, and the ZIP target
 also opens the same bytes as a pipe.
 

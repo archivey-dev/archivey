@@ -8,7 +8,6 @@ serve a member. Every such copy goes through :class:`SpoolBudget`, which enforce
 
 from __future__ import annotations
 
-import shutil
 from typing import BinaryIO
 
 from archivey.config import SpoolLimits
@@ -63,8 +62,15 @@ class SpoolBudget:
         self._archive_name = archive_name
         self._source_format = source_format
         self._written = 0
+        # The most ever charged at once, for the reader's resource-usage record.
+        self._peak = 0
         # The reason given by the first refusal, repeated by every later one.
         self._refused: str | None = None
+
+    @property
+    def peak(self) -> int:
+        """The most bytes charged at once, including charges since released."""
+        return self._peak
 
     def check_total(self, total: int | None) -> None:
         """Refuse before writing when the known ``total`` would pass the limit.
@@ -99,6 +105,7 @@ class SpoolBudget:
         if self._limit is not None and self._written + size > self._limit:
             return False
         self._written += size
+        self._peak = max(self._peak, self._written)
         return True
 
     def release(self, size: int) -> None:
@@ -118,7 +125,12 @@ class SpoolBudget:
         self._check_not_refused()
         limit = self._limit
         if limit is None:
-            shutil.copyfileobj(src, out, length=_COPY_CHUNK)
+            # Nothing to refuse, but the bytes are still counted: the reader's
+            # resource-usage record reads them, and a scan runs with no limit.
+            while chunk := src.read(_COPY_CHUNK):
+                out.write(chunk)
+                self._written += len(chunk)
+                self._peak = max(self._peak, self._written)
             return
         while True:
             remaining = limit - self._written
@@ -131,6 +143,7 @@ class SpoolBudget:
                 raise self._refuse(f"more than {remaining} bytes")
             out.write(chunk)
             self._written += len(chunk)
+            self._peak = max(self._peak, self._written)
 
     def _check_not_refused(self) -> None:
         if self._refused is not None:

@@ -1,18 +1,19 @@
-"""Raw LZMA1/LZMA2 filter chains for 7z and ZIP coders, with Delta, BCJ and ARM64
-stages.
+"""Raw LZMA1/LZMA2 filter chains for 7z and ZIP coders, with Delta, BCJ, ARM64 and
+RISC-V stages.
 """
 
 from __future__ import annotations
 
 import lzma
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import BinaryIO
 
 from archivey.exceptions import TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64, arm64_decode
 from archivey.internal.streams.codecs.isolated import IN_PROCESS, Decompressor, Natives
+from archivey.internal.streams.codecs.riscv_filter import FILTER_RISCV, riscv_decode
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -133,37 +134,55 @@ class FilterDecoder(BaseDecoder):
         return not self._pending
 
 
-class Arm64FilterDecoder(BaseDecoder):
-    """Apply the ARM64 branch filter in Python.
+# Decode what can be decoded of ``data`` whose first byte is at ``pc``: returns a
+# prefix of the decoded stream, and the bytes after it wait for more input.
+BranchDecode = Callable[[bytes, int], bytes]
 
-    The filter itself is :mod:`archivey.internal.streams.codecs.arm64_filter`.
+# The branch filters Python's ``lzma`` will not build, decoded in Python.
+PYTHON_BRANCH_FILTERS: dict[int, BranchDecode] = {
+    FILTER_ARM64: arm64_decode,
+    FILTER_RISCV: riscv_decode,
+}
 
-    The :class:`FilterDecoder` counterpart for the one branch filter Python's ``lzma``
-    will not build. Each fed chunk is decoded in whole 4-byte words as it arrives; up
-    to 3 bytes wait for the next chunk, and at the end of the input they are passed
-    through unchanged, as liblzma and 7-Zip do. ``max_length`` bounds what one call
-    returns; decoded bytes past it are held for the next call.
+
+class PythonBranchFilterDecoder(BaseDecoder):
+    """Apply a branch filter Python's ``lzma`` will not build (ARM64, RISC-V) in Python.
+
+    The filters themselves are :mod:`archivey.internal.streams.codecs.arm64_filter`
+    and :mod:`archivey.internal.streams.codecs.riscv_filter`.
+
+    The :class:`FilterDecoder` counterpart for those filters. Each fed chunk is decoded
+    as far as ``decode`` can take it as it arrives (whole 4-byte words for ARM64, all
+    but the last 7 bytes or so for RISC-V); the rest waits for the next chunk, and at
+    the end of the input it is passed through unchanged, as liblzma and 7-Zip do.
+    ``max_length`` bounds what one call returns; decoded bytes past it are held for
+    the next call.
     """
 
-    def __init__(self, *, start_offset: int, unpack_size: int) -> None:
+    def __init__(
+        self, *, decode: BranchDecode, start_offset: int, unpack_size: int
+    ) -> None:
+        self._decode = decode
         self._start_offset = start_offset
         self._unpack_size = unpack_size
         self._position = start_offset  # pc of the first byte in self._raw
         self._produced = 0
-        self._raw = b""  # input not yet decoded: fewer than 4 bytes
+        self._raw = b""  # input not yet decoded: the few bytes decode left
         self._ready = b""  # decoded output not yet returned
         self._ready_offset = 0
 
-    def recreate(self, point: SeekPoint, inner: BinaryIO) -> Arm64FilterDecoder:
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> PythonBranchFilterDecoder:
         del point, inner
-        return Arm64FilterDecoder(
-            start_offset=self._start_offset, unpack_size=self._unpack_size
+        return PythonBranchFilterDecoder(
+            decode=self._decode,
+            start_offset=self._start_offset,
+            unpack_size=self._unpack_size,
         )
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
         if chunk:
             data = self._raw + chunk if self._raw else bytes(chunk)
-            decoded = arm64_decode(data, self._position)
+            decoded = self._decode(data, self._position)
             self._position += len(decoded)
             self._raw = data[len(decoded) :]
             if self._ready_offset < len(self._ready):
@@ -201,10 +220,13 @@ class Arm64FilterDecoder(BaseDecoder):
 
 def _filter_decoder(
     lzma_filter: Mapping[str, int], unpack_size: int, natives: Natives
-) -> FilterDecoder | Arm64FilterDecoder:
-    if lzma_filter["id"] == FILTER_ARM64:
-        return Arm64FilterDecoder(
-            start_offset=lzma_filter.get("start_offset", 0), unpack_size=unpack_size
+) -> FilterDecoder | PythonBranchFilterDecoder:
+    decode = PYTHON_BRANCH_FILTERS.get(lzma_filter["id"])
+    if decode is not None:
+        return PythonBranchFilterDecoder(
+            decode=decode,
+            start_offset=lzma_filter.get("start_offset", 0),
+            unpack_size=unpack_size,
         )
     return FilterDecoder(
         lzma_filter=lzma_filter, unpack_size=unpack_size, natives=natives
@@ -223,8 +245,8 @@ def FilterStream(
 ) -> DecompressorStream:
     """Apply a filter-only stage — BCJ branch filter or Delta (forward-only).
 
-    ``lzma_filter`` is a liblzma filter dict. The ARM64 filter (``FILTER_ARM64``),
-    which Python's ``lzma`` refuses, runs in Python (:class:`Arm64FilterDecoder`).
+    ``lzma_filter`` is a liblzma filter dict. The ARM64 and RISC-V filters, which
+    Python's ``lzma`` refuses, run in Python (:class:`PythonBranchFilterDecoder`).
 
     ``owns_inner`` is True when this filter wraps a private previous stage
     (later 7z BCJ stages, including the LZMA1 cap slice). First-stage

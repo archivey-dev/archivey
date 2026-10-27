@@ -12,17 +12,31 @@ from typing import TextIO
 # ``archivey/internal/extraction.py`` point back here). ``extract`` reports the
 # outcome from the returned report instead.
 _MEMBER_SKIP_MESSAGE = "Skipping %s %r: %s"
+# The library logs this (``_note_solid_open`` in ``archivey/internal/base_reader.py``)
+# the first time an ``open()`` decodes a solid block again. Its advice is about the
+# library API, so it is dropped while the CLI's own opens run.
+_SOLID_REOPEN_MESSAGE = (
+    "Archive %r is solid: opening %r decoded again %d bytes an earlier open() "
+    "on this reader had decoded, because each open() or read() decodes its "
+    "member's solid block from the start. Reading many members this way is "
+    "quadratic in the block size; stream_members() decodes each block once. "
+    "Logged once per reader."
+)
 
 
 class _MemberSkipHold(logging.Filter):
-    """Hold back the library's member-skip warnings while ``held`` is a list."""
+    """Hold back the library's member-skip warnings while ``held`` is a list, and drop
+    its solid re-open advice while ``own_opens`` is set."""
 
     def __init__(self, handler: logging.Handler) -> None:
         super().__init__()
         self.handler = handler
         self.held: list[logging.LogRecord] | None = None
+        self.own_opens = False
 
     def filter(self, record: logging.LogRecord) -> bool:
+        if self.own_opens and record.msg == _SOLID_REOPEN_MESSAGE:
+            return False
         if self.held is not None and record.msg == _MEMBER_SKIP_MESSAGE:
             self.held.append(record)
             return False
@@ -104,3 +118,23 @@ def member_skips_reported_elsewhere() -> Generator[None, None, None]:
         raise
     finally:
         hold.held = None
+
+
+@contextmanager
+def cli_opens_members() -> Generator[None, None, None]:
+    """Drop the library's solid re-open advice while the CLI opens members itself.
+
+    The advice names ``stream_members()``, which an operator running the CLI is not
+    calling: the opens are the CLI's (``archivey test`` opening links whose target the
+    pass could not read). Only the CLI's own handler drops it; handlers an embedding
+    application installed still see the record.
+    """
+    hold = _hold.get()
+    if hold is None or hold.own_opens:
+        yield
+        return
+    hold.own_opens = True
+    try:
+        yield
+    finally:
+        hold.own_opens = False

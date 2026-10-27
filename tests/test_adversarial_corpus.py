@@ -113,20 +113,20 @@ def test_adversarial_open_list_read_semantics(
     blob: bytes,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    with caplog.at_level(logging.WARNING, logger="archivey.normalization"):
-        with open_archive(io.BytesIO(blob)) as archive:
-            members = archive.members()
-            target = members[1] if entry.field == "link_target" else members[0]
-            assert target.name == entry.expected_name
-            assert target.raw_name == entry.expected_raw_name
-            if entry.field == "comment":
-                assert target.comment == entry.expected_comment
-            if entry.field == "link_target":
-                assert target.link_target == entry.expected_link_target
-            if target.is_file:
-                assert (
-                    archive.read(target) == b"payload for the adversarial name member\n"
-                )
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey.normalization"),
+        open_archive(io.BytesIO(blob)) as archive,
+    ):
+        members = archive.members()
+        target = members[1] if entry.field == "link_target" else members[0]
+        assert target.name == entry.expected_name
+        assert target.raw_name == entry.expected_raw_name
+        if entry.field == "comment":
+            assert target.comment == entry.expected_comment
+        if entry.field == "link_target":
+            assert target.link_target == entry.expected_link_target
+        if target.is_file:
+            assert archive.read(target) == b"payload for the adversarial name member\n"
 
     if entry.warning_text is not None:
         warnings = [

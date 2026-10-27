@@ -219,9 +219,7 @@ def test_zip_lzma_without_marker_and_a_cut_size_is_corrupt(
 
 # --- ZIP PPMd8 (method 98) ----------------------------------------------------------------
 
-_PPMD_IN_A_CHILD = ArchiveyConfig(
-    decoder_limits=DecoderLimits(max_ppmd_in_process_input=16)
-)
+_PPMD_IN_A_CHILD = ArchiveyConfig(decoder_limits=DecoderLimits(max_ppmd_held_input=16))
 _PPMD_WHERE = [
     pytest.param({}, id="in-process"),
     pytest.param({"config": _PPMD_IN_A_CHILD}, id="child"),
@@ -338,15 +336,16 @@ def test_zip_bzip2_with_bytes_after_its_stream_is_corrupt(
 
 
 @requires_zstd()
-def test_zip_zstd_member_is_one_frame() -> None:
-    # A method-93 member is one Zstd frame (CodecParams.single_stream): a second frame
-    # is input after the first frame's end, whether the declared size and CRC count it
-    # or stop at the first, and so are bytes after it that start no frame. A 7z Zstd
-    # coder reads its frames as one stream instead:
-    # test_audit_sevenzip.py::test_codec_streams_count_together_against_the_unpack_size.
+def test_zip_zstd_member_reads_every_frame() -> None:
+    # A method-93 member's frames are one stream, as in a .zst file and a 7z Zstd coder
+    # (test_audit_sevenzip.py::test_codec_streams_count_together_against_the_unpack_size):
+    # RFC 8878 defines Zstd data as one or more frames. A declared size and CRC that
+    # stop at the first frame then disagree with the output, and bytes after the last
+    # frame that start no frame are input after the end.
     first, second = _text(3000, seed=1), _text(2000, seed=2)
     frames = zstd_backend().compress(first) + zstd_backend().compress(second)
-    _assert_surplus(_outcome(_zip_member(frames, first + second, method=93, flags=0)))
+    both = _zip_member(frames, first + second, method=93, flags=0)
+    assert _outcome(both) == _ok(first + second)
     _assert_surplus(_outcome(_zip_member(frames, first, method=93, flags=0)))
     junk = _zip_member(frames + _TAILS["junk"], first + second, method=93, flags=0)
     _assert_surplus(_outcome(junk))

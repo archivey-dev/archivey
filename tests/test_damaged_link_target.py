@@ -32,8 +32,7 @@ from archivey.exceptions import (
     PackageNotInstalledError,
     UnsupportedFeatureError,
 )
-from archivey.internal.streams import codecs as codecs_module
-from archivey.internal.streams import crypto as crypto_module
+from archivey.internal.streams import codecs as codecs_module, crypto as crypto_module
 from archivey.reader import ArchiveReader
 from archivey.types import MemberType, OnError
 from tests.conftest import requires, requires_binary
@@ -208,10 +207,12 @@ def test_damaged_link_target_under_strict_policy_refuses_the_pass(
     blob, link = _damaged_link_case(fmt, tmp_path)
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     seen = []
-    with open_archive(io.BytesIO(blob), streaming=streaming, config=config) as ar:
-        with pytest.raises(DiagnosticRaisedError):
-            for member, _ in ar.stream_members():
-                seen.append(member.name)
+    with (
+        open_archive(io.BytesIO(blob), streaming=streaming, config=config) as ar,
+        pytest.raises(DiagnosticRaisedError),
+    ):
+        for member, _ in ar.stream_members():
+            seen.append(member.name)
     assert link not in seen
 
 
@@ -253,9 +254,11 @@ def test_damaged_link_target_fails_only_that_link_at_extraction(
 
 def test_damaged_link_target_under_strict_policy_refuses_the_listing() -> None:
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with open_archive(io.BytesIO(_damaged_zip_symlink()), config=config) as ar:
-        with pytest.raises(DiagnosticRaisedError):
-            ar.members()
+    with (
+        open_archive(io.BytesIO(_damaged_zip_symlink()), config=config) as ar,
+        pytest.raises(DiagnosticRaisedError),
+    ):
+        ar.members()
 
 
 _RAR4_DAMAGED = "subdir/link_to_file1.txt"
@@ -285,9 +288,11 @@ def test_damaged_rar4_link_target_fails_only_that_link_at_extraction(
 
 def test_damaged_rar4_link_target_under_strict_policy_refuses_the_listing() -> None:
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with open_archive(io.BytesIO(_damaged_rar4_symlink()), config=config) as ar:
-        with pytest.raises(DiagnosticRaisedError):
-            ar.members()
+    with (
+        open_archive(io.BytesIO(_damaged_rar4_symlink()), config=config) as ar,
+        pytest.raises(DiagnosticRaisedError),
+    ):
+        ar.members()
 
 
 def _rar4_symlink_with_sizes(packed: bytes, declared: int) -> bytes:
@@ -462,9 +467,11 @@ def test_undecodable_link_target_under_strict_policy_refuses_the_listing(
         monkeypatch.setattr(codecs_module.deps, "zstd", None)
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     blob = _undecodable_zip_symlink(method=method)
-    with open_archive(io.BytesIO(blob), config=config) as ar:
-        with pytest.raises(DiagnosticRaisedError):
-            ar.members()
+    with (
+        open_archive(io.BytesIO(blob), config=config) as ar,
+        pytest.raises(DiagnosticRaisedError),
+    ):
+        ar.members()
 
 
 @pytest.mark.parametrize("streaming", [False, True], ids=["seekable", "streaming"])

@@ -6,7 +6,7 @@ Optional packages, grouped as extras, add the rest:
 ```bash
 pip install archivey                 # no dependencies
 pip install "archivey[recommended]"  # every format and compression method that installs everywhere
-pip install "archivey[seekable]"     # faster seeking in large gzip, bzip2 and DEFLATE data
+pip install "archivey[seekable]"     # faster seeking and reading in large gzip, bzip2 and DEFLATE data
 pip install "archivey[all]"          # recommended and seekable together
 ```
 
@@ -24,7 +24,7 @@ methods.
 | --- | --- |
 | `archivey` | ZIP, TAR and 7z with their common compression methods, and directories. gzip, bzip2, xz, LZMA, zlib, lzip and `.Z` files, alone or inside a TAR, and Zstandard too on Python 3.14 and later. RAR archives can be listed, and their uncompressed, unencrypted files read. |
 | `[recommended]` adds | ISO images, and LZ4, Brotli and Zstandard files (Zstandard only before Python 3.14). PPMd, Deflate64 and Zstandard inside 7z and ZIP, and Brotli and LZ4 inside 7z. AES decryption for 7z, RAR and WinZip AES ZIP files. Progress bars in the command-line tool. |
-| `[seekable]` adds | No new format. Faster seeking inside large gzip, zlib and bzip2 data, and large DEFLATE members in ZIP and 7z, when you open with `seekable_members=True`. |
+| `[seekable]` adds | No new format. Faster seeking inside large gzip, zlib and bzip2 data, and large DEFLATE members in ZIP and 7z, when you open with `seekable_members=True`. On Linux and macOS, also faster reading of large DEFLATE data that compresses 3:1 or less, without that option. |
 
 Compressed RAR files, and a few encrypted ones, also need an outside program, which no extra can
 install. The next section covers it.
@@ -91,9 +91,9 @@ isn't counted, because only encrypted members need it.
 
 ## Python versions and platforms
 
-Archivey needs CPython 3.11 or later. Every change is tested on Linux with 3.11 to 3.14, and on
-macOS and Windows with 3.11 and 3.14. Other platforms aren't tested, and PyPy isn't supported yet
-([PyPy](#pypy) says what works there). [How it is built](how-it-is-built.md) has the full test
+Archivey needs Python 3.11 or later. Every change is tested on Linux with CPython 3.11 to 3.14
+and PyPy 3.11, and on macOS and Windows with CPython 3.11 and 3.14. Other platforms aren't
+tested, and PyPy has some limits ([PyPy](#pypy) lists them). [How it is built](how-it-is-built.md) has the full test
 setup.
 
 ## Free-threaded Python
@@ -111,8 +111,8 @@ are tested on Linux only.
 
 ## PyPy
 
-PyPy isn't supported yet, but every change runs the whole test suite on PyPy 3.11, with and
-without the optional packages, and it has to pass there.
+archivey works on PyPy 3.11, with the limits below. Every change to the main branch runs the whole
+test suite on PyPy 3.11, with and without the optional packages, and it has to pass there.
 
 Under PyPy, archivey doesn't use rapidgzip, lz4, pyppmd or inflate64, even when they are
 installed, because there they misread data or crash the interpreter. It reads as if they weren't
@@ -126,7 +126,7 @@ installed:
 
 If you read data that needs lz4, pyppmd or inflate64, the error says why archivey doesn't use the
 package, in place of an install hint, and so do `format_availability()` and
-`archivey --version -v`. rapidgzip only speeds up seeking, so neither lists it, and you see its
+`archivey --version -v`. rapidgzip only speeds things up, so neither lists it, and you see its
 reason only if you ask for it outright by setting `use_rapidgzip` or `use_indexed_bzip2` to
 `AcceleratorMode.ON`.
 

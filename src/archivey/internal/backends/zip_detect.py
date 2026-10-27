@@ -30,7 +30,9 @@ ZIP_MULTI_VOLUME_MSG = "Multi-volume (split/spanned) ZIP archives are not suppor
 # 99 parts); 7-Zip ``name.zip.001``…``name.zip.00N``. The final Info-ZIP ``.zip``
 # part is caught via EOCD disk fields instead. ``\Z``, not ``$``: ``$`` also matches
 # before a final newline, which would read ``name.z01\n`` as a split part.
-_ZIP_SPLIT_SEGMENT_RE = re.compile(r"\.(?:z\d{2,}|zip\.\d{3,})\Z", re.IGNORECASE)
+_ZIP_SPLIT_SEGMENT_RE = re.compile(
+    r"\.(?:z[0-9]{2,}|zip\.[0-9]{3,})\Z", re.IGNORECASE | re.ASCII
+)
 
 
 def is_zip_split_segment_name(archive_name: str | None) -> bool:

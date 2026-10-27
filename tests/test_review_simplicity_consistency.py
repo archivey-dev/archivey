@@ -36,6 +36,7 @@ import pytest
 from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
+    ArchiveyError,
     ArchiveyUsageError,
     DiagnosticPolicy,
     StreamNotSeekableError,
@@ -311,9 +312,11 @@ def test_right_explicit_format_stays_silent(tmp_path: Path) -> None:
 def test_wrong_explicit_format_is_loud_for_most_formats(tmp_path: Path) -> None:
     """F7 (guardrail): the non-zero-prefixed formats do fail loudly — keep them loud."""
     path = _archive("basic", "zip", tmp_path)
-    with pytest.raises(Exception):  # noqa: B017
-        with open_archive(path, format=ArchiveFormat.TAR) as reader:
-            reader.members()
+    with (
+        pytest.raises(ArchiveyError),
+        open_archive(path, format=ArchiveFormat.TAR) as reader,
+    ):
+        reader.members()
 
 
 @pytest.mark.parametrize(
@@ -342,7 +345,7 @@ def test_empty_listing_check_never_decides_whether_listing_succeeded(
     """
     import tarfile
 
-    import archivey.internal.detection as detection
+    from archivey.internal import detection
 
     path = tmp_path / "empty.tar"
     with tarfile.open(path, "w"):
@@ -527,7 +530,7 @@ def test_reader_surface_is_uniform_across_formats(key: str, tmp_path: Path) -> N
         with pytest.raises(TypeError):
             len(reader)  # type: ignore[arg-type]
         with pytest.raises(TypeError):
-            "some-name" in reader  # type: ignore[operator]
+            _ = "some-name" in reader  # type: ignore[operator]
         assert reader.get("no-such-member") is None
         with pytest.raises(KeyError):
             reader.read("no-such-member")
@@ -758,7 +761,7 @@ def test_bidi_name_warning_is_queryable_data(tmp_path: Path) -> None:
 
     from archivey.diagnostics import DiagnosticCode
 
-    name = "invoice‮cod.exe"
+    name = "invoice\u202ecod.exe"
     path = tmp_path / "bidi.tar"
     with tarfile.open(path, "w") as tar:
         tar.addfile(tarfile.TarInfo(name), io.BytesIO(b""))
@@ -801,7 +804,7 @@ def test_bidi_diagnostic_is_emitted_once_per_presentation(
 
     path = tmp_path / "bidi.zip"
     with zipfile.ZipFile(path, "w") as zf:
-        zf.writestr("a‮b.txt", b"x")
+        zf.writestr("a\u202eb.txt", b"x")
 
     with open_archive(path) as reader:
         if driver == "members-twice":
@@ -1005,13 +1008,15 @@ def test_trailing_data_is_reported(tail: bytes, tail_id: str, tmp_path: Path) ->
             DiagnosticCode.ARCHIVE_TRAILING_DATA: 1
         }
 
-    with pytest.raises(DiagnosticRaisedError):
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError),
+        open_archive(
             path,
             format=ArchiveFormat.TAR,
             config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
-        ) as reader:
-            reader.members()
+        ) as reader,
+    ):
+        reader.members()
 
 
 def test_trailing_data_scan_is_bounded(tmp_path: Path) -> None:

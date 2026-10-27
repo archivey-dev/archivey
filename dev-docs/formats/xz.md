@@ -354,26 +354,26 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
     tests/test_probe_provenance_unconfirmed.py -k "xz or lzip or lzma"
 ```
 
-| Claim | Pinned by |
-| --- | --- |
-| Size from the index and trailers; not on a pipe or another archive's member stream | `tests/test_single_file.py::test_xz_size_from_header`, `::test_lzip_size_from_trailer`, `::test_member_stream_source_is_not_seeked_to_its_end`, `tests/test_seekable_streams.py::test_xz_try_get_size_uses_index_not_full_decode` |
-| The open-time xz scan is reused by member streams | `tests/test_seekable_streams.py::test_a_bare_xz_scans_its_index_once_for_size_and_seeks` |
-| The combined lzip CRC-32 | `tests/test_single_file.py::test_lzip_exposes_stored_crc32`, `::test_multi_member_lzip_exposes_combined_crc32`, `tests/test_review_simplicity_consistency.py::test_lzip_surfaces_crc32_without_declaring_seekable_members` |
-| Block and member seeks read the right bytes | `tests/test_seekable_streams.py::test_xz_backward_seek_uses_block_index`, `::test_xz_multiblock_seek_serves_the_right_bytes_across_feed_chunks`, `::test_xz_multistream_block_resume_crosses_a_stream_gap`, `::test_lzip_multi_member_seek_after_forward_read_serves_the_right_bytes` |
-| Seeks trust a self-consistent index; forward reads verify | `::test_xz_cold_seek_trusts_a_self_consistent_block_index`, `::test_lzip_cold_seek_trusts_a_self_consistent_trailer_chain`, `::test_xz_block_resume_refuses_blocks_that_disagree_with_the_index`, `::test_lzip_trailer_member_size_mismatch_raises_on_forward_read` |
-| Index grammar | `::test_xz_index_with_room_for_more_records_is_rejected`, `::test_xz_index_rejects_a_non_minimal_multibyte_integer`, `::test_xz_index_crc_mismatch_raises_on_backwards_scan`, `::test_xz_index_with_a_huge_declared_count_fails_without_reserving` |
-| Padding | `::test_xz_stream_padding_between_streams`, `::test_xz_padding_scan_reads_in_chunks` |
-| Thinning | `::test_xz_stream_with_more_blocks_than_the_cap_keeps_spaced_blocks`, `::test_lzip_index_over_the_cap_is_thinned_and_seeks_read_right`, `::test_lzip_peek_index_summary_holds_no_per_member_state` |
-| Truncation and short sources | `::test_xz_truncated_large_read_recovers_prefix`, `::test_lzip_truncated_large_read_recovers_prefix`, `::test_xz_source_cut_inside_the_first_header_is_truncated`, `::test_lzip_source_cut_inside_the_first_header_is_truncated`, `::test_lzip_short_source_that_is_not_lzip_is_corrupt` |
-| lzip trailing data is allowed | `::test_lzip_short_trailing_data_after_a_member_is_allowed` |
-| An LZMA Alone or lzip stream after zero bytes is trailing data, and strict refuses it; zeros at the end and streams with nothing between them stay silent | `tests/test_stream_trailing_data.py::test_a_stream_after_nul_padding_is_trailing_data`, `::test_strict_refuses_a_stream_after_nul_padding`, `::test_a_seek_to_the_end_stops_at_nul_padding`, `::test_nul_padding_at_the_end_and_direct_concatenation_stay_silent` |
-| The index through bytes after the end, and its bound | `tests/test_stream_trailing_data.py::test_xz_keeps_its_size_and_index_through_appended_bytes`, `::test_lzip_keeps_its_size_and_crc_through_appended_bytes`, `::test_the_index_search_reaches_its_bound_and_no_further` |
-| Probes reserve only their read's dictionary | `tests/test_probe_dictionary_clamp.py` |
-| Dictionary caps | `tests/test_decoder_limits.py::test_xz_block_declaring_four_gib_is_refused`, `::test_xz_block_resume_after_a_seek_is_capped_too`, `::test_lzip_member_dictionary_is_capped`, `::test_lzma_alone_declaring_four_gib_is_refused`, `::test_lzma_alone_non_seekable_source_is_checked_and_replayed` |
-| A check liblzma cannot compute warns | `tests/test_audit2_tar_streams.py::test_xz_unsupported_check_type_is_not_silent`, `::test_xz_without_a_check_is_not_unverifiable`, `::test_xz_unsupported_check_in_a_later_stream_is_reported`, `::test_xz_unsupported_check_reached_by_a_block_resume_is_reported_once`, `::test_tar_xz_unsupported_check_type_is_not_silent` |
-| liblzma errors by cause | `tests/test_lzma_error_causes.py::test_xz_with_an_unknown_filter_is_unsupported_not_corrupt`, `::test_an_unknown_filter_mid_tar_xz_aborts_the_listing`, `::test_corrupt_xz_data_is_still_corruption` |
-| The Alone probe | `tests/test_detection.py::test_lzma_alone_detected_by_content_probe`, `::test_lzma_alone_declaring_zero_output_is_not_claimed`, `::test_lzma_alone_with_zero_dictionary_size_is_detected`, `::test_lzma_alone_probe_does_not_claim_lzip`, `::test_tlz_alone_content_wins_with_extension_conflict` |
-| Alone size from the header; `format_unconfirmed` on a probe-only failure | `tests/test_single_file.py::test_lzma_alone_size_from_header_when_known`, `::test_lzma_alone_size_none_when_unknown_marker`, `tests/test_probe_provenance_unconfirmed.py::test_lzma_alone_probable_failure_sets_format_unconfirmed`, `::test_lzma_alone_probable_limit_refusal_sets_format_unconfirmed` |
+| Claim |
+| --- |
+| Size from the index and trailers; not on a pipe or another archive's member stream |
+| The open-time xz scan is reused by member streams |
+| The combined lzip CRC-32 |
+| Block and member seeks read the right bytes |
+| Seeks trust a self-consistent index; forward reads verify |
+| Index grammar |
+| Padding |
+| Thinning |
+| Truncation and short sources |
+| lzip trailing data is allowed |
+| An LZMA Alone or lzip stream after zero bytes is trailing data, and strict refuses it; zeros at the end and streams with nothing between them stay silent |
+| The index through bytes after the end, and its bound |
+| Probes reserve only their read's dictionary |
+| Dictionary caps |
+| A check liblzma cannot compute warns |
+| liblzma errors by cause |
+| The Alone probe |
+| Alone size from the header; `format_unconfirmed` on a probe-only failure |
 
 **Building fixtures.** The standard library writes single-block xz and LZMA Alone
 (`lzma.compress`). `tests/streams_util.py` builds multi-block xz and multi-member lzip.

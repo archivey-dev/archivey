@@ -19,6 +19,7 @@ import random
 import tarfile
 import zipfile
 import zlib
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,8 @@ from archivey.cost import AccessCost, ListingCost
 from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
+    PackageNotInstalledError,
+    ResourceLimitError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -148,9 +151,11 @@ def test_inferred_bidi_control_name_warns_once(
     # (U+202E); this test covers inferred-name presentation warnings, not the
     # accelerator, so pin the stdlib gzip path.
     config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF)
-    with caplog.at_level(logging.WARNING, logger="archivey.normalization"):
-        with open_archive(path, config=config) as archive:
-            assert archive.members()[0].name == name
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey.normalization"),
+        open_archive(path, config=config) as archive,
+    ):
+        assert archive.members()[0].name == name
     warnings = [
         record for record in caplog.records if "bidirectional control" in record.message
     ]
@@ -555,9 +560,11 @@ def test_lzip_version_0_is_unsupported_at_open(tmp_path: Path) -> None:
     member[4] = 0
     path = tmp_path / "old.lz"
     path.write_bytes(bytes(member))
-    with pytest.raises(UnsupportedFeatureError, match="lzip version 0 "):
-        with open_archive(path) as ar:
-            ar.read(ar.members()[0])
+    with (
+        pytest.raises(UnsupportedFeatureError, match="lzip version 0 "),
+        open_archive(path) as ar,
+    ):
+        ar.read(ar.members()[0])
 
 
 def test_multi_member_lzip_exposes_combined_crc32(tmp_path: Path) -> None:
@@ -571,17 +578,19 @@ def test_multi_member_lzip_exposes_combined_crc32(tmp_path: Path) -> None:
     path.write_bytes(make_multi_member_lzip(parts))
     full = b"".join(parts)
 
-    with patch.object(
-        lzip_mod, "_iter_trailers_backwards", wraps=lzip_mod._iter_trailers_backwards
-    ) as scanned:
-        with open_archive(path, seekable_members=True) as ar:
-            member = ar.members()[0]
-            assert scanned.call_count == 1, (
-                "size + CRC must share one backward index scan"
-            )
-            assert member.size == len(full)
-            assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(zlib.crc32(full))
-            assert ar.read(member) == full
+    with (
+        patch.object(
+            lzip_mod,
+            "_iter_trailers_backwards",
+            wraps=lzip_mod._iter_trailers_backwards,
+        ) as scanned,
+        open_archive(path, seekable_members=True) as ar,
+    ):
+        member = ar.members()[0]
+        assert scanned.call_count == 1, "size + CRC must share one backward index scan"
+        assert member.size == len(full)
+        assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(zlib.crc32(full))
+        assert ar.read(member) == full
 
 
 def test_other_single_file_codecs_omit_stored_digests(tmp_path: Path) -> None:
@@ -762,7 +771,7 @@ def test_non_seekable_gzip_streams_fine() -> None:
         # Read while the generator is live: exhaustion closes the current stream.
         pairs = list(ar.stream_members())
         assert len(pairs) == 1
-        member, stream = pairs[0]
+        _member, stream = pairs[0]
         assert stream is not None
         # Re-open via random open is unavailable in streaming mode; drain via a fresh
         # streaming pass that reads before the generator finishes.
@@ -893,9 +902,11 @@ def _read_single_streamed_member(ar) -> bytes:
 def test_truncated_gzip_raises_truncated() -> None:
     full = gzip.compress(b"streamed payload" * 1000)
     truncated = full[: len(full) // 2]  # gzip magic intact -> detection picks GZ
-    with open_archive(NonSeekableBytesIO(truncated), streaming=True) as ar:
-        with pytest.raises(TruncatedError):
-            _read_single_streamed_member(ar)
+    with (
+        open_archive(NonSeekableBytesIO(truncated), streaming=True) as ar,
+        pytest.raises(TruncatedError),
+    ):
+        _read_single_streamed_member(ar)
 
 
 def test_truncation_is_caught_as_corruption() -> None:
@@ -903,18 +914,22 @@ def test_truncation_is_caught_as_corruption() -> None:
     # ``except CorruptionError`` catches it.
     assert issubclass(TruncatedError, CorruptionError)
     full = gzip.compress(b"streamed payload" * 1000)
-    with open_archive(NonSeekableBytesIO(full[: len(full) // 2]), streaming=True) as ar:
-        with pytest.raises(CorruptionError) as caught:
-            _read_single_streamed_member(ar)
+    with (
+        open_archive(NonSeekableBytesIO(full[: len(full) // 2]), streaming=True) as ar,
+        pytest.raises(CorruptionError) as caught,
+    ):
+        _read_single_streamed_member(ar)
     assert isinstance(caught.value, TruncatedError)
 
 
 def test_corrupt_gzip_raises_corruption() -> None:
     data = bytearray(gzip.compress(b"streamed payload" * 100))
     data[15:35] = b"\x00" * 20  # clobber the deflate body (past the 10-byte header)
-    with open_archive(NonSeekableBytesIO(bytes(data)), streaming=True) as ar:
-        with raises_corruption_not_truncation():
-            _read_single_streamed_member(ar)
+    with (
+        open_archive(NonSeekableBytesIO(bytes(data)), streaming=True) as ar,
+        raises_corruption_not_truncation(),
+    ):
+        _read_single_streamed_member(ar)
 
 
 def test_open_from_mid_positioned_stream() -> None:
@@ -1145,11 +1160,15 @@ def test_open_time_failure_names_no_member(tmp_path: Path) -> None:
 def test_non_seekable_source_still_defers_validation_to_the_read() -> None:
     # A probe read would consume a byte the one-shot member stream needs, so a
     # non-seekable source keeps failing on the read, as documented.
-    with open_archive(
-        NonSeekableBytesIO(b"\x00" * 40_000), format=ArchiveFormat.GZ, streaming=True
-    ) as ar:
-        with raises_corruption_not_truncation():
-            _read_single_streamed_member(ar)
+    with (
+        open_archive(
+            NonSeekableBytesIO(b"\x00" * 40_000),
+            format=ArchiveFormat.GZ,
+            streaming=True,
+        ) as ar,
+        raises_corruption_not_truncation(),
+    ):
+        _read_single_streamed_member(ar)
 
 
 @pytest.mark.parametrize(
@@ -1167,6 +1186,186 @@ def test_corrupt_bz2_raises_whatever_the_accelerator_mode(
     path = tmp_path / "garbage.bz2"
     path.write_bytes(_NOT_A_STREAM[contents])
     config = ArchiveyConfig(use_indexed_bzip2=mode)
+    with (
+        pytest.raises(CorruptionError),
+        open_archive(path, seekable_members=True, config=config) as ar,
+    ):
+        ar.read(ar.members()[0])
+
+
+_ACCELERATED_CODECS = pytest.mark.parametrize(
+    ("suffix", "compress", "field"),
+    [
+        (".gz", gzip.compress, "use_rapidgzip"),
+        (".bz2", bz2.compress, "use_indexed_bzip2"),
+    ],
+)
+
+
+@_ACCELERATED_CODECS
+@pytest.mark.parametrize("as_stream", [False, True], ids=["path", "stream"])
+def test_open_time_probe_starts_no_accelerator_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    suffix: str,
+    compress: Callable[[bytes], bytes],
+    field: str,
+    as_stream: bool,
+) -> None:
+    # The one-byte check at open decodes with the standard library: rapidgzip runs in a
+    # child process, and the probe used to start one that the member read then started
+    # again (about 30 ms each). An open and a full read start exactly one.
+    pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
+    from archivey.internal.streams.codecs import rapidgzip_select
+
+    started: list[object] = []
+    real = rapidgzip_select.RapidgzipChildStream
+
+    def counting(*args: object, **kwargs: object) -> object:
+        started.append(args)
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rapidgzip_select, "RapidgzipChildStream", counting)
+    payload = random.Random(5).randbytes(1 << 16) * 4
+    path = tmp_path / f"data{suffix}"
+    path.write_bytes(compress(payload))
+    config = ArchiveyConfig(**{field: AcceleratorMode.ON})
+    # A stream source shares one handle through views, a path source hands the codec
+    # the path: two different routes to the probe.
+    source = io.BytesIO(path.read_bytes()) if as_stream else path
+    with open_archive(source, config=config) as ar:
+        assert started == []
+        assert ar.read(ar.members()[0]) == payload
+    assert len(started) == 1
+
+
+@_ACCELERATED_CODECS
+@pytest.mark.parametrize("as_stream", [False, True], ids=["path", "stream"])
+def test_open_raises_for_an_accelerator_on_that_is_not_installed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    suffix: str,
+    compress: Callable[[bytes], bytes],
+    field: str,
+    as_stream: bool,
+) -> None:
+    # The probe decodes with the standard library but still resolves the accelerator,
+    # so ON without rapidgzip fails at open (DR-15b), not on the first read.
+    from archivey.internal.streams.codecs import deps
+
+    monkeypatch.setattr(
+        deps, "rapidgzip", deps.LazyOptional("rapidgzip", present=False)
+    )
+    path = tmp_path / f"data{suffix}"
+    path.write_bytes(compress(b"payload"))
+    source = io.BytesIO(path.read_bytes()) if as_stream else path
+    with pytest.raises(PackageNotInstalledError):
+        open_archive(source, config=ArchiveyConfig(**{field: AcceleratorMode.ON}))
+
+
+@_ACCELERATED_CODECS
+@pytest.mark.parametrize("as_stream", [False, True], ids=["path", "stream"])
+def test_open_raises_for_an_accelerator_on_with_no_child_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    suffix: str,
+    compress: Callable[[bytes], bytes],
+    field: str,
+    as_stream: bool,
+) -> None:
+    # ON where no rapidgzip child can run fails at open too, and starts nothing.
+    from archivey.internal.streams.codecs import deps, rapidgzip_select
+
+    monkeypatch.setattr(deps, "rapidgzip", deps.LazyOptional("rapidgzip", present=True))
+    monkeypatch.setattr(
+        rapidgzip_select, "rapidgzip_child_unavailable_reason", lambda: "test says no"
+    )
+    path = tmp_path / f"data{suffix}"
+    path.write_bytes(compress(b"payload"))
+    source = io.BytesIO(path.read_bytes()) if as_stream else path
+    with pytest.raises(ResourceLimitError, match="test says no"):
+        open_archive(source, config=ArchiveyConfig(**{field: AcceleratorMode.ON}))
+
+
+@_ACCELERATED_CODECS
+def test_open_logs_no_accelerator_fallback_for_auto(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    suffix: str,
+    compress: Callable[[bytes], bytes],
+    field: str,
+) -> None:
+    # Open resolves only ON. AUTO is left to the read, which sees the size the
+    # registry fills in: a small file never wanted rapidgzip, so where no child can
+    # run, neither the open nor the read says it fell back.
+    from archivey.internal.streams.codecs import bzip2_codec, deps, rapidgzip_select
+
+    monkeypatch.setattr(deps, "rapidgzip", deps.LazyOptional("rapidgzip", present=True))
+    for module in (bzip2_codec, rapidgzip_select):
+        monkeypatch.setattr(
+            module, "rapidgzip_child_unavailable_reason", lambda: "test says no"
+        )
+    monkeypatch.setattr(rapidgzip_select, "_child_fallback_warned", set())
+    path = tmp_path / f"data{suffix}"
+    path.write_bytes(compress(b"payload"))
+    config = ArchiveyConfig(**{field: AcceleratorMode.AUTO})
+    with (
+        caplog.at_level(logging.WARNING),
+        open_archive(path, seekable_members=True, config=config) as ar,
+    ):
+        assert ar.read(ar.members()[0]) == b"payload"
+    assert "test says no" not in caplog.text
+
+
+def test_open_with_accelerator_on_reports_a_refused_gzip_header_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An ON open hands a gzip whose header zlib refuses to the standard library
+    # before it would start a child, so the damage is reported even where no child
+    # can run, as the read reports it.
+    from archivey.internal.streams.codecs import deps, rapidgzip_select
+
+    monkeypatch.setattr(deps, "rapidgzip", deps.LazyOptional("rapidgzip", present=True))
+    monkeypatch.setattr(
+        rapidgzip_select, "rapidgzip_child_unavailable_reason", lambda: "test says no"
+    )
+    data = bytearray(gzip.compress(b"payload", mtime=0))
+    data[3] |= 0x02  # FHCRC, with a CRC16 that cannot match
+    data[10:10] = b"\x00\x00"
+    path = tmp_path / "bad-header.gz"
+    path.write_bytes(bytes(data))
+    with pytest.raises(CorruptionError, match="header crc"):
+        open_archive(path, config=ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON))
+
+
+def test_open_with_accelerator_on_reports_a_zlib_header_rapidgzip_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A zlib stream with a preset dictionary is not zlib to rapidgzip, so an ON open
+    # hands it to the standard library before it would start a child: the data error
+    # comes first even where no child can run.
+    from archivey.internal.streams.codecs import deps, rapidgzip_select
+
+    monkeypatch.setattr(deps, "rapidgzip", deps.LazyOptional("rapidgzip", present=True))
+    monkeypatch.setattr(
+        rapidgzip_select, "rapidgzip_child_unavailable_reason", lambda: "test says no"
+    )
+    compressor = zlib.compressobj(zdict=b"dictionary bytes here")
+    path = tmp_path / "data.zz"
+    path.write_bytes(compressor.compress(b"payload") + compressor.flush())
     with pytest.raises(CorruptionError):
-        with open_archive(path, seekable_members=True, config=config) as ar:
-            ar.read(ar.members()[0])
+        open_archive(path, config=ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON))
+
+
+def test_open_time_probe_still_rejects_a_wrong_codec_with_the_accelerator_on(
+    tmp_path: Path,
+) -> None:
+    # The probe runs with the standard library, so a source that is not the claimed
+    # codec still fails at open, not on the first read.
+    pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
+    path = tmp_path / "zeros.gz"
+    path.write_bytes(b"\x00" * 40_000)
+    config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
+    with raises_corruption_not_truncation():
+        open_archive(path, format=ArchiveFormat.GZ, config=config)

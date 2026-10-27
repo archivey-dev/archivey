@@ -156,7 +156,7 @@ def _named_instances(cls: Class) -> list[dict[str, Any]]:
 
 # griffe_fieldz takes a default's repr(): ``<AcceleratorMode.AUTO: 'auto'>`` for an enum
 # member, ``<class 'dict'>`` or ``<dynamic>`` for a ``default_factory``.
-_ENUM_REPR_RE = re.compile(r"<(?P<name>[A-Za-z_][\w.]*): .*>", re.S)
+_ENUM_REPR_RE = re.compile(r"<(?P<name>[A-Za-z_][\w.]*): .*>", re.DOTALL)
 _FACTORY_RE = re.compile(r"default_factory=(?P<name>[A-Za-z_][\w.]*)\b")
 
 

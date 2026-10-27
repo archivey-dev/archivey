@@ -68,8 +68,7 @@ class Blake2sp:
             start = i * _BLOCK_SIZE
             if len(self._buf) > start:
                 left = len(self._buf) - start
-                if left > _BLOCK_SIZE:
-                    left = _BLOCK_SIZE
+                left = min(left, _BLOCK_SIZE)
                 self._leaves[i].update(self._buf[start : start + left])
         root = hashlib.blake2s(
             digest_size=DIGEST_SIZE,

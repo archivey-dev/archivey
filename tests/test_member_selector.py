@@ -322,10 +322,12 @@ def test_extract_all_raise_on_a_scanned_format_keeps_what_was_written(
 def test_stream_members_raise_comes_after_the_last_member() -> None:
     data = _tar([("a.txt", b"a"), ("b.txt", b"b")])
     seen: list[str] = []
-    with open_archive(io.BytesIO(data), config=_RAISE_UNMATCHED) as ar:
-        with pytest.raises(DiagnosticRaisedError):
-            for member, _stream in ar.stream_members(members=["a.txt", "typo.txt"]):
-                seen.append(member.name)
+    with (
+        open_archive(io.BytesIO(data), config=_RAISE_UNMATCHED) as ar,
+        pytest.raises(DiagnosticRaisedError),
+    ):
+        for member, _stream in ar.stream_members(members=["a.txt", "typo.txt"]):
+            seen.append(member.name)
     assert seen == ["a.txt"]
 
 

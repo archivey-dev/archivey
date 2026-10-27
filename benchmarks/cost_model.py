@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Per-member cost and throughput, fitted from a ladder of archives.
 
 A whole-archive wall time mixes three costs: a fixed one per open, one per member, and

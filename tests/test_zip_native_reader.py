@@ -135,10 +135,12 @@ def test_damaged_directory_lists_the_members_the_local_headers_hold(
 
 def test_damaged_directory_iteration_yields_then_raises() -> None:
     seen: list[str] = []
-    with open_archive(io.BytesIO(_with_bad_third_header())) as reader:
-        with raises_corruption_not_truncation(match="Bad magic number"):
-            for member in reader:
-                seen.append(member.name)
+    with (
+        open_archive(io.BytesIO(_with_bad_third_header())) as reader,
+        raises_corruption_not_truncation(match="Bad magic number"),
+    ):
+        for member in reader:
+            seen.append(member.name)
     assert seen == ["a.txt", "b.txt", "c.txt"]
 
 
@@ -146,9 +148,11 @@ def test_damaged_directory_extract_all_writes_then_raises(tmp_path: object) -> N
     from pathlib import Path
 
     dest = Path(str(tmp_path)) / "out"
-    with open_archive(io.BytesIO(_with_bad_third_header())) as reader:
-        with raises_corruption_not_truncation(match="Bad magic number"):
-            reader.extract_all(dest)
+    with (
+        open_archive(io.BytesIO(_with_bad_third_header())) as reader,
+        raises_corruption_not_truncation(match="Bad magic number"),
+    ):
+        reader.extract_all(dest)
     assert sorted(p.name for p in dest.iterdir()) == ["a.txt", "b.txt", "c.txt"]
 
 
@@ -356,6 +360,33 @@ def test_an_offset_no_file_can_seek_to_is_corruption(
         assert reader.read(report.members[2]) == b"b.txtb.txtb.txt"
 
 
+def test_a_zip_missing_its_first_bytes_says_so(tmp_path: object) -> None:
+    """A ZIP whose first 60 bytes are gone: the directory still finds the members, but
+    the first two local headers would start before the file. Each of those reads
+    raises ``CorruptionError`` that names the 60 bytes the archive is missing, never
+    the raw negative offset or a member's own shortfall alone, and the third member
+    still reads."""
+    from pathlib import Path
+
+    data = _zip()
+    path = Path(str(tmp_path)) / "front-cut.zip"
+    path.write_bytes(data[60:])
+    with open_archive(path) as reader:
+        report = reader.members_report()
+        assert report.error is None
+        a, b, c = report.members
+        for member in (a, b):
+            with raises_corruption_not_truncation(
+                match="missing at least its first 60 bytes"
+            ) as caught:
+                reader.read(member)
+            assert "offset: -" not in str(caught.value)
+        assert "this member's local header would start 10 bytes before" in str(
+            caught.value
+        )
+        assert reader.read(c) == b"c.txtc.txtc.txt"
+
+
 def _bad_utf8_second_name(*, local_too: bool, header_offset: int | None) -> bytes:
     """Three bit-3 members whose second directory entry is flagged UTF-8 over a name
     that is not (read as unflagged), optionally pointing at ``header_offset``, and
@@ -429,18 +460,20 @@ def test_a_damaged_directory_lists_alike_whichever_walk_meets_it_first(
         ]
     # A streaming pass walks the directory before reading any member's data.
     streamed = []
-    with open_archive(io.BytesIO(bytes(data)), streaming=True) as reader:
-        with raises_corruption_not_truncation(match="magic"):
-            for member, stream in reader.stream_members():
-                assert stream is not None
-                streamed.append(
-                    (
-                        member.name,
-                        member.size,
-                        member.compressed_size,
-                        outcome(stream.read),
-                    )
+    with (
+        open_archive(io.BytesIO(bytes(data)), streaming=True) as reader,
+        raises_corruption_not_truncation(match="magic"),
+    ):
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            streamed.append(
+                (
+                    member.name,
+                    member.size,
+                    member.compressed_size,
+                    outcome(stream.read),
                 )
+            )
     assert [(name, read) for name, _, _, read in listed_first] == expected
     assert counted_first == listed_first
     assert streamed == listed_first
@@ -522,9 +555,11 @@ def test_junk_inside_a_declared_comment_is_the_comment() -> None:
 
 def test_strict_policy_refuses_trailing_data() -> None:
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(DiagnosticRaisedError) as ei:
-        with open_archive(io.BytesIO(_zip() + b"JUNK"), config=config) as reader:
-            reader.members()
+    with (
+        pytest.raises(DiagnosticRaisedError) as ei,
+        open_archive(io.BytesIO(_zip() + b"JUNK"), config=config) as reader,
+    ):
+        reader.members()
     assert ei.value.diagnostic.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
 
 
@@ -594,9 +629,11 @@ def test_junk_past_the_search_window_after_a_stub_and_a_comment() -> None:
 
 def test_junk_past_the_search_window_is_refused_under_strict() -> None:
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(DiagnosticRaisedError) as ei:
-        with open_archive(io.BytesIO(_zip() + _PAST_WINDOW), config=config) as reader:
-            reader.members()
+    with (
+        pytest.raises(DiagnosticRaisedError) as ei,
+        open_archive(io.BytesIO(_zip() + _PAST_WINDOW), config=config) as reader,
+    ):
+        reader.members()
     assert ei.value.diagnostic.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
 
 
@@ -693,9 +730,11 @@ def test_a_zip_cut_before_its_directory_extracts_its_members_then_raises(
 
     data = _zip()
     dest = Path(str(tmp_path)) / "out"
-    with open_archive(io.BytesIO(data[: data.index(b"PK\x01\x02")])) as reader:
-        with pytest.raises(TruncatedError, match="before the central directory"):
-            reader.extract_all(dest)
+    with (
+        open_archive(io.BytesIO(data[: data.index(b"PK\x01\x02")])) as reader,
+        pytest.raises(TruncatedError, match="before the central directory"),
+    ):
+        reader.extract_all(dest)
     assert sorted(p.name for p in dest.iterdir()) == list(_NAMES)
 
 
@@ -997,11 +1036,13 @@ def test_a_classic_end_record_stands_in_for_a_damaged_zip64_record() -> None:
     assert diagnostic.context.observed_bytes == data.rindex(b"PK\x06\x07")
     assert "ZIP64 end of central directory record not found" in diagnostic.message
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(DiagnosticRaisedError) as raised:
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError) as raised,
+        open_archive(
             io.BytesIO(data), format=ArchiveFormat.ZIP, config=config
-        ) as reader:
-            reader.members()
+        ) as reader,
+    ):
+        reader.members()
     assert raised.value.diagnostic.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
 
 
@@ -1014,15 +1055,17 @@ def test_a_failure_met_walking_ahead_is_raised_where_the_pass_reaches_it() -> No
     eocd = data.rindex(b"PK\x05\x06")
     struct.pack_into("<HH", data, eocd + 8, 5, 5)
     read = []
-    with open_archive(
-        io.BytesIO(bytes(data)),
-        streaming=True,
-        config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
-    ) as reader:
-        with pytest.raises(DiagnosticRaisedError):
-            for member, stream in reader.stream_members():
-                assert stream is not None
-                read.append((member.name, stream.read()))
+    with (
+        open_archive(
+            io.BytesIO(bytes(data)),
+            streaming=True,
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
+        ) as reader,
+        pytest.raises(DiagnosticRaisedError),
+    ):
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            read.append((member.name, stream.read()))
     assert read == [(n, n.encode() * 3) for n in _NAMES]
 
 

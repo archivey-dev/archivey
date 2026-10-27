@@ -221,8 +221,8 @@ class FramedDecoder(BaseDecoder):
 
         A further stream continues the output only where ``magic`` accepts it; a
         container coder that is one stream (``CodecParams.single_stream``) accepts
-        none, so a further stream there (a skippable zstd frame too) is input after
-        the end, like any other byte that starts no stream.
+        none, so a further stream there is input after the end, like any other byte
+        that starts no stream.
         """
         rest = data.lstrip(b"\x00") if self._zero_padding else data
         if len(rest) < len(data):

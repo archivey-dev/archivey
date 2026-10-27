@@ -1,0 +1,37 @@
+name: Feature request
+description: Ask for a new format, option or API, or propose an idea.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        First read [dev-docs/IDEAS.md](https://github.com/archivey-dev/archivey/blob/main/dev-docs/IDEAS.md).
+        It lists the ideas we know of and the status of each. If your request is there,
+        name the idea and say what you need from it. Items we decided to leave out are in
+        [openspec/project.md](https://github.com/archivey-dev/archivey/blob/main/openspec/project.md),
+        section "Deferred / out of scope (v1)".
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you want to do
+      description: The task you want to do, and where archivey stops you today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+      description: The API, option or behaviour you want. A code sketch helps.
+  - type: input
+    id: idea
+    attributes:
+      label: Matching idea in IDEAS.md
+      description: The title of the idea, if there is one.
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: Do you want to work on it?
+      description: IDEAS.md asks you to agree the shape in this issue before you write code.
+      options:
+        - "No"
+        - "Yes"

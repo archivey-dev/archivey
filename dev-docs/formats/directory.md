@@ -344,25 +344,25 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 ./scripts/test.sh tests/test_corpus_sweep.py -k dir
 ```
 
-| Claim | Pinned by |
-| --- | --- |
-| A directory path opens as `DIRECTORY`, as `str` or `Path`; a conflicting `format=` is refused | `tests/test_directory.py::test_open_directory_returns_reader`, `::test_open_directory_as_string`, `::test_explicit_directory_format_is_accepted`, `::test_conflicting_format_on_directory_raises` |
-| `detect_format` answers `DIRECTORY` with a zero receipt | `tests/test_detection.py::test_detect_format_reports_directory_for_a_directory_path`, `::test_detect_format_directory_carries_a_zero_receipt` |
-| Cost receipt, no upfront list | `tests/test_directory.py::test_cost_receipt`, `::test_members_report_if_available_returns_none_before_scan` |
-| Walk order; any depth lists | `::test_non_dirs_listed_before_subdirs`, `::test_walk_order_is_depth_first_preorder`, `::test_tree_deeper_than_recursion_limit_lists` |
-| Metadata: sizes, times, `ctime` not on Windows, mode | `::test_members_file_sizes`, `::test_members_have_modified_timestamp`, `::test_members_ctime_is_st_ctime_except_on_windows`, `::test_members_have_mode` |
-| Symlinks list as `SYMLINK` and resolve inside the tree | `::test_symlink_member_type`, `::test_symlink_link_target_member_resolved`, `::test_open_symlink_follows_to_real_content` |
-| A junction is flagged and not walked (Windows, 3.12+) | `::test_windows_junction_detected_and_not_traversed` |
-| Races skip with a diagnostic; a genuine error fails the listing | `::test_subdirectory_vanishing_mid_walk_is_skipped`, `::test_symlink_vanishing_before_readlink_is_skipped`, `::test_symlink_replaced_by_file_mid_scan_lists_as_file`, `::test_unreadable_subdirectory_fails_listing`; `tests/test_diagnostics.py::test_directory_scan_race_diagnostic` |
-| Hardlinks: first name `FILE`, later `HARDLINK`; outside names and inode 0 stay `FILE`; the Windows identity `lstat` | `tests/test_directory.py::test_hardlinked_names_list_as_hardlink_to_the_first`, `::test_link_count_from_outside_the_tree_is_a_plain_file`, `::test_hardlinked_directory_extracts_both_names`, `::test_zero_inode_is_no_identity`, `::test_identity_stat_path_failure_keeps_the_file`, `::test_identity_stat_genuine_error_propagates` |
-| A read refuses a file replaced, resized, or swapped for a symlink or FIFO since listing; a directory swapped for a symlink; same-size rewrites and files listed empty still read | `::test_a_file_resized_after_listing_is_refused`, `::test_a_file_rewritten_at_the_same_size_reads_its_new_content`, `::test_a_file_listed_empty_reads_whatever_it_holds_at_open`, `::test_a_file_swapped_for_a_symlink_after_listing_is_refused`, `::test_a_directory_swapped_for_a_symlink_after_listing_is_refused`, `::test_a_file_replaced_after_listing_is_refused`, `::test_a_file_swapped_for_a_fifo_after_listing_is_refused_without_blocking`, `::test_hardlinks_and_symlinks_still_read_through_the_checked_open`, `::test_a_link_to_a_replaced_file_is_refused` |
-| A member listed with no identity is checked on type and size alone, and refused if it is now a reparse point (simulated through the `_identity_stat`, `_HAS_NOFOLLOW` and `_file_attributes` seams) | `::test_an_identityless_member_is_checked_on_type_and_size_alone`, `::test_an_identityless_member_that_is_now_a_reparse_point_is_refused` |
-| Extracting into a folder inside the root is refused, in both modes | `::test_extracting_into_the_root_is_refused` |
-| Streaming extraction fails a link whose first name was filtered out | `::test_streaming_extract_with_first_name_filtered_out_fails_the_link` |
-| Password dropped with a diagnostic | `::test_password_is_accepted_and_recorded` |
-| Same reader surface and streaming mode as the archive backends | `tests/test_review_simplicity_consistency.py::test_reader_surface_is_uniform_across_formats`, `::test_streaming_mode_is_uniform_across_formats` |
-| Concurrent reads | `tests/test_concurrent_multithread.py::test_multithread_directory_open_read` |
-| Cross-format equivalence, including `hardlinks-walk-order` | `tests/test_corpus_sweep.py` (`dir` cells from `tests/sample_archives.py`) |
+| Claim |
+| --- |
+| A directory path opens as `DIRECTORY`, as `str` or `Path`; a conflicting `format=` is refused |
+| `detect_format` answers `DIRECTORY` with a zero receipt |
+| Cost receipt, no upfront list |
+| Walk order; any depth lists |
+| Metadata: sizes, times, `ctime` not on Windows, mode |
+| Symlinks list as `SYMLINK` and resolve inside the tree |
+| A junction is flagged and not walked (Windows, 3.12+) |
+| Races skip with a diagnostic; a genuine error fails the listing |
+| Hardlinks: first name `FILE`, later `HARDLINK`; outside names and inode 0 stay `FILE`; the Windows identity `lstat` |
+| A read refuses a file replaced, resized, or swapped for a symlink or FIFO since listing; a directory swapped for a symlink; same-size rewrites and files listed empty still read |
+| A member listed with no identity is checked on type and size alone, and refused if it is now a reparse point (simulated through the `_identity_stat`, `_HAS_NOFOLLOW` and `_file_attributes` seams) |
+| Extracting into a folder inside the root is refused, in both modes |
+| Streaming extraction fails a link whose first name was filtered out |
+| Password dropped with a diagnostic |
+| Same reader surface and streaming mode as the archive backends |
+| Concurrent reads |
+| Cross-format equivalence, including `hardlinks-walk-order` |
 
 **Building fixtures.** The tests build trees in `tmp_path`; nothing is checked in. A
 hardlink is `os.link`, a FIFO `os.mkfifo`, a name that is not UTF-8 `open(os.path.join(

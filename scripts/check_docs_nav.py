@@ -1,6 +1,6 @@
 """Assert the published docs tree is complete and self-contained.
 
-Three invariants, none of which `mkdocs build --strict` fails on.
+Four invariants, none of which `mkdocs build --strict` fails on.
 
 **Every file under `docs/` is in the nav.** MkDocs *reports* unlisted pages, but at
 INFO level, and then exits 0 — so a page can be built, served, URL-reachable and
@@ -11,7 +11,7 @@ the nav" means "published to nobody on purpose", which is never what anyone mean
 
 **Every absolute URL resolves — repo links and site links alike.** Published
 pages must not link into unpublished maintainer docs; where the depth is worth
-keeping, the link is an absolute `github.com/davitf/archivey/blob/main/…` URL
+keeping, the link is an absolute `github.com/archivey-dev/archivey/blob/main/…` URL
 instead. Those URLs point at files this repository moves around, and nothing in a
 docs build looks at them — so they rot silently, which is the exact failure this
 whole reorganization exists to fix. Checking them offline costs nothing: the target
@@ -31,6 +31,10 @@ to catch the next one. Anchors come from Python-Markdown's own `toc` extension
 rather than a reimplemented slug rule, so they match what the site will serve. The
 one exception is a mkdocstrings block (`::: archivey.Name`), whose id is read from the
 block itself.
+
+**Every nav page is in `llms.txt`.** The `llmstxt` plugin writes a Markdown copy only
+of the pages its `sections` list, and says nothing about a nav page left out, so a new
+page would be missing from `llms.txt` and from the copies coding agents read.
 
 Run by hand with:
 
@@ -54,7 +58,7 @@ MKDOCS_YML = ROOT / "mkdocs.yml"
 # not to a tag: someone following one wants the current state of that document.
 # `tree/` for directories, `blob/` for files — both name a repo-relative path.
 REPO_URL = re.compile(
-    r"https://github\.com/davitf/archivey/(?:blob|tree)/main/([^)\s\"'#]+)"
+    r"https://github\.com/archivey-dev/archivey/(?:blob|tree)/main/([^)\s\"'#]+)"
 )
 
 # Absolute links to the published site itself. These are the ones that freeze forever
@@ -63,7 +67,7 @@ REPO_URL = re.compile(
 # `.../archivey/usage/` and nothing caught it, because the check below originally
 # covered only repo URLs. A site URL maps to a page by its slug: `/archivey/formats/`
 # is `docs/formats.md`.
-SITE_URL = re.compile(r"https://davitf\.github\.io/archivey/([a-z0-9-]*)/")
+SITE_URL = re.compile(r"https://archivey-dev\.github\.io/archivey/([a-z0-9-]*)/")
 
 # Markdown links to another page in the tree, or to a section of this one. Absolute
 # URLs are excluded by requiring the target to not contain a colon; the two patterns
@@ -100,12 +104,12 @@ def anchors_of(path: Path) -> set[str]:
     # object's full path, because mkdocs.yml sets `show_root_heading: true`; without
     # that option the site serves no such id. Only the block's own object is added,
     # not the ids mkdocstrings also emits for its members.
-    found.update(re.findall(r"^::: (\S+)", text, re.M))
+    found.update(re.findall(r"^::: (\S+)", text, re.MULTILINE))
     return found
 
 
-def load_nav_files() -> list[str]:
-    """Return every `docs/`-relative path named in mkdocs.yml's nav.
+def load_mkdocs_config() -> dict[str, Any]:
+    """Return mkdocs.yml as plain data.
 
     mkdocs.yml uses `!!python/name:` tags for Griffe extensions, which SafeLoader
     rejects — so ignore unknown tags rather than trusting the file with FullLoader.
@@ -117,8 +121,37 @@ def load_nav_files() -> list[str]:
     NavLoader.add_multi_constructor("", lambda loader, suffix, node: None)
 
     with MKDOCS_YML.open(encoding="utf-8") as fh:
-        config = yaml.load(fh, Loader=NavLoader)  # noqa: S506 — tags neutralised above
+        return yaml.load(fh, Loader=NavLoader)  # tags neutralised above
 
+
+def load_llmstxt_pages() -> tuple[set[str], list[str]]:
+    """Return the pages the `llmstxt` plugin will publish, and malformed entries.
+
+    A `sections` entry is a page or a one-key mapping of page to description. The
+    plugin reads only the first key of a mapping, so a mapping with two keys (an
+    indentation slip in mkdocs.yml) publishes its first page and drops the rest
+    without a warning. Only the first key counts as listed here, and every such
+    entry is returned as a problem of its own.
+    """
+    found: set[str] = set()
+    malformed: list[str] = []
+    for plugin in load_mkdocs_config().get("plugins") or []:
+        if isinstance(plugin, dict) and "llmstxt" in plugin:
+            for entries in (plugin["llmstxt"].get("sections") or {}).values():
+                for entry in entries:
+                    if isinstance(entry, str):
+                        found.add(entry)
+                        continue
+                    keys = list(entry)
+                    found.add(keys[0])
+                    if len(keys) > 1:
+                        malformed.append(", ".join(keys))
+    return found, malformed
+
+
+def load_nav_files() -> list[str]:
+    """Return every `docs/`-relative path named in mkdocs.yml's nav."""
+    config = load_mkdocs_config()
     found: list[str] = []
 
     def walk(node: Any) -> None:
@@ -153,6 +186,18 @@ def main() -> int:
     for page in sorted(nav_pages - on_disk):
         problems.append(f"mkdocs.yml nav lists docs/{page}, which does not exist.")
 
+    llmstxt_pages, malformed = load_llmstxt_pages()
+    for keys in malformed:
+        problems.append(
+            f"An llmstxt `sections` entry in mkdocs.yml maps several pages ({keys}); "
+            f"the plugin publishes only the first. Give each page its own list item."
+        )
+    for page in sorted(nav_pages - llmstxt_pages):
+        problems.append(
+            f"docs/{page} is in the nav but not in the llmstxt plugin's `sections` in "
+            f"mkdocs.yml, so llms.txt leaves it out. Add it with a one-line description."
+        )
+
     # Published pages plus the README, whose URLs freeze at the 0.2.0 tag because
     # PyPI release metadata is immutable.
     sources = sorted(DOCS.rglob("*.md")) + [ROOT / "README.md"]
@@ -162,14 +207,14 @@ def main() -> int:
             if not (ROOT / target).exists():
                 problems.append(
                     f"{source.relative_to(ROOT)} links "
-                    f"github.com/davitf/archivey/…/{target}, which is not in this repo."
+                    f"github.com/archivey-dev/archivey/…/{target}, which is not in this repo."
                 )
         for slug in sorted(set(SITE_URL.findall(text))):
             if not slug:  # the site root
                 continue
             if f"{slug}.md" not in on_disk:
                 problems.append(
-                    f"{source.relative_to(ROOT)} links davitf.github.io/archivey/{slug}/, "
+                    f"{source.relative_to(ROOT)} links archivey-dev.github.io/archivey/{slug}/, "
                     f"but docs/{slug}.md does not exist — that URL 404s."
                 )
 
@@ -202,7 +247,7 @@ def main() -> int:
 
     print(
         f"docs/: {len(on_disk)} pages, all in nav; repo, site and anchor links "
-        f"all resolve."
+        f"all resolve; every nav page is in llms.txt."
     )
     return 0
 

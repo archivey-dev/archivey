@@ -96,7 +96,7 @@ The rule, in order:
    published page. A link into maintainer material is usually a sign the fact is
    filed in the wrong place — which is the case for two of the nine (see below).
 2. **If the context is genuinely worth preserving**, link the file on GitHub:
-   `https://github.com/davitf/archivey/blob/main/dev-docs/<file>.md`. This is the
+   `https://github.com/archivey-dev/archivey/blob/main/dev-docs/<file>.md`. This is the
    pattern `README.md:20-22` already uses for `CONTRIBUTING` / `VISION` /
    `SECURITY`.
 3. **Never** a bare repo path in prose as a substitute for a link — that was the
@@ -127,7 +127,7 @@ Absolute `blob/main/` URLs rot silently when a file is renamed — the failure m
 this whole review exists to fix, reintroduced in miniature. Two mitigations, both
 already planned:
 
-- **Phase-4 guardrail #2** (link checker) must cover absolute `github.com/davitf/archivey`
+- **Phase-4 guardrail #2** (link checker) must cover absolute `github.com/archivey-dev/archivey`
   URLs in `docs/**`, not only the five in `README.md`. That was already its scope;
   D3 raises the count from 5 to ~10 and makes it load-bearing rather than
   precautionary.

@@ -10,6 +10,7 @@ from archivey.cli.common import open_for_cli, outer_format_for
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
 from archivey.cli.filters import MemberSelection
 from archivey.cli.format import escape_member_name, format_error_detail
+from archivey.cli.logging_config import cli_opens_members
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import ArchiveyConfig, PasswordInput
@@ -252,7 +253,8 @@ def run_test(
                 # If that stops holding, ``open()`` on the streaming reader raises
                 # ``ArchiveyUsageError``, which is caught here so the link counts as
                 # a FAIL instead of ending the run with a traceback.
-                _verify_link(cast(ArchiveReader, reader), link)
+                with cli_opens_members():
+                    _verify_link(cast(ArchiveReader, reader), link)
             except (ArchiveyError, ArchiveyUsageError, OSError) as exc:
                 failed += 1
                 print(

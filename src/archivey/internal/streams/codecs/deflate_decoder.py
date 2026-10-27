@@ -319,9 +319,7 @@ class GzipDecoder(BaseDecoder):
         if self._decomp.unconsumed_tail:
             return False
         # Full next-member prefix retained — drain without reading more.
-        if self._retained.startswith(GZIP_MAGIC):
-            return False
-        return True
+        return not self._retained.startswith(GZIP_MAGIC)
 
     def build_index(
         self, inner: BinaryIO, last_known: SeekPoint

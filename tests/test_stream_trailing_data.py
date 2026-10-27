@@ -92,7 +92,7 @@ def _params() -> list:
     ]
 
 
-def _reports(reader) -> list[ArchiveEofContext]:  # noqa: ANN001 - any reader
+def _reports(reader) -> list[ArchiveEofContext]:  # reader: any reader
     found = [
         d.context
         for d in reader.diagnostics.retained
@@ -130,9 +130,11 @@ def test_strict_makes_the_report_an_error(tmp_path: Path, suffix: str) -> None:
     _name, compress, _marks = _CODECS[suffix]
     path = _write(tmp_path, suffix, compress(_PAYLOAD) + _JUNK)
     strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(DiagnosticRaisedError) as info:
-        with open_archive(path, config=strict) as reader:
-            reader.read(reader.members()[0])
+    with (
+        pytest.raises(DiagnosticRaisedError) as info,
+        open_archive(path, config=strict) as reader,
+    ):
+        reader.read(reader.members()[0])
     assert info.value.diagnostic.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
 
 
@@ -218,9 +220,11 @@ def test_brotli_damage_is_still_corruption(tmp_path: Path) -> None:
     else:
         pytest.fail("no rejected flip found")
     path = _write(tmp_path, ".br", bytes(damaged))
-    with open_archive(path, format=_format(".br")) as reader:
-        with raises_corruption_not_truncation():
-            reader.read(reader.members()[0])
+    with (
+        open_archive(path, format=_format(".br")) as reader,
+        raises_corruption_not_truncation(),
+    ):
+        reader.read(reader.members()[0])
 
 
 @requires("brotli")
@@ -328,9 +332,11 @@ def test_a_second_lzma_stream_is_checked_against_the_dictionary_cap(
     second[1:5] = (1 << 30).to_bytes(4, "little")
     path = _write(tmp_path, ".lzma", first + bytes(second))
     limits = DecoderLimits(max_decoder_memory=1 << 26)
-    with open_archive(path, config=ArchiveyConfig(decoder_limits=limits)) as reader:
-        with pytest.raises(ResourceLimitError):
-            reader.read(reader.members()[0])
+    with (
+        open_archive(path, config=ArchiveyConfig(decoder_limits=limits)) as reader,
+        pytest.raises(ResourceLimitError),
+    ):
+        reader.read(reader.members()[0])
 
 
 def test_a_tail_shaped_like_an_lzma_header_liblzma_refuses_is_reported(
@@ -752,9 +758,11 @@ def test_a_damaged_stream_after_the_last_raises_in_both_modes(
     trailing data."""
     path = _write(tmp_path, ".bz2", bz2.compress(_PAYLOAD) + tail)
     config = ArchiveyConfig(use_indexed_bzip2=mode)
-    with open_archive(path, config=config, seekable_members=True) as reader:
-        with pytest.raises(error):
-            reader.read(reader.members()[0])
+    with (
+        open_archive(path, config=config, seekable_members=True) as reader,
+        pytest.raises(error),
+    ):
+        reader.read(reader.members()[0])
 
 
 @pytest.mark.parametrize("mode", _ACCELERATOR_MODES)
@@ -881,9 +889,11 @@ def test_strict_refuses_a_stream_after_nul_padding(
         tmp_path, suffix, compress(_PAYLOAD) + b"\x00" * 4 + compress(_PAYLOAD)
     )
     config = _accelerator_config(mode, DiagnosticPolicy.STRICT)
-    with pytest.raises(DiagnosticRaisedError) as info:
-        with open_archive(path, config=config, seekable_members=True) as reader:
-            reader.read(reader.members()[0])
+    with (
+        pytest.raises(DiagnosticRaisedError) as info,
+        open_archive(path, config=config, seekable_members=True) as reader,
+    ):
+        reader.read(reader.members()[0])
     assert info.value.diagnostic.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
 
 
@@ -1049,9 +1059,11 @@ def test_a_damaged_bzip2_header_after_the_last_stream_raises_in_both_modes(
         tail = b"BY" + bz2.compress(_SMALL)[2:]
     path = _write(tmp_path, ".bz2", bz2.compress(_SMALL) + tail)
     config = ArchiveyConfig(use_indexed_bzip2=mode)
-    with open_archive(path, config=config, seekable_members=True) as reader:
-        with raises_corruption_not_truncation():
-            reader.read(reader.members()[0])
+    with (
+        open_archive(path, config=config, seekable_members=True) as reader,
+        raises_corruption_not_truncation(),
+    ):
+        reader.read(reader.members()[0])
 
 
 @pytest.mark.parametrize(
@@ -1110,9 +1122,11 @@ def test_a_magic_damaged_to_a_zero_byte_is_corruption(
                     stream.read()
         return
     path = _write(tmp_path, suffix, data)
-    with open_archive(path, seekable_members=True) as reader:
-        with raises_corruption_not_truncation():
-            reader.read(reader.members()[0])
+    with (
+        open_archive(path, seekable_members=True) as reader,
+        raises_corruption_not_truncation(),
+    ):
+        reader.read(reader.members()[0])
 
 
 @pytest.mark.parametrize("zeros", [1, 2])
@@ -1137,9 +1151,11 @@ def test_a_magic_damaged_to_zeros_at_the_end_of_the_file_is_corruption(
                     stream.read()
         return
     path = _write(tmp_path, suffix, data)
-    with open_archive(path, seekable_members=True) as reader:
-        with raises_corruption_not_truncation():
-            reader.read(reader.members()[0])
+    with (
+        open_archive(path, seekable_members=True) as reader,
+        raises_corruption_not_truncation(),
+    ):
+        reader.read(reader.members()[0])
 
 
 @pytest.mark.parametrize("mode", _BZ2_MODES)
@@ -1267,7 +1283,7 @@ def test_the_xz_forward_read_names_where_the_damaged_stream_starts(
                 stream.read()
 
 
-def _format(suffix: str):  # noqa: ANN202 - an ArchiveFormat
+def _format(suffix: str):  # returns an ArchiveFormat
     data = _CODECS[suffix][1](b"probe")
     with open_archive(io.BytesIO(data), config=_ALWAYS_PROBE) as reader:
         return reader.format

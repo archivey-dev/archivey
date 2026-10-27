@@ -23,7 +23,7 @@ from archivey.exceptions import ArchiveyError
 from archivey.types import ArchiveFormat
 
 try:
-    import pycdlib  # noqa: F401
+    import pycdlib
 
     _HAVE_PYCDLIB = True
 except ImportError:
@@ -155,9 +155,8 @@ def test_archive_error_stamps_format_and_archive(
     # way the raised ArchiveyError must carry the format and archive-name context. The exact
     # format is not over-constrained: a codec-layer failure (tar.gz) is stamped with the
     # codec's own format rather than the outer container, which is a valid attribution.
-    with pytest.raises(ArchiveyError) as excinfo:
-        with open_archive(source) as ar:
-            trigger(ar)
+    with pytest.raises(ArchiveyError) as excinfo, open_archive(source) as ar:
+        trigger(ar)
     err = excinfo.value
     assert err.source_format is not None
     assert err.archive_name is not None and source.name in err.archive_name

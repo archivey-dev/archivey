@@ -7,8 +7,9 @@
       If it is storage, add the `format-zip` declaration and the `spool_limits` clause
       to the deltas; if output, add a sentence to the `archive-reading` delta saying
       "Bounded implicit temporary storage" does not reach extraction output.
-      No ruling came; the implementation takes both recommended answers (output, and
-      the order of Decision 5), and the `archive-reading` sentence is added.
+      The implementation took both recommended answers (output, and the order of
+      Decision 5), and the `archive-reading` sentence is added. The maintainer
+      ratified both during PR 920's review (2026-10-20) and again on 2026-10-25.
 - [x] 0.2 `openspec validate --strict pipe-zip-stage-then-commit`.
 
 ## 1. Groundwork (no behaviour change)

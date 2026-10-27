@@ -219,6 +219,11 @@ name by `safe-extraction` "Lone surrogates in a member name". `raw_name` SHALL b
 stored bytes in the Rock Ridge and plain namespaces. `ReadBackend.USES_ENCODING` SHALL be
 `True` for ISO.
 
+`ArchiveInfo.comment` is the primary volume descriptor's volume identifier, its trailing
+spaces removed, and SHALL decode as a plain ISO 9660 identifier does: UTF-8 first, else
+`encoding=`, else UTF-8 with `errors="surrogateescape"`, in every namespace. It SHALL NOT
+borrow the Joliet descriptor's volume identifier.
+
 #### Scenario: ISO name decoding
 
 | Case | Expected |
@@ -233,6 +238,8 @@ stored bytes in the Rock Ridge and plain namespaces. `ReadBackend.USES_ENCODING`
 | The Joliet image, `encoding="cp1252"` | Names decode with cp1252; no diagnostic |
 | Joliet name holds a lone surrogate (`hi` U+D800) | `name == "hi\ud800"`, never U+FFFD; `raw_name == b"hi\xed\xa0\x80"`, the unit as its three `surrogatepass` bytes; a Rock Ridge name that is not UTF-8 borrows it |
 | A Rock Ridge symlink in that image whose target bytes are `hi\xed\xa0\x80.txt` | `link_target == "hi\ud800.txt"`, the name the file lists under |
+| `xorriso -as mkisofs -R -J -V "Café vol"` (stores UTF-8) | `info.comment == "Café vol"` |
+| Volume identifier `caf\xe9 vol`, no `encoding=` / `encoding="cp1252"` | `info.comment == "caf\udce9 vol"` / `"café vol"`, never U+FFFD |
 
 ### Requirement: Contain a System Use entry pycdlib cannot parse to its own record
 

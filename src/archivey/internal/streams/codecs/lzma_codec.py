@@ -126,6 +126,7 @@ class XzCodec(_SizedLzmaCodec):
 
 class LzipCodec(_SizedLzmaCodec):
     codec = Codec.LZIP
+    checks_content = True
     stream_format = StreamFormat.LZIP
     magic = (MagicSignature(0, b"LZIP", ArchiveFormat.LZIP),)
 
@@ -140,6 +141,7 @@ class LzipCodec(_SizedLzmaCodec):
             report_trailing_data=config.report_trailing_data,
             probe_read_bound=config.probe_read_bound,
             natives=natives_for(config.process_isolation),
+            usage=config.usage,
         )
 
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
@@ -470,6 +472,7 @@ class _RawLzmaCodec(_LzmaErrorCodec):
                     spec["dict_size"],
                     limits=config.decoder_limits,
                     what=f"{LZMA_DICTIONARY_FILTERS[spec['id']]} dictionary size",
+                    usage=config.usage,
                 )
         filters = params.filters
         # The coder's input span. A 7z AES stage decrypts whole blocks, so its output

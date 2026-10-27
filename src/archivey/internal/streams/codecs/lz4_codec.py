@@ -73,7 +73,9 @@ class Lz4Codec(StreamCodec):
             source,
             lambda: Lz4Decompressor(natives),
             codec_name="lz4",
-            magic=stream_magic() if params.single_stream else _LZ4_STREAMS,
+            # Every frame is content, in a .lz4 file and in a 7z coder alike: the LZ4
+            # frame format lets frames be appended.
+            magic=_LZ4_STREAMS,
             collector=config.collector,
             report_trailing_data=config.report_trailing_data,
             refuse_input_after_end=config.refuse_input_after_end,

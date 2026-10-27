@@ -2,9 +2,9 @@
 
 **Status:** measured 2026-09-25 on GitHub-hosted runners (`ubuntu-latest`,
 `macos-latest` arm64 on macOS 26, `windows-latest` on Windows Server 2025), CI run
-[36161789865](https://github.com/davitf/archivey/actions/runs/36161789865); the TAR
+[36161789865](https://github.com/archivey-dev/archivey/actions/runs/36161789865); the TAR
 rows come from run
-[36172269114](https://github.com/davitf/archivey/actions/runs/36172269114). The method
+[36172269114](https://github.com/archivey-dev/archivey/actions/runs/36172269114). The method
 is the script, not the numbers in this page. It settles which ZIP, 7z and TAR readers may
 put a stored creation time in `Member.created`.
 
@@ -79,7 +79,7 @@ all three NTFS times by default.
 ### TAR (PAX)
 
 Added in a later run,
-[36172269114](https://github.com/davitf/archivey/actions/runs/36172269114), with the
+[36172269114](https://github.com/archivey-dev/archivey/actions/runs/36172269114), with the
 same method. GNU tar is not on the Windows runner.
 
 | Writer | OS | PAX `ctime` | PAX `LIBARCHIVE.creationtime` | archivey |
@@ -138,9 +138,10 @@ time.
   `ctime`. The UT third time wins over NTFS when both are present.
 - **TAR** (`tar_reader`): PAX `ctime` is `ctime`; libarchive's
   `LIBARCHIVE.creationtime` is `created`.
-- **7z** (`sevenzip_reader._written_on_unix`): a Unix file type (`S_IFMT` bits) in
+- **7z** (`sevenzip_reader._unix_mode`): a Unix file type (`S_IFMT` bits) in
   the attributes' high word marks a Unix writer, so `CTime` goes to
-  `ctime`. Otherwise `CTime` is `created`.
+  `ctime`. Otherwise `CTime` is `created`. A special file type counts only with the
+  `0x8000` bit, since Windows `STRICTLY_SEQUENTIAL` reads as `S_IFCHR`.
 
 The two outcomes the rule accepts are listed above: libarchive-on-Windows birth times
 go to `ctime`, and local-header-only UT times are not read. Neither outcome puts

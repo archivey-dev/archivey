@@ -52,6 +52,7 @@ Two recurring notes:
 | LZMA1/LZMA2 (raw) | stdlib `lzma` `FORMAT_RAW` | core | n/a (container-owned) | yes | yes |
 | Delta, BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | stdlib `lzma` raw filters throughout | core | n/a (filter stage) | yes | yes |
 | BCJ ARM64 (7z) | archivey's own decoder (pure Python; stdlib `lzma` refuses filter id 10) | core | n/a (filter stage) | yes | yes |
+| BCJ RISC-V (7z) | archivey's own decoder (pure Python; stdlib `lzma` refuses filter id 11) | core | n/a (filter stage) | yes | yes |
 | raw Deflate / zlib | stdlib `zlib` | core | no (rewind) | yes | yes |
 | zstd | **stdlib `compression.zstd` (3.14+) / `backports.zstd` (<3.14)** | `[recommended]` on <3.14; core on 3.14+ | per frame (frame starts, seek table) | yes (frame checksum) | **yes** |
 | lz4 | `lz4` | `[recommended]` | no (rewind) | yes | yes |
@@ -322,7 +323,8 @@ liblzma filter; archivey decodes it in pure Python (`internal/streams/codecs/bcj
 Raw deflate (`-15`, ZIP/7z members) and zlib-wrapped deflate default to stdlib `zlib`. For
 **random access**, the same `[seekable]` `rapidgzip` accelerator used for gzip also decodes
 raw DEFLATE and zlib natively (auto-detected; no synthetic gzip wrapper) as of 0.16.0.
-Selection matches gzip (`use_rapidgzip` × declared seekability × availability), plus the
+Selection matches gzip (`use_rapidgzip` × declared seekability × availability, or a large
+sequential read at 3:1 or less on Linux and macOS), plus the
 `AUTO` minimum compressed-size gate (`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`, 16 MiB: below
 about 13 MB the child process's start costs more than rapidgzip saves). Without the
 accelerator, a rewind re-decodes from the start (warning naming `[seekable]`). rapidgzip does not

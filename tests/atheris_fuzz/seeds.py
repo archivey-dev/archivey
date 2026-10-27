@@ -322,6 +322,7 @@ def _accel_payload() -> bytes:
 def accel_gzip_seeds() -> list[bytes]:
     payload = _accel_payload()
     member = gzip.compress(payload, compresslevel=6, mtime=0)
+    small = gzip.compress(_SAMPLE, mtime=0)
     named = io.BytesIO()
     with gzip.GzipFile(fileobj=named, mode="wb", filename="seed.txt", mtime=0) as gz:
         gz.write(_SAMPLE)
@@ -332,6 +333,9 @@ def accel_gzip_seeds() -> list[bytes]:
             member + gzip.compress(_SAMPLE, mtime=0),  # two members
             named.getvalue(),  # FNAME header field
             member[: len(member) // 2],  # cut mid-data
+            # The shape this target found: a last member cut right after its header,
+            # where rapidgzip ends with no error, after a further member.
+            small + small + small[:10],
         ]
     )
 

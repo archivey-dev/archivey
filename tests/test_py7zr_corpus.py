@@ -74,9 +74,7 @@ def _is_primary_archive(path: Path) -> bool:
     lower = path.name.lower()
     if lower.endswith(".7z.001"):
         return True
-    if ".7z." in lower:
-        return False
-    return True
+    return ".7z." not in lower
 
 
 def _normalize_name(name: str) -> str:

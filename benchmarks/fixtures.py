@@ -526,7 +526,7 @@ def materialize_fixtures(
     nonsolid_7z: Path | None = None
     unpacked_7z = 0
     try:
-        import py7zr  # noqa: F401
+        import py7zr
     except ImportError:
         py7zr = None  # type: ignore[assignment]
     if py7zr is not None:

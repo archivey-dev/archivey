@@ -322,9 +322,11 @@ def test_stream_of_unknown_size_stops_at_the_limit_and_removes_the_copy(
 ) -> None:
     blob = _SOLID.read_bytes()
     source = _UnsizedStream(blob)
-    with open_archive(source, config=_config(len(blob) // 2)) as archive:
-        with pytest.raises(ResourceLimitError, match=r"SpoolLimits\.max_bytes"):
-            archive.read("file1.txt")
+    with (
+        open_archive(source, config=_config(len(blob) // 2)) as archive,
+        pytest.raises(ResourceLimitError, match=r"SpoolLimits\.max_bytes"),
+    ):
+        archive.read("file1.txt")
     assert len(temp_artifacts) == 1
     assert not temp_artifacts[0].exists()
 
@@ -337,9 +339,11 @@ def test_zero_limit_keeps_direct_reads_and_refuses_the_copy(
         member = next(m for m in archive.members() if m.is_file)
         assert archive.read(member) == b"stored payload"
     solid = _SOLID.read_bytes()
-    with open_archive(io.BytesIO(solid), config=_config(0)) as archive:
-        with pytest.raises(ResourceLimitError):
-            archive.read("file1.txt")
+    with (
+        open_archive(io.BytesIO(solid), config=_config(0)) as archive,
+        pytest.raises(ResourceLimitError),
+    ):
+        archive.read("file1.txt")
     assert temp_artifacts == []
 
 
@@ -455,9 +459,12 @@ def test_over_default_limit_is_refused(
             out.truncate(size)
         except OSError as exc:
             pytest.skip(f"temp filesystem cannot hold a {size}-byte file: {exc}")
-    with big.open("rb") as handle, open_archive(handle) as archive:
-        with pytest.raises(ResourceLimitError, match=str(size)):
-            archive.read("file1.txt")
+    with (
+        big.open("rb") as handle,
+        open_archive(handle) as archive,
+        pytest.raises(ResourceLimitError, match=str(size)),
+    ):
+        archive.read("file1.txt")
     assert temp_artifacts == []
 
 
@@ -478,9 +485,11 @@ def test_volume_set_limit_weighs_the_total_not_each_volume(
     # Every volume fits on its own; the set does not.
     limit = _volume_total() - 1
     assert all(path.stat().st_size <= limit for path in _VOLUMES)
-    with open_archive(_volume_streams(), config=_config(limit)) as archive:
-        with pytest.raises(ResourceLimitError, match=r"every volume"):
-            archive.read("payload.bin")
+    with (
+        open_archive(_volume_streams(), config=_config(limit)) as archive,
+        pytest.raises(ResourceLimitError, match=r"every volume"),
+    ):
+        archive.read("payload.bin")
     assert temp_artifacts == []
 
 
@@ -514,9 +523,11 @@ def test_volume_set_limit_stops_mid_copy_and_removes_the_directory(
     out during the copy.
     """
     monkeypatch.setattr(SpoolBudget, "check_total", lambda self, total: None)
-    with open_archive(sources(), config=_config(limit)) as archive:
-        with pytest.raises(ResourceLimitError):
-            archive.read("payload.bin")
+    with (
+        open_archive(sources(), config=_config(limit)) as archive,
+        pytest.raises(ResourceLimitError),
+    ):
+        archive.read("payload.bin")
     assert len(temp_artifacts) == 1
     assert not temp_artifacts[0].exists()
 
@@ -559,9 +570,11 @@ def test_staged_volume_set_charges_only_the_volumes_it_copies(
     assert second < _volume_total() - 1
     with open_archive(paths, config=_unrar_config(second)) as archive:
         assert archive.read("payload.bin") == _VOLUME_PAYLOAD
-    with open_archive(paths, config=_unrar_config(second - 1)) as archive:
-        with pytest.raises(ResourceLimitError, match=r"beside the others"):
-            archive.read("payload.bin")
+    with (
+        open_archive(paths, config=_unrar_config(second - 1)) as archive,
+        pytest.raises(ResourceLimitError, match=r"beside the others"),
+    ):
+        archive.read("payload.bin")
 
 
 @requires_binary("unrar")
@@ -580,9 +593,11 @@ def test_staged_volume_set_stops_mid_copy_and_removes_the_directory(
     _refuse_to_link_the_second(monkeypatch)
     monkeypatch.setattr(SpoolBudget, "check_total", lambda self, total: None)
     limit = _VOLUMES[1].stat().st_size // 2
-    with open_archive(paths, config=_unrar_config(limit)) as archive:
-        with pytest.raises(ResourceLimitError):
-            archive.read("payload.bin")
+    with (
+        open_archive(paths, config=_unrar_config(limit)) as archive,
+        pytest.raises(ResourceLimitError),
+    ):
+        archive.read("payload.bin")
     assert len(temp_artifacts) == 1
     assert not temp_artifacts[0].exists()
 

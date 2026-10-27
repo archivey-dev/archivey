@@ -37,7 +37,7 @@ that reaching it needs a name a constructed archive is far more likely to carry 
 an accident.
 
 Recorded as `dev-docs/formats/rar.md` §10 #19, raised on
-[#296](https://github.com/davitf/archivey/pull/296).
+[#296](https://github.com/archivey-dev/archivey/pull/296).
 
 ## What Changes
 

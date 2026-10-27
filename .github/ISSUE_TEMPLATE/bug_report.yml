@@ -1,0 +1,74 @@
+name: Bug report
+description: Archivey reads, lists or extracts an archive wrongly, or raises an error it should not.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Do not file a security problem here: an archive that
+        writes outside the destination, escapes through a link, runs a program, or hangs
+        in a way the caller cannot interrupt. Report it privately, as
+        [SECURITY.md](https://github.com/archivey-dev/archivey/blob/main/SECURITY.md) says.
+  - type: textarea
+    id: version
+    attributes:
+      label: Archivey version and format support
+      description: |
+        Paste the output of `python -m archivey --version -v`. It prints the archivey
+        version and the formats your install can read. For each format it cannot read,
+        it names the package or program that is missing.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: The output of `python -VV`.
+      placeholder: "Python 3.12.7 (main, ...) [GCC 13.2.0]"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Ubuntu 24.04, macOS 15.1, Windows 11"
+    validations:
+      required: true
+  - type: textarea
+    id: archive
+    attributes:
+      label: The archive
+      description: |
+        Attach the archive (put it in a .zip first if GitHub refuses the file type), give
+        a link to it, or give the commands that make it. If you cannot share it, say which
+        program made it and paste the output of `python -m archivey info -v <archive>`.
+    validations:
+      required: true
+  - type: textarea
+    id: code
+    attributes:
+      label: Code or command
+      description: The smallest code or `archivey` command that shows the bug.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: If another tool (7z, unzip, tar) reads the archive differently, say what it does.
+    validations:
+      required: true
+  - type: textarea
+    id: traceback
+    attributes:
+      label: Traceback
+      description: The full traceback, if there is one.
+      render: text

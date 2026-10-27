@@ -121,7 +121,7 @@ def test_archive_stream_close_failure_still_closes_wrapper() -> None:
     from archivey.internal.streams.archive_stream import ArchiveStream
 
     class _FailingClose(io.BytesIO):
-        def close(self) -> None:  # noqa: D102
+        def close(self) -> None:
             raise RuntimeError("simulated close failure")
 
     def _translate(exc: Exception) -> ArchiveyError | None:
@@ -138,6 +138,93 @@ def test_archive_stream_close_failure_still_closes_wrapper() -> None:
     with pytest.raises(ValueError):
         stream.read()
     stream.close()  # idempotent
+
+
+# ---------------------------------------------------------------------------
+# ArchiveStream: a lazy open that failed raises the same error on a retry
+# ---------------------------------------------------------------------------
+
+
+def test_a_failed_lazy_open_raises_the_same_error_again() -> None:
+    """A retry after a failed lazy open does not call the opener again (a half-open
+    backend must not be re-entered). It raises the error the first open raised. It
+    used to raise a usage error that blamed a concurrent caller."""
+    from archivey.internal.streams.archive_stream import ArchiveStream
+
+    calls = 0
+
+    def _open() -> BinaryIO:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("no such codec")
+
+    def _translate(exc: Exception) -> ArchiveyError | None:
+        if isinstance(exc, RuntimeError):
+            return CorruptionError(f"translated: {exc}")
+        return None
+
+    stream = ArchiveStream(_open, translate=_translate, lazy=True)
+    with pytest.raises(CorruptionError) as first:
+        stream.read()
+    with pytest.raises(CorruptionError) as second:
+        stream.read(1)
+    assert second.value is first.value
+    assert calls == 1
+    stream.close()
+    with pytest.raises(ValueError, match="closed file"):
+        stream.read()
+
+
+def test_a_member_whose_lazy_open_failed_raises_the_same_error_again() -> None:
+    """The same through ``stream_members()``: an unsupported ZIP method raises
+    ``UnsupportedFeatureError`` on every read, not a usage error on the second."""
+    from archivey.exceptions import UnsupportedFeatureError
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.txt", b"hello")
+    raw = bytearray(buf.getvalue())
+    # Method 18 (IBM TERSE), in the local header and in the central directory.
+    raw[8:10] = (18).to_bytes(2, "little")
+    central = raw.index(b"PK\x01\x02")
+    raw[central + 10 : central + 12] = (18).to_bytes(2, "little")
+    seen = 0
+    with open_archive(io.BytesIO(bytes(raw))) as archive:
+        for _member, stream in archive.stream_members():
+            seen += 1
+            assert stream is not None
+            with pytest.raises(UnsupportedFeatureError) as first:
+                stream.read()
+            with pytest.raises(UnsupportedFeatureError) as second:
+                stream.read()
+            assert second.value is first.value
+    assert seen == 1
+
+
+def test_an_interrupted_lazy_open_is_not_blamed_on_another_caller() -> None:
+    """A ``KeyboardInterrupt`` during the open is not stored or raised again: it is not
+    the stream's error. A retry says the open was interrupted, not that another
+    caller holds it, and still does not call the opener again."""
+    from archivey.internal.streams.archive_stream import ArchiveStream
+
+    calls = 0
+
+    def _open() -> BinaryIO:
+        nonlocal calls
+        calls += 1
+        raise KeyboardInterrupt("ctrl-c during open")
+
+    stream = ArchiveStream(_open, translate=lambda exc: None, lazy=True)
+    with pytest.raises(KeyboardInterrupt):
+        stream.read()
+    with pytest.raises(ArchiveyUsageError) as excinfo:
+        stream.read()
+    assert str(excinfo.value) == (
+        "Cannot open this member stream: an earlier attempt to open it was "
+        "interrupted (KeyboardInterrupt)."
+    )
+    assert calls == 1
+    stream.close()
 
 
 # ---------------------------------------------------------------------------

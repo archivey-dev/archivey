@@ -12,11 +12,12 @@ the files that hold it:
 
 | Project | What archivey adapted | Licence |
 | --- | --- | --- |
-| [uncompresspy](https://github.com/kYwzor/uncompresspy) (Tiago Gomes) | The LZW decoder for `.Z` files ([notice](https://github.com/davitf/archivey/blob/main/src/archivey/internal/streams/codecs/unix_compress_decoder.py)) | BSD-3-Clause |
-| [rarfile](https://github.com/markokr/rarfile) (Marko Kreen) | RAR3 password key derivation and the RAR3 Unicode filename decoder ([notice](https://github.com/davitf/archivey/blob/main/src/archivey/internal/backends/rar_parser.py)) | ISC |
+| [uncompresspy](https://github.com/kYwzor/uncompresspy) (Tiago Gomes) | The LZW decoder for `.Z` files ([notice](https://github.com/archivey-dev/archivey/blob/main/src/archivey/internal/streams/codecs/unix_compress_decoder.py)) | BSD-3-Clause |
+| [rarfile](https://github.com/markokr/rarfile) (Marko Kreen) | RAR3 password key derivation and the RAR3 Unicode filename decoder ([notice](https://github.com/archivey-dev/archivey/blob/main/src/archivey/internal/backends/rar_parser.py)) | ISC |
 
-The ARM64 branch filter used in 7z archives follows the algorithm in liblzma, from the
-[xz](https://github.com/tukaani-project/xz) project, and is checked against 7-Zip's.
+The ARM64 and RISC-V branch filters used in 7z archives follow the algorithms in liblzma,
+from the [xz](https://github.com/tukaani-project/xz) project, and are checked against
+7-Zip's.
 
 ## Projects archivey learned from
 
@@ -51,8 +52,8 @@ Archivey itself needs no third-party package. Optional packages add formats and 
   AES ZIP files.
 - **[pycdlib](https://github.com/clalancette/pycdlib):** ISO images.
 - **[tqdm](https://github.com/tqdm/tqdm):** progress bars in the command-line tool.
-- **[rapidgzip](https://github.com/mxmlnkn/rapidgzip):** faster seeking in large gzip and bzip2
-  files, and in large DEFLATE members of ZIP archives.
+- **[rapidgzip](https://github.com/mxmlnkn/rapidgzip):** faster seeking in large gzip, bzip2 and
+  DEFLATE data, such as ZIP members, and faster reading of large DEFLATE data where it pays off.
 
 Compressed or encrypted RAR data is read with RARLAB's `unrar` (or `rar`), or with [The
 Unarchiver](https://theunarchiver.com/)'s `unar`. [Install](install.md) says which one runs when.

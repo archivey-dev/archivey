@@ -20,7 +20,7 @@ cleanly: ``PpmdDecoder`` calls ``spoil`` otherwise.
 
 from __future__ import annotations
 
-from archivey.exceptions import ResourceLimitError
+from archivey.exceptions import ResourceUnavailableError
 from archivey.internal.streams.child_process import describe_exit
 from archivey.internal.streams.codecs.decoder_child import (
     DecoderChild,
@@ -45,7 +45,7 @@ class PpmdChildAllocationError(RuntimeError):
 
 def _allocation_error(mem_size: int, detail: str) -> PpmdChildAllocationError:
     return PpmdChildAllocationError(
-        f"the PPMd decoder process could not allocate this member's model "
+        f"The PPMd decoder process could not allocate this member's model "
         f"(mem_size={mem_size} bytes): {detail}. A memory limit on this process (a "
         "container limit, RLIMIT_AS) is the likely cause, and decoding in-process "
         "would fail the same way and take this process down with it. Run with more "
@@ -54,8 +54,15 @@ def _allocation_error(mem_size: int, detail: str) -> PpmdChildAllocationError:
     )
 
 
+# PPMd decodes in a child under every ``process_isolation`` but ``NONE`` (ADR 0022), so
+# ``NONE`` is the only setting that decodes it in this process: the advice when no
+# child can start (``isolation_error``), at open and part-way through a member.
+ISOLATED_UNLESS_NONE = True
+
+
 class _PpmdChild(DecoderChild):
     describe = "PPMd decoder process"
+    isolated_unless_none = ISOLATED_UNLESS_NONE
 
     def __init__(
         self, codec: str, args: tuple[object, ...], *, mem_size: int, setting: str
@@ -68,7 +75,8 @@ class _PpmdChild(DecoderChild):
             exc = _allocation_error(self._mem_size, str(exc) or "MemoryError")
         if isinstance(exc, PpmdChildAllocationError):
             # The words ``PpmdDecoder`` uses when the first child cannot allocate it.
-            return ResourceLimitError(f"Decoder limit reached: {exc}")
+            # No configured limit was reached, so not "Decoder limit reached".
+            return ResourceUnavailableError(str(exc))
         return super()._fresh_child_error(exc)
 
     def _death_error(self, returncode: int | None) -> Exception:

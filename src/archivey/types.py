@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, tzinfo
-from enum import Enum, Flag, StrEnum, auto
+from enum import Enum, Flag, IntEnum, StrEnum, auto
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -90,6 +90,22 @@ class ContainerFormat(StrEnum):
     :class:`~archivey.ArchiveyUsageError`."""
 
 
+class PluginContainer(StrEnum):
+    """Base class for a container enum that a format plugin defines.
+
+    A plugin subclasses it with one member per container it adds, and builds its
+    :class:`~archivey.ArchiveFormat` from that member::
+
+        class CpioContainer(PluginContainer):
+            CPIO = "cpio"
+
+        CPIO = ArchiveFormat(CpioContainer.CPIO, StreamFormat.UNCOMPRESSED)
+
+    Provisional, with the rest of ``archivey.plugins``. Code that matches on
+    ``ArchiveFormat.container`` needs a default case once a plugin is registered.
+    """
+
+
 class StreamFormat(StrEnum):
     """The compression around the whole container, the second half of an
     :class:`~archivey.ArchiveFormat`. Each value is the format's file extension."""
@@ -128,8 +144,9 @@ class ArchiveFormat:
     and an unknown spelling raises :class:`~archivey.ArchiveyUsageError` there.
     """
 
-    container: ContainerFormat
-    """The archive format, such as ``ZIP`` or ``TAR``."""
+    container: ContainerFormat | PluginContainer
+    """The archive format, such as ``ZIP`` or ``TAR``, or a member of a
+    :class:`~archivey.PluginContainer` subclass for a format a plugin adds."""
 
     stream: StreamFormat
     """The compression around the archive, such as ``GZIP`` for a ``.tar.gz``, or
@@ -143,8 +160,9 @@ class ArchiveFormat:
         # Holding members makes the two agree. A member of another enum is refused
         # as a container, but left as it is as a stream: the codec registry is keyed
         # on these pairs, and a codec registered from outside
-        # (``tests/test_codec_descriptor.py`` does) brings its own stream enum.
-        if not isinstance(self.container, ContainerFormat):
+        # (``tests/test_codec_descriptor.py`` does) brings its own stream enum. A
+        # plugin's container is kept as it is too (``archivey.plugins``).
+        if not isinstance(self.container, (ContainerFormat, PluginContainer)):
             object.__setattr__(
                 self,
                 "container",
@@ -213,14 +231,17 @@ class ArchiveFormat:
 
         Uses the predefined named-instance attribute name (``ZIP``, ``TAR_GZ``, …).
         A pair with no named constant, such as ``tar.lz``, gets
-        ``CONTAINER_STREAM`` from the two enum member names (``"TAR_LZIP"``); its
-        ``repr()`` stays the explicit constructor form. ``_FORMAT_NAMES`` is
+        ``CONTAINER_STREAM`` from the two enum member names (``"TAR_LZIP"``), or the
+        container name alone when the stream is ``UNCOMPRESSED`` (a plugin's
+        ``"CPIO"``); its ``repr()`` stays the explicit constructor form. ``_FORMAT_NAMES`` is
         populated just after the class definition — safe at runtime because this
         property is never called before the module is fully loaded.
         """
         name = _FORMAT_NAMES.get(self)
         if name is not None:
             return name
+        if self.stream == StreamFormat.UNCOMPRESSED:
+            return self.container.name
         return f"{self.container.name}_{self.stream.name}"
 
     def __repr__(self) -> str:
@@ -427,6 +448,31 @@ class HashAlgorithm(StrEnum):
     """CRC-32, as four big-endian bytes."""
     BLAKE2SP = "blake2sp"
     """BLAKE2sp, 32 bytes. Only RAR5 stores it."""
+
+
+class Verification(IntEnum):
+    """How much of a member stream's data has been checked, from least to most.
+
+    ``ArchiveStream.verified`` is the level a stream has reached, and
+    ``ArchiveStream.verifiable`` the most it can reach by a read from the start to
+    the end. The levels are ordered, so ``stream.verified >= Verification.STRUCTURE``
+    reads as "at least the structure was checked".
+    """
+
+    NONE = 0
+    """Nothing is checked yet. The stream has not opened its member, or the member's
+    password passed only a check that a wrong password can pass by chance, such as the
+    one-byte check of old ZIP encryption."""
+    KEY = 1
+    """The bytes come from the right key: the member is not encrypted, or its password
+    passed a check a wrong password cannot pass by chance."""
+    STRUCTURE = 2
+    """The right key, and a read reached the end with the length and every
+    end-of-data check passing."""
+    CONTENT = 3
+    """The structure, and a checksum stored with the data matched every byte: the
+    member's CRC-32 or BLAKE2sp, the WinZip AES authentication code, or the checksum of
+    a gzip, bzip2, lzip or zlib stream read from its start."""
 
 
 class CompressionAlgorithm(Enum):
@@ -1317,7 +1363,8 @@ class ExtractionPolicy(Enum):
     are ``rwxr-xr-x``, and owners are not applied."""
     STANDARD = "standard"
     """For archives you mostly trust, such as your own. As ``STRICT``, but trailing dots
-    and spaces are kept, an absolute name is extracted inside the destination
+    and spaces are kept (a folder named only dots or spaces, such as ``...``, is still
+    refused), an absolute name is extracted inside the destination
     (``/etc/x`` as ``etc/x``, as tar and unzip do), and permissions are kept as stored
     without the setuid, setgid and sticky bits."""
     TRUSTED = "trusted"

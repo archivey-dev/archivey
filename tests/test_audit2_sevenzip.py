@@ -323,6 +323,5 @@ def test_unknown_major_version_is_refused() -> None:
     # Byte 6 is outside the StartHeader CRC. 7-Zip 23.01 says "Can't open as archive";
     # the SFX validator also refuses it (``validate_sevenzip_signature_header``).
     data[6] = 1
-    with pytest.raises(ArchiveyError):
-        with open_archive(io.BytesIO(bytes(data))) as reader:
-            reader.members()
+    with pytest.raises(ArchiveyError), open_archive(io.BytesIO(bytes(data))) as reader:
+        reader.members()

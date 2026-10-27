@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Calibrate the STORED-member compressibility probe for ZipCrypto disambiguation.
 
 Wrong ZipCrypto keys yield effectively-random plaintext. Real STORED plaintext is

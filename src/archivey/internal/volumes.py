@@ -57,14 +57,14 @@ SourceSequence = Sequence[SourceItem]
 # in the ZIP backend instead. ``name.z01`` does match the broad old-scheme RAR shape
 # below, and what keeps it out of a RAR set there is stated beside that pattern.
 #
-# **Three digits minimum, not ``\d+``.** 7-Zip numbers from ``.001`` and widens past
+# **Three digits minimum, not one or more.** 7-Zip numbers from ``.001`` and widens past
 # part 999, so nothing it emits needs fewer. Accepting one or two would swallow
 # ``name.zip.1`` / ``name.zip.2`` — what wget and naive rotation produce for two
 # downloads of the *same* file — and concatenate two independent complete archives,
 # handing back the wrong file's contents with no error. The completeness check cannot
 # catch it either: ``[1, 2]`` is exactly ``1..N``. ``.exe`` is format-agnostic (7-Zip
 # writes it for a 7z or ZIP payload), so this pattern is not kept in step with
-# ``is_zip_split_segment_name`` (still ``zip\.\d{3,}`` / ``.zNN``). A lone
+# ``is_zip_split_segment_name`` (still ``zip\.[0-9]{3,}`` / ``.zNN``). A lone
 # numbered part (``.7z.001`` / ``.zip.001`` / ``.exe.001``) is refused at
 # ``open_archive`` as an incomplete set, naming the missing parts — not as a ZIP
 # spanned-set error. Info-ZIP ``.zNN`` stays that ZIP refusal.
@@ -85,16 +85,24 @@ SourceSequence = Sequence[SourceItem]
 # The largest part the six-digit ``part`` groups below can hold.
 _MAX_VOLUME_PART = 999_999
 # This pattern and ``_RAR_PART_RE`` end in ``\Z``, not ``$``: ``$`` also matches before
-# a final newline, which would read ``name.7z.001\n`` as a volume name.
+# a final newline, which would read ``name.7z.001\n`` as a volume name. Digits are
+# ``[0-9]``, not ``\d``: on a ``str`` pattern ``\d`` matches any Unicode digit, so
+# ``0.7z.\u066000`` (an Arabic-Indic zero, then two ASCII zeros) was a numbered part
+# (``\d{3,6}`` took all three) *and* an old-scheme RAR continuation (its
+# ``[^.0-9]`` took the Arabic-Indic zero as the letter), so the schemes overlapped.
+# ``re.ASCII`` does the same for ``re.IGNORECASE``, which otherwise folds ``\u0131``
+# and ``\u0130`` into ``i`` and ``\u017f`` into ``s`` and so read ``x.z\u0131p.001`` as
+# a ZIP volume.
 _NUMBERED_VOLUME_RE = re.compile(
-    r"^(?P<base>.+\.(?:7z|zip|exe))\.0*(?P<part>\d{3,6})\Z", re.IGNORECASE
+    r"^(?P<base>.+\.(?:7z|zip|exe))\.0*(?P<part>[0-9]{3,6})\Z", re.IGNORECASE | re.ASCII
 )
 # WinRAR ``-v`` writes ``name.partN.rar``. An SFX first volume keeps the ``partN``
 # marker and changes only the last extension: ``name.part1.sfx`` (Linux rar) or
 # ``name.part1.exe`` (Windows), with later volumes still ``.partN.rar``. The stem
 # before ``.part`` is the set's base, so mixed extensions on one stem are one set.
 _RAR_PART_RE = re.compile(
-    r"^(?P<base>.+)\.part0*(?P<part>\d{1,6})\.(?:rar|sfx|exe)\Z", re.IGNORECASE
+    r"^(?P<base>.+)\.part0*(?P<part>[0-9]{1,6})\.(?:rar|sfx|exe)\Z",
+    re.IGNORECASE | re.ASCII,
 )
 # Any old-scheme continuation name. WinRAR and unrar go ``.rar``, ``.r00`` … ``.r99``,
 # then ``.s00`` … ``.z99`` and on past ``z`` (``.{00``, ``.|00`` …): the next name adds
@@ -164,7 +172,8 @@ _OLD_RAR_FIRST_VOLUME_SUFFIXES = (".rar", ".exe", ".sfx")
 # base. It accepts only ``.rar``, because ``next_rar_volume_name`` rewrites ``.exe``
 # and ``.sfx`` to ``.rar`` first.
 _UNRAR_PART_NAME_RE = re.compile(
-    r"(?P<head>.*\.part)(?P<num>[0-9]+)(?P<ext>\.rar)", re.IGNORECASE | re.DOTALL
+    r"(?P<head>.*\.part)(?P<num>[0-9]+)(?P<ext>\.rar)",
+    re.IGNORECASE | re.DOTALL | re.ASCII,
 )
 
 
@@ -869,7 +878,7 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
                 n -= got
                 if self._pos >= vol_end:
                     self._advance_volume()
-        except BaseException:  # noqa: BLE001 - restore cursor; the original error re-raises
+        except BaseException:  # restore cursor; the original error re-raises
             self._pos = start_pos
             self._recompute_cursor()
             raise
@@ -885,6 +894,27 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
 
 
 _MAX_ENUMERATED_PARTS = 8
+
+
+class JoinedViews(ConcatenatedFile):
+    """Views over one source read back to back as one stream; closes the views.
+
+    For a member whose bytes sit in several places in the archive: a RAR member split
+    across volumes, an ISO file in more than one extent.
+    """
+
+    def __init__(self, views: list[BinaryIO]) -> None:
+        self._views = views
+        super().__init__(views)
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        try:
+            super().close()
+        finally:
+            for view in self._views:
+                view.close()
 
 
 def _enumerate_parts(parts: Sequence[int], total: int | None = None) -> str:

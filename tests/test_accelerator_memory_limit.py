@@ -26,7 +26,7 @@ from collections.abc import Callable
 import pytest
 
 from archivey.config import DecoderLimits
-from archivey.exceptions import ResourceLimitError
+from archivey.exceptions import ResourceLimitError, ResourceUnavailableError
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams.codecs import (
     Codec,
@@ -96,6 +96,8 @@ def test_a_child_over_its_memory_limit_is_stopped() -> None:
         error = _read_until_stopped(child)
         assert "max_decoder_memory" in str(error)
         assert crashed_on_data(error)
+        # A configured limit, not a shortage of the system.
+        assert not isinstance(error, ResourceUnavailableError)
         # Every later call raises the same error.
         with pytest.raises(ResourceLimitError):
             child.read(1)

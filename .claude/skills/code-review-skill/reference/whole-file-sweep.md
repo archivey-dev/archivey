@@ -5,7 +5,7 @@
 > ([`code-pr.md`](code-pr.md) pass 1 and its checklists), with no PR body to read after.
 
 A **sweep batch** is a cold whole-file reading pass rather than a diff review — the `S*`
-batches posted to [#315](https://github.com/davitf/archivey/pull/315). #315 was closed on
+batches posted to [#315](https://github.com/archivey-dev/archivey/pull/315). #315 was closed on
 2026-10-02 after the first pass; the formal sweep is planned for after the release, and
 this file is the convention it will follow (its hub will be named in its brief). Findings post exactly
 as any review's do (`SKILL.md` §6), one inline thread each. What a sweep posts *in

@@ -146,7 +146,12 @@ that is not the codec its name or its detection claims fails at open rather than
 first read. It checks nothing further in: damage past the first byte still fails on the
 read. A valid empty stream opens and reads as `b""`. A pipe is not checked, because the
 byte would come out of its one pass. The cost is one decoded block, which matters only
-for bzip2 ([`bzip2.md`](bzip2.md) §2.2).
+for bzip2 ([`bzip2.md`](bzip2.md) §2.2). The byte is decoded with the standard library
+whatever `use_rapidgzip` / `use_indexed_bzip2` say, so no rapidgzip child starts at open.
+An `ON` accelerator is still resolved there (`StreamCodec.check_accelerator`), so rapidgzip
+absent or no child process possible raises at open as before. One `ON` failure moved to the
+first read: a child that fails to start (a process cap, no writable temporary directory, too
+many open files), which cannot be known without starting one. `AUTO` is resolved by the read.
 
 What is filled in on the member, and where from:
 
@@ -261,7 +266,8 @@ always does, and raises `PackageNotInstalledError` without it and
 seeking was declared (`seekable_members=True`, `open_stream(seekable=True)`) and it is
 installed. For the DEFLATE family `AUTO` adds two conditions, a compressed input of at
 least 16 MiB and a way to check the decoded length, and `rapidgzip` runs there in a
-child process. Both are on [`gzip.md`](gzip.md) §2.3; bzip2 stays in-process
+child process. It also takes a large sequential read there, at 3:1 or less, on Linux
+and macOS. All of it is on [`gzip.md`](gzip.md) §2.3; bzip2 stays in-process
 ([`bzip2.md`](bzip2.md) §2.3).
 
 **Truncation.** A decoder's `flush` runs once, at compressed end of file. When the stream
@@ -432,6 +438,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Read the xz index and lzip trailers whenever the source is seekable (PR #232); narrowed by PR #732, below | Metadata must not depend on a flag about member-stream seeking | Gating them on `seekable_members` |
 | Do not peek another archive's member stream, stored ZIP entries and TAR members included (PR #732; davitf, 2026-10-10: fix later) | A seek to the end of a deflated member decompresses it twice, and `seek_is_expensive`, the signal detection already uses, covers member streams only as a group. A nested `.xz` or `.lz` loses `size` and the lzip `CRC32`; both are metadata, and the decoder still checks the index and trailers on read. Reopen with a per-stream cheap-seek signal, which would keep both for a stored ZIP entry or a TAR member | Keeping the peek for member streams whose seek is a slice, which needs that signal, shared with detection |
 | Decode one byte at open, on a seekable source (PR #461) | A file that is not the claimed codec fails where the caller opened it; otherwise a `.gz` full of zeros lists one member and fails only on the read | Checking nothing until the read; decoding more, which costs every open |
+| The open-time byte is decoded with the standard library; the accelerator is only resolved (PR #1018) | rapidgzip runs in a child process, about 30 ms to start, and the read started a second one, so a `.gz` paid for two children. Resolving still raises what an `ON` open must raise at open (DR-15b); a child that fails to start is found only by starting one, so it stays on the first read | Probing through the accelerator; skipping the resolution, which moved a missing-package error to the first read |
 | Arm truncation at end of input and raise on the next read (PR #183) | The caller gets every byte before the cut from a sized `read(n)`, and the error cannot be missed by a caller who never calls `close()`. A `read()` of everything raises and returns nothing: a short payload returned as if whole is worse than none | Raising inside the decode, which drops the decoded prefix; raising from `close()` (ADR 0014) |
 | A truncation keeps raising after a seek back | The source did not change, so a second pass must not end cleanly | Clearing the error with the position (PR #491) |
 | An absolute 1 MiB threshold for the rewind report (PR #232) | Wall time follows bytes re-decoded, not the ratio to the jump | A relative threshold, which goes quiet on the worst case |
@@ -461,21 +468,21 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
     tests/test_seekable_streams.py tests/test_codecs.py tests/test_codec_descriptor.py
 ```
 
-| Claim | Pinned by |
-| --- | --- |
-| One backend, one member, names from the filename, `data` for a stream with none | `tests/test_single_file.py::test_one_backend_serves_multiple_formats`, `::test_exactly_one_member_no_directories`, `::test_name_strips_known_compression_extension`, `::test_name_appends_uncompressed_for_unknown_extension`, `::test_name_defaults_to_data_for_anonymous_stream` |
-| Cost and archive info | `::test_cost_is_indexed_and_direct`, `::test_archive_info` |
-| Size from the xz index and lzip trailers on any seekable source, not on a pipe or another archive's member stream | `::test_xz_size_from_header`, `::test_lzip_size_from_trailer`, `::test_cheap_size_does_not_require_a_path_source`, `::test_cheap_size_still_needs_seekability`, `::test_member_stream_source_is_not_seeked_to_its_end` |
-| Only lzip reports a digest | `::test_lzip_exposes_stored_crc32`, `::test_other_single_file_codecs_omit_stored_digests`, `::test_gzip_never_reports_a_crc32` |
-| Validation at open, one byte deep, deferred on a pipe | `::test_open_validation_table_covers_every_single_file_codec`, `::test_undecodable_source_raises_at_open`, `::test_valid_empty_stream_still_opens_and_reads_empty`, `::test_non_seekable_source_still_defers_validation_to_the_read` |
-| A pipe needs `streaming=True` and gives one pass | `::test_non_seekable_gzip_requires_streaming_mode`, `::test_non_seekable_gzip_streams_fine` |
-| Concurrent and re-entrant opens are independent | `::test_concurrent_open_same_member_interleaved`, `::test_reentrant_open_after_first_read` |
-| `password=` accepted and unused | `::test_password_is_accepted_and_recorded` |
-| `open_stream` is forward-only unless asked, and builds no index then | `tests/test_open_stream.py::test_open_stream_default_is_forward_only`, `::test_open_stream_xz_default_builds_no_index`, `::test_open_stream_xz_seekable_exposes_size` |
-| Bytes after the stream: payload, one report, zeros silent, strict raises, xz and lzip keep their index, containers silent | `tests/test_stream_trailing_data.py` |
-| A damaged magic on a later stream raises on a read and a seek, also when a zero replaces its first bytes, in the middle of the file or at its end; other bytes and a tail shorter than the magic still report; the rule is lzip's; after a run of zeros as long as the magic nothing is judged, a damaged magic too | `tests/test_stream_trailing_data.py::test_a_damaged_magic_on_a_later_stream_is_corruption`, `::test_other_bytes_after_a_stream_are_still_reported`, `::test_the_near_magic_rule_is_lzips`, `::test_a_magic_damaged_to_a_zero_byte_is_corruption`, `::test_a_magic_damaged_to_zeros_at_the_end_of_the_file_is_corruption`, `::test_bzip2_judges_a_short_zero_run_as_the_magic_in_both_modes`, `::test_a_zero_run_is_judged_the_same_however_the_input_is_cut`, `::test_after_zero_padding_a_magic_is_not_judged` |
-| A new codec needs only a descriptor | `tests/test_codec_descriptor.py` |
-| Probe order, completion window, `format_unconfirmed` | `tests/test_detection.py`, `tests/test_brotli_framing_gate.py::test_guess_decode_failure_sets_format_unconfirmed` |
+| Claim |
+| --- |
+| One backend, one member, names from the filename, `data` for a stream with none |
+| Cost and archive info |
+| Size from the xz index and lzip trailers on any seekable source, not on a pipe or another archive's member stream |
+| Only lzip reports a digest |
+| Validation at open, one byte deep, deferred on a pipe |
+| A pipe needs `streaming=True` and gives one pass |
+| Concurrent and re-entrant opens are independent |
+| `password=` accepted and unused |
+| `open_stream` is forward-only unless asked, and builds no index then |
+| Bytes after the stream: payload, one report, zeros silent, strict raises, xz and lzip keep their index, containers silent |
+| A damaged magic on a later stream raises on a read and a seek, also when a zero replaces its first bytes, in the middle of the file or at its end; other bytes and a tail shorter than the magic still report; the rule is lzip's; after a run of zeros as long as the magic nothing is judged, a damaged magic too |
+| A new codec needs only a descriptor |
+| Probe order, completion window, `format_unconfirmed` |
 
 **Building fixtures.** Tests build streams with the standard library (`gzip`, `bz2`,
 `lzma`, `zlib`) and the optional packages, or with the command-line tools where the

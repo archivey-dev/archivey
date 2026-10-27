@@ -34,8 +34,13 @@ fails if the tag and either packaged version disagree.
 Pull requests do not edit `CHANGELOG.md`; the release PR writes the whole entry. What
 goes in it:
 
-- one line per new feature and per public API change (**Added** / **Changed** /
-  **Deprecated** / **Removed**);
+- one line per new feature and per public API change, counting a renamed or removed
+  `archivey` verb or option and a changed exit code (**Added** / **Changed** /
+  **Deprecated** / **Removed**); a line that makes callers change their code starts
+  with `**Breaking:**`. That covers a behaviour change that can't be shimmed, and a
+  removal that skipped the warning release under DR-12a's reopen clause;
+- in a minor release only, a name deprecated in the previous minor release is removed
+  now, with a **Removed** line. A patch release removes nothing (DR-12a);
 - one line per security fix (**Security**);
 - one line summarizing all other bug fixes (**Fixed**), unless a fix changes behavior
   users rely on, which then gets its own line.
@@ -43,8 +48,10 @@ goes in it:
 Internal refactors, review docs and chore work stay out.
 
 Previous release tag: `PREV=$(git describe --tags --abbrev=0 2>/dev/null || true)`
-(0.2.0, the first release, has its entry written already: a feature summary rather
-than a change list. Only fill in the date, and re-read it against the current API.)
+(0.2.0, the first release, has its entry written already under
+`## [0.2.0] - Unreleased`: a feature summary rather than a change list. Re-read it
+against the current API and leave `[Unreleased]` empty; `release.py start 0.2.0` puts
+the date in that heading.)
 
 - [ ] List commits / merged PRs since `PREV`:
 
@@ -54,10 +61,14 @@ than a change list. Only fill in the date, and re-read it against the current AP
   gh pr list --state merged --base main --search "merged:>$(git log -1 --format=%cI "$PREV" 2>/dev/null || echo 2020-01-01)" --limit 100
   ```
 
-- [ ] Write the entry under a new `## [X.Y.Z] - YYYY-MM-DD` heading, below an empty
-  `[Unreleased]`.
-- [ ] Add / update the compare links at the bottom of `CHANGELOG.md` once the tag
-  name is known.
+- [ ] Run `uv run python scripts/release.py notes`. Its last line says whether this can
+  be a patch release, from the public API at `PREV` against `HEAD`
+  (`scripts/api_surface.py`) and the merged pull requests labelled `needs-minor`. A `+`
+  line it prints is an **Added** item, a `-` line is **Removed**, and a `-` and `+` pair
+  for the same name is **Changed** (or **Deprecated**, or a **Breaking:** line).
+
+- [ ] Write the entry under `## [Unreleased]`. `release.py start` (§6) moves it under
+  a dated `## [X.Y.Z]` heading and writes the compare links.
 
 ---
 
@@ -66,6 +77,10 @@ than a change list. Only fill in the date, and re-read it against the current AP
 Goal: a short, honest table (or bullet list) of peer wall ratios **for this
 release**, plus a note vs the **previous release** when one exists. Absolute
 VISION bands stay informational; do not claim CI hard-fails on ≤1.3×.
+
+A patch release (bug fixes only) can skip this section unless one of its fixes touches
+performance. §3 is never skipped: a bug-fix release is when `dev-docs/known-issues.md`
+entries go stale and a security fix needs its public line.
 
 - [ ] On a quiet machine (or after pulling the latest successful
       `benchmark-wall-realistic` artifact), measure current `main`:
@@ -192,36 +207,52 @@ Also:
 
 ## 6. Version bump and tag
 
-- [ ] Set `[project].version` in `pyproject.toml` to `X.Y.Z` (**drop** any
-      `.devN` suffix), and the same version in `packages/archivey-cli/pyproject.toml`
-      (`version` and the `archivey[recommended]==` pin).
-- [ ] Commit on a release PR: `CHANGELOG.md`, version bump, doc/number updates;
-      merge to the default branch.
-- [ ] Tag and push (annotated preferred):
+`scripts/release.py` does the mechanical steps. Run each command from a clean,
+up-to-date `main`, with your own `gh` login; `--dry-run` before a command prints what it
+would do. With §2 skipped where it allows, a patch release is §1, §3 to §5 and these
+four commands.
 
-  ```bash
-  git checkout main && git pull
-  git tag -a "vX.Y.Z" -m "archivey X.Y.Z"
-  git push origin "vX.Y.Z"
-  ```
-
-- [ ] Before tagging, run the TestPyPI dry run: Actions → Publish → Run workflow,
-      `target=testpypi`. No tag is needed, and no PyPI version number is used up.
-- [ ] Confirm `publish.yml` built distributions and published the tag to PyPI (a
-      pushed `v*` tag always goes to PyPI). See the cutover runbook for Trusted
-      Publishing setup.
-- [ ] Create a GitHub Release for `vX.Y.Z` whose body **mirrors** the CHANGELOG
-      section (generated notes are optional; the committed file remains
-      authoritative).
+1. `uv run python scripts/release.py notes` lists the merged pull requests since the last
+   tag. Write the entry under `## [Unreleased]` from it (§1). This can be its own small
+   PR, or an agent can write it.
+2. `uv run python scripts/release.py start X.Y.Z` sets `X.Y.Z` in both pyproject files
+   (and the `archivey[recommended]==` pin), refreshes `uv.lock`, moves the `[Unreleased]`
+   text under a dated `## [X.Y.Z]` heading with its compare links, opens the release PR
+   from `release/vX.Y.Z`, and starts the TestPyPI dry run on that branch (Actions →
+   Publish). It also starts each release gate workflow on that branch. These jobs do
+   not run in full on every change, so a regression that only they catch could otherwise
+   ship. `RELEASE_GATE_WORKFLOWS` in `scripts/release.py` is the one list of them.
+   `start` refuses an empty `[Unreleased]`.
+3. When CI, the TestPyPI run and the release gates are green, merge the release PR. Then
+   `uv run python scripts/release.py tag X.Y.Z` checks that each gate's newest run on the
+   release PR's last commit is green. If one is missing, still running or red, it refuses
+   and prints the command that starts it. A commit pushed to the release PR after `start`
+   needs new gate runs. If the release PR's branch was deleted on merge, the refusal also
+   prints the `git push` that restores it at the gated commit, so the gates can run there
+   again. `tag` then creates the GitHub Release `vX.Y.Z` on the release PR's merge
+   commit, so a PR merged after it is not in the release. A PR merged into `main` while
+   the release PR was open is in it, though, and only `ci.yml` has seen it: when one
+   touches what the gates test, merge `main` into the release branch and rerun the gates
+   before merging. Its body is the
+   CHANGELOG section, and it is marked as a pre-release for `a`/`b`/`rc` versions. The
+   tag starts `publish.yml`, which publishes to PyPI after the `pypi` environment
+   approval. Agent sessions cannot do this step (their GitHub access refuses tag pushes
+   and has no tool that creates a release), so it is yours. The tag `gh release create`
+   makes is lightweight; `publish.yml` and `git describe --tags` need only the ref, so an
+   annotated tag is not required. For a release PR that `start` did not open, pass its
+   branch with `--branch`, and start each gate on that branch yourself first.
+4. Confirm both `archivey` and `archivey-cli` are on PyPI at `X.Y.Z`, and that each
+   file shows provenance (an attestation) on its PyPI page. The upload action skips the
+   attestation with only a warning when Trusted Publishing is not in use.
 
 ---
 
 ## 7. Post-release
 
-- [ ] Bump `[project].version` to the next `X.Y.(Z+1).dev0` (or minor/major
-      `.dev0`) on `main`, in both pyproject files, so installs from the default
-      branch stay distinguishable from the tag.
-- [ ] Leave `[Unreleased]` ready for the next cycle.
+- [ ] `uv run python scripts/release.py finish` opens a PR that sets `main` to the next
+      `.dev0` (`X.Y.(Z+1).dev0`, or the next pre-release's `.dev0` after an `rc`), so
+      installs from `main` stay distinguishable from the tag. Pass a version to
+      choose another one (`finish 0.3.0.dev0`).
 - [ ] If docs site is Pages-published, confirm the workflow ran on the tag /
       default branch as configured.
 - [ ] Announce as you prefer (not required by the tooling).
@@ -237,4 +268,5 @@ Also:
 | Realistic wall + JSON | `uv run --no-sync python -m benchmarks.harness --mode full --scale realistic --warmup --json-out /tmp/wall.json --text-out /tmp/wall.md` |
 | Docs | `uv run --group docs mkdocs build --strict` |
 | Build only | `uv build` and `uv build packages/archivey-cli --out-dir dist` (both publish), then inspect `dist/` |
+| Release steps | `uv run python scripts/release.py --help` |
 | Version source | `pyproject.toml` → `[project].version` (copied in `packages/archivey-cli/pyproject.toml`) |

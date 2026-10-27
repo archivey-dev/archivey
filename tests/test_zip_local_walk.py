@@ -159,7 +159,7 @@ def _walk(
 @pytest.mark.parametrize("force_zip64", [False, True], ids=["classic", "zip64"])
 def test_walk_reads_what_zipfile_wrote(pipe: bool, force_zip64: bool) -> None:
     raw = _write(pipe=pipe, force_zip64=force_zip64)
-    read, walk, end = _walk(raw)
+    read, _, end = _walk(raw)
     with zipfile.ZipFile(io.BytesIO(raw)) as zf:
         assert [r.name.decode() for r in read] == zf.namelist()
         for r in read:
@@ -196,7 +196,7 @@ def test_the_stored_scan_ignores_a_descriptor_signature_inside_the_data() -> Non
             member.write(payload)
         with zf.open("y", "w") as member:
             member.write(b"after")
-    read, _walk_, end = _walk(out.getvalue())
+    read, _, _end = _walk(out.getvalue())
     assert [r.data for r in read] == [payload, b"after"]
 
 
@@ -211,9 +211,8 @@ def test_the_stored_scan_stops_at_a_planted_descriptor_for_a_prefix() -> None:
         + b"PK\x01\x02"
     )
     out = _Unseekable()
-    with zipfile.ZipFile(out, "w") as zf:
-        with zf.open("x", "w") as member:
-            member.write(prefix + planted + b"rest")
+    with zipfile.ZipFile(out, "w") as zf, zf.open("x", "w") as member:
+        member.write(prefix + planted + b"rest")
     walk = LocalHeaderWalk(_Unseekable(out.getvalue()))
     entry = walk.next_entry()
     assert entry is not None
@@ -227,7 +226,7 @@ def test_the_stored_scan_stops_at_a_planted_descriptor_for_a_prefix() -> None:
 def test_an_empty_archive_starts_with_the_end_record() -> None:
     buf = io.BytesIO()
     zipfile.ZipFile(buf, "w").close()
-    read, walk, end = _walk(buf.getvalue())
+    read, _, end = _walk(buf.getvalue())
     assert read == []
     assert end is not None
     assert end.entries_declared == 0
@@ -249,7 +248,7 @@ def test_rejected_stub_candidates_are_not_capped() -> None:
     # Detection and the seekable read cap no ZIP decoys; neither does the walk.
     raw = _write(pipe=False)
     stub = b"MZ" + (b"PK\x03\x04" + b"\x00" * 26) * 300
-    read, walk, end = _walk(stub + raw)
+    read, walk, _end = _walk(stub + raw)
     assert walk.first_offset == len(stub)
     assert len(read) == len(_DATA)
 
@@ -277,7 +276,7 @@ def test_a_long_header_across_the_scan_window_end_is_found(before_limit: int) ->
     with zipfile.ZipFile(out, "w") as zf:
         zf.writestr("n" * 0xFFFF, b"data")
     stub = b"\x00" * (SFX_MAX - before_limit)
-    read, walk, end = _walk(stub + out.getvalue())
+    read, walk, _end = _walk(stub + out.getvalue())
     assert walk.first_offset == len(stub)
     assert [r.data for r in read] == [b"data"]
 
@@ -356,7 +355,7 @@ def test_bytes_before_the_directory_are_kept_with_it() -> None:
     end record's directory offset counts it."""
     raw = bytearray(_write(pipe=False))
     eocd = raw.rindex(b"PK\x05\x06")
-    cd_size, cd_offset = struct.unpack_from("<LL", raw, eocd + 12)
+    _cd_size, cd_offset = struct.unpack_from("<LL", raw, eocd + 12)
     block = b"APK Sig Block 42 " * 10
     raw[cd_offset:cd_offset] = block
     struct.pack_into("<L", raw, eocd + len(block) + 16, cd_offset + len(block))
@@ -440,7 +439,7 @@ def test_descriptors_without_their_signature_are_found_by_what_follows() -> None
     piped = _write(pipe=True)
     raw = without_descriptor_signatures(piped)
     assert DATA_DESCRIPTOR_SIGNATURE not in raw
-    read, _walk_, end = _walk(raw)
+    read, _, _end = _walk(raw)
     with zipfile.ZipFile(io.BytesIO(piped)) as zf:
         assert [r.data for r in read] == [zf.read(i) for i in zf.infolist()]
     stored = next(r for r in read if r.name == b"big-stored.bin")
@@ -819,7 +818,7 @@ def test_zip64_end_records_are_read_from_the_stream(
         m.setattr(zipfile, "ZIP_FILECOUNT_LIMIT", 0)
         raw = _write(pipe=True)
     assert b"PK\x06\x06" in raw
-    _read, walk, end = _walk(raw)
+    _read, _, end = _walk(raw)
     assert end is not None
     assert end.zip64
     assert end.entries_declared == len(_DATA)
@@ -894,9 +893,8 @@ def test_planted_descriptor_signatures_cost_one_pass(
     """
     payload = plant(1_200_000)
     out = _Unseekable()
-    with zipfile.ZipFile(out, "w") as zf:
-        with zf.open("x", "w") as member:
-            member.write(payload)
+    with zipfile.ZipFile(out, "w") as zf, zf.open("x", "w") as member:
+        member.write(payload)
     fed = 0
 
     class _CountingZlib:
@@ -1068,7 +1066,9 @@ def test_an_unheld_local_size_reads_by_file() -> None:
     data = bytes(raw)
     with archivey.open_archive(io.BytesIO(data)) as reader:
         assert reader.read("a.txt") == b"hello " * 10
-    with pytest.raises(CorruptionError, match="uncompressed size"):
-        with archivey.open_archive(_Unseekable(data), streaming=True) as reader:
-            for _ in reader.stream_members():
-                pass
+    with (
+        pytest.raises(CorruptionError, match="uncompressed size"),
+        archivey.open_archive(_Unseekable(data), streaming=True) as reader,
+    ):
+        for _ in reader.stream_members():
+            pass

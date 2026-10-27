@@ -53,6 +53,7 @@ from archivey.internal.bomb_tracker import AlwaysStopResourceLimitError, BombTra
 from archivey.internal.extraction import _CHUNK, ExtractionCoordinator
 from archivey.internal.filters import (
     POLICY_TRANSFORMS,
+    _resolve_with_pathlib,
     apply_name_policy,
     check_universal,
     resolve_or_raise_on_loop,
@@ -62,7 +63,7 @@ from archivey.internal.filters import (
 from archivey.internal.link_watch import LinkWatch
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember, MemberType
-from tests.conftest import case_sensitive
+from tests.conftest import binary_refusal, case_sensitive
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.extract_util import open_and_extract
 from tests.streams_util import SizedNonSeekable
@@ -263,7 +264,24 @@ def test_check_universal_names_a_loop_in_the_destination(
     with pytest.raises(ExtractionError) as info:
         check_universal(member, dest)
     assert type(info.value) is ExtractionError
-    assert "A path in the destination does not resolve" in str(info.value)
+    assert "A path in the destination does not resolve (a symlink loop)" in str(
+        info.value
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+def test_check_universal_names_a_path_past_path_max_in_the_destination(
+    tmp_path: Path,
+) -> None:
+    # Not a loop: the destination's link chain is longer than PATH_MAX when expanded.
+    _link_chain_past_path_max(tmp_path)
+    with pytest.raises(ExtractionError) as info:
+        check_universal(_member("up/f"), tmp_path)
+    assert type(info.value) is ExtractionError
+    assert (
+        "A path in the destination does not resolve (a path that cannot be looked up)"
+        in str(info.value)
+    )
 
 
 def test_check_universal_enforced_under_trusted(tmp_path: Path) -> None:
@@ -1594,8 +1612,8 @@ def _bomb_7z(tmp_path: Path) -> tuple[Path, str, str]:
 def _bomb_rar(tmp_path: Path) -> tuple[Path, str, str]:
     # Committed, so the leg runs wherever unrar is installed (no rar writer needed).
     # prefix.bin records 1 MiB from 91 bytes. unrar reads tail.txt.
-    if shutil.which("unrar") is None:
-        pytest.skip("unrar not installed")
+    if (refusal := binary_refusal("unrar")) is not None:
+        pytest.skip(refusal)
     return _RAR_FIXTURES / "seek_respawn_solid__.rar", "prefix.bin", "tail.txt"
 
 
@@ -2055,9 +2073,8 @@ def test_extracting_under_a_symlink_loop_raises_eloop(
         src = tmp_path / "a.tar"
         src.write_bytes(_tar_bytes([("file", "f.txt", b"x")]))
     os.symlink("loop", tmp_path / "loop")
-    with open_archive(src) as reader:
-        with pytest.raises(OSError) as info:
-            reader.extract_all(tmp_path / "loop" / "out", dry_run=dry_run)
+    with open_archive(src) as reader, pytest.raises(OSError) as info:
+        reader.extract_all(tmp_path / "loop" / "out", dry_run=dry_run)
     assert info.value.errno == errno.ELOOP
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted([src.name, "loop"])
 
@@ -2079,9 +2096,11 @@ def test_extracting_into_a_self_looping_symlink_raises_extraction_error(
         src = tmp_path / "a.tar"
         src.write_bytes(_tar_bytes([("file", "f.txt", b"x")]))
     os.symlink("loop", tmp_path / "loop")
-    with open_archive(src) as reader:
-        with pytest.raises(ExtractionError, match="exists and is not a directory"):
-            reader.extract_all(tmp_path / "loop", dry_run=dry_run)
+    with (
+        open_archive(src) as reader,
+        pytest.raises(ExtractionError, match="exists and is not a directory"),
+    ):
+        reader.extract_all(tmp_path / "loop", dry_run=dry_run)
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted([src.name, "loop"])
 
 
@@ -2105,6 +2124,36 @@ def test_resolve_or_raise_on_loop_keeps_a_missing_component(tmp_path: Path) -> N
     assert resolve_or_raise_on_loop(path) == tmp_path.resolve() / "d" / "missing" / "f"
 
 
+def _link_chain_past_path_max(root: Path) -> None:
+    """``root/up``: links whose expansion is longer than PATH_MAX, leading to
+    ``root``'s parent."""
+    component = "d" * 200
+    path_max = os.pathconf(root, "PC_PATH_MAX")
+    depth = path_max // len(component) + 1
+    here = root
+    for _ in range(depth):
+        (here / component).mkdir()
+        os.symlink(component, here / "s")
+        here = here / "s"  # The short spelling, which stays under PATH_MAX.
+    os.symlink(os.path.join(*[".."] * (depth + 1)), here / "x")
+    os.symlink(os.path.join(*["s"] * depth, "x", ".."), root / "up")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+def test_resolve_or_raise_on_loop_raises_when_a_component_cannot_be_looked_up(
+    tmp_path: Path,
+) -> None:
+    # os.path.realpath keeps the long name and drops it again at the "..", so it
+    # gives a path inside tmp_path, while the kernel follows `up` one link at a time
+    # to tmp_path's parent.
+    _link_chain_past_path_max(tmp_path)
+    assert os.path.realpath(tmp_path / "up").startswith(str(tmp_path.resolve()))
+    with pytest.raises(OSError) as info:
+        resolve_or_raise_on_loop(tmp_path / "up")
+    assert info.value.errno == errno.ENAMETOOLONG
+    assert info.value.filename == str(tmp_path / "up")
+
+
 @pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
 def test_resolve_or_raise_on_loop_swallows_enoent_from_the_stat(
     tmp_path: Path,
@@ -2117,7 +2166,7 @@ def test_resolve_or_raise_on_loop_swallows_enoent_from_the_stat(
     )
 
 
-def test_resolve_or_raise_on_loop_treats_winerror_1921_as_a_loop(
+def test_windows_resolution_treats_winerror_1921_as_a_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Windows reports a loop as ERROR_CANT_RESOLVE_FILENAME, not ELOOP. Raised here by
@@ -2134,7 +2183,7 @@ def test_resolve_or_raise_on_loop_treats_winerror_1921_as_a_loop(
     monkeypatch.setattr(Path, "stat", stat)
     path = tmp_path / "x"
     with pytest.raises(OSError) as info:
-        resolve_or_raise_on_loop(path)
+        _resolve_with_pathlib(path)
     assert type(info.value) is OSError
     assert info.value.errno == errno.ELOOP
     assert info.value.filename == str(path)
@@ -2398,9 +2447,11 @@ def test_tar_hardlink_orphan_forward_only_onerror(tmp_path: Path) -> None:
 
     # STOP: raises on the unrecoverable orphan.
     dest = tmp_path / "out_stop"
-    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
-        with pytest.raises(ExtractionError):
-            r.extract_all(dest, filter=drop_source)
+    with (
+        open_archive(NonSeekableBytesIO(raw), streaming=True) as r,
+        pytest.raises(ExtractionError),
+    ):
+        r.extract_all(dest, filter=drop_source)
 
     # CONTINUE: records FAILED, does not raise.
     dest2 = tmp_path / "out_continue"
@@ -2652,18 +2703,20 @@ def test_streaming_live_ratio_halts_under_continue(tmp_path: Path) -> None:
 
     raw = _tar_bytes([("file", "z.bin", b"\x00" * (8 * 1024 * 1024))], mode="w:gz")
     dest = tmp_path / "out"
-    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
-        with pytest.raises(ResourceLimitError):
-            r.extract_all(
-                dest,
-                limits=ExtractionLimits(
-                    max_ratio=10.0,
-                    ratio_activation_threshold=1024,
-                    live_ratio_activation_threshold=1024,
-                    max_extracted_bytes=100 * 2**20,
-                ),
-                on_error=OnError.CONTINUE,  # global guard halts anyway
-            )
+    with (
+        open_archive(NonSeekableBytesIO(raw), streaming=True) as r,
+        pytest.raises(ResourceLimitError),
+    ):
+        r.extract_all(
+            dest,
+            limits=ExtractionLimits(
+                max_ratio=10.0,
+                ratio_activation_threshold=1024,
+                live_ratio_activation_threshold=1024,
+                max_extracted_bytes=100 * 2**20,
+            ),
+            on_error=OnError.CONTINUE,  # global guard halts anyway
+        )
 
 
 def test_streaming_plain_tar_no_live_ratio_trip(tmp_path: Path) -> None:
@@ -2769,12 +2822,14 @@ def test_piped_blank_start_passes_like_a_file(tmp_path: Path) -> None:
 
     # A live floor under the blank start judges it before the data arrives: this is the
     # trade-off the floor sets, and what the old behaviour did at 5 MiB.
-    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
-        with pytest.raises(ResourceLimitError, match="Live decompression ratio"):
-            r.extract_all(
-                tmp_path / "low",
-                limits=replace(limits, live_ratio_activation_threshold=1024),
-            )
+    with (
+        open_archive(NonSeekableBytesIO(raw), streaming=True) as r,
+        pytest.raises(ResourceLimitError, match="Live decompression ratio"),
+    ):
+        r.extract_all(
+            tmp_path / "low",
+            limits=replace(limits, live_ratio_activation_threshold=1024),
+        )
 
 
 def test_non_seekable_member_stream_keeps_its_declared_size(tmp_path: Path) -> None:
@@ -2787,12 +2842,11 @@ def test_non_seekable_member_stream_keeps_its_declared_size(tmp_path: Path) -> N
         info = tarfile.TarInfo("inner.gz")
         info.size = len(inner)
         t.addfile(info, io.BytesIO(inner))
-    with open_archive(outer) as outer_ar:
-        with outer_ar.open("inner.gz") as member_stream:
-            assert not member_stream.seekable()
-            with open_archive(member_stream, streaming=True) as inner_ar:
-                assert inner_ar.compressed_source_size == len(inner)
-                assert inner_ar.compressed_bytes_consumed is None
+    with open_archive(outer) as outer_ar, outer_ar.open("inner.gz") as member_stream:
+        assert not member_stream.seekable()
+        with open_archive(member_stream, streaming=True) as inner_ar:
+            assert inner_ar.compressed_source_size == len(inner)
+            assert inner_ar.compressed_bytes_consumed is None
 
 
 def test_plain_tar_from_sized_pipe_has_no_archive_wide_denominator() -> None:
@@ -3384,8 +3438,8 @@ def test_streaming_duplicate_name_removes_the_copy_a_filter_drops(
         seen: list[str] = []
 
         def drop_second(member: ArchiveMember) -> ArchiveMember | None:
-            seen.append(member.name)
-            return member if len(seen) == 1 else None
+            seen.append(member.name)  # noqa: B023 - called within this iteration
+            return member if len(seen) == 1 else None  # noqa: B023 - called within this iteration
 
         with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
             results = reader.extract_all(dest, filter=drop_second).results
@@ -3402,13 +3456,13 @@ def test_streaming_duplicate_name_removes_the_copy_when_the_later_one_fails(
         seen: list[str] = []
 
         def fail_second(member: ArchiveMember) -> ArchiveMember | None:
-            seen.append(member.name)
-            if len(seen) == 2:
+            seen.append(member.name)  # noqa: B023 - called within this iteration
+            if len(seen) == 2:  # noqa: B023 - called within this iteration
                 # A one-pass extraction keeps the earlier copy until the later one's
                 # outcome is known, so a later copy that lands replaces it atomically.
                 # TAR extracts in one pass in both modes: random access enforces the
                 # listing limits as members arrive rather than listing first.
-                assert (dest / "a.txt").exists()
+                assert (dest / "a.txt").exists()  # noqa: B023 - called within this iteration
                 raise ExtractionError("refused", member_name=member.name)
             return member
 
@@ -3701,8 +3755,8 @@ def test_streaming_duplicate_name_known_differences(tmp_path: Path) -> None:
         picked: list[str] = []
 
         def first_only(member: ArchiveMember) -> bool:
-            picked.append(member.name)
-            return len(picked) == 1
+            picked.append(member.name)  # noqa: B023 - called within this iteration
+            return len(picked) == 1  # noqa: B023 - called within this iteration
 
         dest = tmp_path / f"select-{streaming}"
         assert outcome(streaming, dest, members=first_only) == expected
@@ -3716,8 +3770,8 @@ def test_streaming_duplicate_name_known_differences(tmp_path: Path) -> None:
         seen: list[str] = []
 
         def drop_second(member: ArchiveMember) -> ArchiveMember | None:
-            seen.append(member.name)
-            return member if len(seen) == 1 else None
+            seen.append(member.name)  # noqa: B023 - called within this iteration
+            return member if len(seen) == 1 else None  # noqa: B023 - called within this iteration
 
         dest = tmp_path / f"replace-{streaming}"
         dest.mkdir()
@@ -4007,6 +4061,60 @@ def test_o3_trailing_dot_space_stripped_strict_kept_standard(
         assert sorted(p.name for p in (tmp_path / "standard").iterdir()) == [name]
 
 
+@pytest.mark.parametrize("policy", [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD])
+@pytest.mark.parametrize(
+    ("first", "second"), [("notes", "notes. "), ("d/x", "d./x")], ids=["file", "folder"]
+)
+def test_o3_trailing_dot_name_collides_with_trimmed_name(
+    tmp_path: Path, policy: ExtractionPolicy, first: str, second: str
+) -> None:
+    # Win32 writes 'notes.' as 'notes', so the pair is one file there. STANDARD keeps the
+    # name, and the collision must still be caught on every platform, as for README and
+    # readme: ERROR fails the second member instead of a silent replace on Windows. The
+    # trim applies to every segment, so a folder 'd.' meets 'd' too.
+    archive = _tar_bytes([("file", first, b"A"), ("file", second, b"B")])
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(archive),
+        dest,
+        policy=policy,
+        overwrite=OverwritePolicy.ERROR,
+        on_error=OnError.CONTINUE,
+    )
+    statuses = [r.status for r in report.results]
+    assert statuses == [ExtractionStatus.EXTRACTED, ExtractionStatus.FAILED]
+    assert (dest / first).read_bytes() == b"A"
+    assert sorted(p.name for p in dest.iterdir()) == [first.split("/")[0]]
+    loser = report.results[1]
+    assert loser.path is None
+    assert loser.requested_path is not None
+    assert loser.collided_with == dest / first
+
+
+def test_o3_trailing_dot_rename_skips_trimmed_claim(tmp_path: Path) -> None:
+    # RENAME derives 'notes (1). ' for the second member; its trimmed key 'notes (1)' must
+    # be free too, or the renamed member would merge with a third on Windows.
+    archive = _tar_bytes(
+        [
+            ("file", "notes", b"A"),
+            ("file", "notes (1)", b"B"),
+            ("file", "notes. ", b"C"),
+        ]
+    )
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(archive),
+        dest,
+        policy=ExtractionPolicy.STANDARD,
+        overwrite=OverwritePolicy.RENAME,
+    )
+    assert all(r.status is ExtractionStatus.EXTRACTED for r in report.results)
+    third = report.results[2].path
+    assert third is not None
+    assert third.name.rstrip(". ") not in ("notes", "notes (1)")
+    assert third.read_bytes() == b"C"
+
+
 def test_o3_trailing_dot_directory_tree_stays_connected(tmp_path: Path) -> None:
     # The reported real-world case: a macOS folder named 'stuff_etc.' with a file inside.
     # STRICT must strip the same segment identically in the dir entry and its children, so
@@ -4113,10 +4221,15 @@ def test_o3_strip_treats_a_backslash_as_a_separator(name: str, expected: str) ->
     assert out.name == expected
 
 
-@pytest.mark.parametrize("name", ["a/.../b", "a\\...\\b", "a/. \\b"])
-def test_o3_all_dots_segment_rejected_after_either_separator(name: str) -> None:
+@pytest.mark.parametrize("policy", [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD])
+@pytest.mark.parametrize("name", ["a/.../b", "a/ /b", "a\\...\\b", "a/. \\b"])
+def test_o3_all_dots_segment_rejected_after_either_separator(
+    name: str, policy: ExtractionPolicy
+) -> None:
+    # STANDARD keeps a trailing dot, but a segment of only dots or spaces has no
+    # spelling Win32 keeps: 'a/.../b' would merge into 'a/b' there.
     with pytest.raises(FilterRejectionError, match="entirely dots/spaces"):
-        apply_name_policy(_member(name), ExtractionPolicy.STRICT)
+        apply_name_policy(_member(name), policy)
 
 
 # --- OverwritePolicy.RENAME ------------------------------------------------
@@ -4868,7 +4981,7 @@ def _tar_with_member(path: Path, name: str, *, link_target: str | None = None) -
 
 @pytest.mark.parametrize(
     "name",
-    ["invoice‮cod.exe", "a⁦b.txt", "x‪y", "z‬.bin"],
+    ["invoice\u202ecod.exe", "a\u2066b.txt", "x\u202ay", "z\u202c.bin"],
     ids=["rlo", "lri", "lre", "pdf"],
 )
 @pytest.mark.parametrize("policy", [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD])
@@ -4918,7 +5031,9 @@ def test_bidi_override_name_extracts_under_trusted(name: str, tmp_path: Path) ->
     assert (dest / name).is_file()  # faithful bytes: stored name, unmodified
 
 
-@pytest.mark.parametrize("name", ["invoice‮cod.exe", "a⁦b.txt"], ids=["rlo", "lri"])
+@pytest.mark.parametrize(
+    "name", ["invoice\u202ecod.exe", "a\u2066b.txt"], ids=["rlo", "lri"]
+)
 def test_apply_name_policy_rejects_bidi_override(name: str, tmp_path: Path) -> None:
     """The typed error itself, at the boundary that produces it.
 
@@ -4943,12 +5058,12 @@ def test_bidi_override_in_a_symlink_target_is_refused(tmp_path: Path) -> None:
     from archivey.exceptions import FilterRejectionError
     from archivey.internal.filters import apply_name_policy
 
-    member = _member("link", type=MemberType.SYMLINK, link_target="rea‮dm.txt")
+    member = _member("link", type=MemberType.SYMLINK, link_target="rea\u202edm.txt")
     check_universal(member, tmp_path)  # not a universal violation
     with pytest.raises(FilterRejectionError):
         apply_name_policy(member, ExtractionPolicy.STRICT)
 
-    src = _tar_with_member(tmp_path / "a.tar", "link", link_target="rea‮dm.txt")
+    src = _tar_with_member(tmp_path / "a.tar", "link", link_target="rea\u202edm.txt")
     dest = tmp_path / "out"
     report = open_and_extract(src, dest, on_error=OnError.STOP)
     assert report.results[0].status is ExtractionStatus.BLOCKED
@@ -4957,7 +5072,7 @@ def test_bidi_override_in_a_symlink_target_is_refused(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "name",
-    ["‏doc.pdf", "‎total-2024.txt", "؜فهرس.txt"],
+    ["\u200fdoc.pdf", "\u200etotal-2024.txt", "\u061cفهرس.txt"],
     ids=["rlm", "lrm", "alm"],
 )
 def test_bidi_directional_marks_still_extract(name: str, tmp_path: Path) -> None:
@@ -4988,7 +5103,7 @@ def test_rtl_script_without_controls_extracts_silently(tmp_path: Path) -> None:
 
 def test_bidi_override_is_a_blocked_result_under_continue(tmp_path: Path) -> None:
     """It inherits the whole `FilterRejectionError` lifecycle, which is what a batch wants."""
-    src = _tar_with_member(tmp_path / "a.tar", "invoice‮cod.exe")
+    src = _tar_with_member(tmp_path / "a.tar", "invoice\u202ecod.exe")
     report = open_and_extract(src, tmp_path / "out", on_error=OnError.CONTINUE)
     (result,) = report.results
     assert result.status is ExtractionStatus.BLOCKED

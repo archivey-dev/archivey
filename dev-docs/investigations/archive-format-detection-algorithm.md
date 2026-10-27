@@ -8,8 +8,8 @@ it before implementation. It becomes binding only through #257's revised delta, 
 sitting here (§14).
 
 **Inputs:** the original analysis was written against `main` at `bee7735`, PR
-[#257](https://github.com/davitf/archivey/pull/257), PR
-[#262](https://github.com/davitf/archivey/pull/262), the measured Brotli investigation,
+[#257](https://github.com/archivey-dev/archivey/pull/257), PR
+[#262](https://github.com/archivey-dev/archivey/pull/262), the measured Brotli investigation,
 the current detector, and the format specifications linked in §15. Measurements added in
 the 2026-08-26 revision were taken against `main` at `a3dc408` (which carries #267/#268);
 each states its tree explicitly.
@@ -1918,7 +1918,7 @@ by documenting.
 ## 14. Relationship to PR #257
 
 This investigation is the redesign input for
-[`prefixed-archive-detection` PR #257](https://github.com/davitf/archivey/pull/257), not a
+[`prefixed-archive-detection` PR #257](https://github.com/archivey-dev/archivey/pull/257), not a
 sibling OpenSpec change and not advisory material to defer until after implementation.
 Before #257 implements production code, it should revise its detection-order requirement,
 selection/stopping rules, declaration metadata, ambiguity behavior, and ZIP-tail default

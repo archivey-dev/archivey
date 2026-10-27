@@ -27,7 +27,7 @@ to spend it.
   workflows and `pyproject.toml`.
 - **Published pages stop linking into unpublished docs** (D3): prefer no link
   after inlining the user-relevant sentence; otherwise an absolute
-  `github.com/davitf/archivey/blob/main/…` URL.
+  `github.com/archivey-dev/archivey/blob/main/…` URL.
 - **Add the nav-completeness guardrail.** `mkdocs build --strict` today *prints*
   six published-but-unlisted pages and exits 0 — verified. A new
   `scripts/check_docs_nav.py` fails CI on that, and on absolute repo URLs in

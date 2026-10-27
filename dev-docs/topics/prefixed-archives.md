@@ -218,34 +218,34 @@ Corpus counts in §3 and §4 are measurements, not assertions — their provenan
 investigation linked in §9, and the machine they were taken on is gone. Everything below is
 behaviour a test holds.
 
-| Claim | Pinned by |
-| --- | --- |
-| One shared `SFX_MAX` across the detector and the native parsers' scans (§2, §7) | `tests/test_sfx.py::test_sfx_max_is_one_shared_bound`, `::test_the_scan_does_not_reach_past_the_shared_bound` |
-| The forward ZIP walk's scan caps no rejected candidates and judges a header that crosses the window end on its whole length (§2, §7) | `tests/test_zip_local_walk.py::test_rejected_stub_candidates_are_not_capped`, `::test_a_long_header_across_the_scan_window_end_is_found` |
-| The scan is bounded, and a magic counts only when wholly inside the window | `::test_scan_stops_at_the_limit`, `::test_scan_requires_the_whole_magic_inside_the_limit` |
-| The cue is graded rather than boolean, and `STRONG` means the header structurally parses | `::test_executable_cue_grades_the_evidence`, `::test_pe_cue_does_not_require_alignment_and_does_not_reject_a_large_e_lfanew`, `::test_a_real_elf_binary_is_a_strong_cue` |
-| Mach-O parses or raises no cue at all, so a `.class` file is never scanned | `::test_mach_o_cue_requires_a_parsing_header`, `::test_class_file_does_not_enter_the_sfx_scan` |
-| A fat Mach-O 64 header is read as `fat_arch_64` (cputype, cpusubtype, 64-bit offset and size, align, reserved) | `tests/test_sfx_scan.py::test_fat_macho_64_header_parses`, `::test_fat_macho_64_with_implausible_align_is_refused` |
-| The magic search is linear in the window and finds the same hits, in the same order, as a from-scratch search | `tests/test_sfx_scan.py::test_iter_magic_in_prefix_is_linear_in_decoys`, `::test_finder_matches_a_from_scratch_search`, `::test_validated_scan_hits_are_unchanged` |
-| A `STRONG` cue suppresses the content probes; a `WEAK` one does not, and a real Brotli stream still answers | `::test_executable_prefix_with_a_pe_header_never_becomes_a_stream_codec`, `::test_a_weak_cue_still_lets_a_content_probe_answer`, `::test_a_real_brotli_stream_is_unaffected` |
-| The Mach-O defect in §6 is closed: a stub of each kind opens its real 7z members | `::test_thin_macho_stub_plus_7z_opens_real_members`, `::test_fat_macho_stub_plus_7z_opens_real_members`, `::test_sfx_7z_behind_a_low_entropy_stub_is_not_brotli` and its ZIP/RAR siblings |
-| A shebang non-archive costs at most the window, and detection leaves a non-seekable stream replayable | `::test_shebang_non_archive_reads_at_most_min_size_sfx_max`, `::test_detection_leaves_a_non_seekable_stream_replayable` |
-| Each format's validator rejects its own decoy under every cue (§4) | ZIP: `::test_zip_local_header_validator_accepts_a_real_header_and_rejects_a_decoy`, `::test_shebang_decoy_pk_bytes_are_not_a_zip`, `::test_elf_decoy_pk_bytes_are_not_a_zip` · 7z: `::test_sevenzip_signature_validator` · RAR: `::test_rar_main_header_validator`, `::test_rar_main_header_validator_crc_fail_is_damaged` |
-| Magic bytes quoted in script *text* are not a hit | `::test_shebang_script_mentioning_7z_magic_is_not_seven_z`, `::test_shebang_script_mentioning_rar_magic_is_not_rar` |
-| The scan continues past a failed validation rather than giving up on the source | `::test_a_decoy_7z_needle_is_skipped_for_the_real_payload`, `::test_a_decoy_zip_needle_is_skipped_for_the_real_payload`, `::test_crc_valid_empty_7z_decoy_is_skipped_for_the_real_payload`, `::test_elf_zero_filled_zip_decoy_skips_to_the_real_payload` |
-| Forced `format=7z` / `format=RAR` skip an invalid decoy the same way | `::test_forced_format_skips_a_decoy_7z_needle`, `::test_forced_format_skips_a_decoy_rar_needle`, `::test_find_signature_offset_skips_a_decoy_magic` |
-| `scan_for_magic` validator: decoy then valid; fallback on reject-all; cap; no-validator unchanged | `::test_scan_skips_a_rejected_decoy_for_a_later_valid_hit`, `::test_scan_falls_back_to_the_first_rejected_candidate`, `::test_scan_stops_after_the_rejected_candidate_cap`, `::test_scan_without_a_validator_matches_a_validator_that_accepts_the_first` |
-| Forced-format scan falls back to a damaged or empty payload so the parser names the damage | `::test_forced_format_truncated_7z_names_the_truncation`, `::test_forced_format_crc_damaged_7z_names_the_crc`, `::test_forced_format_empty_7z_behind_a_stub_opens`, `::test_forced_format_crc_damaged_rar4_names_the_crc`, `::test_forced_format_crc_damaged_rar5_names_the_crc` |
-| 7z's declared end is checked against the source length, not the peek window, and costs one 32-byte peek | `::test_sevenzip_sfx_declared_end_uses_source_remaining_not_the_scan_window`, `::test_sevenzip_validator_peeks_only_the_signature_header`, `::test_mz_7z_declared_end_overrun_is_not_claimed` |
-| A candidate near the window end is judged on its whole header: a decoy is rejected there as it is inside the window and on a pipe, a real payload is found within budget, and every validator's largest peek fits `VALIDATOR_PEEK_MAX` | `::test_rar_decoy_crossing_the_scan_window_end_is_rejected_like_one_inside`, `::test_real_rar_crossing_the_scan_window_end_is_found_within_budget`, `::test_every_validator_peek_fits_validator_peek_max`, `::test_rar_short_peek_is_not_a_rar_even_when_remaining_is_known`, `::test_budget_truncated_zip_header_still_detects_when_remaining_is_known` |
-| Detection and forced `format=` stop at the same per-format rejected-candidate cap for RAR and 7z; ZIP decoys never cap the scan, so a real RAR or ZIP after 256 of them is found as the forced format opens it; a capped scan holding a short 7z hit answers with it and records the scan as cut short; a capped format's needles are no longer searched | `::test_detector_and_parser_stop_at_the_same_rejected_candidate_cap`, `::test_zip_decoys_never_cap_the_scan`, `::test_capped_scan_holding_a_short_hit_records_the_scan_as_cut_short`, `::test_a_capped_formats_needles_are_no_longer_searched` |
-| A held short 7z hit is displaced only by a later 7z that ends at end of source; a real ZIP after it does not displace it, since the end-of-source preference never reorders formats | `::test_capped_scan_holding_a_short_hit_records_the_scan_as_cut_short`, its `tail="zip"` legs (`[*-zip]`) |
-| Under a small scan budget the validator reads at most `max_scan_bytes` past the window | `::test_tight_scan_budget_bounds_the_validator_read_past_the_window` |
-| ZIP self-corrects from the tail, so a decoy hit does not move the answer (§5) | `::test_a_stub_carrying_a_decoy_zip_header_does_not_move_the_answer` |
-| 7z and RAR are opened *at* the offset, and a format with no stub story refuses one (§5) | `::test_forced_format_opens_a_7z_behind_a_stub`, `::test_forced_format_opens_packed_and_encoded_header_behind_a_stub`, `::test_start_offset_on_a_path_equals_an_offset_view_on_a_stream`, `::test_a_format_without_stubs_refuses_a_start_offset` |
-| The shapes in §1 detect end to end: `zipapp`, a shebang concatenation, a real SFX | `::test_zipapp_detects_as_zip_and_lists_members`, `::test_shebang_plus_concatenated_zip_detects_and_lists_members`, `::test_shebang_plus_real_7z_detects_and_lists_members`, `::test_shebang_plus_real_rar_detects`, `::test_a_real_sfx_archive_auto_opens` |
-| An uncued prefix (JPEG polyglot) is **not** detected — the §6 gap, pinned so it cannot close silently | `::test_jpeg_plus_appended_zip_stays_undetected_under_balanced` |
-| Among CRC-valid 7z hits, one that ends exactly at EOF beats an earlier one that ends short | `::test_inexact_7z_decoy_loses_to_a_later_exact_payload` |
+| Claim |
+| --- |
+| One shared `SFX_MAX` across the detector and the native parsers' scans (§2, §7) |
+| The forward ZIP walk's scan caps no rejected candidates and judges a header that crosses the window end on its whole length (§2, §7) |
+| The scan is bounded, and a magic counts only when wholly inside the window |
+| The cue is graded rather than boolean, and `STRONG` means the header structurally parses |
+| Mach-O parses or raises no cue at all, so a `.class` file is never scanned |
+| A fat Mach-O 64 header is read as `fat_arch_64` (cputype, cpusubtype, 64-bit offset and size, align, reserved) |
+| The magic search is linear in the window and finds the same hits, in the same order, as a from-scratch search |
+| A `STRONG` cue suppresses the content probes; a `WEAK` one does not, and a real Brotli stream still answers |
+| The Mach-O defect in §6 is closed: a stub of each kind opens its real 7z members |
+| A shebang non-archive costs at most the window, and detection leaves a non-seekable stream replayable |
+| Each format's validator rejects its own decoy under every cue (§4) |
+| Magic bytes quoted in script *text* are not a hit |
+| The scan continues past a failed validation rather than giving up on the source |
+| Forced `format=7z` / `format=RAR` skip an invalid decoy the same way |
+| `scan_for_magic` validator: decoy then valid; fallback on reject-all; cap; no-validator unchanged |
+| Forced-format scan falls back to a damaged or empty payload so the parser names the damage |
+| 7z's declared end is checked against the source length, not the peek window, and costs one 32-byte peek |
+| A candidate near the window end is judged on its whole header: a decoy is rejected there as it is inside the window and on a pipe, a real payload is found within budget, and every validator's largest peek fits `VALIDATOR_PEEK_MAX` |
+| Detection and forced `format=` stop at the same per-format rejected-candidate cap for RAR and 7z; ZIP decoys never cap the scan, so a real RAR or ZIP after 256 of them is found as the forced format opens it; a capped scan holding a short 7z hit answers with it and records the scan as cut short; a capped format's needles are no longer searched |
+| A held short 7z hit is displaced only by a later 7z that ends at end of source; a real ZIP after it does not displace it, since the end-of-source preference never reorders formats |
+| Under a small scan budget the validator reads at most `max_scan_bytes` past the window |
+| ZIP self-corrects from the tail, so a decoy hit does not move the answer (§5) |
+| 7z and RAR are opened *at* the offset, and a format with no stub story refuses one (§5) |
+| The shapes in §1 detect end to end: `zipapp`, a shebang concatenation, a real SFX |
+| An uncued prefix (JPEG polyglot) is **not** detected — the §6 gap |
+| Among CRC-valid 7z hits, one that ends exactly at EOF beats an earlier one that ends short |
 
 **Building fixtures.** Most stubs here are synthetic — `MZ` plus filler, a seven-byte ELF
 ident, a hand-built Mach-O header — because the cue only reads the leading bytes and a real

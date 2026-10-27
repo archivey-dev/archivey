@@ -65,17 +65,21 @@ def test_max_metadata_bytes_raises_on_long_names() -> None:
     names = [f"{'n' * 200}_{i}.txt" for i in range(3)]
     data = _zip_with_members(names)
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=400))
-    with open_archive(io.BytesIO(data), config=cfg) as reader:
-        with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
-            reader.members()
+    with (
+        open_archive(io.BytesIO(data), config=cfg) as reader,
+        pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
+    ):
+        reader.members()
 
 
 def test_huge_archive_comment_counts_toward_metadata() -> None:
     data = _zip_with_members(["a.txt"], comment=b"C" * 1000)
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=500))
-    with open_archive(io.BytesIO(data), config=cfg) as reader:
-        with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
-            reader.members()
+    with (
+        open_archive(io.BytesIO(data), config=cfg) as reader,
+        pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
+    ):
+        reader.members()
 
 
 def test_defaults_allow_linux_scale_member_counts() -> None:
@@ -135,12 +139,14 @@ def test_zip_members_before_the_limit_read_when_opened_first() -> None:
     struct.pack_into("<HH", data, eocd + 8, 1, 1)
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=3))
     read: list[str] = []
-    with open_archive(io.BytesIO(bytes(data)), config=cfg, streaming=True) as reader:
-        with pytest.raises(ResourceLimitError, match="max_members=3"):
-            for member, stream in reader.stream_members():
-                assert stream is not None
-                assert stream.read() == b"x"
-                read.append(member.name)
+    with (
+        open_archive(io.BytesIO(bytes(data)), config=cfg, streaming=True) as reader,
+        pytest.raises(ResourceLimitError, match="max_members=3"),
+    ):
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            assert stream.read() == b"x"
+            read.append(member.name)
     assert read == ["f0.txt", "f1.txt", "f2.txt"]
     with open_archive(io.BytesIO(bytes(data)), config=cfg) as reader:
         assert reader.info.member_count is None
@@ -194,9 +200,11 @@ def test_tar_extract_all_enforces_listing_limits(
             tf.addfile(info, io.BytesIO(payload))
     dest = tmp_path / "out"
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=2))
-    with open_archive(tar_path, config=cfg, streaming=streaming) as reader:
-        with pytest.raises(ResourceLimitError, match="max_members"):
-            reader.extract_all(dest)
+    with (
+        open_archive(tar_path, config=cfg, streaming=streaming) as reader,
+        pytest.raises(ResourceLimitError, match="max_members"),
+    ):
+        reader.extract_all(dest)
 
 
 def _count_header_reads(monkeypatch: pytest.MonkeyPatch) -> list[int]:
@@ -230,9 +238,11 @@ def test_tar_listing_stops_reading_headers_at_max_members(
             tf.addfile(tarfile.TarInfo(name=f"f{i:03d}"))
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=5))
     header_reads = _count_header_reads(monkeypatch)
-    with open_archive(tar_path, config=cfg) as reader:
-        with pytest.raises(ResourceLimitError, match="max_members"):
-            reader.members()
+    with (
+        open_archive(tar_path, config=cfg) as reader,
+        pytest.raises(ResourceLimitError, match="max_members"),
+    ):
+        reader.members()
     assert len(header_reads) <= 6
 
 
@@ -324,9 +334,11 @@ def test_tar_listing_stops_reading_headers_at_max_metadata_bytes(
             tf.addfile(tarfile.TarInfo(name=f"{i:03d}" + "n" * 9_997))
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=50_000))
     header_reads = _count_header_reads(monkeypatch)
-    with open_archive(tar_path, config=cfg) as reader:
-        with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
-            reader.members()
+    with (
+        open_archive(tar_path, config=cfg) as reader,
+        pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
+    ):
+        reader.members()
     # Each name is 10 000 characters and the base weighs name and raw_name, so the
     # cap is passed on the third member.
     assert len(header_reads) <= 6
@@ -387,9 +399,11 @@ def test_tar_pax_keywords_count_toward_max_metadata_bytes(
             tf.addfile(info)
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=500_000))
     header_reads = _count_header_reads(monkeypatch)
-    with open_archive(tar_path, config=cfg) as reader:
-        with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
-            reader.members()
+    with (
+        open_archive(tar_path, config=cfg) as reader,
+        pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
+    ):
+        reader.members()
     # Each keyword is 100 000 characters, so the walk passes the cap on the sixth
     # header and parses no further.
     assert len(header_reads) <= 6
@@ -511,10 +525,12 @@ def test_stream_members_enforces_max_metadata_bytes(
         for i in range(5):
             tf.addfile(tarfile.TarInfo(name=f"{'n' * 300}_{i}"))
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=1000))
-    with open_archive(tar_path, config=cfg, streaming=streaming) as reader:
-        with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
-            for _member, _stream in reader.stream_members():
-                pass
+    with (
+        open_archive(tar_path, config=cfg, streaming=streaming) as reader,
+        pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
+    ):
+        for _member, _stream in reader.stream_members():
+            pass
 
 
 def test_members_report_after_an_interrupted_pass_past_the_caps_raises(
@@ -652,9 +668,11 @@ def _assert_metadata_budget_holds_at_open(
         open_archive(path, config=limits(300), password=password)
     with open_archive(path, config=limits(budget), password=password) as reader:
         assert sorted(m.name for m in reader.members()) == sorted(names)
-    with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
-        with open_archive(path, config=limits(budget - 1), password=password) as reader:
-            reader.members()
+    with (
+        pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
+        open_archive(path, config=limits(budget - 1), password=password) as reader,
+    ):
+        reader.members()
 
 
 @requires_binary("7z")

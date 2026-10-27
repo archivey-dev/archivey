@@ -89,17 +89,20 @@ thread and is rejected. The later conflicting operation SHALL raise
 `ArchiveyUsageError` before changing state; the earlier root and children remain
 usable.
 
-Random `open()` and each operation on a random-open stream SHALL hold a
-short-lived worker token only while that call executes. An idle open stream owns
-a lifecycle lease, not active operation ownership. It carries a private
-lease-bound entry capability so later stream I/O remains admissible after
-`reader.close()`. Under `CONCURRENT`, `close()` waits for in-flight worker
-tokens to drain, then closes; without `CONCURRENT`, close is rejected while a
-worker call is executing. Closure does not enable any new reader API.
+Random `open()` SHALL hold a short-lived worker token only while that call
+executes. An operation on a random-open stream holds no worker token: an open
+stream owns a lifecycle lease, not active operation ownership. Under
+`CONCURRENT`, `close()` waits for in-flight worker tokens to drain, then closes;
+without `CONCURRENT`, close is rejected while a worker call is executing. Either
+way, a `close()` that goes ahead closes every member stream still open
+(archive-reading), including one another thread is reading: that read returns
+what it already had or raises the closed-file `ValueError`, never a damage
+error, and every later read raises it. Closure does not enable any new reader
+API.
 
 "Overlap" means concurrent method/I/O execution, not the lifetime of an idle
 open member stream: a non-concurrent `reader.close()` MAY run while member
-streams remain open, and their leases preserve resources for later stream I/O.
+streams remain open. Each stream keeps its lease until that `close()` closes it.
 This is not a blanket thread-safety guarantee for every reader method. Nor is a
 pass or member stream that nothing can reach any more an overlap, on any
 interpreter: a call refused for an overlap SHALL run a garbage collection and try
@@ -412,8 +415,8 @@ If inner close and the resulting final backend teardown both fail, both
 translated errors SHALL be preserved in an `ExceptionGroup`.
 
 Escaped streams use context captured before close for error translation and MUST
-NOT call closed-reader properties. Their lease-bound short-lived worker tokens
-prevent final teardown from racing each call.
+NOT call closed-reader properties. Their lifecycle lease prevents final teardown
+from racing a call on them.
 
 #### Scenario: lease / teardown matrix
 
@@ -426,4 +429,4 @@ prevent final teardown from racing each call.
 | `close()` under a suspended `stream_members()` pass: wind-down + member-stream close both fail | Both steps run; teardown runs; `ExceptionGroup` of both ("winding down the pass and closing member streams both failed") |
 | `close()` under a suspended `stream_members()` pass: wind-down (or member-stream close) + teardown both fail | Teardown runs once; `TEARDOWN_COMPLETE`; `ExceptionGroup` of the close-time failure and the teardown failure ("close-time cleanup and archive teardown both failed") |
 | `close()` under a suspended `stream_members()` pass interrupted inside its wind-down step | `READER_CLOSED`; the next `close()`, or else closing or collecting the pass generator, finishes the step; pass wound down once; `TEARDOWN_COMPLETE`; source closed. A failure in the recovered step or its teardown comes out of that `close()`, out of the generator's `close()`, or, for a collected generator, through `sys.unraisablehook` |
-| Idle leased stream after `reader.close()` | Later stream I/O via lease-bound worker entry until stream close |
+| Leased stream after `reader.close()`, idle or mid-read on another thread | `reader.close()` closed it; later I/O raises the closed-file `ValueError` (a read already running may first return what it had) |

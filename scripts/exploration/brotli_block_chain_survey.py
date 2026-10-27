@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Does a valid Brotli stream ever carry consecutive *declaring* meta-blocks?
 
 Supporting `dev-docs/investigations/brotli-uncompressed-block-runs.md`, which asks whether
@@ -38,6 +37,7 @@ import os
 import struct
 import sys
 from collections import Counter
+from pathlib import Path
 
 import brotli
 
@@ -163,7 +163,7 @@ def scan(roots: list[str]) -> list[tuple[str, bytes]]:
         for pattern in ("**/*.br", "**/*.woff2"):
             for path in glob.glob(os.path.join(root, pattern), recursive=True):
                 try:
-                    data = open(path, "rb").read()
+                    data = Path(path).read_bytes()
                 except OSError:
                     continue
                 blob = woff2_stream(data) if path.endswith(".woff2") else data

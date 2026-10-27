@@ -385,9 +385,11 @@ def test_tar_pax_header_costs_the_metadata_cap_not_the_header(tmp_path: Path) ->
     config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=cap))
 
     def attempt() -> None:
-        with pytest.raises(ResourceLimitError):
-            with open_archive(archive, config=config) as reader:
-                reader.members()
+        with (
+            pytest.raises(ResourceLimitError),
+            open_archive(archive, config=config) as reader,
+        ):
+            reader.members()
 
     peak = traced_peak(attempt)
     # "an over-limit tar costs the cap rather than the archive, PAX keywords and

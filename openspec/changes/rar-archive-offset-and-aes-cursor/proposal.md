@@ -46,7 +46,7 @@ is not a cursor the RAR walk can use.
 - Docs: `dev-docs/formats/rar.md` (`:286` describes `_HeaderDecryptStream.tell()`),
   `dev-docs/topics/stream-ownership.md` (`:19`, `:35`).
 - **Split out of `fold-rar-header-decrypt-stream`.** **Maintainer decision (davitf,
-  2026-09-18, [#347](https://github.com/davitf/archivey/pull/347#issuecomment-5724553004)):**
+  2026-09-18, [#347](https://github.com/archivey-dev/archivey/pull/347#issuecomment-5724553004)):**
   split, do not park — these two have no gate on them, and riding inside a change whose
   headline outcome may be "don't do it" would leave a directory that can never tick every
   box, therefore never archives.

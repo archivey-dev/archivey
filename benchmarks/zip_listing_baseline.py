@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Non-gating ZIP listing baseline (many small members, two writers).
 
 Times ``open_archive(p).members()`` on two 20 000-member ZIPs next to

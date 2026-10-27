@@ -324,12 +324,24 @@ def _serve(stdin: IO[bytes], stdout: IO[bytes]) -> None:
 
 
 def main() -> None:
+    import os
+
+    rapidgzip = sys.argv[1:2] == [RAPIDGZIP_ARG]
+    refs = None
+    if rapidgzip and sys.platform.startswith("linux"):
+        # For ``rapidgzip_worker._reset_peak``. Opened before ``prepare_child``, which
+        # makes this process not dumpable: ``/proc/self`` files then belong to root,
+        # and a worker that is not root can no longer open this one (measured:
+        # EACCES). A descriptor opened before still writes.
+        try:
+            refs = os.open("/proc/self/clear_refs", os.O_WRONLY | os.O_CLOEXEC)
+        except OSError:
+            pass
     prepare_child()
-    if sys.argv[1:2] == [RAPIDGZIP_ARG]:
+    if rapidgzip:
         # Loaded by path: this script's directory is not on sys.path (-P), and
         # importing it through ``archivey`` would import the whole package.
         import importlib.util
-        import os
 
         path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "rapidgzip_worker.py"
@@ -338,7 +350,7 @@ def main() -> None:
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        module.run(sys.argv[2:])
+        module.run(sys.argv[2:], refs)
         return
     _serve(sys.stdin.buffer, sys.stdout.buffer)
 

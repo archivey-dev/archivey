@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Measure where rapidgzip's bzip2 decoder in a child process beats the standard library.
 
 archivey runs rapidgzip's bzip2 decoder in a child process (``rapidgzip_child.py``), so

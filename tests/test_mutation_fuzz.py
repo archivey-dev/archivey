@@ -55,7 +55,6 @@ from __future__ import annotations
 
 import io
 import os
-import shutil
 import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -77,6 +76,7 @@ from archivey import (
     format_availability,
     open_archive,
 )
+from tests.conftest import binary_refusal
 from tests.sample_archives import (
     CORPUS,
     FORMAT_KEYS,
@@ -196,8 +196,8 @@ def _skip_unless_static_rar_runnable() -> None:
         pytest.skip(
             f"format 'rar' not readable here: {availability.missing or 'no backend'}"
         )
-    if shutil.which("unrar") is None:
-        pytest.skip("unrar unavailable")
+    if (refusal := binary_refusal("unrar")) is not None:
+        pytest.skip(f"unrar unavailable: {refusal}")
 
 
 @dataclass(frozen=True)

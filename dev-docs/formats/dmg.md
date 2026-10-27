@@ -172,14 +172,14 @@ zlib, bzip2 or xz member. There is no UDIF parser.
     tests/test_registry.py::test_required_source_is_declared_for_every_known_format
 ```
 
-| Claim | Pinned by |
-| --- | --- |
-| A zlib, bzip2 or xz first run with a `koly` trailer is `DMG`, and open refuses it (§2.1, §2.2) | `tests/test_udif.py` |
-| `CD001` at 32 769 with a `koly` trailer is `ISO` (§2.1) | `tests/test_udif.py::test_an_iso_payload_with_a_koly_trailer_is_the_iso` |
-| A pipe longer than the far window is not rewound (§2.1) | `::test_a_non_seekable_source_cannot_see_the_trailer` |
-| `format_availability` is `NONE` with nothing missing, and `required_source` is `FORWARD_ONLY` (§2.2) | `::test_dmg_is_known_and_not_supported` |
-| `reader_for_format(DMG)` raises the same text without an archive name (§2.2) | `::test_reader_for_format_refuses_dmg_without_an_archive_name` |
-| `--version -v` says recognised, not readable (§2.2) | `tests/test_cli.py::test_version_verbose_lists_formats` |
+| Claim |
+| --- |
+| A zlib, bzip2 or xz first run with a `koly` trailer is `DMG`, and open refuses it (§2.1, §2.2) |
+| `CD001` at 32 769 with a `koly` trailer is `ISO` (§2.1) |
+| A pipe longer than the far window is not rewound (§2.1) |
+| `format_availability` is `NONE` with nothing missing, and `required_source` is `FORWARD_ONLY` (§2.2) |
+| `reader_for_format(DMG)` raises the same text without an archive name (§2.2) |
+| `--version -v` says recognised, not readable (§2.2) |
 
 ## 9. References
 

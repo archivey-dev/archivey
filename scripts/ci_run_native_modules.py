@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Run dedicated native-heavy pytest modules in fresh subprocesses (CI bandage).
 
 Used by the ``[all]`` / ``[all-lowest]`` CI legs after the main suite. Each listed

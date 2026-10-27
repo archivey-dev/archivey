@@ -201,11 +201,15 @@ def test_a_large_source_is_kept_in_the_spool(
     monkeypatch.setattr(rar_copy_sources, "_MEMORY_LIMIT", 0)
     config = _config("unrar")
     archive, payload = _solid_with_copies(tmp_path)
-    dest = tmp_path / "out"
+    # Through stream_members: under extract_all the copies are made from the written
+    # file, so the source is never kept.
     with open_archive(archive, config=config) as reader:
-        reader.extract_all(dest)
-    for name in _COPY_NAMES:
-        assert (dest / name).read_bytes() == payload, name
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            data = stream.read()
+            if member.name in _COPY_NAMES:
+                assert data == payload, member.name
+        assert reader._resource_usage().spool_bytes == len(payload)
     assert spawns == ["unrar"]
 
 
@@ -245,7 +249,7 @@ def test_a_kept_source_is_still_checked_against_its_digest(
 ) -> None:
     """The kept bytes go through the source's CRC like the pipe's own bytes."""
     config = _config("unrar")
-    archive, payload = _solid_with_copies(tmp_path)
+    archive, _payload = _solid_with_copies(tmp_path)
     real_open = rar_copy_sources.FileCopySources.open
 
     def tampered(self: rar_copy_sources.FileCopySources, *args: object) -> object:
@@ -341,6 +345,8 @@ def test_each_pass_keeps_its_source_within_the_same_spool_limit(
                 data = stream.read()
                 if member.name in _COPY_NAMES:
                     assert data == payload, member.name
+        # The reader's private resource-usage record keeps the peak, not the sum.
+        assert reader._resource_usage().spool_bytes == len(payload)
     assert spawns == ["unrar", "unrar"]
 
 
@@ -588,6 +594,8 @@ def test_stream_members_without_copy_streams_on_a_nonsolid_archive(
 def test_file_copy_streams_takes_a_bool(tmp_path: Path) -> None:
     config = _config("unrar")
     archive, _ = _solid_with_copies(tmp_path)
-    with open_archive(archive, config=config) as reader:
-        with pytest.raises(ArchiveyUsageError, match="file_copy_streams"):
-            reader.stream_members(file_copy_streams=0)  # type: ignore[arg-type]
+    with (
+        open_archive(archive, config=config) as reader,
+        pytest.raises(ArchiveyUsageError, match="file_copy_streams"),
+    ):
+        reader.stream_members(file_copy_streams=0)  # type: ignore[arg-type]

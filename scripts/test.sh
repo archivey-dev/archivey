@@ -79,6 +79,8 @@ leg "[all]" bash -c '
 '
 
 # 2. minimum supported versions
+# Legs 2 and 3 pass --no-cov, as CI does: only leg 1's report is read, and tracing
+# doubles the 3.11 run.
 # Prefer g++ when the default ``c++`` (clang on some cloud images) cannot see
 # libstdc++ headers — otherwise lowest-direct builds of ``ncompress==1.0.0`` fail
 # with ``fatal error: 'istream' file not found`` before any tests run.
@@ -90,7 +92,7 @@ leg "[all-lowest]" bash -c '
     fi
   fi
   uv sync --group dev --extra all --resolution lowest-direct
-  uv run --no-sync pytest -n auto
+  uv run --no-sync pytest -n auto --no-cov
 '
 
 # 3. zero-dependency core
@@ -99,7 +101,7 @@ leg "[core-only]" bash -c '
   git checkout -- uv.lock 2>/dev/null || true
   uv sync --no-dev
   uv run --no-sync python tests/check_zero_dep_core.py
-  uv run --no-sync --with pytest --with pytest-timeout --with pytest-cov --with pytest-xdist pytest tests/ -q -n auto
+  uv run --no-sync --with pytest --with pytest-timeout --with pytest-cov --with pytest-xdist pytest tests/ -q -n auto --no-cov
 '
 
 if [ ${#FAILED[@]} -eq 0 ]; then

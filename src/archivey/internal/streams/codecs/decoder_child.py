@@ -18,6 +18,7 @@ children are ended at interpreter exit, and a forked process forgets its parent'
 from __future__ import annotations
 
 import atexit
+import copy
 import marshal
 import os
 import subprocess
@@ -31,12 +32,13 @@ from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
     ReadError,
-    ResourceLimitError,
+    ResourceUnavailableError,
 )
 from archivey.internal.streams.child_process import (
     describe_exit,
     is_crash,
-    outside_death,
+    mark_no_verdict,
+    outside_death_error,
     python_argv,
     reap,
     spawn,
@@ -244,6 +246,28 @@ def _release(holder: list[_Lease]) -> None:
     holder[0].release()
 
 
+def _unraised(exc: Exception) -> Exception:
+    """A copy of ``exc`` that has never been raised, or ``exc`` itself when its type
+    cannot be rebuilt from its arguments.
+
+    A decoder keeps the error its child died with and raises it again on every later
+    call (:class:`DecoderChild`). The kept instance must never be the one raised: a
+    raise attaches a traceback, whose frames hold the decoder, and the decoder holds the
+    instance, a cycle that only the garbage collector breaks. When the raise comes from
+    a decoder that the collector is finalizing (``PpmdDecoder.__del__`` sends its
+    one-symbol decode at close), the new frames also reach, through ``f_back``, the
+    code the collection interrupted, and the cycle keeps that code's locals alive past
+    its return: a decoder there keeps its child process leased.
+
+    The copy is shallow: a mutable attribute (``__notes__``, say) is shared with
+    ``exc``. A recorded death is built fresh and carries none.
+    """
+    try:
+        return copy.copy(exc)
+    except Exception:  # noqa: BLE001 - a type that copy cannot rebuild: keep the cycle
+        return exc
+
+
 class _Died(Exception):
     """The child went away during a request (internal to :class:`DecoderChild`)."""
 
@@ -321,6 +345,9 @@ class DecoderChild:
     # How a death during a request is reported: the subclass for PPMd keeps the
     # codec's own error types.
     describe = "decoder process"
+    # Whether this decoder runs in a child under every setting but ``NONE``, which
+    # decides the advice when no child can start (``isolation_error``).
+    isolated_unless_none = False
 
     def __init__(
         self,
@@ -343,6 +370,7 @@ class DecoderChild:
         self._unused = b""
         self._unused_stale = False
         self._interrupted = False
+        # Never raise this instance: raise ``_unraised(self._death)`` (see there).
         self._death: Exception | None = None
         # True between the two replies to ``OPEN``: the library is imported and the
         # decoder is being built (see ``_death_error``).
@@ -406,7 +434,7 @@ class DecoderChild:
 
     def _check_usable(self) -> _Process:
         if self._death is not None:
-            raise self._death
+            raise _unraised(self._death)
         if self._interrupted:
             raise ArchiveyUsageError(
                 f"the {self.describe} was interrupted in the middle of a request "
@@ -504,10 +532,11 @@ class DecoderChild:
             # must not reach the caller as a different error because it came later.
             self._lease.reusable = False
             self._lease.release()
-            self._death = self._fresh_child_error(exc)
-            if self._death is exc:
+            death = self._fresh_child_error(exc)
+            self._death = _unraised(death)
+            if death is exc:
                 raise
-            raise self._death from exc
+            raise death from exc
         for tag, arg, parts, crc in log:
             if zlib.crc32(self._request(tag, arg, *parts)) != crc:
                 self._lease.reusable = False
@@ -525,11 +554,14 @@ class DecoderChild:
         """The error for a fresh child that could not be started and opened part-way
         through a member. PPMd overrides this for a model it cannot allocate."""
         if isinstance(exc, DecoderChildStartError):
-            return isolation_error(str(exc), self._setting)
+            return isolation_error(
+                str(exc), self._setting, isolated_unless_none=self.isolated_unless_none
+            )
         return exc
 
     def _death_from(self, died: _Died) -> Exception:
-        """Record and return the error for a child that went away."""
+        """Record the error for a child that went away, and return the error to raise,
+        a copy where the type can be copied (:func:`_unraised`)."""
         self._lease.reusable = False
         self._lease.release()
         if not died.answered:
@@ -540,7 +572,7 @@ class DecoderChild:
             )
         else:
             self._death = self._death_error(died.returncode)
-        return self._death
+        return _unraised(self._death)
 
     def _death_error(self, returncode: int | None) -> Exception:
         """The error for a child that ended during a request (``returncode``): a crash
@@ -553,8 +585,7 @@ class DecoderChild:
                 f"({describe_exit(returncode)})"
             )
         what = f"the {self.describe} exited unexpectedly ({describe_exit(returncode)})"
-        cls, message = outside_death(returncode, what)
-        return cls(message)
+        return outside_death_error(returncode, what)
 
     def call(
         self,
@@ -586,7 +617,8 @@ class DecoderChild:
     def flag(self, name: str) -> bool:
         value = self._state.get(name)
         if not isinstance(value, bool):
-            raise AttributeError(name)
+            # Stands in for the decoder lacking this attribute.
+            raise AttributeError(name)  # noqa: TRY004
         return value
 
     def has(self, name: str) -> bool:
@@ -625,7 +657,8 @@ class DecoderChild:
     def unconsumed_tail(self) -> bytes:
         size = self._state.get("unconsumed_tail")
         if not isinstance(size, int):
-            raise AttributeError("unconsumed_tail")
+            # Stands in for the decoder lacking this attribute.
+            raise AttributeError("unconsumed_tail")  # noqa: TRY004
         if size == 0:
             return b""
         if size <= len(self._input):
@@ -648,16 +681,20 @@ class DecoderChild:
 
 
 def isolation_error(
-    reason: str, setting: str = "NATIVE_DECODERS"
-) -> ResourceLimitError:
+    reason: str, setting: str = "NATIVE_DECODERS", *, isolated_unless_none: bool = False
+) -> ResourceUnavailableError:
     """The error for a decoder that ``process_isolation`` (``setting``) runs only in a
-    child process, when no child can start."""
+    child process, when no child can start. ``isolated_unless_none``: the decoder runs
+    in a child under every setting but ``NONE`` (PPMd), so ``NONE`` is the only advice
+    that helps."""
     instead = (
         "ProcessIsolation.KNOWN_CRASHES"
-        if setting == "NATIVE_DECODERS"
+        if setting == "NATIVE_DECODERS" and not isolated_unless_none
         else "ProcessIsolation.NONE (not recommended for files you do not trust)"
     )
-    return ResourceLimitError(
+    error = ResourceUnavailableError(
         f"{reason}. process_isolation={setting} decodes this only in a child "
         f"process; use {instead} to decode it in this process."
     )
+    mark_no_verdict(error)
+    return error

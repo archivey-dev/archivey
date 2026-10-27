@@ -105,7 +105,7 @@ default:
 | Mode | bzip2 |
 | --- | --- |
 | `OFF` | The standard library, always |
-| `ON` | `rapidgzip.IndexedBzip2File` in a child process, or `PackageNotInstalledError` without `rapidgzip`, or `StreamNotSeekableError` on a source that cannot seek (a pipe, or a member stream of an outer archive opened without `seekable_members`), or `ResourceLimitError` where no child process can start |
+| `ON` | `rapidgzip.IndexedBzip2File` in a child process, or `PackageNotInstalledError` without `rapidgzip`, or `StreamNotSeekableError` on a source that cannot seek (a pipe, or a member stream of an outer archive opened without `seekable_members`), or `ResourceUnavailableError` where no child process can start |
 | `AUTO` | The accelerator when seeking was declared (`seekable_members=True`, `open_stream(seekable=True)`), the source is seekable, `rapidgzip` is installed and the compressed input is at least `INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE` (1 MiB) or of unknown size. Otherwise the standard library, silently; where no child process can start, with one warning per process |
 
 The same rules hold for a bzip2 ZIP member or 7z coder, whose data is one stream
@@ -326,26 +326,26 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
     tests/test_bzip2_resume.py -k "bz"
 ```
 
-| Claim | Pinned by |
-| --- | --- |
-| Size is `None` before a full read | `tests/test_single_file.py::test_bz2_size_none_before_full_read` |
-| Garbage raises in every accelerator mode; a valid empty stream reads empty | `::test_corrupt_bz2_raises_whatever_the_accelerator_mode`, `tests/test_accelerator_corruption.py::test_bzip2_not_a_stream_raises_in_every_accelerator_mode`, `::test_indexed_bzip2_valid_empty_stream_reads_empty` |
-| A seek before the first read does not bypass the check | `::test_indexed_bzip2_seek_before_read_still_raises` |
-| Empty streams anywhere in the file are data in every accelerator and access mode; bytes after them report at the same offset | `tests/test_stream_trailing_data.py::test_empty_bzip2_streams_are_part_of_the_data`, `::test_bytes_after_empty_bzip2_streams_are_reported_past_them`, `::test_the_accelerator_scan_finds_empty_streams_across_its_reads` |
-| A stream after zero bytes is trailing data, and strict refuses it, with the accelerator off, `AUTO` and on, for a read and a seek; zeros at the end and streams with nothing between them stay silent; a damaged header after zeros as long as the magic is trailing data too | `tests/test_stream_trailing_data.py::test_a_stream_after_nul_padding_is_trailing_data`, `::test_a_seek_to_the_end_stops_at_nul_padding`, `::test_strict_refuses_a_stream_after_nul_padding`, `::test_nul_padding_at_the_end_and_direct_concatenation_stay_silent`, `::test_what_follows_zero_padding_is_trailing_data_in_every_mode`, `::test_after_zero_padding_a_magic_is_not_judged` |
-| A cut or damaged stream right after the data raises in both modes, a damaged header too, and so do one to three zeros that start a damaged header | `tests/test_stream_trailing_data.py::test_a_damaged_stream_after_the_last_raises_in_both_modes`, `::test_a_damaged_bzip2_header_after_the_last_stream_raises_in_both_modes`, `::test_bzip2_judges_a_short_zero_run_as_the_magic_in_both_modes` |
-| Junk or a damaged stream before or between streams reads as with the accelerator off | `tests/test_accelerator_corruption.py::test_bzip2_accelerator_reads_stream_gaps_as_the_standard_library_does` |
-| A seek gets the verdict a read would, past a skipped stream, into damage, and to the end; at the end of a stream with zero padding after it, what follows the padding is reported, whatever it is | `tests/test_accelerator_corruption.py::test_bzip2_accelerator_stops_at_a_skipped_stream_after_a_seek_past_it`, `::test_bzip2_accelerator_seek_to_its_end_reports_what_follows_padding`, `::test_bzip2_accelerator_seeks_into_damage_as_off` |
-| A ZIP or 7z coder's single stream reads as with the accelerator off, and bytes after it are `DataAfterEndError` either way | `tests/test_accelerator_corruption.py::test_bzip2_accelerator_reads_a_container_coders_single_stream_as_off`, `::test_bzip2_accelerator_ends_a_container_coders_single_stream_as_off`, `::test_bzip2_read_as_empty_fallback_keeps_the_single_stream_rule` |
-| Accelerator errors become `CorruptionError`; intact files read clean | `::test_indexed_bzip2_corrupt_translates_to_corruption`, `::test_indexed_bzip2_intact_reads_clean` |
-| A cut or damaged stream delivers the same bytes and error with the accelerator off, `AUTO` and `ON`, for a cut in the first block, a later block, the end marker and a second stream; seeks after a takeover | `tests/test_accelerator_takeover.py::test_a_cut_bzip2_reads_as_it_does_with_the_accelerator_off`, `::test_a_damaged_bzip2_block_reads_as_it_does_with_the_accelerator_off`, `::test_after_a_bzip2_takeover_seeks_back_and_forward_read_the_data` |
-| A resume from any block reproduces the data and never gives a verdict at the stream's end | `tests/test_bzip2_resume.py::test_every_block_resumes_to_the_stream_end`, `::test_the_bit_shifter_matches_a_whole_shift` |
-| The caller's source exception reaches the caller unchanged | `::test_bzip2_callers_source_exception_reaches_the_caller_unchanged`, `tests/test_exception_handlers.py::test_bzip2_accelerator_traps_a_failing_caller_source` |
-| bzip2 runs in a child process; the caller's process never imports rapidgzip | `tests/test_accelerator_truncation_abort.py::test_bzip2_runs_in_a_child_process` |
-| A crash of the child on the data hands the read to the standard library | `tests/test_accelerator_truncation_abort.py::test_after_a_child_crash_the_standard_library_reads_on` |
-| `AUTO` uses the accelerator from 1 MiB of compressed input; `ON` uses it at any size; the 1 MiB sits inside the measured break-even | `tests/test_bzip2_auto_threshold.py` |
-| The rewind report with the accelerator off; `ON` without the package | `tests/test_seekable_streams.py::test_bzip2_accelerator_off_warns_on_rewind`, `::test_bzip2_accelerator_on_without_package_raises` |
-| A `.tar.bz2` with a large first block is found, from a pipe too; a bare one stays `BZ2` | `tests/test_detection.py::test_inner_tar_over_bzip2_large_block_is_tar_bz2`, `::test_inner_tar_over_bzip2_large_block_non_seekable`, `::test_bare_bzip2_large_block_stays_bare_bz2` |
+| Claim |
+| --- |
+| Size is `None` before a full read |
+| Garbage raises in every accelerator mode; a valid empty stream reads empty |
+| A seek before the first read does not bypass the check |
+| Empty streams anywhere in the file are data in every accelerator and access mode; bytes after them report at the same offset |
+| A stream after zero bytes is trailing data, and strict refuses it, with the accelerator off, `AUTO` and on, for a read and a seek; zeros at the end and streams with nothing between them stay silent; a damaged header after zeros as long as the magic is trailing data too |
+| A cut or damaged stream right after the data raises in both modes, a damaged header too, and so do one to three zeros that start a damaged header |
+| Junk or a damaged stream before or between streams reads as with the accelerator off |
+| A seek gets the verdict a read would, past a skipped stream, into damage, and to the end; at the end of a stream with zero padding after it, what follows the padding is reported, whatever it is |
+| A ZIP or 7z coder's single stream reads as with the accelerator off, and bytes after it are `DataAfterEndError` either way |
+| Accelerator errors become `CorruptionError`; intact files read clean |
+| A cut or damaged stream delivers the same bytes and error with the accelerator off, `AUTO` and `ON`, for a cut in the first block, a later block, the end marker and a second stream; seeks after a takeover |
+| A resume from any block reproduces the data and never gives a verdict at the stream's end |
+| The caller's source exception reaches the caller unchanged |
+| bzip2 runs in a child process; the caller's process never imports rapidgzip |
+| A crash of the child on the data hands the read to the standard library |
+| `AUTO` uses the accelerator from 1 MiB of compressed input; `ON` uses it at any size; the 1 MiB sits inside the measured break-even |
+| The rewind report with the accelerator off; `ON` without the package |
+| A `.tar.bz2` with a large first block is found, from a pipe too; a bare one stays `BZ2` |
 
 **Building fixtures.** The standard library writes bzip2 (`bz2.compress`). `pbzip2` and
 `lbzip2` install from the distribution.

@@ -4,6 +4,7 @@ backstop, the first header's CRC, the multi-member probe).
 
 from __future__ import annotations
 
+import contextlib
 import gzip
 import io
 import zlib
@@ -17,6 +18,7 @@ from archivey.exceptions import (
     exception_detail,
 )
 from archivey.internal.config import StreamConfig
+from archivey.internal.hashing import crc32_combine
 from archivey.internal.streams.codecs.base import (
     GZIP_MAGIC,
     GZIP_WBITS,
@@ -33,7 +35,6 @@ from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives, nativ
 from archivey.internal.streams.codecs.stdlib_takeover import (
     _DRAIN_CHUNK,
     _drain_into,
-    _OutputChecksum,
     _seek_reached_end,
     _SourceViews,
     _StdlibOnAcceleratorError,
@@ -109,7 +110,8 @@ def _gzip_isize_from_source(source: CodecSource) -> int | None:
 
 
 def _config_with_gzip_isize(source: CodecSource, config: StreamConfig) -> StreamConfig:
-    """Mark gzip ISIZE as available for AUTO / the ISIZE truncation backstop.
+    """Mark gzip ISIZE as available for AUTO / the ISIZE truncation backstop, and keep
+    its value for AUTO's ratio gate (``gzip_isize``).
 
     Does **not** set ``expected_decompressed_size`` from ISIZE: that field is an exact
     bound for ``VerifyingStream``, but ISIZE is mod 2**32 and multi-member gzip's
@@ -117,9 +119,10 @@ def _config_with_gzip_isize(source: CodecSource, config: StreamConfig) -> Stream
     """
     if config.gzip_isize_backstop or config.expected_decompressed_size is not None:
         return config
-    if _gzip_isize_from_source(source) is None:
+    isize = _gzip_isize_from_source(source)
+    if isize is None:
         return config
-    return replace(config, gzip_isize_backstop=True)
+    return replace(config, gzip_isize_backstop=True, gzip_isize=isize)
 
 
 def _stdlib_gzip(source: CodecSource, config: StreamConfig) -> BinaryIO:
@@ -141,6 +144,62 @@ def _stdlib_gzip(source: CodecSource, config: StreamConfig) -> BinaryIO:
 # docstring, ``dev-docs/formats/gzip.md`` §2.3 and §5, and the ``compressed-streams`` and
 # ``seekable-decompressor-streams`` specs state these numbers; change them together.
 _TRAILER_LOOKBACK = 64
+# How far before the end of the non-zero data the backstop looks for the header of an
+# empty last member (``_GzipTruncationCheckStream._empty_member_ends_the_data``). bgzip's
+# end-of-file member is 28 bytes; an empty member whose header fields take more goes to
+# the standard library, which finds nothing wrong at the cost of a second decode.
+# ``dev-docs/formats/gzip.md`` §2.3 and the ``compressed-streams`` and
+# ``seekable-decompressor-streams`` specs state it; change them together.
+_EMPTY_MEMBER_REACH = 1 << 10
+# How far apart the backstop saves the running CRC-32 of the output
+# (``_CheckpointedCrc``), and so the most output it reads back from rapidgzip to check one
+# candidate for the last member's trailer in a file of several members
+# (``_GzipTruncationCheckStream._last_member_ends_the_file``). A fixed spacing of our own,
+# not rapidgzip's seek points: those are sparse (only the start and end at
+# ``parallelization=0``), built ahead of the reader in the child, and a round trip to
+# read, and a point the reader has passed has no CRC-32 saved for it.
+# ``dev-docs/formats/gzip.md`` §2.3 and §5, ``docs/formats.md`` §"Limits and
+# accelerators", and the ``compressed-streams`` and ``seekable-decompressor-streams``
+# specs state it; change them together.
+_CRC_CHECKPOINT_SPACING = 4 << 20
+# How much skipped output in all the backstop reads back from rapidgzip to check the last
+# member's trailer after a seek skipped output: the part of a candidate before the point
+# where reading resumed, which no saved CRC-32 covers. A candidate past what is left of
+# it hands the read to the standard library, which gives the right result at the cost of
+# a second decode. ``dev-docs/formats/gzip.md`` §2.3 and §5, ``docs/formats.md``
+# §"Limits and accelerators", and the ``compressed-streams`` and
+# ``seekable-decompressor-streams`` specs state it; change them together.
+_SKIPPED_READ_BACK = 64 << 20
+
+
+class _CheckpointedCrc:
+    """A running CRC-32 of the output from ``start`` up to a ``frontier``, saved every
+    ``_CRC_CHECKPOINT_SPACING`` bytes: ``checkpoints[i]`` is the CRC-32 of the output from
+    ``start`` to ``start + i * _CRC_CHECKPOINT_SPACING``.
+
+    ``feed`` folds a piece of output in only where it continues the covered range, as
+    ``_OutputChecksum`` does. With a checkpoint at or before ``s``, the CRC-32 of the
+    output from ``s`` to the frontier costs a read-back shorter than the spacing, and no
+    more (``_GzipTruncationCheckStream._crc_to_the_end``).
+    """
+
+    def __init__(self, start: int) -> None:
+        self.start = start
+        self.frontier = start
+        self.value = 0
+        self.checkpoints = [0]
+
+    def feed(self, pos: int, data: bytes) -> None:
+        """Fold in ``data``, the output at ``pos``, if it reaches past the frontier."""
+        end = pos + len(data)
+        view = memoryview(data)
+        while pos <= self.frontier < end:
+            boundary = self.start + len(self.checkpoints) * _CRC_CHECKPOINT_SPACING
+            stop = min(end, boundary)
+            self.value = zlib.crc32(view[self.frontier - pos : stop - pos], self.value)
+            self.frontier = stop
+            if stop == boundary:
+                self.checkpoints.append(self.value)
 
 
 class _GzipTruncationCheckStream(DelegatingStream):
@@ -169,9 +228,13 @@ class _GzipTruncationCheckStream(DelegatingStream):
        is no CRC-32 of that output, and the length is compared to the ISIZE read at
        open, the file's last four bytes, instead. On a mismatch, a file with a further
        member that zlib confirms (:func:`gzip_has_additional_member`) is taken as
-       multi-member and nothing is raised: the trailer is only the last member's size
-       (a per-member ISIZE sum is deferred). A decode that stopped short of the end, or
-       any other mismatch, hands the read to the standard library.
+       multi-member, whose trailer is only the last member's; nothing is raised when
+       that trailer holds the CRC-32 and length of the end of the output
+       (:meth:`_last_member_ends_the_file`, which saved CRC-32 checkpoints make cheap).
+       A decode that stopped short of the end, or any other mismatch, hands the read to
+       the standard library. After a seek skipped output, that check reads back the
+       skipped part of the last member, under a ceiling past which the standard library
+       decides.
 
        The compressed position is what tells a cut member followed by a complete one
        from a multi-member file: the trailer is then the last member's, and the further
@@ -242,14 +305,26 @@ class _GzipTruncationCheckStream(DelegatingStream):
         self._pos = 0
         # CRC-32 of the output from offset 0 up to its frontier; ``_trailer_hands_over``
         # needs it whole to find where the member's trailer is.
-        self._crc = _OutputChecksum(zlib.crc32, 0)
+        self._crc = _CheckpointedCrc(0)
+        # After a seek skipped output, the CRC-32 from where reading resumed, so that the
+        # last member's trailer can still be checked when that range holds the member's
+        # output (:meth:`_last_member_ends_the_file`). Restarted by each later skip.
+        self._resumed: _CheckpointedCrc | None = None
         self._checked = False
 
     def _count(self, data: bytes) -> None:
         """Advance the position past ``data`` that rapidgzip returned, and fold it into
-        the CRC-32 of the output while that prefix is still unbroken."""
+        the CRC-32 of the output while that prefix is still unbroken. A piece past a gap
+        in that prefix (a seek skipped output) goes to the CRC-32 that resumes after the
+        gap instead, so no byte is hashed twice."""
         if not self._checked:
-            self._crc.feed(self._pos, data)
+            pos, end = self._pos, self._pos + len(data)
+            self._crc.feed(pos, data)
+            if self._crc.frontier < end:
+                resumed = self._resumed
+                if resumed is None or pos > resumed.frontier:
+                    resumed = self._resumed = _CheckpointedCrc(pos)
+                resumed.feed(pos, data)
         self._pos += len(data)
 
     def read(self, size: int = -1, /) -> bytes:
@@ -360,23 +435,27 @@ class _GzipTruncationCheckStream(DelegatingStream):
         # truncation. So is a decode that stopped short of the end of the source: the
         # trailer there is not this output's. Otherwise no trailer found (or, after a
         # seek, an ISIZE mismatch) is one, unless this is a concatenated multi-member
-        # gzip (then the trailer is only the last member's). A confirmed further member
-        # => do not raise (a cut whose decode still reaches the end, with zlib
-        # confirming a later member, can pass; the per-member ISIZE sum is deferred).
+        # gzip (then the trailer is only the last member's). A confirmed further member,
+        # and a last member's trailer that matches the end of the output => do not
+        # raise. The further member alone is not enough: rapidgzip ends a last member
+        # cut right after its header with no error, at the end of the source.
         if self._source_len >= 18 and self._decoded_to_the_end():
             if self._isize is None:
                 return False  # length known but ISIZE unread (should not happen here)
-            if self._crc.frontier == self._pos:
-                # Every byte went through the CRC-32, so the trailer can be found
-                # rather than assumed to be the file's last four bytes.
-                if self._member_ends_the_file():
-                    return False
-            elif self._pos % (1 << 32) == self._isize:
-                # A seek short of the end skipped output, then a read met the end, so
-                # there is no CRC-32 to find the trailer with; the last four bytes of
-                # the file stand in. A seek that meets the end reads through instead.
+            whole_crc = self._crc.frontier == self._pos
+            if whole_crc and self._member_ends_the_file():
+                # Every byte went through the CRC-32, so the trailer is found rather
+                # than assumed to be the file's last four bytes.
                 return False
             if self._has_additional_gzip_member():
+                # The trailer is only the last member's, so check that one.
+                if self._last_member_ends_the_file():
+                    return False
+            elif not whole_crc and self._pos % (1 << 32) == self._isize:
+                # A seek short of the end skipped output, then a read met the end, so
+                # there is no CRC-32 to find the trailer with; in a file of one member
+                # the file's last four bytes stand in. A seek that meets the end reads
+                # through instead.
                 return False
         # No trailer of this output ends the file: it was cut, its ISIZE is wrong, or
         # something was appended, and rapidgzip reads past all of these without a word.
@@ -418,42 +497,220 @@ class _GzipTruncationCheckStream(DelegatingStream):
         any file with 24 bytes of padding or fewer, and more only to get back over
         padding.
         """
-        length = self._source_len
-        assert length is not None
         crc = self._crc.value.to_bytes(4, "little")
         size = (self._pos % (1 << 32)).to_bytes(4, "little")
         try:
-            with self._views.view() as f:
-                base = max(0, length - (_TRAILER_LOOKBACK + 32))
-                f.seek(base)
-                tail = f.read(length - base)
-                stripped = tail.rstrip(b"\0")
-                end = base + len(stripped)
-                if not stripped:
-                    end, step = base, 1 << 16
-                    while end > 0:
-                        start = max(0, end - step)
-                        f.seek(start)
-                        stripped = f.read(end - start).rstrip(b"\0")
-                        if stripped:
-                            end = start + len(stripped)
-                            break
-                        end = start
-                # A trailer that ends the data starts 8 bytes before ``end`` at the
-                # earliest and at ``end`` at the latest.
-                first = max(0, end - 8 - _TRAILER_LOOKBACK)
-                last = min(length, end + 12)
-                if base <= first and last <= base + len(tail):
-                    window = tail[first - base : last - base]
-                else:
-                    f.seek(first)
-                    window = f.read(last - first)
+            first, end, window = self._trailer_window()
         except OSError:
             return True  # cannot look -> do not invent a mismatch
         at = window.find(crc)
         if at < 0 or window.find(crc, at + 1) >= 0:
             return False  # absent, or a second occurrence: one of them is forged
         return window[at + 4 : at + 8] == size and first + at + 8 >= end
+
+    def _trailer_window(self) -> tuple[int, int, bytes]:
+        """``(first, end, window)``: ``end`` is the end of the non-zero data, and
+        ``window`` the source bytes from ``first``, ``_TRAILER_LOOKBACK + 8`` bytes before
+        ``end``, to 12 bytes past it (both clipped to the file), where a trailer that
+        ends the data lies. Raises ``OSError`` when the source cannot be read.
+
+        The file is read from the end: the last 96 bytes, which hold the whole range in
+        any file with 24 bytes of padding or fewer, and more only to get back over
+        padding.
+        """
+        length = self._source_len
+        assert length is not None
+        with self._views.view() as f:
+            base = max(0, length - (_TRAILER_LOOKBACK + 32))
+            f.seek(base)
+            tail = f.read(length - base)
+            stripped = tail.rstrip(b"\0")
+            end = base + len(stripped)
+            if not stripped:
+                end, step = base, 1 << 16
+                while end > 0:
+                    start = max(0, end - step)
+                    f.seek(start)
+                    stripped = f.read(end - start).rstrip(b"\0")
+                    if stripped:
+                        end = start + len(stripped)
+                        break
+                    end = start
+            # A trailer that ends the data starts 8 bytes before ``end`` at the
+            # earliest and at ``end`` at the latest.
+            first = max(0, end - 8 - _TRAILER_LOOKBACK)
+            last = min(length, end + 12)
+            if base <= first and last <= base + len(tail):
+                return first, end, tail[first - base : last - base]
+            f.seek(first)
+            return first, end, f.read(last - first)
+
+    def _last_member_ends_the_file(self) -> bool:
+        """Whether the file ends with the trailer of a last member whose output ends the
+        output: eight bytes, then nothing but zero padding, that hold the CRC-32 and the
+        length mod 2**32 of the output's last ``n`` bytes, ``n`` being that length.
+
+        In a file of several members the CRC-32 of the whole output finds no trailer
+        (:meth:`_member_ends_the_file`), and a further member does not show that the last
+        one is whole: rapidgzip ends a last member cut right after its header with no
+        error, at the end of the source (found by the ``gzip_accel`` fuzz target). The
+        last member's trailer says where its output starts, ``n`` bytes before the end,
+        so its CRC-32 is checked against the output from there. That needs no member
+        boundaries.
+
+        The trailer's place is not known exactly: it ends at the end of the non-zero data
+        or up to 3 bytes into the zeros after it, as its last bytes are the high bytes of
+        ISIZE, which is not zero for any member this checks (an empty member is checked
+        apart, below). Each of those four places is a candidate. They are tried shortest
+        first, and the first that matches ends the search.
+
+        A candidate's CRC-32 comes from the running CRC-32 of the output, not from a
+        second decode of the member: with ``C(x)`` the CRC-32 of ``x``, ``C(B)`` is
+        ``C(A + B) ^ crc32_combine(C(A), 0, len(B))``, and the CRC-32 at the candidate's
+        start is the checkpoint saved at or before it, carried on by reading back at most
+        ``_CRC_CHECKPOINT_SPACING`` bytes from rapidgzip (:meth:`_crc_to_the_end`). So a
+        check costs at most four such read-backs, whatever the size of the last member
+        or the length a forged trailer states, and a valid file of any size is decided
+        here without the standard library. A last member of 4 GiB or more does not match,
+        as its length is wrapped, and goes to the standard library.
+
+        After a seek short of the end skipped output, the check still runs. A CRC-32 is
+        kept from where reading resumed, so a candidate that starts after that point is
+        checked as above. For one that starts before it, the skipped part, from the
+        candidate's start to the resume point, is read back from rapidgzip and its
+        CRC-32 combined with the one kept since. That read-back has a ceiling,
+        ``_SKIPPED_READ_BACK`` in all: a candidate past what is left of it hands the read
+        to the standard library, which gives the right result at the cost of a second
+        decode. Nothing is accepted that was not checked.
+
+        An empty last member (bgzip ends every file with one) has a trailer of eight
+        zeros, which any run of zeros would match, so it counts only when zlib decodes
+        an empty member with nothing but zeros after it
+        (:meth:`_empty_member_ends_the_data`).
+
+        A crafted cut can still match, if the last eight bytes of the cut file are made
+        the CRC-32 and length of the end of the output, which takes setting four bytes
+        of the content to choose that CRC-32.
+        """
+        length = self._source_len
+        assert length is not None
+        try:
+            first, end, window = self._trailer_window()
+        except OSError:
+            return True  # cannot look -> do not invent a mismatch
+        if length - end >= 8 and self._empty_member_ends_the_data(end):
+            return True
+        trailers: dict[int, int] = {}  # where the output's last member starts: CRC-32
+        for stop in range(max(end, 8), min(length, end + 3) + 1):
+            trailer = window[stop - 8 - first : stop - first]
+            size = int.from_bytes(trailer[4:], "little")  # not 0: it holds end - 1
+            if size <= self._pos:
+                trailers.setdefault(
+                    self._pos - size, int.from_bytes(trailer[:4], "little")
+                )
+        hasher = next(
+            (
+                h
+                for h in (self._crc, self._resumed)
+                if h is not None and h.frontier == self._pos
+            ),
+            None,
+        )
+        budget = _SKIPPED_READ_BACK
+        for start in sorted(trailers, reverse=True):  # shortest first
+            if hasher is not None and start >= hasher.start:
+                crc = self._crc_to_the_end(hasher, start)
+            else:
+                # After a skip, no saved CRC-32 covers the output from ``start`` to where
+                # reading resumed (the end, with no CRC-32 kept since): read it back.
+                resume = self._pos if hasher is None else hasher.start
+                if resume - start > budget:
+                    return False  # past the ceiling: the standard library decides
+                budget -= resume - start
+                crc = self._output_crc(start, resume, 0)
+                if crc is not None and hasher is not None:
+                    crc = crc32_combine(crc, hasher.value, self._pos - resume)
+            if crc == trailers[start]:
+                return True
+        return False
+
+    def _crc_to_the_end(self, hasher: _CheckpointedCrc, start: int) -> int | None:
+        """The CRC-32 of the output from ``start`` to its end (``_pos``), which
+        ``hasher`` covers; ``None`` when the read-back ends short.
+
+        The checkpoint at or before ``start`` is carried on to ``start`` by reading back
+        from rapidgzip, less than ``_CRC_CHECKPOINT_SPACING`` bytes, then taken out of the
+        running CRC-32 with :func:`crc32_combine`. When the output from ``start`` to the
+        end is shorter than that read-back (a small last member), it is read back
+        instead."""
+        index = (start - hasher.start) // _CRC_CHECKPOINT_SPACING
+        at = hasher.start + index * _CRC_CHECKPOINT_SPACING
+        if self._pos - start <= start - at:
+            return self._output_crc(start, self._pos, 0)
+        crc = hasher.checkpoints[index]
+        if at < start:
+            carried = self._output_crc(at, start, crc)
+            if carried is None:
+                return None
+            crc = carried
+        return hasher.value ^ crc32_combine(crc, 0, self._pos - start)
+
+    def _output_crc(self, start: int, stop: int, crc: int) -> int | None:
+        """``crc`` carried on over the output from ``start`` to ``stop``, read back from
+        rapidgzip; ``None`` when the read ends short. Leaves the stream at ``_pos``.
+
+        An error from the read-back propagates on purpose: rapidgzip, or the standard
+        library that took over from it on the way, met damage, and that is the verdict
+        of the caller's read. The seek back to ``_pos`` is then tried, and its own error
+        is dropped so that it cannot replace that verdict.
+        """
+        at = start
+        try:
+            self._inner.seek(start)
+            while at < stop:
+                data = self._inner.read(min(_DRAIN_CHUNK, stop - at))
+                if not data:
+                    break
+                crc = zlib.crc32(data, crc)
+                at += len(data)
+        except BaseException:
+            with contextlib.suppress(Exception):
+                self._inner.seek(self._pos)
+            raise
+        self._inner.seek(self._pos)
+        return crc if at == stop else None
+
+    def _empty_member_ends_the_data(self, end: int) -> bool:
+        """Whether an empty gzip member ends the data, which ends at ``end`` but for
+        zero padding: zlib decodes one from a ``1f 8b 08`` in the
+        ``_EMPTY_MEMBER_REACH`` bytes before ``end``, and only zeros follow it."""
+        length = self._source_len
+        assert length is not None
+        start = max(0, end - _EMPTY_MEMBER_REACH)
+        stop = min(length, end + 16)  # past the trailer; only zeros are left after it
+        try:
+            with self._views.view() as f:
+                f.seek(start)
+                data = f.read(stop - start)
+        except OSError:
+            return True  # cannot look -> do not invent a mismatch
+        magic = GZIP_MAGIC + b"\x08"
+        at = data.rfind(magic)
+        while at >= 0:
+            decoder = self._natives.zlib_decompressobj(GZIP_WBITS)
+            try:
+                if (
+                    not decoder.decompress(data[at:], 1)
+                    and decoder.eof
+                    and not decoder.unused_data.strip(b"\0")
+                ):
+                    return True
+            except zlib.error:
+                pass
+            finally:
+                release_decoder(decoder)
+            at = data.rfind(magic, 0, at)
+        return False
 
     def _decoded_to_the_end(self) -> bool:
         """Whether rapidgzip's decode reached the end of the source; ``True`` when it
@@ -595,6 +852,7 @@ _GZIP_MIN_MEMBER = 18
 
 class GzipCodec(_DeflateFamilyCodec):
     codec = Codec.GZIP
+    checks_content = True
     stream_format = StreamFormat.GZIP
     magic = (MagicSignature(0, GZIP_MAGIC, ArchiveFormat.GZ),)
     # gzip is only a standalone stream format, never a 7z or ZIP coder, so no container
@@ -626,14 +884,10 @@ class GzipCodec(_DeflateFamilyCodec):
         # progress reaches REWIND_REDECODE_WARN_BYTES.
         return _stdlib_gzip(source, config)
 
-    def _open_accelerated(
-        self, source: CodecSource, params: CodecParams, config: StreamConfig
-    ) -> BinaryIO | None:
-        if _gzip_header_refused(source, natives_for(config.process_isolation)):
-            # The standard-library engine raises zlib's own error on the first
-            # read, as it does with the accelerator off.
-            return None
-        return super()._open_accelerated(source, params, config)
+    def _leaves_to_stdlib(self, source: CodecSource, config: StreamConfig) -> bool:
+        # The standard-library engine raises zlib's own error on the first read, as
+        # it does with the accelerator off.
+        return _gzip_header_refused(source, natives_for(config.process_isolation))
 
     def _end_check(
         self,
@@ -652,8 +906,9 @@ class GzipCodec(_DeflateFamilyCodec):
         # single-member ISIZE (the empty→stdlib fallback is the takeover's,
         # ``_empty_to_stdlib``), with the multi-member scan on an
         # independent view: the check stands down only for a further member zlib's gzip
-        # decoder confirms, and a scan that spends its budget hands the read to the
-        # standard library (the per-member ISIZE sum is deferred). Capture the ISIZE
+        # decoder confirms and a last member's trailer that matches the end of the
+        # output, and a scan that spends its budget hands the read to the standard
+        # library (the ISIZE of a member before the last is not checked). Capture the ISIZE
         # tri-state up front so no per-read reopen is needed and `size < 18` truncation
         # is preserved.
         source_len, isize = _gzip_isize_and_length(source)

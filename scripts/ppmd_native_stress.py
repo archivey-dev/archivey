@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Stress-test PPMd native decode surfaces (Windows + Linux investigation).
 
 Background

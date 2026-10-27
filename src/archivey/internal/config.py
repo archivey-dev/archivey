@@ -8,7 +8,7 @@ for the backends.
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from archivey.config import (
@@ -22,14 +22,15 @@ from archivey.exceptions import ResourceLimitError
 
 if TYPE_CHECKING:
     from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.internal.resource_usage import ResourceUsageRecorder
     from archivey.internal.streams.decompressor_stream import PrebuiltIndex
 
 # Only the names other modules import from here. ``ArchiveyConfig`` and
 # ``DEFAULT_ARCHIVEY_CONFIG`` are imported for use below, not re-exported —
 # callers take those from ``archivey.config``.
 __all__ = [
-    "AcceleratorMode",
     "DEFAULT_STREAM_CONFIG",
+    "AcceleratorMode",
     "DecoderLimits",
     "KeyDerivationBudget",
     "ProcessIsolation",
@@ -37,6 +38,7 @@ __all__ = [
     "check_decoder_memory",
     "probe_lzma_dictionary",
     "stream_config_from_archivey",
+    "without_accelerators",
 ]
 
 
@@ -56,6 +58,11 @@ class StreamConfig:
     seekable gzip source has a readable ISIZE trailer — enough for AUTO to select
     rapidgzip with the ISIZE truncation check, but *not* a hard ``VerifyingStream``
     bound (ISIZE is mod 2**32 and multi-member trailers only cover the last member).
+    ``gzip_isize`` is that trailer's value, which AUTO's ratio gate for a sequential
+    read uses as an estimate of the decoded size and nothing else. ``source_seekable``
+    is set by :func:`open_codec_stream` when the source is a path or a stream that can
+    seek: a sequential read (no declared seek demand) can still go through an
+    accelerator under AUTO, which needs a source it can seek.
     ``decoder_limits`` is the caller's :class:`~archivey.config.DecoderLimits`,
     carried down so a codec can refuse an archive-declared allocation before making
     it; it defaults to the public default rather than to "unlimited", because a
@@ -87,7 +94,10 @@ class StreamConfig:
     through :func:`~archivey.internal.streams.codecs.isolated.natives_for` with it.
     ``seek_index`` is an xz index scan the single-file reader already
     made over this same source; the xz stream uses it in place of its own scan. Like
-    ``collector`` it is left out of equality.
+    ``collector`` it is left out of equality. So is ``usage``, the reader's
+    :class:`~archivey.internal.resource_usage.ResourceUsageRecorder`: a codec passes it
+    to :func:`check_decoder_memory`, which notes each declaration there. A detection
+    probe builds its config without one, so a probe's sizes are never recorded.
     """
 
     streaming: bool = False
@@ -97,6 +107,8 @@ class StreamConfig:
     compressed_input_size: int | None = None
     expected_decompressed_size: int | None = None
     gzip_isize_backstop: bool = False
+    gzip_isize: int | None = None
+    source_seekable: bool = False
     decoder_limits: DecoderLimits = DecoderLimits()
     process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES
     collector: DiagnosticCollector | None = field(default=None, compare=False)
@@ -104,6 +116,7 @@ class StreamConfig:
     probe_read_bound: int | None = None
     refuse_input_after_end: bool = False
     seek_index: PrebuiltIndex | None = field(default=None, compare=False)
+    usage: ResourceUsageRecorder | None = field(default=None, compare=False)
 
 
 def stream_config_from_archivey(
@@ -112,9 +125,11 @@ def stream_config_from_archivey(
     streaming: bool,
     seekable: bool = False,
     refuse_input_after_end: bool = False,
+    usage: ResourceUsageRecorder | None = None,
 ) -> StreamConfig:
     """Derive the codec-layer view from the public config and declared seek demand."""
     return StreamConfig(
+        usage=usage,
         streaming=streaming,
         seekable=seekable,
         refuse_input_after_end=refuse_input_after_end,
@@ -122,6 +137,19 @@ def stream_config_from_archivey(
         use_indexed_bzip2=config.use_indexed_bzip2,
         decoder_limits=config.decoder_limits,
         process_isolation=config.process_isolation,
+    )
+
+
+def without_accelerators(config: StreamConfig) -> StreamConfig:
+    """``config`` decoding with the standard library, whatever its accelerators say.
+
+    Every accelerator setting a ``StreamConfig`` has is listed here once, so a new one
+    added here reaches every path that must not start a child.
+    """
+    return replace(
+        config,
+        use_rapidgzip=AcceleratorMode.OFF,
+        use_indexed_bzip2=AcceleratorMode.OFF,
     )
 
 
@@ -166,8 +194,12 @@ def check_decoder_memory(
     limits: DecoderLimits,
     what: str,
     counted_from: str | None = None,
+    usage: ResourceUsageRecorder | None = None,
 ) -> None:
     """Refuse an archive-declared decoder allocation above ``max_decoder_memory``.
+
+    ``usage`` is the reader's recorder; the declaration is noted there before the
+    comparison, so a refused one is recorded at its full size.
 
     ``declared`` is the number the *archive* asked for: read out of a header field,
     not a measurement of anything, and not bounded by the file's own size. Or, when
@@ -195,6 +227,8 @@ def check_decoder_memory(
     Lives here rather than in ``codecs/`` so the xz and lzip decoders, which the
     codec modules import, can call it without an import cycle.
     """
+    if usage is not None:
+        usage.note_decoder_memory(declared, what)
     cap = limits.max_decoder_memory
     if cap is None or declared <= cap:
         return
@@ -232,6 +266,11 @@ class KeyDerivationBudget:
 
     def __repr__(self) -> str:
         return f"<KeyDerivationBudget: {self._spent} of {self._cap} rounds spent>"
+
+    @property
+    def spent(self) -> int:
+        """Rounds charged so far."""
+        return self._spent
 
     def spend(self, rounds: int, *, what: str) -> None:
         """Charge ``rounds`` to the budget, or raise before the derivation runs.

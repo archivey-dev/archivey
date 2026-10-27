@@ -228,6 +228,8 @@ def test_clean_archive_with_comment_reports_nothing() -> None:
 
 
 def test_end_record_mismatch_refused_under_strict() -> None:
-    with open_archive(io.BytesIO(_with_eocd_count(2)), config=_STRICT) as reader:
-        with pytest.raises(DiagnosticRaisedError):
-            reader.members()
+    with (
+        open_archive(io.BytesIO(_with_eocd_count(2)), config=_STRICT) as reader,
+        pytest.raises(DiagnosticRaisedError),
+    ):
+        reader.members()

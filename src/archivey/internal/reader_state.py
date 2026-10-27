@@ -8,13 +8,13 @@ transition on, or a test of, four independent pieces of state:
 - **Who owns the reader.** ``_root`` is the reader-wide pass in progress (``members()``
   on a default reader, ``stream_members()``, ``extract_all()``), ``_children`` are
   library-internal scopes under a pass (link reads, the extraction coordinator's own
-  opens), and ``_workers`` are short ``open()`` / ``read()`` / ``get()`` calls (and, on a
-  ``CONCURRENT`` reader, ``members()`` / ``members_report()``). On a ``CONCURRENT``
-  reader ``stream_members()`` and ``extract_all()`` passes may run beside workers and
-  beside one another (``_side_passes``). Each is
-  an :class:`OperationToken` that records the thread that took it, so a callback that
-  re-enters the reader on that thread gets a message about the callback, not about a
-  second caller.
+  opens), and ``_workers`` are short ``open()`` / ``get()`` calls, and ``read()`` while
+  it opens the member (and, on a ``CONCURRENT`` reader, ``members()`` /
+  ``members_report()``). On a ``CONCURRENT`` reader ``stream_members()`` and
+  ``extract_all()`` passes may run beside workers and beside one another
+  (``_side_passes``). Each is an :class:`OperationToken` that records the thread that
+  took it, so a callback that re-enters the reader on that thread gets a message about
+  the callback, not about a second caller.
 - **Whether the member list exists yet** (``cache_state``). See :class:`ReaderState`.
 - **How many member streams are alive** (``_live_streams``, plus ``_reservations`` for
   an ``open()`` that has passed the gate but not built its stream yet).
@@ -356,8 +356,8 @@ class ReaderState:
                 )
             if self._workers and not overlap:
                 raise _overlap_refused(
-                    f"Cannot start {name!r}: a concurrent open()/read() call is still "
-                    "in progress."
+                    f"Cannot start {name!r}: a concurrent open()/get()/read() call is "
+                    "still in progress."
                 )
             token = OperationToken(name=name, kind="root")
             if self._root is None:
@@ -586,16 +586,17 @@ class ReaderState:
         """
         with self._lock:
             self._require_lifecycle_open_locked("open()")
-            if not (self.concurrent or self._internal_opens_active_locked()):
-                if self._live_streams or self._reservations:
-                    site = self.open_site
-                    loc = site.location if site is not None else "<unknown>"
-                    raise _overlap_refused(
-                        "A member stream is already open on this reader. Close it "
-                        "before opening another, or reopen the archive with "
-                        "concurrent_operations=True "
-                        f"(this archive was opened without concurrent_operations at {loc})."
-                    )
+            if not (self.concurrent or self._internal_opens_active_locked()) and (
+                self._live_streams or self._reservations
+            ):
+                site = self.open_site
+                loc = site.location if site is not None else "<unknown>"
+                raise _overlap_refused(
+                    "A member stream is already open on this reader. Close it "
+                    "before opening another, or reopen the archive with "
+                    "concurrent_operations=True "
+                    f"(this archive was opened without concurrent_operations at {loc})."
+                )
             token = LiveStreamReservation()
             self._reservations.add(token)
             self._lease_count += 1
@@ -664,7 +665,8 @@ class ReaderState:
         """Mark reader closed and release the reader lease. True → run teardown now.
 
         Under ``MemberStreams.CONCURRENT``, blocks until in-flight worker ``open()`` /
-        ``read()`` / ``get()`` / ``members()`` calls return, then transitions to closed.
+        ``get()`` / ``members()`` calls return (``read()`` while it opens the member),
+        then transitions to closed. A member stream's own reads hold no worker token.
         Escaped idle member streams keep their lifecycle leases and do not block close.
         A worker that never returns is a caller bug (same as any lock); there is no
         artificial timeout.
@@ -719,7 +721,7 @@ class ReaderState:
                     )
                 if self._workers and not self.concurrent:
                     raise ArchiveyUsageError(
-                        "Cannot close the archive reader while an open()/read() call "
+                        "Cannot close the archive reader while an open()/get()/read() call "
                         "is still in progress."
                     )
                 self._closing = True

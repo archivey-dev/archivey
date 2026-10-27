@@ -398,7 +398,7 @@ def test_a_member_the_list_takes_in_the_end_meets_the_callers_parent(
     for where in ("file", "pipe"):
         _seed(tmp_path / where, {"docs": b"MINE"})
     data = _zip([(_entry("docs\\r.txt", host=0), b"read me")])
-    results, tree = _both(
+    _results, tree = _both(
         data,
         tmp_path,
         times=False,
@@ -445,7 +445,7 @@ def test_a_read_only_file_of_the_callers_is_handled_as_from_a_file(
         _seed(tmp_path / where, {"docs/r.txt": b"MINE"})
         os.chmod(tmp_path / where / "docs/r.txt", stat.S_IREAD)
     try:
-        results, tree = _both(
+        _results, tree = _both(
             _dos_docs(),
             tmp_path,
             times=False,
@@ -601,7 +601,7 @@ def test_a_member_the_list_takes_in_the_end_replaces_the_callers_file(
 ) -> None:
     for where in ("file", "pipe"):
         _seed(tmp_path / where, {"docs/r.txt": b"MINE"})
-    results, tree = _both(
+    _results, tree = _both(
         _dos_docs(), tmp_path, times=False, members=["docs/r.txt"], overwrite=overwrite
     )
     expected = b"read me" if overwrite == "replace" else b"MINE"

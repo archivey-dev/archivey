@@ -38,7 +38,10 @@ from archivey.internal.base_reader import (
     ReadBackend,
     reject_start_offset,
 )
-from archivey.internal.config import AcceleratorMode, stream_config_from_archivey
+from archivey.internal.config import (
+    stream_config_from_archivey,
+    without_accelerators,
+)
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.naming import (
     COMPRESSED_TAR_SHORT_SUFFIXES,
@@ -189,12 +192,13 @@ class SingleFileReader(BaseArchiveReader):
         self._codec = self._stream_codec.codec
         self._seekable = source.seekable()
 
-        # A non-seekable source cannot be randomly accessed, so engaging a random-access
-        # accelerator (rapidgzip) is pointless — and would in fact fail at *open*: rapidgzip
-        # needs either a seekable stream or a real OS fileno, and a non-seekable source
-        # offers neither (so it raises StreamNotSeekableError).
-        # Keep the codec sequential for such a source regardless of the archive's streaming flag.
-        # Declared seek demand (MemberStreams.SEEKABLE) also gates accelerator AUTO resolution.
+        # A non-seekable source cannot be randomly accessed, and an accelerator
+        # (rapidgzip) would fail at *open* on it: rapidgzip needs either a seekable
+        # stream or a real OS fileno, and a non-seekable source offers neither (so it
+        # raises StreamNotSeekableError). Keep the codec sequential for such a source
+        # regardless of the archive's streaming flag. Declared seek demand
+        # (MemberStreams.SEEKABLE) also gates accelerator AUTO resolution, which for the
+        # DEFLATE family also takes a large sequential read from a seekable source.
         seek_declared = MemberStreams.SEEKABLE in member_streams
         # The codec stream is the whole file, so bytes after its end are reported.
         self._codec_config = replace(
@@ -202,6 +206,7 @@ class SingleFileReader(BaseArchiveReader):
                 self._config,
                 streaming=self._streaming or not self._seekable,
                 seekable=seek_declared and self._seekable,
+                usage=self._usage,
             ),
             report_trailing_data=True,
         )
@@ -214,12 +219,13 @@ class SingleFileReader(BaseArchiveReader):
         # open and 44 with the flag — a capability flag changing metadata. Accelerators
         # stay OFF: a probe reads no member data, so an accelerator's startup cost buys
         # nothing the native index does not already have.
-        self._metadata_config = replace(
+        self._metadata_config = without_accelerators(
             stream_config_from_archivey(
-                self._config, streaming=False, seekable=self._seekable
-            ),
-            use_rapidgzip=AcceleratorMode.OFF,
-            use_indexed_bzip2=AcceleratorMode.OFF,
+                self._config,
+                streaming=False,
+                seekable=self._seekable,
+                usage=self._usage,
+            )
         )
 
         # The compressed-source header, read at most once and cached (only the gzip metadata
@@ -256,17 +262,25 @@ class SingleFileReader(BaseArchiveReader):
         Constructing a codec stream checks nothing, because every codec checks its header
         on the first read. One byte is the whole guarantee; a corrupt tail still fails on
         read. An empty result is a valid empty stream: each decoder raises on input too
-        short to hold its own header, and the accelerated bzip2 path hands an empty result
-        to the stdlib engine to confirm it. The probe stream is not cached; every
+        short to hold its own header. The probe stream is not cached; every
         ``_open_member`` builds a fresh one. The error names no member, since nobody asked
         for one yet.
 
         A non-seekable source is not probed: the read would consume a byte of the one
         pass the first ``open_member`` hands out, so it still fails on that read.
+
+        The probe decodes with the standard library: rapidgzip runs in a child process,
+        and one byte does not pay for starting one (about 30 ms) that the member read then
+        starts again. An ``ON`` accelerator is still resolved here, without starting
+        anything (``StreamCodec.check_accelerator``), so rapidgzip absent or no child
+        process possible fails at open. ``AUTO`` is left to the read, which resolves it
+        against the config the registry prepares.
         """
         if not self._seekable:
             return
-        with self._open_codec_stream(attribute_member=False) as probe:
+        with self._open_codec_stream(
+            attribute_member=False, accelerated=False
+        ) as probe:
             probe.read(1)
 
     def _build_member(self, archive_name: str | None) -> ArchiveMember:
@@ -522,11 +536,14 @@ class SingleFileReader(BaseArchiveReader):
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield self._member
 
-    def _open_codec_stream(self, *, attribute_member: bool = True) -> ArchiveStream:
+    def _open_codec_stream(
+        self, *, attribute_member: bool = True, accelerated: bool = True
+    ) -> ArchiveStream:
         """Open a fresh decompression stream over the source.
 
         ``attribute_member=False`` leaves ``member_name`` off errors the stream raises, for
-        the open-time probe that no caller asked for.
+        the open-time probe that no caller asked for. ``accelerated=False`` decodes with
+        the standard library whatever ``use_rapidgzip`` / ``use_indexed_bzip2`` say.
 
         A seekable stream source goes through a whole-source ``SharedSource`` view so
         concurrent / re-entrant opens never clobber the shared handle's position. A path
@@ -556,6 +573,15 @@ class SingleFileReader(BaseArchiveReader):
         else:
             codec_source = self._codec_input(src)
         config = self._codec_config
+        if not accelerated:
+            # Still fail where the accelerated open would fail before decoding (ON with
+            # rapidgzip absent, or no child process possible), so the error stays at open.
+            try:
+                self._stream_codec.check_accelerator(codec_source, config)
+            except ArchiveyError as exc:
+                stamp(exc)
+                raise
+            config = without_accelerators(config)
         if self._seek_index is not None:
             config = replace(config, seek_index=self._seek_index)
         raw = open_codec_stream(

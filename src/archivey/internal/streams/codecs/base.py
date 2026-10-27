@@ -35,6 +35,7 @@ from archivey.internal.streams.archive_stream import (
     RewindWarning,
 )
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64
+from archivey.internal.streams.codecs.riscv_filter import FILTER_RISCV
 from archivey.internal.streams.decompressor_stream import truncated_message
 from archivey.types import (
     ArchiveFormat,
@@ -82,10 +83,11 @@ class Codec(Enum):
     BCJ_SPARC = "bcj_sparc"
     BCJ_IA64 = "bcj_ia64"
     BCJ_ARM64 = "bcj_arm64"
+    BCJ_RISCV = "bcj_riscv"
 
 
-# liblzma raw-filter ids for the filter-only codecs. Each one but ARM64 can join a 7z
-# raw liblzma chain; ARM64 is decoded in Python (see sevenzip_pipeline).
+# liblzma raw-filter ids for the filter-only codecs. Each one but ARM64 and RISC-V can
+# join a 7z raw liblzma chain; those two are decoded in Python (see sevenzip_pipeline).
 LZMA_FILTER_IDS: dict[Codec, int] = {
     Codec.DELTA: lzma.FILTER_DELTA,
     Codec.BCJ_X86: lzma.FILTER_X86,
@@ -94,8 +96,9 @@ LZMA_FILTER_IDS: dict[Codec, int] = {
     Codec.BCJ_PPC: lzma.FILTER_POWERPC,
     Codec.BCJ_SPARC: lzma.FILTER_SPARC,
     Codec.BCJ_IA64: lzma.FILTER_IA64,
-    # liblzma's id; Python's lzma refuses it, so archivey decodes it in Python.
+    # liblzma's ids; Python's lzma refuses them, so archivey decodes them in Python.
     Codec.BCJ_ARM64: FILTER_ARM64,
+    Codec.BCJ_RISCV: FILTER_RISCV,
 }
 
 
@@ -121,13 +124,15 @@ class CodecParams:
       ``PpmdDecoder.feed`` (not an enclosing member size). Gates post-eof empty
       drains; when omitted, PPMd recovery stays conservative (single capped NUL only).
     - ``single_stream`` — the coder's data is one stream of its codec: a bzip2 ZIP
-      member or 7z coder, a Zstd ZIP member. The decoder ends at the first stream's
-      end rather than reading a further stream (a Zstd frame) as a concatenated
-      file's, so a further stream is input after the end, which a
+      member or 7z coder. The decoder ends at the first stream's end rather than
+      reading a further stream as a concatenated file's, so a further stream is
+      input after the end, which a
       ``refuse_input_after_end`` stream refuses. Under the bzip2 accelerator, which
       reads on into a further stream, the read hands over to the standard library
-      where one starts (``bzip2_codec._Bzip2Layout``). A 7z Zstd or LZ4 coder does
-      not set it: there concatenated frames count together against the unpack size.
+      where one starts (``bzip2_codec._Bzip2Layout``). A Zstd ZIP member and a 7z
+      Zstd or LZ4 coder do not set it: there concatenated frames count together
+      against the declared size, as RFC 8878 defines Zstd data as one or more frames
+      and the LZ4 frame format lets frames be appended.
       Raw LZMA1/LZMA2 needs no flag: it is container-only and always ends at its first
       end marker, refusing any input after it.
     - ``input_runs_on`` — the source does not end where the coder's data does: a ZIP
@@ -341,6 +346,12 @@ class StreamCodec:
     # They matter most for the formats only a content probe recognises, whose probe runs
     # only for a name that claims the format.
     extension_aliases: ClassVar[tuple[str, ...]] = ()
+    # Whether the decoder checks every byte it decodes against a checksum the format
+    # requires (gzip's CRC-32, bzip2's CRCs, lzip's CRC-32, zlib's Adler-32), raising on
+    # a mismatch before it reports the end. Formats whose checksum is optional per
+    # frame (xz, zstd, LZ4) leave it False until their decoders report, per frame,
+    # that one was present. Read by a stream's verification level.
+    checks_content: ClassVar[bool] = False
 
     # --- derived single-file identity ---
 
@@ -372,6 +383,19 @@ class StreamCodec:
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
         raise NotImplementedError
+
+    def check_accelerator(self, source: CodecSource, config: StreamConfig) -> None:
+        """For an accelerator set to ``ON``, raise what :meth:`open` raises before
+        decoding because it cannot run: its package is absent, ``source`` cannot seek, or
+        no child process can run it (:func:`rapidgzip_child_unavailable_reason`). Starts
+        no process; it reads ``source`` only where :meth:`open` would decide on its first
+        bytes to leave it to the standard library (a gzip header zlib refuses), and then
+        raises nothing, as :meth:`open` does. A child that fails to start is not
+        known until one is started, so that error stays with :meth:`open`. ``AUTO`` is
+        not resolved here: the open resolves it against the config the registry
+        prepares, which this caller does not have, and logs its own fallback.
+        Default: the codec has no accelerator."""
+        return
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         """Map a raw decoder exception to an ``ArchiveyError`` subclass, or ``None``."""
@@ -574,9 +598,9 @@ class StreamCodec:
                 return out_len > 0
             return True
         except TruncatedError:
-            if fully_visible:
-                return False  # whole file in hand; stream did not terminate
-            return True  # decoded fine, just ran out of the bounded prefix
+            # With the whole file in hand, the stream did not terminate; otherwise it
+            # decoded fine and just ran out of the bounded prefix.
+            return not fully_visible
         except ArchiveyError:
             return False
         except MemoryError:

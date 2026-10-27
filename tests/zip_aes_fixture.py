@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import os
 import struct
 import zlib
 from collections.abc import Callable, Sequence
@@ -73,7 +72,12 @@ def build_aes_zip(
         else:
             compressed = zlib.compress(payload)[2:-4]  # raw deflate
         compressed += compressed_tail
-        salt = os.urandom(aes.salt_len)
+        # A fixed salt per member: with a random one, a wrong password passes the
+        # 2-byte verifier about once in 65,536 builds and the test that expects
+        # EncryptionError sees the decoder's CorruptionError instead.
+        salt = hashlib.sha256(b"archivey-test-salt:%d:" % index + name).digest()[
+            : aes.salt_len
+        ]
         enc_key, auth_key, pw_verify = derive_winzip_aes_keys(
             password, salt=salt, key_len=aes.key_len
         )

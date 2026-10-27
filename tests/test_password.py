@@ -388,13 +388,15 @@ def test_7z_wrong_password_raises_on_the_read_not_the_yield(
     _make_encrypted_7z(archive, solid=solid)
 
     yielded: list[str] = []
-    with open_archive(archive, password="wrongpassword") as ar:
-        with pytest.raises(EncryptionError):
-            for member, stream in ar.stream_members():
-                yielded.append(member.name)
-                if member.name == "f2.txt":
-                    assert stream is not None
-                    stream.read()
+    with (
+        open_archive(archive, password="wrongpassword") as ar,
+        pytest.raises(EncryptionError),
+    ):
+        for member, stream in ar.stream_members():
+            yielded.append(member.name)
+            if member.name == "f2.txt":
+                assert stream is not None
+                stream.read()
 
     # The whole pass got through before the failure: the error came from the read,
     # not from reaching the member.
@@ -420,13 +422,12 @@ def test_7z_reading_one_member_opens_only_its_own_folder(
 
     monkeypatch.setattr(SevenZipReader, "_open_folder_stream", spy)
 
-    with enable_measurement():
-        with open_archive(archive, password="correctpw") as ar:
-            for member, stream in ar.stream_members():
-                if member.name == "f1.txt":
-                    assert stream is not None
-                    assert len(stream.read()) == member_size
-            stats = ar.io_stats()
+    with enable_measurement(), open_archive(archive, password="correctpw") as ar:
+        for member, stream in ar.stream_members():
+            if member.name == "f1.txt":
+                assert stream is not None
+                assert len(stream.read()) == member_size
+        stats = ar.io_stats()
 
     assert len(opened) == 1, f"expected one folder open, got {opened}"
     assert stats is not None

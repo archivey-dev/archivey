@@ -38,7 +38,9 @@ _DANGEROUS = ("\x1b", "\r", "\n", "\x00", "\x9b")
         "\u200b",
         "\ud800",  # lone high surrogate
         "\U0001d173",  # astral non-printable
-        "\udc80",  # surrogateescape of byte 0x80
+        # surrogateescape of byte 0x80. Not a duplicate of "\ud800": ruff compares lone
+        # surrogates lossily.
+        "\udc80",  # noqa: PT014
     ],
 )
 def test_dangerous_characters_do_not_survive(text: str) -> None:
@@ -64,7 +66,7 @@ def test_astral_code_points_render_as_a_readable_escape() -> None:
     body = out[1:-1]
     assert body.startswith("\\U")
     # Recoverable: the escape names the code point it replaced.
-    assert int(body[2:], 16) == 0x1D173
+    assert int(body[2:], 16) == 0x1D173  # noqa: FURB166 - the prefix is \\U, not 0x
 
 
 def test_literal_backslash_is_distinguishable_from_a_real_control_char() -> None:
@@ -585,6 +587,9 @@ _CLI_PRINT_ALLOWED = {
     "common.py: str(stats.compressed_bytes_consumed)": "int counter",
     "common.py: stats.source_seek_count": "int counter",
     "extract_cmd.py: ', '.join(parts)": "counts, built two lines above",
+    "extract_cmd.py: '; '.join(parts)": (
+        "_usage_line: int counts, and the declaring text through escape_member_name"
+    ),
     "extract_cmd.py: result.kept_mode": "int mode, printed as octal",
     "extract_cmd.py: stat.S_IMODE(os.stat(dest).st_mode)": (
         "int mode of the operator's directory, printed as octal"

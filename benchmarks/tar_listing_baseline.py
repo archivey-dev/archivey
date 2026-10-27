@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Non-gating TAR header-parse and listing baseline (many tiny members).
 
 Times ``parse_header_block`` on one ustar header and the listing of a plain tar of

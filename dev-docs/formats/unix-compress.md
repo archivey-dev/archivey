@@ -208,20 +208,20 @@ The truncation gap is the format's, not an open question;
     tests/test_audit_tar_streams.py -k "unix_compress or _z_"
 ```
 
-| Claim | Pinned by |
-| --- | --- |
-| Reads, from a pipe too | `tests/test_codecs.py::test_unix_compress_backend_roundtrip`, `::test_unix_compress_non_seekable_source_streams`, `tests/test_single_file.py::test_unix_compress_non_seekable_streams_fine`, `::test_unix_compress_non_seekable_requires_streaming_mode` |
-| Header checks | `tests/test_codecs.py::test_unix_compress_reserved_header_flags_unsupported`, `::test_unix_compress_maxbits_above_16_rejected`, `::test_unix_compress_maxbits_16_accepted`, `::test_unix_compress_short_source_that_is_not_z_is_corrupt` |
-| The three kinds of truncation evidence | `::test_unix_compress_source_cut_inside_the_header_is_truncated`, `::test_unix_compress_cut_inside_clear_padding_is_truncated`, `::test_unix_compress_truncated_raises_on_next_read`, `::test_unix_compress_valid_stream_has_zero_leftover_padding` |
-| Truncation keeps raising, after a rewind too | `::test_unix_compress_truncated_readall_raises`, `::test_unix_compress_truncated_readall_then_rewind_raises_again` |
-| CLEAR codes are seek points, merged when empty | `::test_unix_compress_clear_seek_points`, `::test_unix_compress_consecutive_clear_seek_points_no_assert`, `tests/test_detection.py::test_detect_format_atheris_z_clear_collisions_do_not_assert` |
-| One call's output is bounded | `tests/test_codecs.py::test_unix_compress_read_one_bounds_internal_buffer` |
-| The table stays under about 19 MiB, 21 MiB on a free-threaded build (§4) | `tests/test_codecs.py::test_unix_compress_worst_case_table_stays_under_the_stated_bound`, `tests/test_audit_tar_streams.py::test_unix_compress_dictionary_memory_is_bounded` |
-| Files written without block mode decode like GNU `gzip -d` at 10 to 16 bits | `tests/test_codecs.py::test_unix_compress_non_block_mode_decodes_like_the_reference`, `::test_unix_compress_non_block_mode_streams_match_gzip`, `::test_unix_compress_non_block_mode_may_end_at_a_widening`, `::test_unix_compress_non_block_mode_cut_inside_widening_padding_is_truncated` |
-| 9-bit files, in block mode with and without CLEAR codes and without block mode, decode to their input like `7z` | `tests/test_codecs.py::test_unix_compress_nine_bit_streams_decode_exactly` |
-| A 9-bit file with ncompress 5.0's damage reads with no error to the same wrong bytes as `7z` | `tests/test_codecs.py::test_unix_compress_ncompress_5_0_nine_bit_damage_reads_as_wrong_bytes` |
-| Linked long entries decode exactly | `tests/test_codecs.py::test_unix_compress_long_dictionary_entries_decode_exactly`, `::test_unix_compress_repeated_longest_code_decodes_exactly` |
-| `.tar.Z` is found; a bare `.Z` stays bare | `tests/test_detection.py::test_unix_compress_without_inner_tar_stays_bare_z`, `tests/test_libarchive_corpus.py::test_tar_z_detection_upgrades_via_inner_probe` |
+| Claim |
+| --- |
+| Reads, from a pipe too |
+| Header checks |
+| The three kinds of truncation evidence |
+| Truncation keeps raising, after a rewind too |
+| CLEAR codes are seek points, merged when empty |
+| One call's output is bounded |
+| The table stays under about 19 MiB, 21 MiB on a free-threaded build (§4) |
+| Files written without block mode decode like GNU `gzip -d` at 10 to 16 bits |
+| 9-bit files, in block mode with and without CLEAR codes and without block mode, decode to their input like `7z` |
+| A 9-bit file with ncompress 5.0's damage reads with no error to the same wrong bytes as `7z` |
+| Linked long entries decode exactly |
+| `.tar.Z` is found; a bare `.Z` stays bare |
 
 **Building fixtures.** No Python library writes `.Z`. The `ncompress` package installs
 `compress`; it is a development tool only.

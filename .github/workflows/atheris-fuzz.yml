@@ -36,7 +36,9 @@ on:
         default: "1"
 
 concurrency:
-  group: atheris-fuzz-${{ github.event_name == 'pull_request' && github.ref || 'nightly' }}
+  # A dispatch (a release gate, say) gets its own group, so it and the nightly run never
+  # cancel each other.
+  group: atheris-fuzz-${{ github.event_name == 'pull_request' && github.ref || github.event_name == 'workflow_dispatch' && github.run_id || 'nightly' }}
   cancel-in-progress: true
 
 jobs:

@@ -17,10 +17,10 @@ name: Publish
 # ── One-time setup required before the first release ────────────────────────────────
 # Trusted Publishing must be configured on the index side (Settings are per-project):
 #   • PyPI  (https://pypi.org/manage/account/publishing/):
-#       project `archivey`, owner `davitf`, repo `archivey`,
+#       project `archivey`, owner `archivey-dev`, repo `archivey`,
 #       workflow `publish.yml`, environment `pypi`.
 #   • TestPyPI (https://test.pypi.org/manage/account/publishing/):
-#       project `archivey`, owner `davitf`, repo `archivey`,
+#       project `archivey`, owner `archivey-dev`, repo `archivey`,
 #       workflow `publish.yml`, environment `testpypi`.
 #   • The same two entries again for project `archivey-cli` (a "pending publisher"
 #     until its first upload). Without them the upload of `archivey-cli` is refused.
@@ -88,6 +88,26 @@ jobs:
       # PyPI *after* upload, when the filename can no longer be reused. Catch them here.
       - name: Check distribution metadata
         run: uvx twine check --strict dist/*/*
+      # Each sdist must hold only what a build needs (packaging-and-extras spec, "Source
+      # distributions"). For archivey that is the [tool.hatch.build.targets.sdist] list in
+      # pyproject.toml; tests/test_sdist_contents.py keeps that list and the expected names
+      # below in step. Without the list hatch packs every tracked file, and the 0.2.0rc1
+      # sdist shipped openspec/, review/, dev-docs/ and tests/ (about 7.5 MB).
+      # packages/archivey-cli/ holds only LICENSE, README.md and pyproject.toml, so it needs
+      # no list. In both, hatch generates PKG-INFO and copies the repo-root .gitignore.
+      # A new top-level name here means the list changed: update the names below on purpose.
+      - name: Check sdist contents
+        run: |
+          check() {
+            got="$(tar tzf "$1" | cut -d/ -f2 | sed "/^$/d" | LC_ALL=C sort -u | paste -sd' ')"
+            want="$(printf '%s\n' $2 | LC_ALL=C sort -u | paste -sd' ')"
+            if [ "$got" != "$want" ]; then
+              echo "::error::$1 holds top-level entries [$got], expected [$want]" >&2
+              exit 1
+            fi
+          }
+          check dist/archivey/archivey-*.tar.gz ".gitignore CHANGELOG.md LICENSE PKG-INFO README.md pyproject.toml src"
+          check dist/archivey-cli/archivey_cli-*.tar.gz ".gitignore LICENSE PKG-INFO README.md pyproject.toml"
       - name: Upload distributions
         uses: actions/upload-artifact@v4
         with:
@@ -99,7 +119,7 @@ jobs:
     needs: [build]
     # Real PyPI only from the canonical repo: a version tag, or an explicit manual run.
     if: >-
-      github.repository == 'davitf/archivey'
+      github.repository == 'archivey-dev/archivey'
       && (startsWith(github.ref, 'refs/tags/') || inputs.target == 'pypi')
     runs-on: ubuntu-latest
     environment: pypi
@@ -115,23 +135,30 @@ jobs:
       # archivey-cli upload leaves archivey published. skip-existing lets a re-run finish
       # the missing one instead of failing on the files that are already up (a PyPI
       # filename can never be uploaded twice).
+      # attestations: the action signs each file and uploads a PEP 740 attestation, which
+      # PyPI shows as provenance (the 0.2.0rc1 files of both projects have one). Setting it
+      # pins today's default. It still needs Trusted Publishing (no password:) and a
+      # pypi.org URL: without either the action only warns, skips the attestation and
+      # uploads anyway. The release checklist checks the provenance on PyPI.
       - name: Publish archivey
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/archivey/
           skip-existing: true
+          attestations: true
       - name: Publish archivey-cli
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/archivey-cli/
           skip-existing: true
+          attestations: true
 
   testpypi:
     name: Publish to TestPyPI
     needs: [build]
     # Dry run: manual dispatch only, so a tag push can never land on TestPyPI by accident.
     if: >-
-      github.repository == 'davitf/archivey'
+      github.repository == 'archivey-dev/archivey'
       && github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
     runs-on: ubuntu-latest
     environment: testpypi
@@ -149,9 +176,11 @@ jobs:
           repository-url: https://test.pypi.org/legacy/
           packages-dir: dist/archivey/
           skip-existing: true
+          attestations: true
       - name: Publish archivey-cli
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
           packages-dir: dist/archivey-cli/
           skip-existing: true
+          attestations: true

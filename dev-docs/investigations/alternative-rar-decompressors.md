@@ -9,7 +9,7 @@ heading is the 2026-09-01 evidence as recorded.
 **Date:** 2026-09-01  
 **Trigger:** Homebrew disabled the `rar` cask (Gatekeeper / notarization); CI now
 compiles RARLAB UnRAR from a pinned GitHub mirror
-([PR #276](https://github.com/davitf/archivey/pull/276)). Question: should archivey
+([PR #276](https://github.com/archivey-dev/archivey/pull/276)). Question: should archivey
 accept another CLI for member **data** — first `unar` (easy `brew install`), then
 whatever rarfile already wraps?
 
@@ -327,7 +327,7 @@ Homebrew contributor (commented on the 2020 core unrar-removal PR). Tap created
 ### `carlocab/personal/unrar`
 
 Same shape, older pin (`unrarsrc-7.1.5.tar.gz`), bottles through Sequoia +
-Linux. [PR #276](https://github.com/davitf/archivey/pull/276) already rejected
+Linux. [PR #276](https://github.com/archivey-dev/archivey/pull/276) already rejected
 it for CI: personal tap, bottles stop before `macos-latest` (Tahoe).
 
 ### Trust

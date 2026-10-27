@@ -787,13 +787,20 @@ def _zip_bytes(entries: dict[str, bytes]) -> bytes:
 
 
 def _main_on_fifo(fifo: Path, argv: list[str]) -> int:
-    """Run ``main(argv)`` in a thread and fail the test if it blocks on ``fifo``."""
+    """Run ``main(argv)`` in a thread and fail the test if it blocks on ``fifo``.
+
+    A second open of a FIFO blocks every time, not now and then, so the window only
+    has to outlast a slow runner: 10 s was missed once on macOS under ``-n auto``
+    (a test that passed on the same commit in another run). 40 s plus the 5 s
+    unblock stays under the suite's 60 s ``--timeout``, so a real block still fails
+    here with its message.
+    """
     import threading
 
     result: list[int] = []
     worker = threading.Thread(target=lambda: result.append(main(argv)), daemon=True)
     worker.start()
-    worker.join(10)
+    worker.join(40)
     if worker.is_alive():
         # Unblock a stuck second open so the thread can finish, then fail.
         fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
@@ -1375,7 +1382,7 @@ def test_progress_callback_requires_tty(monkeypatch: pytest.MonkeyPatch) -> None
     from archivey.cli import progress as progress_mod
 
     class _NonTTY(io.StringIO):
-        def isatty(self) -> bool:  # noqa: A003 - match TextIO API
+        def isatty(self) -> bool:  # match TextIO API
             return False
 
     monkeypatch.setattr(progress_mod.sys, "__stderr__", _NonTTY())
@@ -3076,9 +3083,11 @@ def test_stored_zipcrypto_provider_none_is_password_required(tmp_path: Path) -> 
     path = tmp_path / "zc_stored.zip"
     path.write_bytes(blob)
 
-    with pytest.raises(EncryptionError, match="Password required") as caught:
-        with open_archive(path, password=lambda _r: None) as ar:
-            ar.read(next(m for m in ar.members() if m.is_file))
+    with (
+        pytest.raises(EncryptionError, match="Password required") as caught,
+        open_archive(path, password=lambda _r: None) as ar,
+    ):
+        ar.read(next(m for m in ar.members() if m.is_file))
     assert "Wrong password" not in caught.value.message
 
 
@@ -3471,11 +3480,7 @@ def _report_lines(err: str, marker: str) -> list[str]:
     character absent" assertion would pass vacuously. A trailing ``\\r`` is stripped so a
     CRLF line ending does not read as an embedded CR.
     """
-    return [
-        ln[:-1] if ln.endswith("\r") else ln
-        for ln in err.split("\n")
-        if ln.startswith(marker)
-    ]
+    return [ln.removesuffix("\r") for ln in err.split("\n") if ln.startswith(marker)]
 
 
 # A member name carrying an ANSI erase-line plus a CR: printed raw, everything before
@@ -4500,9 +4505,11 @@ def test_library_log_records_reach_other_handlers_unescaped(
     from archivey.cli.logging_config import cli_logging
 
     err = io.StringIO()
-    with caplog.at_level(logging.WARNING, logger="archivey.test"):
-        with cli_logging(verbose=False, err=err):
-            logging.getLogger("archivey.test").warning("name: %r", "ev\x1b[2Kil.txt")
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey.test"),
+        cli_logging(verbose=False, err=err),
+    ):
+        logging.getLogger("archivey.test").warning("name: %r", "ev\x1b[2Kil.txt")
 
     assert caplog.records[-1].getMessage() == "name: 'ev\\x1b[2Kil.txt'"
     assert caplog.records[-1].args == ("ev\x1b[2Kil.txt",)
@@ -4522,7 +4529,9 @@ def test_uncaught_exception_traceback_reaches_stderr_inert() -> None:
         "from archivey.exceptions import ExtractionError\n"
         "raise ExtractionError('Destination exists: /out/ev\\x1b[2Kil\\rSPOOF.txt')\n"
     )
-    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    proc = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=False
+    )
     assert proc.returncode != 0
     assert "\x1b" not in proc.stderr  # no raw escape sequence reached the terminal
     assert "\\x1b[2K" in proc.stderr  # …shown losslessly on the traceback's last line
@@ -4622,6 +4631,7 @@ def test_dunder_main_is_importable_without_running_the_cli() -> None:
         [sys.executable, "-c", "import archivey.__main__; print('imported')"],
         capture_output=True,
         text=True,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     assert "imported" in proc.stdout

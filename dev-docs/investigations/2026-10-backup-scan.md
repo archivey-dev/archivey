@@ -178,8 +178,10 @@ The others, checked on the files:
 - **Negative offset (2 ZIPs):** the files are missing their first 316 008 and 12 150
   bytes. `unzip` reports "missing N bytes in zipfile" and then fails every member as
   overlapped. Archivey fails only the member whose data was cut and extracts the rest. Its
-  message, "Absurd local-header offset: -316008", could say that the start of the file is
-  missing.
+  message was "Absurd local-header offset: -316008". **Status: fixed.** The message now
+  says the archive seems to be missing at least its first 316 008 bytes, the same number
+  for every cut member (`tests/test_zip_native_reader.py`,
+  `test_a_zip_missing_its_first_bytes_says_so`).
 - **All 13 members bad magic (1 ZIP, 120 MB):** the central directory lists tracks 6-18
   at offsets that leave room for five earlier tracks. The file's local headers sit at
   other offsets, and the members found there are longer than declared. It looks like a

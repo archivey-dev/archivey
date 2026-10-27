@@ -14,7 +14,7 @@ behaviour and links the row.
 | --- | --- |
 | Read | Brotli as a one-member archive and inside `.tar.br` |
 | Write | **Not shipped** |
-| Backends | `brotli` 1.2.0 or later, from `[recommended]`, through its incremental `Decompressor` under `DecompressorStream` |
+| Backends | `brotli` 1.2.1 or later, from `[recommended]`, through its incremental `Decompressor` under `DecompressorStream` |
 | Seeking | A backward seek decodes again from the start |
 | Size | `None`. Brotli has no size field |
 | Digests | None. Brotli has no checksum |
@@ -114,9 +114,9 @@ is empty ([`single-file.md`](single-file.md) §2.2).
 `brotli.Decompressor` incrementally. It asks for output with `output_buffer_limit` and
 checks `can_accept_more_data()` before feeding more, so a `read(1)` does not make the
 library materialise a whole meta-block of up to 16 MiB. The limit is per block, with a
-floor around 32 KiB, not a byte cap. Those two calls exist from `brotli` 1.2.0, which is why
-that is the minimum: earlier versions have no way to bound one call's output
-(CVE-2025-6176).
+floor around 32 KiB, not a byte cap. Those two calls exist from `brotli` 1.2.0: earlier
+versions have no way to bound one call's output (CVE-2025-6176). The minimum is 1.2.1, which
+also fixes a decoder buffer overflow (CVE-2026-111497).
 
 A `brotli.error` is `CorruptionError`. A cut stream does not raise in the library: the
 decompressor simply never reports that it finished, so the engine arms a `TruncatedError`
@@ -221,6 +221,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Far magic before content probes (PR #270) | A bootable ISO's system area decoded as Brotli | Probes first |
 | Decode to the compressed block the walk stops at | Every measured false claim over 64 KiB failed within 256 bytes of it; the read is sequential and mostly a copy | Stopping signatures for `.pyc` and PFB (the pyc magic changes per CPython version); parsing the block's Huffman tables without decoding |
 | Require `brotli` 1.2.0 | `output_buffer_limit` bounds one call's output (CVE-2025-6176) | Older versions, which decoded a whole meta-block per call |
+| Require `brotli` 1.2.1 | Fixes a decoder buffer overflow (CVE-2026-111497) present from 1.0.3 through 1.2.0. The floor binds an install of `[recommended]` only: a brotli that is already present is used whatever its version, so `docs/security.md` §Hardening tells users to upgrade it | Staying on 1.2.0, which left the overflow reachable from a crafted stream; a runtime version check, which no other Python codec has |
 | Replay from the start to tell bytes after the end from damage | The library gives the same error for both and loses the call's output; a replay costs nothing on a clean file | Feeding one byte at a time always, which is slow on every file; refusing bytes after the end, unlike every other codec |
 | `brotli`, not `brotlicffi` | `brotli` is the reference binding; `brotlicffi` helps only on PyPy | Supporting both |
 
@@ -236,19 +237,19 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
     tests/test_codecs.py tests/test_detection.py tests/test_single_file.py -k "brotli or br_ or chain or completeness or guess"
 ```
 
-| Claim | Pinned by |
-| --- | --- |
-| Reads; the backend is optional | `tests/test_single_file.py::test_brotli_roundtrip`, `tests/test_codecs.py::test_brotli_without_brotli_raises`, `tests/test_detection.py::test_brotli_probe_skipped_when_backend_missing` |
-| Cut is `TruncatedError`, damage `CorruptionError` | `tests/test_codecs.py::test_truncated_brotli_translates_to_truncated`, `::test_corrupt_brotli_translates_to_corruption_with_cause` |
-| One call's output is bounded | `::test_brotli_read_one_bounds_internal_buffer` |
-| No real Brotli file is rejected | `tests/test_brotli_framing_gate.py::test_real_brotli_corpus_zero_false_negatives`, `tests/test_probe_completeness_gate.py::test_real_brotli_corpus_includes_sub_100_byte_payloads`, `::test_small_real_brotli_survives_completeness` |
-| The first-block gate | `tests/test_brotli_framing_gate.py::test_framing_gate_rejects_mz_stub_and_doxygen_opener`, `::test_framing_gate_rejects_random_overrunning_blobs`, `::test_unknown_length_skips_framing_gate` |
-| The chain walk and completeness | `tests/test_probe_completeness_gate.py::test_chain_walk_rejects_second_link_overrun`, `::test_chain_walk_rejects_trailing_bytes_after_declared_end`, `::test_sixteen_mib_vacuous_first_block_caught_by_walk`, `::test_completeness_rejects_tiny_nonterminating_file`, `::test_probe_hit_under_the_completion_window_is_checked_whole` |
-| The 4 KiB sample | `::test_text_that_decodes_for_256_bytes_is_not_brotli` |
-| The chain decode | `tests/test_brotli_chain_decode.py::test_data_that_fails_past_the_window_is_not_brotli`, `::test_real_stream_with_a_long_uncompressed_first_block_is_kept`, `::test_real_stream_with_a_long_metadata_first_block_is_kept`, `::test_fast_budget_cannot_cover_the_decode_and_says_so` |
-| `PROBABLE` and `GUESS` | `tests/test_brotli_framing_gate.py::test_real_brotli_compressed_first_is_probable_without_extension`, `::test_real_brotli_with_br_extension_is_probable`, `::test_brotli_residual_that_fits_framing_detects_as_guess` |
-| `format_unconfirmed` on a probe-only failure | `::test_guess_decode_failure_sets_format_unconfirmed`, `::test_probe_unconfirmed_diagnostic_emitted_once_across_retries` |
-| Archives behind a stub are not Brotli | `tests/test_sfx.py::test_sfx_7z_behind_a_low_entropy_stub_is_not_brotli`, `::test_a_real_brotli_stream_is_unaffected` |
+| Claim |
+| --- |
+| Reads; the backend is optional |
+| Cut is `TruncatedError`, damage `CorruptionError` |
+| One call's output is bounded |
+| No real Brotli file is rejected |
+| The first-block gate |
+| The chain walk and completeness |
+| The 4 KiB sample |
+| The chain decode |
+| `PROBABLE` and `GUESS` |
+| `format_unconfirmed` on a probe-only failure |
+| Archives behind a stub are not Brotli |
 
 **Building fixtures.** `brotli.compress` writes Brotli; the `brotli` command installs from
 the distribution. `scripts/exploration/brotli_probe_field_survey.py` is the reference for

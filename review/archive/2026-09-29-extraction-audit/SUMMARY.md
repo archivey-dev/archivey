@@ -1,6 +1,6 @@
 # Extraction and backend security audit (2026-09-28/29) — summary
 
-PR [#512](https://github.com/davitf/archivey/pull/512). The brief was the maintainer's own:
+PR [#512](https://github.com/archivey-dev/archivey/pull/512). The brief was the maintainer's own:
 find bugs and untested corner cases in extraction and the backends, including protections
 one format has and another lacks. Try to make the library raise an untyped exception,
 crash, return wrong data, use large memory, or skip a limit or a rate check, and compare

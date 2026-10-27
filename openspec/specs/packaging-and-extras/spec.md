@@ -356,6 +356,26 @@ Reason: Python packaging has no default extras, so `uvx archivey` runs the core 
 | Root version bumped without the companion's version or pin | `tests/test_cli_companion_package.py` fails |
 | Tag `vX.Y.Z` where either built wheel has another version | `publish.yml` build job fails before upload |
 
+### Requirement: Source distributions hold only what a build needs
+
+The `archivey` sdist SHALL hold `src/`, `LICENSE`, `README.md`, `CHANGELOG.md`, and the
+files the build backend adds (`pyproject.toml`, `PKG-INFO`, the repository's
+`.gitignore`). The `archivey-cli` sdist SHALL hold its `LICENSE`, `README.md` and
+`pyproject.toml` plus the same generated files. Tests SHALL NOT be shipped in the sdist.
+
+Reason: without a list the build packs every tracked file (the 0.2.0rc1 sdist was about
+7.5 MB with design notes and tests). Many tests read files that exist only in a git
+checkout (`scripts/`, `review/`, `openspec/`, `.github/`), so the suite would not pass
+from an unpacked sdist; packagers who run tests use the git tag.
+
+#### Scenario: sdist contents
+
+| Case | Expected |
+| --- | --- |
+| Tag `vX.Y.Z`, either sdist holds a top-level entry not listed above | `publish.yml` build job fails before upload |
+| `only-include` in `pyproject.toml` changed without the `publish.yml` expectation | `tests/test_sdist_contents.py` fails |
+| Unpack the `archivey` sdist and build a wheel from it | Builds; no `tests/` directory |
+
 ### Requirement: Terminal-safe display helpers live in the public archivey.terminal module
 
 The package SHALL provide a public module, `archivey.terminal`, holding

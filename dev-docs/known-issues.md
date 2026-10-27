@@ -185,7 +185,7 @@ of MB with every core decoding.
 **What remains.** Nothing runs rapidgzip in the caller's process. To know whether the
 isolation is still needed, `scripts/accelerator_crash_search.py` runs both decoders
 in-process on damaged input, in a process it watches, and reports each crash by its
-signature; `.github/workflows/accelerator-crash-search.yml` runs it weekly and on a
+signature; `.github/workflows/accelerator-crash-search.yml` runs it monthly and on a
 lockfile change, on Linux, macOS and Windows. A new signature (any bzip2 crash) turns the
 run red; a run with cut inputs that no longer finds this abort suggests it is fixed.
 
@@ -248,17 +248,21 @@ the exact remaining `unpack_size` and never passes `-1`; refuses unsized PPMd7 a
 construction; decodes unsized PPMd8 in bounded 64 KiB requests; injects at most one capped
 NUL at the end; stops at a spent payload; and hands pyppmd the whole member in one
 `decode`, so a short return is the end. Two exceptions are fed in pieces: members over
-`DecoderLimits.max_ppmd_in_process_input` (16 MiB by default), and a ZIP member read from
+`DecoderLimits.max_ppmd_held_input` (16 MiB by default), and a ZIP member read from
 a stream that cannot seek, whose sizes follow its data, so its input runs on into the rest
-of the archive. Fed in pieces, pyppmd 1.3.1 can return short at a false `eof` with input
-unread, which reads as a spent payload: a valid member then raises `TruncatedError` a few
-KiB short (tracked internally). Every PPMd member decodes in a child process unless
-`process_isolation` is `NONE` (`ppmd_child.py`), because the quiesce NUL can crash pyppmd
-on small members too; a crash becomes `CorruptionError` (`ResourceLimitError` for SIGKILL
-or a refused `mem_size`, `ReadError` for other deaths). A child is reused only after a
-member that ended cleanly. Pinned by
+of the archive. Fed in pieces, pyppmd 1.3.1 resumes a worker that waited for input with
+the output budget and count of the call that started it, so a call can return short at a
+false `eof` with input unread, which reads as a spent payload; a valid member raised
+`TruncatedError` some KiB short. `PpmdDecoder._native_decode` now asks 1 byte of each call
+that brings new input after the first, which stops a resumed worker after one symbol, and
+the rest of a new worker; a request of 1 byte needs no split. Every PPMd member decodes in
+a child process unless `process_isolation` is `NONE` (`ppmd_child.py`), because the
+quiesce NUL can crash pyppmd on small members too; a crash becomes `CorruptionError`
+(`ResourceLimitError` for SIGKILL or a refused `mem_size`, `ReadError` for other deaths).
+A child is reused only after a member that ended cleanly. Pinned by
 `tests/test_ppmd_crash_isolation.py` and `tests/test_ppmd_raw_streams.py`; the
-non-blocking PPMd native stress workflow watches for regressions.
+non-blocking PPMd native stress workflow watches for regressions, weekly and on pull
+requests that touch the PPMd path.
 
 **What remains.** No crash is confirmed on the in-process path; the defect is upstream,
 so the path rests on archivey's call discipline, not on a fixed decoder. A header that
@@ -511,11 +515,16 @@ in-process reports its likely size with `__pypy__.add_memory_pressure`, as PyPy'
 
 A decoder's `close` also ends its liblzma decoders with `ffi.release` and cancels their
 pressure, because only the stream declares the real dictionary (up to 4 GiB uncapped).
-Pinned by `tests/test_decoder_memory_pressure.py`: each estimate exactly, and 800 dropped
-xz decoders in a fresh interpreter under 2 GiB through `/proc`. The drops run in a child
-process because in an xdist worker they once grew 3,725 MiB (PR #901, docs-only, passed on
-a re-run); the likely reason, inferred and not reproduced, is that PyPy's collection
-threshold scales with the heap the last collection left.
+Pinned by `tests/test_decoder_memory_pressure.py`: each estimate exactly, and 1,600 dropped
+xz decoders in a fresh interpreter, where the last 800 must add under 2 GiB through `/proc`.
+With the accounting, the growth levels off at whatever pressure PyPy lets build before a
+major collection. That level is large and varies: 800 drops reached 3,725 MiB in an xdist
+worker (PR #901) and 2,120 MiB in a fresh interpreter (PR #951), and both passed on a
+re-run. So the test checks that growth levels off, not how high. Without the accounting,
+growth is linear at 8 MiB per drop. The drops run in a child process because the worker
+reading was 1.76 times the fresh one, likely because PyPy's threshold scales with the heap
+the last collection left (inferred, not reproduced). Each CI run writes the curve to the
+job summary.
 
 **What remains.** A zstd frame can reserve up to `window_log_max` (2 GiB under the default
 `max_decoder_memory`) and nothing frees it before a collection, nor a brotli window over

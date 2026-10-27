@@ -67,7 +67,7 @@ def persist_crash(target: str, data: bytes, *, reason: str) -> Path:
 def _install_slice_alarm(seconds: float) -> None:
     """Hard wall-clock kill for a single TestOneInput (ISO hang class)."""
 
-    def _handler(signum: int, frame: Any) -> None:  # noqa: ARG001
+    def _handler(signum: int, frame: Any) -> None:
         raise TimeoutError(f"atheris input exceeded {seconds:.1f}s wall clock")
 
     signal.signal(signal.SIGALRM, _handler)
@@ -135,7 +135,7 @@ def run_target(
         except TimeoutError:
             persist_crash(name, payload, reason="per-input-timeout")
             raise
-        except Exception as exc:  # noqa: BLE001 — any non-ArchiveyError is a fuzz finding
+        except Exception as exc:
             # Targets must convert ArchiveyError to a soft return; anything else is a finding.
             persist_crash(name, payload, reason=type(exc).__name__)
             raise

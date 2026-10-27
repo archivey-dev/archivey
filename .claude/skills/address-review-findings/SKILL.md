@@ -324,7 +324,7 @@ waiting for a decision that has already been made.
 
 **Name the decider.** A settled call must be visibly the maintainer’s:
 
-> **Maintainer decision (davitf, [r3988422276](https://github.com/davitf/archivey/pull/326#discussion_r3988422276)):**
+> **Maintainer decision (davitf, [r3988422276](https://github.com/archivey-dev/archivey/pull/326#discussion_r3988422276)):**
 > raise rather than clamp — dropping consumed bytes desynchronizes the stream. `ValueError`,
 > since `streamtools` cannot raise `ArchiveyUsageError`.
 

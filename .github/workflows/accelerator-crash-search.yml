@@ -9,12 +9,12 @@
 # - the known DEFLATE truncation abort is listed but does not; when a run no longer
 #   finds it, the verdict line says it may be fixed upstream.
 #
-# It runs weekly, on demand, and on a PR that changes the script, this file or the
+# It runs monthly (the 1st), on demand, and on a PR that changes the script, this file or the
 # lockfile (a rapidgzip upgrade). Not a required check: a red run is the signal we want,
 # not a merge gate.
 on:
   schedule:
-    - cron: "23 5 * * 1"
+    - cron: "23 5 1 * *"
   pull_request:
     paths:
       - "scripts/accelerator_crash_search.py"
@@ -43,7 +43,7 @@ jobs:
     env:
       UV_PYTHON: "3.11"
       # A PR run is a short check that the script and the lockfile's rapidgzip work;
-      # the weekly and manual runs search longer.
+      # the scheduled and manual runs search longer.
       SECONDS_PER_CODEC: ${{ github.event_name == 'pull_request' && '60' || inputs.seconds || '300' }}
     steps:
       - uses: actions/checkout@v4

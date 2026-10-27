@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveFormat, MemberType, open_archive
-from tests.conftest import requires, requires_binary
+from tests.conftest import requires, requires_unrar_cli
 
 _ENV = "ARCHIVEY_RARFILE_TEST_FILES"
 
@@ -63,9 +63,7 @@ def _is_primary_archive(path: Path) -> bool:
         return False
     # Mid-set volumes: *.partN.rar for N != 1
     lower = path.name.lower()
-    if ".part" in lower and not lower.endswith(".part1.rar"):
-        return False
-    return True
+    return not (".part" in lower and not lower.endswith(".part1.rar"))
 
 
 def _normalize_name(name: str) -> str:
@@ -106,7 +104,7 @@ pytestmark = [
         reason=f"set {_ENV} to rarfile's test/files directory to run this corpus",
     ),
     requires("rarfile"),
-    requires_binary("unrar"),
+    requires_unrar_cli(),
 ]
 
 

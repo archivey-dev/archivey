@@ -71,6 +71,15 @@ install_linux_packages() {
   # tabix: ships bgzip, the reference BGZF writer tests/test_bgzf_seek.py checks the
   #   block walk against (the test skips without it).
   ${SUDO} apt-get install -y unrar rar p7zip-full unar xorriso zip unzip tabix
+  # 7zz 26.05: Ubuntu's 7z predates the RISC-V filter that tests/test_sevenzip_riscv.py
+  # checks against. Built from source (about half a minute); a no-op once installed.
+  # Non-fatal: without it only those live checks skip.
+  local log7z="${TMPDIR:-/tmp}/archivey-7zip-build.log"
+  if ! "${REPO_ROOT}/scripts/install-7zip-from-source.sh" --dest "${HOME}/.local/bin" \
+    >"$log7z" 2>&1; then
+    tail -n 20 "$log7z" >&2
+    echo "! 7-Zip build failed (log: $log7z); RISC-V 7-Zip tests will skip" >&2
+  fi
 }
 
 install_macos_packages() {
@@ -204,6 +213,17 @@ for tool in ("unrar", "7z", "unar", "xorriso", "zip", "unzip", "unzipsfx", "bgzi
             "(not on login PATH — a new shell will skip RAR data tests "
             "unless that directory is added)"
         )
+
+from tests.conftest import sevenzip_with_riscv
+
+riscv_7z = sevenzip_with_riscv()
+if riscv_7z:
+    print(f"ok   7-Zip with RISC-V: {shutil.which(riscv_7z)}")
+else:
+    print(
+        "MISSING 7-Zip with RISC-V: tests/test_sevenzip_riscv.py skips its live 7-Zip "
+        "checks. Build: scripts/install-7zip-from-source.sh --dest ~/.local/bin"
+    )
 
 missing = missing_baseline_requirements()
 if missing:

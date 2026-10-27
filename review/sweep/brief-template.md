@@ -9,12 +9,12 @@ Run the counter first and take the scope from what it says is left:
 
 ```
 for p in 1 2 3; do \
-  curl -s "https://api.github.com/repos/davitf/archivey/issues/315/comments?per_page=100&page=$p" \
+  curl -s "https://api.github.com/repos/archivey-dev/archivey/issues/315/comments?per_page=100&page=$p" \
   | python3 -c 'import json,sys; [print(c["body"]) for c in json.load(sys.stdin)]'; \
 done | python3 scripts/sweep_coverage.py --unswept
 ```
 
-That loop pages deliberately: the endpoint serves 100 comments at a time, #315 gains a marker per file swept, and a single-page fetch drops the rest **silently** — the files on the missing page come back as unswept. Raise the range until the last page prints nothing. With the `gh` CLI, `gh api --paginate repos/davitf/archivey/issues/315/comments --jq '.[].body'` does the same in one call.
+That loop pages deliberately: the endpoint serves 100 comments at a time, #315 gains a marker per file swept, and a single-page fetch drops the rest **silently** — the files on the missing page come back as unswept. Raise the range until the last page prints nothing. With the `gh` CLI, `gh api --paginate repos/archivey-dev/archivey/issues/315/comments --jq '.[].body'` does the same in one call.
 
 **Exclude every file that already carries a marker.** The markers are the record of what
 was read; a batch plan is not. A brief written from a plan alone sends an agent back over code
@@ -32,7 +32,7 @@ Paste this whole file into a fresh agent on `archivey`, `main` @ `<sha>`.
 
 Run `/code-review-skill` over the files below as a **cold whole-file reading pass**, not a
 diff review. There is no PR to review: this is the continuation of the codebase sweep that
-produced the threads on [#315](https://github.com/davitf/archivey/pull/315). These files have
+produced the threads on [#315](https://github.com/archivey-dev/archivey/pull/315). These files have
 never been read end to end by any review.
 
 ## Scope — read all of these, and nothing else

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Field survey for the Brotli content-probe investigation — run it, send back the JSON.
 
 Supporting `dev-docs/investigations/brotli-content-probe-results.md`. That investigation

@@ -25,7 +25,10 @@ Measurements: ``dev-docs/investigations/alternative-rar-decompressors.md`` and
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from archivey.internal.backends.rar_parser import RarArchive, RarMemberInfo
+from archivey.terminal import quoted
 
 # Compression versions below 2.0 are decoded by a separate RAR 1.5 algorithm, which
 # only matters when the data is compressed.
@@ -223,6 +226,104 @@ def _rar4_solid_after_encrypted(archive: RarArchive) -> set[int]:
     return refused
 
 
+@dataclass(frozen=True)
+class SolidAfterUnknown:
+    """Why a member after an unknown-version member is not decoded.
+
+    ``blocker`` is the unknown-version member. ``same_stream`` says whether the
+    member shares its solid stream, so that no decoder can rebuild the window it
+    needs; when ``False``, only ``unrar``'s masked read is blocked
+    (:func:`solid_after_unknown_compression`).
+    """
+
+    blocker: RarMemberInfo
+    same_stream: bool
+
+
+def solid_after_unknown_compression(
+    archive: RarArchive,
+) -> dict[int, SolidAfterUnknown]:
+    """``id``s of the payload members that an unknown-version member ahead of them
+    keeps from being decoded, each mapped to why.
+
+    No decoder archivey runs decodes that member
+    (:meth:`RarMemberInfo.unknown_compression_version`), so no decoder rebuilds the
+    window a later member of **its solid stream** needs (``same_stream``). The streams
+    are the ones :func:`unar_dictionary_costs` walks, by each member's solid flag, so
+    this part does not depend on the archive's solid bit. That much holds for both
+    programs, and it is all ``unar`` is refused: it addresses an entry by index and
+    does not decode the stream ahead of a member that starts a new one. Measured
+    with ``unar`` 1.10.1 on ``solid_groups__.rar`` (``rar -s2``) with ``a.txt``'s data
+    garbled: ``b.txt`` fails and ``c.txt`` and ``d.txt`` read whole.
+
+    ``unrar`` 7.00 is blocked further. It reports "Unknown method" and stops, so
+    ``unrar p`` writes nothing for any later member, and a read addressed with an
+    include mask (``-n``, as archivey addresses a member) decodes a solid archive from
+    its start. So in an archive whose main header has the solid bit, every payload
+    member after the first unknown-version one fails under ``unrar``, even one in a
+    later solid group (``same_stream`` ``False``). The archive bit is the gate
+    because ``unrar`` keys that on it, not on the members' flags: on the same
+    archive with the bit cleared, ``unrar p -n./c.txt`` reads ``c.txt``. Only a
+    file name given as an argument, which archivey does not use, skips to the group.
+
+    A member a program does not decode (stored and read by archivey itself) is not
+    affected, so callers check this only on the way to a program.
+    """
+    blocked: dict[int, SolidAfterUnknown] = {}
+    first: RarMemberInfo | None = None
+    in_stream: RarMemberInfo | None = None
+    for info in archive.members:
+        # Every member, as ``unar_dictionary_costs`` walks them: a compressed RAR
+        # 2.x-4.x symlink is no payload file but stores its target as compressed data,
+        # so it starts, continues or blocks a stream like any other. A stored member
+        # neither starts nor continues one; only ``unrar``'s masked read reaches it.
+        decoded = not uses_no_dictionary(info)
+        if decoded and not info.file_solid:
+            in_stream = None
+        # Only payload members are read, so only they are recorded.
+        if info.is_payload_file():
+            if decoded and in_stream is not None:
+                blocked[id(info)] = SolidAfterUnknown(in_stream, same_stream=True)
+            elif first is not None and archive.is_solid:
+                blocked[id(info)] = SolidAfterUnknown(first, same_stream=False)
+        if decoded and info.unknown_compression_version() is not None:
+            # Refused on its own first; recorded as the blocker of what follows.
+            first = first or info
+            in_stream = in_stream or info
+    return blocked
+
+
+def solid_after_unknown_compression_reason(block: SolidAfterUnknown) -> str:
+    """Why a member that ``block`` names cannot be decoded.
+
+    For a member of the blocker's own solid stream it is worded like
+    :data:`REFUSE_UNKNOWN_COMPRESSION`, for the same reason: the bound is the
+    decoder's, not one program's. For a member of a later stream the bound is how
+    archivey runs ``unrar``, and the text says so. The reader's refusal uses it too.
+    """
+    blocker = block.blocker
+    version = blocker.unknown_compression_version()
+    assert version is not None
+    if block.same_stream:
+        return (
+            f"it comes after {quoted(blocker.filename)} in its solid stream, and "
+            f"decoding it means decoding that member first. That member is "
+            f"compressed with {version}, which neither RAR decompressor archivey "
+            'runs is known to decode (unrar 7.00 reports "Unknown method" and stops '
+            "there), so switching decompressors does not help; it may need a newer "
+            "version of RAR."
+        )
+    return (
+        f"it comes after {quoted(blocker.filename)} in this solid archive, which is "
+        f"compressed with {version}. This member is not in that member's solid "
+        "stream and does not need it decoded, but archivey asks unrar for one member "
+        "through an "
+        "include mask, and unrar then decodes the solid archive from its start and "
+        'stops at that member ("Unknown method"). unar reads it: set '
+        "ArchiveyConfig.rar_decompressor to 'unar'."
+    )
+
+
 def _needs_password(archive: RarArchive, info: RarMemberInfo) -> bool:
     return archive.has_header_encryption or info.is_encrypted or info.encryption_unknown
 
@@ -253,6 +354,12 @@ class UnarRarPolicy:
         self._index = unar_entry_index(archive)
         self._solid_after_empty = _rar5_solid_after_empty(archive)
         self._solid_after_encrypted = _rar4_solid_after_encrypted(archive)
+        # Only the blocker's own stream: ``unar`` reads a later one (see the function).
+        self._solid_after_unknown = {
+            key: block
+            for key, block in solid_after_unknown_compression(archive).items()
+            if block.same_stream
+        }
         self._archive_refusal = _archive_refusal(archive)
         self._pass_refusals: dict[int, str] = {}
         self._pass_indexes: list[int] | None = None
@@ -299,6 +406,9 @@ class UnarRarPolicy:
         version = info.unknown_compression_version()
         if version is not None:
             return REFUSE_UNKNOWN_COMPRESSION.format(version=version)
+        block = self._solid_after_unknown.get(id(info))
+        if block is not None:
+            return solid_after_unknown_compression_reason(block)
         if _rar4_encrypted(self._archive, info):
             return REFUSE_RAR4_ENCRYPTED
         if id(info) in self._solid_after_encrypted:

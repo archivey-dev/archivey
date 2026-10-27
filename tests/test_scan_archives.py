@@ -13,7 +13,6 @@ import importlib.util
 import json
 import logging
 import os
-import subprocess
 import sys
 import zlib
 from pathlib import Path
@@ -21,6 +20,7 @@ from pathlib import Path
 import pytest
 
 import archivey
+from archivey.internal.base_reader import BaseArchiveReader
 from tests.streams_util import make_lzip_member
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -86,9 +86,8 @@ def test_near_excludes_over_in_flags_and_summary() -> None:
 def test_main_writes_csv_and_log(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # ``main`` wraps library internals and reroutes the ``archivey`` logger for the
-    # life of the process; neither may leak into the rest of the test session.
-    monkeypatch.setattr(scan, "_install_probes", lambda: [])
+    # ``main`` reroutes the ``archivey`` logger for the life of the process, which
+    # may not leak into the rest of the test session.
     logger = logging.getLogger("archivey")
     monkeypatch.setattr(logger, "handlers", list(logger.handlers))
     monkeypatch.setattr(logger, "propagate", logger.propagate)
@@ -123,30 +122,27 @@ def test_detection_probes_do_not_count_as_decoder_memory(tmp_path: Path) -> None
     # Detection opens the LZMA Alone codec on every file it cannot place by magic. When
     # that codec checked bytes 1-4 as a dictionary size itself, a git loose object
     # (bare zlib) read that way declared 3.4 GB, and a scan of a home directory flagged
-    # every git object ``over:max_decoder_memory``. The probes patch library internals
-    # for the life of the process, so the script runs in its own interpreter.
+    # every git object ``over:max_decoder_memory``. A detection probe builds its own
+    # stream config, without the reader's usage record, so it is never counted.
     tree = tmp_path / "in"
     tree.mkdir()
     (tree / "object").write_bytes(zlib.compress(b"blob 12\x00hello world\n" * 50))
     (tree / "real.lz").write_bytes(make_lzip_member(b"a" * 100_000, 20))
-    out = tmp_path / "scan.csv"
-    subprocess.run(
-        [sys.executable, str(SCRIPT), str(tree), "-o", str(out)],
-        check=True,
-        capture_output=True,
-    )
-    with out.open(encoding="utf-8", newline="") as fh:
-        rows = {Path(row["path"]).name: row for row in csv.DictReader(fh)}
+    config = scan._scan_config(False)
+    rows = {}
+    for name in ("object", "real.lz"):
+        row = scan.scan_one(tree / name, config)
+        assert row is not None
+        rows[name] = row.csv_row()
     assert rows["object"]["format"] == "raw_stream.zz"
-    assert rows["object"]["decoder_memory"] == ""
+    assert rows["object"].get("decoder_memory", "") == ""
     assert "max_decoder_memory" not in rows["object"]["flags"]
     # A real lzip member's dictionary is still measured: the 1 MiB its header declares.
     # (xz, .lzma and zstd hand the cap to their library and are not measured.)
-    assert rows["real.lz"]["decoder_memory"] == str(1024 * 1024)
+    assert rows["real.lz"]["decoder_memory"] == 1024 * 1024
 
 
 def _quiet_main(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(scan, "_install_probes", lambda: [])
     logger = logging.getLogger("archivey")
     monkeypatch.setattr(logger, "handlers", list(logger.handlers))
     monkeypatch.setattr(logger, "propagate", logger.propagate)
@@ -555,3 +551,51 @@ def test_row_round_trips_through_the_csv() -> None:
     record = {k: "" if v is None else str(v) for k, v in row.csv_row().items()}
     back = scan._Row.from_csv(record)
     assert scan._summary([back]) == scan._summary([row])
+
+
+def test_a_changed_usage_record_warns_and_keeps_the_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The record is internal: a renamed field must set the summary warning, not turn
+    # the row into a ``scan`` failure that hides its open and extract results.
+    class _Renamed:
+        decoder_memory = 0
+
+    monkeypatch.setattr(scan, "USAGE_MISSING", False)
+    monkeypatch.setattr(BaseArchiveReader, "_resource_usage", lambda self: _Renamed())
+    row = scan.scan_one(FIXTURE, scan._scan_config(False))
+    assert row is not None
+    out = row.csv_row()
+    assert out["open"] == "ok"
+    assert out["extract"] == "ok"
+    assert out.get("metadata_bytes", "") == ""
+    assert scan.USAGE_MISSING
+    summary_line = "warning: resource usage not recorded"
+    logger = logging.getLogger("archivey")
+    monkeypatch.setattr(logger, "handlers", list(logger.handlers))
+    monkeypatch.setattr(logger, "propagate", logger.propagate)
+    csv_out = tmp_path / "scan.csv"
+    assert scan.main([str(FIXTURE.parent), "-o", str(csv_out)]) == 0
+    assert summary_line in csv_out.with_suffix(".log").read_text(encoding="utf-8")
+
+
+def test_the_peaks_are_read_when_the_scan_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The usage record is read in a ``finally``: a reader that opened and then raised
+    # still reports its peaks, and a row that never listed has no metadata_bytes.
+    def fail(reader: object, config: object, row: object) -> None:
+        raise RuntimeError("raised after the open")
+
+    monkeypatch.setattr(scan, "_scan_open_reader", fail)
+    calls: list[object] = []
+    real = scan._read_usage
+    monkeypatch.setattr(
+        scan,
+        "_read_usage",
+        lambda reader, row: (calls.append(reader), real(reader, row)),
+    )
+    row = scan.scan_one(FIXTURE, scan._scan_config(False))
+    assert row is not None
+    assert len(calls) == 1
+    assert "metadata_bytes" not in row.numbers

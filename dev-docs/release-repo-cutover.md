@@ -5,7 +5,7 @@ clean-slate reimplementation) to the canonical **`archivey`** name for public
 release, while retiring the v1 repos.
 
 **Status (2026-10-10):** steps 2, 4 and 6 are done: this repo is `davitf/archivey`,
-Pages is enabled with `https://davitf.github.io/archivey/` as the repo homepage, and
+Pages is enabled with `https://archivey-dev.github.io/archivey/` as the repo homepage, and
 `CLAUDE.md` and `AGENTS.md` no longer name `archivey-2`. Steps 1 and 5 are half done:
 the prior v1 release repo was renamed `davitf/archivey-old` (the runbook originally
 said `archivey-v1`) but is not archived yet, and `publish.yml` no longer routes on the
@@ -55,7 +55,7 @@ Do these in order — the `archivey` name must be free before this repo can take
     - Description: `Python library for reading zip, tar, rar, 7z and other archives`
     - Topics: `python` `compression` `zip` `tar` `rar` `decompression` `archive` `7zip`
 4. **GitHub Pages.** *(Enabled.)* Settings → Pages → Source = **GitHub Actions**. `mkdocs.yml`'s
-   `site_url` is already `https://davitf.github.io/archivey/`, so no code change; re-set a
+   `site_url` is already `https://archivey-dev.github.io/archivey/`, so no code change; re-set a
    custom domain if one was used.
 5. **PyPI publishing** (see `.github/workflows/publish.yml`):
     - Configure Trusted Publishing on **PyPI** for owner `davitf`, repo `archivey`,

@@ -78,6 +78,7 @@ _MATCHED: list[tuple[DiagnosticCode, DiagnosticContext]] = [
         ArchiveEofContext(expected_marker="end_of_stream"),
     ),
     (DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS, LocalHeaderContext(field="name")),
+    (DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS, LocalHeaderContext(field="method")),
     (DiagnosticCode.MEMBER_LOCAL_CRC_USED, LocalHeaderContext(field="crc32")),
 ]
 

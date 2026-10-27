@@ -25,7 +25,7 @@ import pytest
 from archivey import ArchiveyConfig, DiagnosticPolicy, open_archive
 from archivey.config import RarDecompressor
 from archivey.exceptions import TruncatedError
-from tests.conftest import binary_refusal
+from tests.conftest import binary_refusal, requires_unrar_cli
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 _NAMES = ["a.txt", "b.txt", "c.txt", "d.txt"]
@@ -119,9 +119,11 @@ def test_the_listing_keeps_the_members_present_and_ends_truncated(
         assert isinstance(report.error, TruncatedError)
         assert f"volume {len(volumes) + 1} is missing" in str(report.error)
     if not streaming:
-        with open_archive(volumes[0]) as archive:
-            with pytest.raises(TruncatedError, match="expects another volume"):
-                archive.members()
+        with (
+            open_archive(volumes[0]) as archive,
+            pytest.raises(TruncatedError, match="expects another volume"),
+        ):
+            archive.members()
 
 
 @pytest.mark.parametrize("stem", sorted(_SETS))
@@ -153,19 +155,21 @@ def test_extract_all_writes_the_complete_members_then_raises(
     _needs("unrar")
     size, _ = _SETS[stem]
     dest = tmp_path / "out"
-    with open_archive(_volumes(stem)[0], config=_config("unrar")) as archive:
-        with pytest.raises(TruncatedError):
-            archive.extract_all(dest)
+    with (
+        open_archive(_volumes(stem)[0], config=_config("unrar")) as archive,
+        pytest.raises(TruncatedError),
+    ):
+        archive.extract_all(dest)
     for index, name in enumerate(_NAMES[:-1]):
         assert (dest / name).read_bytes() == _payload(index, size)
     assert not (dest / _NAMES[-1]).exists()
 
 
 @pytest.mark.parametrize("stem", sorted(_SETS))
+@requires_unrar_cli()
 def test_unrar_tests_the_same_members(stem: str) -> None:
     """The oracle: ``unrar t`` passes the complete members and fails the last one
     on the missing volume."""
-    _needs("unrar")
     result = subprocess.run(
         ["unrar", "t", "-p-", str(_volumes(stem)[0])],
         capture_output=True,

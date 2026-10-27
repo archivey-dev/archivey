@@ -619,10 +619,18 @@ def _read_whole_member(member: ArchiveMember, stream: BinaryIO) -> bytes:
     return data
 
 
+# A symlink buffer followed by bytes past its declared end: not a link buffer either.
+_PADDED_LINK = (
+    _reparse_buffer(IO_REPARSE_TAG_SYMLINK, "C:\\target", "C:\\target") + b"P" * 100
+)
+
+
 @pytest.mark.parametrize("read_link_targets", [True, False])
 @pytest.mark.parametrize("streaming", [False, True], ids=["random-access", "streaming"])
 @pytest.mark.parametrize(
-    "content", [b"not a reparse buffer", _LONG_CONTENT], ids=["short", "long"]
+    "content",
+    [b"not a reparse buffer", _LONG_CONTENT, _PADDED_LINK],
+    ids=["short", "long", "padded-link"],
 )
 def test_a_7z_pass_yields_a_non_link_reparse_member_with_its_content(
     tmp_path: Path, read_link_targets: bool, streaming: bool, content: bytes
@@ -674,8 +682,11 @@ def test_a_7z_pass_yields_a_non_link_reparse_member_with_its_content(
 
 @pytest.mark.parametrize("read_link_targets", [True, False])
 @pytest.mark.parametrize("streaming", [False, True], ids=["random-access", "streaming"])
+@pytest.mark.parametrize(
+    "content", [_LONG_CONTENT, _PADDED_LINK], ids=["long", "padded-link"]
+)
 def test_a_zip_pass_yields_a_non_link_reparse_member_with_its_content(
-    tmp_path: Path, read_link_targets: bool, streaming: bool
+    tmp_path: Path, read_link_targets: bool, streaming: bool, content: bytes
 ) -> None:
     """The ZIP pass types such a member when it reaches it, as the 7z pass does.
 
@@ -687,7 +698,7 @@ def test_a_zip_pass_yields_a_non_link_reparse_member_with_its_content(
     archive = tmp_path / "odd_reparse.zip"
     with zipfile.ZipFile(archive, "w") as zf:
         for name, attributes, data in [
-            ("tree/weird", 0x20 | FILE_ATTRIBUTE_REPARSE_POINT, _LONG_CONTENT),
+            ("tree/weird", 0x20 | FILE_ATTRIBUTE_REPARSE_POINT, content),
             ("tree/after.txt", 0x20, b"next member"),
         ]:
             info = zipfile.ZipInfo(name)
@@ -707,7 +718,7 @@ def test_a_zip_pass_yields_a_non_link_reparse_member_with_its_content(
     seen = [(member.name, member_type, data) for member, member_type, data in yielded]
     if read_link_targets:
         assert seen == [
-            ("tree/weird", MemberType.FILE, _LONG_CONTENT),
+            ("tree/weird", MemberType.FILE, content),
             ("tree/after.txt", MemberType.FILE, b"next member"),
         ]
     else:
@@ -954,8 +965,8 @@ def test_a_link_buffer_is_read_only_as_far_as_it_declares(
     by the buffer's own header, not by the most a buffer could ever declare (65 543
     bytes, which across many members is hundreds of times the archive).
 
-    Trailing data past the declared buffer changes no parse, so it is never decoded:
-    the read stops one byte past the buffer.
+    The read stops one byte past the buffer. A byte there means the data is not that
+    buffer, so the member is a file, and the rest is decoded only when it is read.
     """
     delivered: list[int] = []
     original_open = ZipReader._open_member
@@ -984,8 +995,60 @@ def test_a_link_buffer_is_read_only_as_far_as_it_declares(
         zf.writestr(info, buffer + _LARGE_CONTENT)
     with open_archive(archive) as opened:
         (member,) = opened.members()
-        assert member.link_target == "C:/target"
+        assert member.type is MemberType.FILE
+        assert member.link_target is None
     assert sum(delivered) == len(buffer) + 1
+
+
+def _padded_link_member(*, damaged: bool) -> tuple[bytes, bytes]:
+    """A symlink buffer with bytes after its declared end.
+
+    Returns ``(data, stored)``: the data to build the archive from, and the bytes to
+    store in it, which are the same data unless ``damaged``. The damaged bytes change
+    one byte in the PrintName, which is the target read first."""
+    buffer = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, "C:\\target", "C:\\target")
+    data = buffer + b"P" * 100
+    at = data.rindex("target".encode("utf-16-le"))
+    changed = bytearray(data)
+    changed[at] ^= 1
+    return data, bytes(changed) if damaged else data
+
+
+@pytest.mark.parametrize("damaged", [False, True], ids=["intact", "damaged"])
+@pytest.mark.parametrize("fmt", ["zip", "7z"])
+def test_data_longer_than_its_link_buffer_is_a_file_with_a_checked_crc(
+    tmp_path: Path, fmt: str, damaged: bool
+) -> None:
+    """Data that runs on past the buffer its header declares is not a link buffer:
+    Windows returns exactly the header and ReparseDataLength bytes. The member is a
+    file holding that data, and reading it checks its CRC.
+
+    It used to list as a link to the buffer's target with the data read only to one
+    byte past the buffer, so the CRC was never checked: a damaged target listed as
+    ``uarget`` with no error.
+    """
+    data, stored = _padded_link_member(damaged=damaged)
+    archive = tmp_path / f"padded.{fmt}"
+    attributes = 0x20 | FILE_ATTRIBUTE_REPARSE_POINT
+    if fmt == "zip":
+        _zip_with_reparse_member(archive, name="link", attributes=attributes, data=data)
+        raw = archive.read_bytes()
+        archive.write_bytes(raw.replace(data, stored))
+    else:
+        _sevenzip_with_members(archive, [("link", attributes, data)])
+        raw = archive.read_bytes()
+        archive.write_bytes(raw.replace(data, stored))
+    with open_archive(archive) as opened:
+        (member,) = opened.members()
+        assert member.type is MemberType.FILE
+        assert member.link_target is None
+        assert _unavailable_reasons(opened) == ["reparse_data_unrecognized"]
+        if damaged:
+            with pytest.raises(CorruptionError), opened.open(member) as stream:
+                stream.read()
+        else:
+            with opened.open(member) as stream:
+                assert stream.read() == data
 
 
 def test_a_directory_shaped_reparse_point_with_odd_data_stays_a_link(
@@ -1016,6 +1079,33 @@ def test_a_directory_shaped_reparse_point_with_odd_data_stays_a_link(
         assert member.link_target is None
         assert not member.is_junction
         assert _unavailable_reasons(opened) == ["reparse_data_unrecognized"]
+
+
+def test_a_directory_shaped_link_buffer_with_data_past_it_stays_a_targetless_link(
+    tmp_path: Path,
+) -> None:
+    """Data that runs on past its buffer is no link buffer, and a directory-shaped
+    member is not re-typed to carry it (as above): it stays a link with no target, and
+    extraction writes nothing for it. The buffer's target used to be listed and
+    written."""
+    data = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, "tree\\target", "tree\\target")
+    archive = tmp_path / "padded_directory_reparse.zip"
+    _zip_with_reparse_member(
+        archive,
+        name="linkdir/",
+        attributes=_FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT,
+        data=data + b"P" * 40,
+    )
+    with open_archive(archive) as opened:
+        (member,) = opened.members()
+        assert member.type is MemberType.SYMLINK
+        assert member.link_target is None
+        assert _unavailable_reasons(opened) == ["reparse_data_unrecognized"]
+        report = opened.extract_all(tmp_path / "out")
+    (result,) = report.results
+    assert result.status is ExtractionStatus.LINK_TARGET_UNAVAILABLE
+    assert not (tmp_path / "out" / "linkdir").exists()
+    assert not (tmp_path / "out" / "linkdir").is_symlink()
 
 
 def test_a_directory_reparse_point_with_no_data_stays_a_link(tmp_path: Path) -> None:
@@ -1354,9 +1444,11 @@ def test_a_rar4_link_whose_data_is_out_of_reach_says_why(
                 isinstance(r.error, LinkTargetNotFoundError) for r in link_results
             )
             # The library default aborts on it, as it did before this status existed.
-            with open_archive(fixture) as opened:
-                with pytest.raises(LinkTargetNotFoundError):
-                    opened.extract_all(dest / "stop", members=only_links)
+            with (
+                open_archive(fixture) as opened,
+                pytest.raises(LinkTargetNotFoundError),
+            ):
+                opened.extract_all(dest / "stop", members=only_links)
         else:
             assert all(
                 r.status is ExtractionStatus.LINK_TARGET_UNAVAILABLE

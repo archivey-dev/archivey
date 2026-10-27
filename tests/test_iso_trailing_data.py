@@ -252,9 +252,11 @@ def test_table_that_does_not_count_leaves_junk_reported(
 
 def test_strict_policy_refuses_trailing_data() -> None:
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(DiagnosticRaisedError) as ei:
-        with open_archive(io.BytesIO(_iso() + b"JUNK"), config=config) as reader:
-            reader.members()
+    with (
+        pytest.raises(DiagnosticRaisedError) as ei,
+        open_archive(io.BytesIO(_iso() + b"JUNK"), config=config) as reader,
+    ):
+        reader.members()
     assert ei.value.diagnostic.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
 
 

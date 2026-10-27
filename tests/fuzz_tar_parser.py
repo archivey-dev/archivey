@@ -134,7 +134,9 @@ def _gnu_tar_sparse_seeds() -> list[bytes]:
     tar = shutil.which("tar")
     if tar is None:
         return []
-    version = subprocess.run([tar, "--version"], capture_output=True, text=True)
+    version = subprocess.run(
+        [tar, "--version"], capture_output=True, text=True, check=False
+    )
     if "GNU tar" not in version.stdout:
         return []
     seeds = []

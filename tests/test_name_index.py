@@ -15,7 +15,10 @@ def _zip(names: list[str]) -> bytes:
         warnings.simplefilter("ignore", UserWarning)  # zipfile warns on duplicates
         with zipfile.ZipFile(buf, "w") as zf:
             for i, name in enumerate(names):
-                zf.writestr(name, f"{i}")
+                # A fixed timestamp: writestr(name) stamps the current time, so two
+                # same-named members written across a 2-second DOS-time boundary
+                # differ in `modified` and the equality the tests rely on fails.
+                zf.writestr(zipfile.ZipInfo(name, (2020, 1, 1, 0, 0, 0)), f"{i}")
     return buf.getvalue()
 
 

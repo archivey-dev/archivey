@@ -37,9 +37,11 @@ from archivey.exceptions import (
     DiagnosticRaisedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.streams.decompressor_stream import DataAfterEndError
+from archivey.internal.streams.codecs.rapidgzip_child import RapidgzipChildStream
+from archivey.internal.streams.decompressor_stream import DataAfterEndError, SeekPoint
 from tests.conftest import requires, requires_binary
 from tests.extract_util import open_and_extract
+from tests.streams_util import NonSeekableBytesIO
 
 
 @dataclass
@@ -348,9 +350,11 @@ def test_malformed_unicode_path_field_is_dropped_with_a_diagnostic(
 def test_malformed_unicode_path_field_refuses_under_strict() -> None:
     blob, _ = _unicode_path_zip(extra=_short_unicode_path_field(2))
     strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(DiagnosticRaisedError) as raised:
-        with archivey.open_archive(io.BytesIO(blob), config=strict) as ar:
-            ar.members()
+    with (
+        pytest.raises(DiagnosticRaisedError) as raised,
+        archivey.open_archive(io.BytesIO(blob), config=strict) as ar,
+    ):
+        ar.members()
     assert raised.value.diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
 
 
@@ -377,6 +381,149 @@ def test_malformed_unicode_path_field_from_a_file_path(tmp_path: Path) -> None:
             DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
         ]
         assert ar.read(member) == b"hi"
+
+
+# ---------------------------------------------------------------------------------------
+# The Info-ZIP Unicode Comment extra field (0x6375) gives an unflagged member comment.
+# ---------------------------------------------------------------------------------------
+
+
+_UNICODE_COMMENT_STORED = "café".encode("cp437")  # b"caf\x82": not UTF-8
+_UNICODE_COMMENT_REAL = "café ü"
+
+
+def _unicode_comment_field(
+    stored: bytes = _UNICODE_COMMENT_STORED,
+    text: bytes = _UNICODE_COMMENT_REAL.encode(),
+    *,
+    version: int = 1,
+) -> bytes:
+    field = struct.pack("<BI", version, zlib.crc32(stored)) + text
+    return struct.pack("<HH", 0x6375, len(field)) + field
+
+
+def _unicode_comment_zip(
+    field: bytes, *, flags: int = 0, name: bytes = b"a.txt"
+) -> bytes:
+    entry = _Entry(
+        name, b"hi", extra=field, comment=_UNICODE_COMMENT_STORED, flags=flags
+    )
+    return _build_zip([entry])
+
+
+@pytest.mark.filterwarnings("error")
+@pytest.mark.parametrize("encoding", [None, "cp1252"])
+@pytest.mark.parametrize("pipe", [False, True], ids=["seekable", "pipe"])
+def test_unicode_comment_field_gives_the_member_comment(
+    encoding: str | None, pipe: bool
+) -> None:
+    # 7-Zip shows the field's text (`7z l -slt`: `Comment = café ü`); Info-ZIP unzip
+    # 6.00 prints the header bytes. The field's CRC covers the stored comment, so it is
+    # an in-band oracle that outranks a caller's encoding=, as the Unicode Path field
+    # does for a name.
+    blob = _unicode_comment_zip(_unicode_comment_field())
+    source: io.RawIOBase | io.BytesIO = (
+        NonSeekableBytesIO(blob) if pipe else io.BytesIO(blob)
+    )
+    with archivey.open_archive(source, encoding=encoding, streaming=pipe) as ar:
+        # A pipe pass fills the comment in when it reaches the directory, after the
+        # last member, so the member is checked once the pass is done.
+        (member,) = [member for member, _ in ar.stream_members()]
+        assert member.comment == _UNICODE_COMMENT_REAL
+        assert member.diagnostics == ()
+        # The field was used, so it is not listed as unparsed.
+        assert "zip.extra_fields" not in member.extra
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        pytest.param(_unicode_comment_field(stored=b"old"), id="crc_mismatch"),
+        pytest.param(_unicode_comment_field(version=2), id="unknown_version"),
+    ],
+)
+def test_unicode_comment_field_that_does_not_vouch_is_ignored(field: bytes) -> None:
+    with archivey.open_archive(io.BytesIO(_unicode_comment_zip(field))) as ar:
+        (member,) = ar.members()
+        assert member.comment == "café"  # the cp437 reading of the header bytes
+        assert member.diagnostics == ()
+        assert member.extra["zip.extra_fields"] == {0x6375: field[4:]}
+
+
+@pytest.mark.filterwarnings("error")
+@pytest.mark.parametrize(
+    ("field", "reason"),
+    [
+        pytest.param(
+            _unicode_comment_field(text=b"\xff"), "not valid UTF-8", id="invalid_utf8"
+        ),
+        pytest.param(_unicode_comment_field(text=b""), "no comment", id="empty"),
+        pytest.param(
+            struct.pack("<HH", 0x6375, 3) + b"\x01\x02\x03", "shorter", id="short"
+        ),
+    ],
+)
+def test_malformed_unicode_comment_field_is_dropped_with_a_diagnostic(
+    field: bytes, reason: str
+) -> None:
+    blob = _unicode_comment_zip(field)
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        (member,) = ar.members()
+        assert member.comment == "café"
+        (diagnostic,) = member.diagnostics
+        assert diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        assert diagnostic.context.record == "unicode_comment"
+        assert diagnostic.context.record_id == 0x6375
+        assert reason in diagnostic.context.reason
+        assert ar.read(member) == b"hi"
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with (
+        pytest.raises(DiagnosticRaisedError) as raised,
+        archivey.open_archive(io.BytesIO(blob), config=strict) as ar,
+    ):
+        ar.members()
+    assert raised.value.diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+
+
+@pytest.mark.filterwarnings("error")
+@pytest.mark.parametrize(
+    "field",
+    [
+        pytest.param(_unicode_comment_field(), id="good"),
+        pytest.param(struct.pack("<HH", 0x6375, 3) + b"\x01\x02\x03", id="malformed"),
+    ],
+)
+def test_unicode_comment_field_under_a_refuted_flag_is_not_consulted(
+    field: bytes,
+) -> None:
+    # Bit 11 set over a name that is not UTF-8: the flag is refuted, so name and comment
+    # decode as unflagged ones, but neither Unicode field is read, because both fields
+    # are read only when bit 11 is clear. 7-Zip 23.01 does the same: `7z l -slt` lists
+    # this comment as the header bytes, not the field's `café ü`.
+    blob = _unicode_comment_zip(field, flags=0x800, name=b"caf\xe9.txt")
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        (member,) = ar.members()
+        assert member.comment == "café"  # the cp437 reading of the header bytes
+        assert [d.code for d in member.diagnostics] == [
+            DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED
+        ]
+        assert member.extra["zip.extra_fields"] == {0x6375: field[4:]}
+
+
+@pytest.mark.filterwarnings("error")
+def test_unicode_comment_field_of_a_flagged_comment_is_not_consulted() -> None:
+    # Bit 11 over a valid UTF-8 name covers the comment too, so its field is an unused
+    # record: a bad one costs nothing and says nothing, and a good one is not needed.
+    blob = _unicode_comment_zip(
+        struct.pack("<HH", 0x6375, 3) + b"\x01\x02\x03",
+        flags=0x800,
+        name="ünï.txt".encode(),
+    )
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        (member,) = ar.members()
+        # Not valid UTF-8, so the flagged comment's cp437 fallback reads it.
+        assert member.comment == "café"
+        assert member.diagnostics == ()
 
 
 def _central_entry_lookalike() -> bytes:
@@ -520,15 +667,64 @@ def test_second_deflate_stream_that_breaks_the_crc_raises(
 
 
 @requires("rapidgzip")
-def test_seekable_members_refuses_a_second_stream_in_a_large_deflate_member() -> None:
-    # 9 MiB of random data twice: > RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE compressed, so
-    # under the default AUTO, seekable_members=True engages rapidgzip. Both paths
-    # refuse the second stream, though the size and CRC cover it.
+def test_seekable_members_refuses_a_short_second_stream_in_a_large_deflate_member() -> (
+    None
+):
+    # 9 MiB of random data, then a 64 KiB stream: > RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
+    # compressed, so under the default AUTO, seekable_members=True engages rapidgzip.
+    # Its end check decodes from the last point of rapidgzip's index, which lies in
+    # the first stream, so it finds that stream's end and the bytes after it. Both
+    # paths refuse the second stream, though the size and CRC cover it.
     payload = os.urandom(9 * 2**20)
-    stream = _raw_deflate(payload, level=1)
-    blob = _build_zip([_Entry(b"a", stream + stream, method=8, plain=payload * 2)])
+    tail = os.urandom(64 << 10)
+    stream = _raw_deflate(payload, level=1) + _raw_deflate(tail, level=1)
+    blob = _build_zip([_Entry(b"a", stream, method=8, plain=payload + tail)])
     assert _outcome(blob) == ("raise", DataAfterEndError)  # zlib
     assert _outcome(blob, seekable_members=True) == ("raise", DataAfterEndError)
+
+
+def _counting_text(count: int) -> bytes:
+    return b"".join(b"%d " % i for i in range(count))
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize("points_kept", [True, False], ids=["kept", "none-kept"])
+def test_rapidgzip_reads_a_long_second_stream_whose_size_and_crc_cover_both(
+    points_kept: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The one case where the accelerator changes the result (zip.md §2.3, maintainer
+    # decision 2026-10-24). A first stream shorter than rapidgzip's first index point,
+    # then a long one, with the size and CRC of both. The end check decodes from the
+    # last index point, in the second stream, so it sees only the second stream's
+    # end, with nothing after it. Finding the first stream's end would take a decode
+    # from the start. 7-Zip and Info-ZIP read the first stream and fail the CRC.
+    # The point comes from the complete index, not from the points the stream kept
+    # while it read, so the result is the same when it kept none.
+    if not points_kept:
+        monkeypatch.setattr(RapidgzipChildStream, "_query_points", lambda *_: None)
+    first, second = _counting_text(40_000), _counting_text(1_200_000)
+    stream = _raw_deflate(first, level=1) + _raw_deflate(second, level=1)
+    blob = _build_zip([_Entry(b"a", stream, method=8, plain=first + second)])
+    assert _outcome(blob) == ("raise", DataAfterEndError)
+    # Where the end check started. Linux and macOS give the complete index points in
+    # the second stream; on windows-latest it held none past 0, even for a 12 MiB
+    # second stream, and the check decodes from the start.
+    points: list[int | None] = []
+    find_point = RapidgzipChildStream.end_check_point
+
+    def record_point(self: RapidgzipChildStream, end: int) -> SeekPoint | None:
+        point = find_point(self, end)
+        points.append(None if point is None else point.decompressed_offset)
+        return point
+
+    monkeypatch.setattr(RapidgzipChildStream, "end_check_point", record_point)
+    outcome = _outcome(blob, config=ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON))
+    assert len(points) == 1, points
+    if points[0] is None or points[0] < len(first):
+        # No point in the second stream: the standard library's verdict.
+        assert outcome == ("raise", DataAfterEndError), points
+        pytest.skip(f"rapidgzip's index has no point in the second stream: {points}")
+    assert outcome == ("ok", hashlib.sha256(first + second).hexdigest()), points
 
 
 # ---------------------------------------------------------------------------------------
@@ -706,12 +902,10 @@ def test_zero_size_member_with_wrong_crc_raises_on_chunked_read() -> None:
     blob = _build_zip([_Entry(b"a", b"", crc=0x12345678)])
     with archivey.open_archive(io.BytesIO(blob)) as ar:
         (member,) = ar.members()
-        with ar.open(member) as stream:
-            with pytest.raises(CorruptionError):
-                stream.read()  # read(-1) does raise: fixture sanity
-        with ar.open(member) as stream:
-            with pytest.raises(CorruptionError):
-                stream.read(8192)
+        with ar.open(member) as stream, pytest.raises(CorruptionError):
+            stream.read()  # read(-1) does raise: fixture sanity
+        with ar.open(member) as stream, pytest.raises(CorruptionError):
+            stream.read(8192)
 
 
 def test_zero_size_member_with_wrong_crc_does_not_extract_clean(tmp_path: Path) -> None:
@@ -731,11 +925,10 @@ def test_zero_declared_size_with_data_raises_rather_than_serving_it(
     with archivey.open_archive(io.BytesIO(blob)) as ar:
         (member,) = ar.members()
         assert member.size == 0
-        with ar.open(member) as stream:
-            # read(-1) raises "exceeds its declared size of 0 bytes"; a bounded read
-            # must reach the same verdict rather than b"" followed by b"hello".
-            with pytest.raises(CorruptionError):
-                stream.read(8192)
+        # read(-1) raises "exceeds its declared size of 0 bytes"; a bounded read
+        # must reach the same verdict rather than b"" followed by b"hello".
+        with ar.open(member) as stream, pytest.raises(CorruptionError):
+            stream.read(8192)
 
 
 def test_zero_declared_size_with_data_does_not_extract_clean(tmp_path: Path) -> None:

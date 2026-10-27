@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Regenerate ``tests/fixtures/damaged_member/`` with the ``7z`` and RARLAB ``rar`` CLIs.
 
 Usage (from the repo root)::
@@ -38,8 +37,6 @@ sys.path.insert(0, str(REPO_ROOT))
 # One definition of the member content: the test compares against the same function.
 from tests.test_damaged_member_pass import (  # noqa: E402
     _MEMBER_SIZE as MEMBER_SIZE,
-)
-from tests.test_damaged_member_pass import (  # noqa: E402
     _member_text as member_text,
 )
 
@@ -167,7 +164,7 @@ def _damage(fx: _Fixture, data: bytes, work: Path) -> bytes:
     else:
         start = int(len(data) * fx.guess)
         candidates = [
-            start + d for step in range(0, 400) for d in ((step * 7), -(step * 7))
+            start + d for step in range(400) for d in ((step * 7), -(step * 7))
         ]
         width = 16
     # An offset outside the file would wrap (a negative index damages the tail, the

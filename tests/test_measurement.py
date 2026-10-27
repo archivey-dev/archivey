@@ -187,14 +187,13 @@ def test_measurement_on_counts_zip_decompressed_bytes(tmp_path: Path) -> None:
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr("a.txt", payload_a)
         zf.writestr("b.txt", payload_b)
-    with enable_measurement():
-        with open_archive(path) as reader:
-            assert isinstance(reader, BaseArchiveReader)
-            for _member, stream in reader.stream_members():
-                if stream is not None:
-                    stream.read()
-            assert reader.bytes_decompressed == len(payload_a) + len(payload_b)
-            assert reader.source_seek_count > 0
+    with enable_measurement(), open_archive(path) as reader:
+        assert isinstance(reader, BaseArchiveReader)
+        for _member, stream in reader.stream_members():
+            if stream is not None:
+                stream.read()
+        assert reader.bytes_decompressed == len(payload_a) + len(payload_b)
+        assert reader.source_seek_count > 0
 
 
 @pytest.mark.parametrize("shape", ["path", "stream"])

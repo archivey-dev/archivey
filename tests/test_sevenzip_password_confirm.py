@@ -357,14 +357,14 @@ def test_inconclusive_candidate_is_not_promoted_when_ambiguous(
             assert stream.read(1) == big[:1]
         # "secret" survived its prefix without a CRC match, and another candidate
         # exists: accepted for this folder, kept out of known-good.
-        assert reader._passwords._known_good == []  # noqa: SLF001
+        assert reader._passwords._known_good == []
 
     with open_archive(archive, password=_PASSWORD) as reader:
         members = [m for m in reader.members() if m.is_file]
         with reader.open(members[0]) as stream:
             stream.read(1)
         # One distinct candidate: nothing else could be the right one, so promote.
-        assert reader._passwords._known_good == [_PASSWORD.encode()]  # noqa: SLF001
+        assert reader._passwords._known_good == [_PASSWORD.encode()]
 
 
 def test_plan_confirm_is_what_the_reader_calls() -> None:

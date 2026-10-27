@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Characterize rapidgzip (and IndexedBzip2File) truncation/corruption behaviour.
 
 Builds gzip/bzip2 fixtures of several shapes, truncates at every byte offset (or a
@@ -176,10 +175,10 @@ def _cut_offsets(size: int, dense_limit: int) -> list[int]:
     the first/last dense_limit//4 offsets.
     """
     if size <= dense_limit:
-        return list(range(0, size + 1))
+        return list(range(size + 1))
     edge = max(8, dense_limit // 4)
     stride = max(1, size // dense_limit)
-    offsets = set(range(0, edge + 1))
+    offsets = set(range(edge + 1))
     offsets.update(range(max(0, size - edge), size + 1))
     offsets.update(range(0, size + 1, stride))
     # Around gzip header boundary (10) and trailer (last 8 bytes) when relevant.
@@ -346,14 +345,12 @@ def sweep_fixture(
             outcome = _classify(
                 raw,
                 out_len,
-                expected_len
-                if cut == len(fixture.data)
                 # For a proper prefix cut of a complete fixture, expected full output is
                 # only achievable if the cut still contains a complete stream. Treat
                 # "expected" as full length only for the uncut file; for cuts, any ok
                 # read that isn't a raise is silent short/zero relative to full payload,
                 # unless out_len equals full (shouldn't for real truncations).
-                else (expected_len),
+                expected_len,
             )
             # Refine: for cuts of complete fixtures, "full" means recovered full payload
             # despite truncation (bad). For the uncut file, "full" is success.

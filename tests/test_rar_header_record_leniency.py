@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import binascii
 import io
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -38,6 +37,7 @@ from archivey.internal.backends.rar_parser import (
 from archivey.internal.streams import verify
 from archivey.types import HashAlgorithm, MemberType
 from tests.atheris_fuzz.crc_fixup import fixup_rar_header_crcs
+from tests.conftest import requires_unrar_cli
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.test_rar_owner import OWNER_IDS_RAR5
 
@@ -190,12 +190,14 @@ def test_a_short_checksum_record_still_refuses_the_archive_under_strict(
 ) -> None:
     """Leniency is the default, not the only option: the code is in
     ``ARCHIVE_INTEGRITY_CODES``, so a caller who wants the old refusal asks for it."""
-    with pytest.raises(DiagnosticRaisedError) as raised:
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError) as raised,
+        open_archive(
             short_hash_archive,
             config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
-        ) as archive:
-            archive.members()
+        ) as archive,
+    ):
+        archive.members()
     assert raised.value.diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
 
 
@@ -208,9 +210,11 @@ def test_a_short_encryption_record_still_refuses_the_archive(tmp_path: Path) -> 
     path = tmp_path / "short_crypt.rar"
     path.write_bytes(_shrink_record(data, record, new_size=3))
 
-    with raises_corruption_not_truncation():
-        with open_archive(path, password="password") as archive:
-            archive.members()
+    with (
+        raises_corruption_not_truncation(),
+        open_archive(path, password="password") as archive,
+    ):
+        archive.members()
 
 
 def test_an_unimplemented_record_type_lists_silently(tmp_path: Path) -> None:
@@ -227,7 +231,7 @@ def test_an_unimplemented_record_type_lists_silently(tmp_path: Path) -> None:
         assert archive.diagnostics.counts == {}
 
 
-@pytest.mark.skipif(shutil.which("unrar") is None, reason="needs the unrar CLI")
+@requires_unrar_cli()
 def test_unrar_lists_the_short_checksum_archive_too(short_hash_archive: Path) -> None:
     """The oracle for why refusing it was wrong: RARLAB's own tool reads this file."""
     result = subprocess.run(
@@ -565,7 +569,7 @@ def test_a_zero_length_record_stops_the_walk(tmp_path: Path) -> None:
     assert any(d.context.list_truncated for d in member.diagnostics)
 
 
-@pytest.mark.skipif(shutil.which("unrar") is None, reason="needs the unrar CLI")
+@requires_unrar_cli()
 def test_unrar_gets_the_zero_length_record_wrong(tmp_path: Path) -> None:
     """Why the ``unrar`` oracle does not extend to this case.
 
@@ -846,7 +850,7 @@ def test_a_checksum_this_install_cannot_compute_does_not_count_as_survival(
     bytes handed back.
     """
     _no_rar_binaries(monkeypatch, tmp_path)
-    monkeypatch.setattr(verify, "_make_hasher", lambda key: None)
+    monkeypatch.setattr(verify, "hasher_factory", lambda key: None)
     path = _cut_short(tmp_path, "stored_m0.rar", "cut_short_crc32.rar")
 
     with open_archive(path) as archive:
@@ -991,9 +995,11 @@ def test_a_cut_short_service_header_neither_speaks_nor_gets_sliced(
     assert "the archive comment was not used" in emitted[-1].message, emitted[-1]
 
     strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(DiagnosticRaisedError):
-        with open_archive(path, config=strict) as archive:
-            archive.members()
+    with (
+        pytest.raises(DiagnosticRaisedError),
+        open_archive(path, config=strict) as archive,
+    ):
+        archive.members()
 
 
 def test_an_undamaged_service_header_stays_quiet(tmp_path: Path) -> None:
@@ -1172,9 +1178,11 @@ def test_a_damaged_service_header_past_the_first_volume_is_reported(
 
     assert counts["tinyvol.part2.rar"] == counts["tinyvol.part1.rar"] == 2, counts
     strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(DiagnosticRaisedError):
-        with open_archive(tmp_path / "tinyvol.part1.rar", config=strict) as archive:
-            archive.members()
+    with (
+        pytest.raises(DiagnosticRaisedError),
+        open_archive(tmp_path / "tinyvol.part1.rar", config=strict) as archive,
+    ):
+        archive.members()
 
 
 def _insert_after_rar5_main(data: bytes, header: bytes) -> bytes:
@@ -1314,9 +1322,11 @@ def test_bytes_before_the_declared_extra_area_are_not_read_as_records(
         assert "extra record" not in diagnostic.message, diagnostic.message
 
     strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(DiagnosticRaisedError):
-        with open_archive(path, config=strict) as archive:
-            archive.members()
+    with (
+        pytest.raises(DiagnosticRaisedError),
+        open_archive(path, config=strict) as archive,
+    ):
+        archive.members()
 
 
 def test_bytes_before_a_service_headers_extra_area_are_reported(
@@ -1344,9 +1354,11 @@ def test_bytes_before_a_service_headers_extra_area_are_reported(
     )
 
     strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(DiagnosticRaisedError):
-        with open_archive(path, config=strict) as archive:
-            archive.members()
+    with (
+        pytest.raises(DiagnosticRaisedError),
+        open_archive(path, config=strict) as archive,
+    ):
+        archive.members()
 
 
 def test_the_declared_extra_area_is_read_where_it_is(tmp_path: Path) -> None:
@@ -1373,9 +1385,11 @@ def test_an_extra_area_larger_than_its_header_is_a_corrupt_header(
             gap=b"", extra=_redir_record(b"target"), declared_extra=100
         )
     )
-    with raises_corruption_not_truncation(match="extra area"):
-        with open_archive(path) as archive:
-            archive.members()
+    with (
+        raises_corruption_not_truncation(match="extra area"),
+        open_archive(path) as archive,
+    ):
+        archive.members()
 
 
 def _rar5_file_header_size(*, gap: bytes, extra: bytes) -> int:
@@ -1403,9 +1417,11 @@ def test_the_extra_size_limit_is_the_whole_header(
         _rar5_file_with_extra(gap=b"", extra=extra, declared_extra=declared)
     )
     if corrupt:
-        with raises_corruption_not_truncation(match="extra area"):
-            with open_archive(path) as archive:
-                archive.members()
+        with (
+            raises_corruption_not_truncation(match="extra area"),
+            open_archive(path) as archive,
+        ):
+            archive.members()
         return
     with open_archive(path) as archive:
         (member,) = archive.members()
@@ -1415,7 +1431,7 @@ def test_the_extra_size_limit_is_the_whole_header(
         assert "overlaps" in diagnostic.context.reason
 
 
-@pytest.mark.skipif(shutil.which("unrar") is None, reason="needs the unrar CLI")
+@requires_unrar_cli()
 @pytest.mark.parametrize(
     ("below", "corrupt"), [(1, False), (0, True)], ids=["whole-minus-1", "whole"]
 )
@@ -1465,7 +1481,7 @@ def test_an_extra_area_overlapping_the_fixed_fields_is_reported(
         assert "overlaps" in context.reason
 
 
-@pytest.mark.skipif(shutil.which("unrar") is None, reason="needs the unrar CLI")
+@requires_unrar_cli()
 @pytest.mark.parametrize(
     ("gap", "extra", "declared", "expected_type", "corrupt"),
     [

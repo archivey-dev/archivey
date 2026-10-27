@@ -268,9 +268,11 @@ def test_fixup_tar_checksum_keeps_a_mutated_header_readable() -> None:
     original = bytearray(_tar_bytes())
     original[0] ^= 0x01
     broken = bytes(original)
-    with pytest.raises(ArchiveyError):
-        with open_archive(io.BytesIO(broken), format="tar") as arc:
-            list(arc)
+    with (
+        pytest.raises(ArchiveyError),
+        open_archive(io.BytesIO(broken), format="tar") as arc,
+    ):
+        list(arc)
 
     fixed = fixup_tar_header_checksums(broken, broken=False)
     with open_archive(io.BytesIO(fixed), format="tar") as arc:
@@ -292,9 +294,11 @@ def test_fixup_tar_broken_mode_still_rejects() -> None:
     assert field.endswith(b"\x00 ")
     stored = int(field[:6], 8)
     assert stored == _tar_block_checksum(original[:512]) ^ 1
-    with pytest.raises(ArchiveyError):
-        with open_archive(io.BytesIO(fixed_broken), format="tar") as arc:
-            list(arc)
+    with (
+        pytest.raises(ArchiveyError),
+        open_archive(io.BytesIO(fixed_broken), format="tar") as arc,
+    ):
+        list(arc)
 
 
 def test_fixup_tar_leaves_the_end_marker() -> None:

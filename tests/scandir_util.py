@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Iterator
+from typing import Self
 
 import pytest
 
@@ -52,7 +53,7 @@ class _Scan:
     def __next__(self) -> _Entry:
         return _Entry(next(self._inner), self._replacement)
 
-    def __enter__(self) -> _Scan:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc: object) -> None:

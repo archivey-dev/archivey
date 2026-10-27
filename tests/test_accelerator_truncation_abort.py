@@ -36,7 +36,7 @@ from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
     ReadError,
-    ResourceLimitError,
+    ResourceUnavailableError,
     TruncatedError,
 )
 from archivey.internal.config import AcceleratorMode, StreamConfig
@@ -116,6 +116,7 @@ def _run(script: str, *args: str) -> subprocess.CompletedProcess[str]:
         text=True,
         timeout=120,
         env={**os.environ, "PYTHONFAULTHANDLER": "1"},
+        check=False,
     )
 
 
@@ -375,10 +376,12 @@ def test_what_a_cut_stream_delivers_before_the_abort_is_a_correct_prefix(
     payload = _payload()
     path = _write(tmp_path, f"cut.{codec.value}", _compress(codec, payload)[:-cut])
     got = bytearray()
-    with open_codec_stream(codec, str(path), config=_ON) as stream:
-        with pytest.raises(CorruptionError):
-            while block := stream.read(chunk):
-                got += block
+    with (
+        open_codec_stream(codec, str(path), config=_ON) as stream,
+        pytest.raises(CorruptionError),
+    ):
+        while block := stream.read(chunk):
+            got += block
     assert len(got) < len(payload)
     assert payload.startswith(got)
 
@@ -434,7 +437,7 @@ def test_the_child_stream_reads_and_seeks_like_stdlib(
 def _child_stream(stream: object) -> RapidgzipChildStream:
     inner = stream
     while not isinstance(inner, RapidgzipChildStream):
-        inner = getattr(inner, "_inner")
+        inner = inner._inner
     return inner
 
 
@@ -541,10 +544,12 @@ def test_a_fault_archivey_raises_about_the_source_is_not_marked_as_the_sources()
     """Only what the caller's source itself raised is marked as the caller's (and so
     left untranslated): archivey's own guard against an over-long read is not."""
     source = _OverReadingSource(zlib.compress(_payload()))
-    with open_codec_stream(Codec.ZLIB, source, config=_ON) as stream:
-        with pytest.raises(ValueError, match="the excess is already consumed") as info:
-            while stream.read(1 << 16):
-                pass
+    with (
+        open_codec_stream(Codec.ZLIB, source, config=_ON) as stream,
+        pytest.raises(ValueError, match="the excess is already consumed") as info,
+    ):
+        while stream.read(1 << 16):
+            pass
     assert not rapidgzip_child.from_callers_source(info.value)
 
 
@@ -643,7 +648,7 @@ def test_an_interrupt_from_the_callers_source_leaves_the_stream_unusable() -> No
 @pytest.mark.parametrize(
     ("sig", "expected"),
     [
-        ("SIGKILL", ResourceLimitError),
+        ("SIGKILL", ResourceUnavailableError),
         ("SIGTERM", ReadError),
         ("SIGSEGV", CorruptionError),
         ("SIGABRT", CorruptionError),
@@ -678,7 +683,7 @@ def test_a_child_death_is_reported_by_how_it_ended(
 @_POSIX
 @pytest.mark.parametrize(
     ("sig", "expected"),
-    [("SIGKILL", ResourceLimitError), ("SIGTERM", ReadError)],
+    [("SIGKILL", ResourceUnavailableError), ("SIGTERM", ReadError)],
 )
 def test_a_child_killed_from_outside_ends_the_stream(
     tmp_path: Path, sig: str, expected: type[Exception]
@@ -1086,7 +1091,7 @@ def test_without_a_child_auto_uses_stdlib_and_on_refuses(
         assert not _has_child_stream(stream)
         assert stream.read() == payload
     field = "use_indexed_bzip2" if codec is Codec.BZIP2 else "use_rapidgzip"
-    with pytest.raises(ResourceLimitError, match=rf"{field}.*\(no child here\)"):
+    with pytest.raises(ResourceUnavailableError, match=rf"{field}.*\(no child here\)"):
         open_codec_stream(codec, str(path), config=_ON)
 
 
@@ -1103,7 +1108,7 @@ def test_under_pypy_on_is_refused_with_the_reason(
     )
     path = _write(tmp_path, "valid.gz", gzip.compress(_payload()))
     with pytest.raises(
-        ResourceLimitError, match=r"\(archivey does not use rapidgzip under PyPy"
+        ResourceUnavailableError, match=r"\(archivey does not use rapidgzip under PyPy"
     ):
         open_codec_stream(Codec.GZIP, str(path), config=_ON)
 
@@ -1139,7 +1144,7 @@ def test_a_child_that_cannot_start_is_a_resource_limit_under_on(
     """ON asked for rapidgzip, so a refused child is an error, not a quiet fallback."""
     path = _write(tmp_path, "valid.gz", gzip.compress(_payload()))
     _break_child_start(monkeypatch, tmp_path, how)
-    with pytest.raises(ResourceLimitError, match="cannot start"):
+    with pytest.raises(ResourceUnavailableError, match="cannot start"):
         open_codec_stream(Codec.GZIP, str(path), config=_ON)
 
 
@@ -1241,7 +1246,7 @@ def test_an_auto_fallback_warns_once_per_process(
 
     why = _NO_CHILD_REASONS[how]
     _take_the_child_away(monkeypatch, tmp_path, how)
-    with pytest.raises(ResourceLimitError, match=why):
+    with pytest.raises(ResourceUnavailableError, match=why):
         open_codec_stream(Codec.GZIP, str(path), config=_ON)
     assert _fallback_warnings(caplog) == []
 

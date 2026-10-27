@@ -85,7 +85,7 @@ Zero buffered bytes, nothing to strand on close, `seekable()` inherited `False` 
 idempotent (the seekable branch already was — see D5). Callers can therefore apply it
 defensively without checking, which is what lets `PeekableStream` own its own precondition.
 
-**Maintainer decision (davitf, #330 review session, [packet 3](https://github.com/davitf/archivey/pull/330#pullrequestreview-5184461333)):
+**Maintainer decision (davitf, #330 review session, [packet 3](https://github.com/archivey-dev/archivey/pull/330#pullrequestreview-5184461333)):
 the zero-read-ahead promise is boundary-only, and `DecompressorStream`'s buffering of a pipe
 is accepted.** Stated as an absolute, "no `BufferedReader` on a non-seekable source" is a rule
 the tree already breaks: `decompressor_stream.py:269` puts a `_NonClosingBufferedReader` on a
@@ -165,7 +165,7 @@ the guarantee instead of three mechanisms covering three paths.
 Composition order is `PeekableStream(FullCountStream(raw))`: the peek buffer sits above
 the guarantee, so replayed prefix bytes and pass-through reads are both full-count.
 
-**Maintainer decision (davitf, #330 review session, [packet 1](https://github.com/davitf/archivey/pull/330#pullrequestreview-5184461333)):
+**Maintainer decision (davitf, #330 review session, [packet 1](https://github.com/archivey-dev/archivey/pull/330#pullrequestreview-5184461333)):
 `PeekableStream.__init__` calls `ensure_full_count_reads` on its own inner, and
 `ensure_full_count_reads` is made idempotent so no caller has to check.** Collapsing
 `_fill_to` turns "my inner is full-count" from an observation into a precondition, and it
@@ -199,7 +199,7 @@ never peek and moving the guarantee up into `streams/`. Here the guarantee stays
 
 ### D8 — The wrapper stays transparent to the metadata probes
 
-**Maintainer decision (davitf, #330 review session, [packet 2](https://github.com/davitf/archivey/pull/330#pullrequestreview-5184461333)):
+**Maintainer decision (davitf, #330 review session, [packet 2](https://github.com/archivey-dev/archivey/pull/330#pullrequestreview-5184461333)):
 forward the metadata on the wrapper.** `FullCountStream` sits at the one boundary every
 source crosses, so an opaque wrapper blinds the duck-typed probes. Measured with the D2
 sketch over a stream carrying `name` and `size`:

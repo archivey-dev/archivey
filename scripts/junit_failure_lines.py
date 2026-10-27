@@ -41,10 +41,11 @@ def _node_id(case: ET.Element) -> str:
     path = case.get("file")
     if not path:
         return f"{classname}::{name}"
-    # classname is the module's dotted path, then any class: keep only the class.
+    # classname is the module's dotted path, then any classes, outermost first: keep
+    # only the classes, each its own node id part.
     module = path.removesuffix(".py").replace("/", ".")
     inner = classname.removeprefix(module).lstrip(".")
-    return "::".join(part for part in (path, inner, name) if part)
+    return "::".join([path, *(inner.split(".") if inner else []), name])
 
 
 def _cut(line: str, width: int) -> str:

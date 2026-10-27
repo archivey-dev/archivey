@@ -385,8 +385,7 @@ def test_bgzf_size_is_known_after_a_walk_or_a_full_read(fill: str) -> None:
 
 
 def test_a_bgzf_member_size_is_cheap_on_an_archive_stream() -> None:
-    from archivey import AcceleratorMode as PublicMode
-    from archivey import ArchiveyConfig, open_archive
+    from archivey import AcceleratorMode as PublicMode, ArchiveyConfig, open_archive
 
     data = make_bgzf(_BIG_PARTS)
     source = CountingBytesIO(data)
@@ -401,3 +400,25 @@ def test_a_bgzf_member_size_is_cheap_on_an_archive_stream() -> None:
             assert source.bytes_read - before <= io.DEFAULT_BUFFER_SIZE
             assert stream.read() == b"".join(_BIG_PARTS)
             assert stream.size == len(b"".join(_BIG_PARTS))
+
+
+def test_damage_at_an_honest_block_raises_after_the_walk_is_dropped() -> None:
+    """Block 2's deflate data is damaged at its first byte, and the walk is right.
+
+    A resume there fails before any output, which the stream cannot tell from a walk
+    that put a block start in the wrong place: it drops the walk with
+    ``SEEK_INDEX_DEGRADED``, decodes from the start, and raises where the damage is.
+    """
+    blocks = [make_bgzf_block(p) for p in PARTS]
+    damaged = bytearray(blocks[2])
+    damaged[18] = 0x07  # BFINAL, then the reserved block type 3
+    blocks[2] = bytes(damaged)
+    collector, seen = _collector()
+    with _open(io.BytesIO(b"".join(blocks) + BGZF_EOF), collector=collector) as stream:
+        assert stream.seek(0, io.SEEK_END) == len(FULL)
+        with pytest.raises(CorruptionError):
+            stream.seek(STARTS[2] + 5)
+            stream.read(10)
+    (report,) = _degraded(seen)
+    assert report.context.scan == "decode_check"
+    assert report.context.error_type == "SeekIndexContradicted"

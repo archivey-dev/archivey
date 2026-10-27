@@ -7,6 +7,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
   workflow_dispatch:
 
 concurrency:
@@ -39,6 +40,11 @@ jobs:
         # Relative links under dev-docs/ and .claude/skills/ (pair-workflow + skills).
         # Stdlib-only; does not need the docs group.
         run: uv run --python 3.12 --no-sync python scripts/check_internal_md_links.py
+      - name: Check the issue forms and pull request template
+        # Most files the test reads are .md, which ci.yml's path filter excludes, so ci.yml
+        # would skip it on the pull requests that break them. PyYAML is named here so the
+        # parse check cannot skip; `-o addopts=` drops coverage and xdist flags.
+        run: uv run --python 3.12 --no-sync --with pytest --with pyyaml pytest -o addopts= -p no:cacheprovider tests/test_github_templates.py
       - name: Build docs (strict)
         # --python overrides repo `.python-version` (3.11) so docs actually run on 3.12.
         run: uv run --python 3.12 --group docs mkdocs build --strict

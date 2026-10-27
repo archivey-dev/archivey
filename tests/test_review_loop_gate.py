@@ -31,7 +31,7 @@ gate = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = gate
 _spec.loader.exec_module(gate)
 
-REPO = "davitf/archivey"
+REPO = "archivey-dev/archivey"
 SHA = "a" * 40
 # A head pushed after the round read `SHA`.
 LATER = "b" * 40
@@ -366,8 +366,9 @@ def test_every_finished_round_counts_and_records_what_it_read(name: str) -> None
     history = gate.read_history([first_line])
     assert history.rounds == 1
     assert "Two nits left." in answer.comment
-    assert "https://github.com/davitf/archivey/blob/main/dev-docs/review-loop.md" in (
-        answer.comment
+    assert (
+        "https://github.com/archivey-dev/archivey/blob/main/dev-docs/review-loop.md"
+        in (answer.comment)
     )
 
 
@@ -449,7 +450,7 @@ def test_a_decision_carries_its_question() -> None:
 
 
 def _run(stdin: str, *args: str) -> dict:
-    result = subprocess.run(  # noqa: S603 - fixed argv
+    result = subprocess.run(  # fixed argv
         [sys.executable, str(SCRIPT), *args],
         input=stdin,
         capture_output=True,
@@ -595,7 +596,7 @@ def test_the_close_step_runs_as_written(
         "GITHUB_REPOSITORY": REPO,
         "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
     }
-    subprocess.run([bash, "-c", script], cwd=ROOT, env=env, check=True)  # noqa: S603
+    subprocess.run([bash, "-c", script], cwd=ROOT, env=env, check=True)
 
     result = json.loads((work / "finish.json").read_text(encoding="utf-8"))
     assert result["counted"] is counted
@@ -612,8 +613,10 @@ def test_the_close_step_runs_as_written(
     removed = [line for line in calls.splitlines() if "--method DELETE" in line]
     if label:
         assert added == [
-            f"api --method POST repos/{REPO}/issues/7/labels "
-            f"-f labels[]={label} --silent"
+            (
+                f"api --method POST repos/{REPO}/issues/7/labels "
+                f"-f labels[]={label} --silent"
+            )
         ]
         deleted = sorted(line.split("/labels/")[1].split()[0] for line in removed)
         # A failed listing tries every other outcome label rather than none.
@@ -644,6 +647,6 @@ def test_a_refused_round_posts_only_a_comment_it_has(
         "PR": "7",
         "GITHUB_REPOSITORY": REPO,
     }
-    subprocess.run([bash, "-c", script], cwd=ROOT, env=env, check=True)  # noqa: S603
+    subprocess.run([bash, "-c", script], cwd=ROOT, env=env, check=True)
     log = tmp_path / "gh.log"
     assert log.exists() is bool(comment)

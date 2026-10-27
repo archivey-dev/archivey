@@ -24,6 +24,7 @@ Module map:
   seek-target and argument rules)
 - :mod:`.slice` — ``SlicingStream`` / ``SharedView`` bound views + ``fix_stream_start_position``
 - :mod:`.shared` — ``SharedSource`` (concurrent independent views over one handle)
+- :mod:`.fullcount` — ``FullCountStream`` (full-count reads with no buffer)
 - :mod:`.locked` — ``LockedStream`` (whole-op lock wrapper)
 - :mod:`.readahead` — ``ReadAheadStream`` (a read buffer over a full-count stream)
 - :mod:`.solid` — ``SolidBlockReader`` (forward-only solid demux)
@@ -74,6 +75,7 @@ from archivey.internal.streams.streamtools.binaryio import (
     source_size_fact,
     underlying_stream,
 )
+from archivey.internal.streams.streamtools.fullcount import FullCountStream
 from archivey.internal.streams.streamtools.locked import LockedStream
 from archivey.internal.streams.streamtools.readahead import ReadAheadStream
 from archivey.internal.streams.streamtools.shared import SharedSource
@@ -89,8 +91,10 @@ from archivey.internal.streams.streamtools.solid import (
 from archivey.internal.streams.streamtools.sparse import SparseStream
 
 __all__ = [
+    "DEFAULT_UNKNOWN_LENGTH_READ_STEP",
     "BinaryIOWrapper",
     "DelegatingStream",
+    "FullCountStream",
     "LockedStream",
     "OneReadEachStream",
     "ReadAheadStream",
@@ -101,6 +105,8 @@ __all__ = [
     "SlicingStream",
     "SolidBlockReader",
     "SparseStream",
+    "check_read_size",
+    "check_seek_args",
     "ensure_binaryio",
     "ensure_bufferedio",
     "fix_stream_start_position",
@@ -110,19 +116,16 @@ __all__ = [
     "is_stream",
     "raise_if_text_stream",
     "raise_if_write_only_stream",
-    "reject_source",
-    "require_source",
-    "check_read_size",
-    "check_seek_args",
-    "resolve_seek",
     "read_arrived",
     "read_exact",
-    "readinto_via_read",
-    "skip_forward",
     "read_within_reach",
-    "DEFAULT_UNKNOWN_LENGTH_READ_STEP",
+    "readinto_via_read",
+    "reject_source",
+    "require_source",
+    "resolve_seek",
+    "skip_forward",
     "source_byte_size",
-    "source_size_fact",
     "source_name",
+    "source_size_fact",
     "underlying_stream",
 ]

@@ -166,15 +166,17 @@ The rest depend on the policy:
   `"strict"` and `"standard"` refuse it. `"trusted"` writes it as is.
 - **`notes. `, with a trailing dot and space:** `"strict"` writes it as `notes`. `"standard"` and
   `"trusted"` write it as is.
+- **`a/.../b`, with a folder named only dots or spaces:** `"strict"` and `"standard"` refuse it,
+  because Windows would write it into `a`. `"trusted"` writes it as is.
 - **`caf\xe9.txt`, a name that isn't valid UTF-8:** `"strict"` and `"standard"` write it as
   `caf%E9.txt`. `"trusted"` writes it as is.
 - **`what?.txt`, with a character Windows doesn't allow:** `"strict"` and `"standard"` write it as
   `what%3F.txt`. `"trusted"` writes it as is.
 - **`back\slash` in a TAR:** `"strict"` and `"standard"` write it as `slash` in a folder `back`.
   `"trusted"` writes it as is.
-- **`README`, then `readme`, or `café` written two ways in Unicode:** under `"strict"` and
-  `"standard"`, the second one counts as a file already there. `"trusted"` writes both, if the disk
-  tells them apart.
+- **`README`, then `readme`; `café` written two ways in Unicode; or `notes`, then `notes.`:** under
+  `"strict"` and `"standard"`, the second one counts as a file already there. `"trusted"` writes
+  both, if the disk tells them apart.
 - **A file with mode `rwsr-xr-x`:** `"strict"` and `"standard"` write it as `rwxr-xr-x`. `"trusted"`
   writes it as is.
 - **A file with mode `rw-rw-rw-`:** `"strict"` writes it as `rw-r--r--`. `"standard"` and

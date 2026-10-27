@@ -141,9 +141,11 @@ def test_streaming_extract_writes_the_same_prefix(
     contents, error_type, message = _listing(data)
     assert set(contents) == prefix  # precondition
     dest = tmp_path / "out"
-    with open_archive(io.BytesIO(data), streaming=True) as reader:
-        with pytest.raises(error_type) as excinfo:
-            reader.extract_all(dest)
+    with (
+        open_archive(io.BytesIO(data), streaming=True) as reader,
+        pytest.raises(error_type) as excinfo,
+    ):
+        reader.extract_all(dest)
     assert str(excinfo.value) == message
     assert _files_on_disk(dest) == contents
 
@@ -156,7 +158,7 @@ def test_selection_inside_the_prefix_still_raises(
     # Every selected member is listed before the damage; whether more would match
     # after it is unknown, so the call still reports the damage.
     contents, error_type, message = _listing(data)
-    first = sorted(prefix)[0]
+    first = min(prefix)
     dest = tmp_path / "out"
     with open_archive(io.BytesIO(data)) as reader:
         if listed_first:
@@ -237,7 +239,7 @@ def test_an_entry_unmatched_in_the_prefix_is_not_reported(
     raise_on = {DiagnosticCode.MEMBER_SELECTOR_UNMATCHED} if raise_unmatched else set()
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy(raise_on=raise_on))
     contents, error_type, message = _listing(data)
-    first = sorted(prefix)[0]
+    first = min(prefix)
     dest = tmp_path / "out"
     with open_archive(io.BytesIO(data), config=config) as reader:
         if listed_first:
@@ -261,7 +263,7 @@ def test_a_fresh_corruption_error_from_the_pass_propagates_at_once(
     with open_archive(io.BytesIO(data)) as reader:
         real_pass = reader._stream_members
 
-        def wrapping_pass(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        def wrapping_pass(*args, **kwargs):
             try:
                 yield from real_pass(*args, **kwargs)
             except CorruptionError as exc:

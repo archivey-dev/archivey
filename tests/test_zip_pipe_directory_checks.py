@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import io
 import struct
+import sys
 import zipfile
+import zlib
 
 import pytest
 
@@ -67,9 +69,11 @@ def test_a_directory_entry_contradicting_the_local_header_fails_the_member(
     header; the directory describes other data, so the member fails at the end."""
     raw = _zip()
     struct.pack_into(fmt, raw, _central(raw) + at, value)
-    with archivey.open_archive(io.BytesIO(bytes(raw))) as archive:
-        with pytest.raises(CorruptionError):
-            archive.read("a.txt")
+    with (
+        archivey.open_archive(io.BytesIO(bytes(raw))) as archive,
+        pytest.raises(CorruptionError),
+    ):
+        archive.read("a.txt")
     with pytest.raises(
         CorruptionError, match="local header and its central directory entry disagree"
     ):
@@ -90,11 +94,18 @@ def test_an_encryption_flag_only_the_directory_sets_fails_the_member() -> None:
 def test_a_method_the_two_headers_disagree_on_does_not_fail_a_member_its_crc_checks() -> (
     None
 ):
-    """The data matched the CRC and size the directory gives, so it is the data the
-    directory describes, whichever codec decoded it."""
+    """The data matched the CRC and size the directory gives. A file read decodes by
+    the local method too, and both report ``MEMBER_LOCAL_METHOD_DIFFERS``."""
     raw = _zip(b"hello world" * 20, zipfile.ZIP_DEFLATED)
     struct.pack_into("<H", raw, 8, 9)  # Deflate64 decodes this Deflate stream too
-    assert _drain(bytes(raw)) == [b"hello world" * 20]
+    code = archivey.DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS
+    with archivey.open_archive(NonSeekableBytesIO(bytes(raw)), streaming=True) as pipe:
+        read = [stream.read() for _, stream in pipe.stream_members() if stream]
+        assert read == [b"hello world" * 20]
+        assert pipe.diagnostics.counts[code] == 1
+    with archivey.open_archive(io.BytesIO(bytes(raw))) as archive:
+        assert archive.read("a.txt") == b"hello world" * 20
+        assert archive.diagnostics.counts[code] == 1
 
 
 @requires("cryptography")
@@ -113,9 +124,11 @@ def test_a_member_decoding_short_of_its_size_is_truncation_as_from_a_file() -> N
     for at in (22, _central(raw) + 24):  # the size, in both headers
         struct.pack_into("<I", raw, at, 1000)
     message = r"Decompressed content ended after 220 of 1000 expected bytes\."
-    with archivey.open_archive(io.BytesIO(bytes(raw))) as archive:
-        with pytest.raises(TruncatedError, match=message):
-            archive.read("a.txt")
+    with (
+        archivey.open_archive(io.BytesIO(bytes(raw))) as archive,
+        pytest.raises(TruncatedError, match=message),
+    ):
+        archive.read("a.txt")
     with pytest.raises(TruncatedError, match=message):
         _drain(bytes(raw))
 
@@ -157,9 +170,11 @@ def test_damage_past_the_prefix_under_a_lone_surviving_password_is_the_codecs(
     monkeypatch.setattr(password_confirm, "PASSWORD_CONFIRM_PREFIX_BYTES", 4096)
     monkeypatch.setattr(zip_reader, "PASSWORD_CONFIRM_PREFIX_BYTES", 4096)
     passwords = [right, b"also-wrong"]
-    with archivey.open_archive(io.BytesIO(bytes(blob)), password=passwords) as archive:
-        with pytest.raises(TruncatedError):
-            archive.read("a.txt")
+    with (
+        archivey.open_archive(io.BytesIO(bytes(blob)), password=passwords) as archive,
+        pytest.raises(TruncatedError),
+    ):
+        archive.read("a.txt")
     with pytest.raises(TruncatedError) as caught:
         _drain(bytes(blob), password=passwords)
     assert not isinstance(caught.value, EncryptionError)
@@ -175,8 +190,84 @@ def test_an_aes_member_short_of_its_size_under_several_passwords_is_truncation()
     for signature, at in ((b"PK\x03\x04", 22), (b"PK\x01\x02", 24)):
         struct.pack_into("<I", raw, raw.index(signature) + at, 100_000)
     passwords = [b"right", b"wrong"]
-    with archivey.open_archive(io.BytesIO(bytes(raw)), password=passwords) as archive:
-        with pytest.raises(TruncatedError):
-            archive.read("a.bin")
+    with (
+        archivey.open_archive(io.BytesIO(bytes(raw)), password=passwords) as archive,
+        pytest.raises(TruncatedError),
+    ):
+        archive.read("a.bin")
     with pytest.raises(TruncatedError):
         _drain(bytes(raw), password=passwords)
+
+
+def _remethoded_and_missing(n: int, *, central_method: int) -> bytes:
+    """``n`` stored members whose directory entries name ``central_method``, then ``n``
+    directory entries pointing one byte into a member, where no local header starts."""
+    body = bytearray()
+    directory = bytearray()
+    starts = []
+    crc = zlib.crc32(b"x")
+    for i in range(n):
+        name = f"m{i}".encode()
+        starts.append(len(body))
+        body += struct.pack(
+            "<4sHHHHHIIIHH", b"PK\x03\x04", 20, 0, 0, 0, 0x21, crc, 1, 1, len(name), 0
+        )
+        body += name + b"x"
+    for prefix, method, shift in ((b"m", central_method, 0), (b"g", 0, 1)):
+        for i in range(n):
+            name = prefix + str(i).encode()
+            directory += struct.pack(
+                "<4sHHHHHHIIIHHHHHII",
+                b"PK\x01\x02",
+                20,
+                20,
+                0,
+                method,
+                0,
+                0x21,
+                crc,
+                1,
+                1,
+                len(name),
+                0,
+                0,
+                0,
+                0,
+                0,
+                starts[i] + shift,
+            )
+            directory += name
+    end = struct.pack(
+        "<4sHHHHIIH", b"PK\x05\x06", 0, 0, 2 * n, 2 * n, len(directory), len(body), 0
+    )
+    return bytes(body + directory + end)
+
+
+def _pass_calls(data: bytes) -> int:
+    """How many Python calls a pass over ``data`` makes, generator resumptions
+    included: a count, so the test does not depend on the machine's speed."""
+    calls = 0
+
+    def count(_frame: object, event: str, _arg: object) -> None:
+        nonlocal calls
+        if event == "call":
+            calls += 1
+
+    with archivey.open_archive(NonSeekableBytesIO(data), streaming=True) as archive:
+        sys.setprofile(count)
+        try:
+            with pytest.raises(CorruptionError, match="no local header"):
+                for _ in archive.stream_members():
+                    pass
+        finally:
+            sys.setprofile(None)
+    return calls
+
+
+def test_many_method_differences_beside_many_failures_stay_linear() -> None:
+    """Members whose directory names another method, beside as many entries with no
+    local header: doubling both about doubles the pass's calls. A scan of the
+    failures per reported member made it grow fourfold (quadratic)."""
+    small = _pass_calls(_remethoded_and_missing(400, central_method=8))
+    large = _pass_calls(_remethoded_and_missing(800, central_method=8))
+    assert large < 2.5 * small

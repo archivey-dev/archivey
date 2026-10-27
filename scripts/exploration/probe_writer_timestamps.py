@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Record which file time each archiver stores in its "creation time" slots.
 
 ZIP's NTFS extra field (0x000A), 7z's CTime property and libarchive's PAX
@@ -316,11 +315,7 @@ def inspect_7z(path: Path) -> dict[str, object]:
     import archivey
 
     with archivey.open_archive(path) as reader:
-        record = next(
-            r
-            for r in reader._archive.files
-            if r.filename.endswith("f.txt")  # noqa: SLF001
-        )
+        record = next(r for r in reader._archive.files if r.filename.endswith("f.txt"))
     attrs = record.attributes
     return {
         "member": record.filename,

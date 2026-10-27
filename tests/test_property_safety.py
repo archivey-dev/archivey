@@ -26,8 +26,7 @@ from pathlib import Path
 import pytest
 
 try:
-    from hypothesis import example, given
-    from hypothesis import strategies as st
+    from hypothesis import example, given, strategies as st
 except ImportError:  # pragma: no cover - [core-only] leg
     pytest.skip("hypothesis not installed (dev group)", allow_module_level=True)
 
@@ -55,6 +54,12 @@ from archivey.internal.volumes import (
     rar_volume_name,
 )
 from archivey.types import ArchiveMember, MemberType
+from tests.risky_text import (
+    risky_components,
+    risky_text,
+    with_lookalike,
+    with_risky_char,
+)
 from tests.streams_util import NonSeekableBytesIO
 
 # ---------------------------------------------------------------------------
@@ -117,6 +122,9 @@ _hostile_pathish = st.lists(
     max_size=4,
 ).map(lambda parts: "/".join(parts))
 
+# A well-formed relative path for the risky branches below to alter.
+_ascii_path = st.from_regex(r"[a-z0-9_.]{1,8}(/[a-z0-9_.]{1,8}){0,2}", fullmatch=True)
+
 # Path-flavoured names: mix separators, dots, drives, UNC-ish prefixes, hostile encodings.
 _pathish = st.one_of(
     _name_text,
@@ -152,6 +160,16 @@ _pathish = st.one_of(
         max_size=5,
     ).map(lambda parts: "\\".join(parts)),
     _hostile_pathish,
+    # Risky Unicode on its own, and swapped or inserted into a well-formed path so it
+    # reaches the checks past the first separator split.
+    risky_text(),
+    with_lookalike(_ascii_path),
+    with_risky_char(_ascii_path),
+    st.lists(
+        st.one_of(risky_components, st.sampled_from(["a", "..", "."])),
+        min_size=1,
+        max_size=3,
+    ).map("/".join),
 )
 
 _member_types = st.sampled_from(list(MemberType))
@@ -395,6 +413,8 @@ def test_check_universal_total(
         pytest.fail(f"raw exception from check_universal: {type(exc).__name__}: {exc}")
 
 
+# A hardlink target the platform cannot encode is fine: the string never reaches the OS.
+@example(name="0", member_type=MemberType.HARDLINK, link_target="\ud800")
 @given(
     name=_pathish,
     member_type=_member_types,
@@ -419,12 +439,11 @@ def test_check_universal_accepts_only_materializable(
         )
     except ArchiveyError:
         return  # rejected — nothing to materialize
-    # Accepted: the name (and any link target the extractor would create) must encode.
+    # Accepted: the name (and a symlink's target, which the extractor writes) must
+    # encode. A hardlink's target is never written: it names an earlier member, and
+    # the link is made to the file that member became (see ``check_universal``).
     os.fsencode(name)
-    if link_target is not None and member_type in (
-        MemberType.SYMLINK,
-        MemberType.HARDLINK,
-    ):
+    if link_target is not None and member_type is MemberType.SYMLINK:
         os.fsencode(link_target)
 
 
@@ -527,15 +546,23 @@ def test_resolve_link_pinned_examples(
 # ---------------------------------------------------------------------------
 
 
-_volume_style_names = st.one_of(
-    st.from_regex(r"[A-Za-z0-9_]{1,12}\.7z\.\d{1,4}", fullmatch=True),
-    st.from_regex(r"[A-Za-z0-9_]{1,12}\.zip\.\d{1,4}", fullmatch=True),
-    st.from_regex(r"[A-Za-z0-9_]{1,12}\.exe\.\d{1,4}", fullmatch=True),
-    st.from_regex(r"[A-Za-z0-9_]{1,12}\.z\d{2,3}", fullmatch=True),
-    st.from_regex(r"[A-Za-z0-9_]{1,12}\.part\d{1,3}\.rar", fullmatch=True),
-    st.from_regex(r"[A-Za-z0-9_]{1,12}\.part\d{1,3}\.sfx", fullmatch=True),
-    st.from_regex(r"[A-Za-z0-9_]{1,12}\.r\d{2}", fullmatch=True),
+# ``[0-9]``, not ``\d``: on a ``str`` pattern ``\d`` draws any Unicode digit, which
+# reached ``0.7z.\u066000`` only by luck. The lookalike branch draws that class on
+# purpose, one swapped digit, dot or letter in an otherwise valid volume name.
+_valid_volume_names = st.one_of(
+    st.from_regex(r"[A-Za-z0-9_]{1,12}\.7z\.[0-9]{1,4}", fullmatch=True),
+    st.from_regex(r"[A-Za-z0-9_]{1,12}\.zip\.[0-9]{1,4}", fullmatch=True),
+    st.from_regex(r"[A-Za-z0-9_]{1,12}\.exe\.[0-9]{1,4}", fullmatch=True),
+    st.from_regex(r"[A-Za-z0-9_]{1,12}\.z[0-9]{2,3}", fullmatch=True),
+    st.from_regex(r"[A-Za-z0-9_]{1,12}\.part[0-9]{1,3}\.rar", fullmatch=True),
+    st.from_regex(r"[A-Za-z0-9_]{1,12}\.part[0-9]{1,3}\.sfx", fullmatch=True),
+    st.from_regex(r"[A-Za-z0-9_]{1,12}\.r[0-9]{2}", fullmatch=True),
     st.from_regex(r"[A-Za-z0-9_]{1,12}\.rar", fullmatch=True),
+)
+_volume_style_names = st.one_of(
+    _valid_volume_names,
+    with_lookalike(_valid_volume_names),
+    with_risky_char(_valid_volume_names),
     _name_text,
 )
 
@@ -567,6 +594,8 @@ def test_volume_part_helpers_total(name: str) -> None:
 @example(name="my.part1.zip.001")
 @example(name="my.part1.exe")
 @example(name="my.part1.r00")
+# ``\d`` matched Arabic-Indic zeros, so this was numbered and old-scheme RAR at once.
+@example(name="0.7z.\u066000")
 @given(name=_volume_style_names)
 def test_volume_schemes_are_disjoint(name: str) -> None:
     matched = [p.pattern for p in _VOLUME_SCHEMES if p.match(name) is not None]

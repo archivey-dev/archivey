@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey.exceptions import TruncatedError
+from archivey.exceptions import ArchiveyUsageError, TruncatedError
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import codecs as codecs_module
 from archivey.internal.streams.codecs import Codec, open_codec_stream
@@ -74,7 +74,7 @@ def _stdlib(codec: Codec, source: object) -> DecompressorStream:
 def _child(stream: object) -> RapidgzipChildStream:
     inner = stream
     while not isinstance(inner, RapidgzipChildStream):
-        inner = getattr(inner, "_inner")
+        inner = inner._inner
     return inner
 
 
@@ -250,7 +250,7 @@ def test_a_corrupt_member_found_after_a_resume_is_still_corrupt(tmp_path: Path) 
     data[-8] ^= 0xFF  # the CRC-32
     path = tmp_path / "crc.gz"
     path.write_bytes(bytes(data) + b"junk after the member")
-    expected, expected_error = _read_cut(path, Codec.GZIP, _OFF, "path")
+    _expected, expected_error = _read_cut(path, Codec.GZIP, _OFF, "path")
     got, error = _read_cut(path, Codec.GZIP, _ON, "path")
     assert expected_error is not None
     assert type(error) is type(expected_error)
@@ -282,10 +282,12 @@ def test_a_bytes_source_cut_stream_matches_too() -> None:
     whole = zlib.decompressobj(31)
     expected = whole.decompress(cut)
     got = bytearray()
-    with pytest.raises(TruncatedError):
-        with open_codec_stream(Codec.GZIP, io.BytesIO(cut), config=_ON) as stream:
-            while block := stream.read(1 << 20):
-                got += block
+    with (
+        pytest.raises(TruncatedError),
+        open_codec_stream(Codec.GZIP, io.BytesIO(cut), config=_ON) as stream,
+    ):
+        while block := stream.read(1 << 20):
+            got += block
     assert bytes(got) == expected
 
 
@@ -407,3 +409,103 @@ def test_the_start_over_never_reaches_the_caller(
             assert stream.read() == b""
     assert resumed
     assert restarts
+
+
+# ---------------------------------------------------------------------------------------
+# end_check_point: the point the DEFLATE end check decodes from.
+# ---------------------------------------------------------------------------------------
+
+
+def _read_to_the_end() -> RapidgzipChildStream:
+    child = RapidgzipChildStream(
+        io.BytesIO(_compressed(Codec.GZIP)), label="gzip", max_memory=None
+    )
+    while child.read(1 << 20):
+        pass
+    return child
+
+
+def test_end_check_point_reads_a_point_it_did_not_keep_back_from_the_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RapidgzipChildStream, "_query_points", lambda *_: None)
+    with _read_to_the_end() as child:
+        end = child.tell()
+        point = child.end_check_point(end)
+        assert point is not None
+        assert point.decompressed_offset in child.block_offsets().values()
+        assert child.tell() == end
+        resume = point.state
+        assert isinstance(resume, DeflateResume)
+        start = point.decompressed_offset - len(resume.window)
+        assert resume.window == _payload()[start : point.decompressed_offset]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [ArchiveyUsageError("open the member again"), OSError("source"), MemoryError()],
+    ids=["usage", "os", "memory"],
+)
+def test_end_check_point_lets_a_real_error_through(
+    error: BaseException, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The same errors the other probes on the stream let through: a None here would
+    # read as "no point", and the end check would decode from the start instead.
+    def fail(_self: RapidgzipChildStream) -> dict[int, int]:
+        raise error
+
+    with _read_to_the_end() as child:
+        end = child.tell()
+        monkeypatch.setattr(RapidgzipChildStream, "block_offsets", fail)
+        with pytest.raises(type(error)):
+            child.end_check_point(end)
+
+
+def test_end_check_point_is_none_when_the_index_fails_otherwise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(_self: RapidgzipChildStream) -> dict[int, int]:
+        raise ValueError("no index")
+
+    with _read_to_the_end() as child:
+        end = child.tell()
+        monkeypatch.setattr(RapidgzipChildStream, "block_offsets", fail)
+        assert child.end_check_point(end) is None
+
+
+def test_end_check_point_lets_an_error_in_the_window_read_back_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RapidgzipChildStream, "_query_points", lambda *_: None)
+
+    def fail(_self: RapidgzipChildStream, _n: int | None = -1, /) -> bytes:
+        raise OSError("pipe")
+
+    with _read_to_the_end() as child:
+        end = child.tell()
+        monkeypatch.setattr(RapidgzipChildStream, "read", fail)
+        with pytest.raises(OSError, match="pipe"):
+            child.end_check_point(end)
+        monkeypatch.undo()
+        assert child.tell() == end
+
+
+def test_end_check_point_raises_when_the_child_refuses_the_restoring_seek(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RapidgzipChildStream, "_query_points", lambda *_: None)
+    seek = RapidgzipChildStream.seek
+    calls: list[int] = []
+
+    def refuse_second(self: RapidgzipChildStream, offset: int, whence: int = 0) -> int:
+        calls.append(offset)
+        if len(calls) == 2:
+            raise ValueError("seek refused")
+        return seek(self, offset, whence)
+
+    with _read_to_the_end() as child:
+        end = child.tell()
+        monkeypatch.setattr(RapidgzipChildStream, "seek", refuse_second)
+        with pytest.raises(ValueError, match="seek refused"):
+            child.end_check_point(end)
+        assert calls[1] == end

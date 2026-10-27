@@ -146,7 +146,7 @@ def test_directory_format_on_a_path_under_a_file_raises_what_the_os_reports(
     (tmp_path / "a.txt").write_bytes(b"x")
     under_a_file = tmp_path / "a.txt" / "sub"
     try:
-        open(under_a_file, "rb").close()  # noqa: SIM115
+        open(under_a_file, "rb").close()
     except OSError as e:
         expected: type[OSError] = type(e)
     else:  # pragma: no cover - no OS opens a path under a regular file
@@ -217,9 +217,11 @@ def test_bidi_control_name_warns_once(
 ) -> None:
     name = "invoice\u202ecod.exe"
     (tmp_path / name).write_bytes(b"x")
-    with caplog.at_level(logging.WARNING, logger="archivey.normalization"):
-        with open_archive(tmp_path) as reader:
-            assert reader.members()[0].name == name
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey.normalization"),
+        open_archive(tmp_path) as reader,
+    ):
+        assert reader.members()[0].name == name
     warnings = [
         record for record in caplog.records if "bidirectional control" in record.message
     ]
@@ -374,9 +376,8 @@ def test_get_returns_member(simple_dir: Path) -> None:
 
 
 def test_open_missing_name_raises_key_error(simple_dir: Path) -> None:
-    with open_archive(simple_dir) as reader:
-        with pytest.raises(KeyError):
-            reader.open("does_not_exist.txt")
+    with open_archive(simple_dir) as reader, pytest.raises(KeyError):
+        reader.open("does_not_exist.txt")
 
 
 def test_get_returns_none_for_missing(simple_dir: Path) -> None:
@@ -687,9 +688,8 @@ def test_unreadable_subdirectory_fails_listing(
     monkeypatch.setattr(
         os, "scandir", _scandir_raising_for(sub, PermissionError(13, "denied"))
     )
-    with open_archive(simple_dir) as ar:
-        with pytest.raises(PermissionError):
-            ar.members()
+    with open_archive(simple_dir) as ar, pytest.raises(PermissionError):
+        ar.members()
 
 
 def test_subdirectory_vanishing_mid_walk_is_skipped(
@@ -705,9 +705,11 @@ def test_subdirectory_vanishing_mid_walk_is_skipped(
     monkeypatch.setattr(
         os, "scandir", _scandir_raising_for(sub, FileNotFoundError(2, "gone"))
     )
-    with caplog.at_level(logging.WARNING, logger="archivey.backends"):
-        with open_archive(simple_dir) as ar:
-            names = {m.name for m in ar.members()}
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey.backends"),
+        open_archive(simple_dir) as ar,
+    ):
+        names = {m.name for m in ar.members()}
     assert "a.txt" in names
     assert "sub/" in names  # the dir entry itself was listed before it vanished
     assert not any(n.startswith("sub/") and n != "sub/" for n in names)
@@ -881,9 +883,8 @@ def test_identity_stat_genuine_error_propagates(
 
     monkeypatch.setattr(directory_reader, "_STAT_LACKS_IDENTITY", True)
     monkeypatch.setattr(directory_reader, "_identity_stat", denied)
-    with open_archive(tmp_path) as reader:
-        with pytest.raises(PermissionError):
-            reader.members()
+    with open_archive(tmp_path) as reader, pytest.raises(PermissionError):
+        reader.members()
 
 
 def test_streaming_extract_with_first_name_filtered_out_fails_the_link(
@@ -897,9 +898,11 @@ def test_streaming_extract_with_first_name_filtered_out_fails_the_link(
     src = tmp_path / "src"
     _hardlinked_pair(src)
     dest = tmp_path / "dest"
-    with open_archive(src, streaming=True) as reader:
-        with pytest.raises(ExtractionError, match="forward-only"):
-            reader.extract_all(dest, filter=lambda m: None if m.name == "a.txt" else m)
+    with (
+        open_archive(src, streaming=True) as reader,
+        pytest.raises(ExtractionError, match="forward-only"),
+    ):
+        reader.extract_all(dest, filter=lambda m: None if m.name == "a.txt" else m)
 
 
 # ---------------------------------------------------------------------------
@@ -1084,14 +1087,17 @@ def test_every_directory_scan_refuses_a_swap(
     (root / "sub" / "b.txt").write_bytes(b"inside")
     outside = _outside_tree(tmp_path)
     listed: list[str] = []
-    with pytest.raises(
-        OSError, match="was replaced since the directory was listed; not scanning it"
-    ) as excinfo:
-        with open_archive(root, streaming=True) as reader:
-            for member, _stream in reader.stream_members():
-                listed.append(member.name)
-                if member.name == after:
-                    _replace_tree(root / "sub", swap, outside)
+    with (
+        pytest.raises(
+            OSError,
+            match="was replaced since the directory was listed; not scanning it",
+        ) as excinfo,
+        open_archive(root, streaming=True) as reader,
+    ):
+        for member, _stream in reader.stream_members():
+            listed.append(member.name)
+            if member.name == after:
+                _replace_tree(root / "sub", swap, outside)
     assert excinfo.value.errno == errno.ESTALE
     assert after.rstrip("/") in str(excinfo.value)
     cause = excinfo.value.__cause__
@@ -1277,7 +1283,9 @@ def test_extracting_into_the_root_is_refused(tmp_path: Path, streaming: bool) ->
 
     (tmp_path / "a").write_bytes(b"x")
     dest = tmp_path / "out"
-    with open_archive(tmp_path, streaming=streaming) as reader:
-        with pytest.raises(ExtractionError, match="into itself"):
-            reader.extract_all(dest)
+    with (
+        open_archive(tmp_path, streaming=streaming) as reader,
+        pytest.raises(ExtractionError, match="into itself"),
+    ):
+        reader.extract_all(dest)
     assert not dest.exists()

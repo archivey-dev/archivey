@@ -25,7 +25,7 @@ What it measures:
 Not measured: ``decoder_limits.max_decoder_memory`` and ``spool_limits.max_bytes`` already
 count memory and disk bytes directly; ``extraction_limits.max_ratio`` (and its
 ``ratio_activation_threshold``) is a proportion with no cost of its own; and
-``decoder_limits.max_ppmd_in_process_input`` is a memory bound too: archivey holds up to
+``decoder_limits.max_ppmd_held_input`` is a memory bound too: archivey holds up to
 that many compressed bytes of a PPMd member, and about as much again while the decoder
 copies them.
 """
@@ -154,8 +154,10 @@ def main() -> None:
                 (
                     f"`max_members` ({kind})",
                     f"{fmt_time(per_s)}, {fmt_bytes(per_b)} per member",
-                    f"{fmt_time(per_s * listing.max_members)}, "
-                    f"{fmt_bytes(per_b * listing.max_members)}",
+                    (
+                        f"{fmt_time(per_s * listing.max_members)}, "
+                        f"{fmt_bytes(per_b * listing.max_members)}"
+                    ),
                 )
             )
 
@@ -170,8 +172,10 @@ def main() -> None:
             (
                 "`max_metadata_bytes` (ZIP, 1000-byte names)",
                 f"{fmt_time(per_s * MiB)}, {fmt_bytes(per_b * MiB)} per MiB charged",
-                f"{fmt_time(per_s * listing.max_metadata_bytes)}, "
-                f"{fmt_bytes(per_b * listing.max_metadata_bytes)}",
+                (
+                    f"{fmt_time(per_s * listing.max_metadata_bytes)}, "
+                    f"{fmt_bytes(per_b * listing.max_metadata_bytes)}"
+                ),
             )
         )
 

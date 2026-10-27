@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable, Container, Iterator
-from collections.abc import Sequence as ABCSequence
+from collections.abc import Callable, Container, Iterator, Sequence as ABCSequence
 from contextvars import ContextVar
 from typing import TypeGuard, TypeVar
 
@@ -148,9 +147,9 @@ class _PasswordCandidates:
         "_candidates",
         "_known_good",
         "_provider",
-        "_state_lock",
-        "_provider_turn",
         "_provider_owner",
+        "_provider_turn",
+        "_state_lock",
     )
 
     def __init__(

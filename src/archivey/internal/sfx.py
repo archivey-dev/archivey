@@ -37,8 +37,7 @@ deliberately two-tiered — see :class:`ExecutableCue`.
 from __future__ import annotations
 
 import struct
-from collections.abc import Callable, Container, Iterator, Sequence
-from collections.abc import Set as AbstractSet
+from collections.abc import Callable, Container, Iterator, Sequence, Set as AbstractSet
 from enum import Enum
 from typing import BinaryIO, Generic, NamedTuple, Protocol, TypeVar
 

@@ -50,6 +50,7 @@ from archivey.internal.config import (
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.hashing import crc32_combine
+from archivey.internal.resource_usage import ResourceUsageRecorder
 from archivey.internal.streams.codecs.isolated import IN_PROCESS, Decompressor, Natives
 from archivey.internal.streams.codecs.xz_decoder import lzma_error_to_archivey
 from archivey.internal.streams.decompressor_stream import (
@@ -320,10 +321,12 @@ class _LzipState:
         offset: int,
         read_bound: int | None = None,
         natives: Natives = IN_PROCESS,
+        usage: ResourceUsageRecorder | None = None,
     ) -> None:
         self._limits = limits
         self._read_bound = read_bound
         self._natives = natives
+        self._usage = usage
         # Source offset of the current member's header, for error messages.
         self._comp_offset = offset
         self._state = self._NEED_HEADER
@@ -492,7 +495,10 @@ class _LzipState:
         # The format's own ceiling is 512 MiB (exponent 29), under the default cap, so
         # this refuses only for a caller who set a smaller one.
         check_decoder_memory(
-            dict_size, limits=self._limits, what="lzip dictionary size"
+            dict_size,
+            limits=self._limits,
+            what="lzip dictionary size",
+            usage=self._usage,
         )
         # A detection probe decodes with only the dictionary its read needs.
         decode_dict = probe_lzma_dictionary(dict_size, self._read_bound)
@@ -543,11 +549,13 @@ class LzipDecoder(BaseDecoder):
         limits: DecoderLimits,
         read_bound: int | None = None,
         natives: Natives = IN_PROCESS,
+        usage: ResourceUsageRecorder | None = None,
     ) -> None:
         self._state = state
         self._limits = limits
         self._read_bound = read_bound
         self._natives = natives
+        self._usage = usage
         self._comp_cursor = comp_cursor
         self._decomp_cursor = decomp_cursor
         self._collector = collector
@@ -556,7 +564,11 @@ class LzipDecoder(BaseDecoder):
         del inner
         return LzipDecoder(
             _LzipState(
-                self._limits, point.compressed_offset, self._read_bound, self._natives
+                self._limits,
+                point.compressed_offset,
+                self._read_bound,
+                self._natives,
+                self._usage,
             ),
             comp_cursor=point.compressed_offset,
             decomp_cursor=point.decompressed_offset,
@@ -564,6 +576,7 @@ class LzipDecoder(BaseDecoder):
             limits=self._limits,
             read_bound=self._read_bound,
             natives=self._natives,
+            usage=self._usage,
         )
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
@@ -622,6 +635,7 @@ def LzipDecompressorStream(
     report_trailing_data: bool = False,
     probe_read_bound: int | None = None,
     natives: Natives = IN_PROCESS,
+    usage: ResourceUsageRecorder | None = None,
 ) -> DecompressorStream:
     """Seekable lzip decompressor backed by stdlib ``lzma``.
 
@@ -635,7 +649,11 @@ def LzipDecompressorStream(
         del inner
         return LzipDecoder(
             _LzipState(
-                decoder_limits, point.compressed_offset, probe_read_bound, natives
+                decoder_limits,
+                point.compressed_offset,
+                probe_read_bound,
+                natives,
+                usage,
             ),
             comp_cursor=point.compressed_offset,
             decomp_cursor=point.decompressed_offset,
@@ -643,6 +661,7 @@ def LzipDecompressorStream(
             limits=decoder_limits,
             read_bound=probe_read_bound,
             natives=natives,
+            usage=usage,
         )
 
     return DecompressorStream(

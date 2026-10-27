@@ -909,8 +909,7 @@ class CentralDirectoryWalk:
                 member_end = (
                     entry.header_offset + LOCAL_HEADER_SIZE + entry.compressed_size
                 )
-                if member_end > previous_end:
-                    previous_end = member_end
+                previous_end = max(previous_end, member_end)
             wrapped_base = None
             if entry_end < cd_size:
                 ensure(pos, entry_end + 4)
@@ -1342,28 +1341,34 @@ def _apply_zip64_extra(
             continue
         data = field.data
         cursor = 0
-
-        def take(width: int, what: str) -> int:
-            nonlocal cursor
-            if cursor + width > len(data):
-                raise CorruptionError(
-                    f"Corrupt ZIP64 extra field in central directory entry "
-                    f"#{index}: {what} not found"
-                )
-            value = int.from_bytes(data[cursor : cursor + width], "little")
-            cursor += width
-            return value
-
         if file_size in (_U32_MAX, _U64_MAX):
-            file_size = take(8, "uncompressed size")
+            file_size, cursor = _zip64_value(
+                data, cursor, 8, "uncompressed size", index
+            )
         if compressed_size == _U32_MAX:
-            compressed_size = take(8, "compressed size")
+            compressed_size, cursor = _zip64_value(
+                data, cursor, 8, "compressed size", index
+            )
         if header_offset == _U32_MAX:
-            header_offset = take(8, "local header offset")
+            header_offset, cursor = _zip64_value(
+                data, cursor, 8, "local header offset", index
+            )
         if disk_deferred and cursor + 4 <= len(data):
-            disk_start = take(4, "disk number")
+            disk_start, cursor = _zip64_value(data, cursor, 4, "disk number", index)
             disk_deferred = False
     return compressed_size, file_size, header_offset, disk_start
+
+
+def _zip64_value(
+    data: bytes, cursor: int, width: int, what: str, index: int
+) -> tuple[int, int]:
+    """The ``width``-byte value at ``cursor`` in a ZIP64 extra field, and the cursor after it."""
+    if cursor + width > len(data):
+        raise CorruptionError(
+            f"Corrupt ZIP64 extra field in central directory entry "
+            f"#{index}: {what} not found"
+        )
+    return int.from_bytes(data[cursor : cursor + width], "little"), cursor + width
 
 
 @dataclass(frozen=True, slots=True)
@@ -1392,11 +1397,19 @@ def read_local_header(
     """Parse the local header at absolute ``header_offset``.
 
     Reads the fixed 30 bytes, then the name and extra field. Name and extra lengths are
-    uint16, so 65 535 is legal and they need no cap of their own; offsets past
-    :data:`MAX_DATA_OFFSET` are refused. The caller decides what a disagreement with the
-    central directory means. ``zip64_sizes`` is :func:`local_header_from`'s.
+    uint16, so 65 535 is legal and they need no cap of their own; a negative offset
+    and one past :data:`MAX_DATA_OFFSET` are refused, each with its own message. The
+    caller decides what a disagreement with the central directory means, and words a
+    negative offset in the archive's terms when it can (``ZipReader._local_data_region``
+    names the bytes the whole archive seems to be missing). ``zip64_sizes`` is
+    :func:`local_header_from`'s.
     """
-    if not 0 <= header_offset <= MAX_DATA_OFFSET:
+    if header_offset < 0:
+        raise CorruptionError(
+            f"The local header would start {-header_offset} bytes before the start "
+            "of the file"
+        )
+    if header_offset > MAX_DATA_OFFSET:
         raise CorruptionError(f"Absurd local-header offset: {header_offset}")
     fixed = read_at(header_offset, LOCAL_HEADER_SIZE)
     if len(fixed) == LOCAL_HEADER_SIZE and fixed[:4] != LOCAL_HEADER_SIGNATURE:

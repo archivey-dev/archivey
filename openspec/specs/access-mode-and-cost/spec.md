@@ -374,9 +374,10 @@ reason is recorded here rather than rediscovered a fourth time:
   open-time signal at all and is the reason that one does emit — if the case with no
   prior warning does not justify an ambient one, the case that already told you at open
   certainly does not.
-- A `warnings.warn` here would be the library's first, against the project rule that
+- A `warnings.warn` here would be about an archive, against the project rule that
   prefers structured diagnostics precisely because "a logging warning most applications
-  never see is a surprise deferred, not avoided" (`VISION.md`).
+  never see is a surprise deferred, not avoided" (`VISION.md`). A `DeprecationWarning`
+  is a different case: it is about the caller's code (`design-rules.md` DR-12a).
 - Emitting per `open()` on the workload that provokes it (walking every member of a
   solid archive) would produce one occurrence per member — noise proportional to the
   thing already reported once, accurately, as a cost.

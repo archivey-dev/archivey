@@ -145,12 +145,15 @@ def test_streaming_tar_huge_declared_size_fails_fast() -> None:
     octal size of 8 GiB costs 1.4 s (5.6 s as .tar.gz), 2**38 costs 43 s (180 s)."""
     first = _patched(_member("a", b"x" * 10), 124, _base256(2**45, 12))
     data = first + _member("b", b"y") + _TRAILER
-    with _watchdog(1.5), pytest.raises(ArchiveyError):
-        with open_archive(io.BytesIO(data), streaming=True) as ar:
-            # List without reading: a consumer that skips a member is what makes
-            # tarfile seek over it. (Reading it hits EOF at once and is typed.)
-            for _member_, _stream in ar.stream_members():
-                pass
+    with (
+        _watchdog(1.5),
+        pytest.raises(ArchiveyError),
+        open_archive(io.BytesIO(data), streaming=True) as ar,
+    ):
+        # List without reading: a consumer that skips a member is what makes
+        # tarfile seek over it. (Reading it hits EOF at once and is typed.)
+        for _member_, _stream in ar.stream_members():
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -181,9 +184,8 @@ def test_random_access_tar_huge_declared_size_is_typed(
     elif source_kind == "tar.xz":
         source = io.BytesIO(lzma.compress(data))
         fmt = ArchiveFormat.TAR_XZ
-    with pytest.raises(ArchiveyError):
-        with open_archive(source, format=fmt) as ar:
-            ar.members()
+    with pytest.raises(ArchiveyError), open_archive(source, format=fmt) as ar:
+        ar.members()
 
 
 # ---------------------------------------------------------------------------
@@ -206,9 +208,11 @@ def test_gnu_sparse_pax_record_not_an_integer_is_corruption(
 ) -> None:
     """error-handling: a malformed header value is CorruptionError, not ValueError."""
     data = _member("a", b"x" * 10, pax_headers=pax) + _TRAILER
-    with pytest.raises(CorruptionError):
-        with open_archive(io.BytesIO(data), streaming=streaming) as ar:
-            _drain(ar)
+    with (
+        pytest.raises(CorruptionError),
+        open_archive(io.BytesIO(data), streaming=streaming) as ar,
+    ):
+        _drain(ar)
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -221,9 +225,11 @@ def test_gnu_sparse_1_0_map_without_newline_is_corruption(streaming: bool) -> No
         "GNU.sparse.realsize": "10",
     }
     data = _member("GNUSparseFile.0/f", b"no newline here", pax_headers=pax) + _TRAILER
-    with pytest.raises(CorruptionError):
-        with open_archive(io.BytesIO(data), streaming=streaming) as ar:
-            _drain(ar)
+    with (
+        pytest.raises(CorruptionError),
+        open_archive(io.BytesIO(data), streaming=streaming) as ar,
+    ):
+        _drain(ar)
 
 
 # ---------------------------------------------------------------------------
@@ -262,9 +268,11 @@ def test_streaming_sparse_map_backward_seek_is_typed(case: str) -> None:
     else:
         sparse = _gnu_sparse("a", [(0, 1024)], 1024, b"A" * 512)
     data = sparse + _member("b", b"SECRET") + _TRAILER
-    with pytest.raises(ArchiveyError):
-        with open_archive(io.BytesIO(data), streaming=True) as ar:
-            _drain(ar)
+    with (
+        pytest.raises(ArchiveyError),
+        open_archive(io.BytesIO(data), streaming=True) as ar,
+    ):
+        _drain(ar)
 
 
 def test_sparse_map_past_packed_data_is_not_served_silently() -> None:
@@ -276,10 +284,12 @@ def test_sparse_map_past_packed_data_is_not_served_silently() -> None:
         + _member("b", b"SECRET")
         + _TRAILER
     )
-    with open_archive(io.BytesIO(data)) as ar:
-        with pytest.raises(CorruptionError):
-            with ar.open("a") as stream:
-                stream.read()
+    with (
+        open_archive(io.BytesIO(data)) as ar,
+        pytest.raises(CorruptionError),
+        ar.open("a") as stream,
+    ):
+        stream.read()
 
 
 def _pax_sparse(
@@ -415,13 +425,15 @@ def test_sparse_map_damaged_or_out_of_order_is_refused(
         + _member("b", b"SECRET")
         + _TRAILER
     )
-    with open_archive(io.BytesIO(data), streaming=streaming) as ar:
-        with pytest.raises(error, match=match):
-            if streaming:
-                _drain(ar)
-            else:
-                with ar.open("a") as stream:
-                    stream.read()
+    with (
+        open_archive(io.BytesIO(data), streaming=streaming) as ar,
+        pytest.raises(error, match=match),
+    ):
+        if streaming:
+            _drain(ar)
+        else:
+            with ar.open("a") as stream:
+                stream.read()
 
 
 _IN_ORDER_ENTRIES = [(0, 512), (4096, 512), (8192, 0)]
@@ -455,9 +467,8 @@ def test_sparse_map_in_order_is_read_through_open(encoding: str) -> None:
         + _member("b", b"SECRET")
         + _TRAILER
     )
-    with open_archive(io.BytesIO(data)) as ar:
-        with ar.open("a") as stream:
-            assert stream.read() == _IN_ORDER_EXPECTED
+    with open_archive(io.BytesIO(data)) as ar, ar.open("a") as stream:
+        assert stream.read() == _IN_ORDER_EXPECTED
 
 
 def _sparse_1_0_tar(entries: int) -> bytes:
@@ -516,15 +527,17 @@ def test_bzip2_accelerator_header_errors_are_typed(prefix: bytes) -> None:
     # Either the block-size byte replaced, or five junk bytes before the magic.
     data = prefix + good[4:] if prefix.startswith(b"BZh") else prefix + good
     config = ArchiveyConfig(use_indexed_bzip2=AcceleratorMode.ON)
-    with pytest.raises(ArchiveyError):
-        with open_archive(
+    with (
+        pytest.raises(ArchiveyError),
+        open_archive(
             io.BytesIO(data),
             format=ArchiveFormat.BZ2,
             seekable_members=True,
             config=config,
-        ) as ar:
-            with ar.open(ar.members()[0]) as stream:
-                stream.read()
+        ) as ar,
+        ar.open(ar.members()[0]) as stream,
+    ):
+        stream.read()
 
 
 # ---------------------------------------------------------------------------
@@ -565,10 +578,12 @@ def test_unix_compress_dictionary_memory_is_bounded() -> None:
 
     def read_all() -> None:
         nonlocal total
-        with open_archive(io.BytesIO(data), format=ArchiveFormat.Z) as ar:
-            with ar.open(ar.members()[0]) as stream:
-                while chunk := stream.read(65536):
-                    total += len(chunk)
+        with (
+            open_archive(io.BytesIO(data), format=ArchiveFormat.Z) as ar,
+            ar.open(ar.members()[0]) as stream,
+        ):
+            while chunk := stream.read(65536):
+                total += len(chunk)
 
     peak = traced_peak(read_all)
     assert total == codes * (codes + 1) // 2
@@ -756,11 +771,13 @@ def test_compressed_tar_cut_after_trailer_is_unverifiable(
         assert set(ar.diagnostics.counts) == {DiagnosticCode.DIGEST_UNVERIFIABLE}
 
     strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(DiagnosticRaisedError):
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError),
+        open_archive(
             io.BytesIO(data), format=fmt, streaming=streaming, config=strict
-        ) as ar:
-            _drain(ar)
+        ) as ar,
+    ):
+        _drain(ar)
 
 
 @pytest.mark.parametrize("streaming", [False, True])

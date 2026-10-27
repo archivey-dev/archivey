@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Census the content-probe residual on a real filesystem tree.
 
 `brotli-probe-framing-gate` landed the first-block framing check;

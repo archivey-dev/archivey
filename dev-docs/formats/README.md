@@ -14,7 +14,7 @@ For a format or topic that has no page yet, point briefs at
 Formats:
 
 - [`zip.md`](zip.md) — the first page, and the worked example for the shape below.
-- [`rar.md`](rar.md) — the only format whose read path crosses a process boundary.
+- [`rar.md`](rar.md) — the only format whose read path runs an external program.
 - [`7z.md`](7z.md) — the format whose header is a decode program.
 - [`tar.md`](tar.md) — no index, archivey's own header walker, and how archivey decides
   why a walk ended.
@@ -36,6 +36,8 @@ Topics:
   inner.
 - [`exception-handlers.md`](../topics/exception-handlers.md) — when a blind
   `except Exception` is right in `src/`, and which shape it takes.
+- [`process-isolation.md`](../topics/process-isolation.md) — which native decoders run
+  in a child process, how the children are reused, and what a caller sees when one dies.
 
 ## Format page structure
 
@@ -52,7 +54,7 @@ had. Sections are numbered so a brief can cite `zip.md` §2.3.
 | **5. Sharp edges** | *Symptoms someone observes*, each tagged **format** (inherent) / **library** (upstream or replace the library) / **archivey** (ours), so a reader can stop thinking about what they cannot fix. Details and fix plans stay behind the register link. **One table, not two**: a reader arrives with a symptom and does not yet know whether it is a bug or the format, so the tag sorts each row after they have found it rather than making them pick the right list first |
 | **6. Decisions** | Choice → why → rejected alternative. Light bullets, not ADRs |
 | **7. Open questions** | What we do not know and cannot settle by reading the code — each with what it would change and what would answer it. When there is nothing honest to put in it, keep the heading with one line saying none are open, so the numbers of §8 and §9 stay what briefs cite |
-| **8. Verify** | Commands and tests that pin the claims above, plus how to build fixtures for this format |
+| **8. Verify** | The command that runs this format's tests, and how to build or regenerate its fixtures. No list of the tests that pin each claim: tests are found by their folder and file name |
 | **9. References** | External spec sections *with numbers*, our investigations, upstream issues |
 
 Four rules the shape depends on:
@@ -65,10 +67,11 @@ Four rules the shape depends on:
 - **Behaviour here, status behind the link.** The page says what a caller sees and how
   fixable it is; `known-issues.md` keeps live defects, and the format's threat surface
   links the `threat-model.md` design.
-- **Test pointers live on the handbook page only**, in §8 — not duplicated into
-  `openspec/specs/`. That is step 1 of
+- **State the rule, not the tests that pin it.** A page names no test paths or test
+  names, in §8 or anywhere else: tests are found by their folder and file name, so a list
+  is a second copy that drifts. This replaces the test links that step 1 of
   [`discussions/2026-09-specs-to-handbook-and-tests.md`](../discussions/2026-09-specs-to-handbook-and-tests.md)
-  read literally, and it keeps one list to maintain rather than two that drift.
+  asked for.
 
 Stream formats (brotli, lzma, …) get one page each and may need a different shape; take
 this as the starting point, not a template to satisfy.

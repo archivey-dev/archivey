@@ -66,7 +66,7 @@ That origin story encodes priorities that remain core:
   `dev-docs/IDEAS.md`).
 - **Hashes without decompression where possible.** Formats already store CRC32/BLAKE2
   digests; a dedupe pass can use `member.hashes` without reading data (recipe:
-  [`docs/formats.md`](docs/formats.md#cheap-dedupe-with-stored-hashes)).
+  [`docs/formats.md`](docs/formats.md#stored-digests)).
 
 ## What "no surprises" means concretely
 
@@ -93,11 +93,23 @@ path meets them today. Measured figures, with their host and commit, live in
 
 - **Decompression-dominated** common paths (large-member ZIP/TAR/gzip read):
   target **≤ 1.3×** the relevant stdlib peer; up to ~**2×** where safety or
-  correctness features justify it (e.g. extract with path/symlink guards).
+  correctness features justify it (e.g. extract with path/symlink guards). The
+  benchmark corpus measures ZIP and TAR `read_all` above the 2× allowance today,
+  but its members compress about 250:1, so the gap there is per-member cost
+  rather than decompression, and the band's own case is barely exercised. The
+  nightly also reports ZIP extract above 2× on its runner; the measurement host
+  in `RESULTS.md` gives no reliable extract ratio, because the `zipfile` peer
+  time swings too much there.
 - **Metadata / listing** (open+list): aspirational peer ratios — ZIP/TAR at most
   **2–3×** vs `zipfile`/`tarfile`; native 7z/RAR **≈parity** (~1.25×) with
-  `py7zr`/`rarfile`. The ZIP listing gap is mostly per-member derivation cost;
-  lazy `ArchiveMember` derivation is the named follow-up, not a release blocker.
+  `py7zr`/`rarfile`. TAR is within its band. The ZIP and 7z/RAR bands are **not
+  met today**: ZIP listing is well past 3× `zipfile`, and 7z and RAR listing is
+  slower than py7zr and rarfile. The cost is per member: on ZIP and 7z mostly building
+  `ArchiveMember`, on RAR mostly header parsing. Lazy `ArchiveMember` derivation is
+  the named follow-up, not a release blocker.
+- **Against other readers:** reading 7z/RAR member data is at or ahead of `py7zr`
+  and `rarfile`; `libarchive` (C) is faster than archivey on nearly every path.
+  Figures with host and commit: `benchmarks/RESULTS.md` §"Third-party peers".
 - The bottleneck in real workloads is data movement and *re*-decompression, not
   header parsing. The benchmark suite tracks **bytes decompressed and seek
   patterns**, not just wall time — an implementation that re-reads a solid block
@@ -169,9 +181,13 @@ has no third-party runtime dependency, ADR 0011), heavy investment in
 self-checking scaffolding (specs, corpus sweep, fuzzing, CI matrix) over manual
 vigilance, a conservative public-API surface (easy to keep stable), and no promised
 support matrix beyond what CI actually exercises. The API is not frozen until 1.0, but
-no major changes are expected, and each change is listed in `CHANGELOG.md`.
+no large changes are expected, and each change is listed in `CHANGELOG.md`. Before 1.0 a
+minor release may break the API, but a removed or renamed name keeps working for one more
+minor release with a `DeprecationWarning`
+([versioning and stability](docs/how-it-is-built.md#versioning-and-stability)). 1.0 is
+declared once early users have run archivey for a while and the API has held up.
 
-[How it is built](https://davitf.github.io/archivey/how-it-is-built/) tells users how
+[How it is built](https://archivey-dev.github.io/archivey/how-it-is-built/) tells users how
 changes are made and checked, and what that process does not promise.
 
 How these priorities have been applied, question by question, is collected as rules in

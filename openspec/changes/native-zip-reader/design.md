@@ -342,7 +342,7 @@ archive has that shape, so DR-5a lets the two reads differ.
 PPMd holds its input until the whole member is in, and hands it to pyppmd whole: fed in
 pieces, pyppmd can crash the process on corrupt input. A bit-3 PPMd member has no size
 to wait for, and holding until the source ends would hold the rest of the archive, so it
-is fed in pieces and always in a child process; `max_ppmd_in_process_input=None`, which
+is fed in pieces and always in a child process; `max_ppmd_held_input=None`, which
 rules children out, refuses it with `ResourceLimitError`. pyppmd stops at the end mark
 and reports what it did not use (measured, in-process and in the child).
 
@@ -543,9 +543,10 @@ names only now). The pass reads and checks a member's data as its local header d
 it, and the file read as the directory does, so where the two headers differ the file
 read reads other data or fails the member. The method does not count, nor the CRC of a
 WinZip AE-2 member, which no read checks: data that matched the CRC and size the
-directory gives is the data it describes, whichever codec decoded it. A local name that
-is not UTF-8 under the UTF-8 flag is read as unflagged for the pass, and the name check
-fails the member, as the file read fails it. Each is a member-scoped failure of the
+directory gives is the data it describes, and a file read decodes by the local method
+too, reporting `MEMBER_LOCAL_METHOD_DIFFERS` as the pass does (2026-10-21). A local name
+that is not UTF-8 under the UTF-8 flag is read as unflagged for the pass, and the name
+check fails the member, as the file read fails it. Each is a member-scoped failure of the
 member it names, handled as `safe-extraction` handles any other (the `OnError`
 requirement):
 

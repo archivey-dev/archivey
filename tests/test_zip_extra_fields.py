@@ -240,6 +240,8 @@ def test_unparsed_fields_count_against_the_listing_limit(extra: bytes) -> None:
     with open_archive(io.BytesIO(data)) as archive:
         assert archive.members()[0].extra["zip.extra_fields"]
     limited = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=10_000))
-    with pytest.raises(ResourceLimitError):
-        with open_archive(io.BytesIO(data), config=limited) as archive:
-            archive.members()
+    with (
+        pytest.raises(ResourceLimitError),
+        open_archive(io.BytesIO(data), config=limited) as archive,
+    ):
+        archive.members()

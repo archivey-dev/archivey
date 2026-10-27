@@ -188,12 +188,12 @@ def _params(method: int, data: MemberData) -> CodecParams:
             ppmd_restore_method=word >> 12,
             input_runs_on=True,
         )
-    if method in (12, 93):
+    if method == 12:
         return CodecParams(single_stream=True)
     return CodecParams()
 
 
-def _codec(method: int):  # noqa: ANN202 - test helper
+def _codec(method: int):
     from archivey.internal.backends.zip_reader import _ZIP_METHOD_CODECS
 
     return _ZIP_METHOD_CODECS[method]
@@ -259,6 +259,25 @@ def test_a_codec_member_ends_where_its_codec_ends(
         _member(b"empty", method, b""),
         _stored(b"stored", b"stored data"),
         _member(b"last", method, _SMALL),
+    ]
+    raw = _streamed_zip(members, signed=signed)
+    assert _read_all(raw) == [(m.name, m.data) for m in members]
+
+
+@requires_zstd()
+@pytest.mark.parametrize("signed", [True, False], ids=["signed", "unsigned"])
+def test_a_zstd_member_of_several_frames_ends_after_its_last(signed: bool) -> None:
+    # Every frame of a Zstd member is content, so the decoder reads on past each frame
+    # end; with no size declared, the walk still finds the descriptor after the last.
+    def frames(data: bytes) -> bytes:
+        half = len(data) // 2
+        return _zstd(data[:half]) + _zstd(data[half:])
+
+    method = _Method(93, 0, frames)
+    members = [
+        _member(b"big", method, _BIG),
+        _member(b"small", method, _SMALL),
+        _stored(b"stored", b"stored data"),
     ]
     raw = _streamed_zip(members, signed=signed)
     assert _read_all(raw) == [(m.name, m.data) for m in members]

@@ -351,18 +351,18 @@ def test_pax_records_in_extra_are_read_only(streaming: bool) -> None:
         pax = member.extra["tar.pax_headers"]
         mutable = cast("dict[str, str]", pax)
         changes = (
-            lambda: mutable.__setitem__("comment", "x"),
-            lambda: mutable.__delitem__("comment"),
-            lambda: mutable.__ior__({"comment": "x"}),
-            lambda: mutable.update(comment="x"),
-            lambda: mutable.pop("comment"),
-            lambda: mutable.popitem(),
-            lambda: mutable.setdefault("new", "x"),
-            lambda: mutable.clear(),
+            lambda d: d.__setitem__("comment", "x"),
+            lambda d: d.__delitem__("comment"),
+            lambda d: d.__ior__({"comment": "x"}),
+            lambda d: d.update(comment="x"),
+            lambda d: d.pop("comment"),
+            lambda d: d.popitem(),
+            lambda d: d.setdefault("new", "x"),
+            lambda d: d.clear(),
         )
         for change in changes:
             with pytest.raises(TypeError, match="read-only"):
-                change()
+                change(mutable)
         assert pax["comment"] == "g"
         assert json.loads(json.dumps(pax)) == dict(pax)
         for copied in (

@@ -121,7 +121,9 @@ missing; read that line.
 - Rare tasks have their own page: the v1 reference repo `archivey-dev`
   ([`dev-docs/archivey-dev.md`](dev-docs/archivey-dev.md)), Atheris fuzzing
   ([`dev-docs/fuzzing.md`](dev-docs/fuzzing.md)), releases
-  ([`dev-docs/release-checklist.md`](dev-docs/release-checklist.md)).
+  ([`dev-docs/release-checklist.md`](dev-docs/release-checklist.md)), and maintenance
+  events such as a red scheduled job, a broken dependency, a security report or a new
+  issue ([`dev-docs/maintenance.md`](dev-docs/maintenance.md)).
 
 ## Review workflow (two agents, two skills)
 
@@ -222,8 +224,8 @@ rulings on the handbook page, and general ones in `dev-docs/design-rules.md`.
   (maintainer, 2026-09-25: "go ahead with merge straightforward ones … if there's a
   tricky one, you can ask me to take a look before merging").
   Tricky ones go to the maintainer: a behaviour trade-off, a design reversal, removing
-  or renaming a public name (before 0.2.0 too, `design-rules.md` DR-12), a very large
-  diff, or anything an open decision touches.
+  or renaming a public name or an `archivey` verb or option (`design-rules.md`
+  DR-12a), a very large diff, or anything an open decision touches.
 - The PR body is the record of a piece of work. Do not commit working plans to the repo.
 - Do not edit `CHANGELOG.md` in a PR; the release writes it.
 

@@ -11,7 +11,7 @@ from archivey.exceptions import (
     ArchiveyError,
     PackageNotInstalledError,
 )
-from archivey.internal.config import StreamConfig
+from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
@@ -30,6 +30,7 @@ from archivey.internal.streams.codecs.rapidgzip_select import (
     _rapidgzip_requirement,
     _rapidgzip_rewind_warning,
     _refuse_forward_only_accelerator,
+    _require_rapidgzip_child,
     _StdlibSeekContract,
     _translate_child_or_stdlib,
     _warn_if_auto_without_child,
@@ -72,6 +73,21 @@ class _DeflateFamilyCodec(StreamCodec):
                 return stream
         return self._open_stdlib(source, config)
 
+    def check_accelerator(self, source: CodecSource, config: StreamConfig) -> None:
+        if config.use_rapidgzip is not AcceleratorMode.ON:
+            return
+        if self._use_accelerator(source, config) and not self._leaves_to_stdlib(
+            source, config
+        ):
+            _require_rapidgzip_child(self.codec.value)
+
+    def _leaves_to_stdlib(self, source: CodecSource, config: StreamConfig) -> bool:
+        """Whether an accelerated open hands ``source`` to the standard library before
+        starting a child, on a look at its first bytes. Every such hand-off is declared
+        here, so :meth:`open` and :meth:`check_accelerator` make it alike. Default: this
+        codec has none."""
+        return False
+
     def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
         """The standard-library decoder, with the accelerator off and as its fallback."""
         raise NotImplementedError
@@ -94,14 +110,16 @@ class _DeflateFamilyCodec(StreamCodec):
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO | None:
         """Open ``source`` through rapidgzip, or ``None`` where the standard library
-        decodes it instead: here, an ``AUTO`` open whose child could not start; a
-        subclass may add its own cases.
+        decodes it instead: a source :meth:`_leaves_to_stdlib` hands over, or an
+        ``AUTO`` open whose child could not start.
 
         The layers, outermost first: :class:`_StdlibSeekContract`, the
         ``VerifyingStream`` of a declared size (:func:`_wrap_accelerated_length`), the
         codec's :meth:`_end_check`, and :class:`_StdlibOnAcceleratorError` over the
         child.
         """
+        if self._leaves_to_stdlib(source, config):
+            return None
         label = self.codec.value
         if self._bounds_source:
             source_for_child = _bound_rapidgzip_source(source, params, config)

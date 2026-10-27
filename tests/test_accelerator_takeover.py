@@ -234,7 +234,7 @@ def test_a_cut_zlib_reads_as_it_does_with_the_accelerator_off(
 def _decompressor(stream: object) -> DecompressorStream:
     inner = stream
     while not isinstance(inner, DecompressorStream):
-        inner = getattr(inner, "_inner")
+        inner = inner._inner
     return inner
 
 

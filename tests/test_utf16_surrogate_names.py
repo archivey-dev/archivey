@@ -411,10 +411,12 @@ def test_unrar_sizes_a_read_past_a_surrogate_name_the_mask_also_selects(
     """
     names = ("hiX.txt", "hi\ud800.txt", "hi")
     archive, expected = _compressed_rar4_surrogate(tmp_path, names)
-    with archivey.open_archive(archive, config=_UNRAR) as reader:
-        # Decoding an earlier member first is refused by default, as for any glob.
-        with pytest.raises(UnsupportedFeatureError, match="earlier members"):
-            reader.read(names[1])
+    # Decoding an earlier member first is refused by default, as for any glob.
+    with (
+        archivey.open_archive(archive, config=_UNRAR) as reader,
+        pytest.raises(UnsupportedFeatureError, match="earlier members"),
+    ):
+        reader.read(names[1])
     config = ArchiveyConfig(
         rar_decompressor=RarDecompressor.UNRAR,
         rar_allow_glob_member_concatenation=True,
@@ -430,9 +432,11 @@ def test_unrar_refuses_a_surrogate_unit_in_a_directory_and_names_unar(
 ) -> None:
     """The unit would reach ``unrar`` as a directory glob, which cannot be sized."""
     archive, _ = _compressed_rar4_surrogate(tmp_path, ("dir\ud800/f.txt",))
-    with archivey.open_archive(archive, config=_UNRAR) as reader:
-        with pytest.raises(UnsupportedFeatureError, match="surrogate unit.*unar"):
-            reader.read("dir\ud800/f.txt")
+    with (
+        archivey.open_archive(archive, config=_UNRAR) as reader,
+        pytest.raises(UnsupportedFeatureError, match="surrogate unit.*unar"),
+    ):
+        reader.read("dir\ud800/f.txt")
 
 
 @requires_binary("unar")

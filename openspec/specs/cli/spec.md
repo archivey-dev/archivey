@@ -652,12 +652,14 @@ needs beyond `archivey.__all__` SHALL otherwise come from a public module, such 
 `archivey.terminal` for terminal-safe display and `archivey.paths` for the `name (N)`
 spelling its single-root hoist shares with extraction. The CLI is the example other
 front ends copy, and an internal import would let an internal refactor break it
-without touching any public name. `extract --dry-run` also reads three private fields,
-`ExtractionReport._dry_run_top_level`, `ExtractionReport._dry_run_links` and
-`ExtractionReport._dry_run_entries`: the entries the dry run left at the top of its
-scratch copy of the destination, the symlinks in that copy, and every entry in it. A
-dry run writes nothing the CLI could look at instead, and renaming any of these fields
-breaks the dry run's hoist line and summary. Apart from those three fields, the CLI
+without touching any public name. `extract --dry-run` also reads four private fields,
+`ExtractionReport._dry_run_top_level`, `ExtractionReport._dry_run_links`,
+`ExtractionReport._dry_run_entries` and `ExtractionReport._resource_usage`: the entries
+the dry run left at the top of its scratch copy of the destination, the symlinks in that
+copy, every entry in it, and the reader's peak use of its limits. A dry run writes
+nothing the CLI could look at instead, and the usage record stays private until a scan
+shows which of its numbers are worth a public name. Renaming any of these fields breaks
+the dry run's hoist line, usage line and summary. Apart from those four fields, the CLI
 SHALL NOT read a private attribute of a library object, and SHALL NOT decide anything
 from a library exception's message: `extract` tells a re-root from a portable rewrite
 by `ExtractionResult.rewrites`, and `test` tells a link the archive left without a
@@ -694,6 +696,13 @@ nor check whether an existing directory there can be written into: a real run wh
 hoist is refused by that directory's permissions fails where the dry run predicted the
 move.
 
+Just before its closing summary, `extract --dry-run` SHALL print one line beginning
+`peak use of the reader limits:` with the parts that are not zero: the largest decoder
+allocation archivey checked and what it was for, the key-derivation rounds, the spool
+peak and the listing's member count and metadata bytes, each in the unit its limit
+field uses. When every part is zero, or the run ends before its summary, there is no
+line. A run without `--dry-run` SHALL NOT print it.
+
 #### Scenario: extract dry-run matrix
 
 | Case | Expected |
@@ -701,6 +710,7 @@ move.
 | `archivey extract <archive> --dry-run` | stderr names `would extract into <stem>/`; summary begins `dry run, nothing written:`; nothing created in the cwd |
 | `archivey extract <archive-with-traversal> --dry-run` | `blocked:` line; exit `3` |
 | `archivey extract <archive> -d out --dry-run` | `out` is not created |
+| `archivey extract <7z-with-an-LZMA2-folder> --dry-run` | a `peak use of the reader limits:` line names `decoder memory` and `LZMA2 dictionary size`; without `--dry-run`, no such line |
 | `archivey extract <tar-with-single-root-src> --dry-run` | stderr names `would move to src/`; summary ends `→ src/`; nothing created in the cwd |
 | `archivey extract <tar-whose-single-root-has-a-link-leaving-it> --dry-run` | stderr names `would keep in <stem>/:` and the reason the real run prints; no `would move` |
 | `archivey extract foo.tar --dry-run --overwrite error` holding `foo/x.txt`, with the operator's file `foo` | stderr names `would keep in foo (1)/: foo already exists`; summary ends `→ foo (1)/` |

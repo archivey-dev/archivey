@@ -58,12 +58,13 @@ uv run ty check                    # type-check (ty)
 uv run pre-commit run --all-files  # optional: framework hooks over the whole tree
 ```
 
-Pyrefly and ty are scoped to `src/`, so every command above runs clean with no extra
-path arguments. **Both type checkers must stay green** — `ruff` passing is not the gate,
+Pyrefly and ty are scoped to `src/` and `packages/archivey-squashfs/src/` (the library
+and the in-repo plugin package), so every command above runs clean with no extra path
+arguments. **Both type checkers must stay green** — `ruff` passing is not the gate,
 and running it alone is the most common self-inflicted CI failure here.
 
 **Format before you commit.** CI runs `ruff format --check` (and `ruff check`) over
-`src/ tests/ scripts/ benchmarks/` and will fail on drift. Installing the git hook
+`src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/` and will fail on drift. Installing the git hook
 (`./scripts/install-git-hooks.sh`) makes this automatic: staged `*.py` under those
 paths are `ruff check --fix`'d and `ruff format`'d on commit. If you skip the hook,
 run `uv run ruff format` yourself before committing — `ruff format --check` only
@@ -108,14 +109,14 @@ uv sync --group dev --extra all && uv run --no-sync pytest -n auto
 # 2. Minimum supported versions — every declared dependency pinned to its floor
 #    (`pycdlib 1.22`, `backports.zstd 1.0`, …), so version-specific library bugs in the
 #    supported range surface. --no-sync keeps the lowest resolution for the test run.
-uv sync --group dev --extra all --resolution lowest-direct && uv run --no-sync pytest -n auto
+uv sync --group dev --extra all --resolution lowest-direct && uv run --no-sync pytest -n auto --no-cov
 
 # 3. Zero-dependency core — no extras, no dev group; proves tests needing an optional
 #    library skip/xfail cleanly (see the `requires` helper in tests/conftest.py) and the
 #    core imports nothing third-party.
 uv sync --no-dev && uv run --no-sync python tests/check_zero_dep_core.py \
   && uv run --no-sync --with pytest --with pytest-timeout --with pytest-cov --with pytest-xdist \
-     pytest tests/ -q -n auto
+     pytest tests/ -q -n auto --no-cov
 ```
 
 These mirror CI's `[all]`, `[all-lowest]`, and `[core-only]` legs; all three must stay
@@ -137,12 +138,12 @@ Keep that when you add a step.
 > change what the gates report.
 
 A pull request that changes only documentation does not start `ci.yml` (none of its
-jobs: lint, test legs, unar and free-threaded legs, benchmark gate), `atheris-fuzz.yml`
-or `ppmd-native-stress.yml`. The docs build and the OpenSpec checks live in
-`docs-checks.yml`, which always runs. The list of documentation paths is the
-`pull_request: paths:` filter in those three workflows; if a test starts reading a doc
-file, re-include that file there, as `docs/api.md` is, or a change to it will skip the
-test that reads it. `tests/test_ci_doc_paths.py` checks that the three lists match and
+jobs: lint, test legs, unar and free-threaded legs, benchmark gate) or `atheris-fuzz.yml`.
+The docs build and the OpenSpec checks live in `docs-checks.yml`, which always runs. The
+list of documentation paths is the `pull_request: paths:` filter in those two workflows;
+if a test starts reading a doc file, re-include that file there, as `docs/api.md` is, or
+a change to it will skip the test that reads it. `tests/test_ci_doc_paths.py` checks that
+the two lists match and
 that the re-includes come after every `!` entry. Branch protection on `main` requires no
 status checks today. If one is added, it must come from a workflow that runs on every
 pull request, because a filtered workflow reports no check at all and the PR would wait
@@ -157,6 +158,18 @@ tag, publish). One-time repo rename / PyPI setup:
 User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md). Pull requests do not edit
 it: the release PR writes each version's entry (new features, public API changes and
 security fixes one line each, other bug fixes summarized in one line).
+
+Whether a release can be a patch follows
+[`docs/how-it-is-built.md`](docs/how-it-is-built.md) §Versioning and stability, and
+`scripts/release.py notes` answers it from two sources:
+
+- **`dev-docs/api-surface.txt`** lists the public API one line per item: the public
+  submodules, names, signatures, fields, enum values, `ARCHIVE_INTEGRITY_CODES`, and
+  the command's verbs, options and exit codes. A pull request that changes any of them runs
+  `uv run python scripts/api_surface.py --write` and commits the result;
+  `tests/test_api_surface.py` fails until it does.
+- **The `needs-minor` label** marks a merged pull request that needs a minor release for
+  a reason the file cannot show, such as a call that now gives a different result.
 
 ## Tooling decisions
 
@@ -256,6 +269,11 @@ maintainer.
   int"), so `isinstance(value, bool)` drops it.
 - **Match the surrounding code.** Naming, structure, and idiom should read like the file
   you're editing.
+- **A `str` regex matches ASCII unless it means Unicode.** On a `str` pattern `\d`,
+  `\w`, `\s` and `\b` match Unicode digits, letters and spaces, and `re.IGNORECASE`
+  folds `ı`, `İ`, `ſ` and the Kelvin sign into ASCII letters: `0.7z.٠00` read as a
+  volume name. Write `[0-9]`, `[A-Za-z0-9_]` or `[ \t]`, or pass `re.ASCII`.
+  `tests/test_src_regex_ascii.py` enforces it.
 - **Type-checker suppressions must be justified, and are a last resort.** A bare
   `# type: ignore` that hides a *fixable* error is not allowed — it lets a real bug
   through and silently rots. Before suppressing, fix the type model (e.g. declaring the
@@ -388,6 +406,16 @@ maintainer.
   reach the path it named. For a test the PR says fails on `main`,
   `uv run python scripts/review_prep.py red-on-base <test ids>` runs it against the
   merge base's `src/` and prints a table for the PR body.
+- **A test you move or refactor still tests what it did.** When a change moves tests
+  between files or swaps their setup for a shared helper, run the suite before it (twice,
+  for the coverage baseline) and after it, and compare the runs with
+  `scripts/compare_test_runs.py` (its docstring has the commands). It fails when a test
+  is missing, new or has a different outcome, and when a test lost a large share of the
+  `src/` lines it ran: a test whose body no longer reaches the library still passes, so
+  only this catches it. Per-test coverage varies a little between runs, so smaller
+  losses do not fail; they are listed, and a reviewer reads them. Neither check reads
+  test code: a test that makes the same calls and has lost an assertion reports `same`
+  on both, so the moved tests still get read. Paste both results into the PR.
 - **A parity promise gets its comparison test first.** When a feature promises to behave
   like another archivey path (a dry run like a real extraction), write the test that
   runs both and compares them first, before the feature itself. This generalises the
@@ -534,7 +562,7 @@ specs-to-handbook discussion below), but we are migrating executable detail into
 [`dev-docs/discussions/2026-09-specs-to-handbook-and-tests.md`](dev-docs/discussions/2026-09-specs-to-handbook-and-tests.md).
 On every PR that touches `openspec/specs/` or a change delta:
 
-- Prefer a **pytest** (and a handbook / Verify link) over a new WHEN/THEN scenario.
+- Prefer a **pytest** over a new WHEN/THEN scenario.
 - When you touch a requirement that is already covered by tests, **collapse or delete**
   redundant scenarios rather than adding siblings “for completeness”.
 - Leave that capability **no denser than you found it** (preferably thinner).
@@ -603,4 +631,4 @@ published, URL-reachable and absent from every menu.
 `scripts/check_docs_nav.py` enforces it, along with the rule that a published page
 must not link into unpublished material: prefer inlining the fact, and where the
 depth is genuinely worth keeping, link the file on GitHub with an absolute
-`https://github.com/davitf/archivey/blob/main/…` URL.
+`https://github.com/archivey-dev/archivey/blob/main/…` URL.

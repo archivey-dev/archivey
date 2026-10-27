@@ -17,7 +17,7 @@ the status — this page states the behaviour and links the row.
 | Access cost | `DIRECT` — every file is one extent (or one run of extents) at an absolute sector |
 | Stream capability | `SEEKABLE` |
 | Core dependencies | None can read it: ISO needs `pycdlib`, which is in `[recommended]` |
-| Refuses | Non-seekable sources, before `pycdlib` is consulted (`StreamNotSeekableError`, not `PackageNotInstalledError`) · raw CD sector images (`.bin`), by name, also before `pycdlib` is consulted · a multi-extent file whose extents are not back to back · reading a zisofs2 member · writing |
+| Refuses | Non-seekable sources, before `pycdlib` is consulted (`StreamNotSeekableError`, not `PackageNotInstalledError`) · raw CD sector images (`.bin`), by name, also before `pycdlib` is consulted · a multi-extent file whose extents overlap each other (`CorruptionError`) · reading a zisofs2 member · writing |
 | Accepts and ignores | `password=` (`PASSWORD_ARGUMENT_UNUSED`) |
 | `encoding=` | Applied to a Rock Ridge or plain name, or a Rock Ridge link target, whose bytes are not valid UTF-8; without it, such a Rock Ridge name takes its Joliet name when the two line up (§2.2) |
 
@@ -144,8 +144,7 @@ each File Identifier and each File Entry to the image's `max_metadata_bytes` sum
 Entry is weighed before `pycdlib` parses it, as its fixed part plus the
 extended-attribute and allocation-descriptor lengths it declares, since `pycdlib` makes
 one object per allocation descriptor. After it,
-listing touches only records already in memory
-(`test_listing_reads_nothing_from_the_image`), which is what lets the member walk run
+listing touches only records already in memory, which is what lets the member walk run
 without the handle lock. Two exceptions read a directory's extent once more, under the
 handle lock (§2.3): a directory holding a repeated identifier, to check the multi-extent
 flags as written, and a directory holding a file whose data ends at the end of the image,
@@ -267,9 +266,13 @@ What is ISO-specific in turning a record into a member:
   is the rule after PR #470; before it, `created` fell back to the attribute-change time.
 - **POSIX fields.** `mode` (permission bits only), `uid` and `gid` come from `PX`, and
   are `None` outside Rock Ridge. `link_target` is the `SL` path.
-- **Archive info.** `comment` is the volume identifier. `format_version` is `None`:
-  ISO 9660 stores no interchange level, and `pycdlib`'s inferred one read 3 on nearly
-  every image because it counts the `.`/`..` identifiers as non-d-characters.
+- **Archive info.** `comment` is the primary descriptor's volume identifier, decoded as
+  a plain ISO 9660 name is (UTF-8, else `encoding=`, else `surrogateescape`): the
+  standard allows only d-characters there, but xorriso 1.5.6 stores `-V` as UTF-8. The
+  Joliet descriptor's copy is not read, because xorriso writes each non-ASCII byte of it
+  as `_` and it holds 16 characters to the primary's 32 bytes. `format_version` is
+  `None`: ISO 9660 stores no interchange level, and `pycdlib`'s inferred one read 3 on
+  nearly every image because it counts the `.`/`..` identifiers as non-d-characters.
   `member_count` is `None`.
 
 A bootable image's **El Torito boot catalog** (`boot.catalog`, `BOOT.CAT`) is listed as
@@ -279,19 +282,24 @@ tree is listed there.
 
 ### 2.3 Member data
 
-Reading a file is a `PyCdlibIO` over an inode, wrapped as `_PyCdlibStream` and entered at
-open. There is no decoding, no password and nothing to verify. Seeking is supported when
+Reading a file is a view of the archive source over the file's extent
+(`PluginSource.view`), or one view per extent joined into one stream (`JoinedViews`) for
+a multi-extent file. Nothing goes through `pycdlib`'s file object. A view cannot return
+more than the file's bytes, so the member promises `bounded=True`. There is no decoding
+apart from zisofs, no password and nothing to verify. Seeking is supported when
 `seekable_members=True`.
 
-The inode is `pycdlib`'s own when it covers the file. Three kinds of record need one built
-here, over the extents read straight from the image (`_data_inode`):
+The span is the directory record's own when `pycdlib` describes the file as written.
+Three kinds of record need a layout, worked out while listing and used by `_data_spans`:
 
 - **A multi-extent file.** In parse mode `pycdlib` gives each extent its own inode and
   links the records through `data_continuation`, so the first record's inode covers only
-  the first extent. archivey sums the chain and reads it as one run. Writers put the
-  extents back to back — xorriso and libarchive's fixture both do — and the ISO 9660
-  standard does not require it, so a chain with a gap is refused with
-  `UnsupportedFeatureError` rather than read as one run.
+  the first extent. archivey sums the chain and reads each extent where its record puts
+  it, in record order. Writers put the extents back to back (xorriso and libarchive's
+  fixture both do), but the ISO 9660 standard does not require it, and the Linux kernel
+  reads each section where it is, so a gap between extents is read, not refused.
+  Extents that overlap each other are refused with `CorruptionError`: no writer makes
+  them, and they would let a small image list a file many times its size.
 
   `pycdlib` builds that chain for a file record whose identifier repeats the record just
   before it on disc, and sets the multi-extent flag on the earlier record in memory while
@@ -326,8 +334,8 @@ here, over the extents read straight from the image (`_data_inode`):
   data read.
 - **The boot catalog.** `pycdlib` keeps it in memory and gives its record no inode. Its
   extent still holds the bytes, which is what a mounted image shows. Because it has no
-  inode, `pycdlib` never clamped its length to the image either; the inode built here
-  stops at the end of the image, like any other (§4).
+  inode, `pycdlib` never clamped its length to the image either; its view is read as
+  far as the image goes, like any other (§4).
 - **A file cut by the end of the image.** `pycdlib` clamps a file whose data runs past
   the end of the image to end there, and overwrites the declared length with the clamped
   one on every record sharing the inode: zero when the extent starts at the end, negative
@@ -350,9 +358,11 @@ here, over the extents read straight from the image (`_data_inode`):
   anywhere after its ISO 9660 trees fails here too, at the anchor `pycdlib` reads in the
   volume's last block, so a cut UDF image does not open even when its files survive.
 
-`MemberStreams.CONCURRENT` puts one per-reader lock around everything that moves
-`pycdlib`'s shared image handle: `PyCdlibIO` construction and entry, every read and seek,
-close. Correctness only: the lock serialises parallel reads of one image.
+`MemberStreams.CONCURRENT` puts the adapter's per-reader lock around every call into the
+reader and every read and seek of a member stream. `pycdlib` moves the shared image
+handle only while listing; member reads go through views, which need no lock but take it
+anyway, since the adapter cannot tell a view from a library's stream. Correctness only:
+the lock serialises parallel reads of one image.
 
 ### 2.4 Extract
 
@@ -418,20 +428,17 @@ ISO-specific only. General extraction and name hazards are §2.4.
   the minimum archivey requires, `pycdlib` detects the loop and raises "ISO Directory
   Records form a loop" or "UDF File Entries form a loop", which archivey reports as
   `CorruptionError` at open. So a looping tree is refused at open, also when the loop is
-  only in a tree archivey does not list from, such as UDF or Joliet under Rock Ridge
-  (`test_pycdlib_directory_cycle_does_not_hang`, found on a Joliet tree;
-  `test_pycdlib_udf_directory_cycle_does_not_hang` for UDF). No tool writes a cyclic
+  only in a tree archivey does not list from, such as UDF or Joliet under Rock Ridge.
+  No tool writes a cyclic
   tree, so only a crafted or damaged image is refused. archivey's own `_walk_records`
   also enters each extent once. Importing the ISO backend (which `import archivey` does
   eagerly, to register it) replaces `pycdlib.rockridge.RockRidge.parse` with the System
   Use filter (§2.2), but that wrapper acts only inside `IsoReader`'s own `open_fp` call,
-  where a `ContextVar` is set, so other callers are untouched
-  (`test_pycdlib_used_directly_is_not_filtered`). The `ListingLimits` hooks on
+  where a `ContextVar` is set, so other callers are untouched. The `ListingLimits` hooks on
   `pycdlib.dr.DirectoryRecord.parse`,
   `pycdlib.pycdlib.PyCdlib._parse_path_table`,
   `pycdlib.path_table_record.PathTableRecord.parse`, `pycdlib.udf.parse_file_ident` and
-  `pycdlib.udf.parse_file_entry` (§2.2) are gated the same way
-  (`test_the_pycdlib_hooks_are_inert_outside_archivey_opens`). The
+  `pycdlib.udf.parse_file_entry` (§2.2) are gated the same way. The
   mutation-harness finding is in [`threat-model.md`](../threat-model.md).
 - **Records multiply what `pycdlib` builds at open.** Every record costs `pycdlib` about
   0.8 KB of Python objects, 15 to 20 times its size on disc, and records whose Rock Ridge
@@ -499,7 +506,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A Rock Ridge name written in Latin-1 lists with `\udcXX` escapes | **format** | Rock Ridge names have no charset field, and this image has no Joliet name that lines up with it (none, cut at 64 characters, or a directory with no file under it). Pass `encoding=` (§2.2) |
 | A file exists in the listing of one tool and not another | **format** | The trees are independent (§1). archivey picks Rock Ridge first, 7-Zip Joliet first |
 | A DVD image lists 8.3 names while the disc shows long ones | **archivey** | Long names are in UDF, which is not read (§3) |
-| A multi-extent file with non-contiguous extents raises `UnsupportedFeatureError` on read | **archivey** | Its `size` is right; reading it would need a chained stream rather than one run. No writer seen does this (§2.3) |
+| A multi-extent file whose extents overlap each other raises `CorruptionError` on read | **archivey** | Its `size` lists; no writer makes overlapping extents, and reading them would let a small image produce a huge file (§2.3) |
 | Two members share their bytes, and extraction writes both | **format** | Hardlinks are records sharing an extent; there is no hardlink record to map to `HARDLINK` |
 | Two members have one name and different bytes, and one of them is a resource fork | **format** | An associated file (flag bit 2) shares its data file's identifier; both records list, in on-disc order, and the later one is current (§2.3). Nothing on the member marks which is the fork |
 | Opening a large image is slow and listing is instant | **library** | `open_fp` parses every tree up front (§2.2). The cost class `INDEXED` is still right: nothing is decoded |
@@ -516,7 +523,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Call `pycdlib`'s private `_yield_children` | It is the one place that skips extra multi-extent records and follows relocation; the tests run it on every supported `pycdlib` | Reimplementing both, which duplicates the fragile part |
 | Hide `rr_moved` by its contents | The name is a writer convention, and a real directory may carry it | Hiding by name |
 | List old plain-ISO versions under their stored identifier, not current | Same shape as RAR file history, so extraction writes the newest and nothing is lost from the listing | Dropping old versions; listing all under one name |
-| Read a multi-extent file as one run, and refuse a gap | Every writer seen writes the extents back to back, so one inode covers them; a gap is refused rather than read wrong | A chained stream over per-extent inodes, not needed by any image seen |
+| Read each extent of a multi-extent file where it is, joined; refuse overlapping extents | ECMA-119 does not require the extents to be back to back, and the kernel reads each section where it is. Maintainer, 2026-10-27, thread "Implement the plugin API" ("yes please", to joining per-extent views): this reverses the earlier call to read one run and refuse a gap, made when reading went through `pycdlib`'s inode; once reads became views of the source, the chained stream was a few lines. Reopen if an image needs overlapping extents | One run with a gap refused (the earlier call) |
 | List the boot catalog as an ordinary file, read from its extent | It is a file in the tree, and 7-Zip lists it the same way; its bytes are on disc | Hiding it; synthesising 7-Zip's `[BOOT]` entries |
 | `format_version` is `None` | ISO 9660 stores no level; `pycdlib`'s inference read 3 on nearly every image | Passing the inference through |
 | Filter System Use bytes before `pycdlib` parses them, only inside archivey's own `open_fp` | One odd record otherwise costs every member, and zisofs is a valid image. A `ContextVar` confines the wrapper to archivey's opens, so a program using `pycdlib` directly keeps its behaviour | Patching `pycdlib` for the whole process; a per-entry leniency layer that retries `pycdlib`'s parse, which would need its partly built state undone |
@@ -550,32 +557,32 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
     tests/test_corpus_sweep.py -k "iso or ISO"
 ```
 
-| Claim | Pinned by |
-| --- | --- |
-| Detection by far magic; a bootable image is not taken by a probe; a short source falls through | `tests/test_detection.py::test_iso_detected_via_extended_window`, `::test_bootable_iso_is_not_claimed_by_the_content_probe`, `::test_zeroed_system_area_iso_still_detected`, `::test_stream_too_short_for_iso_falls_through`; `tests/test_iso.py::test_iso_detected_by_extended_window` |
-| Raw sector images refused by name, without `pycdlib` | `tests/test_iso_raw_sectors.py` |
-| Bytes after the volume space reported, zeros silent, strict refuses, 1 MiB bound; MBR and GPT partitions after the volume space (hand-built, and `xorriso` hybrids; `xorriso` is installed by `setup-dev-env.sh` and on the Linux `all` CI legs) are part of the image; a GPT with a bad CRC or out-of-range fields, a protective MBR entry, or an MBR without its signature widens nothing; a valid GPT partition reaching past the file (entry sizes 128, 1024, 4096) still counts, the test that fails if such a partition is dropped | `tests/test_iso_trailing_data.py` |
-| Cost, seekable-only, write refused, password unused | `tests/test_iso.py::test_iso_cost`, `::test_non_seekable_iso_rejected`, `::test_write_rejected`, `::test_password_is_accepted_and_recorded` |
-| Unknown System Use entries skipped; zisofs lists and reads decoded, seeks, refuses zisofs2 under `ZF` or `Z2` and a too-short entry (listing `UNKNOWN`) and damaged, over-long or unterminated blocks, and a member cut by the image end raises `TruncatedError`; a malformed entry costs its own member only, a cut symlink withholds its target, strict refuses; the filter is inert outside archivey | `::test_a_zisofs_member_lists_its_decoded_size_and_reads_decoded`, `::test_a_zisofs_member_seeks_across_blocks`, `::test_a_zisofs_member_this_reader_cannot_decode_is_refused_alone`, `::test_a_damaged_zisofs_block_is_corruption`, `::test_a_zisofs_block_that_inflates_past_the_block_size_is_corruption`, `::test_a_zisofs_block_that_does_not_end_at_its_pointer_is_corruption`, `::test_a_zisofs_member_cut_by_the_image_end_is_truncated`, `::test_a_malformed_rock_ridge_entry_costs_its_own_member_only`, `::test_a_symlink_whose_entries_are_cut_withholds_its_target`, `::test_a_strict_policy_refuses_a_cut_rock_ridge_area`, `::test_pycdlib_used_directly_is_not_filtered`, `::test_the_filter_knows_every_entry_pycdlib_parses` |
-| Names that are not UTF-8 take `encoding=`, else their Joliet name when it lines up, and a relative link target follows the members it names; UTF-8 names ignore it; `raw_name` is the stored bytes | `::test_a_latin1_rock_ridge_name_decodes_with_encoding`, `::test_a_utf8_rock_ridge_name_ignores_encoding`, `::test_an_encoding_that_cannot_decode_the_name_falls_back_to_escapes`, `::test_a_latin1_rock_ridge_name_takes_its_joliet_name`, `::test_encoding_wins_over_the_joliet_name`, `::test_following_link_targets_reads_each_directory_once`, `::test_empty_files_sharing_an_extent_are_matched_in_linear_time`; `tests/test_review_simplicity_consistency.py::test_usable_encoding_argument_is_not_recorded` |
-| Namespace selection and metadata per namespace | `::test_rock_ridge_namespace_and_fidelity`, `::test_joliet_namespace_and_fidelity`, `::test_plain_iso_namespace_and_fidelity` |
-| Record walk: `/` in a name, duplicate names, cycles, `rr_moved`, a record without Rock Ridge or without `NM` (also with `pycdlib`'s unallocated `ce_entries`) | `::test_a_rock_ridge_name_holding_a_slash_costs_no_sibling`, `::test_an_area_cut_before_its_nm_entry_lists_under_the_iso_name`, `::test_a_record_without_a_continuation_area_has_no_nm_name`, `::test_duplicate_rock_ridge_names_all_list`, `::test_the_record_walk_descends_each_directory_extent_once`, `::test_rock_ridge_relocation_directory_is_not_listed`, `::test_a_rock_ridge_record_without_entries_lists_under_its_iso_name` |
-| Device node is `OTHER`; plain versions keep the newest current; a directory keeps a `;N` suffix | `::test_a_rock_ridge_device_node_is_other_not_file`, `::test_plain_iso_versions_keep_the_newest_current`, `::test_a_directory_identifier_keeps_its_version_like_suffix` |
-| `TF` long-form dates; `TF` wins over the record date | `::test_rock_ridge_long_form_tf_time_is_read`, `::test_rock_ridge_tf_modification_time_wins_over_record_date` |
-| Boot catalog reads and extracts, and one declared past the image end reads short | `::test_the_el_torito_boot_catalog_reads_and_extracts`, `::test_a_boot_catalog_declared_past_the_image_end_reads_short` |
-| Multi-extent size and data; a gap refused; a repeated identifier without the on-disc flag starts a member of its own, also after a real multi-extent file and when two records share an extent; a repeated superseded version stays not current; a directory and a file with one identifier both list, and so do an associated file and a file in either order; the raw directory walk crosses sector padding | `::test_a_multi_extent_file_lists_and_reads_every_extent`, `::test_a_multi_extent_file_with_a_gap_is_refused`, `::test_a_repeated_identifier_without_the_flag_lists_each_file`, `::test_a_multi_extent_file_and_an_unrelated_file_with_its_name_both_list`, `::test_records_sharing_an_extent_keep_their_own_multi_extent_flags`, `::test_a_repeated_superseded_version_stays_not_current`, `::test_a_directory_and_a_file_with_one_identifier_both_list`, `::test_an_associated_file_and_a_file_with_its_identifier_both_list`, `::test_the_raw_directory_walk_crosses_sector_padding` |
-| No interchange-level guess | `::test_format_version_is_not_pycdlibs_guess` |
-| A loop in `pycdlib`'s own walk refused at open, in all three trees and in UDF | `::test_pycdlib_directory_cycle_does_not_hang`, `::test_pycdlib_udf_directory_cycle_does_not_hang` |
-| UDF tree counted against `max_members` and `max_metadata_bytes` at open | `::test_listing_limits_count_udf_entries_as_pycdlib_parses_them`, `::test_listing_limits_count_udf_bytes_as_pycdlib_parses_them` |
-| Path table bounded by the image, `max_metadata_bytes` (both tables weighed) and `max_members` (entries, with an image whose directories fill the cap still opening); a `CE` area past its block refused before the read, for the record's own `CE` and a chained one, and one ending at the block end opens | `tests/test_iso_metadata_bounds.py` |
-| Directory length bound; path sources go through the source; handles released on failure | `::test_directory_data_length_does_not_drive_the_allocation`, `::test_a_path_source_is_read_through_the_archive_source`, `::test_a_refused_path_source_does_not_hold_its_handle`, `::test_a_failure_after_open_fp_is_translated_and_releases` |
-| Corrupt input is `CorruptionError`; handle `OSError` is not | `::test_a_damaged_image_of_full_length_is_corruption_not_truncation`, `::test_filesystem_oserror_propagates_unwrapped` |
-| An image cut inside its descriptors, path tables, directories, System Use areas or UDF structures is `TruncatedError` at open | `::test_an_image_cut_inside_its_first_descriptor_is_truncated`, `::test_an_image_cut_inside_its_metadata_is_truncated`, `::test_every_cut_of_an_image_is_truncated_or_opens` |
-| A cut image whose failing read started past its volume space is `CorruptionError`; a full-length image whose volume space size is damaged upwards reads as cut | `::test_a_cut_image_whose_root_points_past_its_volume_space_is_corruption`, `::test_a_full_length_image_declaring_a_larger_volume_space_is_truncated` |
-| Listing reads nothing after open, on an image with no repeated identifier and no file ending at the image end | `::test_listing_reads_nothing_from_the_image` |
-| Concurrent reads under the lock | `tests/test_concurrent_multithread.py::test_multithread_iso_open_read`, `tests/test_locked_stream.py::test_tar_iso_concurrent_open_uses_lock` |
-| Cross-format equivalence (`basic`, `encoding`, `symlinks`, Rock Ridge and Joliet-only) | `tests/test_corpus_sweep.py` |
-| A truncated image lists declared sizes and raises `TruncatedError` at the cut, in the ISO 9660 and Joliet trees | `::test_a_truncated_image_lists_declared_sizes_and_reads_to_the_cut` |
+| Claim |
+| --- |
+| Detection by far magic; a bootable image is not taken by a probe; a short source falls through |
+| Raw sector images refused by name, without `pycdlib` |
+| Bytes after the volume space reported, zeros silent, strict refuses, 1 MiB bound; MBR and GPT partitions after the volume space (hand-built, and `xorriso` hybrids; `xorriso` is installed by `setup-dev-env.sh` and on the Linux `all` CI legs) are part of the image; a GPT with a bad CRC or out-of-range fields, a protective MBR entry, or an MBR without its signature widens nothing; a valid GPT partition reaching past the file (entry sizes 128, 1024, 4096) still counts, the test that fails if such a partition is dropped |
+| Cost, seekable-only, write refused, password unused |
+| Unknown System Use entries skipped; zisofs lists and reads decoded, seeks, refuses zisofs2 under `ZF` or `Z2` and a too-short entry (listing `UNKNOWN`) and damaged, over-long or unterminated blocks, and a member cut by the image end raises `TruncatedError`; a malformed entry costs its own member only, a cut symlink withholds its target, strict refuses; the filter is inert outside archivey |
+| Names that are not UTF-8 take `encoding=`, else their Joliet name when it lines up, and a relative link target follows the members it names; UTF-8 names ignore it; `raw_name` is the stored bytes |
+| Namespace selection and metadata per namespace |
+| Record walk: `/` in a name, duplicate names, cycles, `rr_moved`, a record without Rock Ridge or without `NM` (also with `pycdlib`'s unallocated `ce_entries`) |
+| Device node is `OTHER`; plain versions keep the newest current; a directory keeps a `;N` suffix |
+| `TF` long-form dates; `TF` wins over the record date |
+| Boot catalog reads and extracts, and one declared past the image end reads short |
+| Multi-extent size and data; a gap read around, overlapping extents refused; a repeated identifier without the on-disc flag starts a member of its own, also after a real multi-extent file and when two records share an extent; a repeated superseded version stays not current; a directory and a file with one identifier both list, and so do an associated file and a file in either order; the raw directory walk crosses sector padding |
+| No interchange-level guess |
+| A loop in `pycdlib`'s own walk refused at open, in all three trees and in UDF |
+| UDF tree counted against `max_members` and `max_metadata_bytes` at open |
+| Path table bounded by the image, `max_metadata_bytes` (both tables weighed) and `max_members` (entries, with an image whose directories fill the cap still opening); a `CE` area past its block refused before the read, for the record's own `CE` and a chained one, and one ending at the block end opens |
+| Directory length bound; path sources go through the source; handles released on failure |
+| Corrupt input is `CorruptionError`; handle `OSError` is not |
+| An image cut inside its descriptors, path tables, directories, System Use areas or UDF structures is `TruncatedError` at open |
+| A cut image whose failing read started past its volume space is `CorruptionError`; a full-length image whose volume space size is damaged upwards reads as cut |
+| Listing reads nothing after open, on an image with no repeated identifier and no file ending at the image end |
+| Concurrent reads under the lock |
+| Cross-format equivalence (`basic`, `encoding`, `symlinks`, Rock Ridge and Joliet-only) |
+| A truncated image lists declared sizes and raises `TruncatedError` at the cut, in the ISO 9660 and Joliet trees |
 
 **Building fixtures.** The suite builds every image with `pycdlib` (`PyCdlib.new`,
 `add_fp`, `add_directory`, `add_symlink`, `add_eltorito`), and shapes `pycdlib` will not
@@ -587,8 +594,7 @@ install genisoimage xorriso`), and `mkzftree` comes with genisoimage for zisofs.
 over 4 GiB needs no disk: make it sparse with `truncate`, pipe `xorriso -as mkisofs
 -iso-level 3 -o -` into a writer that seeks over zero blocks, and the image is sparse too.
 libarchive's ISO fixtures live in `libarchive/test/*iso*.uu` (uuencoded, most also
-`.Z`-compressed); `tests/test_libarchive_corpus.py` reads them only as nested `.Z`
-streams, not as ISO.
+`.Z`-compressed); the suite reads them only as nested `.Z` streams, not as ISO.
 
 ## 9. References
 

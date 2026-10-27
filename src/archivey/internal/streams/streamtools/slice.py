@@ -26,8 +26,11 @@ is gone; pass ``lock`` to :class:`SharedView`.
 from __future__ import annotations
 
 import io
+import os
+import stat
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
+from dataclasses import dataclass
 from typing import BinaryIO
 
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
@@ -444,6 +447,101 @@ class SharedView(SlicingStream):
             source_size=self._source_size,
             probe_source_size=False,
         )
+
+
+@dataclass(frozen=True)
+class FileRegion:
+    """Where a stream's bytes sit in a regular file: ``length`` bytes from ``start`` of
+    the file open as ``fd``. ``checks`` raise as a read of the stream would once it can
+    no longer be read: the views' ``check_open`` callables (the archive was closed),
+    then a check that each source and the file itself are still open.
+
+    ``fd`` is a bare number, valid only while the stream it came from stays open and
+    alive: the caller holds that stream until the descriptor has been handed on.
+    ``owner`` is what owns the descriptor for archivey: the outermost ``ArchiveSource``
+    looked through, else the file object itself. Readers of the same file share it."""
+
+    fd: int
+    start: int
+    length: int
+    checks: tuple[Callable[[], None], ...]
+    owner: object
+
+
+def file_region(stream: BinaryIO) -> FileRegion | None:
+    """The file region ``stream`` reads, or ``None`` when it is not one.
+
+    ``stream`` qualifies when it is a regular file opened with ``open(path, "rb")``
+    (an ``io.FileIO``, or an ``io.BufferedReader`` over one), or a stack of
+    :class:`SlicingStream` and :class:`SharedView` with a fixed start over such a file.
+    A stream whose class has ``file_region_inner`` (``ArchiveSource``) is looked
+    through to the stream that returns. Exact types otherwise: a subclass or any other
+    wrapper may change the bytes, so it is ``None``. That includes the measurement
+    wrappers (``SeekCountingStream``): under ``enable_measurement`` there is no region,
+    and the counters see every read. A reader of the region
+    (``os.pread`` on ``fd``) then sees what ``stream`` reads from its start, without
+    moving the shared handle.
+    """
+    offset = 0
+    remaining: int | None = None
+    checks: list[Callable[[], None]] = []
+    owner: object = None
+    while True:
+        # An archive source over a file (``ArchiveSource.file_region_inner``).
+        inner = getattr(type(stream), "file_region_inner", None)
+        if inner is not None:
+            unwrapped = inner(stream)
+            if unwrapped is None:
+                return None
+            checks.append(_open_check(stream))
+            if owner is None:
+                owner = stream
+            stream = unwrapped
+            continue
+        if type(stream) not in (SlicingStream, SharedView):
+            break
+        view = stream
+        assert isinstance(view, SlicingStream)
+        if view.closed or view._start is None:
+            return None
+        bound = view._effective_length
+        if bound is not None:
+            bound = max(bound - offset, 0)
+            remaining = bound if remaining is None else min(remaining, bound)
+        offset += view._start
+        if view._source_check is not None:
+            checks.append(view._source_check)
+        stream = view._stream
+    raw: object = stream
+    if type(stream) is io.BufferedReader:
+        raw = stream.raw
+    if type(raw) is not io.FileIO or raw.closed:
+        return None
+    try:
+        fd = raw.fileno()
+        info = os.fstat(fd)
+    except (OSError, ValueError):
+        return None
+    if not stat.S_ISREG(info.st_mode):
+        return None
+    available = max(info.st_size - offset, 0)
+    length = available if remaining is None else min(remaining, available)
+    # The child keeps its own copy of ``fd``, so it could read on after the caller
+    # closes this file; the check makes that read fail as a read of the stream would.
+    checks.append(_open_check(stream))
+    return FileRegion(
+        fd, offset, length, tuple(checks), stream if owner is None else owner
+    )
+
+
+def _open_check(stream: BinaryIO) -> Callable[[], None]:
+    """A check that raises, as a read of ``stream`` would, once ``stream`` is closed."""
+
+    def check() -> None:
+        if stream.closed:
+            raise ValueError("I/O operation on closed file.")
+
+    return check
 
 
 def fix_stream_start_position(stream: BinaryIO) -> BinaryIO:

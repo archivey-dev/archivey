@@ -41,6 +41,10 @@ from archivey.internal.streams.codecs.bcj2_filter import Bcj2DecoderStream
 from archivey.types import CompressionAlgorithm
 from tests.conftest import requires, requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
+from tests.streams_util import (
+    assert_non_integer_seek_is_type_error,
+    assert_seek_underflow_matches_bytesio,
+)
 
 _BCJ2 = b"\x03\x03\x01\x1b"
 _COPY = b"\x00"
@@ -530,6 +534,27 @@ def test_decoder_seeks_backward_and_forward() -> None:
         stream.seek(-1)
 
 
+def _seekable_decoder() -> tuple[Bcj2DecoderStream, bytes]:
+    main, call = b"\xe8\xe8", _be(_T1, _T2)
+    expected = b"\xe8" + _le(_T1, 1) + b"\xe8" + _le(_T2, 6)
+    stream = Bcj2DecoderStream(
+        *map(io.BytesIO, [main, call, b"", _RC_CONVERT]), unpack_size=len(expected)
+    )
+    return stream, expected
+
+
+def test_decoder_seeks_before_the_start_as_bytesio() -> None:
+    """The member-stream seek convention (archive-reading spec): a relative seek that
+    lands before the start goes to 0, and only a negative ``SEEK_SET`` is refused."""
+    stream, _ = _seekable_decoder()
+    assert_seek_underflow_matches_bytesio(stream)
+
+
+def test_decoder_refuses_a_non_integer_seek_as_bytesio() -> None:
+    stream, expected = _seekable_decoder()
+    assert_non_integer_seek_is_type_error(stream, expected)
+
+
 def test_decoder_over_a_non_seekable_input_does_not_seek() -> None:
     class _Forward(io.BytesIO):
         def seekable(self) -> bool:
@@ -677,8 +702,12 @@ def test_encoded_header_stays_linear_only() -> None:
 
 def _bare_bcj2_archive(payload: bytes) -> bytes:
     """A BCJ2 folder whose four branches are raw pack streams: no coder but BCJ2."""
-    from tests.test_sevenzip_parser_hardening import _archive, _folder, _header
-    from tests.test_sevenzip_parser_hardening import _coder as _raw_coder
+    from tests.test_sevenzip_parser_hardening import (
+        _archive,
+        _coder as _raw_coder,
+        _folder,
+        _header,
+    )
 
     assert not any(b in payload for b in (0xE8, 0xE9, 0x0F))
     rc = b"\x00" * 5
@@ -714,12 +743,21 @@ def test_bare_bcj2_member_seeks_with_seekable_members() -> None:
             assert stream.read(5) == payload[6:11]
             stream.seek(0)
             assert stream.read() == payload
+        # The decoder's own seek, reached through the archive's member stream.
+        with reader.open(member) as stream:
+            assert_seek_underflow_matches_bytesio(stream)
+        with reader.open(member) as stream:
+            assert_non_integer_seek_is_type_error(stream, payload)
 
 
 def test_encrypted_folder_with_a_cycle_is_corruption_not_a_password_error() -> None:
     """Planning runs before the password check's error mapping (D1)."""
-    from tests.test_sevenzip_parser_hardening import _archive, _folder, _header
-    from tests.test_sevenzip_parser_hardening import _coder as _raw_coder
+    from tests.test_sevenzip_parser_hardening import (
+        _archive,
+        _coder as _raw_coder,
+        _folder,
+        _header,
+    )
 
     aes = b"\x06\xf1\x07\x01"
     props = bytes([0x13, 0x00])  # NumCyclesPower 19, no salt, no IV

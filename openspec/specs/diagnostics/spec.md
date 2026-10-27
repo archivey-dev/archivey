@@ -14,7 +14,7 @@ detection, readers, streams, and extraction.
 | `format-detection` | Standalone `FormatInfo.diagnostics`; open handoff of one collector |
 | `safe-extraction` | Extraction report ranges over the shared collector |
 | `access-mode-and-cost` | Runtime events must not mutate `CostReceipt` |
-| `logging` | WARNING projection; handlers run unlocked |
+| `logging` | Log-record projection (WARNING, or INFO for the codes `_INFO_LOG_CODES` names); handlers run unlocked |
 | `reader-concurrency` | Callbacks / providers hold no Archivey locks |
 
 ## Requirements
@@ -56,7 +56,7 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 | `MEMBER_DIRECTORY_DATA_IGNORED` | `DirectoryDataContext`: `kind="directory_data"`, `archive_name`, `member_name`, `member_id`, `size` (declared; 0 when none is declared and the body is larger than an empty one of its method), `compressed_size` |
 | `MEMBER_LINK_DATA_IGNORED` | `LinkDataContext`: `kind="link_data"`, `archive_name`, `member_name`, `member_id`, `size` (declared) |
 | `MEMBER_SPECIAL_FILE_HAS_DATA` | `SpecialFileDataContext`: `kind="special_file_data"`, `archive_name`, `member_name`, `member_id`, `special_file_type` ∈ `{"fifo","char_device","block_device","socket","unknown"}`, `size` |
-| `MEMBER_LOCAL_NAME_DIFFERS`, `MEMBER_LOCAL_CRC_USED` | `LocalHeaderContext`: `kind="local_header"`, `archive_name`, `member_name`, `member_id`, `field` (`"name"` for the first, `"crc32"` for the second), `local_raw_name_base64` (the local header's name bytes, `field="name"` only), `local_crc32` (`field="crc32"` only) |
+| `MEMBER_LOCAL_NAME_DIFFERS`, `MEMBER_LOCAL_METHOD_DIFFERS`, `MEMBER_LOCAL_CRC_USED` | `LocalHeaderContext`: `kind="local_header"`, `archive_name`, `member_name`, `member_id`, `field` (`"name"`, `"method"` and `"crc32"` in that order), `local_raw_name_base64` (the local header's name bytes, `field="name"` only), `local_method` and `central_method` (`field="method"` only), `local_crc32` (`field="crc32"` only) |
 | `ARCHIVE_OFFSET_WRAPPED` | `OffsetWrapContext`: `kind="offset_wrap"`, `archive_name`, `format`, `member_name`, `member_id` (empty and `None` for the directory), `record` ∈ `{"local_header","central_directory"}`, `stored_offset`, `corrected_offset` |
 | `MEMBER_SIZE_WRAPPED` | `SizeWrapContext`: `kind="size_wrap"`, `archive_name`, `format`, `member_name`, `member_id`, `stored_compressed_size`, `compressed_size`, `stored_size`, `size` (`None` when only a read can tell) |
 | `MEMBER_TYPE_UNKNOWN` | `UnknownMemberTypeContext`: `kind="unknown_member_type"`, `archive_name`, `member_name`, `member_id`, `stored_type` (the TAR typeflag byte as a one-character string, the byte read as Latin-1), `size` (the member's `size`; `None` for an `OTHER` member) |
@@ -300,7 +300,7 @@ disposition) and a single code where a set was meant. There SHALL be no
 default disposition other than `COLLECT`: "raise on everything but X" is
 `raise_on=frozenset(DiagnosticCode) - {X}`.
 
-| Disposition | Counts | Retain/attach | WARNING log | Callback | Raise |
+| Disposition | Counts | Retain/attach | Log record | Callback | Raise |
 | --- | --- | --- | --- | --- | --- |
 | `IGNORE` | yes | no | no | no | no |
 | `COLLECT` | yes | budget permitting | yes | if configured | no |
@@ -309,7 +309,9 @@ default disposition other than `COLLECT`: "raise on everything but X" is
 Per event: validate typed payload → resolve policy → under collector lock allocate
 id, build immutable value, update counts/retention → **release all locks** → log →
 synchronous callback on calling thread → escalate. Logs/callbacks see
-already-updated state, in emission order.
+already-updated state, in emission order. The log record is WARNING, except for the codes
+in `archivey.diagnostics._INFO_LOG_CODES`, which log at INFO: they report the caller's
+access pattern rather than the archive (`logging` spec).
 
 | Failure | Behavior |
 | --- | --- |
@@ -377,8 +379,8 @@ same machine meaning; typed context distinguishes variants.
 
 **No advisory SHALL be log-only.** Every condition the library reports as advice to
 the caller SHALL be emitted through the central diagnostic path with a code, so it is
-queryable on `reader.diagnostics` and escalatable by `DiagnosticPolicy`; the WARNING
-log line is the projection of that emission, never a substitute for it.
+queryable on `reader.diagnostics` and escalatable by `DiagnosticPolicy`; the log
+record is the projection of that emission, never a substitute for it.
 
 That rule is a floor. The following two clauses are its ceiling, and a proposed code
 SHALL satisfy both.
@@ -516,7 +518,7 @@ the archive's own bytes or metadata as anomalous:
 
 | In `ARCHIVE_INTEGRITY_CODES` | Excluded |
 | --- | --- |
-| `MEMBER_NAME_NORMALIZED`, `MEMBER_NAME_ENCODING_INFERRED`, `MEMBER_NAME_BIDI_CONTROL`, `MEMBER_NAME_ZERO_WIDTH_CHARACTER`, `EXTENSION_FORMAT_UNCONFIRMED`, `SCAN_DIRECTORY_VANISHED`, `SCAN_ENTRY_VANISHED`, `ARCHIVE_EOF_MARKER_MISSING`, `ARCHIVE_TRAILING_DATA`, `ARCHIVE_UNLISTED_DATA`, `MEMBER_TIMESTAMP_INVALID`, `MEMBER_HEADER_RECORD_SKIPPED`, `SYMLINK_TARGET_UNAVAILABLE`, `DIGEST_UNVERIFIABLE`, `MEMBER_DIRECTORY_DATA_IGNORED`, `MEMBER_LINK_DATA_IGNORED`, `SEEK_INDEX_DEGRADED`, `MEMBER_LOCAL_NAME_DIFFERS` | `EMPTY_ARCHIVE` (an empty archive is legitimate), `EXPLICIT_FORMAT_LISTED_EMPTY`, `ENCODING_ARGUMENT_UNUSED`, `PASSWORD_ARGUMENT_UNUSED`, `STREAM_REWIND_REDECOMPRESSES`, `PROBE_FORMAT_UNCONFIRMED`, `ENCRYPTED_MEMBER_UNVERIFIED`, `MEMBER_SELECTOR_UNMATCHED`, `MEMBER_SPECIAL_FILE_HAS_DATA`, `MEMBER_NAME_INVISIBLE_CHARACTER`, `FORMAT_EXTENSION_CONFLICT` (the name is wrong, not the bytes), `MEMBER_LOCAL_CRC_USED` (Adobe AIR writes it; the data is checked against the local CRC-32), `ARCHIVE_OFFSET_WRAPPED` and `MEMBER_SIZE_WRAPPED` (macOS writes the shape by default), `MEMBER_TYPE_UNKNOWN` (GNU tar extracts the member as a file) |
+| `MEMBER_NAME_NORMALIZED`, `MEMBER_NAME_ENCODING_INFERRED`, `MEMBER_NAME_BIDI_CONTROL`, `MEMBER_NAME_ZERO_WIDTH_CHARACTER`, `EXTENSION_FORMAT_UNCONFIRMED`, `SCAN_DIRECTORY_VANISHED`, `SCAN_ENTRY_VANISHED`, `ARCHIVE_EOF_MARKER_MISSING`, `ARCHIVE_TRAILING_DATA`, `ARCHIVE_UNLISTED_DATA`, `MEMBER_TIMESTAMP_INVALID`, `MEMBER_HEADER_RECORD_SKIPPED`, `SYMLINK_TARGET_UNAVAILABLE`, `DIGEST_UNVERIFIABLE`, `MEMBER_DIRECTORY_DATA_IGNORED`, `MEMBER_LINK_DATA_IGNORED`, `SEEK_INDEX_DEGRADED`, `MEMBER_LOCAL_NAME_DIFFERS`, `MEMBER_LOCAL_METHOD_DIFFERS` | `EMPTY_ARCHIVE` (an empty archive is legitimate), `EXPLICIT_FORMAT_LISTED_EMPTY`, `ENCODING_ARGUMENT_UNUSED`, `PASSWORD_ARGUMENT_UNUSED`, `STREAM_REWIND_REDECOMPRESSES`, `PROBE_FORMAT_UNCONFIRMED`, `ENCRYPTED_MEMBER_UNVERIFIED`, `MEMBER_SELECTOR_UNMATCHED`, `MEMBER_SPECIAL_FILE_HAS_DATA`, `MEMBER_NAME_INVISIBLE_CHARACTER`, `FORMAT_EXTENSION_CONFLICT` (the name is wrong, not the bytes), `MEMBER_LOCAL_CRC_USED` (Adobe AIR writes it; the data is checked against the local CRC-32), `ARCHIVE_OFFSET_WRAPPED` and `MEMBER_SIZE_WRAPPED` (macOS writes the shape by default), `MEMBER_TYPE_UNKNOWN` (GNU tar extracts the member as a file) |
 
 Each exclusion is deliberate, and the reason SHALL be recorded so the boundary is not
 rediscovered: `EMPTY_ARCHIVE` because an empty archive is legitimate and this spec
