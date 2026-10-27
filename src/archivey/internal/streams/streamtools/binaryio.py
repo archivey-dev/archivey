@@ -1053,17 +1053,19 @@ class _NonClosingBufferedReader(io.BufferedReader):
 
 
 def ensure_bufferedio(obj: object, *, owns: bool = False) -> io.BufferedIOBase:
-    """Return ``obj`` as a buffered reader, without taking ownership of it.
+    """Return ``obj`` as a buffered reader; with ``owns``, one whose close closes it.
 
     An already-buffered stream is returned unchanged; otherwise it is wrapped in a
     non-closing ``BufferedReader``. With ``owns``, a ``RawIOBase`` is wrapped in a plain
     ``BufferedReader`` instead, whose close closes it: for a stream the caller hands
     over, such as a format plugin's member stream. Any other object is refused then
-    (``TypeError``), since the adapter that would wrap it does not close it. ``io.BufferedReader`` requires its underlying object to
-    be an ``io.RawIOBase`` (it rejects a merely stream-like object), so a non-``RawIOBase``
-    source is first adapted via :class:`BinaryIOWrapper` (which *is* a ``RawIOBase``) — this
-    is why we branch on ``RawIOBase`` here rather than calling :func:`ensure_binaryio`,
-    whose result may be a ``BufferedIOBase`` that ``BufferedReader`` would reject.
+    (``TypeError``), since the adapter that would wrap it does not close it.
+
+    ``io.BufferedReader`` requires its underlying object to be an ``io.RawIOBase`` (it
+    rejects a merely stream-like object), so a non-``RawIOBase`` source is first adapted
+    via :class:`BinaryIOWrapper` (which *is* a ``RawIOBase``) — this is why we branch on
+    ``RawIOBase`` here rather than calling :func:`ensure_binaryio`, whose result may be
+    a ``BufferedIOBase`` that ``BufferedReader`` would reject.
 
     A ``RawIOBase`` whose ``readinto`` is the ``RawIOBase`` default (raises
     ``NotImplementedError``) is also wrapped: ``BufferedReader.read(n)`` drives

@@ -54,10 +54,13 @@ _METADATA_UNCOMPRESSED = 0x8000
 _BLOCK_UNCOMPRESSED = 1 << 24
 _NO_FRAGMENT = 0xFFFFFFFF
 _NO_TABLE = 0xFFFFFFFFFFFFFFFF
-_FLAG_COMPRESSOR_OPTIONS = 0x0400
 # The kernel refuses a symlink target longer than this (``squashfs_read_inode``).
 _SYMLINK_MAX = 65535
 
+# When the superblock's compressor-options flag is set, a metadata block of options
+# follows the superblock. It is not read: zlib, xz, LZMA Alone and Zstandard streams
+# carry their own parameters, and the LZ4 and LZO options only name a compression
+# level or variant that the same decoder reads.
 _COMPRESSORS = {1: "gzip", 2: "lzma", 3: "lzo", 4: "xz", 5: "lz4", 6: "zstd"}
 _DECODED_AS: dict[str, CompressionAlgorithm | StreamFormat] = {
     "gzip": StreamFormat.ZLIB,

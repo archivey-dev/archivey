@@ -263,9 +263,11 @@ A view and a `block_stream()` seek by themselves, and cheaply. A `decompress()` 
 seeks by itself too, but a backward seek decodes again from the start, as the fallback
 does.
 
-The stream may also return fewer bytes than asked before it ends, as an `io.RawIOBase`
+A raw stream may also return fewer bytes than asked before it ends, as an `io.RawIOBase`
 may. One that stops each read at the end of a block is an example. archivey asks it again
-for the rest, and reads nothing ahead. For a raw stream whose reads cost more than a
+for the rest, and reads nothing ahead. An `io.BufferedIOBase` is taken at its word, as
+that class promises full reads until the end, and so are the streams archivey hands out
+(a view, a `decompress()` result, `block_stream()`). For a raw stream whose reads cost more than a
 copy, such as one call into a library per read, return `buffered_stream(stream)`, which
 puts an `io.BufferedReader` in front of it. Closing that also closes the stream it wraps.
 

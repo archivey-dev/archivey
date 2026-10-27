@@ -24,14 +24,4 @@ class FullCountStream(DelegatingStream):
     def read(self, n: int = -1, /) -> bytes:
         if n is None or n < 0:
             return read_blocking(self._inner)
-        if n == 0:
-            return b""
-        data = read_blocking(self._inner, n)
-        got = len(data)
-        if got == n or got == 0:
-            return data
-        if got > n:
-            raise ValueError(
-                f"inner returned {got} bytes for read({n}): {self._inner!r}"
-            )
-        return data + read_exact(self._inner, n - got)
+        return read_exact(self._inner, n)
