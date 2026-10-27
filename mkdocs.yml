@@ -14,6 +14,7 @@ nav:
   - Command line: cli.md
   - Recipes: recipes.md
   - Formats and extras: formats.md
+  - Adding a format: adding-a-format.md
   - Migrating from other libraries: migrating.md
   - Philosophy: philosophy.md
   - How it works: how-it-works.md
@@ -74,6 +75,7 @@ plugins:
           - cli.md: The archivey command (list, test, extract, info) and its exit codes
           - recipes.md: Complete scripts for dataset downloads, HTTP streams, and checking uploaded archives
           - formats.md: Per-format behaviour, extras each format needs, and format-specific member fields
+          - adding-a-format.md: Adding a read-only format from outside archivey with the provisional archivey.plugins API
           - migrating.md: Equivalent calls and behaviour differences from zipfile, tarfile, py7zr and rarfile
         Reference:
           - api.md: Every public class, function and exception, generated from the docstrings

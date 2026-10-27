@@ -37,8 +37,8 @@ enum archivey.AccessCost
 value archivey.AccessCost.DIRECT = 'direct'
 value archivey.AccessCost.SOLID = 'solid'
 class archivey.ArchiveFormat()
-init archivey.ArchiveFormat(container: ContainerFormat, stream: StreamFormat) -> None
-field archivey.ArchiveFormat.container: ContainerFormat
+init archivey.ArchiveFormat(container: ContainerFormat | PluginContainer, stream: StreamFormat) -> None
+field archivey.ArchiveFormat.container: ContainerFormat | PluginContainer
 field archivey.ArchiveFormat.stream: StreamFormat
 attribute archivey.ArchiveFormat.BROTLI = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.BZ2 = ArchiveFormat(...)
@@ -383,6 +383,7 @@ field archivey.FormatInfo.diagnostics: DiagnosticSummary = <factory>
 field archivey.FormatInfo.format: ArchiveFormat
 field archivey.FormatInfo.payload_offset: int = 0
 field archivey.FormatInfo.unavailable_tiers: tuple[TierSkip, ...] = ()
+property archivey.FormatInfo.from_plugin: bool
 class archivey.FormatSupport(Enum)
 enum archivey.FormatSupport
 value archivey.FormatSupport.FULL = 'full'
@@ -477,6 +478,8 @@ class archivey.PasswordRequest()
 init archivey.PasswordRequest(member: ArchiveMember | None, attempt: int) -> None
 field archivey.PasswordRequest.attempt: int
 field archivey.PasswordRequest.member: ArchiveMember | None
+class archivey.PluginContainer(StrEnum)
+enum archivey.PluginContainer
 class archivey.ProcessIsolation(Enum)
 enum archivey.ProcessIsolation
 value archivey.ProcessIsolation.KNOWN_CRASHES = 'known_crashes'

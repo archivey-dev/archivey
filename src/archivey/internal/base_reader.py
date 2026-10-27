@@ -432,6 +432,10 @@ class ReadBackend(ABC):
     # Name of the optional dependency this backend needs (e.g. "pycdlib"); the registry
     # derives availability centrally from whether it imports. ``None`` for core backends.
     OPTIONAL_DEPENDENCY: str | None = None
+    # More modules the backend imports, checked after ``OPTIONAL_DEPENDENCY`` the same
+    # way. Only plugin backends set it (``FormatPlugin.requires``); ``INSTALL_HINT``
+    # covers them all.
+    REQUIRED_MODULES: tuple[str, ...] = ()
     # Human-readable install hint surfaced when the dependency is absent
     # (e.g. "pip install archivey[recommended]").
     INSTALL_HINT: str | None = None
@@ -1110,9 +1114,14 @@ class BaseArchiveReader(ArchiveReader):
         fill_size: bool = False,
         rewind_warning: RewindWarning | None = None,
         translate: ExceptionTranslator | None = None,
+        checks_content: bool = False,
     ) -> ArchiveStream:
         """Wrap a raw member stream so read/seek errors route through the backend's
         translator and are stamped with format/archive/member context.
+
+        ``checks_content`` says that ``inner`` checks every byte against a checksum of
+        its own when read from the start to the end, and raises on a mismatch (a
+        plugin's ``MemberData.checked``): such a read counts as ``CONTENT``.
 
         Backends return ``_wrap_member_stream(raw, member.name, size=member.size)`` from
         ``_open_member`` so a decode error surfaces as a stamped ``ArchiveyError`` rather
@@ -1194,6 +1203,7 @@ class BaseArchiveReader(ArchiveReader):
                 archive_name=self._archive_name,
                 rewind_warning=rewind_warning,
                 member_name=member_name,
+                checks_content=checks_content,
             )
 
         assert inner is not None
@@ -1220,6 +1230,7 @@ class BaseArchiveReader(ArchiveReader):
             archive_name=self._archive_name,
             rewind_warning=rewind_warning,
             member_name=member_name,
+            checks_content=checks_content,
         )
 
     @abstractmethod

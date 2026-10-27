@@ -118,6 +118,7 @@ from archivey.types import (
     NameRewrite,
     OnError,
     OverwritePolicy,
+    PluginContainer,
     StreamFormat,
     Verification,
 )
@@ -188,6 +189,7 @@ __all__ = [
     "PasswordInput",
     "PasswordProvider",
     "PasswordRequest",
+    "PluginContainer",
     "ProcessIsolation",
     "RarDecompressor",
     "ReadError",
