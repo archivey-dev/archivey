@@ -12,16 +12,25 @@ The error SHALL name the policy as the reason. archivey SHALL NOT call into the 
 during such a call. The exclusion SHALL apply only to calls made with that config:
 another call in the same process, on any thread, SHALL see the package as it is.
 
-`format_availability(fmt, config=...)` and `list_supported_formats(config=...)` SHALL
-count an excluded package as absent, listing it in `missing` with the policy as its
-`reason`. Without `config` they SHALL answer what the environment provides.
+`format_availability(fmt, config=...)` SHALL count an excluded package as absent,
+listing it in `missing` with the policy as its `reason`; `list_supported_formats` follows
+it (`backend-registry`, *Format support is tri-state and compositional*).
+
+A `PackageNotInstalledError` SHALL carry `missing: tuple[MissingComponent, ...]`, the
+components the raise is about, on every raise. A component refused by the policy SHALL
+have the policy as its `reason`.
+
+`exclude_libraries` SHALL accept only archivey's own optional package names. A policy
+that names a plugin (in `replace=`, or a plugin container in `only=`) whose `requires`
+holds an excluded package SHALL be refused at construction with `ArchiveyUsageError`.
 
 #### Scenario: An excluded pyppmd refuses only the PPMd member
 
 - **WHEN** a caller opens a 7z archive that holds a PPMd member and a LZMA2 member with
   `FormatPolicy(exclude_libraries={"pyppmd"})`, with `pyppmd` installed
 - **THEN** both members are listed
-- **AND** reading the PPMd member raises `PackageNotInstalledError` that names the policy
+- **AND** reading the PPMd member raises `PackageNotInstalledError` whose `missing`
+  holds `pyppmd` with the policy as its `reason`
 - **AND** the LZMA2 member reads
 - **AND** `format_availability(ArchiveFormat.SEVEN_Z, config=...)` with the same config
   reports `PARTIAL` with `pyppmd` in `missing`

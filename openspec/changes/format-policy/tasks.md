@@ -6,7 +6,8 @@ Not started. Design approved 2026-10-27; starts once the plugin API stack has me
 
 - [ ] 1.1 `FormatPolicy` (frozen; `only`, `exclude`, `exclude_libraries`, `plugins`,
       `replace`; `allows()`), with the construction checks in `design.md` §3, §5 and
-      §5a. Exported at the root.
+      §5a: the fixed set of library names, and a named plugin whose `requires` holds an
+      excluded package. Exported at the root.
 - [ ] 1.2 `ArchiveyConfig.formats: FormatPolicy = FormatPolicy()`, and the cross-field
       check in `ArchiveyConfig.__post_init__` (an excluded `rapidgzip` with
       `use_rapidgzip=ON` or `use_indexed_bzip2=ON`).
@@ -22,8 +23,10 @@ Not started. Design approved 2026-10-27; starts once the plugin API stack has me
 
 ## 3. Detection and member open
 
-- [ ] 3.1 Skip the content probe of a plugin the policy turns off, and record it as
-      `NOT_ENABLED_BY_POLICY` in the detection receipt.
+- [ ] 3.1 Skip the content probe of a plugin the policy turns off, also under
+      `always_probe_content=True` and in `open_stream`; record it as
+      `NOT_ENABLED_BY_POLICY`; name the policy in the `FormatDetectionError` message
+      when that was the only probe left out.
 - [ ] 3.2 `exclude_libraries`: carry the excluded names from `ArchiveyConfig.formats` on
       the reader config and the stream config, and pass them to every place that answers
       "is this package available": `LazyOptional`, `registry._optional` /
@@ -32,9 +35,12 @@ Not started. Design approved 2026-10-27; starts once the plugin API stack has me
       excluded name answers "absent" first; no module global changes per call. Build the
       `MissingComponent` per call with `reason` naming `config.formats`.
 - [ ] 3.3 `format_availability(fmt, config=None)` and `list_supported_formats(config=None)`
-      count excluded libraries as absent.
+      count excluded libraries as absent; the list does not filter by `allows()`. Update
+      both docstrings in `registry.py`, which today say the answer does not change with
+      `ArchiveyConfig`.
 - [ ] 3.4 Widen the `UnsupportedFeatureError` and `PackageNotInstalledError` docstrings
-      to cover policy refusals.
+      to cover policy refusals, and add `PackageNotInstalledError.missing` (the
+      components the raise is about), set on every raise.
 
 ## 4. Tests and docs
 

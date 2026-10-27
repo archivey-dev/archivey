@@ -160,7 +160,11 @@ extensions itself, so a plugin's magic and extensions still name its format when
 plugin is off, and the open is refused by name. A plugin's **content probe** is the
 plugin's own code, so it does not run when the policy turns that plugin off. A file that
 only that probe would recognise gets `FormatDetectionError`, which is a reported absence
-(DR-1), not a wrong answer. The skip is recorded in the detection receipt as
+(DR-1), not a wrong answer. This wins over `always_probe_content=True` and over `open_stream`'s rule that every
+probe runs: both run every probe the policy allows. When the only probe left out is an
+off plugin's, the `FormatDetectionError` message names the policy rather than the three
+ways to read a nameless probe-only stream, none of which reaches a plugin that is off.
+The skip is recorded in the detection receipt as
 `TierSkipReason.NOT_ENABLED_BY_POLICY` (`workspace.record_skip("content_probe", ...)`),
 the reason detection already gives a probe the extension rule leaves out, so the
 receipt does not look like a complete search.
@@ -225,8 +229,9 @@ FormatPolicy(exclude_libraries={"pyppmd", "inflate64"})
 
 - **The names** are the package names that `MissingComponent.name` (on
   `FormatAvailability.missing`) already reports: `pyppmd`, `inflate64`, `brotli`, `lz4`,
-  `backports.zstd`, `rapidgzip`, `pycdlib`, `cryptography`, and any module a registered
-  plugin lists in `requires`. `compression.zstd` is accepted too: it is the zstd module
+  `backports.zstd`, `rapidgzip`, `pycdlib`, `cryptography`. The set is fixed: it does not
+  read the plugin registry, so a policy accepts the same names whenever it is built.
+  `compression.zstd` is accepted too: it is the zstd module
   on 3.14 and later, and an optional part of a CPython build. An entry names a module,
   not a capability, so excluding one zstd module falls through to the other, as when it
   is absent; to turn off zstd decoding on every interpreter, exclude both. Excluding
@@ -248,14 +253,17 @@ FormatPolicy(exclude_libraries={"pyppmd", "inflate64"})
   - an accelerator under `AUTO` falls back to the standard library (DR-11);
   - a member that needs the library raises `PackageNotInstalledError` when opened (a
     PPMd member in ZIP or 7z, an encrypted member without `cryptography`), and
-    `format_availability(fmt, config=...)` reports the format `PARTIAL`;
+    `format_availability(fmt, config=...)` reports the format `PARTIAL` for a member
+    codec package (`cryptography` does not lower support, as today);
   - a format that needs it raises at open (ISO without `pycdlib`, `.br` without
     `brotli`).
   Only the message changes: it names `config.formats` as the reason, not an install
   command, since installing the package would not help. The reason is data, not only
   prose: the `MissingComponent` for an excluded package is built per call with `reason`
   set, so `advice` (which the refusal text and `format_availability` already use) says
-  "turned off by `config.formats`".
+  "turned off by `config.formats`". The raise carries it too: `PackageNotInstalledError`
+  gains a `missing: tuple[MissingComponent, ...]` attribute holding the components this
+  raise is about, set on every raise, policy or not.
 - **Never used, and if lazy, never imported.** An excluded library decodes nothing in
   that call. `brotli`, `pyppmd`, `inflate64` and `rapidgzip` are imported on first use
   (`LazyOptional`), so a process whose every call excludes one never imports it. `lz4`,
@@ -268,8 +276,12 @@ FormatPolicy(exclude_libraries={"pyppmd", "inflate64"})
 - **RAR.** `unrar` decodes RAR members, PPMd blocks included, so no Python library is
   involved; the maintainer ruled that fine (2026-10-27), since the concern is library
   problems.
-- **Plugins.** A plugin's `requires` names the modules it needs. Excluding one of them
-  turns that plugin off for the call, as a missing module does today.
+- **Plugins.** A plugin's own modules are not names `exclude_libraries` takes: a caller
+  turns a plugin off by its container, in `exclude=` or by leaving it out of `only=`.
+  When a plugin the policy names (in `replace=`, or a container listed in `only=`)
+  lists an excluded package in its `requires`, such as a replacement that needs
+  `cryptography` with `cryptography` excluded, the policy is refused at construction as
+  a contradiction. A replacement is never quietly swapped back to the built-in reader.
 
 **Asking up front.** `format_availability` and `list_supported_formats` gain a keyword
 `config=None`. Without it they answer what the environment provides, as today. With it,
@@ -279,7 +291,12 @@ installed. So with `pyppmd` installed and excluded, `format_availability(SEVEN_Z
 config=cfg)` answers `PARTIAL` with `pyppmd` in `missing`. The two questions stay apart:
 `format_availability(fmt, config=cfg)` says what can decode, `cfg.formats.allows(fmt)`
 says what may open. A caller needs both to know whether a format will read, and the
-docs say so next to each.
+docs say so next to each. `list_supported_formats(config=cfg)` follows
+`format_availability`: it returns the formats whose support under `cfg` is `FULL` or
+`PARTIAL`, and it does not filter by `allows()`. So with `only={C.ZIP}` it still lists
+7z, RAR, ISO and every registered plugin format. A caller that wants the formats it
+may open writes `[f for f in list_supported_formats(config=cfg) if
+cfg.formats.allows(f)]`; a helper for that one line is not added (DR-14).
 
 **How the policy reaches the checks.** Every place that answers "is this package
 available" is process-wide today: `LazyOptional._present` (fixed at construction, module
@@ -296,9 +313,12 @@ is today.
 
 **Exception types.** The refusals reuse `UnsupportedFeatureError` and
 `PackageNotInstalledError` (DR-13): a caller that wants to tell a policy refusal from
-another one already has the data, since it built the policy. It asks
-`config.formats.allows(exc.source_format)` for a format refusal, and for a library
-refusal the message and `format_availability(..., config=)` name the policy. Both
+another one has it as data. For a format refusal it asks
+`config.formats.allows(exc.source_format)`. For a library refusal it reads
+`exc.missing`: a component whose `name` is in its `exclude_libraries` was refused by its
+own policy, and any other component needs installing. That holds when one raise has
+both causes. `missing` is an additive attribute on an existing type, not a new type
+(DR-13). Both
 docstrings widen in the same change: `UnsupportedFeatureError` also covers "the caller's
 `FormatPolicy` refuses this format", and `PackageNotInstalledError` also covers "the
 caller's `FormatPolicy` excludes the package; the message says so instead of an install
