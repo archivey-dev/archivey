@@ -104,10 +104,13 @@ A receipt is within its budget when each bounded counter is at most `passes` tim
 limit: `far_bytes`, `scanned_bytes`, `decode_input` and `decode_output` against the field
 of the same name, and `unique_bytes_read` against the largest of `max_prefix_bytes`,
 `max_far_bytes` and `max_scan_bytes` plus the probe-seek allowance, the trailer allowance,
-the tail allowance when `sfx_tail` read the source, and, when `scanned_bytes` is positive,
-the SFX validator allowance: the smaller of
-`VALIDATOR_PEEK_MAX` and `max_scan_bytes`, the bytes a hit validator may read past the
-window end to judge a candidate that starts inside it. `prefix_bytes` is not compared,
+and, when `scanned_bytes` is positive, the SFX validator allowance and the tail allowance.
+The validator allowance is the smaller of `VALIDATOR_PEEK_MAX` and `max_scan_bytes`, the
+bytes a hit validator may read past the window end to judge a candidate that starts inside
+it. The tail allowance is granted on the same condition because the probe runs only after
+an SFX scan, and the receipt can show that a scan ran but not that the probe did; a source
+that scanned without probing gets the allowance unused, and a source that did not scan
+never gets it. `prefix_bytes` is not compared,
 because it bills overlapping requests in full and `unique_bytes_read` stands in for it. A
 receipt that is not within its budget SHALL carry a *budget exhausted* or *capability
 unavailable* skip naming the tier that was cut short. The library does not expose this
@@ -130,7 +133,8 @@ check; the test suite asserts it.
 | Signed PE with a 3 MiB overlay and a ZIP at its end, default budget | `ZIP`; `unique_bytes_read` ≤ scan ceiling + probe allowance + trailer allowance + tail allowance + validator allowance; `scanned_bytes` ≤ `max_scan_bytes` |
 | The same PE under `FAST` | Probe runs; the same bound under `FAST`'s scan ceiling |
 | The same PE as an `ArchiveStream` | Tail not read; `sfx_tail` recorded *capability unavailable*, not `trailer` |
-| Ordinary signed PE larger than the window | No `sfx_tail` record; no tail allowance in the bound |
+| Ordinary signed PE larger than the window | No `sfx_tail` record; no tail read; within budget |
+| Non-executable source (no SFX scan) | `scanned_bytes` 0, so no tail allowance in the bound |
 | Stub-only `vol.exe` beside `vol.7z.001` | `SEVEN_Z`; the receipt includes the stub pass's SFX scan; `passes` 2; within two budgets, not one; a skip both passes record is kept once |
 | `max_decode_output` below one 512-byte TAR header | Inner-TAR probe not run; `inner_tar` recorded *budget exhausted*; nothing charged |
 | `max_decode_input` 0, zlib stream | No content probe runs; `content_probe` recorded *not enabled by policy*; `decode_input` 0; detection fails |

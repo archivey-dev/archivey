@@ -111,9 +111,14 @@ ZIP whose offsets count from byte 0, so that file would have to be declined).
 ### 5. Confirm the record before answering
 The checks in the spec cost two small reads: the first central header and the local
 header it names. Requiring that local header to be at or past the overlay start rules
-out a record whose "archive" would sit inside the program's own sections. **Rejected:**
-read the whole central directory (megabytes for a big archive); trust the record alone
-(the six false positives show why not).
+out a record whose "archive" would sit inside the program's own sections. A record that
+declares no entries is declined: it has neither header to check, so 22 bytes of
+`PK\x05\x06` and zeros would pass, and since `payload_offset` is the record's own base
+(§10) nothing later would catch it. **Rejected:** read the whole central directory
+(megabytes for a big archive); trust the record alone (the six false positives show why
+not); accept an empty record (uncorroborated, and an empty ZIP behind a multi-megabyte
+overlay is not a payload anyone needs found); require the record to end flush with the
+payload end (IRPF has 224 zero bytes between them).
 
 ### 6. Report as `sfx_scan`, record as `sfx_tail`
 `detected_by` stays `sfx_scan`, which the docs already define as covering every prefixed
@@ -175,8 +180,11 @@ reach); a caller flag to ask for the exact value (public surface for a number fe
 ### 11. `FormatInfo.prefixed` is the test for a prefixed archive
 **Maintainer direction (davitf, review round 1):** stop using `payload_offset > 0` as the
 test for a self-extractor; document the base-0 case and add a field if needed. The field
-is `prefixed: bool = False`, `True` when detection found the archive behind bytes that are
-not part of it. Today that is every `sfx_scan` hit; a later tier that finds a prefixed
+is `prefixed: bool = False`, `True` when detection had to recognise or skip leading bytes
+before the archive's own structures, whether or not the archive's stored offsets count
+them in. It is defined by the evidence, not by the archive's extent: a ZIP written in place
+starts at byte 0 by its own numbers, yet detection still met a stub first, and that is
+what a caller asking "is this a self-extractor?" wants. Today that is every `sfx_scan` hit; a later tier that finds a prefixed
 archive by other evidence sets it too, which is why it is a field and not
 `detected_by == "sfx_scan"`. `detected_by` says which evidence decided and is an open set,
 so a caller matching one value would miss a new tier. It is added last in the dataclass,

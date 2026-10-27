@@ -32,13 +32,15 @@ class FormatInfo:
 ```
 
 `config=None` → library default. `confidence` = magic / structural probe /
-extension-guess. `prefixed` SHALL be `True` when detection found the archive behind bytes
-that are not part of it (an executable stub, a `#!` launcher, any other prefix), and it is
+extension-guess. `prefixed` SHALL be `True` when detection had to recognise or skip
+leading bytes before the archive's own structures (an executable stub, a `#!` launcher, any
+other prefix), whether or not the archive's stored offsets count those bytes in, and it is
 the test for a self-extracting or otherwise prefixed archive. `payload_offset` is where to
 start reading the archive: never after its first member, and exactly that member when the
 detection step saw it. The two are separate facts: a ZIP whose stored offsets count from
-the start of the file can be said to start at byte 0, so it MAY report `prefixed=True`
-with `payload_offset` 0. `payload_end` is where the archive's region of the source ends
+the start of the file starts at byte 0 by its own numbers, so it SHALL report
+`payload_offset` 0 and `prefixed=True` when detection found it behind a stub.
+`payload_end` is where the archive's region of the source ends
 when detection identified something after it: today the start of a PE's Authenticode
 certificate table (*Self-extracting (SFX) archives are detected behind an executable
 stub*), whatever tier found the archive. `None`, the common case, means the region runs
@@ -212,8 +214,10 @@ them as part of the prefix fetches them again. The PE tail probe (*A ZIP in a PE
 is found from its end record*), when it runs, SHALL add one seek towards the end and one
 read of its span, at most two reads of fixed record parts the span does not already hold
 (the first central header and the local header it names), and one seek back to the end of
-the prefix. No other backward seek re-reads the prefix. The exit restore of a seekable
-caller stream is the non-consumption contract.
+the prefix. The probe runs before far magic, so a probe hit ends detection before the
+trailer tier: the two tails are both read only when the probe declines. No other backward
+seek re-reads the prefix. The exit restore of a seekable caller stream is the
+non-consumption contract.
 
 This holds for every source kind. A network range reader pays for the prefix pass and,
 when the trailer runs, one range for that block; a member stream (`ArchiveStream`) is
@@ -241,6 +245,7 @@ from its end record reports the EOCD-derived base, which needs no walk.
 | `koly` hit on a seekable image larger than the prefix | 1 prefix pass; the trailer bytes are fetched once | 1 | 1, back to the end of the prefix |
 | Gated PE, ZIP found from its end record, directory inside the span | 1 prefix pass, the span, the local header | 1 | 2: to the local header, back to the end of the prefix |
 | Gated PE, directory and local header both before the span | 1 prefix pass, the span, two fixed record parts | 1 | 3: to the central header, to the local header, back to the end of the prefix |
+| Gated PE, probe declines, then the trailer step runs | 1 prefix pass, the span, up to two fixed record parts, the trailer block | 2 | Up to 4: up to two record reads, and one back to the end of the prefix after each tail read |
 | Non-seekable source, any tier | 1 pass | 0 | **0** |
 | Member stream (`ArchiveStream`), bare, buffered, through `open_archive`, or one volume of a list, any tier | 1 pass | 0 | **0** |
 
@@ -263,11 +268,14 @@ from the prefix. A source that does not allow the read SHALL be recorded under `
 never under `trailer`, so the two tiers' records cannot be confused.
 
 A record found there SHALL be accepted only when all of these hold: both disk numbers are
-0 and its two entry counts are equal; `cd_start = eocd − cd_size` and
+0 and its two entry counts are equal and above 0; `cd_start = eocd − cd_size` and
 `base = cd_start − cd_offset` are not negative; the four bytes at `cd_start` are a central
-header signature (or `cd_size` is 0 for an empty archive); and the first central header's
-local-header offset plus `base` is at or past the overlay start and holds a local header
-signature. A record with ZIP64 placeholder values SHALL be declined. Accepted →
+header signature; and the first central header's local-header offset plus `base` is at or
+past the overlay start and holds a local header signature. A record declaring no entries
+SHALL be declined: with no central header and no local header nothing corroborates it, and
+22 bytes of `PK\x05\x06` followed by zeros would pass the remaining checks. An empty ZIP
+behind a multi-megabyte overlay is not a payload worth finding, and declining it leaves
+detection where it is today. A record with ZIP64 placeholder values SHALL be declined. Accepted →
 `ZIP` / `PROBABLE` / `detected_by="sfx_scan"`, with `payload_offset` = `base`. No read is
 made to refine it. `base` is never after any member's local header, so `open_archive`
 reads every member from it. It is the ZIP's first byte when the ZIP's offsets count from
@@ -291,6 +299,7 @@ continues with far magic, as after a scan miss today.
 | PE carrying `PK\x05\x06` as a string constant near its end (counts or offsets that point nowhere) | Declined |
 | PE whose end record is valid but whose first local header lies inside the sections | Declined |
 | End record with ZIP64 placeholders | Declined |
+| End record declaring no entries (`PK\x05\x06` and 18 zero bytes, or a real empty ZIP) | Declined |
 | ELF or Mach-O stub with an appended ZIP past the window | Not found, as today |
 | Pipe or member stream | No tail read; `sfx_tail` recorded *capability unavailable* |
 | `max_scan_bytes` 0 | No tail read; `sfx_tail` recorded *not enabled by policy* |

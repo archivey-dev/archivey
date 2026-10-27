@@ -30,8 +30,8 @@ and WinRAR installers the archive starts exactly at the end of the last section.
   certificate (or before end of file when there is none), and confirms the end record
   against the central directory and a local header before answering `ZIP` / `PROBABLE` /
   `sfx_scan`.
-- **`FormatInfo.prefixed`.** A new `bool`, `True` when detection found the archive behind
-  bytes that are not part of it. It replaces `payload_offset > 0` as the documented test
+- **`FormatInfo.prefixed`.** A new `bool`, `True` when detection had to recognise or skip
+  leading bytes before the archive, even when the archive's own offsets count them in. It replaces `payload_offset > 0` as the documented test
   for a self-extractor: a ZIP found from its end record reports the base its end record
   implies, which is 0 when its offsets count from the start of the file.
 - **`FormatInfo.payload_end` and readers bounded by it.** Detection reports where a signed
@@ -75,7 +75,9 @@ and WinRAR installers the archive starts exactly at the end of the last section.
   passed to `open_read`), and the ZIP, 7z and RAR readers' end-record and trailing-data
   code.
 - Public API: `FormatInfo.prefixed` and `FormatInfo.payload_end` are added (additive, last
-  fields). `detected_by` keeps its values. `TierSkip.tier` gains `sfx_tail`.
+  fields) in `src/archivey/detection.py`, the public module, and the `info` verb
+  (`src/archivey/cli/info_cmd.py`) prints them. `detected_by` keeps its values.
+  `TierSkip.tier` gains `sfx_tail`.
 - Tests: synthetic PE files with a section table and a certificate entry; no real
   installer is committed.
 - Docs: `dev-docs/topics/prefixed-archives.md`, `dev-docs/topics/detection.md`,

@@ -41,8 +41,9 @@ Block 3 is the overlay-start rule. Each reuses Block 1's PE layout helper.
       recorded under (design §7); the trailer step passes `trailer`. Receipt and records:
       tail bytes in `unique_bytes_read`, not `scanned_bytes`; prefix-held bytes not fetched
       again; `sfx_tail` *not enabled by policy* / *capability unavailable*; nothing
-      recorded for an excluded source. Add the tail allowance to the test suite's
-      within-budget check.
+      recorded for an excluded source. Add the tail allowance to `within_budget`
+      (`tests/detection_cost_util.py`) on the condition the validator allowance uses,
+      `scanned_bytes > 0`; no new receipt field.
 - [ ] 2.3 `internal/detection.py`: the tail probe after a scan miss, gated as in the spec,
       answering `ZIP` / `PROBABLE` / `sfx_scan` with `payload_offset` = the EOCD-derived
       base (design §10, maintainer decision), `prefixed=True`, and `payload_end`.
