@@ -1,8 +1,8 @@
 ---
 name: address-review-findings
 description: |
-  Work through review feedback on an archivey pull request: read both comment channels
-  (top-level and inline threads) plus CI failures, verify each finding before acting,
+  Work through review feedback on an archivey pull request: read all four channels
+  (top-level, inline threads, formal reviews, CI), verify each finding before acting,
   fix what you agree with, and surface disagreements and maintainer decisions one at a
   time with full context. The counterpart to `code-review-skill` — that one produces
   findings, this one dispositions them.
