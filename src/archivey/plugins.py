@@ -131,9 +131,12 @@ class MemberData(NamedTuple):
     """A member's data, as :meth:`IndexedReader.open_member` returns it."""
 
     stream: BinaryIO | io.RawIOBase
-    """The member's decoded bytes, read from the start. archivey closes it. Its
-    ``read(n)`` may return fewer bytes than asked before the end, as an
-    :class:`io.RawIOBase` may: archivey asks again for the rest."""
+    """The member's decoded bytes, read from the start. archivey closes it. A stream
+    that is neither an :class:`io.BufferedIOBase` nor one archivey made (a view, a
+    :meth:`PluginContext.decompress` result, :func:`block_stream`) may return fewer
+    bytes than asked before the end, as an :class:`io.RawIOBase` may: archivey asks
+    again for the rest. A buffered stream is taken at its word, as
+    :class:`io.BufferedIOBase` promises: a short read from it is its end."""
 
     expected_hashes: Mapping[HashAlgorithm, bytes] = {}
     """Digests archivey checks the bytes against as they are read. A digest in

@@ -186,14 +186,11 @@ class PluginReaderAdapter(BaseArchiveReader):
         properties: bytes | None,
     ) -> BinaryIO:
         """``PluginContext.decompress``: ``data`` through archivey's codec layer."""
-        if isinstance(method, StreamFormat):
-            codec = (
-                Codec.STORED
-                if method is StreamFormat.UNCOMPRESSED
-                else codec_for_stream_format(method)
-            )
-        else:
-            codec = _PLUGIN_CODECS.get(method)
+        codec = (
+            codec_for_stream_format(method)
+            if isinstance(method, StreamFormat)
+            else _PLUGIN_CODECS.get(method)
+        )
         if codec is None:
             raise UnsupportedFeatureError(
                 f"PluginContext.decompress() does not decode {method.name}",

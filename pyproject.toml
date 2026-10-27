@@ -275,8 +275,8 @@ python-version = "3.11"
 root = ["src", "packages/archivey-squashfs/src"]
 
 [tool.ty.src]
-# Type-check only the library, mirroring pyrefly's `project-includes = ["src"]`, so a
-# bare `uv run ty check` is clean — no `src/` path argument needed.
+# Type-check the library and the in-repo plugin package, mirroring pyrefly's
+# `project-includes`, so a bare `uv run ty check` is the gate with no path arguments.
 include = ["src", "packages/archivey-squashfs/src"]
 
 [tool.coverage.run]
