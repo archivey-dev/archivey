@@ -24,6 +24,7 @@ Module map:
   seek-target and argument rules)
 - :mod:`.slice` — ``SlicingStream`` / ``SharedView`` bound views + ``fix_stream_start_position``
 - :mod:`.shared` — ``SharedSource`` (concurrent independent views over one handle)
+- :mod:`.fullcount` — ``FullCountStream`` (full-count reads with no buffer)
 - :mod:`.locked` — ``LockedStream`` (whole-op lock wrapper)
 - :mod:`.readahead` — ``ReadAheadStream`` (a read buffer over a full-count stream)
 - :mod:`.solid` — ``SolidBlockReader`` (forward-only solid demux)
@@ -74,6 +75,7 @@ from archivey.internal.streams.streamtools.binaryio import (
     source_size_fact,
     underlying_stream,
 )
+from archivey.internal.streams.streamtools.fullcount import FullCountStream
 from archivey.internal.streams.streamtools.locked import LockedStream
 from archivey.internal.streams.streamtools.readahead import ReadAheadStream
 from archivey.internal.streams.streamtools.shared import SharedSource
@@ -92,6 +94,7 @@ __all__ = [
     "DEFAULT_UNKNOWN_LENGTH_READ_STEP",
     "BinaryIOWrapper",
     "DelegatingStream",
+    "FullCountStream",
     "LockedStream",
     "OneReadEachStream",
     "ReadAheadStream",

@@ -101,8 +101,11 @@ more indexed plugin, 2026-10-27).
       installs the package and runs its tests.
 - [x] 3b.4 Gaps the package found, added to the interface: `PluginContext.decompress`
       takes a `StreamFormat` (SquashFS stores zlib, xz and LZMA Alone streams; bytes
-      after such a stream are reported as for a file of that format), and the adapter
-      buffers a plugin's `RawIOBase` stream so `read(n)` is not short before the end.
+      after such a stream are reported as for a file of that format), and a
+      member stream whose reads may be short before the end is read whole: the adapter
+      puts streamtools' `FullCountStream` (no buffer) in front of any stream that is not
+      buffered or archivey's own, and `buffered_stream()` (`ensure_bufferedio`) is
+      public for a plugin that wants a buffer (maintainer, 2026-10-27).
 - [x] 3b.5 LZO, which archivey does not decode: the package's own LZO1X decoder in
       Python (from the kernel's `lzo1x_decompress_safe`), or liblzo2 through
       `python-lzo` when installed; tests cross-check the two (maintainer, 2026-10-27).

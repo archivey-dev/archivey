@@ -538,6 +538,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
     ) -> MemberData:
         # archivey opens only a FILE: a hard link reaches the member it names.
         assert locator is not None, member.name
+        # A read stops at a block boundary; archivey asks again for the rest.
         return MemberData(_FileStream(self, locator), bounded=True)
 
     def archive_info(self) -> PluginArchiveInfo:

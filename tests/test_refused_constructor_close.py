@@ -242,6 +242,9 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.backends.tar_reader._MemberDataView": (
         "DelegatingStream.__init__ first; close() reads nothing assigned after it"
     ),
+    "archivey.internal.streams.streamtools.fullcount.FullCountStream": (
+        "no __init__ of its own: DelegatingStream's"
+    ),
     "archivey.internal.streams.streamtools.readahead.ReadAheadStream": (
         "assigns every field close() reads before DelegatingStream.__init__"
     ),

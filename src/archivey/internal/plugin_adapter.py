@@ -57,6 +57,7 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.respawn import RespawnStream
 from archivey.internal.streams.streamtools import (
+    FullCountStream,
     LockedStream,
     SharedSource,
     is_seekable,
@@ -84,6 +85,21 @@ from archivey.types import (
     PluginContainer,
     StreamFormat,
 )
+
+
+def _reads_full(stream: object) -> bool:
+    """Whether ``stream.read(n)`` returns ``n`` bytes unless it ends, so a plugin's
+    member stream needs no :class:`FullCountStream` in front of it.
+
+    A buffered stream does. So does every stream archivey made, a
+    ``PluginSource.view()`` or a ``PluginContext.decompress()`` result: the stream layer
+    keeps that rule, and a short read from one is its end. Anything else may be an
+    ``io.RawIOBase`` that stops a read early (at a block boundary, say), and the
+    wrapper's cost when it does not is one call per read and no copy.
+    """
+    return isinstance(stream, io.BufferedIOBase) or type(stream).__module__.startswith(
+        "archivey."
+    )
 
 
 class PluginReaderAdapter(BaseArchiveReader):
@@ -335,8 +351,8 @@ class PluginReaderAdapter(BaseArchiveReader):
             yield member
 
     def _plugin_member_data(self, member: ArchiveMember) -> tuple[MemberData, BinaryIO]:
-        """Call the plugin's ``open_member``: its data, and its stream as archivey
-        reads it, buffered if raw and under the handle lock."""
+        """Call the plugin's ``open_member``: its data, and its stream as archivey reads
+        it, full-count and under the handle lock."""
         with self._translated_errors(member.name), self._handle_guard():
             data = self._reader.open_member(member, member._raw)
         if not isinstance(data, MemberData):
@@ -344,11 +360,9 @@ class PluginReaderAdapter(BaseArchiveReader):
                 f"{type(self._reader).__name__}.open_member() returned "
                 f"{type(data).__name__}, not MemberData"
             )
-        stream = data.stream
-        if isinstance(stream, io.RawIOBase):
-            # A raw stream may return fewer bytes than asked for before its end;
-            # archivey's readers expect a file's ``read(n)``, as a buffer gives.
-            stream = cast(BinaryIO, io.BufferedReader(stream))
+        stream = cast(BinaryIO, data.stream)
+        if not _reads_full(stream):
+            stream = FullCountStream(stream)
         if self._handle_lock is not None:
             stream = LockedStream(stream, self._handle_lock)
         return data, stream

@@ -1052,11 +1052,14 @@ class _NonClosingBufferedReader(io.BufferedReader):
         return getattr(self, "_detached", False) or self.raw is None or super().closed
 
 
-def ensure_bufferedio(obj: object) -> io.BufferedIOBase:
+def ensure_bufferedio(obj: object, *, owns: bool = False) -> io.BufferedIOBase:
     """Return ``obj`` as a buffered reader, without taking ownership of it.
 
     An already-buffered stream is returned unchanged; otherwise it is wrapped in a
-    non-closing ``BufferedReader``. ``io.BufferedReader`` requires its underlying object to
+    non-closing ``BufferedReader``. With ``owns``, a ``RawIOBase`` is wrapped in a plain
+    ``BufferedReader`` instead, whose close closes it: for a stream the caller hands
+    over, such as a format plugin's member stream. Any other object is refused then
+    (``TypeError``), since the adapter that would wrap it does not close it. ``io.BufferedReader`` requires its underlying object to
     be an ``io.RawIOBase`` (it rejects a merely stream-like object), so a non-``RawIOBase``
     source is first adapted via :class:`BinaryIOWrapper` (which *is* a ``RawIOBase``) — this
     is why we branch on ``RawIOBase`` here rather than calling :func:`ensure_binaryio`,
@@ -1090,9 +1093,14 @@ def ensure_bufferedio(obj: object) -> io.BufferedIOBase:
         getattr(io.RawIOBase, "readinto", None),
     ):
         raw = obj
+    elif owns:
+        raise TypeError(
+            f"{type(obj).__name__} is neither buffered nor an io.RawIOBase with a "
+            "readinto(), so it cannot be buffered and closed with the buffer"
+        )
     else:
         raw = BinaryIOWrapper(obj)
-    return _NonClosingBufferedReader(raw)
+    return io.BufferedReader(raw) if owns else _NonClosingBufferedReader(raw)
 
 
 class OneReadEachStream(io.BufferedIOBase, BinaryIO):

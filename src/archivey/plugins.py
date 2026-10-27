@@ -27,12 +27,13 @@ import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
-from typing import BinaryIO, ClassVar, Generic, NamedTuple, Protocol, TypeVar
+from typing import BinaryIO, ClassVar, Generic, NamedTuple, Protocol, TypeVar, cast
 
 from archivey.config import ArchiveyConfig
 from archivey.diagnostics import DiagnosticCode, DiagnosticContext
 from archivey.exceptions import ArchiveyError
 from archivey.internal.naming import normalize_member_name
+from archivey.internal.streams.streamtools import ensure_bufferedio
 from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
@@ -56,6 +57,7 @@ __all__ = [
     "PluginContext",
     "PluginReader",
     "PluginSource",
+    "buffered_stream",
     "register_format",
 ]
 
@@ -127,9 +129,9 @@ class MemberData(NamedTuple):
     """A member's data, as :meth:`IndexedReader.open_member` returns it."""
 
     stream: BinaryIO | io.RawIOBase
-    """The member's decoded bytes, read from the start. archivey closes it. A
-    :class:`io.RawIOBase`, whose ``read(n)`` may return fewer bytes than asked before
-    its end, is buffered by archivey."""
+    """The member's decoded bytes, read from the start. archivey closes it. Its
+    ``read(n)`` may return fewer bytes than asked before the end, as an
+    :class:`io.RawIOBase` may: archivey asks again for the rest."""
 
     expected_hashes: Mapping[HashAlgorithm, bytes] = {}
     """Digests archivey checks the bytes against as they are read. A digest in
@@ -473,3 +475,15 @@ def register_format(plugin: type[FormatPlugin]) -> None:
 
     with _register_lock:
         register_plugin(plugin)
+
+
+def buffered_stream(stream: BinaryIO | io.RawIOBase) -> BinaryIO:
+    """``stream`` behind a read buffer, so ``read(n)`` returns ``n`` bytes unless it ends.
+
+    archivey already makes a member stream's short reads whole, without a buffer. This
+    is for an :class:`io.RawIOBase` whose reads cost more than a buffer copy, such as
+    one call into a library per read. A stream that is already buffered is returned as it
+    is; any other object that is not an :class:`io.RawIOBase` raises ``TypeError``.
+    Closing the result closes ``stream``.
+    """
+    return cast(BinaryIO, ensure_bufferedio(stream, owns=True))

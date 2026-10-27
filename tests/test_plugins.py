@@ -56,6 +56,7 @@ from archivey.plugins import (
     PluginArchiveInfo,
     PluginContext,
     PluginSource,
+    buffered_stream,
     register_format,
 )
 from tests.conftest import requires, requires_zstd
@@ -997,28 +998,37 @@ def test_decompress_stream_format_reports_data_after_end(
         reader.read("m.bin")
 
 
-def test_a_raw_stream_reads_whole_lengths(clean_registry: None, tmp_path: Path) -> None:
-    """A plugin's raw stream may return less than asked before its end; the member
-    stream still returns what ``read(n)`` asks for."""
+class _Trickle(io.RawIOBase):
+    """A raw stream that returns at most 7 bytes a read, as ``io.RawIOBase`` may."""
 
-    class Trickle(io.RawIOBase):
-        def __init__(self, data: bytes) -> None:
-            self._data = io.BytesIO(data)
+    def __init__(self, data: bytes) -> None:
+        self._data = io.BytesIO(data)
 
-        def readable(self) -> bool:
-            return True
+    def readable(self) -> bool:
+        return True
 
-        def readinto(self, buffer: memoryview) -> int:  # type: ignore[override]
-            chunk = self._data.read(min(len(buffer), 7))
-            buffer[: len(chunk)] = chunk
-            return len(chunk)
+    def readinto(self, buffer: memoryview) -> int:  # type: ignore[override]
+        chunk = self._data.read(min(len(buffer), 7))
+        buffer[: len(chunk)] = chunk
+        return len(chunk)
+
+
+@pytest.mark.parametrize("wrap", [lambda stream: stream, buffered_stream])
+def test_a_raw_stream_reads_whole_lengths(
+    clean_registry: None, tmp_path: Path, wrap: Callable[[_Trickle], BinaryIO]
+) -> None:
+    """A plugin's stream may return short reads, as an ``io.RawIOBase`` may: the
+    member stream still returns what ``read(n)`` asks for, and closing it closes the
+    plugin's stream."""
+    opened: list[_Trickle] = []
 
     class TrickleReader(ToyReader):
         def open_member(
             self, member: ArchiveMember, locator: tuple[int, int]
         ) -> MemberData:
             offset, length = locator
-            return MemberData(Trickle(self._source.read_at(offset, length)))
+            opened.append(_Trickle(self._source.read_at(offset, length)))
+            return MemberData(wrap(opened[-1]))
 
     class TricklePlugin(ToyPlugin):
         def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
@@ -1029,6 +1039,25 @@ def test_a_raw_stream_reads_whole_lengths(clean_registry: None, tmp_path: Path) 
     with open_archive(path) as reader, reader.open("m.bin") as stream:
         assert stream.read(1000) == _PLAIN[:1000]
         assert stream.read() == _PLAIN[1000:]
+    assert opened[0].closed
+
+
+def test_only_streams_that_may_read_short_are_wrapped() -> None:
+    """A buffered stream and archivey's own streams already return whole reads."""
+    from archivey.internal import plugin_adapter
+    from archivey.internal.streams.streamtools import SharedSource
+
+    assert plugin_adapter._reads_full(io.BytesIO())
+    with SharedSource(io.BytesIO(b"abc")).view(0, 3) as view:
+        assert plugin_adapter._reads_full(view)
+    assert not plugin_adapter._reads_full(_Trickle(b""))
+
+
+def test_buffered_stream_keeps_a_buffered_stream_and_refuses_others() -> None:
+    buffered = io.BytesIO(b"x")
+    assert buffered_stream(buffered) is buffered
+    with pytest.raises(TypeError, match="RawIOBase"):
+        buffered_stream(object())  # type: ignore[arg-type]
 
 
 def test_translate_exception_mid_read(clean_registry: None, tmp_path: Path) -> None:

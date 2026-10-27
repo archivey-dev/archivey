@@ -218,8 +218,11 @@ Where the compressed data ends depends on the method:
 A format whose methods archivey does not decode wraps the view in its own library's
 decoder.
 
-The stream may be an `io.RawIOBase`, whose `read(n)` may return fewer bytes than asked
-before the end; archivey buffers it, so its callers get whole reads.
+The stream may return fewer bytes than asked before its end, as an `io.RawIOBase` may
+(one that stops each read at a block boundary, say): archivey asks it again for the
+rest, and reads nothing ahead. For a raw stream whose reads cost more than a copy, such
+as one call into a library per read, return `buffered_stream(stream)`, which puts an
+`io.BufferedReader` in front of it. Closing that closes the stream it wraps.
 
 archivey checks every member stream against what the listing said:
 
