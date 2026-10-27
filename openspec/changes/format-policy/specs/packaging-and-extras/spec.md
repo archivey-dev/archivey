@@ -16,13 +16,16 @@ another call in the same process, on any thread, SHALL see the package as it is.
 listing it in `missing` with the policy as its `reason`; `list_supported_formats` follows
 it (`backend-registry`, *Format support is tri-state and compositional*).
 
-A `PackageNotInstalledError` SHALL carry `missing: tuple[MissingComponent, ...]`, the
-components the raise is about, on every raise. A component refused by the policy SHALL
-have the policy as its `reason`.
+The `PackageNotInstalledError` for an excluded package SHALL list it in `missing` (see
+`error-handling`, *PackageNotInstalledError carries its missing components*), with the
+policy as its `reason`.
 
 `exclude_libraries` SHALL accept only archivey's own optional package names. A policy
 that names a plugin (in `replace=`, or a plugin container in `only=`) whose `requires`
 holds an excluded package SHALL be refused at construction with `ArchiveyUsageError`.
+A registered plugin the policy does not name, whose `requires` holds an excluded
+package, SHALL read as NONE under that config, and opening one of its files SHALL raise
+`PackageNotInstalledError` naming the policy.
 
 #### Scenario: An excluded pyppmd refuses only the PPMd member
 

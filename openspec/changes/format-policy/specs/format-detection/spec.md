@@ -89,9 +89,9 @@ source is a compressed stream, so a probe only picks the codec. Both rules stop 
 caller's format policy: the probe of a plugin format that `ArchiveyConfig.formats` does
 not allow SHALL NOT run, under `always_probe_content=True` and in `open_stream` alike,
 and the skip SHALL be recorded in `unavailable_tiers` as `content_probe` /
-`NOT_ENABLED_BY_POLICY`. Built-in probes are not affected by the policy. The internal detections
-`open_archive` runs under `format=` (stub check, empty-listing rescan) SHALL follow the
-caller's `always_probe_content`. This covers Brotli (no
+`NOT_ENABLED_BY_POLICY`. Built-in probes are not affected by the policy.
+The internal detections `open_archive` runs under `format=` (stub check, empty-listing
+rescan) SHALL follow the caller's `always_probe_content`. This covers Brotli (no
 signature), zlib (too-unspecific CMF/FLG), and LZMA Alone (13-byte header whose
 properties byte is too weak for exact magic). Probes typically decode a bounded
 prefix; MAY gate on cheap structural bytes first; and MAY consult the source length

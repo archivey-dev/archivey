@@ -101,17 +101,26 @@ Support SHALL be computed across the format backend and codecs/tools:
   `install_hint` is the refusal that probe gives a member read. `reason` is set when the
   package may be installed but archivey does not use it on the running interpreter, and
   `advice` is `reason` when set, otherwise `install_hint`; every report of a missing
-  component prints `advice`. `open_archive` and
-  `list_supported_formats()` do not run it: a missing tool never makes a format NONE,
-  so they need no answer about tools. Without `config` the answer does not depend on `ArchiveyConfig`. With
-  `config`, only `config.formats.exclude_libraries` changes it: an excluded package
-  counts as absent (see `packaging-and-extras`, *An excluded optional library reads as
-  not installed*). The policy's `only`, `exclude`, `plugins` and `replace` do not change
-  it; `config.formats.allows(fmt)` answers whether a format may open. `check_programs=False` runs no program and
-  counts no tool, for a caller who wants no external program run.
+  component prints `advice`. `open_archive` and `list_supported_formats()` do not run
+  it: a missing tool never makes a format NONE, so they need no answer about tools.
+  `rar_decompressor` does not change the answer. `check_programs=False` runs no
+  program and counts no tool, for a caller who wants no external program run.
 - `cryptography`, which only encrypted members need, SHALL NOT lower support.
 - By-design unsupported features such as unknown 7z method IDs SHALL
   not lower support; members using them raise `UnsupportedFeatureError`.
+
+Without `config` the answer SHALL NOT depend on `ArchiveyConfig`. With `config`, two of
+its fields change it, and no other:
+
+- `config.formats.exclude_libraries`: an excluded package counts as absent (see
+  `packaging-and-extras`, *An excluded optional library reads as not installed*).
+- `config.formats.replace`: for a replaced container the answer is for the
+  replacement's backend, not the built-in's. The replacement's `requires` count as a
+  registered plugin's do, so a missing or excluded one makes the format NONE, and the
+  open raises `PackageNotInstalledError` before the plugin's `open` runs.
+
+The policy's `only`, `exclude` and `plugins` SHALL NOT change the answer;
+`config.formats.allows(fmt)` answers whether a format may open.
 
 `list_supported_formats()` SHALL return FULL plus PARTIAL formats; with `config`, the
 formats that are FULL or PARTIAL under that config. It SHALL NOT filter by
@@ -184,3 +193,12 @@ conservative answer.
   `cfg.formats == FormatPolicy(only={ContainerFormat.ZIP})` and 7z readable
 - **THEN** the list holds `ArchiveFormat.SEVEN_Z`
 - **AND** `cfg.formats.allows(ArchiveFormat.SEVEN_Z)` is false
+
+#### Scenario: Availability answers for the replacement
+
+- **WHEN** a caller asks `format_availability(ArchiveFormat.ZIP, config=cfg)` with
+  `cfg.formats == FormatPolicy(replace={ContainerFormat.ZIP: P})`,
+  `P.requires == ("cryptography",)` and `cryptography` not installed
+- **THEN** the answer is NONE and its `missing` names `cryptography`
+- **AND** opening a ZIP file with `cfg` raises `PackageNotInstalledError`, and `P.open`
+  is not called

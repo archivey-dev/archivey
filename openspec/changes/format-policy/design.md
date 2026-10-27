@@ -160,14 +160,14 @@ extensions itself, so a plugin's magic and extensions still name its format when
 plugin is off, and the open is refused by name. A plugin's **content probe** is the
 plugin's own code, so it does not run when the policy turns that plugin off. A file that
 only that probe would recognise gets `FormatDetectionError`, which is a reported absence
-(DR-1), not a wrong answer. This wins over `always_probe_content=True` and over `open_stream`'s rule that every
-probe runs: both run every probe the policy allows. When the only probe left out is an
-off plugin's, the `FormatDetectionError` message names the policy rather than the three
-ways to read a nameless probe-only stream, none of which reaches a plugin that is off.
-The skip is recorded in the detection receipt as
+(DR-1), not a wrong answer. This wins over `always_probe_content=True` and over
+`open_stream`'s rule that every probe runs: both run every probe the policy allows. When
+the only probe left out is an off plugin's, the `FormatDetectionError` message names the
+policy rather than the three ways to read a nameless probe-only stream, none of which
+reaches a plugin that is off. The skip is recorded in the detection receipt as
 `TierSkipReason.NOT_ENABLED_BY_POLICY` (`workspace.record_skip("content_probe", ...)`),
-the reason detection already gives a probe the extension rule leaves out, so the
-receipt does not look like a complete search.
+the reason detection already gives a probe the extension rule leaves out, so the receipt
+does not look like a complete search.
 
 **What the policy does not bound.** It decides which *reader* runs, not how much of the
 file detection reads. Far magic, the SFX scan and the built-in content probes still run
@@ -282,6 +282,12 @@ FormatPolicy(exclude_libraries={"pyppmd", "inflate64"})
   lists an excluded package in its `requires`, such as a replacement that needs
   `cryptography` with `cryptography` excluded, the policy is refused at construction as
   a contradiction. A replacement is never quietly swapped back to the built-in reader.
+  The reason is that the caller named that plugin, so a policy that cannot use it is a
+  mistake in the policy, and construction is the earliest place to say so. A registered
+  plugin the policy does not name is different: excluding a package it requires makes
+  its format NONE under that config, and opening one of its files raises
+  `PackageNotInstalledError` naming the policy, as for a built-in format whose package is
+  excluded.
 
 **Asking up front.** `format_availability` and `list_supported_formats` gain a keyword
 `config=None`. Without it they answer what the environment provides, as today. With it,
@@ -297,6 +303,13 @@ docs say so next to each. `list_supported_formats(config=cfg)` follows
 7z, RAR, ISO and every registered plugin format. A caller that wants the formats it
 may open writes `[f for f in list_supported_formats(config=cfg) if
 cfg.formats.allows(f)]`; a helper for that one line is not added (DR-14).
+
+`replace=` is the one other field that changes the availability answer. For a replaced
+container `format_availability(fmt, config=cfg)` answers for the backend that would
+read it, the replacement, not the built-in. The replacement's `requires` count as a
+registered plugin's do: a missing or excluded one makes the format `NONE` with that
+package in `missing`, and the open raises `PackageNotInstalledError` before the plugin's
+`open` runs. `only`, `exclude` and `plugins` do not change the answer.
 
 **How the policy reaches the checks.** Every place that answers "is this package
 available" is process-wide today: `LazyOptional._present` (fixed at construction, module
@@ -316,9 +329,11 @@ is today.
 another one has it as data. For a format refusal it asks
 `config.formats.allows(exc.source_format)`. For a library refusal it reads
 `exc.missing`: a component whose `name` is in its `exclude_libraries` was refused by its
-own policy, and any other component needs installing. That holds when one raise has
-both causes. `missing` is an additive attribute on an existing type, not a new type
-(DR-13). Both
+own policy, and any other component needs installing. That holds when one raise has both
+causes. `missing` is filled on every raise for an absent package or program: the unrar
+sites fill it from `rarlab_unrar_missing()`. It is empty only when the program is
+present but cannot start (`external/cli.py`), where nothing is missing to name.
+`missing` is an additive attribute on an existing type, not a new type (DR-13). Both
 docstrings widen in the same change: `UnsupportedFeatureError` also covers "the caller's
 `FormatPolicy` refuses this format", and `PackageNotInstalledError` also covers "the
 caller's `FormatPolicy` excludes the package; the message says so instead of an install

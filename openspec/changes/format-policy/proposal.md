@@ -1,9 +1,8 @@
 > **Design approved 2026-10-27** (option A and every call in `design.md` §7). The
 > implementation builds on the plugin API stack (`plugin-api`) and starts once that
-> stack has merged.
-> This change carries deltas for `backend-registry`, `format-detection` and
-> `packaging-and-extras`; the deltas to `format-plugins` and `archive-reading` come with
-> the implementation PR.
+> stack has merged. This change carries deltas for `backend-registry`,
+> `format-detection`, `packaging-and-extras` and `error-handling`; the deltas to
+> `format-plugins` and `archive-reading` come with the implementation PR.
 
 ## Why
 
@@ -57,14 +56,16 @@ Nothing changes for a caller who does not set `formats`.
 
 - Specs: `backend-registry` (policy and reader selection), `format-detection` (skipped
   probes), `format-plugins` (replacement plugins), `archive-reading` (the refusals),
-  `packaging-and-extras` (excluded libraries).
+  `packaging-and-extras` (excluded libraries), `error-handling`
+  (`PackageNotInstalledError.missing`).
 - Code: `config.py`, a new `FormatPolicy` (in `config.py` or `types.py`),
   `internal/registry.py` (`reader_for_format` takes the policy), `internal/detection.py`
   (plugin probes filtered), `internal/plugin_adapter.py` (replacement backends), the
   codec and backend availability checks (`deps.py`), `core.py` (one check at the reader
   choice, and the volume and SFX refusals for a replacement).
-- Public API: one new root name, one new config field, and a keyword `config=` on
-  `format_availability` and `list_supported_formats`. All additive. The
+- Public API: one new root name, one new config field, a keyword `config=` on
+  `format_availability` and `list_supported_formats`, and a `missing` attribute on
+  `PackageNotInstalledError`. All additive. The
   `UnsupportedFeatureError` and `PackageNotInstalledError` docstrings widen to cover a
   policy refusal.
 - Cost: one set lookup per open.

@@ -15,7 +15,9 @@ Not started. Design approved 2026-10-27; starts once the plugin API stack has me
 ## 2. Reader choice
 
 - [ ] 2.1 `BackendRegistry.reader_for_format(fmt, policy)`: refuse an off format with
-      `UnsupportedFeatureError` naming the entry to add; return the replacement backend.
+      `UnsupportedFeatureError` naming the entry to add; return the replacement backend,
+      after checking its `requires` (missing or excluded raises
+      `PackageNotInstalledError` before the plugin's `open` runs).
 - [ ] 2.2 Replacement backends: `_backend_class` over the built-in format with no
       detection signals, cached per plugin class.
 - [ ] 2.3 `core.py`: refuse multi-volume sets and SFX-found archives for a replaced
@@ -37,16 +39,21 @@ Not started. Design approved 2026-10-27; starts once the plugin API stack has me
 - [ ] 3.3 `format_availability(fmt, config=None)` and `list_supported_formats(config=None)`
       count excluded libraries as absent; the list does not filter by `allows()`. Update
       both docstrings in `registry.py`, which today say the answer does not change with
-      `ArchiveyConfig`.
+      `ArchiveyConfig`. Under `replace=` answer for the replacement's backend and its
+      `requires`. Also update the `config.py` RAR docstring ("the `format_availability()`
+      query takes no config") and the comment on `RarReader.missing_programs`.
 - [ ] 3.4 Widen the `UnsupportedFeatureError` and `PackageNotInstalledError` docstrings
       to cover policy refusals, and add `PackageNotInstalledError.missing` (the
-      components the raise is about), set on every raise.
+      components the raise is about), set on every raise; the unrar sites fill it from
+      `rarlab_unrar_missing()`, and it is empty only for a program that is present but
+      cannot start.
 
 ## 4. Tests and docs
 
 - [ ] 4.1 Tests: each row of the `design.md` §3 table; `format=` does not bypass the
       policy; an off plugin's probe is not called; a replacement reads a ZIP and
-      `detect_format` answers the same with and without it; the refusals in §5; an excluded `pyppmd` makes a PPMd 7z member raise
+      `detect_format` answers the same with and without it; the refusals in §5; an
+      excluded `pyppmd` makes a PPMd 7z member raise
       `PackageNotInstalledError` while the other members read; an excluded `rapidgzip`
       under `AUTO` falls back and under `ON` is refused; an excluded lazy package is
       never imported; two threads, one excluding `pyppmd` and one not, each get their
