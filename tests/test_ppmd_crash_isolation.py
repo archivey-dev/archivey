@@ -40,7 +40,7 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.internal.config import StreamConfig
-from archivey.internal.streams.child_process import is_crash
+from archivey.internal.streams.child_process import is_crash, is_no_verdict
 from archivey.internal.streams.codecs import (
     Codec,
     CodecParams,
@@ -734,7 +734,6 @@ def test_a_decode_after_a_child_death_raises_the_same_error_again(
     assert str(errors[0]) == str(errors[1])
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
 def test_a_dead_child_decoder_is_freed_without_the_garbage_collector(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -744,10 +743,10 @@ def test_a_dead_child_decoder_is_freed_without_the_garbage_collector(
     decoder's recorded instance the one raised, the decoder would live until the
     collector ran, however promptly the caller dropped it.
     """
-    _stand_in_worker(monkeypatch, tmp_path, "os.kill(os.getpid(), signal.SIGKILL)")
+    _stand_in_worker(monkeypatch, tmp_path, "os._exit(7)")
     child = open_ppmd_child(variant=7, order=_ORDER, mem_size=_MEM)
     for _ in range(2):
-        with pytest.raises(ResourceUnavailableError):
+        with pytest.raises(ReadError):
             child.decode(b"\x00" * 16, 10)
     alive = weakref.ref(child)
     gc.disable()
@@ -758,7 +757,27 @@ def test_a_dead_child_decoder_is_freed_without_the_garbage_collector(
         gc.enable()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+class _NeedsTwoArguments(Exception):
+    def __init__(self, first: str, second: str) -> None:
+        super().__init__(f"{first} {second}")
+
+
+def test_the_recorded_death_is_raised_as_a_copy() -> None:
+    """``_unraised`` copies the error types a death records, mark included, and falls
+    back to the instance itself for a type ``copy`` cannot rebuild."""
+    recorded = start_error("no child")
+    raised = decoder_child._unraised(recorded)
+    assert raised is not recorded
+    assert type(raised) is type(recorded)
+    assert str(raised) == str(recorded)
+    death = decoder_child.isolation_error("no child")
+    copied = decoder_child._unraised(death)
+    assert copied is not death
+    assert is_no_verdict(copied)
+    uncopyable = _NeedsTwoArguments("a", "b")
+    assert decoder_child._unraised(uncopyable) is uncopyable
+
+
 def test_collecting_a_dead_decoder_does_not_keep_the_interrupted_code_alive(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -770,7 +789,7 @@ def test_collecting_a_dead_decoder_does_not_keep_the_interrupted_code_alive(
     from the collector's frames, whose ``f_back`` is the code the collection
     interrupted.
     """
-    _stand_in_worker(monkeypatch, tmp_path, "os.kill(os.getpid(), signal.SIGKILL)")
+    _stand_in_worker(monkeypatch, tmp_path, "os._exit(7)")
     packed = _encode_ppmd7(_ZERO_RUN)
     dead = ppmd_decoder.PpmdDecoder(
         order=_ORDER,
@@ -779,7 +798,7 @@ def test_collecting_a_dead_decoder_does_not_keep_the_interrupted_code_alive(
         unpack_size=len(_ZERO_RUN),
         pack_size=len(packed),
     )
-    with pytest.raises(ResourceUnavailableError):
+    with pytest.raises(ReadError):
         dead.feed(packed)
     dead.cycle = dead  # type: ignore[attr-defined]  # only the collector frees it
     del dead

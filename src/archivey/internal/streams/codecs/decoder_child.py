@@ -258,6 +258,9 @@ def _unraised(exc: Exception) -> Exception:
     one-symbol decode at close), the new frames also reach, through ``f_back``, the
     code the collection interrupted, and the cycle keeps that code's locals alive past
     its return: a decoder there keeps its child process leased.
+
+    The copy is shallow: a mutable attribute (``__notes__``, say) is shared with
+    ``exc``. A recorded death is built fresh and carries none.
     """
     try:
         return copy.copy(exc)
@@ -367,6 +370,7 @@ class DecoderChild:
         self._unused = b""
         self._unused_stale = False
         self._interrupted = False
+        # Never raise this instance: raise ``_unraised(self._death)`` (see there).
         self._death: Exception | None = None
         # True between the two replies to ``OPEN``: the library is imported and the
         # decoder is being built (see ``_death_error``).
@@ -556,7 +560,8 @@ class DecoderChild:
         return exc
 
     def _death_from(self, died: _Died) -> Exception:
-        """Record the error for a child that went away, and return a copy to raise."""
+        """Record the error for a child that went away, and return the error to raise,
+        a copy where the type can be copied (:func:`_unraised`)."""
         self._lease.reusable = False
         self._lease.release()
         if not died.answered:
