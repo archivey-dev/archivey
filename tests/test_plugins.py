@@ -1096,10 +1096,12 @@ def test_block_stream_reads_a_block_stream_no_further_than_it_needs() -> None:
             buffer[:] = bytes(len(buffer))
             return len(buffer)
 
-    stream = block_stream(8192, 4096, lambda index: io.BufferedReader(Endless()))
+    stream = block_stream(
+        8192, 4096, lambda index: io.BufferedReader(Endless(), buffer_size=4096)
+    )
     with pytest.raises(CorruptionError, match="block 0 holds 4097 bytes, not the 4096"):
         stream.read()
-    assert sum(read_sizes) <= 8192  # one buffer fill, not the whole bomb
+    assert sum(read_sizes) <= 8192  # a buffer fill or two, not the whole bomb
 
 
 def test_block_stream_takes_a_stream_per_block() -> None:
