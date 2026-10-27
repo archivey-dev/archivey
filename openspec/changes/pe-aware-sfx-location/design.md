@@ -143,6 +143,55 @@ amends it by hand (task 3.4).
 ZIP64 needs the locator and the ZIP64 end record read and checked as well. No installer
 seen needs it. A declined record leaves detection where it is today.
 
+### 10. A tail-probe hit reports the EOCD-derived base
+**Maintainer decision (davitf, review round 1, K1):** `payload_offset` for a ZIP found
+from its end record is `base = (eocd − cd_size) − cd_offset`, with no read made to refine
+it, and the field stays an `int`. `dev-docs/formats/zip.md` §3 now defines it as a safe
+start that is exact when the evidence shows it: never after the archive's first member,
+and exactly that member when the tier that found the archive saw it. The forward scan
+sees the earliest local header and reports it; the tail probe sees only the end record
+and reports the base.
+
+The value is used, not only shown: `open_archive` hands it to the reader as the place to
+start reading (`core.py`), and the ZIP reader cuts the source there. A value after the
+first member cuts members off; `base` cannot be after any member, because every member is
+at `base` plus a stored offset that is not negative. For a ZIP appended whole (install4j)
+it is the ZIP's first byte. For one whose offsets count from the start of the file it is
+0, which reads correctly, and which is defensible as the start: the ZIP's own numbers say
+it starts there. Decision §11 moves the "was there a prefix?" question off this field.
+
+The case that does not read correctly from 0 is declined: a base-0 ZIP whose end record a
+certificate larger than 64 KiB hides from the reader's own tail search. Started at byte 0,
+the reader's fallback walk would meet the stub, not a local header.
+
+**Rejected:** the first entry the directory lists (one read, but too late when the
+directory is not in file order, which cuts members off); the minimum over the whole
+directory (megabytes during detection, for a number that is then only a label);
+`int | None` with `None` for "not known" (callers are told to test `payload_offset > 0`,
+which raises `TypeError` on `None`, and only in the rare case a test suite does not
+reach); a caller flag to ask for the exact value (public surface for a number few read).
+
+### 11. `FormatInfo.prefixed` is the test for a prefixed archive
+**Maintainer direction (davitf, review round 1):** stop using `payload_offset > 0` as the
+test for a self-extractor; document the base-0 case and add a field if needed. The field
+is `prefixed: bool = False`, `True` when detection found the archive behind bytes that are
+not part of it. Today that is every `sfx_scan` hit; a later tier that finds a prefixed
+archive by other evidence sets it too, which is why it is a field and not
+`detected_by == "sfx_scan"`. `detected_by` says which evidence decided and is an open set,
+so a caller matching one value would miss a new tier. It is added last in the dataclass,
+so positional construction keeps working. It reaches `open_archive` callers through
+`reader.format_info`; with `format=` passed there is no detection, and `format_info` stays
+`None` as today.
+
+`prefix_kind` / `PrefixKind` (`NONE` / `EXECUTABLE` / `SCRIPT` / `UNKNOWN`) was struck from
+`prefixed-archive-detection` on 2026-09-25 because "`payload_offset > 0` already says
+prefixed". Decision §10 ends that, so the need is back, but only for the yes/no answer.
+**Rejected:** reviving `PrefixKind` (it classifies the prefix, which no caller has asked
+for, and a bool can grow into it later); `detected_by == "sfx_scan"` as the documented
+test (ties the question to one evidence value of an open set); keeping
+`payload_offset > 0` and reporting a nonzero offset for a base-0 ZIP (needs the directory
+read §10 rejects, or reports a start the ZIP's own numbers contradict).
+
 ## Risks / Trade-offs
 
 - [The overlay-start rule changes an answer] → Only for a PE with a valid archive at its
@@ -153,16 +202,16 @@ seen needs it. A declined record leaves detection where it is today.
 - [A crafted PE could point its certificate entry anywhere] → It counts only when it runs
   to end of source and starts at or past the overlay start; otherwise `payload_end` is end
   of file. Every offset is checked against the known length before reading.
+- [Existing callers test `payload_offset > 0`] → It stays true for every hit that is not
+  a base-0 tail-probe ZIP, and that shape is unlikely this far into a file: offsets counted
+  from the file's start come from `zip -A` or a writer emitting the stub itself, and those
+  ZIPs sit right after the stub, where the forward scan answers first. The docstring,
+  `docs/opening.md` and the changelog point callers at `prefixed` (task 1.8).
 - [The local-header walk for a large certificate is slow on a big ZIP] → It reads headers
   only, never member data, and has been the reader's fallback since before this change.
 
 ## Open Questions
 
-- **`payload_offset` for a tail-probe hit.** The spec says the first central header's local
-  header plus `base`. Every writer seen lists entries in file order, so that is the earliest
-  local header, but the ZIP format does not promise it. The alternatives are `base` (0 for
-  a ZIP written in place, which hides the stub) or the minimum over the whole central
-  directory (exact, but reads all of it during detection). Recommendation: first entry.
 - **Overlay start past the window.** A RAR / 7z stub larger than 2 MiB is not found today.
   The overlay-start check could reach it in one read, but then the parsers' scans must
   reach it too. Left out until a real file needs it.

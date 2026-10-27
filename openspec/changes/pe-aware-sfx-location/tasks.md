@@ -19,8 +19,9 @@ reuses Block 1's helper.
       `read_at`, the end-record offset and the overlay start; reuse
       `locate_classic_record` for the search.
 - [ ] 1.5 `internal/detection.py`: the tail probe after a scan miss, gated as in the spec,
-      answering `ZIP` / `PROBABLE` / `sfx_scan` with `payload_offset` per design Open
-      Questions (first entry, unless the maintainer decides otherwise).
+      answering `ZIP` / `PROBABLE` / `sfx_scan` with `payload_offset` = the EOCD-derived
+      base (design §10, maintainer decision); decline a base-0 record outside the last
+      65 558 bytes.
 - [ ] 1.6 `PrefixWorkspace.read_tail`: take an end offset and the tier name a decline is
       recorded under (design §7); the trailer step passes `trailer`. Receipt and records:
       tail bytes in `unique_bytes_read`, not `scanned_bytes`; prefix-held bytes not fetched
@@ -31,8 +32,13 @@ reuses Block 1's helper.
       including both ZIP write conventions and a certificate larger than 64 KiB.
 - [ ] 1.8 Docs: `prefixed-archives.md` (§2 tier table, §3 cost, §6 sharp edges, §7
       decisions), `detection.md` (tier list and the "no ZIP tail probe" lines),
-      `docs/formats.md` (SFX bullet), and a pointer from the struck Block 2 note in
-      `prefixed-archive-detection/tasks.md`.
+      `docs/formats.md` (SFX bullet), a pointer from the struck Block 2 note in
+      `prefixed-archive-detection/tasks.md`, and the `FormatInfo.payload_offset`
+      docstring and `docs/opening.md`, which call `payload_offset > 0` the test for a
+      self-extractor: name `prefixed` as the test and describe the base-0 case.
+- [ ] 1.9 `FormatInfo.prefixed: bool = False`, added last (design §11); set on every
+      `sfx_scan` answer, the tail probe's included; the `info` CLI verb prints it; tests
+      for the scenario rows of *detect_format() returns a FormatInfo*.
 
 ## 2. Overlay start first (Block 2)
 

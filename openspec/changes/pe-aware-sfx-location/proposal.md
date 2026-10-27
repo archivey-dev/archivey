@@ -30,6 +30,10 @@ and WinRAR installers the archive starts exactly at the end of the last section.
   certificate (or before end of file when there is none), and confirms the end record
   against the central directory and a local header before answering `ZIP` / `PROBABLE` /
   `sfx_scan`.
+- **`FormatInfo.prefixed`.** A new `bool`, `True` when detection found the archive behind
+  bytes that are not part of it. It replaces `payload_offset > 0` as the documented test
+  for a self-extractor: a ZIP found from its end record reports the base its end record
+  implies, which is 0 when its offsets count from the start of the file.
 - **Accounting.** The tail read is counted in `unique_bytes_read` under a defined tail
   allowance and recorded under a new tier name, `sfx_tail`. No new budget field.
 - **Not breaking.** Files detected today are detected the same way, except a PE with a
@@ -41,8 +45,9 @@ and WinRAR installers the archive starts exactly at the end of the last section.
 ### New Capabilities
 
 ### Modified Capabilities
-- `format-detection`: the SFX requirement gains the overlay-start rule; a new requirement
-  for the PE-gated ZIP tail probe.
+- `format-detection`: `FormatInfo` gains `prefixed`; the SFX requirement gains the
+  overlay-start rule; the access-shape requirement gains the tail probe's reads; a new
+  requirement for the PE-gated ZIP tail probe.
 - `detection-cost`: *Detection declares what it may spend, and reports what it spent*
   gains the tail allowance, in its definitions and in the within-budget rule. The spec's
   Purpose note, which expects a tail probe to bring its own budget field, is amended by
@@ -55,7 +60,8 @@ and WinRAR installers the archive starts exactly at the end of the last section.
   shared), `rar_parser.py`, `sevenzip_parser.py` and `zip_local_walk.py` (overlay-start
   rule in their scans), `detection_workspace.py` (a tail read that ends at a given offset
   and records its decline under the caller's tier).
-- No public API change. `detected_by` keeps its values. `TierSkip.tier` gains `sfx_tail`.
+- Public API: `FormatInfo.prefixed` is added (additive, last field). `detected_by` keeps
+  its values. `TierSkip.tier` gains `sfx_tail`.
 - Tests: synthetic PE files with a section table and a certificate entry; no real
   installer is committed.
 - Docs: `dev-docs/topics/prefixed-archives.md`, `dev-docs/topics/detection.md`,

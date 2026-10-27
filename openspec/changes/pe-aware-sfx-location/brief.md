@@ -1,6 +1,6 @@
 # pe-aware-sfx-location — find archives in Windows installers from the executable's own layout
 
-**Status:** Ready to implement, with one small choice left open. Depends on nothing. Blocks nothing. Not breaking, with one narrow change of answer. Effort: medium, in two pull requests.
+**Status:** Ready to implement. Depends on nothing. Blocks nothing. Not breaking, with one narrow change of answer. Effort: medium, in two pull requests.
 
 **Why it matters:** The IRPF 2026 installer carries a ZIP thirty-five megabytes in, past the two mebibyte scan window, so detection refuses a file that opening it as ZIP reads fine. The earlier tail probe was struck because it would have read the end of every file. A Windows executable's header says, for free, whether anything was appended to it at all.
 
@@ -8,6 +8,6 @@
 
 **Decided:** Gate on the executable's layout, not on a list of installer brands. Ordinary programs never pay for a tail read. No new budget setting. The answer is still reported as an SFX scan hit, and the tail read gets its own tier name for the records. A valid archive at the start of the appended data wins over any other match in the window, even a 7z that ends before the file does, and every reader that scans for a payload follows the same rule, the streaming ZIP reader included. The tail read reuses the trailer step's cheap read, and the cost spec gains a tail allowance. ZIP64 end records are declined for now. Linux and macOS executables are out of scope.
 
-**Your call later:** Which offset to report for a ZIP found from its end. The repository already defines it as the earliest local header, and the cheap way to establish that is still open.
+**Your call later:** None. You settled the last question: a ZIP found from its end reports the base its end record implies, which never cuts a member off and costs no extra read.
 
 **Bottom line:** A small, well-bounded fix for a real missed file, plus a cheaper and decoy-proof path for classic self-extractors. Not urgent.

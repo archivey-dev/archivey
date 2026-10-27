@@ -1,5 +1,89 @@
 ## MODIFIED Requirements
 
+### Requirement: detect_format() returns a FormatInfo
+
+The system SHALL expose:
+
+```python
+archivey.detect_format(
+    source: str | Path | BinaryIO,
+    *,
+    config: ArchiveyConfig | None = None,
+) -> FormatInfo
+```
+
+```python
+class DetectionConfidence(Enum):
+    CERTAIN = "certain"
+    PROBABLE = "probable"
+    GUESS = "guess"
+
+@dataclass(frozen=True)
+class FormatInfo:
+    format: ArchiveFormat
+    confidence: DetectionConfidence
+    detected_by: Literal["magic", "extension", "content_probe", "sfx_scan", "directory"]
+    payload_offset: int = 0
+    diagnostics: DiagnosticSummary = DiagnosticSummary.empty()
+    cost_receipt: DetectionCostReceipt | None = None   # compare=False; see detection-cost
+    unavailable_tiers: tuple[TierSkip, ...] = ()       # compare=False; see detection-cost
+    prefixed: bool = False
+```
+
+`config=None` → library default. `confidence` = magic / structural probe /
+extension-guess. `prefixed` SHALL be `True` when detection found the archive behind bytes
+that are not part of it (an executable stub, a `#!` launcher, any other prefix), and it is
+the test for a self-extracting or otherwise prefixed archive. `payload_offset` is where to
+start reading the archive: never after its first member, and exactly that member when the
+detection step saw it. The two are separate facts: a ZIP whose stored offsets count from
+the start of the file can be said to start at byte 0, so it MAY report `prefixed=True`
+with `payload_offset` 0. `cost_receipt` and
+`unavailable_tiers` are part of this contract; `detection-cost` defines what they hold.
+`FormatInfo` also carries a provisional `corroborated: bool` for `open_archive`'s own use,
+which SHALL NOT be part of this contract: its `False` cannot tell an uncorroborated probe
+from a result that was not a probe.
+
+A **directory path** SHALL return `FormatInfo(format=DIRECTORY,
+confidence=CERTAIN, detected_by="directory")` without reading anything, the same
+format `open_archive` reads it as. Its `cost_receipt` SHALL be the zero receipt (one pass, no
+bytes read). It SHALL NOT raise `IsADirectoryError` or any
+other `OSError`. An empty string is not a directory path, although `Path("")` is
+`Path(".")`: `detect_format("")` SHALL raise `ValueError` (`error-handling`).
+
+A **path to a volume of a set** SHALL be detected on the source `open_archive` resolves
+for it: any part of a numbered split set (`set.7z.002`, `set.zip.003`, `set.exe.002`) on
+the parts joined in order, and a RAR continuation on volume 1. A middle part has no magic
+at offset 0, so detecting the named file alone would refuse a path `open_archive` opens.
+That resolution runs before detection reads a byte and MAY raise what `open_archive`
+raises for the same path: a numbered set with a gap SHALL raise `TruncatedError` naming the
+missing part. A lone first part (`set.zip.001` with no other part) SHALL be detected as the
+format its bytes show; `open_archive` refuses it as an incomplete set.
+
+**Collectors:**
+
+| Path | Behavior |
+| --- | --- |
+| Standalone `detect_format` | One finite collector; policy/callback/logging/budget; final summary on `FormatInfo.diagnostics` |
+| Inside `open_archive` | Open creates prospective-reader collector + detection watermark, passes that collector into detection. On success the reader owns it — no seed/merge/replay/copy; each retained occurrence charged once. Internal detection-range `FormatInfo.diagnostics` is not retained after handoff; same events remain on the reader's cumulative summary |
+
+#### Scenario: detect / handoff matrix
+
+| Case | Expected |
+| --- | --- |
+| Standalone detect with magic/extension conflict | `FormatInfo.diagnostics` has exact conflict count + retained detail under default budget |
+| Auto-detect inside `open_archive` retains conflict, open succeeds | Reader continues same collector/order/budget; no copied aggregate |
+| Magic match | `confidence=CERTAIN`, `detected_by="magic"`, `prefixed=False` |
+| RAR, 7z or ZIP found by the SFX scan at offset N | `detected_by="sfx_scan"`, `prefixed=True`, `payload_offset == N` |
+| ZIP found from its end record behind a PE stub, offsets counted from the ZIP's start | `prefixed=True`, `payload_offset` = the ZIP's first byte |
+| The same, offsets counted from the start of the file | `prefixed=True`, `payload_offset` 0 |
+| Extension-only guess | `confidence=GUESS`, `detected_by="extension"` |
+| Directory path | `format=DIRECTORY`, `confidence=CERTAIN`, `detected_by="directory"`; zero `cost_receipt`; no `OSError` |
+| Empty string `""` | `ValueError`; the current directory is not detected |
+| Any part of a numbered split set, or a RAR continuation | The format, `detected_by` and `payload_offset` `open_archive` reports for the same path |
+| Numbered set with a gap (`set.zip.002`, no `set.zip.001`) | `TruncatedError` naming the missing part, from `detect_format` and `open_archive` alike |
+| Lone first part (`set.zip.001`, no other part) | The format its bytes show; `open_archive` raises `TruncatedError` |
+| Explicit `diagnostic_policy` on detect | IGNORE/COLLECT/RAISE applies to that finite detection |
+
 ### Requirement: Self-extracting (SFX) archives are detected behind an executable stub
 
 SFX RAR/7z/ZIP: EXE stub precedes payload. If leading bytes look like executable
@@ -110,6 +194,50 @@ judged, and SHALL record `sfx_scan` as *budget exhausted*, whether or not it ans
 | PE whose section table lies past the detection prefix, or does not parse | No layout; scanned as today |
 | ELF or Mach-O stub | Scanned as today |
 
+### Requirement: Detection's access shape is bounded, not only its byte count
+
+Detection SHALL perform **one forward-only pass** over the prefix from the detection
+origin. Bytes already in the prefix buffer SHALL NOT be fetched again. The trailer tier,
+when it runs, SHALL add one seek towards the end, one read of its block, and one seek
+back to the end of the prefix. Those bytes are not kept, so a later tier that reads
+them as part of the prefix fetches them again. The PE tail probe (*A ZIP in a PE's overlay
+is found from its end record*), when it runs, SHALL add one seek towards the end and one
+read of its span, at most two reads of fixed record parts the span does not already hold
+(the first central header and the local header it names), and one seek back to the end of
+the prefix. No other backward seek re-reads the prefix. The exit restore of a seekable
+caller stream is the non-consumption contract.
+
+This holds for every source kind. A network range reader pays for the prefix pass and,
+when the trailer runs, one range for that block; a member stream (`ArchiveStream`) is
+not asked for the trailer, because a rewind would re-decode, and it decodes the prefix
+forward once. That holds whether the member stream reaches detection bare, under a
+pass-through buffer, wrapped in the `ArchiveSource` that `open_archive` builds, or as a
+volume in a list passed to `open_archive`. A source that is not asked records `trailer`
+as *capability unavailable* (detection-cost), unless it is shorter than the 512-byte
+block: then there is no block to miss and nothing is recorded. The rule is stated flatly rather than
+derived from a cost model because `StreamCapability` cannot distinguish a cheap seek
+from an expensive one.
+
+Resolving an exact `payload_offset` through a central-directory walk does not fit this
+shape — the directory is reached backwards from the end and points backwards again. Offset
+resolution is therefore separable from identification, and no tier does it. A ZIP found
+from its end record reports the EOCD-derived base, which needs no walk.
+
+#### Scenario: access-shape matrix
+
+| Case | Forward reads | Seeks toward end | Backward seeks |
+| --- | --- | --- | --- |
+| gzip at offset 0, seekable stream | 1 pass | 0 | **0** |
+| ISO far magic, seekable stream | 1 pass | 0 | **0** |
+| Seekable bzip2 or xz larger than the prefix, no `koly` block | 1 pass, then the rest of the file for the inner-TAR probe, which fetches the trailer bytes again | 1 | 1, back to the end of the prefix |
+| `koly` hit on a seekable image larger than the prefix | 1 prefix pass; the trailer bytes are fetched once | 1 | 1, back to the end of the prefix |
+| Gated PE, ZIP found from its end record, directory inside the span | 1 prefix pass, the span, the local header | 1 | 2: to the local header, back to the end of the prefix |
+| Gated PE, directory and local header both before the span | 1 prefix pass, the span, two fixed record parts | 1 | 3: to the central header, to the local header, back to the end of the prefix |
+| Non-seekable source, any tier | 1 pass | 0 | **0** |
+| Member stream (`ArchiveStream`), bare, buffered, through `open_archive`, or one volume of a list, any tier | 1 pass | 0 | **0** |
+
+The backward-seek column does not count the exit restore of a seekable caller stream.
+
 ## ADDED Requirements
 
 ### Requirement: A ZIP in a PE's overlay is found from its end record
@@ -132,18 +260,26 @@ A record found there SHALL be accepted only when all of these hold: both disk nu
 header signature (or `cd_size` is 0 for an empty archive); and the first central header's
 local-header offset plus `base` is at or past the overlay start and holds a local header
 signature. A record with ZIP64 placeholder values SHALL be declined. Accepted →
-`ZIP` / `PROBABLE` / `detected_by="sfx_scan"`, with `payload_offset` that first local
-header (`base` for an empty archive). Declined → detection continues with far magic, as
-after a scan miss today.
+`ZIP` / `PROBABLE` / `detected_by="sfx_scan"`, with `payload_offset` = `base`. No read is
+made to refine it. `base` is never after any member's local header, so `open_archive`
+reads every member from it. It is the ZIP's first byte when the ZIP's offsets count from
+its own start, and 0 when they count from the start of the file; in that case
+`prefixed` is `True` either way. A
+record with `base` 0 that lies outside the last 65 558 bytes of the source SHALL be
+declined: the reader, started at byte 0, would not find it by its own tail search, and
+its local-header walk would start at the stub. Declined → detection continues with far
+magic, as after a scan miss today.
 
 #### Scenario: tail probe matrix
 
 | Case | Expected |
 | --- | --- |
-| Signed PE, 3 MiB of overlay filler, then a ZIP, then zero padding and a certificate | `ZIP`, `payload_offset` at its first local header; `open_archive` lists every member |
+| Signed PE, 3 MiB of overlay filler, then a ZIP, then zero padding and a certificate | `ZIP`, `payload_offset` = the ZIP's first byte (its first local header); `open_archive` lists every member |
 | Same, unsigned (ZIP ends at end of file) | `ZIP`, as above |
-| Same, ZIP written in place (offsets counted from byte 0) | `ZIP`, `payload_offset` at its first local header |
-| Same, ZIP followed by a certificate larger than 64 KiB | `ZIP`: the search ends at the payload end; the reader opens it through its local-header walk |
+| Same, ZIP written in place (offsets counted from byte 0) | `ZIP`, `payload_offset` 0; `open_archive` lists every member |
+| Same, ZIP's central directory not in file order | `ZIP`, `payload_offset` = the ZIP's first byte, before every member; `open_archive` lists every member |
+| Same, ZIP followed by a certificate larger than 64 KiB | `ZIP`: the search ends at the payload end; the reader, started at the ZIP's first byte, opens it through its local-header walk |
+| ZIP written in place, followed by a certificate larger than 64 KiB | Declined |
 | PE whose overlay holds only a certificate (an ordinary signed program) | No tail read |
 | PE no larger than the scan window | No tail read: the scan covered the file |
 | PE carrying `PK\x05\x06` as a string constant near its end (counts or offsets that point nowhere) | Declined |

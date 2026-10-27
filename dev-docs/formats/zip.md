@@ -960,10 +960,24 @@ store different numbers:
 
 The difference is self-correcting: the EOCD's own position is known once it is found, so
 `(eocd_pos - size_cd) - offset_cd` recovers the base under either convention and every
-entry offset is read through it. This is why `payload_offset` is defined as the absolute
-position of the earliest local file header rather than as the adjustment — the adjustment
-is 0 for `zipapp`, which would report the motivating case as unprefixed. An empty archive
-has no local header to point at, so there `payload_offset` is the EOCD-derived base.
+entry offset is read through it. Every member sits at the base plus a stored offset that
+is not negative, so **the base is never after any member**.
+
+`payload_offset` is where to start reading: **never after the archive's first member, and
+exactly that member when the detection step saw it.** It is not only a label:
+`open_archive` hands it to the reader, which cuts the source there, so a value after the
+first member would cut members off. The forward scan meets the earliest local header and
+reports it. A step that finds the ZIP from its end record sees only the base and reports
+that, with no read to refine it; an empty archive has no local header either, so it
+reports the base too.
+
+**A base of 0 is a real answer, not a missing one.** For a ZIP written in place, the
+stored offsets count from byte 0 of the file, stub included, so by the ZIP's own numbers
+the archive starts at byte 0, and reading from there finds every member. The forward scan
+reports the same ZIP at its first local header, after the stub; both are correct starts.
+What 0 does not tell is whether a prefix exists, so `payload_offset > 0` is not the test
+for a self-extractor. That is a separate fact (`FormatInfo.prefixed`, planned in the
+`pe-aware-sfx-location` change).
 
 **Producers disagree about encodings.** Info-ZIP and others write valid UTF-8 names without
 setting bit 11, which is the case the sniff exists for; `tests/fixtures/external/encoding_infozip_jules.zip`
