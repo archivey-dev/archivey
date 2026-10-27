@@ -250,7 +250,9 @@ class MemberVerifier:
             self._expected[key] = value
         for name, (value, factory) in (custom_digests or {}).items():
             key = _algo_key(name)
-            assert key not in self._expected, "the adapter refuses a clashing name"
+            assert key not in self._expected, (
+                "the adapter refuses a name it already checks"
+            )
             self._hasher_factories[key] = factory
             self._hashers[key] = factory()
             self._expected[key] = value

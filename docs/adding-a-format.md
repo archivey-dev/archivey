@@ -195,9 +195,15 @@ def open_member(self, member: ArchiveMember, locator: Locator) -> MemberData:
 It decodes raw Deflate, Deflate64, bzip2, Zstandard and LZ4 frames, Brotli, and raw
 LZMA and LZMA2 (with the `properties` bytes the format stores). It uses the caller's
 decoder limits, process isolation and accelerator settings, and turns the decoder's
-errors into archivey's own. Bytes left after the end of the compressed data raise
-`CorruptionError`. A method whose optional package is missing raises
+errors into archivey's own. A method whose optional package is missing raises
 `PackageNotInstalledError`.
+
+Where the compressed data ends depends on the method:
+
+- **Zstandard and LZ4** data may be several frames, and all of them are decoded.
+- **bzip2** data is one stream. A second stream after it raises `CorruptionError`.
+- **LZMA and LZMA2** end at their end marker, or at `size` when there is none.
+- For every method, bytes left after that end raise `CorruptionError`.
 
 A format whose methods archivey does not decode wraps the view in its own library's
 decoder.
@@ -214,7 +220,10 @@ archivey checks every member stream against what the listing said:
   checksum, put a `MemberDigest` in `MemberData.digests`: its name, the stored value,
   and a function that makes a fresh hasher, such as `hashlib.sha1`. A hasher is any
   object with `update(bytes)` and `digest()`. archivey feeds it the bytes as they are
-  read, and checks the result the same way as a CRC-32:
+  read, and checks the result the same way as a CRC-32. The name may not be one
+  archivey already checks (`"crc32"`, `"blake2sp"`, or a key of `member.hashes` or
+  `expected_hashes`) or repeat another digest's name, ignoring case, or opening the
+  member raises `ValueError`. For example:
 
   ```python
   return MemberData(

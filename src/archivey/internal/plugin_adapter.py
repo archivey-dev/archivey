@@ -246,6 +246,14 @@ class PluginReaderAdapter(BaseArchiveReader):
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         data = self._plugin_member_data(member)
+        expected: dict = dict(member.hashes)
+        expected.update(data.expected_hashes)
+        try:
+            custom_digests = self._custom_digests(data, expected)
+        except BaseException:
+            # Nothing has taken the stream over yet; archivey owes it a close.
+            data.stream.close()
+            raise
         stream: BinaryIO = data.stream
         rewind: RewindWarning | None = None
         if self._seek_declared() and not is_seekable(stream):
@@ -262,8 +270,6 @@ class PluginReaderAdapter(BaseArchiveReader):
             rewind = RewindWarning(
                 codec_name=self._format.display_name, suggest_install=False
             )
-        expected: dict = dict(member.hashes)
-        expected.update(data.expected_hashes)
         return self._wrap_member_stream(
             stream,
             member.name,
@@ -276,23 +282,30 @@ class PluginReaderAdapter(BaseArchiveReader):
             verify_member=member,
             fill_size=member.size is None,
             checks_content=data.checked,
-            custom_digests=self._custom_digests(data) or None,
+            custom_digests=custom_digests or None,
             rewind_warning=rewind,
         )
 
-    def _custom_digests(self, data: MemberData) -> CustomDigests:
-        """``data.digests`` keyed by folded name; a clash is the plugin's bug."""
+    def _custom_digests(self, data: MemberData, expected: Mapping) -> CustomDigests:
+        """``data.digests`` keyed by folded name.
+
+        A name archivey already checks, as a ``HashAlgorithm`` or as a key of
+        ``expected``, or one another digest uses, is the plugin's bug: the verifier
+        keys every check by its folded name, so one would replace the other.
+        """
+        checked = _ALGORITHM_KEYS | {str(key).lower() for key in expected}
         digests: dict[str, tuple[bytes, Callable[[], Hasher]]] = {}
         for digest in data.digests:
             key = digest.name.lower()
-            if key in digests or key in _ALGORITHM_KEYS:
+            if key in digests or key in checked:
                 raise ValueError(
                     f"{type(self._reader).__name__}.open_member() returned a digest "
                     f"named {digest.name!r}, "
                     + (
                         "which another digest of the member also uses"
                         if key in digests
-                        else "which is a HashAlgorithm archivey computes itself"
+                        else "which archivey already checks as a listed or expected "
+                        "hash"
                     )
                 )
             digests[key] = (digest.expected, digest.new)
@@ -335,11 +348,11 @@ class PluginReaderAdapter(BaseArchiveReader):
             self._shared.close()
 
 
-# The methods ``PluginContext.decompress`` decodes. PPMd, the branch filters and RAR
-# need parameters or framing a plain method name cannot carry.
 # The names ``MemberDigest`` may not take: archivey computes these itself.
 _ALGORITHM_KEYS = frozenset(str(algorithm) for algorithm in HashAlgorithm)
 
+# The methods ``PluginContext.decompress`` decodes. PPMd, the branch filters and RAR
+# need parameters or framing a plain method name cannot carry.
 _PLUGIN_CODECS: dict[CompressionAlgorithm, Codec] = {
     CompressionAlgorithm.STORED: Codec.STORED,
     CompressionAlgorithm.DEFLATE: Codec.DEFLATE,

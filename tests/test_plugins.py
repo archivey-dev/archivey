@@ -17,6 +17,7 @@ import zipfile
 import zlib
 from collections.abc import Iterator
 from pathlib import Path
+from typing import BinaryIO
 
 import pytest
 
@@ -1147,17 +1148,24 @@ def test_seekable_member_with_no_listed_size(
 
 
 @pytest.mark.parametrize(
-    ("digests", "match"),
+    ("digests", "expected", "match"),
     [
         (
             (MemberDigest("crc32", b"\0\0\0\0", hashlib.sha1),),
-            "HashAlgorithm archivey computes itself",
+            {},
+            "archivey already checks",
+        ),
+        (
+            (MemberDigest("SHA1", b"\0" * 20, hashlib.sha1),),
+            {"sha1": b"\0" * 20},
+            "archivey already checks",
         ),
         (
             (
                 MemberDigest("sha1", b"x", hashlib.sha1),
                 MemberDigest("SHA1", b"y", hashlib.sha1),
             ),
+            {},
             "another digest of the member also uses",
         ),
     ],
@@ -1166,18 +1174,27 @@ def test_member_digest_names_must_not_clash(
     clean_registry: None,
     tmp_path: Path,
     digests: tuple[MemberDigest, ...],
+    expected: dict[str, bytes],
     match: str,
 ) -> None:
-    """A digest named like archivey's own CRC-32 would replace the listed CRC-32's
-    check, and two digests sharing a name would keep one; both are refused."""
+    """A digest named like a check archivey already makes (its own CRC-32, or a name
+    in ``expected_hashes``) would replace that check, and two digests sharing a name
+    would keep one; all are refused, and the refused member's stream is closed. The
+    reader translates broadly, so a refusal inside the error boundary would come out
+    as ``CorruptionError``."""
+    opened: list[BinaryIO] = []
 
-    class Clashing(ToyReader):
+    class Clashing(_BroadTranslator):
         def open_member(
             self, member: ArchiveMember, locator: tuple[int, int]
         ) -> MemberData:
-            return MemberData(self._source.view(*locator), digests=digests)
+            stream = self._source.view(*locator)
+            opened.append(stream)
+            return MemberData(stream, expected_hashes=expected, digests=digests)
 
     _plugin_with("clash", reader=Clashing)
     path = _write(tmp_path, build_toya(_ENTRIES), "t.clash")
     with open_archive(path) as reader, pytest.raises(ValueError, match=match):
         reader.read("docs/a.txt")
+    assert opened
+    assert opened[0].closed

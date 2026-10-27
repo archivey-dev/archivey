@@ -100,9 +100,10 @@ class MemberDigest(NamedTuple):
     """
 
     name: str
-    """The checksum's name (``"sha1"``), for messages and as its key: two digests of
-    one member cannot share a name, ignoring case, and a ``HashAlgorithm`` value
-    (``"crc32"``) is refused, since archivey computes those itself."""
+    """The checksum's name (``"sha1"``), for messages and as its key. Ignoring case, it
+    may not repeat another digest's name, be a ``HashAlgorithm`` value (``"crc32"``),
+    or be a key of the member's ``hashes`` or ``expected_hashes``: archivey checks
+    those itself. A refused name raises ``ValueError`` when the member is opened."""
 
     expected: bytes
     """The value the archive stores, as ``digest()`` returns it."""
@@ -238,14 +239,19 @@ class PluginContext:
         """Decode one member's compressed bytes with archivey's own decoders.
 
         ``data`` holds exactly the member's compressed bytes, usually a
-        :meth:`PluginSource.view` of them. Bytes left after the end of the compressed
-        stream are damage and raise ``CorruptionError``. The returned stream gives the
-        decoded bytes; return it in :class:`MemberData`. It applies the caller's
-        decoder limits, process isolation and accelerator settings, and translates the
-        decoder's errors itself, so ``translate_exception`` never sees them.
+        :meth:`PluginSource.view` of them. The returned stream gives the decoded bytes;
+        return it in :class:`MemberData`. It applies the caller's decoder limits,
+        process isolation and accelerator settings, and translates the decoder's errors
+        itself, so ``translate_exception`` never sees them.
+
+        Where the compressed data ends depends on the method. ``ZSTD`` and ``LZ4`` data
+        is one or more frames, decoded together. ``BZIP2`` data is one stream, and a
+        second one is damage. ``LZMA`` and ``LZMA2`` end at their end marker, or at
+        ``size`` when there is none. For every method, bytes left after that end raise
+        ``CorruptionError``.
 
         ``method`` is one of ``STORED``, ``DEFLATE`` (raw, no zlib or gzip header),
-        ``DEFLATE64``, ``BZIP2``, ``ZSTD`` (a frame), ``LZ4`` (a frame), ``BROTLI``,
+        ``DEFLATE64``, ``BZIP2``, ``ZSTD``, ``LZ4``, ``BROTLI``,
         ``LZMA`` (raw LZMA1; ``properties`` is its 5-byte properties: the ``lc``,
         ``lp``, ``pb`` byte and the dictionary size) and ``LZMA2`` (raw; ``properties``
         is its 1-byte dictionary size). Any other method raises
