@@ -518,6 +518,12 @@ format can come from someone else without the maintainer writing it.
   suite and in the cross-format matrix tests, so a break fails CI.
 - **Locator stored in `_raw`.** A member that a caller copies with `dataclasses.replace`
   keeps the locator. That is what built-in backends do already, so it is not new.
+- **No strict end for a whole stream.** `decompress()` of a `StreamFormat` reports bytes
+  after the stream's end (`ARCHIVE_TRAILING_DATA`) and never refuses them, as archivey
+  reads a `.gz` or `.xz` file. A container that bounds the stream exactly, as a
+  SquashFS block does, could treat those bytes as damage; it has no way to ask for that
+  in this version. A `strict_end=` keyword on `decompress()` is the addition if a
+  plugin needs it.
 
 ## Migration Plan
 

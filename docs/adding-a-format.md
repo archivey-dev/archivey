@@ -224,9 +224,11 @@ returns block `i` decoded; archivey calls it when a read first needs the block, 
 only the current block, and raises `CorruptionError` for a block of the wrong length.
 A seek then decodes one block, not the file up to it. Set `bounded=True` with it.
 
-The stream may return fewer bytes than asked before its end, as an `io.RawIOBase` may
+A raw stream may return fewer bytes than asked before its end, as an `io.RawIOBase` may
 (one that stops each read at a block boundary, say): archivey asks it again for the
-rest, and reads nothing ahead. For a raw stream whose reads cost more than a copy, such
+rest, and reads nothing ahead. An `io.BufferedIOBase` is taken at its word, as that
+class promises a full read until the end; so are the streams archivey hands out (a
+view, a `decompress()` result, `block_stream()`). For a raw stream whose reads cost more than a copy, such
 as one call into a library per read, return `buffered_stream(stream)`, which puts an
 `io.BufferedReader` in front of it. Closing that closes the stream it wraps.
 

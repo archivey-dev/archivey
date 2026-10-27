@@ -327,7 +327,7 @@ def _imports(path: Path) -> Iterator[str]:
 
 def test_the_package_uses_only_public_archivey() -> None:
     """The point of the package: a format added from outside, through the plugin API."""
-    used = {name for path in PACKAGE.glob("*.py") for name in _imports(path)}
+    used = {name for path in PACKAGE.rglob("*.py") for name in _imports(path)}
     archivey_modules = {name for name in used if name.split(".")[0] == "archivey"}
     assert archivey_modules == {"archivey", "archivey.plugins"}
 
