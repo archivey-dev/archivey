@@ -206,8 +206,9 @@ FormatPolicy(exclude={CompressionAlgorithm.PPMD, CompressionAlgorithm.DEFLATE64}
 
 - **Listing does not change.** The member still lists, with its `compression` (DR-8).
   Opening its data raises `UnsupportedFeatureError` that names the policy, the same
-  refusal a member with a codec archivey cannot decode gets (DR-4). `extract_all` then
-  refuses that member as it refuses any unsupported member; the other members extract.
+  refusal a member with a codec archivey cannot decode gets (DR-4). `extract_all`
+  treats that member as it treats any member it cannot decode; the policy adds no new
+  extraction path.
 - **The whole chain counts.** A member opens only when no method in its chain is off,
   filters included (`BCJ`, `BCJ2`, `DELTA`).
 - **Not under `only=`.** An allow-list of algorithms would have to list `STORED` and
