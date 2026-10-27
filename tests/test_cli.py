@@ -787,13 +787,20 @@ def _zip_bytes(entries: dict[str, bytes]) -> bytes:
 
 
 def _main_on_fifo(fifo: Path, argv: list[str]) -> int:
-    """Run ``main(argv)`` in a thread and fail the test if it blocks on ``fifo``."""
+    """Run ``main(argv)`` in a thread and fail the test if it blocks on ``fifo``.
+
+    A second open of a FIFO blocks every time, not now and then, so the window only
+    has to outlast a slow runner: 10 s was missed once on macOS under ``-n auto``
+    (a test that passed on the same commit in another run). 40 s plus the 5 s
+    unblock stays under the suite's 60 s ``--timeout``, so a real block still fails
+    here with its message.
+    """
     import threading
 
     result: list[int] = []
     worker = threading.Thread(target=lambda: result.append(main(argv)), daemon=True)
     worker.start()
-    worker.join(10)
+    worker.join(40)
     if worker.is_alive():
         # Unblock a stuck second open so the thread can finish, then fail.
         fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)

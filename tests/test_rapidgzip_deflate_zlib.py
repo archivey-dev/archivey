@@ -13,7 +13,10 @@ import bz2
 import gzip
 import io
 import random
+import sys
+import zipfile
 import zlib
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -32,6 +35,7 @@ from archivey.internal.streams.decompressor_stream import (
 from archivey.internal.streams.streamtools import SlicingStream
 from archivey.internal.streams.verify import VerifyingStream
 from tests.corruption_util import raises_corruption_not_truncation
+from tests.streams_util import NonSeekableBytesIO
 
 # Large enough that compressed size exceeds the AUTO threshold for less-compressible
 # payloads; used when a test needs AUTO to select rapidgzip.
@@ -266,23 +270,188 @@ def _uses_rapidgzip_child(stream: object) -> bool:
     return False
 
 
+# Data that compresses about 1.6:1 (1 MiB random, then words) and data that compresses
+# about 7:1 (20 words), both over the lowered threshold once compressed.
+_RNG = random.Random(2)
+_WORDS = [
+    bytes(_RNG.choices(b"abcdefghijklmnopqrstuvwxyz", k=_RNG.randint(2, 9)))
+    for _ in range(5000)
+]
+_LOW_RATIO = _RNG.randbytes(1 << 20) + b" ".join(_RNG.choices(_WORDS, k=400_000))
+_HIGH_RATIO = b" ".join(_RNG.choices(_WORDS[:20], k=2_000_000))
+
+
 @pytest.mark.usefixtures("_low_auto_threshold")
-@pytest.mark.parametrize("declared", [False, True])
-def test_auto_on_a_large_gz_file_follows_declared_seeking(
-    tmp_path: Path, declared: bool
+@pytest.mark.parametrize(
+    ("declared", "data", "platform_ok", "accelerated"),
+    [
+        pytest.param(True, _LARGE, True, True, id="declared"),
+        pytest.param(
+            True, _HIGH_RATIO, False, True, id="declared-any-ratio-any-platform"
+        ),
+        pytest.param(False, _LOW_RATIO, True, True, id="sequential-low-ratio"),
+        pytest.param(False, _LARGE, True, True, id="sequential-incompressible"),
+        pytest.param(False, _HIGH_RATIO, True, False, id="sequential-high-ratio"),
+        pytest.param(False, _LOW_RATIO, False, False, id="sequential-on-windows"),
+    ],
+)
+def test_auto_on_a_large_gz_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    declared: bool,
+    data: bytes,
+    platform_ok: bool,
+    accelerated: bool,
 ) -> None:
-    """End to end through ``open_archive``: AUTO keys on ``seekable_members``, not on the
-    source being seekable, so a plain open of a large ``.gz`` read front to back stays
-    on the stdlib and the declared open gets rapidgzip."""
+    """End to end through ``open_archive``: AUTO gives a declared-seekable open of a large
+    ``.gz`` rapidgzip, and a plain open read front to back only on a platform that takes
+    sequential reads (Linux, macOS) and when the data compresses 3:1 or less (ISIZE
+    against the file size)."""
     pytest.importorskip("rapidgzip")
+    monkeypatch.setattr(codecs.rapidgzip_select, "_SEQUENTIAL_PLATFORM", platform_ok)
     path = tmp_path / "large.gz"
-    path.write_bytes(gzip.compress(_LARGE))
-    assert path.stat().st_size >= _TEST_THRESHOLD
+    path.write_bytes(gzip.compress(data))
+    size = path.stat().st_size
+    assert size >= _TEST_THRESHOLD
+    if data is _LOW_RATIO:
+        assert len(data) <= 3 * size
+    if data is _HIGH_RATIO:
+        assert len(data) > 3 * size
     with open_archive(path, seekable_members=declared) as archive:
         member = archive.members()[0]
         with archive.open(member) as stream:
-            assert _uses_rapidgzip_child(stream) is declared
-            assert stream.read() == _LARGE
+            assert _uses_rapidgzip_child(stream) is accelerated
+            # The accelerator does not make an undeclared stream seekable.
+            assert stream.seekable() is declared
+            assert stream.read() == data
+
+
+@pytest.mark.usefixtures("_low_auto_threshold")
+@pytest.mark.parametrize(
+    ("data", "accelerated"),
+    [
+        pytest.param(_LOW_RATIO, True, id="low-ratio"),
+        pytest.param(_HIGH_RATIO, False, id="high-ratio"),
+    ],
+)
+def test_auto_on_a_large_zip_member_read_front_to_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, data: bytes, accelerated: bool
+) -> None:
+    """A ZIP member's ratio comes from its declared sizes."""
+    pytest.importorskip("rapidgzip")
+    monkeypatch.setattr(codecs.rapidgzip_select, "_SEQUENTIAL_PLATFORM", True)
+    path = tmp_path / "large.zip"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("a", data)
+    with open_archive(path) as archive:
+        (member,) = archive.members()
+        assert member.compressed_size is not None
+        assert member.compressed_size >= _TEST_THRESHOLD
+        with archive.open(member) as stream:
+            assert _uses_rapidgzip_child(stream) is accelerated
+            assert not stream.seekable()
+            assert stream.read() == data
+
+
+# An otherwise eligible sequential read: seekable source, known size over the lowered
+# threshold, 2:1 by the gzip ISIZE trailer.
+_ELIGIBLE = StreamConfig(
+    compressed_input_size=2 * _TEST_THRESHOLD,
+    gzip_isize_backstop=True,
+    gzip_isize=4 * _TEST_THRESHOLD,
+    source_seekable=True,
+)
+
+
+@pytest.mark.usefixtures("_low_auto_threshold")
+@pytest.mark.parametrize(
+    ("changes", "pays"),
+    [
+        pytest.param({}, True, id="eligible"),
+        pytest.param({"source_seekable": False}, False, id="forward-only-source"),
+        pytest.param({"compressed_input_size": None}, False, id="unknown-size"),
+        pytest.param(
+            {"compressed_input_size": _TEST_THRESHOLD - 1}, False, id="below-threshold"
+        ),
+        pytest.param({"gzip_isize": 6 * _TEST_THRESHOLD}, True, id="exactly-3-to-1"),
+        pytest.param({"gzip_isize": 6 * _TEST_THRESHOLD + 1}, False, id="over-3-to-1"),
+        pytest.param({"gzip_isize": None}, False, id="no-decoded-size"),
+        # A BGZF file, or any file whose last member is empty: ISIZE 0.
+        pytest.param({"gzip_isize": 0}, False, id="isize-of-an-empty-last-member"),
+        pytest.param(
+            {"gzip_isize": _TEST_THRESHOLD}, False, id="isize-below-the-input"
+        ),
+        # Incompressible data: the decoded size a hair under the compressed one.
+        pytest.param(
+            {"gzip_isize": 2 * _TEST_THRESHOLD - 100}, True, id="incompressible"
+        ),
+        pytest.param(
+            {"gzip_isize": 0, "expected_decompressed_size": 4 * _TEST_THRESHOLD},
+            True,
+            id="declared-size-wins",
+        ),
+    ],
+)
+def test_sequential_read_gate(
+    monkeypatch: pytest.MonkeyPatch, changes: dict, pays: bool
+) -> None:
+    """Each condition of ``_sequential_read_pays`` refuses on its own."""
+    monkeypatch.setattr(codecs.rapidgzip_select, "_SEQUENTIAL_PLATFORM", True)
+    config = replace(_ELIGIBLE, **changes)
+    assert codecs.rapidgzip_select._sequential_read_pays(config) is pays
+
+
+@pytest.mark.usefixtures("_low_auto_threshold")
+def test_sequential_read_gate_is_off_where_the_platform_is_not_measured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(codecs.rapidgzip_select, "_SEQUENTIAL_PLATFORM", False)
+    assert not codecs.rapidgzip_select._sequential_read_pays(_ELIGIBLE)
+
+
+def test_sequential_platforms_are_linux_and_macos() -> None:
+    assert codecs.rapidgzip_select._SEQUENTIAL_PLATFORM is (
+        sys.platform in ("linux", "darwin")
+    )
+
+
+@pytest.mark.usefixtures("_low_auto_threshold")
+def test_auto_sequential_read_of_a_forward_only_source_stays_on_the_stdlib(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A forward-only source with a declared decoded size: truncation is checkable, so
+    only the seekable-source condition can refuse."""
+    pytest.importorskip("rapidgzip")
+    monkeypatch.setattr(codecs.rapidgzip_select, "_SEQUENTIAL_PLATFORM", True)
+    blob = _raw_deflate(_LOW_RATIO)
+    declared = StreamConfig(
+        compressed_input_size=len(blob), expected_decompressed_size=len(_LOW_RATIO)
+    )
+    with open_codec_stream(
+        Codec.DEFLATE, NonSeekableBytesIO(blob), config=declared
+    ) as stream:
+        assert not _uses_rapidgzip_child(stream)
+        assert stream.read() == _LOW_RATIO
+    with open_codec_stream(Codec.DEFLATE, io.BytesIO(blob), config=declared) as stream:
+        assert _uses_rapidgzip_child(stream)
+        assert stream.read() == _LOW_RATIO
+
+
+@pytest.mark.usefixtures("_low_auto_threshold")
+def test_auto_sequential_read_of_a_gz_ending_in_an_empty_member_stays_on_the_stdlib(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A trailer of 0 (BGZF's end, or any empty last member) says nothing of the ratio."""
+    pytest.importorskip("rapidgzip")
+    monkeypatch.setattr(codecs.rapidgzip_select, "_SEQUENTIAL_PLATFORM", True)
+    path = tmp_path / "ends-empty.gz"
+    path.write_bytes(gzip.compress(_HIGH_RATIO) + gzip.compress(b""))
+    assert path.stat().st_size >= _TEST_THRESHOLD
+    with open_archive(path) as archive:
+        member = archive.members()[0]
+        with archive.open(member) as stream:
+            assert not _uses_rapidgzip_child(stream)
+            assert stream.read() == _HIGH_RATIO
 
 
 # --- 4.3 Error translation + truncation limitation -----------------------------------

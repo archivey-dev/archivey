@@ -110,7 +110,8 @@ def _gzip_isize_from_source(source: CodecSource) -> int | None:
 
 
 def _config_with_gzip_isize(source: CodecSource, config: StreamConfig) -> StreamConfig:
-    """Mark gzip ISIZE as available for AUTO / the ISIZE truncation backstop.
+    """Mark gzip ISIZE as available for AUTO / the ISIZE truncation backstop, and keep
+    its value for AUTO's ratio gate (``gzip_isize``).
 
     Does **not** set ``expected_decompressed_size`` from ISIZE: that field is an exact
     bound for ``VerifyingStream``, but ISIZE is mod 2**32 and multi-member gzip's
@@ -118,9 +119,10 @@ def _config_with_gzip_isize(source: CodecSource, config: StreamConfig) -> Stream
     """
     if config.gzip_isize_backstop or config.expected_decompressed_size is not None:
         return config
-    if _gzip_isize_from_source(source) is None:
+    isize = _gzip_isize_from_source(source)
+    if isize is None:
         return config
-    return replace(config, gzip_isize_backstop=True)
+    return replace(config, gzip_isize_backstop=True, gzip_isize=isize)
 
 
 def _stdlib_gzip(source: CodecSource, config: StreamConfig) -> BinaryIO:
