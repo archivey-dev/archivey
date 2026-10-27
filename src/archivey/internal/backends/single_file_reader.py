@@ -192,12 +192,13 @@ class SingleFileReader(BaseArchiveReader):
         self._codec = self._stream_codec.codec
         self._seekable = source.seekable()
 
-        # A non-seekable source cannot be randomly accessed, so engaging a random-access
-        # accelerator (rapidgzip) is pointless — and would in fact fail at *open*: rapidgzip
-        # needs either a seekable stream or a real OS fileno, and a non-seekable source
-        # offers neither (so it raises StreamNotSeekableError).
-        # Keep the codec sequential for such a source regardless of the archive's streaming flag.
-        # Declared seek demand (MemberStreams.SEEKABLE) also gates accelerator AUTO resolution.
+        # A non-seekable source cannot be randomly accessed, and an accelerator
+        # (rapidgzip) would fail at *open* on it: rapidgzip needs either a seekable
+        # stream or a real OS fileno, and a non-seekable source offers neither (so it
+        # raises StreamNotSeekableError). Keep the codec sequential for such a source
+        # regardless of the archive's streaming flag. Declared seek demand
+        # (MemberStreams.SEEKABLE) also gates accelerator AUTO resolution, which for the
+        # DEFLATE family also takes a large sequential read from a seekable source.
         seek_declared = MemberStreams.SEEKABLE in member_streams
         # The codec stream is the whole file, so bytes after its end are reported.
         self._codec_config = replace(

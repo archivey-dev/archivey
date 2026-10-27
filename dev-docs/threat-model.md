@@ -1186,7 +1186,15 @@ keep a hostile archive from getting that far. Public:
 ### Accelerators on by default, and unbounded in time
 
 `AcceleratorMode.AUTO` engages the `[seekable]` accelerators when installed and a caller
-asks for seeking. They are third-party C++ that can busy-loop on crafted input, in a
+asks for seeking, and, for the DEFLATE family on Linux and macOS, on a large sequential
+read too: 16 MiB or more that compresses 3:1 or less ([`formats/gzip.md`](formats/gzip.md)
+§2.3). The sizes behind that choice come from the file (a ZIP or 7z member's declared
+sizes, the gzip ISIZE trailer), so a hostile file picks which decoder a default open
+gets. Either one is a decoder the caller accepted by installing `[seekable]`, and either
+way the checks of [`docs/security.md`](../docs/security.md#where-the-guarantees-stop) apply:
+the shapes that read differently under rapidgzip (DR-5a), and the crafted cut `.gz` it
+can read short, are now on the default path of a plain open, not only of a declared
+seek. They are third-party C++ that can busy-loop on crafted input, in a
 thread no Python timeout can cleanly interrupt. The gzip-family decoder runs in a child
 process, so an abort costs only the member, but a loop there has no read timeout. The
 Atheris accelerator targets fuzz them ([Parsers survive hostile bytes](#parsers-survive-hostile-bytes))

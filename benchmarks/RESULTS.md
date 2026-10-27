@@ -232,27 +232,30 @@ cost:
 
 The figures this section quoted before (tar.gz 2.57× and tar.bz2 2.97× faster than
 accelerator off) were measured in-process, before PR 493. None of these rows reaches
-the size where `AUTO` turns the accelerator on, so the harness has no current figure
-for that case. A separate measurement (2026-10-22, same host class, CPython 3.13.16,
-text-like data compressing about 2:1, fastest of three warm reads) fills part of the
-gap. It is not part of the harness runs above:
+the size where `AUTO` turns the accelerator on. `benchmarks/accel_auto.py` measures that
+case: it builds inputs above the thresholds from text-like data (about 3:1 under gzip)
+and compares the default `AUTO`, with `seekable_members=True`, against `OFF`. It is
+not part of the harness runs above. On 2026-10-26 (4-core KVM, CPython 3.11.17,
+rapidgzip 0.16.0, main after PRs 1027 and 1042, 64 MiB of data, fastest of three
+alternating runs after a warm-up):
 
-- **Where `AUTO` engages on a gzip or bzip2 file or tar, it wins** (that is, with
-  seekable streams asked for and a large input). A single 64 MiB `.gz` reads in
-  289 ms with the accelerator against 456 ms without; a 64-member 64 MiB `.tar.gz`
-  in 301 against 550 ms; a 32 MiB `.tar.bz2` in 475 against 1 800 ms.
-- **A single `.gz` or `.bz2` starts two children**, about 70 ms in total: the
-  one-byte format check at open uses an accelerated stream, and the read starts
-  another. A `.tar.gz` starts one.
-- **In-ZIP DEFLATE never gains, and `AUTO` can pick it.** With
-  `seekable_members=True`, the default `use_rapidgzip=AUTO` uses rapidgzip for a ZIP
-  DEFLATE member of 16 MiB or more compressed. A 32 MiB member (17 MB compressed)
-  reads in 379 ms that way against 230 ms with the accelerator off. The process
-  boundary is not the cause: rapidgzip called directly in the same process, outside
-  archivey (no archivey setting decodes in-process), also loses at 289 ms. A ZIP
-  member reaches rapidgzip as a Python file object rather than a path, so each of its
-  reads and seeks calls back into Python. This is the one case found where `AUTO` is
-  slower than `OFF`.
+| Case | compressed | `AUTO` | `OFF` | `AUTO` ÷ `OFF` |
+| --- | ---: | ---: | ---: | ---: |
+| single `.gz`, read to the end | 18.8 MiB | 212 ms | 247 ms | 0.86× |
+| `.tar.gz`, 64 members of 1 MiB | 18.8 MiB | 280 ms | 538 ms | 0.52× |
+| `.tar.bz2`, the same members | 13.2 MiB | 1 495 ms | 5 596 ms | 0.27× |
+| ZIP, one DEFLATE member, read to the end | 18.9 MiB | 212 ms | 252 ms | 0.84× |
+| ZIP, the same member, 20 random 64 KiB reads | 18.9 MiB | 216 ms | 1 562 ms | 0.14× |
+
+**Where `AUTO` engages, it now wins in every case measured.** Two earlier findings no
+longer hold:
+
+- A single `.gz` or `.bz2` used to start two children, because the one-byte format check
+  at open used an accelerated stream. The check now decodes with the standard library.
+- An in-ZIP DEFLATE member read to the end used to be slower with `AUTO` (a 32 MiB
+  member: 379 ms against 230 ms off, 2026-10-22). Most of that cost was the end-of-stream
+  check decoding the whole member again with zlib. PR 1042 checks only the tail when
+  the member holds one stream, so a full read is now faster with `AUTO` too.
 
 **The documented command fails its sanity ceiling on this host.**
 `targz_read_all_accel_on` measured 10.9–13.6× against its own stdlib pair, above
