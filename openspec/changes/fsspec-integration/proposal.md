@@ -70,15 +70,25 @@ for every format archivey reads.
   benchmark harness and gated as a structural invariant.
 - `packaging-and-extras`: the base package declares the `fsspec.specs` entry point, and
   fsspec stays out of every extra.
+- `access-mode-and-cost`: the source boundary gains the `OpenFile` read-ahead row and its
+  size as a fact, and `detect_format` crosses the boundary for an `OpenFile`.
+- `error-handling`: `SourceChangedError`, a `ReadError` subclass.
+- `diagnostics`: the advisory code `SOURCE_CHANGE_UNDETECTABLE`, outside
+  `ARCHIVE_INTEGRITY_CODES`.
+
+Not here: the CLI's URL arguments (maintainer, 2026-10-25) change the `cli` contract
+for which tokens are archive paths and can only be tested once `OpenFile` sources exist,
+so they land as their own change after this one.
 
 ## Impact
 
-- **Public surface:** one more accepted `source` type for `open_archive()`, `open_stream()`
-  and `detect_format()`, and one new
-  public module (`archivey.fsspec`) holding `ArchiveyFileSystem`. No new function and no
-  new keyword.
+- **Public surface:** one more accepted `source` type for `open_archive()`,
+  `open_stream()` and `detect_format()`; one new public module (`archivey.fsspec`)
+  holding `ArchiveyFileSystem`; one config field, `ArchiveyConfig.max_read_through`; one
+  exception, `SourceChangedError`; and one diagnostic code, `SOURCE_CHANGE_UNDETECTABLE`.
+  No new function and no new keyword argument.
 - **Internal:** a fetch-planning layer in `ArchiveSource` for remote sources, and a
-  small hint call that the ZIP, 7z, ISO and TAR backends make before they read.
+  small hint call that the ZIP, 7z, ISO and RAR backends make before they read.
 - **Benchmarks:** a new structural baseline file for the remote axis.
 - **Docs:** a "Remote archives and fsspec" page in `docs/`, and the cache advice for
   callers who keep passing their own fsspec file.

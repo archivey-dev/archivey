@@ -169,13 +169,13 @@ Rejected:
 `RangeSource` over `(fs, path, size)`. It is built on fsspec's own primitives, not on
 a cache of its own (maintainer, 2026-10-27): every byte reaches archivey through
 `fs.cat_file(path, start, end)`, and a set of known spans through `fs.cat_ranges`
-after `fsspec.utils.merge_offset_ranges` (D5). The size is learned once and passed on
-(`fs.open(path, size=size)` where a file object is needed), so no call repeats the
-`info` request. What archivey adds is a thin planner that decides each fetch's start
-and length:
+after `fsspec.utils.merge_offset_ranges` (D5). These two calls are the only byte path:
+the planner never opens a file object. The size is learned once at open and handed to
+whatever asks for it, so no later call repeats the `info` request. What archivey adds is
+a thin planner that decides each fetch's start and length:
 
 1. **Doubling read-ahead, once a run is sequential.** The first two reads of a run fetch
-   what they ask for, at least 64 KiB. From the third read that continues where the last
+   what they ask for, at least `_MIN_FETCH` (64 KiB). From the third read that continues where the last
    fetch ended, each fetch doubles, up to `_MAX_FETCH` (8 MiB). This is the trigger
    fsspec's `AdaptiveReadaheadCache` uses: a header probe or a single random read never
    pays for read-ahead. A backward jump, or a forward jump past the read-through
@@ -211,17 +211,28 @@ and length:
 
    Each sequential run (one member stream, or the listing walk) owns at most one window.
    When more runs are active than `_POOL_BYTES / _MAX_FETCH` (4), the planner lowers the
-   maximum fetch to `_POOL_BYTES / runs`, down to the 64 KiB minimum. Past 512 concurrent
-   runs every fetch is the minimum, and the pool stays at 32 MiB. So eight threads reading
-   eight members of one remote ZIP get 4 MiB fetches each, not evictions on every read. A
-   remote benchmark case with more streams than windows pins this (`tasks.md` 1.3).
+   maximum fetch to `_POOL_BYTES / runs`, down to `_MIN_FETCH`. So eight threads reading
+   eight members of one remote ZIP get 4 MiB fetches each, not evictions on every read.
+   At most `_POOL_BYTES / _MIN_FETCH` (512) runs hold a window. A run that starts while
+   512 hold one reads **unbuffered**: each read is one fetch of exactly the bytes asked
+   for, which go to the caller and are not kept, so it costs a request per read and no
+   pool space. It takes a window when one frees. The pool therefore never holds more than
+   `_POOL_BYTES`, whatever the thread count; past 512 streams the cost moves to request
+   count, which is the honest place for it. Remote benchmark cases with more streams than
+   windows, and with more than the window limit under the seam, pin both rules
+   (`tasks.md` 1.3).
 
-The constants are internal. They are fixed bounds per reader that do not grow with
-input, so DR-9 does not ask for a new public limit. If the benchmark or a user shows that
-a caller needs to change them, that is a new public field then, not now. The benchmark
-sets them through a private seam to small values (64 KiB maximum fetch, 16 KiB
-read-through), so that its PR-gated cases exercise every planner rule on the small
-fixtures the structural gate already uses (§Benchmark).
+`_MIN_FETCH`, `_MAX_FETCH` and `_POOL_BYTES` are internal. They are fixed bounds per
+reader that do not grow with input, so DR-9 does not ask for a new public limit. If the
+benchmark or a user shows that a caller needs to change them, that is a new public field
+then, not now. The read-through distance is not one of them: it is the public
+`ArchiveyConfig.max_read_through` (§Decisions by the maintainer 1). The benchmark sets
+the three internal constants through a private seam to small values (16 KiB minimum
+fetch, 128 KiB maximum fetch, 512 KiB pool) and `max_read_through` to 16 KiB through the
+config field, so that its PR-gated cases exercise every planner rule on the small
+fixtures (§Benchmark). The seam's maximum fetch stays above every fixed hint the spec's
+ceilings rely on, the ZIP tail of 64 KiB + 22 bytes being the largest, so a gated case
+meets the same ceiling as production does.
 
 What the planner should reach. The ceilings that follow from an index are in the spec;
 the rest are what the benchmark baseline records. `F` is the maximum fetch and `G` the
@@ -246,7 +257,10 @@ Rejected:
 
 - **Pick an fsspec cache per format.** The table shows every cache is wrong somewhere,
   and none of them can take a hint. The planner is about 200 lines and owns the policy.
-- **fsspec's `AdaptiveReadaheadCache`.** Measured on the stage 1 benchmark: it does not
+- **fsspec's `AdaptiveReadaheadCache`.** Measured 2026-10-27 with stage 1's
+  `benchmarks/remote.py` (#1047 at `a2508e31`, `realistic` scale, fsspec 2026.9.0), with
+  a `cache_type="adaptive"` mode added to `CACHE_MODES` locally and not committed (the
+  maintainer chose not to keep that column): it does not
   overfetch on a listing, but its read-ahead grows linearly with the run (92 to 327
   requests where doubling needs a handful), it drops its buffer on any forward seek, so
   TAR `extract_all()` took 810 requests and twice the bytes, and it exists only from
@@ -364,13 +378,20 @@ an explicit sequence of `OpenFile` objects is the way to open those.
 
 `extract_all()` and `stream_members()` over a non-solid ZIP or 7z know every member span
 before they start. With the spans as hints, the planner coalesces them with
-`fsspec.utils.merge_offset_ranges` (`max_gap` = `max_read_through`, `max_block` =
-`_MAX_FETCH`) and fetches each batch with one `fs.cat_ranges`, which fsspec runs
+`fsspec.utils.merge_offset_ranges` (`max_gap` = `max_read_through`, `max_block` = the
+pass's current maximum fetch) and fetches them with `fs.cat_ranges`, which fsspec runs
 concurrently for async file systems. This is how fsspec's own Parquet reader
-(`fsspec.parquet.open_parquet_file`) plans its reads. The fetched batch goes into the
-window pool, which is still bounded by `_POOL_BYTES`, so a batch is at most what the pool
-holds. It lands with the range hints (stage 3), because it needs nothing but the spans
-the hints already carry.
+(`fsspec.parquet.open_parquet_file`) plans its reads.
+
+`merge_offset_ranges` bounds each merged range, not the list, and `cat_ranges` returns
+every range it is given, so the planner chunks the list itself: it walks the merged
+ranges in order and issues one `cat_ranges` per **group** whose total is at most the
+pass's window (its current maximum fetch, D2 rule 4), and asks for the next group only
+once the pass has consumed the previous one. A single span larger than the window is not
+batched; it is read in steps as rule 4 says. So the bytes a batched pass holds are one
+window, as for any other run, and the request count is one per merged range, which is
+what the counting file system records. It lands with the range hints (stage 3), because
+it needs nothing but the spans the hints already carry.
 
 ### D6. RAR members over a remote source
 
@@ -402,9 +423,15 @@ only for data that has a checksum. In order of strength:
 3. **Otherwise nothing can see a same-length replacement.** Comparing the total size on
    each fetch catches a replacement of a different length only. This is an accepted
    non-guarantee, recorded in the threat model beside the others, and the reader says so
-   at open with a diagnostic of the `DIGEST_UNVERIFIABLE` kind (advisory; §Decisions 3), so that silence never reads as "checked".
+   at open with the advisory diagnostic `SOURCE_CHANGE_UNDETECTABLE` (§Decisions 3), so
+   that silence never reads as "checked".
 
 A change that is caught raises `SourceChangedError` (§Decisions 3).
+
+Tier 3 lands with the first remote read (stage 2): the size comparison and the
+diagnostic cost nothing and are what keeps silence honest. Tiers 1 and 2 need
+per-file-system code and land later (stage 7). Until a file system's pinning or header
+guard exists, archivey treats it as offering neither, so it gets tier 3.
 
 ## Benchmark: requests and bytes fetched
 
@@ -424,16 +451,20 @@ The structural gate counts seeks today. This change adds a remote axis.
 - **Gate:** `range_requests` exact and `bytes_fetched` at most the baseline, in
   `benchmarks/baselines/remote.json`, updated with `--update-baselines` like
   `structural.json`. Both are structural invariants, so they block a PR.
-- **Fixtures and scale.** The PR-gated cases run on the `ci` scale the structural gate
-  already builds (`benchmarks/fixtures.py`), with the planner's constants set small
-  through its private seam (64 KiB maximum fetch, 16 KiB read-through, 256 KiB pool), so
-  each case still crosses windows, gaps and runs and no large archive is built on a PR.
-  The generator stays seeded, so member spans and the exact counts are the same on every
-  host. The production constants run on the `realistic` scale in the change-guarded
+- **Fixtures and scale.** The PR-gated cases run on `benchmarks/remote.py`'s own `ci`
+  scale: 32 seeded random members, which do not compress, so a compressed fixture is as
+  large as a stored one (stage 1 found that `benchmarks/fixtures.py`'s payloads compress
+  about 100:1 and trip the ratio guard at larger scales). Stage 2 makes the member sizes
+  vary, seeded, between 4 and 32 KiB, so some TAR gaps fall under the 16 KiB read-through
+  and some over it. The planner's constants are set small (D2: 16 KiB minimum fetch,
+  128 KiB maximum fetch, 512 KiB pool, `max_read_through` 16 KiB), so each case still
+  crosses windows, gaps and runs and no large archive is built on a PR. The generator
+  stays seeded, so member spans and the exact counts are the same on every host. The production constants run on the `realistic` scale in the change-guarded
   nightly that already runs the wall job; those numbers are reported, not gated.
 - **More streams than windows.** One case reads eight members of one ZIP from eight
   threads under `concurrent_operations=True`, so the shrinking-fetch rule of D2 is
-  pinned.
+  pinned. A second opens 40 member streams at once, more than the seam's 32 windows
+  (512 KiB / 16 KiB), so the unbuffered rule is pinned too.
 - **Informational:** a modelled time, `range_requests x 30 ms + bytes_fetched / 50 MB/s`,
   printed beside each case so that a change that trades requests for bytes can be judged.
   Not gated.
@@ -451,17 +482,23 @@ The open questions of the first draft, and the review's decision card:
    `ArchiveyConfig.max_read_through` (bytes, default 1 MiB): a forward gap of at most this
    is read through, a longer one is a new request. The default sits just under the
    break-even of one request against its bytes (about 30 ms × 50 MB/s ≈ 1.5 MB), leaning
-   toward fewer requests. `0` means "fetch only what is needed". It replaces the
-   internal `_READ_THROUGH`; the benchmark still sets small values through it. It is the
+   toward fewer requests. `0` means "fetch only what is needed". It takes an `int`,
+   checked when the config is built as the numeric limit fields are: a negative value,
+   a `bool`, a float or `None` raises `ArchiveyUsageError`. It replaces the internal
+   `_READ_THROUGH`; the benchmark sets small values through it. It is the
    one public addition to the planner (D2's other constants stay internal).
 2. **The CLI accepts URLs.** When fsspec is installed, an argument with a `scheme://`
    prefix fsspec knows, that is not an existing local path, is opened as
-   `fsspec.open(arg)`.
+   `fsspec.open(arg)`. It lands as its own OpenSpec change after this one (task 7.3):
+   it changes the CLI's rule for which tokens are archive paths, which the `cli` spec
+   owns, and it can only be tested once `OpenFile` sources exist.
 3. **A detected change raises `SourceChangedError`**, a new subclass of `ReadError`, at
    open or later (D7). It is not damage, so not `CorruptionError`, and a distinct type
    lets a caller reopen and retry. Where no guard exists (no version pinning, no
-   `If-Match`), the reader emits an advisory diagnostic at open saying that changes
-   cannot be detected; like `DIGEST_UNVERIFIABLE`, `STRICT` does not refuse on it.
+   `If-Match`), the reader emits the advisory diagnostic `SOURCE_CHANGE_UNDETECTABLE` at
+   open saying that a same-length change cannot be detected. It is outside
+   `ARCHIVE_INTEGRITY_CODES`, so `STRICT` does not refuse on it: it describes the
+   transport, not the archive's bytes.
 4. **No download-size cost figure.** If a user asks, the honest form is an
    after-the-fact count of bytes fetched, not a prediction.
 
@@ -469,6 +506,8 @@ And on 2026-10-27, after the stage 1 benchmark and a survey of how fsspec's own 
 readers fetch:
 
 5. **Build on fsspec's primitives, with a thin planner, not a full cache.** `cat_file`,
-   `cat_ranges` with `merge_offset_ranges`, and `fs.open(size=)` do the fetching; the
-   planner adds only doubling after a few sequential reads, forward-gap read-through and
-   the memory bound (D2). `AdaptiveReadaheadCache` is not used (D2, Rejected).
+   `cat_ranges` with `merge_offset_ranges` do the fetching; the planner adds only
+   doubling after a few sequential reads, forward-gap read-through and the memory bound
+   (D2). `AdaptiveReadaheadCache` is not used (D2, Rejected). `fs.open(size=)` was on the
+   list too; the design needs no file object, so the size learned at open is passed on
+   directly instead.

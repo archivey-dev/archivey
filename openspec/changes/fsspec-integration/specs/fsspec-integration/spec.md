@@ -11,15 +11,20 @@ start and length itself:
 
 | Rule | Behaviour |
 | --- | --- |
-| Sequential run | A read that continues the last fetch grows the next fetch, up to a fixed maximum fetch size |
-| Short forward gap | A forward seek no longer than `ArchiveyConfig.max_read_through` (default 1 MiB) continues the run instead of starting a new request |
+| Sequential run | The first two reads of a run fetch what they ask for, and at least a fixed minimum fetch size (64 KiB). From the third read that continues the last fetch, each fetch doubles, up to a fixed maximum fetch size |
+| Short forward gap | A forward seek no longer than `ArchiveyConfig.max_read_through` (an `int`, default 1 MiB; a negative value, a `bool`, a float or `None` raises `ArchiveyUsageError` when the config is built) continues the run instead of starting a new request |
 | Jump | A backward seek, or a longer forward one, starts a new run at the minimum fetch size |
 | Backend range hint | A span the backend declares it will read next is fetched in one request, up to the maximum fetch size, then continued as a run |
+| Known spans of a whole-archive pass | Merged across gaps of at most `max_read_through`, and fetched with `cat_ranges` in groups whose total is at most the pass's maximum fetch; the next group is fetched once the previous one is consumed |
 
 The fetched bytes one reader holds SHALL be bounded by a fixed constant that depends
 neither on the archive nor on the number of volumes or open member streams: every source
 the reader opens SHALL share one pool, and when more sequential runs are active than the
 pool holds at the maximum fetch, the maximum fetch SHALL shrink so the pool bound holds.
+When more runs are active than the pool holds at the minimum fetch, each further run
+SHALL read unbuffered, one fetch of exactly the requested bytes per read with nothing
+kept, until a window frees, so the bound holds at any number of streams. No byte SHALL
+reach the reader except through those range reads: the planner opens no file object.
 Hints SHALL change only how bytes are fetched, never which bytes a read returns, and SHALL
 do nothing on a local source. The source facts are those of `archive-reading` §"The source
 facts of an OpenFile".
@@ -47,6 +52,8 @@ listed are held by its baseline.
 | Case | Expected |
 | --- | --- |
 | Eight threads read eight members of one remote ZIP | Each read returns its member's bytes; the pool bound holds; each fetch is at most pool / 8 |
+| More concurrent member streams than the pool holds at the minimum fetch | Each read returns its member's bytes; the pool bound holds; the streams past the limit fetch once per read |
+| `extract_all()` over a remote non-solid ZIP far larger than the pool | Fetched bytes held at any time stay within the pool bound |
 | A remote 7z in 50 volumes read end to end | The pool bound holds for the reader, not per volume |
 
 ### Requirement: A changed remote object is caught or reported
@@ -54,9 +61,10 @@ listed are held by its baseline.
 When the source's file system can pin a version of the object, the planner SHALL pin the
 version seen at open. When it forwards request headers and the object has an `ETag`, the
 planner SHALL send `If-Match` with it on every fetch. When neither is possible, the reader
-SHALL record a diagnostic at open saying that a replacement of the same length cannot be
-detected, and the planner SHALL compare the total size on each fetch whose response
-reports it. A change that is detected SHALL raise; it MUST NOT return bytes of the new
+SHALL record `SOURCE_CHANGE_UNDETECTABLE` (`diagnostics`) at open, saying that a
+replacement of the same length cannot be detected, and the planner SHALL compare the total
+size on each fetch whose response reports it. A file system for which archivey does not
+implement version pinning or header forwarding SHALL be treated as offering neither. A change that is detected SHALL raise; it MUST NOT return bytes of the new
 object as bytes of the archive.
 
 #### Scenario: changed object
@@ -65,7 +73,8 @@ object as bytes of the archive.
 | --- | --- |
 | Versioned store, object replaced mid-read | Reads continue from the pinned version |
 | HTTP with `ETag`, object replaced mid-read | The next fetch raises |
-| No version, no `ETag` | Diagnostic at open; a length change raises on the next fetch |
+| No version, no `ETag` | `SOURCE_CHANGE_UNDETECTABLE` at open; a length change raises `SourceChangedError` on the next fetch |
+| `DiagnosticPolicy.STRICT`, no version, no `ETag` | Opens; the diagnostic is collected, not raised |
 
 ### Requirement: Multi-volume discovery over fsspec
 

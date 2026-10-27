@@ -17,9 +17,12 @@ member's stored span, or the whole stream for a format with no index), and repor
 `bytes_fetched` as at most its baseline, in a committed baseline file updated only by
 `--update-baselines`, on every PR, as the seek counts are.
 
-The PR-gated cases SHALL run on the seeded fixtures the structural gate already builds,
-with the planner's constants set small enough through a private seam that every case
-crosses fetch, gap and pool boundaries, so the counts are exact on every host. The
+The PR-gated cases SHALL run on small seeded fixtures, with the planner's internal
+constants set small enough through a private seam, and `ArchiveyConfig.max_read_through`
+through the config field, that every case crosses fetch, gap and pool boundaries, so the
+counts are exact on every host. The seam's maximum fetch SHALL stay above every fixed
+backend hint the planner's ceilings rely on, so a gated case is held to the same ceilings
+as the production constants. The
 production constants SHALL run on the larger wall-job scale off the PR path, reported
 and not gated.
 
@@ -36,5 +39,6 @@ system's for the same case.
 | `extract_all()` | All four counts |
 | One `stream_members()` pass, `streaming=True` | All four counts |
 | Eight threads read eight members of one ZIP | All four counts; the pool bound holds |
+| More member streams of one ZIP than the pool holds at the minimum fetch | All four counts; the pool bound holds |
 | Read one member through `fsspec.open("archivey://<member>::<fixture URL>")` | All four counts |
 | A change adds one range request to a ZIP open | The PR gate fails until the baseline diff is reviewed |
