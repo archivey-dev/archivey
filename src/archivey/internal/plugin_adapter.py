@@ -472,9 +472,10 @@ class PluginReaderAdapter(BaseArchiveReader):
                 )
             if key in listed:
                 listed_key, prior = listed[key]
-                if algorithm is None:
+                if hasher_factory(key) is None:
                     # A listed name archivey has no hasher of its own for: the
-                    # listed value is checked with the plugin's hasher too.
+                    # listed value is checked with the plugin's hasher too. One
+                    # archivey can hash (hashlib's ``sha1``) keeps archivey's.
                     del expected[listed_key]
                     custom[key] = (prior, factory)
                 if prior != digest.expected:

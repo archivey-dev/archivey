@@ -661,6 +661,41 @@ def test_a_listed_name_outside_hashalgorithm_uses_the_plugins_hasher(
                 reader.read("docs/a.txt")
 
 
+def test_a_listed_name_archivey_can_hash_keeps_archiveys_hasher(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """A listed ``sha1`` that the plugin also reports is hashed by hashlib, not by the
+    plugin's hasher: a broken plugin hasher does not decide the member's check."""
+    good = hashlib.sha1(b"alpha\n").digest()
+
+    class Broken:
+        def update(self, data: bytes, /) -> None:
+            pass
+
+        def digest(self) -> bytes:
+            return bytes(20)
+
+    class ListedSha1(ToyReader):
+        def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+            for record in super().iter_members():
+                record.member.hashes = {"sha1": good}  # type: ignore[dict-item]
+                yield record
+
+        def open_member(
+            self, member: ArchiveMember, locator: tuple[int, int]
+        ) -> MemberData:
+            data = super().open_member(member, locator)
+            return MemberData(
+                data.stream, digests=(MemberDigest("sha1", good, Broken),)
+            )
+
+    _plugin_with("listedsha1", reader=ListedSha1)
+    path = _write(tmp_path, build_toya(_ENTRIES), "t.listedsha1")
+    with open_archive(path) as reader, reader.open("docs/a.txt") as stream:
+        assert stream.read() == b"alpha\n"
+        assert stream.verified is archivey.Verification.CONTENT
+
+
 def test_long_member_raises_corruption(clean_registry: None, tmp_path: Path) -> None:
     class Overrun(ToyReader):
         def open_member(

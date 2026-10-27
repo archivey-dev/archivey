@@ -297,8 +297,8 @@ archivey checks every member stream against what the listing said.
   `hashlib.sha1`. A hasher is any object with `update(bytes)` and `digest()`. archivey
   feeds it the bytes as they are read, and checks the result the same way as a CRC-32.
   A CRC-32 or BLAKE2sp given this way that the index does not already store is also
-  added to `member.hashes` when the member is opened, so callers see it. For example, for a header that stores a CRC-32 and a
-  SHA-1:
+  added to `member.hashes` when the member is opened, so callers see it. For example,
+  for a header that stores a CRC-32 and a SHA-1:
 
     ```python
     return MemberData(

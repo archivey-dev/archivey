@@ -27,7 +27,8 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
       member listed with no size (maintainer, 2026-10-26).
 - [x] 1.2f `MemberData.digests`, `MemberDigest` and `Hasher`: checksums the plugin reads
       when opening a member, computed by archivey for a `HashAlgorithm` name and by a
-      hasher the plugin supplies for any other (maintainer, 2026-10-26 and 2026-10-27;
+      hasher the plugin supplies for any other (a listed name archivey can hash keeps
+      archivey's hasher) (maintainer, 2026-10-26 and 2026-10-27;
       see design.md).
 - [ ] 1.2b Move TAR's codec-stream opening (`_open_byte_stream`) to a helper shared
       with the adapter, for compressed sequential plugins.
