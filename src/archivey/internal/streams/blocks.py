@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 from collections.abc import Callable
+from typing import BinaryIO
 
 from archivey.exceptions import CorruptionError
 from archivey.internal.streams.streamtools import (
@@ -24,14 +25,19 @@ __all__ = ["BlockStream"]
 class BlockStream(ReadOnlyIOStream):
     """The ``size`` bytes of a file in blocks of ``block_size``, the last one shorter.
 
-    ``read_block(i)`` returns block ``i`` decoded. It is called when a read first needs
-    the block, and again after a read has moved to another block: only the current
-    block is kept. A block of another length than the file needs there raises
+    ``read_block(i)`` returns block ``i`` decoded, as bytes or as a stream. A stream is
+    read for at most one byte more than the block's length, then closed, so a block
+    that decodes to far more costs no more than that. It is called when a read first
+    needs the block, and again after a read has moved to another block: only the
+    current block is kept. A block of another length than the file needs there raises
     ``CorruptionError``. Seekable; a seek decodes nothing until the next read.
     """
 
     def __init__(
-        self, size: int, block_size: int, read_block: Callable[[int], bytes]
+        self,
+        size: int,
+        block_size: int,
+        read_block: Callable[[int], bytes | BinaryIO],
     ) -> None:
         super().__init__()
         if size < 0 or block_size <= 0:
@@ -42,6 +48,11 @@ class BlockStream(ReadOnlyIOStream):
         self._pos = 0
         self._index = -1
         self._block = b""
+
+    @property
+    def size(self) -> int:
+        """The file's length."""
+        return self._size
 
     def seekable(self) -> bool:
         return True
@@ -61,7 +72,12 @@ class BlockStream(ReadOnlyIOStream):
         if index != self._index:
             start = index * self._block_size
             expected = min(self._block_size, self._size - start)
-            data = self._read_block(index)
+            block = self._read_block(index)
+            if isinstance(block, (bytes, bytearray, memoryview)):
+                data = bytes(block)
+            else:
+                with block:
+                    data = block.read(expected + 1)
             if len(data) != expected:
                 raise CorruptionError(
                     f"block {index} holds {len(data)} bytes, not the {expected} the "

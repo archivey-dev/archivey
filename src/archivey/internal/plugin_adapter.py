@@ -12,7 +12,9 @@ registers it after the built-in backends, so a built-in signal always wins (§4)
 
 from __future__ import annotations
 
+import functools
 import io
+import logging
 import lzma
 import threading
 from collections.abc import Callable, Generator, Iterator, Mapping
@@ -48,6 +50,7 @@ from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
+from archivey.internal.streams.blocks import BlockStream
 from archivey.internal.streams.codecs import (
     Codec,
     CodecParams,
@@ -60,6 +63,7 @@ from archivey.internal.streams.streamtools import (
     FullCountStream,
     LockedStream,
     SharedSource,
+    SlicingStream,
     is_seekable,
     source_byte_size,
 )
@@ -87,6 +91,21 @@ from archivey.types import (
 )
 
 
+def _bounded(stream: object, size: int | None) -> bool:
+    """Whether ``stream`` cannot return more than ``size`` bytes, so the overrun probe
+    is not needed: a view or a block stream no longer than the member, which is what
+    ``MemberData.bounded`` would say."""
+    if size is None or not isinstance(stream, (SlicingStream, BlockStream)):
+        return False
+    length = stream.size
+    return length is not None and length <= size
+
+
+@functools.lru_cache(maxsize=64)
+def _type_reads_full(cls: type) -> bool:
+    return issubclass(cls, io.BufferedIOBase) or cls.__module__.startswith("archivey.")
+
+
 def _reads_full(stream: object) -> bool:
     """Whether ``stream.read(n)`` returns ``n`` bytes unless it ends, so a plugin's
     member stream needs no :class:`FullCountStream` in front of it.
@@ -97,9 +116,7 @@ def _reads_full(stream: object) -> bool:
     ``io.RawIOBase`` that stops a read early (at a block boundary, say), and the
     wrapper's cost when it does not is one call per read and no copy.
     """
-    return isinstance(stream, io.BufferedIOBase) or type(stream).__module__.startswith(
-        "archivey."
-    )
+    return _type_reads_full(type(stream))
 
 
 class PluginReaderAdapter(BaseArchiveReader):
@@ -361,6 +378,8 @@ class PluginReaderAdapter(BaseArchiveReader):
                 f"{type(data).__name__}, not MemberData"
             )
         stream = cast(BinaryIO, data.stream)
+        if not data.bounded and _bounded(stream, member.size):
+            data = data._replace(bounded=True)
         if not _reads_full(stream):
             stream = FullCountStream(stream)
         if self._handle_lock is not None:
@@ -377,7 +396,9 @@ class PluginReaderAdapter(BaseArchiveReader):
                 if data.expected_hashes
                 else member.hashes
             )
-            custom_digests = self._custom_digests(data, expected)
+            custom_digests = (
+                self._custom_digests(data, expected) if data.digests else None
+            )
             rewind: RewindWarning | None = None
             if self._seek_declared() and not is_seekable(stream):
                 # The caller asked for seekable members and the plugin's stream reads
@@ -483,6 +504,8 @@ _ALGORITHM_KEYS = frozenset(str(algorithm) for algorithm in HashAlgorithm)
 
 # The methods ``PluginContext.decompress`` decodes. PPMd, the branch filters and RAR
 # need parameters or framing a plain method name cannot carry.
+logger = logging.getLogger(__name__)
+
 _PLUGIN_CODECS: dict[CompressionAlgorithm, Codec] = {
     CompressionAlgorithm.STORED: Codec.STORED,
     CompressionAlgorithm.DEFLATE: Codec.DEFLATE,
@@ -547,7 +570,15 @@ def _prefix_probe(probe: object) -> ContentProbe:
         charge_decode: Callable[[int], bool] | None = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
     ) -> bool:
-        return bool(probe(prefix))
+        # A probe that raises (a struct.unpack past a short prefix, say) is no match:
+        # one plugin must not change how unrelated input fails to be detected.
+        try:
+            return bool(probe(prefix))
+        except Exception:
+            logger.debug(
+                "plugin probe %r raised; taken as no match", probe, exc_info=True
+            )
+            return False
 
     return content_probe
 

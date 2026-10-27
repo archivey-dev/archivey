@@ -1082,6 +1082,87 @@ def test_block_stream_refuses_a_block_of_the_wrong_length() -> None:
         stream.read()
 
 
+def test_block_stream_reads_a_block_stream_no_further_than_it_needs() -> None:
+    read_sizes: list[int] = []
+
+    class Endless(io.RawIOBase):
+        """A block that decodes to far more than the block: a bomb."""
+
+        def readable(self) -> bool:
+            return True
+
+        def readinto(self, buffer: memoryview) -> int:  # type: ignore[override]
+            read_sizes.append(len(buffer))
+            buffer[:] = bytes(len(buffer))
+            return len(buffer)
+
+    stream = block_stream(8192, 4096, lambda index: io.BufferedReader(Endless()))
+    with pytest.raises(CorruptionError, match="block 0 holds 4097 bytes, not the 4096"):
+        stream.read()
+    assert sum(read_sizes) <= 8192  # one buffer fill, not the whole bomb
+
+
+def test_block_stream_takes_a_stream_per_block() -> None:
+    data = bytes(range(256)) * 20
+    stream = block_stream(
+        len(data),
+        1024,
+        lambda index: io.BytesIO(data[index * 1024 : (index + 1) * 1024]),
+    )
+    assert stream.read() == data
+
+
+def test_read_exact_raises_truncated_at_the_end(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    seen: list[bytes] = []
+
+    class ExactReader(ToyReader):
+        def __init__(self, source: PluginSource, context: PluginContext) -> None:
+            super().__init__(source, context)
+            seen.append(source.read_exact(0, 8))
+            source.read_exact(len(_MAGIC), 1 << 20)
+
+    class ExactPlugin(ToyPlugin):
+        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+            return ExactReader(source, context)
+
+    register_format(ExactPlugin)
+    with pytest.raises(TruncatedError, match="archive ends") as info:
+        open_archive(_write(tmp_path, build_toya(_ENTRIES)))
+    assert seen == [_MAGIC]
+    assert info.value.archive_name is not None
+
+
+def test_a_probe_that_raises_is_no_match(clean_registry: None) -> None:
+    """One plugin's broken probe must not change how unrelated input fails."""
+
+    class BrokenProbe(ToyPlugin):
+        magic = ()
+        probe = staticmethod(
+            lambda prefix: struct.unpack("<I", prefix[100:104])[0] == 1
+        )
+
+    register_format(BrokenProbe)
+    with pytest.raises(archivey.FormatDetectionError):
+        archivey.open_stream(io.BytesIO(b"hello world, short"))
+
+
+def test_a_view_no_longer_than_the_member_skips_the_overrun_probe(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    from archivey.internal import plugin_adapter
+    from archivey.internal.streams.streamtools import SharedSource
+
+    with SharedSource(io.BytesIO(b"abcdef")).view(0, 4) as view:
+        assert plugin_adapter._bounded(view, 4)
+        assert plugin_adapter._bounded(view, 5)
+        assert not plugin_adapter._bounded(view, 3)
+        assert not plugin_adapter._bounded(view, None)
+    assert plugin_adapter._bounded(block_stream(10, 4, lambda i: b""), 10)
+    assert not plugin_adapter._bounded(io.BytesIO(b"abcd"), 4)
+
+
 def test_buffered_stream_keeps_a_buffered_stream_and_refuses_others() -> None:
     buffered = io.BytesIO(b"x")
     assert buffered_stream(buffered) is buffered

@@ -53,7 +53,6 @@ from archivey import (
     MemberType,
     PluginContainer,
     StreamFormat,
-    TruncatedError,
 )
 from archivey.plugins import (
     FormatPlugin,
@@ -81,18 +80,17 @@ class ToyReader(IndexedReader[Locator]):
     def __init__(self, source: PluginSource, context: PluginContext) -> None:
         self._source = source
         self._context = context
-        head = source.read_at(0, 12)
-        if len(head) < 12:
-            raise TruncatedError("the TOYA index is cut short")
-        (self._count,) = struct.unpack_from("<I", head, 8)
+        # read_exact() raises TruncatedError when the archive ends early, where
+        # struct.unpack() would fail on the short read with an error of its own.
+        (self._count,) = struct.unpack_from("<I", source.read_exact(0, 12), 8)
 
     def iter_members(self) -> Iterator[MemberRecord[Locator]]:
         pos = 12
         for _ in range(self._count):
-            (name_len,) = struct.unpack("<H", self._source.read_at(pos, 2))
-            raw_name = self._source.read_at(pos + 2, name_len)
+            (name_len,) = struct.unpack("<H", self._source.read_exact(pos, 2))
+            raw_name = self._source.read_exact(pos + 2, name_len)
             is_dir, size, crc, offset = struct.unpack(
-                "<BIIQ", self._source.read_at(pos + 2 + name_len, 17)
+                "<BIIQ", self._source.read_exact(pos + 2 + name_len, 17)
             )
             pos += 2 + name_len + 17
             member = ArchiveMember(
@@ -106,7 +104,7 @@ class ToyReader(IndexedReader[Locator]):
 
     def open_member(self, member: ArchiveMember, locator: Locator) -> MemberData:
         offset, size = locator
-        return MemberData(self._source.view(offset, size), bounded=True)
+        return MemberData(self._source.view(offset, size))
 
 
 class ToyPlugin(FormatPlugin):
@@ -233,9 +231,11 @@ block `i` decoded. archivey takes care of the rest:
 - a seek decodes only the block it lands in, not the file up to it;
 - a block of the wrong length raises `CorruptionError`.
 
-Set `bounded=True` with it. The SquashFS package's `read_block` is about fifteen lines:
-it reads the block list as far as it needs, returns zeros for a sparse block, and calls
-`decompress()` on the rest.
+`read_block` may return the stream `decompress()` gives rather than bytes. archivey then
+reads at most one byte more than the block's length from it, so a block that decodes to
+far more is refused without being decoded in full. The SquashFS package's `read_block`
+is about fifteen lines: it reads the block list as far as it needs, returns zeros for a
+sparse block, and decodes the rest.
 
 **Your own decoder.** For a method archivey does not decode, wrap the view in your
 library's decoder, or one of your own. Such a decoder is outside archivey's decoder
@@ -271,10 +271,11 @@ archivey checks every member stream against what the listing said.
     - A file listed with no size is read to the end of its stream, and only its
       checksums are checked.
     - To find out whether a stream runs past the size, archivey reads one more byte at
-      the end. Set `bounded=True` on the `MemberData` when the stream cannot return more
-      than `member.size` bytes, and archivey skips that read. A view of exactly the
-      member's bytes and a `block_stream()` are both bounded this way. The extra read is
-      a measurable part of opening a small member.
+      the end. It skips that read for a view or a `block_stream()` no longer than the
+      member, which cannot run past it. For another stream that cannot return more
+      than `member.size` bytes, such as your own decoder that stops at the size, set
+      `bounded=True` on the `MemberData`. The extra read is a measurable part of
+      opening a small member.
 - **Checksums archivey can compute.** A CRC-32 or BLAKE2sp in `member.hashes`, or in
   `MemberData.expected_hashes`, is checked as the stream is read. A mismatch raises
   `CorruptionError`, and a full read with a match reaches `Verification.CONTENT`.
@@ -311,6 +312,8 @@ see it.
 archivey cannot check how your reader parses the archive, only what it hands back.
 These habits keep a crafted file from doing more than raising `CorruptionError`.
 
+- **Read with `PluginSource.read_exact()`** wherever the bytes must all be there, as
+  the example does. It raises `TruncatedError` when the archive ends early.
 - **Check every size and offset against what the format allows** before you allocate or
   read with it. Compare offsets with `PluginSource.size`, and refuse a count or length
   larger than the format can hold.
@@ -415,7 +418,8 @@ archivey recognises a plugin's format by its `magic`, its `extensions`, and an o
   for your format. It gets only the bytes detection has already read, and runs after
   every built-in check. Like a built-in format's probe, it runs only when the source's
   name has one of your extensions, or when `ArchiveyConfig(always_probe_content=True)`
-  is set. Use it only for a format with no fixed signature.
+  is set. The prefix may be shorter than your format's header, and a probe that
+  raises counts as no match. Use it only for a format with no fixed signature.
 
 `FormatInfo.from_plugin` is `True` when detection chose a plugin's format.
 
