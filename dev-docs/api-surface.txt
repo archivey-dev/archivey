@@ -919,12 +919,11 @@ class archivey.plugins.MemberData(tuple)
 field archivey.plugins.MemberData.bounded: bool
 field archivey.plugins.MemberData.checked: bool
 field archivey.plugins.MemberData.digests: tuple[MemberDigest, ...]
-field archivey.plugins.MemberData.expected_hashes: Mapping[HashAlgorithm, bytes]
 field archivey.plugins.MemberData.stream: BinaryIO | io.RawIOBase
 class archivey.plugins.MemberDigest(tuple)
 field archivey.plugins.MemberDigest.expected: bytes
 field archivey.plugins.MemberDigest.name: str
-field archivey.plugins.MemberDigest.new: Callable[[], Hasher]
+field archivey.plugins.MemberDigest.new: Callable[[], Hasher] | None
 class archivey.plugins.MemberRecord(tuple, Generic[LocatorT])
 field archivey.plugins.MemberRecord.locator: LocatorT
 field archivey.plugins.MemberRecord.member: ArchiveMember

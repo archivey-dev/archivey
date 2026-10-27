@@ -116,7 +116,7 @@ class PluginReaderAdapter(BaseArchiveReader):
             data.stream, member.name,
             size=member.size,
             expected_size=member.size,            # a short read always raises
-            expected_hashes=data.expected_hashes, # verified as built-ins are
+            expected_hashes=member.hashes,        # with data.digests, verified as built-ins are
             fill_size=member.size is None, verify_member=member,
         )
 ```
@@ -187,12 +187,12 @@ class MemberSpan(NamedTuple):
     member: ArchiveMember
     data_length: int | None = None  # raw: the next data_length bytes of the stream
     data: BinaryIO | None = None    # decoded: a stream the plugin's library decodes
-    expected_hashes: Mapping[HashAlgorithm, bytes] = {}
+    digests: tuple[MemberDigest, ...] = ()
     checked: bool = False           # the library verified the data when read to the end
 
 class MemberData(NamedTuple):
     stream: BinaryIO
-    expected_hashes: Mapping[HashAlgorithm, bytes] = {}
+    digests: tuple[MemberDigest, ...] = ()
     checked: bool = False
 
 class ForwardStream:
@@ -235,7 +235,7 @@ Points that matter:
   stores it on the member. The plugin never sees `_raw`.
 - **Member data is verified the way a built-in's is.** The adapter always passes the
   listed size, so a short stream raises `TruncatedError` (principle 1). A plugin that
-  knows a checksum returns it in `expected_hashes`. A plugin that knows none gets the
+  knows a checksum lists it in `ArchiveMember.hashes` or returns it in `digests`. A plugin that knows none gets the
   `DIGEST_UNVERIFIABLE` behaviour that a built-in format without a checksum gets.
 - **Checksums the enum cannot name (maintainer, 2026-10-25).** `HashAlgorithm` holds
   CRC32 and BLAKE2SP only, and stays closed. When the plugin's library verifies a digest
@@ -260,6 +260,15 @@ Points that matter:
   that checks itself (a library's own decoder), and the stored value still goes in
   `extra` either way. What would reopen it: a checksum a hasher cannot compute
   incrementally.
+- **One digest list (maintainer, 2026-10-27, project thread "Implement the plugin
+  API": "I agree with the hashes change" and "let's do the check").** `expected_hashes`
+  is folded into `digests`: `MemberDigest(name, expected, new=None)`, where a
+  `HashAlgorithm` name uses archivey's own hasher and any other name needs `new`. The
+  only refusals left are a repeated name and a missing hasher. A digest that names an
+  algorithm `ArchiveMember.hashes` already holds is checked as well, not instead: an
+  index and a local header that disagree fail the read, rather than the local value
+  silently replacing the listed one. What would reopen it: a real format whose two
+  stored values legitimately differ.
 - **Sources are views, not a shared handle.** `PluginSource.view()` returns a stream with
   its own position over the shared source (the `SharedSource` views the built-ins use).
   Two member streams open at the same time, or a `CONCURRENT` reader, cannot move each

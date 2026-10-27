@@ -286,28 +286,33 @@ archivey checks every member stream against what the listing said.
       than `member.size` bytes, such as your own decoder that stops at the size, set
       `bounded=True` on the `MemberData`. The extra read is a measurable part of
       opening a small member.
-- **Checksums archivey can compute.** A CRC-32 or BLAKE2sp in `member.hashes`, or in
-  `MemberData.expected_hashes`, is checked as the stream is read. A mismatch raises
-  `CorruptionError`, and a full read with a match reaches `Verification.CONTENT`.
-- **Checksums archivey has no hasher for.** For a CRC-16, a SHA-1 or any other checksum,
-  put a `MemberDigest` in `MemberData.digests`. It holds the checksum's name, the stored
-  value, and a function that makes a fresh hasher, such as `hashlib.sha1`. A hasher is
-  any object with `update(bytes)` and `digest()`. archivey feeds it the bytes as they are
-  read, and checks the result the same way as a CRC-32. For example:
+- **Checksums in the index.** A CRC-32 or BLAKE2sp the index stores, known when
+  listing, goes in `member.hashes`, where callers see it. It is checked as the stream is
+  read. A mismatch raises `CorruptionError`, and a full read with a match reaches
+  `Verification.CONTENT`.
+- **Checksums you read when opening.** A checksum the member's own header stores goes in
+  `MemberData.digests`, as a `MemberDigest` with its name and stored value. For a name
+  archivey computes (`"crc32"`, `"blake2sp"`) that is all; for a CRC-16, a SHA-1 or any
+  other checksum, also pass a function that makes a fresh hasher, such as
+  `hashlib.sha1`. A hasher is any object with `update(bytes)` and `digest()`. archivey
+  feeds it the bytes as they are read, and checks the result the same way as a CRC-32.
+  For example, for a header that stores a CRC-32 and a SHA-1:
 
     ```python
     return MemberData(
         self._source.view(offset, size),
-        digests=(MemberDigest("sha1", stored_sha1, hashlib.sha1),),
+        digests=(
+            MemberDigest("crc32", stored_crc),
+            MemberDigest("sha1", stored_sha1, hashlib.sha1),
+        ),
     )
     ```
 
-    List each checksum in one place only. The name, ignoring case, may not be any of
-    these, or opening the member raises `ValueError`:
-
-    - a name archivey computes itself (`"crc32"`, `"blake2sp"`);
-    - a key of `member.hashes` or `expected_hashes`;
-    - another digest's name.
+    A name, ignoring case, appears once in `digests`, and one archivey does not compute
+    needs a hasher; otherwise opening the member raises `ValueError`. When the index and
+    the header both store a CRC-32, put each where it is read: archivey checks both, so
+    a read fails when either does not match the data, rather than one replacing the
+    other.
 
 - **Checksums the stream checks itself.** If the stream your library returns checks its
   own checksum and raises when it does not match, set `checked=True` on the

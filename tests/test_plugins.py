@@ -506,7 +506,9 @@ def test_checked_counts_as_content(clean_registry: None, tmp_path: Path) -> None
             assert stream.verified is expected
 
 
-def test_expected_hashes_from_open_member(clean_registry: None, tmp_path: Path) -> None:
+def test_a_crc32_from_open_member_is_checked(
+    clean_registry: None, tmp_path: Path
+) -> None:
     """A checksum known only once the member is opened is checked like a listed one."""
 
     class LateHash(ToyReader):
@@ -521,7 +523,7 @@ def test_expected_hashes_from_open_member(clean_registry: None, tmp_path: Path) 
             data = super().open_member(member, locator)
             crc = 0 if member.name == "b.bin" else zlib.crc32(b"alpha\n")
             return MemberData(
-                data.stream, expected_hashes={HashAlgorithm.CRC32: crc.to_bytes(4)}
+                data.stream, digests=(MemberDigest("crc32", crc.to_bytes(4)),)
             )
 
     _plugin_with("latehash", reader=LateHash)
@@ -532,6 +534,55 @@ def test_expected_hashes_from_open_member(clean_registry: None, tmp_path: Path) 
             assert stream.verified is archivey.Verification.CONTENT
         with pytest.raises(CorruptionError):
             reader.read("b.bin")
+
+
+@pytest.mark.parametrize(
+    ("local", "listed", "ok"),
+    [
+        ("good", None, True),
+        ("good", "good", True),
+        ("bad", "good", False),
+        ("good", "bad", False),
+    ],
+)
+def test_a_listed_and_an_opened_crc32_are_both_checked(
+    clean_registry: None,
+    tmp_path: Path,
+    local: str,
+    listed: str | None,
+    ok: bool,
+) -> None:
+    """An index CRC and a local-header CRC that disagree: neither replaces the other,
+    so the read fails whichever of the two is wrong."""
+    good = zlib.crc32(b"alpha\n").to_bytes(4)
+    value = {"good": good, "bad": b"\0\0\0\0"}
+
+    class TwoValues(ToyReader):
+        def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+            for record in super().iter_members():
+                record.member.hashes = (
+                    {} if listed is None else {HashAlgorithm.CRC32: value[listed]}
+                )
+                yield record
+
+        def open_member(
+            self, member: ArchiveMember, locator: tuple[int, int]
+        ) -> MemberData:
+            data = super().open_member(member, locator)
+            return MemberData(
+                data.stream, digests=(MemberDigest("CRC32", value[local]),)
+            )
+
+    _plugin_with("twovalues", reader=TwoValues)
+    path = _write(tmp_path, build_toya(_ENTRIES), "t.twovalues")
+    with open_archive(path) as reader:
+        if ok:
+            with reader.open("docs/a.txt") as stream:
+                assert stream.read() == b"alpha\n"
+                assert stream.verified is archivey.Verification.CONTENT
+        else:
+            with pytest.raises(CorruptionError, match="crc32"):
+                reader.read("docs/a.txt")
 
 
 def test_long_member_raises_corruption(clean_registry: None, tmp_path: Path) -> None:
@@ -1516,61 +1567,74 @@ def test_seekable_member_with_no_listed_size(
 
 
 @pytest.mark.parametrize(
-    ("digests", "expected", "match"),
+    ("digests", "match"),
     [
         (
-            (MemberDigest("crc32", b"\0\0\0\0", hashlib.sha1),),
-            {},
-            "HashAlgorithm archivey computes itself",
-        ),
-        (
-            (MemberDigest("SHA1", b"\0" * 20, hashlib.sha1),),
-            {"sha1": b"\0" * 20},
-            "already lists as a hash",
-        ),
-        # Refused even with no hasher for the listed one: two stored values, one name.
-        (
-            (MemberDigest("crc16", b"\x12\x34", hashlib.sha1),),
-            {"crc16": b"\x12\x34"},
-            "already lists as a hash",
+            (MemberDigest("crc16", b"\x12\x34"),),
+            "which archivey does not compute, with no hasher",
         ),
         (
             (
                 MemberDigest("sha1", b"x", hashlib.sha1),
                 MemberDigest("SHA1", b"y", hashlib.sha1),
             ),
-            {},
-            "another digest of the member also uses",
+            "another digest of the member uses",
         ),
     ],
 )
-def test_member_digest_names_must_not_clash(
+def test_a_refused_member_digest_closes_the_stream(
     clean_registry: None,
     tmp_path: Path,
     digests: tuple[MemberDigest, ...],
-    expected: dict[str, bytes],
     match: str,
 ) -> None:
-    """A digest named like a ``HashAlgorithm`` or a hash the member lists, or like
-    another digest, would share one key with it in the verifier; all are refused, and the refused member's stream is closed. The
-    reader translates broadly, so a refusal inside the error boundary would come out
-    as ``CorruptionError``."""
+    """A repeated name, or a name archivey cannot compute with no hasher, is refused,
+    and the refused member's stream is closed. The reader translates broadly, so a
+    refusal inside the error boundary would come out as ``CorruptionError``."""
     opened: list[BinaryIO] = []
 
-    class Clashing(_BroadTranslator):
+    class Refused(_BroadTranslator):
         def open_member(
             self, member: ArchiveMember, locator: tuple[int, int]
         ) -> MemberData:
             stream = self._source.view(*locator)
             opened.append(stream)
-            return MemberData(stream, expected_hashes=expected, digests=digests)
+            return MemberData(stream, digests=digests)
 
-    _plugin_with("clash", reader=Clashing)
-    path = _write(tmp_path, build_toya(_ENTRIES), "t.clash")
+    _plugin_with("refused", reader=Refused)
+    path = _write(tmp_path, build_toya(_ENTRIES), "t.refused")
     with open_archive(path) as reader, pytest.raises(ValueError, match=match):
         reader.read("docs/a.txt")
     assert opened
     assert opened[0].closed
+
+
+def test_a_hashalgorithm_name_uses_archiveys_hasher(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """For ``"crc32"`` archivey computes the CRC itself; a ``new`` is not called."""
+
+    def never() -> hashlib._Hash:
+        raise AssertionError("archivey computes crc32 itself")
+
+    class OwnCrc(ToyReader):
+        def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+            for record in super().iter_members():
+                record.member.hashes = {}
+                yield record
+
+        def open_member(
+            self, member: ArchiveMember, locator: tuple[int, int]
+        ) -> MemberData:
+            data = super().open_member(member, locator)
+            crc = zlib.crc32(b"alpha\n").to_bytes(4)
+            return MemberData(data.stream, digests=(MemberDigest("crc32", crc, never),))
+
+    _plugin_with("owncrc", reader=OwnCrc)
+    path = _write(tmp_path, build_toya(_ENTRIES), "t.owncrc")
+    with open_archive(path) as reader, reader.open("docs/a.txt") as stream:
+        assert stream.read() == b"alpha\n"
+        assert stream.verified is archivey.Verification.CONTENT
 
 
 def test_member_stream_is_closed_when_a_hasher_factory_fails(

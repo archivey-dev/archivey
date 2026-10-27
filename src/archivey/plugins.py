@@ -40,7 +40,6 @@ from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
     CompressionAlgorithm,
-    HashAlgorithm,
     MemberType,
     PluginContainer,
     StreamFormat,
@@ -105,27 +104,34 @@ class Hasher(Protocol):
 
 
 class MemberDigest(NamedTuple):
-    """A checksum archivey cannot compute itself, with what computes it.
+    """A checksum the archive stores for a member, which archivey checks its bytes
+    against as they are read.
 
-    archivey feeds the member's bytes to a fresh hasher from ``new`` as they are read,
-    and compares ``digest()`` with ``expected`` when a read reaches the end. A mismatch
-    raises ``CorruptionError``, and a match counts as ``Verification.CONTENT``, as for
-    a CRC-32 in ``ArchiveMember.hashes``. Bytes read again after a backward seek are
-    not fed twice.
+    A mismatch raises ``CorruptionError`` when a read reaches the end, and a match
+    counts as ``Verification.CONTENT``, as for a CRC-32 in ``ArchiveMember.hashes``.
+    Bytes read again after a backward seek are not fed twice.
+
+    A checksum the index stores, known when listing, goes in ``ArchiveMember.hashes``
+    instead, where callers see it. When both hold the same algorithm, both values are
+    checked: an index and a local header that disagree make the read fail, rather than
+    one value silently replacing the other.
     """
 
     name: str
-    """The checksum's name (``"sha1"``), for messages and as its key. Ignoring case, it
-    may not repeat another digest's name, be a ``HashAlgorithm`` value (``"crc32"``),
-    which archivey computes itself, or be a key of the member's ``hashes`` or
-    ``expected_hashes``, even one archivey has no hasher for. A refused name raises
-    ``ValueError`` when the member is opened."""
+    """The checksum's name (``"crc32"``, ``"sha1"``), for messages and as its key.
+    Ignoring case, it may appear once in ``MemberData.digests``. A name that is a
+    ``HashAlgorithm`` value is computed by archivey."""
 
     expected: bytes
-    """The value the archive stores, as ``digest()`` returns it."""
+    """The value the archive stores, as ``digest()`` returns it (for ``"crc32"``, four
+    big-endian bytes)."""
 
-    new: Callable[[], Hasher]
-    """Makes a fresh hasher: ``hashlib.sha1``, or a class of the plugin's own."""
+    new: Callable[[], Hasher] | None = None
+    """Makes a fresh hasher: ``hashlib.sha1``, or a class of the plugin's own. Needed
+    for a name archivey does not compute; for a ``HashAlgorithm`` name archivey uses
+    its own hasher and does not call it. A refused digest (a repeated name, or no
+    hasher for one archivey does not compute) raises ``ValueError`` when the member is
+    opened."""
 
 
 class MemberData(NamedTuple):
@@ -139,10 +145,6 @@ class MemberData(NamedTuple):
     again for the rest. A buffered stream is taken at its word, as
     :class:`io.BufferedIOBase` promises: a short read from it is its end."""
 
-    expected_hashes: Mapping[HashAlgorithm, bytes] = {}
-    """Digests archivey checks the bytes against as they are read. A digest in
-    ``ArchiveMember.hashes`` is checked too."""
-
     checked: bool = False
     """The stream checks its bytes itself, with a checksum the plugin's library
     computes inside it, and raises when it does not match once read to the end. The
@@ -150,8 +152,9 @@ class MemberData(NamedTuple):
     compute the checksum but returns a raw stream uses ``digests`` instead."""
 
     digests: tuple[MemberDigest, ...] = ()
-    """Checksums archivey computes with a hasher the plugin supplies, as the stream
-    is read."""
+    """Checksums the archive stores for the member and the plugin reads when opening
+    it, such as a local header's. A digest in ``ArchiveMember.hashes`` is checked
+    too."""
 
     bounded: bool = False
     """The stream never returns more than ``ArchiveMember.size`` bytes: a decoder
