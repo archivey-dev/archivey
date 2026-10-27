@@ -53,37 +53,26 @@ Archive a completed change in the experimental workflow.
 
    **If no tasks file exists:** Proceed without task-related warning.
 
-4. **Assess delta spec sync state**
+4. **Preview the delta specs**
 
-   Use `artifactPaths.specs.existingOutputPaths` from status JSON to check for delta specs. If none exist, proceed without sync prompt.
+   Use `artifactPaths.specs.existingOutputPaths` from status JSON to check for delta specs. If none exist, go to step 5.
 
    **If delta specs exist:**
    - Compare each delta spec with its corresponding main spec at `openspec/specs/<capability>/spec.md`
-   - Determine what changes would be applied (adds, modifications, removals, renames)
-   - Show a combined summary before prompting
+   - Determine what the archive will apply (adds, modifications, removals, renames)
+   - Show a combined summary, then use **AskUserQuestion tool** to confirm: "Archive and apply these deltas", "Cancel"
 
-   **Prompt options:**
-   - If changes needed: "Sync now (recommended)", "Archive without syncing"
-   - If already synced: "Archive now", "Sync anyway", "Cancel"
-
-   If user chooses sync, use Task tool (subagent_type: "general-purpose", prompt: "Use Skill tool to invoke openspec-sync-specs for change '<name>'. Delta spec analysis: <include the analyzed delta spec summary>"). Proceed to archive regardless of choice.
+   If a main spec already contains a delta's changes (for example, `openspec-sync-specs` ran earlier), say so in the summary: the archive applies the deltas again. For a non-trivial delta, `CONTRIBUTING.md` §"Archiving an OpenSpec change" says how to check it with a dry-run archive first.
 
 5. **Perform the archive**
 
-   Create an `archive` directory under `planningHome.changesDir` if it doesn't exist:
    ```bash
-   mkdir -p "<planningHome.changesDir>/archive"
+   openspec archive "<name>" --yes
    ```
 
-   Generate target name using current date: `YYYY-MM-DD-<change-name>`
+   The CLI applies the deltas to `openspec/specs/` and moves the change into the archive. If it fails, report its output and stop. Do not move the directory by hand: a change archived without its deltas leaves `openspec/specs/` wrong, and CI checks for that (`CONTRIBUTING.md` §"Archiving an OpenSpec change").
 
-   **Check if target already exists:**
-   - If yes: Fail with error, suggest renaming existing archive or using different date
-   - If no: Move `changeRoot` to the archive directory
-
-   ```bash
-   mv "<changeRoot>" "<planningHome.changesDir>/archive/YYYY-MM-DD-<name>"
-   ```
+   Commit the resulting `openspec/specs/` updates together with the moved change.
 
 6. **Display summary**
 
@@ -91,7 +80,7 @@ Archive a completed change in the experimental workflow.
    - Change name
    - Schema that was used
    - Archive location
-   - Whether specs were synced (if applicable)
+   - Which specs the archive updated (if any)
    - Note about any warnings (incomplete artifacts/tasks)
 
 **Output On Success**
@@ -102,7 +91,7 @@ Archive a completed change in the experimental workflow.
 **Change:** <change-name>
 **Schema:** <schema-name>
 **Archived to:** the archive path derived from `planningHome.changesDir`/YYYY-MM-DD-<name>/
-**Specs:** ✓ Synced to main specs (or "No delta specs" or "Sync skipped")
+**Specs:** ✓ Deltas applied to main specs (or "No delta specs")
 
 All artifacts complete. All tasks complete.
 ```
@@ -111,7 +100,6 @@ All artifacts complete. All tasks complete.
 - Always prompt for change selection if not provided
 - Use artifact graph (openspec status --json) for completion checking
 - Don't block archive on warnings - just inform and confirm
-- Preserve .openspec.yaml when moving to archive (it moves with the directory)
+- Archive only through `openspec archive "<name>" --yes`, never by moving the directory
 - Show clear summary of what happened
-- If sync is requested, use openspec-sync-specs approach (agent-driven)
-- If delta specs exist, always run the sync assessment and show the combined summary before prompting
+- If delta specs exist, always show the combined summary before prompting
