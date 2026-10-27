@@ -87,7 +87,10 @@ setting is `NONE`.
 Whether rapidgzip is used at all is a separate decision, made by `AcceleratorMode` in
 `codecs/rapidgzip_select.py`. `AUTO` uses it only when all of these are true:
 
-- the caller declared seeking (`seekable_members=True`, `open_stream(seekable=True)`);
+- the caller declared seeking (`seekable_members=True`, `open_stream(seekable=True)`),
+  or, for the DEFLATE family, the read is a large sequential one that pays: on Linux or
+  macOS, a compressed size known to be at least 16 MiB, and data that compresses 3:1 or
+  less;
 - the source is seekable and rapidgzip is installed;
 - the compressed input is not known to be smaller than the gate
   (`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`, 16 MiB, for the DEFLATE family;
@@ -95,8 +98,8 @@ Whether rapidgzip is used at all is a separate decision, made by `AcceleratorMod
 - for the DEFLATE family, the decoded length can be checked.
 
 The gate exists because of the child: a stream smaller than it does not pay back the
-start of the process. gzip.md §2.3 has the full table, and why declared seeking is the
-signal.
+start of the process. gzip.md §2.3 has the full table, why declared seeking is the
+signal, and why the sequential route stops at 3:1 and leaves out Windows.
 
 ### 2.2 The generic decoder child
 
@@ -256,16 +259,14 @@ this section says what each cost comes from.
   too when the source is a stream.
 - **A round trip per request.** Small for large reads; it adds up over many small
   members, and over a non-solid 7z of many small PPMd members, each a decoder of its own.
-- **A second decode for a ZIP or 7z DEFLATE member read through rapidgzip.** ZIP and 7z
-  set `refuse_input_after_end`. When rapidgzip's output ends, the parent decodes the
-  whole member again with zlib from offset 0 (`_hands_over_at_end`, then
+- **A tail decode at the end of a ZIP or 7z DEFLATE member read through rapidgzip.** ZIP
+  and 7z set `refuse_input_after_end`. When rapidgzip's output ends, the parent decodes
+  with zlib from the last point of rapidgzip's complete index (`_hands_over_at_end`, then
   `deflate_resume.stream_end`, in `zlib_codec.py`) to find where the DEFLATE stream ends
-  and whether bytes follow it. It cannot start from a resume point, because rapidgzip
-  reads on into a second stream, so a point could sit past the first stream's end. This
-  is the largest part of a full read of a large ZIP member, and it is why such a read is
-  slower with rapidgzip than without. `.gz` and `.tar.gz` do not pay it. A seek short of
-  the end does not pay it either, so random reads of a large member are still much
-  faster.
+  and whether bytes follow it. That costs a decode of the tail, not of the member. Where
+  the index has no point before the end, the check decodes from the start and costs a
+  whole decode. `.gz` and `.tar.gz` do not pay it, and neither does a seek short of the
+  end.
 - **Memory.** An idle generic child holds a Python interpreter. A rapidgzip child also
   holds decoded chunks, bounded by `DecoderLimits.max_decoder_memory`.
 
@@ -275,7 +276,7 @@ this section says what each cost comes from.
 
 | What you see | Where | More |
 | --- | --- | --- |
-| A full read of a large ZIP DEFLATE member is slower with `seekable_members=True` than without | **archivey** | The end check decodes the member a second time (§3). Random reads of the same member are much faster. A gate on the source kind would not help: the loss and the gain were measured about the same for a path, an open file and a `BytesIO`. §6 |
+| A DEFLATE member that holds two streams, with a size and CRC that cover both, reads as both under rapidgzip and is `DataAfterEndError` without it | **library** / **archivey** | The end check starts from rapidgzip's last resume point (§3), which can sit in the second stream. A shorter second stream is refused either way; no known writer makes such a member. [`formats/zip.md`](../formats/zip.md) has the detail |
 | A non-solid 7z of many small PPMd members reads more slowly than under `NONE` | **archivey** | One decoder, so one request cycle, per member, and a new child every `MAX_DECODERS_PER_CHILD` (§2.2). A solid folder pays once |
 | `NATIVE_DECODERS` makes zstd and gzip reads several times slower | **archivey** | The pipe copy (§3). The setting is for hostile input where a crash must cost only the member |
 | A loop on crafted input in a child never ends | **library** | No timeout (§At a glance). Set the accelerators `OFF` for a latency budget |
@@ -307,10 +308,6 @@ this section says what each cost comes from.
 
 ## 6. Open questions
 
-- **Can the end check start from the last resume point?** When rapidgzip's index shows only
-  one DEFLATE stream, the check may only need the tail after the last point. That would
-  remove the second decode (§3). It needs a careful design, because the check is what
-  refuses trailing bytes after a member.
 - **Does rapidgzip still crash?** `scripts/accelerator_crash_search.py` answers it. A run
   with no crash over a new release would let the DEFLATE family come back in-process,
   and with it the bzip2 decoder, which is isolated only because the DEFLATE one is.
