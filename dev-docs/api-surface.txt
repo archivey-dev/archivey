@@ -953,6 +953,7 @@ property archivey.plugins.PluginSource.path: Path | None
 method archivey.plugins.PluginSource.read_at(self, offset: int, n: int) -> bytes
 property archivey.plugins.PluginSource.size: int | None
 method archivey.plugins.PluginSource.view(self, start: int, length: int | None = None) -> BinaryIO
+function archivey.plugins.block_stream(size: int, block_size: int, read_block: Callable[[int], bytes]) -> BinaryIO
 function archivey.plugins.buffered_stream(stream: BinaryIO | io.RawIOBase) -> BinaryIO
 function archivey.plugins.register_format(plugin: type[FormatPlugin]) -> None
 module archivey.terminal

@@ -22,7 +22,7 @@ import struct
 from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, NamedTuple
+from typing import BinaryIO, NamedTuple
 
 from archivey import (
     ArchiveMember,
@@ -41,11 +41,9 @@ from archivey.plugins import (
     PluginArchiveInfo,
     PluginContext,
     PluginSource,
+    block_stream,
 )
 from archivey_squashfs import lzo
-
-if TYPE_CHECKING:
-    from _typeshed import WriteableBuffer
 
 MAGIC = b"hsqs"
 _SWAPPED_MAGIC = b"sqsh"  # big-endian images, written by SquashFS 3 and older
@@ -538,8 +536,29 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
     ) -> MemberData:
         # archivey opens only a FILE: a hard link reaches the member it names.
         assert locator is not None, member.name
-        # A read stops at a block boundary; archivey asks again for the rest.
-        return MemberData(_FileStream(self, locator), bounded=True)
+        return MemberData(self._file_stream(locator), bounded=True)
+
+    def _file_stream(self, location: FileLocation) -> BinaryIO:
+        """A regular file's bytes: its blocks decoded one at a time, then its tail."""
+        block_size = self.block_size
+        block_list = self.block_list(location)
+        # Each block's stored size and start, read from the list as far as needed.
+        stored: list[int] = []
+        starts = [location.blocks_start]
+
+        def read_block(index: int) -> bytes:
+            if index == location.block_count:
+                return self.fragment_tail(location, location.size % block_size)
+            while len(stored) <= index:
+                (size,) = struct.unpack("<I", block_list.read(4))
+                stored.append(size)
+                starts.append(starts[-1] + (size & ~_BLOCK_UNCOMPRESSED))
+            expected = min(block_size, location.size - index * block_size)
+            if stored[index] == 0:  # a sparse block: zeros, nothing stored
+                return bytes(expected)
+            return self.data_block(starts[index], stored[index], expected)
+
+        return block_stream(location.size, block_size, read_block)
 
     def archive_info(self) -> PluginArchiveInfo:
         return PluginArchiveInfo(
@@ -584,73 +603,3 @@ class _MetadataCursor:
             if self.offset == len(data):
                 self._pos, self.offset = next_pos, 0
         return b"".join(parts)
-
-
-class _FileStream(io.RawIOBase):
-    """A regular file's bytes: its blocks decoded one at a time, then its tail."""
-
-    def __init__(self, reader: SquashfsReader, location: FileLocation) -> None:
-        self._reader = reader
-        self._location = location
-        self._pos = 0
-        # Each block's stored size and start, read from the list as far as needed.
-        self._list = reader.block_list(location)
-        self._stored: list[int] = []
-        self._starts: list[int] = []
-        self._next_start = location.blocks_start
-        self._block_index = -1
-        self._block = b""
-
-    def readable(self) -> bool:
-        return True
-
-    def seekable(self) -> bool:
-        return True
-
-    def tell(self) -> int:
-        return self._pos
-
-    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
-        if whence == io.SEEK_CUR:
-            offset += self._pos
-        elif whence == io.SEEK_END:
-            offset += self._location.size
-        if offset < 0:
-            raise ValueError(f"negative seek position {offset}")
-        self._pos = offset
-        return offset
-
-    def _block_at(self, index: int) -> bytes:
-        if index == self._block_index:
-            return self._block
-        location = self._location
-        block_size = self._reader.block_size
-        if index == location.block_count:
-            data = self._reader.fragment_tail(location, location.size % block_size)
-        else:
-            while len(self._stored) <= index:
-                (stored,) = struct.unpack("<I", self._list.read(4))
-                self._stored.append(stored)
-                self._starts.append(self._next_start)
-                self._next_start += stored & ~_BLOCK_UNCOMPRESSED
-            expected = min(block_size, location.size - index * block_size)
-            stored = self._stored[index]
-            if stored == 0:  # a sparse block: zeros, nothing stored
-                data = bytes(expected)
-            else:
-                data = self._reader.data_block(self._starts[index], stored, expected)
-        self._block_index, self._block = index, data
-        return data
-
-    def readinto(self, b: WriteableBuffer, /) -> int:
-        size = self._location.size
-        if self._pos >= size:
-            return 0
-        block_size = self._reader.block_size
-        index, within = divmod(self._pos, block_size)
-        data = self._block_at(index)
-        with memoryview(b) as outer, outer.cast("B") as buffer:
-            chunk = data[within : within + min(len(buffer), size - self._pos)]
-            buffer[: len(chunk)] = chunk
-        self._pos += len(chunk)
-        return len(chunk)

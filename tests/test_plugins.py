@@ -56,6 +56,7 @@ from archivey.plugins import (
     PluginArchiveInfo,
     PluginContext,
     PluginSource,
+    block_stream,
     buffered_stream,
     register_format,
 )
@@ -1051,6 +1052,34 @@ def test_only_streams_that_may_read_short_are_wrapped() -> None:
     with SharedSource(io.BytesIO(b"abc")).view(0, 3) as view:
         assert plugin_adapter._reads_full(view)
     assert not plugin_adapter._reads_full(_Trickle(b""))
+
+
+def test_block_stream_decodes_only_the_blocks_it_reads() -> None:
+    data = bytes(range(256)) * 40  # 10240 bytes: two blocks of 4096 and one of 2048
+    decoded: list[int] = []
+
+    def read_block(index: int) -> bytes:
+        decoded.append(index)
+        return data[index * 4096 : (index + 1) * 4096]
+
+    stream = block_stream(len(data), 4096, read_block)
+    assert stream.read(10) == data[:10]
+    stream.seek(9000)
+    assert stream.read(5000) == data[9000:]
+    assert decoded == [0, 2]
+    stream.seek(4000)
+    assert stream.read(200) == data[4000:4200]  # across a block boundary
+    assert decoded == [0, 2, 0, 1]
+    assert stream.read(0) == b""
+    assert stream.seek(0, io.SEEK_END) == len(data)
+    assert stream.read() == b""
+
+
+def test_block_stream_refuses_a_block_of_the_wrong_length() -> None:
+    stream = block_stream(5000, 4096, lambda index: bytes(4096))
+    stream.read(4096)
+    with pytest.raises(CorruptionError, match="block 1 holds 4096 bytes, not the 904"):
+        stream.read()
 
 
 def test_buffered_stream_keeps_a_buffered_stream_and_refuses_others() -> None:

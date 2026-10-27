@@ -106,6 +106,9 @@ more indexed plugin, 2026-10-27).
       puts streamtools' `FullCountStream` (no buffer) in front of any stream that is not
       buffered or archivey's own, and `buffered_stream()` (`ensure_bufferedio`) is
       public for a plugin that wants a buffer (maintainer, 2026-10-27).
+      `block_stream()` (`internal/streams/blocks.py`): a file stored as fixed-size
+      blocks that decode on their own, read and seeked by archivey from the plugin's
+      `read_block(i)` (maintainer asked for shared infrastructure, 2026-10-27).
 - [x] 3b.5 LZO, which archivey does not decode: the package's own LZO1X decoder in
       Python (from the kernel's `lzo1x_decompress_safe`), or liblzo2 through
       `python-lzo` when installed; tests cross-check the two (maintainer, 2026-10-27).

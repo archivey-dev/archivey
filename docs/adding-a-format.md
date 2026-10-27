@@ -218,6 +218,12 @@ Where the compressed data ends depends on the method:
 A format whose methods archivey does not decode wraps the view in its own library's
 decoder.
 
+A format that stores a file as fixed-size blocks, each compressed on its own (SquashFS,
+CAB, WIM, CSO), returns `block_stream(size, block_size, read_block)`. `read_block(i)`
+returns block `i` decoded; archivey calls it when a read first needs the block, keeps
+only the current block, and raises `CorruptionError` for a block of the wrong length.
+A seek then decodes one block, not the file up to it. Set `bounded=True` with it.
+
 The stream may return fewer bytes than asked before its end, as an `io.RawIOBase` may
 (one that stops each read at a block boundary, say): archivey asks it again for the
 rest, and reads nothing ahead. For a raw stream whose reads cost more than a copy, such

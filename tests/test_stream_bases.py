@@ -415,6 +415,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     from archivey.internal.external import cli, unar
     from archivey.internal.streams import (
         archive_stream,
+        blocks,
         codecs,
         counting,
         crypto,
@@ -433,6 +434,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
 
     forwards_or_owns = {
         archive_stream.ArchiveStream,
+        blocks.BlockStream,  # owns its resume points: every block start
         bcj2.Bcj2DecoderStream,  # owns its one resume point: the folder start
         rapidgzip_child.RapidgzipChildStream,  # asks the child's rapidgzip index
         codecs.zlib_codec._DeflateEndCheckStream,

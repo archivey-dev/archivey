@@ -33,6 +33,7 @@ from archivey.config import ArchiveyConfig
 from archivey.diagnostics import DiagnosticCode, DiagnosticContext
 from archivey.exceptions import ArchiveyError
 from archivey.internal.naming import normalize_member_name
+from archivey.internal.streams.blocks import BlockStream
 from archivey.internal.streams.streamtools import ensure_bufferedio
 from archivey.types import (
     ArchiveFormat,
@@ -57,6 +58,7 @@ __all__ = [
     "PluginContext",
     "PluginReader",
     "PluginSource",
+    "block_stream",
     "buffered_stream",
     "register_format",
 ]
@@ -475,6 +477,22 @@ def register_format(plugin: type[FormatPlugin]) -> None:
 
     with _register_lock:
         register_plugin(plugin)
+
+
+def block_stream(
+    size: int, block_size: int, read_block: Callable[[int], bytes]
+) -> BinaryIO:
+    """A member stream over a file stored as blocks that each decode on their own.
+
+    The file is ``size`` bytes in blocks of ``block_size``, the last one shorter, as
+    SquashFS, CAB, WIM and CSO store them. ``read_block(i)`` returns block ``i``
+    decoded, from ``PluginContext.decompress`` or the plugin's own decoder. archivey
+    calls it when a read first needs the block and keeps only the block it is in, so
+    a seek decodes one block, not the file up to it. A block of another length than
+    the file needs there raises ``CorruptionError``. Return the result as
+    ``MemberData.stream``, with ``bounded=True``.
+    """
+    return BlockStream(size, block_size, read_block)
 
 
 def buffered_stream(stream: BinaryIO | io.RawIOBase) -> BinaryIO:
