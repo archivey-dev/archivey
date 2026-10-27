@@ -30,8 +30,9 @@ readers, including an opt-in path and replacement.
   `DiagnosticPolicy`, and a new field `ArchiveyConfig.formats: FormatPolicy`. Its
   arguments:
   - `only=`: containers and compressions that may open. `None` (the default) means all.
-  - `exclude=`: containers and compressions that may not open, and member codecs
-    (`CompressionAlgorithm`) that may not decode.
+  - `exclude=`: containers and compressions that may not open.
+  - `exclude_libraries=`: optional packages (`pyppmd`, `inflate64`, ...) that read as
+    not installed for the call.
   - `plugins=`: `False` turns off every registered plugin format.
   - `replace=`: a built-in container mapped to the plugin that reads it instead.
   - `allows(fmt)`: whether a format may open under the policy.
@@ -40,8 +41,10 @@ readers, including an opt-in path and replacement.
   refused format raises `UnsupportedFeatureError` that names the policy.
 - **The code of a plugin that is off does not run.** Its content probe is skipped in
   detection; its magic and extensions, which archivey matches itself, still name it.
-- **A member codec that is off** still lists; opening the member raises
-  `UnsupportedFeatureError`. RAR's PPMd cannot be singled out (`design.md` §5a).
+- **An excluded library** behaves exactly as an absent one does today: accelerators
+  fall back, a member that needs it raises `PackageNotInstalledError`, a format that
+  needs it refuses at open. Today a caller cannot avoid a library that is installed
+  system-wide (`design.md` §5a).
 - **A replacement plugin** has a built-in `ArchiveFormat` as its `format`, declares no
   detection signals, and is used only through `replace=`. It is not registered.
 
@@ -50,12 +53,12 @@ Nothing changes for a caller who does not set `formats`.
 ## Impact
 
 - Specs: `backend-registry` (policy and reader selection), `format-detection` (skipped
-  probes), `format-plugins` (replacement plugins), `archive-reading` (the refusals,
-  including member codecs).
+  probes), `format-plugins` (replacement plugins), `archive-reading` (the refusals),
+  `packaging-and-extras` (excluded libraries).
 - Code: `config.py`, a new `FormatPolicy` (in `config.py` or `types.py`),
-  `internal/registry.py` (`reader_for_format` takes the policy),
-  `internal/detection.py` (plugin probes filtered), `internal/plugin_adapter.py`
-  (replacement backends), the shared member-open path (the codec check), `core.py`
-  (one check at the reader choice, and the volume and SFX refusals for a replacement).
+  `internal/registry.py` (`reader_for_format` takes the policy), `internal/detection.py`
+  (plugin probes filtered), `internal/plugin_adapter.py` (replacement backends), the
+  codec and backend availability checks (`deps.py`), `core.py` (one check at the reader
+  choice, and the volume and SFX refusals for a replacement).
 - Public API: one new root name and one new config field. Both additive.
 - Cost: one set lookup per open.

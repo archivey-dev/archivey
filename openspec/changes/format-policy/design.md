@@ -102,7 +102,8 @@ FormatEntry = ContainerFormat | PluginContainer | StreamFormat
 @dataclass(frozen=True)
 class FormatPolicy:
     only: frozenset[FormatEntry] | None = None
-    exclude: frozenset[FormatEntry | CompressionAlgorithm] = frozenset()  # §5a
+    exclude: frozenset[FormatEntry] = frozenset()
+    exclude_libraries: frozenset[str] = frozenset()  # §5a
     plugins: bool = True
     replace: Mapping[ContainerFormat, type[FormatPlugin]] = {}  # stored read-only
 
@@ -193,42 +194,56 @@ class StrongZipPlugin(FormatPlugin):
   `DMG` are refused as keys.
 - A replaced container that `only` or `exclude` turns off is refused as a contradiction.
 
-## 5a. Member codecs
+## 5a. Optional libraries
 
-The maintainer asked (2026-10-27) whether a caller could also turn off a codec inside
-members, such as PPMd or Deflate64, because of a security or performance problem in it.
-`exclude=` also takes `CompressionAlgorithm` members, the public enum that
-`ArchiveMember.compression` already reports.
+The maintainer asked (2026-10-27) whether a caller could turn off a codec because of a
+security or performance problem in it, and then ruled that the switch is per library,
+not per algorithm: "if a library is installed systemwide, there's currently no way for a
+library user to avoid its use, which can be dangerous". A problem lives in a library,
+and one algorithm can have several (deflate decodes through `zlib` or `rapidgzip`), so
+turning off `DEFLATE` would also turn off the safe path.
 
 ```python
-FormatPolicy(exclude={CompressionAlgorithm.PPMD, CompressionAlgorithm.DEFLATE64})
+FormatPolicy(exclude_libraries={"pyppmd", "inflate64"})
 ```
 
-- **Listing does not change.** The member still lists, with its `compression` (DR-8).
-  Opening its data raises `UnsupportedFeatureError` that names the policy, the same
-  refusal a member with a codec archivey cannot decode gets (DR-4). `extract_all`
-  treats that member as it treats any member it cannot decode; the policy adds no new
-  extraction path.
-- **The whole chain counts.** A member opens only when no method in its chain is off,
-  filters included (`BCJ`, `BCJ2`, `DELTA`).
-- **Not under `only=`.** An allow-list of algorithms would have to list `STORED` and
-  each filter to open anything, and a format that adds a method in a later release would
-  stop opening. Formats are the allow-list; codecs are a deny-list.
-- **Not a second way to name the outer stream.** `S.GZIP` still turns off `.gz` and
-  `.tar.gz`. `CompressionAlgorithm.DEFLATE` turns off deflate members in ZIP and 7z,
-  not gzip files: the outer stream is a format, a member method is a member's property.
-- **Limit: RAR.** RAR members report `CompressionAlgorithm.RAR` for every RAR method,
-  and the decoder is `unrar`, so PPMd inside RAR cannot be turned off on its own. RAR 3
-  and 4 (the RAR 2.9 format) can switch any block of a member between LZ and PPMd
-  variant H, with a bit inside the compressed data, so no header says which a member
-  uses. RAR 5 has no PPMd. Turning off `RAR` turns off every compressed RAR member.
-- **Plugins.** A plugin member is checked on the `compression` its `MemberRecord`
-  reports, before `open_member` runs.
+- **The names** are the package names that `MissingComponent.name` (on
+  `FormatAvailability.missing`) already reports: `pyppmd`, `inflate64`, `brotli`, `lz4`,
+  `backports.zstd`, `rapidgzip`, `pycdlib`, `cryptography`. An unknown name, a standard
+  library module (`zlib`, `bz2`, `lzma`, `compression.zstd`) and a program are refused
+  with `ArchiveyUsageError`. The standard library is not optional: turn off the formats
+  or compressions it reads instead. The programs (`unrar`, `unar`) keep their own
+  setting, `rar_decompressor`.
+- **An excluded library reads as not installed, for that call.** archivey already has
+  this path: under PyPy, `deps.py` treats some installed packages as absent and gives
+  the reason in place of the install hint (`MissingComponent.reason`). So every
+  consequence is one that a missing package already has, and is already tested:
+  - an accelerator under `AUTO` falls back to the standard library (DR-11);
+  - a member that needs the library raises `PackageNotInstalledError` when opened, and
+    the format reports `PARTIAL` (a PPMd member in ZIP or 7z, an encrypted member
+    without `cryptography`);
+  - a format that needs it raises at open (ISO without `pycdlib`, `.br` without
+    `brotli`).
+  Only the message changes: it names `config.formats` as the reason, not an install
+  command, since installing the package would not help.
+- **Never used, and if lazy, never imported.** An excluded library decodes nothing in
+  that call. `brotli`, `pyppmd`, `inflate64` and `rapidgzip` are imported on first use
+  (`LazyOptional`), so a process whose every call excludes one never imports it. `lz4`,
+  zstd and `pycdlib` are imported when archivey loads, so they are loaded but unused.
+  Making those lazy too is a separate change, worth doing only if the import itself is
+  the concern.
+- **Conflicts.** `use_rapidgzip=ON` (or `use_indexed_bzip2=ON`) with `rapidgzip` excluded
+  is refused at construction as a contradiction; `AUTO` with it excluded is the normal
+  fallback.
+- **RAR.** `unrar` decodes RAR members, PPMd blocks included, so no Python library is
+  involved; the maintainer ruled that fine (2026-10-27), since the concern is library
+  problems.
+- **Plugins.** A plugin's `requires` names the modules it needs. Excluding one of them
+  turns that plugin off for the call, as a missing module does today.
 
-This covers "do not decode with this codec". The other half of the performance and
-security question already has a setting: which implementation decodes and where it runs
-(`use_rapidgzip`, `use_indexed_bzip2`, `rar_decompressor`, `process_isolation`). Those
-stay where they are (DR-14).
+`format_availability` gains no `config` argument in this change: it answers what the
+environment provides. A caller that wants the policy's view asks
+`config.formats.allows(fmt)` for the format and reads `exclude_libraries` itself.
 
 ## 6. Where it is checked
 
@@ -243,7 +258,8 @@ stay where they are (DR-14).
 ## 7. Calls for the maintainer
 
 All decided by the maintainer on 2026-10-27: call 1 on the decision card, calls 2 to 5
-by agreeing to the rest of the design.
+by agreeing to the rest of the design. Call 5 first named algorithms; the maintainer
+then moved it to libraries.
 
 1. **Option A (per call), not B (process-wide).**
 2. **Plugins are on by default once registered.** Registration is already the
@@ -251,4 +267,5 @@ by agreeing to the rest of the design.
 3. **Replacement scope in v1: ZIP, 7z, RAR and ISO, with volumes and SFX refused.** TAR
    follows with the sequential shape.
 4. **Name.** `FormatPolicy` and `ArchiveyConfig.formats`, after `DiagnosticPolicy`.
-5. **Member codecs in `exclude=`** (§5a), deny-list only.
+5. **Optional libraries can be turned off** (§5a), by package name, not by
+   algorithm: `exclude_libraries=`. A deny-list only.

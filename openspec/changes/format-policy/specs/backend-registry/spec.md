@@ -35,16 +35,19 @@ the built-in format.
 - **WHEN** a caller opens a ZIP file with `FormatPolicy(replace={ContainerFormat.ZIP: P})`
 - **THEN** `P.open` reads it and `reader.format` is `ArchiveFormat.ZIP`
 
-### Requirement: A member codec the policy excludes does not decode
+### Requirement: An excluded optional library reads as not installed
 
-When `FormatPolicy.exclude` holds a `CompressionAlgorithm`, opening the data of a member
-whose `compression` chain contains that algorithm SHALL raise `UnsupportedFeatureError`
-that names the policy. The member SHALL still be listed with its `compression`.
+When `FormatPolicy.exclude_libraries` names an optional package, archivey SHALL treat
+that package as not installed for every call made with that config: an accelerator
+under `AUTO` SHALL fall back, a member that needs it SHALL raise
+`PackageNotInstalledError` when opened, and a format that needs it SHALL refuse at open.
+The error SHALL name the policy as the reason. archivey SHALL NOT call into the package
+during such a call.
 
-#### Scenario: An excluded PPMd member lists but does not open
+#### Scenario: An excluded pyppmd refuses only the PPMd member
 
 - **WHEN** a caller opens a 7z archive that holds a PPMd member and a LZMA2 member with
-  `FormatPolicy(exclude={CompressionAlgorithm.PPMD})`
+  `FormatPolicy(exclude_libraries={"pyppmd"})`, with `pyppmd` installed
 - **THEN** both members are listed
-- **AND** reading the PPMd member raises `UnsupportedFeatureError`
+- **AND** reading the PPMd member raises `PackageNotInstalledError` that names the policy
 - **AND** the LZMA2 member reads
