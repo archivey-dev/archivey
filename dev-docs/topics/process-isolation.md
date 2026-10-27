@@ -142,6 +142,15 @@ decoder calls `release_decoder`, and a reader that closes calls
 `release_decoder_children`. Without these, PyPy under `NATIVE_DECODERS` once started one
 process for each gzip member, xz stream or zstd frame.
 
+The last reference goes only if no reference cycle holds the decoder, and a raised
+exception that the decoder keeps makes one: the traceback's frames hold the decoder. A
+decoder whose child died keeps that error and raises it on every later call, so it keeps
+an instance that is never raised and raises a copy (`_unraised`). Before that, CPython
+too held such a decoder until a collection, and a collection that finalized one inside
+other code kept that code's frames alive through `f_back`, with any decoder in their
+locals and its child. The leak oracle caught it as an order-dependent failure: a PPMd
+test right after a child-death test on the same worker.
+
 **Interrupts.** A `KeyboardInterrupt` part-way through a request or reply leaves the pipe
 out of step. Every later call on that decoder raises `ArchiveyUsageError`, and the child is
 ended at close, not inside the interrupt.
@@ -303,6 +312,9 @@ this section says what each cost comes from.
 - **rapidgzip children are reused within one open archive only** (§2.3). Rejected: a
   process-wide pool. The child holds one file's descriptor from its start, and a
   process-wide pool would keep that file open after the archive closes.
+- **A recorded death is never the instance raised** (§2.2). Rejected: raising the kept
+  instance with `with_traceback(None)`, which bounds the traceback but still makes the
+  cycle.
 - **A file range, not a path, for a ZIP member.** The descriptor is passed at spawn, so a
   rename after the open cannot change what the child reads.
 
