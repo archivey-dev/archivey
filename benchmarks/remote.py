@@ -245,16 +245,20 @@ OPERATIONS: dict[str, tuple[bool, Callable[[Any, Path], None]]] = {
 @dataclass(frozen=True)
 class RemoteScale:
     members: int
-    member_size: int
+    min_member_size: int
+    max_member_size: int
 
 
 # The comparison corpus in benchmarks/fixtures.py compresses ~100:1 (a .tar.gz of
 # 128 KiB is 1.5 KiB), so over a network almost every case would be one small fetch.
 # These members are seeded random bytes: a member's stored span is about its size, so
-# the counts show where each read goes.
+# the counts show where each read goes. Their sizes vary, seeded, so that the gaps a
+# TAR listing hops over fall on both sides of a fixed read-through distance.
 REMOTE_SCALES: dict[str, RemoteScale] = {
-    "ci": RemoteScale(members=32, member_size=16 * 1024),
-    "realistic": RemoteScale(members=64, member_size=256 * 1024),
+    "ci": RemoteScale(members=32, min_member_size=4 * 1024, max_member_size=32 * 1024),
+    "realistic": RemoteScale(
+        members=64, min_member_size=64 * 1024, max_member_size=448 * 1024
+    ),
 }
 
 # Formats whose bytes depend only on this file and the stdlib's ZIP/TAR writers. The
@@ -280,7 +284,10 @@ _FIXED_MTIME = 1_577_836_800
 def _member_payloads(scale: RemoteScale) -> list[tuple[str, bytes]]:
     rng = random.Random(20261026)
     return [
-        (f"m{i:03d}.bin", rng.randbytes(scale.member_size))
+        (
+            f"m{i:03d}.bin",
+            rng.randbytes(rng.randint(scale.min_member_size, scale.max_member_size)),
+        )
         for i in range(scale.members)
     ]
 
