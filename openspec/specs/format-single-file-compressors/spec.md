@@ -108,9 +108,10 @@ format-specific reliability limits:
 Availability of an index/trailer-derived size SHALL be decided by **the source's shape**,
 never by the caller's declared member-stream capability. `seekable_members` /
 `open_stream(seekable=…)` declare intent to `seek()` inside a member stream; they select
-an indexed decompressor backend and resolve accelerator `AUTO`, and they MUST NOT change
-what metadata a member reports. A seekable source SHALL yield the same `member.size` with
-and without the declaration; a non-seekable source SHALL yield `None` for every
+an indexed decompressor backend and resolve accelerator `AUTO` (which for the DEFLATE
+family also takes a large sequential read: `seekable-decompressor-streams`), and they
+MUST NOT change what metadata a member reports. A seekable source SHALL yield the same
+`member.size` with and without the declaration; a non-seekable source SHALL yield `None` for every
 index/trailer-derived size, and no probe SHALL force a decompression pass to obtain one.
 Another archive's member stream, bare or under a pass-through buffer
 (`seek_is_expensive`), counts as a source that cannot reach its end cheaply, so the size

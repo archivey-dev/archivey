@@ -266,7 +266,8 @@ always does, and raises `PackageNotInstalledError` without it and
 seeking was declared (`seekable_members=True`, `open_stream(seekable=True)`) and it is
 installed. For the DEFLATE family `AUTO` adds two conditions, a compressed input of at
 least 16 MiB and a way to check the decoded length, and `rapidgzip` runs there in a
-child process. Both are on [`gzip.md`](gzip.md) §2.3; bzip2 stays in-process
+child process. It also takes a large sequential read there, at 3:1 or less, on Linux
+and macOS. All of it is on [`gzip.md`](gzip.md) §2.3; bzip2 stays in-process
 ([`bzip2.md`](bzip2.md) §2.3).
 
 **Truncation.** A decoder's `flush` runs once, at compressed end of file. When the stream
