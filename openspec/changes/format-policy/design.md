@@ -193,6 +193,40 @@ class StrongZipPlugin(FormatPlugin):
   `DMG` are refused as keys.
 - A replaced container that `only` or `exclude` turns off is refused as a contradiction.
 
+## 5a. Member codecs (proposed, call 5)
+
+The maintainer asked (2026-10-27) whether a caller could also turn off a codec inside
+members, such as PPMd or Deflate64, because of a security or performance problem in it.
+Proposal: `exclude=` also takes `CompressionAlgorithm` members, the public enum that
+`ArchiveMember.compression` already reports.
+
+```python
+FormatPolicy(exclude={CompressionAlgorithm.PPMD, CompressionAlgorithm.DEFLATE64})
+```
+
+- **Listing does not change.** The member still lists, with its `compression` (DR-8).
+  Opening its data raises `UnsupportedFeatureError` that names the policy, the same
+  refusal a member with a codec archivey cannot decode gets (DR-4). `extract_all` then
+  refuses that member as it refuses any unsupported member; the other members extract.
+- **The whole chain counts.** A member opens only when no method in its chain is off,
+  filters included (`BCJ`, `BCJ2`, `DELTA`).
+- **Not under `only=`.** An allow-list of algorithms would have to list `STORED` and
+  each filter to open anything, and a format that adds a method in a later release would
+  stop opening. Formats are the allow-list; codecs are a deny-list.
+- **Not a second way to name the outer stream.** `S.GZIP` still turns off `.gz` and
+  `.tar.gz`. `CompressionAlgorithm.DEFLATE` turns off deflate members in ZIP and 7z,
+  not gzip files: the outer stream is a format, a member method is a member's property.
+- **Limit: RAR.** RAR members report `CompressionAlgorithm.RAR` for every RAR method,
+  and the decoder is `unrar`, so PPMd inside RAR cannot be turned off on its own. Turning
+  off `RAR` turns off every compressed RAR member.
+- **Plugins.** A plugin member is checked on the `compression` its `MemberRecord`
+  reports, before `open_member` runs.
+
+This covers "do not decode with this codec". The other half of the performance and
+security question already has a setting: which implementation decodes and where it runs
+(`use_rapidgzip`, `use_indexed_bzip2`, `rar_decompressor`, `process_isolation`). Those
+stay where they are (DR-14).
+
 ## 6. Where it is checked
 
 - `open_archive` asks `BackendRegistry.reader_for_format(fmt, policy)`, after
@@ -213,3 +247,4 @@ class StrongZipPlugin(FormatPlugin):
 3. **Replacement scope in v1: ZIP, 7z, RAR and ISO, with volumes and SFX refused.**
    Recommended: yes, and TAR with the sequential shape.
 4. **Name.** `FormatPolicy` and `ArchiveyConfig.formats`, after `DiagnosticPolicy`.
+5. **Member codecs in `exclude=`** (§5a). Recommended: yes, deny-list only.
