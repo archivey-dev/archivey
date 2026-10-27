@@ -246,6 +246,20 @@ Points that matter:
   `ArchiveMember.hashes` (archivey verifies it), and any other goes in
   `ArchiveMember.extra` under a namespaced key such as `extra["xar.sha1"]`, which
   `MemberExtra` already allows.
+- **Plugin-supplied hashers (maintainer, 2026-10-26 23:11Z, project thread "Implement
+  the plugin API": "yes, in memberdata. please add it").** This adds to the ruling
+  above rather than replacing it. A plugin that parses the format itself and returns a
+  raw stream can still have a checksum the enum cannot name checked: it returns
+  `MemberData(stream, digests=(MemberDigest(name, expected, new),))`, where `new` makes
+  a hashlib-shaped hasher (`update`, `digest`). archivey's member verifier feeds it as
+  the stream is read, with the same seek handling, `CorruptionError` on a mismatch and
+  `Verification.CONTENT` on a match as its own CRC-32. The hashers live on `MemberData`,
+  not on `ArchiveMember`, because a member is public data callers copy and compare. A
+  digest name is refused when it is a `HashAlgorithm` value or repeats another digest's
+  name, so it can never replace archivey's own check. `checked=True` stays for a stream
+  that checks itself (a library's own decoder), and the stored value still goes in
+  `extra` either way. What would reopen it: a checksum a hasher cannot compute
+  incrementally.
 - **Sources are views, not a shared handle.** `PluginSource.view()` returns a stream with
   its own position over the shared source (the `SharedSource` views the built-ins use).
   Two member streams open at the same time, or a `CONCURRENT` reader, cannot move each
@@ -504,6 +518,12 @@ format can come from someone else without the maintainer writing it.
   suite and in the cross-format matrix tests, so a break fails CI.
 - **Locator stored in `_raw`.** A member that a caller copies with `dataclasses.replace`
   keeps the locator. That is what built-in backends do already, so it is not new.
+- **No strict end for a whole stream.** `decompress()` of a `StreamFormat` reports bytes
+  after the stream's end (`ARCHIVE_TRAILING_DATA`) and never refuses them, as archivey
+  reads a `.gz` or `.xz` file. A container that bounds the stream exactly, as a
+  SquashFS block does, could treat those bytes as damage; it has no way to ask for that
+  in this version. A `strict_end=` keyword on `decompress()` is the addition if a
+  plugin needs it.
 
 ## Migration Plan
 
@@ -527,4 +547,7 @@ explicit registration, both reader shapes with pipes, outer compression for sequ
 formats, `FormatInfo.from_plugin` (one boolean), ISO onto the interface, CPIO in
 `packages/archivey-cpio/`, the directory reader stays internal, decoded data in the
 sequential shape, and the `checked` flag with stored digests in `hashes` or `extra`.
+On 2026-10-26 the maintainer added plugin-supplied hashers (`MemberData.digests`), and
+asked for seekable members over a forward-only plugin stream ("if the user says they
+need seeking, we must support it") and for `PluginContext.decompress`.
 No question is open.

@@ -15,7 +15,7 @@ from typing import Literal
 
 from archivey.detection_cost import DetectionCostReceipt, TierSkip
 from archivey.diagnostics import DiagnosticSummary
-from archivey.types import ArchiveFormat
+from archivey.types import ArchiveFormat, PluginContainer
 
 __all__ = ["DetectionConfidence", "FormatInfo"]
 
@@ -107,3 +107,10 @@ class FormatInfo:
     :class:`~archivey.detection_cost.TierSkip` with its
     :class:`~archivey.detection_cost.TierSkipReason`: not enabled by policy, a
     capability the source lacks, or the budget ran out. Empty when every tier ran."""
+
+    @property
+    def from_plugin(self) -> bool:
+        """Whether ``format`` is one a plugin added (``archivey.plugins``), not a
+        built-in one. A plugin's parser is not covered by archivey's limits, so a
+        caller that reads untrusted input can refuse such a format."""
+        return isinstance(self.format.container, PluginContainer)

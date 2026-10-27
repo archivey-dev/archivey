@@ -72,6 +72,37 @@ def _archive_format_spellings() -> dict[str, ArchiveFormat]:
     )
 
 
+# Spellings of plugin formats (``archivey.plugins.register_format``), looked up after
+# the built-in table, so a plugin never changes what a built-in spelling means.
+_plugin_spellings: dict[str, ArchiveFormat] = {}
+
+
+def _plugin_format_spellings(fmt: ArchiveFormat) -> tuple[str, str]:
+    return fmt.file_extension(), fmt.display_name
+
+
+def plugin_spelling_clash(fmt: ArchiveFormat) -> tuple[str, ArchiveFormat] | None:
+    """The first of ``fmt``'s two spellings that already names another format, and that
+    format, if any.
+
+    A spelling a built-in format or an earlier plugin holds would resolve to that
+    format, so registration refuses it rather than leave ``fmt`` unspellable.
+    """
+    for spelling in _plugin_format_spellings(fmt):
+        key = normalize_spelling(spelling)
+        owner = _archive_format_spellings().get(key) or _plugin_spellings.get(key)
+        if owner is not None:
+            return spelling, owner
+    return None
+
+
+def add_plugin_spellings(fmt: ArchiveFormat) -> None:
+    """Make ``fmt``'s extension and display name accepted as ``format=`` spellings."""
+    assert plugin_spelling_clash(fmt) is None, "checked at registration"
+    for spelling in _plugin_format_spellings(fmt):
+        _plugin_spellings[normalize_spelling(spelling)] = fmt
+
+
 def _accepted_archive_formats() -> str:
     """The spellings worth recommending, for a refusal message.
 
@@ -81,12 +112,16 @@ def _accepted_archive_formats() -> str:
     has an extension, and offering it would do the same — the spelling resolves,
     then open refuses the image — so it is excluded by name. Lowercasing keeps the
     list from implying that case is significant, in a message whose subject is a
-    spelling that ignores it.
+    spelling that ignores it. A registered plugin's extension is listed too, so a typo
+    of its name is not answered with a list that leaves it out.
     """
     spellings = sorted(
-        fmt.file_extension().lower()
-        for fmt in _FORMAT_NAMES
-        if fmt.file_extension() and fmt.container is not ContainerFormat.DMG
+        {
+            fmt.file_extension().lower()
+            for fmt in _FORMAT_NAMES
+            if fmt.file_extension() and fmt.container is not ContainerFormat.DMG
+        }
+        | {fmt.file_extension().lower() for fmt in _plugin_spellings.values()}
     )
     return ", ".join(repr(s) for s in spellings)
 
@@ -174,7 +209,8 @@ def coerce_archive_format(
     if isinstance(value, Enum):
         _reject_wrong_enum(value, call=call, expected="an ArchiveFormat")
     if isinstance(value, str):
-        fmt = _archive_format_spellings().get(normalize_spelling(value))
+        key = normalize_spelling(value)
+        fmt = _archive_format_spellings().get(key) or _plugin_spellings.get(key)
         if fmt is not None:
             return fmt
     raise _usage_error_for(value)(

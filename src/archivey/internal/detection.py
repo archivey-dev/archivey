@@ -29,7 +29,9 @@ header before decoding). Each probe is a function the backends declare as data â
 stream codecs, on the codec descriptor â€” so the detector stays format-agnostic. Unless
 ``ArchiveyConfig.always_probe_content`` is set (``open_stream`` sets it), only the probe of
 a format the source's extension names runs: on a nameless source a probe would be the only
-evidence, and real binary files pass them. The probes also do not run on a prefix that is
+evidence, and real binary files pass them. A built-in probe is matched by its stream; a
+plugin format's, by the format itself, since every plugin format shares its stream with
+ZIP and TAR. The probes also do not run on a prefix that is
 evidence of a non-archive file: a structurally confirmed executable
 (``ExecutableCue.STRONG``) or a known non-archive signature (``_PROBE_STOPPING_SIGNATURES``,
 today OLE compound files), and the error then names that evidence. A non-archive signature
@@ -134,6 +136,7 @@ from archivey.types import (
     ArchiveFormat,
     ContainerFormat,
     MagicSignature,
+    PluginContainer,
     StreamFormat,
     TrailerSignature,
 )
@@ -617,6 +620,20 @@ def _streams_named_by(
     fmt, ext = ext_match
     also = _ALSO_NAMES_STREAM.get(ext)
     return frozenset({fmt.stream} if also is None else {fmt.stream, also})
+
+
+def _probe_named(
+    fmt: ArchiveFormat, ext_match: tuple[ArchiveFormat, str] | None
+) -> bool:
+    """Whether the source's extension allows ``fmt``'s content probe to run.
+
+    A built-in probe is keyed by its stream, so ``.tlz`` can name two. Every plugin
+    format shares the ``UNCOMPRESSED`` stream with ZIP, TAR and the rest, so its probe
+    runs only when the extension names that format itself.
+    """
+    if isinstance(fmt.container, PluginContainer):
+        return ext_match is not None and ext_match[0] == fmt
+    return fmt.stream in _streams_named_by(ext_match)
 
 
 def _brotli_probe_confidence(
@@ -1253,8 +1270,7 @@ def _detect_format_body(
             )
         probes = registry.content_probes()
         if not always_probe:
-            named = _streams_named_by(ext_match)
-            named_probes = [(f, p) for f, p in probes if f.stream in named]
+            named_probes = [(f, p) for f, p in probes if _probe_named(f, ext_match)]
             # Recorded whenever the name left a probe out, even if another one runs: a
             # .zz source still skips the LZMA Alone and Brotli probes.
             if len(named_probes) < len(probes):

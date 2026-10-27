@@ -52,6 +52,7 @@ from archivey.internal.streams.verification import (
     ask_verification_proofs,
 )
 from archivey.internal.streams.verify import (
+    CustomDigests,
     MemberVerifier,
     build_member_verifier,
     note_raised_seek,
@@ -202,6 +203,8 @@ class ArchiveStream(ReadOnlyIOStream):
         member_name: str | None = None,
         repeat_verdict: bool = True,
         checks_content: bool = False,
+        custom_digests: CustomDigests | None = None,
+        bounded: bool = False,
     ) -> None:
         super().__init__()
         # Named in the closed-source error and returned by ``name``; ``None`` for a
@@ -281,6 +284,8 @@ class ArchiveStream(ReadOnlyIOStream):
                 end_check=end_check,
                 fill_size=fill_size,
                 lazy=lazy,
+                custom_digests=custom_digests,
+                bounded=bounded,
             )
 
     def _init_checks(
@@ -295,6 +300,8 @@ class ArchiveStream(ReadOnlyIOStream):
         end_check: Callable[[int], None] | None,
         fill_size: bool,
         lazy: bool,
+        custom_digests: CustomDigests | None = None,
+        bounded: bool = False,
     ) -> None:
         """The part of the constructor that can emit: inside the stream's scope."""
         # Fused member verification (None when there is nothing to check). Prefer an
@@ -311,6 +318,8 @@ class ArchiveStream(ReadOnlyIOStream):
                 digest_transforms=digest_transforms,
                 end_check=end_check,
                 fill_size=fill_size,
+                custom_digests=custom_digests,
+                bounded=bounded,
             )
         if not lazy:
             self._ensure_open()

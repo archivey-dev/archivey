@@ -242,6 +242,9 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.backends.tar_reader._MemberDataView": (
         "DelegatingStream.__init__ first; close() reads nothing assigned after it"
     ),
+    "archivey.internal.streams.streamtools.fullcount.FullCountStream": (
+        "no __init__ of its own: DelegatingStream's"
+    ),
     "archivey.internal.streams.streamtools.readahead.ReadAheadStream": (
         "assigns every field close() reads before DelegatingStream.__init__"
     ),
@@ -267,12 +270,9 @@ _CLOSE_STATE_FIRST = {
         "plain assignments only"
     ),
     "archivey.internal.streams.codecs.rapidgzip_select._StdlibSeekContract": "plain assignments only",
-    "archivey.internal.backends.rar_reader._JoinedParts": (
+    "archivey.internal.volumes.JoinedViews": (
         "assigns _views, then ConcatenatedFile.__init__, which sets its close state "
         "first; its views come from SharedSource.view, which has already checked them"
-    ),
-    "archivey.internal.backends.iso_reader._PyCdlibStream": (
-        "raw.__enter__() runs after DelegatingStream.__init__ has set what close() reads"
     ),
     "archivey.internal.backends.zip_reader._UnconfirmedZipCryptoStream": (
         "assigns _payload_complete, then DelegatingStream.__init__"
@@ -289,7 +289,7 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.backends.rar_reader._UnrarOwnedStream": (
         "assigns every field close() reads before DelegatingStream.__init__"
     ),
-    "archivey.internal.backends.rar_reader._RespawnStream": "plain assignments only",
+    "archivey.internal.streams.respawn.RespawnStream": "plain assignments only",
     "archivey.internal.backends.rar_copy_sources._TeeBlock": "plain assignments only",
     "archivey.internal.backends.sevenzip_pipeline._DecodedPastSizeCheck": (
         "plain assignments only"

@@ -400,7 +400,6 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.streams.streamtools.slice as slice_mod
     from archivey.internal import detection, password_confirm
     from archivey.internal.backends import (
-        iso_reader,
         rar_copy_sources,
         rar_reader,
         sevenzip_pipeline,
@@ -416,17 +415,26 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     from archivey.internal.external import cli, unar
     from archivey.internal.streams import (
         archive_stream,
+        blocks,
         codecs,
         counting,
         crypto,
         decompressor_stream,
+        respawn,
         verify,
     )
     from archivey.internal.streams.codecs import rapidgzip_child
-    from archivey.internal.streams.streamtools import locked, readahead, solid, sparse
+    from archivey.internal.streams.streamtools import (
+        fullcount,
+        locked,
+        readahead,
+        solid,
+        sparse,
+    )
 
     forwards_or_owns = {
         archive_stream.ArchiveStream,
+        blocks.BlockStream,  # owns its resume points: every block start
         bcj2.Bcj2DecoderStream,  # owns its one resume point: the folder start
         rapidgzip_child.RapidgzipChildStream,  # asks the child's rapidgzip index
         codecs.zlib_codec._DeflateEndCheckStream,
@@ -452,14 +460,15 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     }
     remaps_or_not_on_chain = {
         locked.LockedStream,
+        # Over a format plugin's own member stream, which has no table below it.
+        fullcount.FullCountStream,
         counting.CountingReader,
         counting.SeekCountingStream,
         rar_reader._UnrarOwnedStream,
-        rar_reader._RespawnStream,
+        respawn.RespawnStream,
         # Subprocess stdout, like the unrar pipe: nothing below it has a table.
         unar.UnarOutputStream,
         cli.ProcessOutputStream,  # the base of the two subprocess stdout streams
-        iso_reader._PyCdlibStream,
         solid._MemberSlice,
         # A table below it (gzip under a .tar.gz) is in stored offsets, and the map
         # from logical to stored offsets is not a contiguous shift, so a slice's
@@ -639,7 +648,6 @@ def test_delegating_stream_close_inventory() -> None:
 
     from archivey.internal import password_confirm
     from archivey.internal.backends import (
-        iso_reader,
         rar_copy_sources,
         rar_reader,
         sevenzip_pipeline,
@@ -648,14 +656,19 @@ def test_delegating_stream_close_inventory() -> None:
     )
     from archivey.internal.external import cli, unar
     from archivey.internal.streams import codecs, counting
-    from archivey.internal.streams.streamtools import locked, readahead, sparse
+    from archivey.internal.streams.streamtools import (
+        fullcount,
+        locked,
+        readahead,
+        sparse,
+    )
 
     owns_via_base = {
         locked.LockedStream,
+        fullcount.FullCountStream,
         counting.CountingReader,
         counting.OutputCountingStream,
         counting.SeekCountingStream,
-        iso_reader._PyCdlibStream,
         codecs.zlib_codec._DeflateEndCheckStream,
         codecs.gzip_codec._GzipTruncationCheckStream,
         codecs.zlib_codec._ZlibAdlerCheckStream,
