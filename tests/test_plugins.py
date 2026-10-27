@@ -56,6 +56,8 @@ from archivey.plugins import (
     PluginArchiveInfo,
     PluginContext,
     PluginSource,
+    block_stream,
+    buffered_stream,
     register_format,
 )
 from tests.conftest import requires, requires_zstd
@@ -723,7 +725,7 @@ _PLAIN = b"plugin member data " * 200
 
 
 def _compressed_plugin(
-    method: CompressionAlgorithm,
+    method: CompressionAlgorithm | StreamFormat,
     properties: bytes | None = None,
     translated: list[Exception] | None = None,
 ) -> type[FormatPlugin]:
@@ -929,6 +931,162 @@ def test_decompress_refusals(
         pytest.raises(error),
     ):
         reader.read("m.bin")
+
+
+def _stream(method: StreamFormat, data: bytes) -> bytes:
+    if method is StreamFormat.ZLIB:
+        return zlib.compress(data)
+    if method is StreamFormat.GZIP:
+        import gzip
+
+        return gzip.compress(data, mtime=0)
+    if method is StreamFormat.BZIP2:
+        return bz2.compress(data)
+    if method is StreamFormat.XZ:
+        return lzma.compress(data, format=lzma.FORMAT_XZ)
+    assert method is StreamFormat.LZMA_ALONE
+    return lzma.compress(data, format=lzma.FORMAT_ALONE)
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        StreamFormat.ZLIB,
+        StreamFormat.GZIP,
+        StreamFormat.BZIP2,
+        StreamFormat.XZ,
+        StreamFormat.LZMA_ALONE,
+    ],
+)
+def test_decompress_stream_formats(
+    clean_registry: None, tmp_path: Path, method: StreamFormat
+) -> None:
+    register_format(_compressed_plugin(method))
+    path = _compressed_archive(tmp_path, _stream(method, _PLAIN))
+    with open_archive(path) as reader, reader.open("m.bin") as stream:
+        assert stream.read() == _PLAIN
+        assert stream.verified is archivey.Verification.CONTENT
+
+
+def test_decompress_stream_format_reads_as_its_files_do(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """Unlike a bzip2 member, a ``.bz2`` stream may hold several, as bzip2 decodes."""
+    half = len(_PLAIN) // 2
+    stored = bz2.compress(_PLAIN[:half]) + bz2.compress(_PLAIN[half:])
+    register_format(_compressed_plugin(StreamFormat.BZIP2))
+    with open_archive(_compressed_archive(tmp_path, stored)) as reader:
+        assert reader.read("m.bin") == _PLAIN
+
+
+@pytest.mark.parametrize(
+    "method", [StreamFormat.ZLIB, StreamFormat.GZIP, StreamFormat.XZ]
+)
+def test_decompress_stream_format_reports_data_after_end(
+    clean_registry: None, tmp_path: Path, method: StreamFormat
+) -> None:
+    """As for a file of that format: reported, and raised only under a strict policy."""
+    register_format(_compressed_plugin(method))
+    path = _compressed_archive(tmp_path, _stream(method, _PLAIN) + b"junk")
+    with open_archive(path) as reader:
+        assert reader.read("m.bin") == _PLAIN
+        assert reader.diagnostics.counts == {DiagnosticCode.ARCHIVE_TRAILING_DATA: 1}
+    strict = archivey.ArchiveyConfig(diagnostic_policy=archivey.DiagnosticPolicy.STRICT)
+    with (
+        open_archive(path, config=strict) as reader,
+        pytest.raises(archivey.ArchiveyError),
+    ):
+        reader.read("m.bin")
+
+
+class _Trickle(io.RawIOBase):
+    """A raw stream that returns at most 7 bytes a read, as ``io.RawIOBase`` may."""
+
+    def __init__(self, data: bytes) -> None:
+        self._data = io.BytesIO(data)
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: memoryview) -> int:  # type: ignore[override]
+        chunk = self._data.read(min(len(buffer), 7))
+        buffer[: len(chunk)] = chunk
+        return len(chunk)
+
+
+@pytest.mark.parametrize("wrap", [lambda stream: stream, buffered_stream])
+def test_a_raw_stream_reads_whole_lengths(
+    clean_registry: None, tmp_path: Path, wrap: Callable[[_Trickle], BinaryIO]
+) -> None:
+    """A plugin's stream may return short reads, as an ``io.RawIOBase`` may: the
+    member stream still returns what ``read(n)`` asks for, and closing it closes the
+    plugin's stream."""
+    opened: list[_Trickle] = []
+
+    class TrickleReader(ToyReader):
+        def open_member(
+            self, member: ArchiveMember, locator: tuple[int, int]
+        ) -> MemberData:
+            offset, length = locator
+            opened.append(_Trickle(self._source.read_at(offset, length)))
+            return MemberData(wrap(opened[-1]))
+
+    class TricklePlugin(ToyPlugin):
+        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+            return TrickleReader(source, context)
+
+    register_format(TricklePlugin)
+    path = _compressed_archive(tmp_path, _PLAIN)
+    with open_archive(path) as reader, reader.open("m.bin") as stream:
+        assert stream.read(1000) == _PLAIN[:1000]
+        assert stream.read() == _PLAIN[1000:]
+    assert opened[0].closed
+
+
+def test_only_streams_that_may_read_short_are_wrapped() -> None:
+    """A buffered stream and archivey's own streams already return whole reads."""
+    from archivey.internal import plugin_adapter
+    from archivey.internal.streams.streamtools import SharedSource
+
+    assert plugin_adapter._reads_full(io.BytesIO())
+    with SharedSource(io.BytesIO(b"abc")).view(0, 3) as view:
+        assert plugin_adapter._reads_full(view)
+    assert not plugin_adapter._reads_full(_Trickle(b""))
+
+
+def test_block_stream_decodes_only_the_blocks_it_reads() -> None:
+    data = bytes(range(256)) * 40  # 10240 bytes: two blocks of 4096 and one of 2048
+    decoded: list[int] = []
+
+    def read_block(index: int) -> bytes:
+        decoded.append(index)
+        return data[index * 4096 : (index + 1) * 4096]
+
+    stream = block_stream(len(data), 4096, read_block)
+    assert stream.read(10) == data[:10]
+    stream.seek(9000)
+    assert stream.read(5000) == data[9000:]
+    assert decoded == [0, 2]
+    stream.seek(4000)
+    assert stream.read(200) == data[4000:4200]  # across a block boundary
+    assert decoded == [0, 2, 0, 1]
+    assert stream.read(0) == b""
+    assert stream.seek(0, io.SEEK_END) == len(data)
+    assert stream.read() == b""
+
+
+def test_block_stream_refuses_a_block_of_the_wrong_length() -> None:
+    stream = block_stream(5000, 4096, lambda index: bytes(4096))
+    stream.read(4096)
+    with pytest.raises(CorruptionError, match="block 1 holds 4096 bytes, not the 904"):
+        stream.read()
+
+
+def test_buffered_stream_keeps_a_buffered_stream_and_refuses_others() -> None:
+    buffered = io.BytesIO(b"x")
+    assert buffered_stream(buffered) is buffered
+    with pytest.raises(TypeError, match="RawIOBase"):
+        buffered_stream(object())  # type: ignore[arg-type]
 
 
 def test_translate_exception_mid_read(clean_registry: None, tmp_path: Path) -> None:

@@ -29,6 +29,8 @@ Package map:
   (``ask_verification_proofs``), for ``ArchiveStream.verified``.
 - :mod:`.respawn` — ``RespawnStream``: seeks over a stream that only reads forward,
   reading through on a forward seek and reopening it on a backward one.
+- :mod:`.blocks` — ``BlockStream``: a file stored as fixed-size blocks that each
+  decode on their own, for ``archivey.plugins.block_stream``.
 - :mod:`.crypto` — AES decrypt stage (``[recommended]``) + 7z-local KDF helpers.
 - :mod:`.counting` — measurement wrappers (bytes / seeks).
 """

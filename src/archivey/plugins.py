@@ -22,16 +22,19 @@ passwords, and new diagnostic codes.
 
 from __future__ import annotations
 
+import io
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
-from typing import BinaryIO, ClassVar, Generic, NamedTuple, Protocol, TypeVar
+from typing import BinaryIO, ClassVar, Generic, NamedTuple, Protocol, TypeVar, cast
 
 from archivey.config import ArchiveyConfig
 from archivey.diagnostics import DiagnosticCode, DiagnosticContext
 from archivey.exceptions import ArchiveyError
 from archivey.internal.naming import normalize_member_name
+from archivey.internal.streams.blocks import BlockStream
+from archivey.internal.streams.streamtools import ensure_bufferedio
 from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
@@ -39,6 +42,7 @@ from archivey.types import (
     HashAlgorithm,
     MemberType,
     PluginContainer,
+    StreamFormat,
 )
 
 __all__ = [
@@ -54,6 +58,8 @@ __all__ = [
     "PluginContext",
     "PluginReader",
     "PluginSource",
+    "block_stream",
+    "buffered_stream",
     "register_format",
 ]
 
@@ -124,8 +130,13 @@ class MemberDigest(NamedTuple):
 class MemberData(NamedTuple):
     """A member's data, as :meth:`IndexedReader.open_member` returns it."""
 
-    stream: BinaryIO
-    """The member's decoded bytes, read from the start. archivey closes it."""
+    stream: BinaryIO | io.RawIOBase
+    """The member's decoded bytes, read from the start. archivey closes it. A stream
+    that is neither an :class:`io.BufferedIOBase` nor one archivey made (a view, a
+    :meth:`PluginContext.decompress` result, :func:`block_stream`) may return fewer
+    bytes than asked before the end, as an :class:`io.RawIOBase` may: archivey asks
+    again for the rest. A buffered stream is taken at its word, as
+    :class:`io.BufferedIOBase` promises: a short read from it is its end."""
 
     expected_hashes: Mapping[HashAlgorithm, bytes] = {}
     """Digests archivey checks the bytes against as they are read. A digest in
@@ -214,7 +225,8 @@ class PluginContext:
         archive_name: str | None,
         config: ArchiveyConfig,
         decompress: Callable[
-            [BinaryIO, CompressionAlgorithm, int | None, bytes | None], BinaryIO
+            [BinaryIO, CompressionAlgorithm | StreamFormat, int | None, bytes | None],
+            BinaryIO,
         ],
         report: Callable[
             [DiagnosticCode, str, DiagnosticContext, ArchiveMember | None], None
@@ -315,7 +327,7 @@ class PluginContext:
     def decompress(
         self,
         data: BinaryIO,
-        method: CompressionAlgorithm,
+        method: CompressionAlgorithm | StreamFormat,
         *,
         size: int | None = None,
         properties: bytes | None = None,
@@ -328,18 +340,24 @@ class PluginContext:
         process isolation and accelerator settings, and translates the decoder's errors
         itself, so ``translate_exception`` never sees them.
 
+        ``method`` is a compression method or a stream format. As a method, it is one
+        of ``STORED``, ``DEFLATE`` (raw, no zlib or gzip header), ``DEFLATE64``,
+        ``BZIP2``, ``ZSTD``, ``LZ4`` (frames), ``BROTLI``, ``LZMA`` (raw LZMA1;
+        ``properties`` is its 5-byte properties: the ``lc``, ``lp``, ``pb`` byte and the
+        dictionary size) and ``LZMA2`` (raw; ``properties`` is its 1-byte dictionary
+        size). As a stream format, the data is a whole stream with its own framing,
+        decoded as a file of that format is: ``ZLIB`` (deflate with the zlib header and
+        Adler-32), ``GZIP``, ``XZ``, ``LZMA_ALONE``, ``LZIP`` and the others
+        ``StreamFormat`` names. Any other method raises ``UnsupportedFeatureError``,
+        and one whose optional package is missing raises ``PackageNotInstalledError``.
+
         Where the compressed data ends depends on the method. ``ZSTD`` and ``LZ4`` data
         is one or more frames, decoded together. ``BZIP2`` data is one stream, and a
         second one is damage. ``LZMA`` and ``LZMA2`` end at their end marker; raw LZMA1,
         which may have none, then ends at ``size``. For every method, bytes left after
-        that end raise ``CorruptionError``.
-
-        ``method`` is one of ``STORED``, ``DEFLATE`` (raw, no zlib or gzip header),
-        ``DEFLATE64``, ``BZIP2``, ``ZSTD``, ``LZ4``, ``BROTLI``, ``LZMA`` (raw LZMA1;
-        ``properties`` is its 5-byte properties: the ``lc``, ``lp``, ``pb`` byte and the
-        dictionary size) and ``LZMA2`` (raw; ``properties`` is its 1-byte dictionary
-        size). Any other method raises ``UnsupportedFeatureError``, and a method whose
-        optional package is missing raises ``PackageNotInstalledError``.
+        that end raise ``CorruptionError``. A stream format ends where its format says,
+        and bytes after that end are reported as ``ARCHIVE_TRAILING_DATA``, as for a
+        file of that format; under ``DiagnosticPolicy.STRICT`` that report raises.
 
         ``size`` is the decoded length when the format stores it. Raw LZMA1 may have
         no end marker and needs it then.
@@ -462,3 +480,31 @@ def register_format(plugin: type[FormatPlugin]) -> None:
 
     with _register_lock:
         register_plugin(plugin)
+
+
+def block_stream(
+    size: int, block_size: int, read_block: Callable[[int], bytes]
+) -> BinaryIO:
+    """A member stream over a file stored as blocks that each decode on their own.
+
+    The file is ``size`` bytes in blocks of ``block_size``, the last one shorter, as
+    SquashFS, CAB, WIM and CSO store them. ``read_block(i)`` returns block ``i``
+    decoded, from ``PluginContext.decompress`` or the plugin's own decoder. archivey
+    calls it when a read first needs the block and keeps only the block it is in, so
+    a seek decodes one block, not the file up to it. A block of another length than
+    the file needs there raises ``CorruptionError``. Return the result as
+    ``MemberData.stream``, with ``bounded=True``.
+    """
+    return BlockStream(size, block_size, read_block)
+
+
+def buffered_stream(stream: BinaryIO | io.RawIOBase) -> BinaryIO:
+    """``stream`` behind a read buffer, so ``read(n)`` returns ``n`` bytes unless it ends.
+
+    archivey already makes a member stream's short reads whole, without a buffer. This
+    is for an :class:`io.RawIOBase` whose reads cost more than a buffer copy, such as
+    one call into a library per read. A stream that is already buffered is returned as it
+    is; any other object that is not an :class:`io.RawIOBase` raises ``TypeError``.
+    Closing the result closes ``stream``.
+    """
+    return cast(BinaryIO, ensure_bufferedio(stream, owns=True))

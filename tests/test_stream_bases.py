@@ -415,6 +415,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     from archivey.internal.external import cli, unar
     from archivey.internal.streams import (
         archive_stream,
+        blocks,
         codecs,
         counting,
         crypto,
@@ -423,10 +424,17 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         verify,
     )
     from archivey.internal.streams.codecs import rapidgzip_child
-    from archivey.internal.streams.streamtools import locked, readahead, solid, sparse
+    from archivey.internal.streams.streamtools import (
+        fullcount,
+        locked,
+        readahead,
+        solid,
+        sparse,
+    )
 
     forwards_or_owns = {
         archive_stream.ArchiveStream,
+        blocks.BlockStream,  # owns its resume points: every block start
         bcj2.Bcj2DecoderStream,  # owns its one resume point: the folder start
         rapidgzip_child.RapidgzipChildStream,  # asks the child's rapidgzip index
         codecs.zlib_codec._DeflateEndCheckStream,
@@ -452,6 +460,8 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     }
     remaps_or_not_on_chain = {
         locked.LockedStream,
+        # Over a format plugin's own member stream, which has no table below it.
+        fullcount.FullCountStream,
         counting.CountingReader,
         counting.SeekCountingStream,
         rar_reader._UnrarOwnedStream,
@@ -646,10 +656,16 @@ def test_delegating_stream_close_inventory() -> None:
     )
     from archivey.internal.external import cli, unar
     from archivey.internal.streams import codecs, counting
-    from archivey.internal.streams.streamtools import locked, readahead, sparse
+    from archivey.internal.streams.streamtools import (
+        fullcount,
+        locked,
+        readahead,
+        sparse,
+    )
 
     owns_via_base = {
         locked.LockedStream,
+        fullcount.FullCountStream,
         counting.CountingReader,
         counting.OutputCountingStream,
         counting.SeekCountingStream,
