@@ -165,7 +165,7 @@ def test_extract(tmp_path: Path, name: str, pipe: bool) -> None:
         reader.extract_all(dest)
     for member_name, content in CONTENT.items():
         assert (dest / member_name).read_bytes() == content
-    assert os.readlink(dest / "dir" / "link") == "../a.txt"
+    assert os.readlink(dest / "dir" / "link") == os.path.join("..", "a.txt")
     assert (dest / "a.txt").stat().st_ino == (dest / "dir" / "hard.txt").stat().st_ino
     assert (dest / "empty").is_dir()
 
