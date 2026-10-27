@@ -31,11 +31,13 @@ from typing import BinaryIO, ClassVar, Generic, NamedTuple, Protocol, TypeVar
 from archivey.config import ArchiveyConfig
 from archivey.diagnostics import DiagnosticCode, DiagnosticContext
 from archivey.exceptions import ArchiveyError
+from archivey.internal.naming import normalize_member_name
 from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
     CompressionAlgorithm,
     HashAlgorithm,
+    MemberType,
     PluginContainer,
 )
 
@@ -71,13 +73,17 @@ class MemberRecord(NamedTuple, Generic[LocatorT]):
     """One member, as :meth:`IndexedReader.iter_members` yields it."""
 
     member: ArchiveMember
-    """The member, with its public fields filled in. ``name`` is decoded but not yet
-    normalized: archivey normalizes it and reports the change, as for a built-in
-    format."""
+    """The member, with its public fields filled in. ``name`` is decoded; archivey
+    normalizes it and reports the change, as for a built-in format."""
 
     locator: LocatorT
     """Anything the reader needs to find the member's data again. archivey stores it
     and hands it back to :meth:`IndexedReader.open_member`."""
+
+    stored_name: str | None = None
+    """The decoded name before :meth:`PluginContext.normalize_name`, when the reader
+    normalized ``member.name`` itself so that a report it made while listing names
+    the member as callers see it. archivey reports the change from this name."""
 
 
 class Hasher(Protocol):
@@ -275,6 +281,17 @@ class PluginContext:
         fails such a member instead of skipping it as a link with no target.
         """
         self._link_target_unavailable(member, reason, message, target_in_archive)
+
+    def normalize_name(self, name: str, member_type: MemberType) -> str:
+        """The name archivey gives a member: ``./a//b`` becomes ``a/b``, and a
+        directory's name ends in ``/``.
+
+        archivey normalizes every name a reader yields, so most readers never call
+        this. A reader that reports on a member before yielding it calls it first, so
+        the report and the member carry one name: it sets ``member.name`` to the
+        result and yields the name it started from as ``MemberRecord.stored_name``.
+        """
+        return normalize_member_name(name, member_type, backslash_is_separator=False)
 
     def decode_name(self, raw: bytes) -> str:
         """Decode a stored name the way built-in formats do.

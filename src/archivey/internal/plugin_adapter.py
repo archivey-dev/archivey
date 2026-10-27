@@ -100,6 +100,9 @@ class PluginReaderAdapter(BaseArchiveReader):
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
     ) -> None:
+        # Until ``plugin.open()`` returns there is no reader, and only the plugin
+        # translates errors (``_translate_exception``).
+        self._reader_open = False
         super().__init__(
             format,
             streaming,
@@ -153,6 +156,7 @@ class PluginReaderAdapter(BaseArchiveReader):
                 f"{type(reader).__name__}, not an IndexedReader"
             )
         self._reader = reader
+        self._reader_open = True
         self._MEMBER_LIST_UPFRONT = reader.member_list_upfront
 
     def _decompress(
@@ -262,9 +266,9 @@ class PluginReaderAdapter(BaseArchiveReader):
         )
 
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
-        # Before ``open()`` returns there is no reader: only the plugin translates.
-        reader = getattr(self, "_reader", None)
-        translated = None if reader is None else reader.translate_exception(exc)
+        translated = (
+            self._reader.translate_exception(exc) if self._reader_open else None
+        )
         return (
             translated
             if translated is not None
@@ -291,7 +295,11 @@ class PluginReaderAdapter(BaseArchiveReader):
                     f"{type(self._reader).__name__}.iter_members() yielded "
                     f"{type(member).__name__}, not an ArchiveMember"
                 )
-            presented = member.name
+            # A reader that reports while listing normalizes the name itself, and
+            # hands over the one it started from.
+            presented = (
+                record.stored_name if record.stored_name is not None else member.name
+            )
             member.name = normalize_member_name(
                 presented, member.type, backslash_is_separator=False
             )

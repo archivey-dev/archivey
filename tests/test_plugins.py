@@ -1347,3 +1347,28 @@ def test_bounded_long_stream_is_cut_at_the_size(
     register_format(_bounded_plugin([], bounded=True, extra=b"EXTRA"))
     with open_archive(_write(tmp_path, build_toya(_ENTRIES))) as reader:
         assert reader.read("b.bin") == bytes(range(256)) * 4
+
+
+def test_a_reader_can_normalize_names_itself(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """A reader that names a member in a report while listing normalizes the name
+    first; archivey still reports the change, from ``stored_name``."""
+
+    class SelfNormalizing(ToyReader):
+        def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+            for record in super().iter_members():
+                member = record.member
+                stored = member.name
+                member.name = self._context.normalize_name(stored, member.type)
+                yield MemberRecord(member, record.locator, stored_name=stored)
+
+    _plugin_with("selfnorm", reader=SelfNormalizing)
+    data = build_toya(
+        [("./a//b.txt", MemberType.FILE, b"b"), ("d", MemberType.DIRECTORY, b"")]
+    )
+    with open_archive(_write(tmp_path, data, "t.selfnorm")) as reader:
+        assert [m.name for m in reader.members()] == ["a/b.txt", "d/"]
+        # A directory's trailing slash is not a reported change.
+        counts = reader.diagnostics.counts
+        assert counts.get(archivey.DiagnosticCode.MEMBER_NAME_NORMALIZED) == 1

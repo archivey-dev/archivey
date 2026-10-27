@@ -2355,6 +2355,23 @@ def test_a_malformed_rock_ridge_entry_costs_its_own_member_only() -> None:
         assert by_name["bbb"].diagnostics == ()
 
 
+def test_a_report_made_while_listing_names_the_member_as_listed() -> None:
+    """A directory's name ends in ``/`` once normalized; a report made while the
+    member was typed names it the same way, so the two can be matched."""
+    from archivey import DiagnosticCode
+
+    def populate(iso: Any) -> None:
+        iso.add_directory("/DDD", rr_name="ddd")
+
+    data = _cut_after(_build_rr_iso(populate), b"ddd")
+    with open_archive(io.BytesIO(data)) as ar:
+        ddd = {m.name: m for m in ar.members()}["ddd/"]
+        [diagnostic] = ddd.diagnostics
+        assert diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        assert diagnostic.context.member_name == "ddd/"
+        assert "ddd/" in diagnostic.message
+
+
 def test_an_area_cut_before_its_nm_entry_lists_under_the_iso_name() -> None:
     """With no ``NM`` entry pycdlib names the record by its ISO 9660 identifier,
     ``;1`` included; the member lists under the identifier with that removed, as a

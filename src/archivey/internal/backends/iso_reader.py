@@ -1447,23 +1447,22 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         # many targets through one wide directory stays linear.
         self._rock_ridge_children: dict[int, dict[bytes, DirectoryRecord]] = {}
         # The adapter calls this under the handle lock and translates its errors.
-        # pycdlib reads the image through this view; ``_raw_directory`` reads a
-        # directory's extent again through it.
+        # pycdlib reads the image through this view of the source, never through
+        # ``open(str(path))``: a path pycdlib opened for itself would have nothing of
+        # ours underneath it, and the view is what bounds the reads pycdlib sizes
+        # from the image's own headers. pycdlib clamps a *file*'s ``data_length`` to
+        # the image, but not a *directory*'s: a root record declaring 4 GiB asks for
+        # 4 GiB inside ``open_fp``, from a file of any size. The view turns that into
+        # a short read, which pycdlib reports as an invalid directory record. When
+        # the file holds less than the image declares, ``_cut_short`` makes that a
+        # ``TruncatedError``; otherwise, as for a full-length image whose directory
+        # declares too much, ``IsoPlugin.translate_exception`` makes it a
+        # ``CorruptionError``. pycdlib never closes a file object it was handed
+        # (``_managing_fp`` is set only by ``open()``), so the reader closes the view
+        # (``_release_archive_handles``). ``_raw_directory`` reads a directory's
+        # extent again through it.
         self._iso_fp = source.view(0)
         try:
-            # Always the source, never ``open(str(path))``: a path pycdlib opened
-            # for itself would have nothing of ours underneath it, and the
-            # source is what bounds the reads pycdlib sizes from the image's own
-            # headers. pycdlib clamps a *file*'s ``data_length`` to the image,
-            # but not a *directory*'s: a root record declaring 4 GiB asks for 4
-            # GiB inside ``open_fp``, from a file of any size. The source turns
-            # that into a short read, which pycdlib reports as an invalid
-            # directory record. When the file holds less than the image
-            # declares, ``_cut_short`` makes that a ``TruncatedError``;
-            # otherwise, as for a full-length image whose directory declares
-            # too much, ``_translate_exception`` makes it a
-            # ``CorruptionError``. pycdlib never closes a file object it was
-            # handed (``_managing_fp`` is set only by ``open()``).
             limits = config.listing_limits
             budget = (
                 None
@@ -1939,12 +1938,10 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         for index, (ns_path, raw_path, record, superseded) in enumerate(
             self._walk_records()
         ):
-            yield MemberRecord(
-                self._make_member(
-                    ns_path, raw_path, record, index, superseded=superseded
-                ),
-                record,
+            member, stored_name = self._make_member(
+                ns_path, raw_path, record, index, superseded=superseded
             )
+            yield MemberRecord(member, record, stored_name=stored_name)
 
     def _make_member(
         self,
@@ -1954,7 +1951,8 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         index: int,
         *,
         superseded: bool = False,
-    ) -> ArchiveMember:
+    ) -> tuple[ArchiveMember, str]:
+        """The member, and its name as presented before normalization."""
         rr = getattr(record, "rock_ridge", None)
         raw_mode, uid, gid = self._px(rr)
 
@@ -1995,8 +1993,10 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             # The newest version takes the bare name. Keeping the stored spelling also
             # keeps ``FOO.;1`` and ``FOO;1`` apart when both are superseded.
             presented = ns_path.lstrip("/")
-        # The adapter normalizes the name, and reports a change, once it is yielded.
-        name = presented
+        # Normalized here, not left to the adapter, so the reports made while
+        # listing name the member as callers see it; the adapter reports the change
+        # from ``presented``.
+        name = self._context.normalize_name(presented, member_type)
         raw_name = raw_path
         extra = (
             MemberExtra({"iso.version": version})
@@ -2114,7 +2114,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
                 ),
                 member=member,
             )
-        return member
+        return member, presented
 
     def _zisofs_entry(self, record: DirectoryRecord) -> _ZisofsEntry | None:
         rr = getattr(record, "rock_ridge", None)
@@ -2401,12 +2401,17 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         """
         block_size = self._iso.logical_block_size
         layout = self._layouts.get(id(record))
+        if id(record) not in self._layouts:
+            # Described as written (``_file_size`` keeps a layout for every other
+            # record): the span comes from the record the listed size came from, so
+            # ``bounded`` holds for the same number. ``orig_extent_loc`` is where the
+            # record says the data is in the image; pycdlib's ``extent_location()``
+            # can differ only after it moves extents to write an image, which
+            # archivey never does.
+            return [(record.orig_extent_loc * block_size, record.data_length)]
         if layout is None:
-            # Described as written, or the declared length is lost and pycdlib's
-            # clamped inode is what there is to read.
-            assert id(record) in self._layouts or self._as_written(record), (
-                "the layout is worked out while listing"
-            )
+            # The declared length is lost, so the member lists with no size, and
+            # pycdlib's clamped inode is what there is to read.
             inode = record.inode
             assert inode is not None
             return [(inode.orig_extent_loc * block_size, inode.data_length)]
@@ -2512,14 +2517,16 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         )
 
     def _release_archive_handles(self) -> None:
-        """Close what the open built: pycdlib's state over the source.
+        """Close what the open built: pycdlib's state, and the reader's own view of
+        the source that pycdlib reads through.
 
         One release path for both the failure inside ``__init__`` and the ordinary
         close, so the two cannot drift. It is called from ``__init__`` before the
         object is complete, which is why ``_iso.close()`` is gated on the flag rather
-        than tried: pycdlib raises on a ``close()`` it never opened. The source itself
-        is not this reader's to close here: the reader closes it after teardown, and
-        ``open_archive`` closes it when the constructor raises.
+        than tried: pycdlib raises on a ``close()`` it never opened. The
+        ``ArchiveSource`` under the view is not this reader's to close: the adapter
+        closes it after teardown, and ``open_archive`` closes it when the constructor
+        raises.
         """
         try:
             if self._iso_opened:

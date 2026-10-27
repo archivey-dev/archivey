@@ -287,6 +287,12 @@ attach the report to a member, either while listing it (before it is yielded) or
 opening it. The caller's `DiagnosticPolicy` applies, so a code the caller raises on
 raises from `report()`.
 
+A report made while listing a member should name it as callers will see it, and
+archivey normalizes names only after `iter_members()` yields them. So normalize the
+name first with `PluginContext.normalize_name()`, set `member.name` to the result, and
+yield the name you started from as `MemberRecord(member, locator, stored_name=...)`.
+archivey then reports the change from that name, as it would have.
+
 A symlink whose target cannot be read is reported with
 `PluginContext.link_target_unavailable()`, which also leaves `link_target` unset and
 tells extraction whether the archive holds a target the reader could not reach.
