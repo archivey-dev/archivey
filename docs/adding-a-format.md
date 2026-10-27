@@ -136,9 +136,10 @@ whatever its name is.
 
 A format is an `ArchiveFormat`, a pair of a container and a stream. A plugin defines its
 container as a member of its own `PluginContainer` subclass, and uses
-`StreamFormat.UNCOMPRESSED` as the stream. The container's value is the format's name in
-`format=` and on the command line, so it must differ from every built-in format's
-(`"zip"`, `"tar"`, `"iso"` and the others) and from every other plugin's.
+`StreamFormat.UNCOMPRESSED` as the stream. The container's value and its member name are
+the format's names in `format=` and on the command line, so neither may already name a
+format: not a built-in one (`"zip"`, `"tar.gz"`, `"TAR_GZ"` and the others) and not
+another plugin's. `register_format()` refuses a plugin whose name is taken.
 
 Code that matches on `ArchiveFormat.container` needs a default case once a plugin is
 registered, because the set of containers is no longer only `ContainerFormat`.
@@ -204,7 +205,8 @@ decoder.
 archivey checks every member stream against what the listing said:
 
 - **Size.** A stream that ends before `member.size` raises `TruncatedError`, and one that
-  runs past it raises `CorruptionError`.
+  runs past it raises `CorruptionError`. A file listed with no size is read to the end
+  of its stream, and only its checksums are checked.
 - **Checksums archivey can compute.** A CRC-32 or BLAKE2sp in `member.hashes`, or in
   `MemberData.expected_hashes`, is checked as the stream is read. A mismatch raises
   `CorruptionError`, and a full read with a match reaches `Verification.CONTENT`.
@@ -262,7 +264,9 @@ archivey recognises a plugin's format by its `magic`, its `extensions`, and an o
 - An **extension** that a built-in format uses is refused at registration.
 - A **probe** is a function that takes the first bytes of the source and returns `True`
   for your format. It gets only the bytes detection has already read, and runs after
-  every built-in check. Use it only for a format with no fixed signature.
+  every built-in check. Like a built-in format's probe, it runs only when the source's
+  name has one of your extensions, or when `ArchiveyConfig(always_probe_content=True)`
+  is set. Use it only for a format with no fixed signature.
 
 `FormatInfo.from_plugin` is `True` when detection chose a plugin's format.
 

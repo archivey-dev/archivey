@@ -14,11 +14,12 @@ from __future__ import annotations
 
 import lzma
 import threading
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Generator, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import replace
-from typing import TYPE_CHECKING, BinaryIO, ClassVar
+from typing import BinaryIO, ClassVar
 
-from archivey.config import ArchiveyConfig
+from archivey.config import ArchiveyConfig, ProcessIsolation
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.exceptions import (
     ArchiveyError,
@@ -26,6 +27,7 @@ from archivey.exceptions import (
     CorruptionError,
     UnsupportedFeatureError,
 )
+from archivey.internal import format_args
 from archivey.internal.base_reader import (
     BaseArchiveReader,
     ReadBackend,
@@ -33,7 +35,7 @@ from archivey.internal.base_reader import (
 )
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.format_args import add_plugin_spellings
+from archivey.internal.format_args import add_plugin_spellings, plugin_spelling_clash
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
@@ -72,9 +74,6 @@ from archivey.types import (
     StreamFormat,
 )
 
-if TYPE_CHECKING:
-    from archivey.config import ProcessIsolation
-
 
 class PluginReaderAdapter(BaseArchiveReader):
     """Serves one plugin reader through the internal reader contract."""
@@ -103,8 +102,8 @@ class PluginReaderAdapter(BaseArchiveReader):
         )
         self._source = source
         # The plugin may hold a handle of its own (a library over ``source.path``), so
-        # under CONCURRENT every call into it, and every read of a stream it returned,
-        # takes one lock. The views of ``PluginSource`` need none, but archivey cannot
+        # under CONCURRENT every call into it (each inside ``_handle_guard``), and every
+        # read of a stream it returned, takes one lock. The views of ``PluginSource`` need none, but archivey cannot
         # tell which kind of reader it was given.
         if MemberStreams.CONCURRENT in member_streams:
             self._handle_lock = threading.Lock()
@@ -129,6 +128,9 @@ class PluginReaderAdapter(BaseArchiveReader):
         )
         with self._translated_errors(), self._handle_guard():
             reader = plugin.open(plugin_source, context)
+        # Each check that the plugin kept to the interface sits outside the error
+        # boundary, so a plugin's broad ``translate_exception`` cannot report a plugin
+        # bug as a fault in the archive.
         if not isinstance(reader, IndexedReader):
             raise TypeError(
                 f"{type(plugin).__name__}.open() returned "
@@ -214,11 +216,11 @@ class PluginReaderAdapter(BaseArchiveReader):
         """Call the plugin's ``open_member``, with its stream under the handle lock."""
         with self._translated_errors(member.name), self._handle_guard():
             data = self._reader.open_member(member, member._raw)
-            if not isinstance(data, MemberData):
-                raise TypeError(
-                    f"{type(self._reader).__name__}.open_member() returned "
-                    f"{type(data).__name__}, not MemberData"
-                )
+        if not isinstance(data, MemberData):
+            raise TypeError(
+                f"{type(self._reader).__name__}.open_member() returned "
+                f"{type(data).__name__}, not MemberData"
+            )
         if self._handle_lock is not None:
             data = data._replace(stream=LockedStream(data.stream, self._handle_lock))
         return data
@@ -247,8 +249,9 @@ class PluginReaderAdapter(BaseArchiveReader):
             stream,
             member.name,
             size=member.size,
-            # The listed size is always enforced, so a short stream raises
-            # TruncatedError and a long one CorruptionError.
+            # A listed size is enforced, so a short stream raises TruncatedError and
+            # a long one CorruptionError. A file listed with no size is read to the
+            # end of its stream, and only its digests are checked.
             expected_size=member.size,
             expected_hashes=expected or None,
             verify_member=member,
@@ -259,7 +262,8 @@ class PluginReaderAdapter(BaseArchiveReader):
         )
 
     def _get_archive_info(self) -> ArchiveInfo:
-        info = self._reader.archive_info()
+        with self._translated_errors(), self._handle_guard():
+            info = self._reader.archive_info()
         cost = CostReceipt(
             listing_cost=(
                 ListingCost.INDEXED
@@ -356,13 +360,13 @@ def _prefix_probe(probe: object) -> ContentProbe:
         /,
         *,
         source_length: int | None = None,
-        read_at: object = None,
-        charge_decode: object = None,
-        isolation: ProcessIsolation | None = None,
+        read_at: Callable[[int, int], bytes | None] | None = None,
+        charge_decode: Callable[[int], bool] | None = None,
+        isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
     ) -> bool:
         return bool(probe(prefix))
 
-    return content_probe  # type: ignore[return-value]
+    return content_probe
 
 
 def _check_plugin(plugin: type[FormatPlugin]) -> ArchiveFormat:
@@ -401,18 +405,24 @@ def _check_plugin(plugin: type[FormatPlugin]) -> ArchiveFormat:
                 f"{plugin.__name__}: container value {value!r} is already used by "
                 f"{other.display_name}"
             )
-    builtin_extensions = {ext.lower() for ext in registry.extension_map()}
+    clash = plugin_spelling_clash(fmt)
+    if clash is not None:
+        raise ArchiveyUsageError(
+            f"{plugin.__name__}: format= spelling {clash!r} already names another "
+            "format; choose a container value and member name no format uses"
+        )
+    claimed = {ext.lower(): owner for ext, owner in registry.extension_map().items()}
     for ext in plugin.extensions:
         if not ext.startswith(".") or len(ext) < 2:
             raise ArchiveyUsageError(
-                f"{plugin.__name__}: extension {ext!r} must start with a dot"
+                f"{plugin.__name__}: extension {ext!r} must be a dot followed by at "
+                "least one character"
             )
-        if ext.lower() in builtin_extensions:
+        owner = claimed.get(ext.lower())
+        if owner is not None:
             raise ArchiveyUsageError(
                 f"{plugin.__name__}: extension {ext!r} is already claimed by "
-                f"{registry.extension_map()[ext].display_name}"
-                if ext in registry.extension_map()
-                else f"{plugin.__name__}: extension {ext!r} is already claimed"
+                f"{owner.display_name}"
             )
     for magic in plugin.magic:
         if magic.offset < 0 or not magic.data:
@@ -445,3 +455,21 @@ def register_plugin(plugin: type[FormatPlugin]) -> None:
     backend = type(f"{plugin.__name__}Backend", (_PluginBackend,), attrs)
     get_registry().register_plugin_backend(backend)
     add_plugin_spellings(fmt)
+
+
+@contextmanager
+def registration_scope() -> Generator[None]:
+    """Undo, on exit, every :func:`register_plugin` made inside it.
+
+    ``register_format`` is permanent by design, so this is for tests. It restores each
+    table :func:`register_plugin` writes; a table that function comes to write is saved
+    here too, next to the others.
+    """
+    restore_registry = get_registry().save_plugin_state()
+    spellings = dict(format_args._plugin_spellings)
+    try:
+        yield
+    finally:
+        restore_registry()
+        format_args._plugin_spellings.clear()
+        format_args._plugin_spellings.update(spellings)
