@@ -28,7 +28,8 @@
       is in `sys.modules`. Refuse a non-`"rb"` mode and a resolved compression. `name`
       is `of.path`; `size` is `fs.size()` as a fact. Test that a `str` that looks
       like a URL makes no request and that `import archivey` imports no fsspec.
-- [ ] 2.2 `RangeSource`: size once, `cat_file` fetches, doubling runs, read-through of
+- [ ] 2.2 `RangeSource`: size once, `cat_file` fetches, doubling from the third
+      sequential read, read-through of
       short forward gaps, one 32 MiB window pool per reader with the shrinking-fetch rule
       (design D2), and the private seam for the constants. Unit-test the planner on a
       recorded read trace, independent of any format.
@@ -46,7 +47,10 @@
 - [ ] 3.3 7z: next-header hint at open; pack-stream hint per member, folder start for
       solid folders.
 - [ ] 3.4 ISO extent hints; RAR header-position hints during the listing walk.
-- [ ] 3.5 Check the ceilings in `specs/fsspec-integration` against the baseline; update
+- [ ] 3.5 Batched span fetches for `extract_all()` and `stream_members()` over
+      non-solid ZIP and 7z: `merge_offset_ranges` then one `cat_ranges` per batch,
+      into the window pool (design D5).
+- [ ] 3.6 Check the ceilings in `specs/fsspec-integration` against the baseline; update
       the baseline.
 
 ## 4. `ArchiveyFileSystem`
@@ -79,15 +83,15 @@
       extraction-view tree and `policy=`, the RAR download, and that an `archivey://`
       URL reaches the network where `open_archive(str)` never does (member names from a
       caller go to `fs.open()`, never into a URL).
-- [ ] 6.3 `dev-docs/threat-model.md`: a remote-source section with two lines: chained
+- [ ] 6.2 `dev-docs/threat-model.md`: a remote-source section with two lines: chained
       URLs reach the protocol they name, and a same-length replacement of an unpinned
       remote object is not detected (design D7).
-- [ ] 6.2 IDEAS.md: replace the fsspec entry with a pointer to this change.
+- [ ] 6.3 IDEAS.md: replace the fsspec entry with a pointer to this change, and add
+      a persisted member index (offsets saved so a later open lists with no walk) as a
+      separate idea.
 
 ## 7. Later, each on its own evidence
 
-- [ ] 7.1 Batched span fetches for `extract_all()` and `stream_members()` through
-      `cat_ranges` (design D5), if the benchmark shows latency left to win.
 - [ ] 7.2 RAR sparse spool investigation (design D6): measure what `unrar` reads, with
       the garbage-filled-holes test, before any code.
 - [ ] 7.3 A changed remote object (design D7): version pinning, `If-Match`, the size

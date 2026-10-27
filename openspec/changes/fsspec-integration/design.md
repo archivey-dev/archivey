@@ -166,13 +166,20 @@ Rejected:
 
 `ArchiveSource` gains one more way to supply its guarantees (`access-mode-and-cost`
 §boundary table). For an `OpenFile` source, the raw stream is an internal
-`RangeSource` over `(fs, path, size)`. Every byte reaches archivey through
-`fs.cat_file(path, start, end)` (or `fs.cat_ranges` for D5). The planner decides each
-fetch's start and length:
+`RangeSource` over `(fs, path, size)`. It is built on fsspec's own primitives, not on
+a cache of its own (maintainer, 2026-10-27): every byte reaches archivey through
+`fs.cat_file(path, start, end)`, and a set of known spans through `fs.cat_ranges`
+after `fsspec.utils.merge_offset_ranges` (D5). The size is learned once and passed on
+(`fs.open(path, size=size)` where a file object is needed), so no call repeats the
+`info` request. What archivey adds is a thin planner that decides each fetch's start
+and length:
 
-1. **Doubling read-ahead.** A read that continues where the last fetch ended doubles
-   the next fetch, from 64 KiB up to `_MAX_FETCH` (8 MiB). A backward jump, or a forward
-   jump past the read-through distance, resets it.
+1. **Doubling read-ahead, once a run is sequential.** The first two reads of a run fetch
+   what they ask for, at least 64 KiB. From the third read that continues where the last
+   fetch ended, each fetch doubles, up to `_MAX_FETCH` (8 MiB). This is the trigger
+   fsspec's `AdaptiveReadaheadCache` uses: a header probe or a single random read never
+   pays for read-ahead. A backward jump, or a forward jump past the read-through
+   distance, ends the run.
 2. **Read through short forward gaps.** A forward seek of at most
    `ArchiveyConfig.max_read_through` bytes (public, default 1 MiB; maintainer,
    2026-10-25) does not end the sequential run: the
@@ -239,6 +246,15 @@ Rejected:
 
 - **Pick an fsspec cache per format.** The table shows every cache is wrong somewhere,
   and none of them can take a hint. The planner is about 200 lines and owns the policy.
+- **fsspec's `AdaptiveReadaheadCache`.** Measured on the stage 1 benchmark: it does not
+  overfetch on a listing, but its read-ahead grows linearly with the run (92 to 327
+  requests where doubling needs a handful), it drops its buffer on any forward seek, so
+  TAR `extract_all()` took 810 requests and twice the bytes, and it exists only from
+  fsspec 2026.9.0. Its trigger (no read-ahead before the third sequential read) is
+  borrowed in rule 1.
+- **fsspec's `KnownPartsOfAFile` as the window pool.** With its default `strict=False`
+  a read past a known part returns zero bytes instead of fetching them, which would turn
+  a planner bug into silent wrong data. The pool fetches on a miss.
 - **A per-source memory bound.** Volumes and streams would multiply it, and the count
   of both comes from the archive.
 - **A public `advise()` on archivey streams.** Callers never need to say this; backends
@@ -347,11 +363,14 @@ an explicit sequence of `OpenFile` objects is the way to open those.
 ### D5. Batched fetches for whole-archive passes
 
 `extract_all()` and `stream_members()` over a non-solid ZIP or 7z know every member span
-before they start. With the spans as hints, the planner can coalesce adjacent spans
-into one request and prefetch the next span while the current one decodes, through
-`fs.cat_ranges`, which fsspec runs concurrently for async file systems. This is a later
-stage: the planner of D2 already turns each member into one request, and the benchmark
-will show whether the remaining latency matters.
+before they start. With the spans as hints, the planner coalesces them with
+`fsspec.utils.merge_offset_ranges` (`max_gap` = `max_read_through`, `max_block` =
+`_MAX_FETCH`) and fetches each batch with one `fs.cat_ranges`, which fsspec runs
+concurrently for async file systems. This is how fsspec's own Parquet reader
+(`fsspec.parquet.open_parquet_file`) plans its reads. The fetched batch goes into the
+window pool, which is still bounded by `_POOL_BYTES`, so a batch is at most what the pool
+holds. It lands with the range hints (stage 3), because it needs nothing but the spans
+the hints already carry.
 
 ### D6. RAR members over a remote source
 
@@ -445,3 +464,11 @@ The open questions of the first draft, and the review's decision card:
    cannot be detected; like `DIGEST_UNVERIFIABLE`, `STRICT` does not refuse on it.
 4. **No download-size cost figure.** If a user asks, the honest form is an
    after-the-fact count of bytes fetched, not a prediction.
+
+And on 2026-10-27, after the stage 1 benchmark and a survey of how fsspec's own archive
+readers fetch:
+
+5. **Build on fsspec's primitives, with a thin planner, not a full cache.** `cat_file`,
+   `cat_ranges` with `merge_offset_ranges`, and `fs.open(size=)` do the fetching; the
+   planner adds only doubling after a few sequential reads, forward-gap read-through and
+   the memory bound (D2). `AdaptiveReadaheadCache` is not used (D2, Rejected).
