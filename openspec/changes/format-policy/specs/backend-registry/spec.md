@@ -27,13 +27,24 @@ turns off SHALL NOT run.
 ### Requirement: A replacement plugin reads a built-in container
 
 A `FormatPolicy(replace={container: plugin})` SHALL open that built-in container with
-the plugin's reader. Detection SHALL stay the built-in's, and `reader.format` SHALL be
-the built-in format.
+the plugin's reader. Detection SHALL stay the built-in's, `reader.format` SHALL be the
+built-in format, and `format_info.from_plugin` SHALL stay false.
+
+The replacement SHALL NOT be given a multi-volume set, an archive found behind an SFX
+stub, or a read-once source. Each SHALL raise `UnsupportedFeatureError` that names the
+replacement, before the plugin's `open` runs.
 
 #### Scenario: A ZIP opens with the replacement
 
 - **WHEN** a caller opens a ZIP file with `FormatPolicy(replace={ContainerFormat.ZIP: P})`
 - **THEN** `P.open` reads it and `reader.format` is `ArchiveFormat.ZIP`
+
+#### Scenario: A replacement is not given a volume set
+
+- **WHEN** a caller opens the first part of a multi-volume ZIP set with
+  `FormatPolicy(replace={ContainerFormat.ZIP: P})`
+- **THEN** the open raises `UnsupportedFeatureError` that names `P`
+- **AND** `P.open` is not called
 
 ### Requirement: An excluded optional library reads as not installed
 
@@ -42,7 +53,12 @@ that package as not installed for every call made with that config: an accelerat
 under `AUTO` SHALL fall back, a member that needs it SHALL raise
 `PackageNotInstalledError` when opened, and a format that needs it SHALL refuse at open.
 The error SHALL name the policy as the reason. archivey SHALL NOT call into the package
-during such a call.
+during such a call. The exclusion SHALL apply only to calls made with that config:
+another call in the same process, on any thread, SHALL see the package as it is.
+
+`format_availability(fmt, config=...)` and `list_supported_formats(config=...)` SHALL
+count an excluded package as absent, listing it in `missing` with the policy as its
+`reason`. Without `config` they SHALL answer what the environment provides.
 
 #### Scenario: An excluded pyppmd refuses only the PPMd member
 
@@ -51,3 +67,5 @@ during such a call.
 - **THEN** both members are listed
 - **AND** reading the PPMd member raises `PackageNotInstalledError` that names the policy
 - **AND** the LZMA2 member reads
+- **AND** `format_availability(ArchiveFormat.SEVEN_Z, config=...)` with the same config
+  reports `PARTIAL` with `pyppmd` in `missing`

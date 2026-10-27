@@ -20,9 +20,17 @@ Not started. Design approved 2026-10-27; starts once the plugin API stack has me
 ## 3. Detection and member open
 
 - [ ] 3.1 Skip the content probe of a plugin the policy turns off.
-- [ ] 3.2 `exclude_libraries`: thread the policy into the optional-package checks
-      (`deps.py`, `LazyOptional`, backend `REQUIRED_MODULES`), so an excluded package
-      reads as absent for the call, with a reason naming `config.formats`.
+- [ ] 3.2 `exclude_libraries`: carry the excluded names from `ArchiveyConfig.formats` on
+      the reader config and the stream config, and pass them to every place that answers
+      "is this package available": `LazyOptional`, `registry._optional` /
+      `_missing_dependency`, `codecs.registry.is_codec_available`,
+      `StreamCodec.available` / `_backend_present`, backend `REQUIRED_MODULES`. An
+      excluded name answers "absent" first; no module global changes per call. Build the
+      `MissingComponent` per call with `reason` naming `config.formats`.
+- [ ] 3.3 `format_availability(fmt, config=None)` and `list_supported_formats(config=None)`
+      count excluded libraries as absent.
+- [ ] 3.4 Widen the `UnsupportedFeatureError` and `PackageNotInstalledError` docstrings
+      to cover policy refusals.
 
 ## 4. Tests and docs
 
@@ -31,6 +39,9 @@ Not started. Design approved 2026-10-27; starts once the plugin API stack has me
       `detect_format` answers the same with and without it; the refusals in §5; an excluded `pyppmd` makes a PPMd 7z member raise
       `PackageNotInstalledError` while the other members read; an excluded `rapidgzip`
       under `AUTO` falls back and under `ON` is refused; an excluded lazy package is
-      never imported.
+      never imported; two threads, one excluding `pyppmd` and one not, each get their
+      own answer; `format_availability(SEVEN_Z, config=...)` answers `PARTIAL` with
+      `pyppmd` installed and excluded; a replacement is refused on a volume set, an
+      SFX-found archive and a pipe.
 - [ ] 4.2 Docs: the config page, the security page (the upload-server policy), and the
       "Adding a format" guide (replacement plugins).

@@ -60,5 +60,8 @@ Nothing changes for a caller who does not set `formats`.
   (plugin probes filtered), `internal/plugin_adapter.py` (replacement backends), the
   codec and backend availability checks (`deps.py`), `core.py` (one check at the reader
   choice, and the volume and SFX refusals for a replacement).
-- Public API: one new root name and one new config field. Both additive.
+- Public API: one new root name, one new config field, and a keyword `config=` on
+  `format_availability` and `list_supported_formats`. All additive. The
+  `UnsupportedFeatureError` and `PackageNotInstalledError` docstrings widen to cover a
+  policy refusal.
 - Cost: one set lookup per open.
