@@ -1681,3 +1681,27 @@ def test_a_reader_can_normalize_names_itself(
         # A directory's trailing slash is not a reported change.
         counts = reader.diagnostics.counts
         assert counts.get(archivey.DiagnosticCode.MEMBER_NAME_NORMALIZED) == 1
+
+
+def test_read_struct_unpacks_and_raises_truncated(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    seen: list[tuple[object, ...]] = []
+
+    class StructReader(ToyReader):
+        def __init__(self, source: PluginSource, context: PluginContext) -> None:
+            super().__init__(source, context)
+            seen.append(source.read_struct("<I", len(_MAGIC)))
+            seen.append(source.read_struct(struct.Struct("<8s"), 0))
+            end = source.size
+            assert end is not None
+            source.read_struct("<Q", end - 4)
+
+    class StructPlugin(ToyPlugin):
+        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+            return StructReader(source, context)
+
+    register_format(StructPlugin)
+    with pytest.raises(TruncatedError, match="archive ends 4 bytes into the 8"):
+        open_archive(_write(tmp_path, build_toya(_ENTRIES)))
+    assert seen == [(len(_ENTRIES),), (_MAGIC,)]

@@ -43,7 +43,6 @@ name, a directory flag, the size, a CRC-32 and the offset of the data. The data 
 members comes after the index. All numbers are little-endian.
 
 ```python
-import struct
 from collections.abc import Iterator
 
 from archivey import (
@@ -80,17 +79,18 @@ class ToyReader(IndexedReader[Locator]):
     def __init__(self, source: PluginSource, context: PluginContext) -> None:
         self._source = source
         self._context = context
-        # read_exact() raises TruncatedError when the archive ends early, where
-        # struct.unpack() would fail on the short read with an error of its own.
-        (self._count,) = struct.unpack_from("<I", source.read_exact(0, 12), 8)
+        # read_struct() and read_exact() raise TruncatedError when the archive ends
+        # early, where struct.unpack() would fail on the short read with an error of
+        # its own.
+        (self._count,) = source.read_struct("<I", 8)
 
     def iter_members(self) -> Iterator[MemberRecord[Locator]]:
         pos = 12
         for _ in range(self._count):
-            (name_len,) = struct.unpack("<H", self._source.read_exact(pos, 2))
+            (name_len,) = self._source.read_struct("<H", pos)
             raw_name = self._source.read_exact(pos + 2, name_len)
-            is_dir, size, crc, offset = struct.unpack(
-                "<BIIQ", self._source.read_exact(pos + 2 + name_len, 17)
+            is_dir, size, crc, offset = self._source.read_struct(
+                "<BIIQ", pos + 2 + name_len
             )
             pos += 2 + name_len + 17
             member = ArchiveMember(
@@ -312,9 +312,9 @@ see it.
 archivey cannot check how your reader parses the archive, only what it hands back.
 These habits keep a crafted file from doing more than raising `CorruptionError`.
 
-- **Read with `PluginSource.read_exact()`** wherever the bytes must all be there, as
-  the example does. It raises `TruncatedError` when the archive ends early. It and
-  `read_at()` are the cheap way to parse: each is one read of the archive, with no
+- **Read with `PluginSource.read_struct()` and `read_exact()`** wherever the bytes must
+  all be there, as the example does. They raise `TruncatedError` when the archive ends
+  early. They and `read_at()` are the cheap way to parse: each is one read of the archive, with no
   stream built, and safe from any thread. Keep `view()` for a member's data.
 - **Check every size and offset against what the format allows** before you allocate or
   read with it. Compare offsets with `PluginSource.size`, and refuse a count or length

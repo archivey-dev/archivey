@@ -952,6 +952,7 @@ class archivey.plugins.PluginSource()
 property archivey.plugins.PluginSource.path: Path | None
 method archivey.plugins.PluginSource.read_at(self, offset: int, n: int) -> bytes
 method archivey.plugins.PluginSource.read_exact(self, offset: int, n: int) -> bytes
+method archivey.plugins.PluginSource.read_struct(self, fmt: str | struct.Struct, offset: int) -> tuple[Any, ...]
 property archivey.plugins.PluginSource.size: int | None
 method archivey.plugins.PluginSource.view(self, start: int, length: int | None = None) -> BinaryIO
 function archivey.plugins.block_stream(size: int, block_size: int, read_block: Callable[[int], bytes | BinaryIO]) -> BinaryIO

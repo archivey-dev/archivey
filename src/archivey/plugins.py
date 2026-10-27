@@ -23,11 +23,12 @@ passwords, and new diagnostic codes.
 from __future__ import annotations
 
 import io
+import struct
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
-from typing import BinaryIO, ClassVar, Generic, NamedTuple, Protocol, TypeVar, cast
+from typing import Any, BinaryIO, ClassVar, Generic, NamedTuple, Protocol, TypeVar, cast
 
 from archivey.config import ArchiveyConfig
 from archivey.diagnostics import DiagnosticCode, DiagnosticContext
@@ -228,6 +229,15 @@ class PluginSource:
                 f"{offset}"
             )
         return data
+
+    def read_struct(self, fmt: str | struct.Struct, offset: int) -> tuple[Any, ...]:
+        """``struct.unpack(fmt, ...)`` of the bytes at ``offset``, read with
+        :meth:`read_exact`: a field the archive ends inside raises ``TruncatedError``.
+        ``fmt`` is a format string or a ``struct.Struct``; a bad format is the
+        plugin's own ``struct.error``."""
+        if isinstance(fmt, struct.Struct):
+            return fmt.unpack(self.read_exact(offset, fmt.size))
+        return struct.unpack(fmt, self.read_exact(offset, struct.calcsize(fmt)))
 
 
 class PluginContext:
