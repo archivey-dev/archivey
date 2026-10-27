@@ -235,7 +235,8 @@ def test_extract_all(toys: ArchiveFormat, tmp_path: Path, pipe: bool) -> None:
         reader.extract_all(dest)
     assert (dest / "docs" / "a.txt").read_bytes() == b"alpha\n"
     assert (dest / "b.bin").read_bytes() == _DATA["b.bin"]
-    assert os.readlink(dest / "link") == "docs/a.txt"
+    # Extraction writes the target with the platform separator.
+    assert os.readlink(dest / "link") == os.path.join("docs", "a.txt")
 
 
 def test_detection_and_availability(toys: ArchiveFormat, tmp_path: Path) -> None:
