@@ -86,13 +86,16 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
 
 ## 3. CPIO package
 
-- [ ] 3.1 `packages/archivey-cpio/` (unpublished): a `SequentialReader` for binary, odc,
+- [x] 3.1 `packages/archivey-cpio/` (unpublished): a `SequentialReader` for binary, odc,
       newc, newc-with-CRC; `.cpio.gz` / `.cpio.xz`; read from a file and a pipe.
-- [ ] 3.2 Fixtures written by GNU `cpio` and `bsdcpio`: files, directories, symlinks,
+      *`.cpio.gz` / `.cpio.xz` wait for outer compression (stage 3).*
+- [x] 3.2 Fixtures written by GNU `cpio` and `bsdcpio`: files, directories, symlinks,
       hard links, device nodes (listed as `OTHER`), a damaged checksum, a truncated
-      member.
-- [ ] 3.3 A test that fails if the package imports `archivey.internal`.
-- [ ] 3.4 CI job that installs the package and runs its tests.
+      member. *GNU cpio 2.15 writes all four variants, bsdcpio 3.7.2 odc and newc (its
+      binary writer refuses a FIFO); the damaged and truncated cases are cut from them
+      in the tests.*
+- [x] 3.3 A test that fails if the package imports `archivey.internal`.
+- [x] 3.4 CI job that installs the package and runs its tests.
 
 ## 3b. SquashFS package
 

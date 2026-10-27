@@ -518,9 +518,13 @@ a pipe. A test fails if the package imports from `archivey.internal`.
 
 One CPIO detail the interface does not solve: newc stores a hard-linked file's data with
 the **last** of its links, and the earlier ones are empty. Backward-only hard links
-cannot name a later member, so the plugin reports the earlier names as empty files
-with a member-level note until a forward pass can tell. This is the plugin's call, not
-the interface's, and the CPIO package documents it.
+cannot name a later member. This is the plugin's call, not the interface's, and the
+CPIO package documents it. *As built:* the reader holds the empty links back until the
+link with the data arrives, yields that one as the `FILE` and then the held ones as
+`HARDLINK` members to it, so every name extracts with the content. The listing order
+moves those names after the data's, and a group whose data never comes (an empty
+file's) is yielded at the trailer. The held links are bounded by
+`ListingLimits.max_members`.
 
 ### 8. Will the code be cleaner?
 

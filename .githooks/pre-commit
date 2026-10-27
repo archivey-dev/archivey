@@ -9,7 +9,7 @@ cd "$ROOT"
 files=()
 while IFS= read -r -d '' f; do
   case "$f" in
-    src/* | tests/* | scripts/* | benchmarks/* | packages/archivey-squashfs/*)
+    src/* | tests/* | scripts/* | benchmarks/* | packages/archivey-squashfs/* | packages/archivey-cpio/*)
       case "$f" in
         *.py) files+=("$f") ;;
       esac
