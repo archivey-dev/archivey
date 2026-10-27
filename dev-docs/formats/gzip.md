@@ -160,7 +160,7 @@ end. A `.gzi` index is a separate file, which a stream cannot find, so it is not
 | Mode | gzip, zlib, raw DEFLATE |
 | --- | --- |
 | `OFF` | The standard library engine, always |
-| `ON` | `rapidgzip`, whatever the size; `PackageNotInstalledError` without it, `ResourceLimitError` if no child process can start, `StreamNotSeekableError` on a source that cannot seek (a pipe, or a member stream of an outer archive opened without `seekable_members`) |
+| `ON` | `rapidgzip`, whatever the size; `PackageNotInstalledError` without it, `ResourceUnavailableError` if no child process can start, `StreamNotSeekableError` on a source that cannot seek (a pipe, or a member stream of an outer archive opened without `seekable_members`) |
 | `AUTO` | `rapidgzip` only when all hold: seeking was declared (`seekable_members=True`, `open_stream(seekable=True)`); the source is seekable; `rapidgzip` is installed; the compressed input is not known to be smaller than 16 MiB (`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`; an unknown size counts as large enough, as `AcceleratorMode.AUTO` records); and the decoded length can be checked, either because the container declared it or because a gzip trailer is readable. Otherwise the standard library engine, silently |
 
 The 16 MiB gate is the break-even of the child process: it costs about 45 ms to start and
@@ -209,7 +209,7 @@ What crosses the boundary:
   rewrites it.
 - **How the child ended**, when it dies: its exit status and its standard error, scanned
   for `rapidgzip`'s abort message. An abort that names the truncation is `TruncatedError`,
-  another crash `CorruptionError`, `SIGKILL` `ResourceLimitError` (usually the
+  another crash `CorruptionError`, `SIGKILL` `ResourceUnavailableError` (usually the
   out-of-memory killer), the exit status `MEMORY_LIMIT_EXIT` `ResourceLimitError` (the
   memory cap below), anything else `ReadError`. Every later call raises the same error.
 
@@ -241,7 +241,7 @@ more than the child's decode plus the cap left the child never stopped.
 Where no child can start — a frozen application, no `sys.executable`, archivey imported
 from a zip so the worker is not a file, or a spawn or temporary file the system refuses —
 `AUTO` uses the standard library and logs one warning per process on the `archivey.streams`
-logger; `ON` raises `ResourceLimitError`.
+logger; `ON` raises `ResourceUnavailableError`.
 
 **Truncation through `rapidgzip`.** Besides aborting, `rapidgzip` often ends a truncated
 stream softly, by design: `read()` returns `b""` or a prefix with no error. For a gzip

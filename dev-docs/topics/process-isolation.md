@@ -29,15 +29,15 @@ Other pages own parts of this, and this page links them rather than repeating th
   decodes in this process, and rapidgzip is not used at all (`AUTO` falls back to the
   standard library, and `ON` is refused when the config is built).
 - **What a caller sees when a child dies.** A crash signal (or its Windows status) is
-  `CorruptionError`: a verdict on the data. SIGKILL is `ResourceLimitError`, usually the
-  out-of-memory killer. Any other end is `ReadError`. The last two say the data may be
-  valid. A rapidgzip child has more cases (truncation, its memory cap): gzip.md §2.3.
+  `CorruptionError`: a verdict on the data. SIGKILL is `ResourceUnavailableError` (a
+  `ResourceLimitError`), usually the out-of-memory killer. Any other end is `ReadError`.
+  The last two say the data may be valid. A rapidgzip child has more cases (truncation, its memory cap): gzip.md §2.3.
 - **The caller's process keeps** checksums, AES and ZipCrypto decryption, the archive
   parsers, and everything the codecs do around the native object. Only the native decoder
   object moves.
 - **Where no child can start** (a frozen application, no `sys.executable`, archivey
   imported from a zip, a refused spawn), a decoder that must be isolated raises
-  `ResourceLimitError`. The exception is rapidgzip under `AUTO`, which falls back to the
+  `ResourceUnavailableError`. The exception is rapidgzip under `AUTO`, which falls back to the
   standard library with one warning per process (§2.6).
 - **What you might expect and will not find:**
   - A timeout. A decoder that loops in a child loops for ever, as it would in-process
@@ -201,7 +201,7 @@ from Python that state looks like a valid stream that waits for input (ADR 0022,
 A solid 7z folder is one decoder for all its members, so it takes one child.
 
 When the child cannot allocate the member's model (a container memory limit,
-`RLIMIT_AS`), the member raises `ResourceLimitError` and does not suggest `NONE`, because
+`RLIMIT_AS`), the member raises `ResourceUnavailableError` and does not suggest `NONE`, because
 the same allocation in-process would abort the caller.
 
 ### 2.5 What crosses the boundary
@@ -231,10 +231,10 @@ cap, no temporary directory, too many open files).
 
 | Decoder | Then |
 | --- | --- |
-| PPMd under `KNOWN_CRASHES` or `NATIVE_DECODERS` | `ResourceLimitError`, which names `NONE` as the way to decode in-process (PPMd runs in a child under every other setting) |
-| Any other decoder under `NATIVE_DECODERS` | `ResourceLimitError`, which names `KNOWN_CRASHES` |
+| PPMd under `KNOWN_CRASHES` or `NATIVE_DECODERS` | `ResourceUnavailableError`, which names `NONE` as the way to decode in-process (PPMd runs in a child under every other setting) |
+| Any other decoder under `NATIVE_DECODERS` | `ResourceUnavailableError`, which names `KNOWN_CRASHES` |
 | rapidgzip under `AUTO` | The standard library, with one warning per process on `archivey.streams` |
-| rapidgzip under `ON` | `ResourceLimitError` |
+| rapidgzip under `ON` | `ResourceUnavailableError` |
 
 A fresh child that is needed part-way through a member (§2.2, the re-run) and cannot start
 gives the same error as at open.
@@ -279,7 +279,7 @@ this section says what each cost comes from.
 | A non-solid 7z of many small PPMd members reads more slowly than under `NONE` | **archivey** | One decoder, so one request cycle, per member, and a new child every `MAX_DECODERS_PER_CHILD` (§2.2). A solid folder pays once |
 | `NATIVE_DECODERS` makes zstd and gzip reads several times slower | **archivey** | The pipe copy (§3). The setting is for hostile input where a crash must cost only the member |
 | A loop on crafted input in a child never ends | **library** | No timeout (§At a glance). Set the accelerators `OFF` for a latency budget |
-| A PPMd member raises `ResourceLimitError` in a frozen application or under a spawn limit | **archivey** | By design: it does not decode in-process unless `NONE` is set (§2.6) |
+| A PPMd member raises `ResourceUnavailableError` in a frozen application or under a spawn limit | **archivey** | By design: it does not decode in-process unless `NONE` is set (§2.6) |
 | `use_rapidgzip=ON` with `process_isolation=NONE` raises `ArchiveyUsageError` when the config is built | **archivey** | rapidgzip runs only in a child (§At a glance) |
 | A member stream used after `fork` raises `ArchiveyUsageError` | **archivey** | Its child belongs to the parent process, for the generic child (§2.2) and the rapidgzip child (§2.3) alike. Open the member again in the forked process. Closing the inherited stream there leaves the parent's child alone |
 | Under PyPy, a reader that is never closed holds its children until a collection | **library** (PyPy) | Close readers; the readers already release replaced decoders (§2.2) |
