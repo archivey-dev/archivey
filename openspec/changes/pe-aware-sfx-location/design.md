@@ -27,9 +27,10 @@ a related idea, "Bound the SFX search at the PE overlay".
 - A ZIP inside a PE section past the window (no case seen; Squirrel's sits at 170 KB).
 - Undoing installer obfuscation (install4j's XORed block) or naming installer families.
   That is the "prefix analysis" idea and stays in `IDEAS.md`.
-- Changing the ZIP reader's end-record search. It already falls back to walking local
-  headers when a long tail hides the record (`format-zip`, *Report bytes after the end of
-  a ZIP archive*).
+- A new end-record search strategy for the ZIP reader. The search gains an upper bound,
+  the payload end (§12), and nothing else: the window, the locator and the local-header
+  fallback walk stay as they are (`format-zip`, *Report bytes after the end of a ZIP
+  archive*).
 - A tail probe for non-executables (JPEG + ZIP). That is still the struck Block 2.
 
 ## Investigations
@@ -208,9 +209,18 @@ region runs to the end of the source), `open_archive` passes it to `open_read` b
 start offset, and the backend behaves as if handed a view of `[start, end)`. A backend
 never reads before its start offset to find an end itself: that would break the
 "as if a view" promise of `ReadBackend.open_read` and would not work on a stream. Under
-forced `format=` the start is 0, the stub is the backend's own first bytes, and a backend
-that scans them for its payload (RAR, 7z, the ZIP forward walk) derives the same end with
-the same helper, so both paths agree (DR-23a).
+forced `format=` the start is 0 and the stub is the backend's own first bytes. Every RAR,
+7z and ZIP backend opened at 0 with no end reads those bytes and derives the same end with
+the same helper, so both paths agree (DR-23a). For RAR, 7z and the ZIP forward walk these
+are bytes their payload scan reads anyway. The seekable ZIP reader locates its archive
+from the tail and never reads its start, so it gains one read of its first bytes for
+this; without it, forced `format=ZIP` on IRPF would keep warning about the certificate
+and fail under `STRICT` while auto-detect opens it.
+
+A scan never accepts a candidate that starts at or past a known payload end. The
+certificate table is not parsed, so a needle inside it could pass a validator, and the
+payload would then start where its region has already ended. With that rule
+`payload_offset < payload_end` always holds, in detection and in the forced path.
 
 With the end known, the ZIP reader's end-record search stops there, and the trailing-data
 checks of ZIP, 7z and RAR stop there too: a code-signed installer no longer warns about its

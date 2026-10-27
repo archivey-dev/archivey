@@ -81,5 +81,7 @@ and WinRAR installers the archive starts exactly at the end of the last section.
 - Tests: synthetic PE files with a section table and a certificate entry; no real
   installer is committed.
 - Docs: `dev-docs/topics/prefixed-archives.md`, `dev-docs/topics/detection.md`,
-  `docs/formats.md`, `dev-docs/IDEAS.md`, and a pointer from the struck Block 2 of
+  `dev-docs/formats/7z.md`, `dev-docs/formats/zip.md` and `dev-docs/formats/rar.md` (the
+  certificate rule and its reasoning), `docs/formats.md`, `docs/opening.md`,
+  `dev-docs/IDEAS.md`, and a pointer from the struck Block 2 of
   `prefixed-archive-detection`.

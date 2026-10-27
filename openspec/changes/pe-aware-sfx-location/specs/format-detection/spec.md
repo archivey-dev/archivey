@@ -43,8 +43,10 @@ the start of the file starts at byte 0 by its own numbers, so it SHALL report
 `payload_end` is where the archive's region of the source ends
 when detection identified something after it: today the start of a PE's Authenticode
 certificate table (*Self-extracting (SFX) archives are detected behind an executable
-stub*), whatever tier found the archive. `None`, the common case, means the region runs
-to the end of the source. `open_archive` passes both bounds to the reader
+stub*), whatever tier found the archive and whether or not the source can seek. It needs
+the PE layout from the prefix and a known total size, because the table counts only when
+it runs to the end of the source; a source whose size is unknown reports `None`. `None`,
+the common case, means the region runs to the end of the source. `open_archive` passes both bounds to the reader
 (`archive-reading`). `cost_receipt` and
 `unavailable_tiers` are part of this contract; `detection-cost` defines what they hold.
 `FormatInfo` also carries a provisional `corroborated: bool` for `open_archive`'s own use,
@@ -84,8 +86,8 @@ format its bytes show; `open_archive` refuses it as an incomplete set.
 | RAR, 7z or ZIP found by the SFX scan at offset N | `detected_by="sfx_scan"`, `prefixed=True`, `payload_offset == N` |
 | ZIP found from its end record behind a PE stub, offsets counted from the ZIP's start | `prefixed=True`, `payload_offset` = the ZIP's first byte |
 | The same, offsets counted from the start of the file | `prefixed=True`, `payload_offset` 0 |
-| Signed PE SFX, any tier | `payload_end` = the certificate table's start |
-| Unsigned PE SFX, or no PE layout | `payload_end` is `None` |
+| Signed PE SFX, any tier, total size known (a path, a seekable stream, or a sized non-seekable source) | `payload_end` = the certificate table's start |
+| Unsigned PE SFX, no PE layout, or total size unknown | `payload_end` is `None` |
 | Extension-only guess | `confidence=GUESS`, `detected_by="extension"` |
 | Directory path | `format=DIRECTORY`, `confidence=CERTAIN`, `detected_by="directory"`; zero `cost_receipt`; no `OSError` |
 | Empty string `""` | `ValueError`; the current directory is not detected |
@@ -131,7 +133,10 @@ preference below is a tie-break between needles of unknown standing, and the PE'
 layout outranks it. When nothing at the overlay start is accepted, the scan below runs
 unchanged. Every other scan bounded by `SFX_MAX` SHALL apply the same rule — the RAR and
 7z parsers' scans and the forward ZIP walk that reads a non-seekable source — so forced
-`format=`, seekable or not, opens the same payload. A PE whose layout does not parse SHALL
+`format=`, seekable or not, opens the same payload. No scan SHALL accept a candidate that
+starts at or past a known payload end: the certificate table is not parsed, and a needle
+inside it would give a payload that starts where the archive's region has already ended.
+So `payload_offset` is always before `payload_end`. A PE whose layout does not parse SHALL
 be scanned as today.
 
 The scan takes the **earliest** matching needle in the window that its format's hit
@@ -202,6 +207,7 @@ judged, and SHALL record `sfx_scan` as *budget exhausted*, whether or not it ans
 | PE with a config block between the last section and the 7z (`7zS.sfx` style) | Nothing accepted at the overlay start; the forward scan finds the 7z as today |
 | PE whose ZIP is inside `.rsrc` (Squirrel) | Nothing at the overlay start; the forward scan finds the ZIP as today |
 | PE whose section table lies past the detection prefix, or does not parse | No layout; scanned as today |
+| Signed PE, nothing at the overlay start, a validator-accepted 7z or ZIP inside the certificate table | Not accepted: it starts past the payload end; through detection and forced `format=` alike |
 | ELF or Mach-O stub | Scanned as today |
 
 ### Requirement: Detection's access shape is bounded, not only its byte count

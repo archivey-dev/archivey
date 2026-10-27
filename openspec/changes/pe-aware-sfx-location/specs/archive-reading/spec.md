@@ -21,10 +21,13 @@ for itself. A backend that hands the file to an external program (`unrar`) appli
 to its own checks only.
 
 An explicit `format=` that bypasses detection retains each backend’s own
-start-offset / SFX rules (`format-rar`, `format-7z`). A backend that scans the start of the
-source for its payload under those rules SHALL derive the payload end from the same bytes
-with the PE layout helper detection uses, so forced `format=` and auto-detect see the same
-end.
+start-offset / SFX rules (`format-rar`, `format-7z`). A RAR, 7z or ZIP backend opened at
+start offset 0 with no end passed SHALL read its own leading bytes, and when they are a PE
+whose layout parses, SHALL derive the payload end from them with the PE layout helper
+detection uses. That reads the backend's own start, not before it. It applies whether or
+not the backend otherwise scans its start: the seekable ZIP reader locates its archive from
+the tail and reads its leading bytes only for this. Forced `format=` and auto-detect then
+see the same end.
 
 #### Scenario: payload_offset hand-off
 
@@ -35,5 +38,6 @@ end.
 | Explicit `format=` | Detection skipped; backend SFX/start-offset rules apply |
 | Bare seek only (no start-offset / no offset view) | Insufficient for 7z; MUST NOT be the sole hand-off mechanism |
 | Auto-detect, signed PE SFX, `payload_end == E` | Backend reads nothing at or past `E`; the certificate raises no `ARCHIVE_TRAILING_DATA` |
-| Forced `format=` on the same signed SFX | The backend's own scan derives the same `E`; same listing, same diagnostics |
-| No `payload_end` (unsigned, non-PE, non-seekable) | Unchanged: the archive is read to the end of the source |
+| Forced `format=` on the same signed SFX (RAR, 7z, or ZIP seekable or streamed) | The backend derives the same `E` from its leading bytes; same listing, same diagnostics |
+| Forced `format=ZIP` on the IRPF installer under `DiagnosticPolicy.STRICT` | Opens, as auto-detect does: the certificate is past `E` |
+| No `payload_end` (unsigned, non-PE, or total size unknown) | Unchanged: the archive is read to the end of the source |
