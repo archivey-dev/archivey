@@ -330,73 +330,77 @@ class PluginReaderAdapter(BaseArchiveReader):
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         data = self._plugin_member_data(member)
-        expected = (
-            {**member.hashes, **data.expected_hashes}
-            if data.expected_hashes
-            else member.hashes
-        )
-        try:
-            custom_digests = self._custom_digests(data, expected)
-        except BaseException:
-            # Nothing has taken the stream over yet; archivey owes it a close.
-            data.stream.close()
-            raise
         stream: BinaryIO = data.stream
-        rewind: RewindWarning | None = None
-        if self._seek_declared() and not is_seekable(stream):
-            # The caller asked for seekable members and the plugin's stream reads
-            # forward only: a forward seek reads through, and a backward one opens
-            # the member again from the start (``open_member`` once more). With no
-            # listed size, a seek from the end reads through to find it.
-            stream = RespawnStream(
-                lambda: self._plugin_member_data(member).stream,
+        # Until the ArchiveStream takes the stream over, a raise here (a refused
+        # digest name, a hasher factory that fails) leaves archivey owing it a close.
+        try:
+            expected = (
+                {**member.hashes, **data.expected_hashes}
+                if data.expected_hashes
+                else member.hashes
+            )
+            custom_digests = self._custom_digests(data, expected)
+            rewind: RewindWarning | None = None
+            if self._seek_declared() and not is_seekable(stream):
+                # The caller asked for seekable members and the plugin's stream reads
+                # forward only: a forward seek reads through, and a backward one
+                # opens the member again from the start (``open_member`` once more).
+                # With no listed size, a seek from the end reads through to find it.
+                stream = RespawnStream(
+                    lambda: self._plugin_member_data(member).stream,
+                    stream,
+                    size=member.size,
+                    what=f"{self._format.display_name} member data",
+                )
+                rewind = RewindWarning(
+                    codec_name=self._format.display_name, suggest_install=False
+                )
+            return self._wrap_member_stream(
                 stream,
+                member.name,
                 size=member.size,
-                what=f"{self._format.display_name} member data",
+                # A listed size is enforced, so a short stream raises TruncatedError
+                # and a long one CorruptionError. A file listed with no size is read
+                # to the end of its stream, and only its digests are checked.
+                expected_size=member.size,
+                expected_hashes=expected or None,
+                verify_member=member,
+                fill_size=member.size is None,
+                checks_content=data.checked,
+                bounded=data.bounded,
+                custom_digests=custom_digests or None,
+                rewind_warning=rewind,
             )
-            rewind = RewindWarning(
-                codec_name=self._format.display_name, suggest_install=False
-            )
-        return self._wrap_member_stream(
-            stream,
-            member.name,
-            size=member.size,
-            # A listed size is enforced, so a short stream raises TruncatedError and
-            # a long one CorruptionError. A file listed with no size is read to the
-            # end of its stream, and only its digests are checked.
-            expected_size=member.size,
-            expected_hashes=expected or None,
-            verify_member=member,
-            fill_size=member.size is None,
-            checks_content=data.checked,
-            bounded=data.bounded,
-            custom_digests=custom_digests or None,
-            rewind_warning=rewind,
-        )
+        except BaseException:
+            stream.close()
+            raise
 
     def _custom_digests(self, data: MemberData, expected: Mapping) -> CustomDigests:
         """``data.digests`` keyed by folded name.
 
-        A name archivey already checks, as a ``HashAlgorithm`` or as a key of
-        ``expected``, or one another digest uses, is the plugin's bug: the verifier
-        keys every check by its folded name, so one would replace the other.
+        The verifier keys every check by its folded name, so a digest may not take
+        the name of another digest, of a ``HashAlgorithm`` archivey computes itself,
+        or of a hash the member already lists in ``expected``. The last is refused
+        even when archivey has no hasher for the listed one: two stored values under
+        one name is the plugin's bug, whichever would win.
         """
-        checked = _ALGORITHM_KEYS | {str(key).lower() for key in expected}
+        listed = {str(key).lower() for key in expected}
         digests: dict[str, tuple[bytes, Callable[[], Hasher]]] = {}
         for digest in data.digests:
             key = digest.name.lower()
-            if key in digests or key in checked:
-                raise ValueError(
-                    f"{type(self._reader).__name__}.open_member() returned a digest "
-                    f"named {digest.name!r}, "
-                    + (
-                        "which another digest of the member also uses"
-                        if key in digests
-                        else "which archivey already checks as a listed or expected "
-                        "hash"
-                    )
-                )
-            digests[key] = (digest.expected, digest.new)
+            if key in digests:
+                reason = "which another digest of the member also uses"
+            elif key in _ALGORITHM_KEYS:
+                reason = "which is a HashAlgorithm archivey computes itself"
+            elif key in listed:
+                reason = "which the member already lists as a hash"
+            else:
+                digests[key] = (digest.expected, digest.new)
+                continue
+            raise ValueError(
+                f"{type(self._reader).__name__}.open_member() returned a digest "
+                f"named {digest.name!r}, {reason}"
+            )
         return digests
 
     def _get_archive_info(self) -> ArchiveInfo:

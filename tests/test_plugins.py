@@ -1158,12 +1158,18 @@ def test_seekable_member_with_no_listed_size(
         (
             (MemberDigest("crc32", b"\0\0\0\0", hashlib.sha1),),
             {},
-            "archivey already checks",
+            "HashAlgorithm archivey computes itself",
         ),
         (
             (MemberDigest("SHA1", b"\0" * 20, hashlib.sha1),),
             {"sha1": b"\0" * 20},
-            "archivey already checks",
+            "already lists as a hash",
+        ),
+        # Refused even with no hasher for the listed one: two stored values, one name.
+        (
+            (MemberDigest("crc16", b"\x12\x34", hashlib.sha1),),
+            {"crc16": b"\x12\x34"},
+            "already lists as a hash",
         ),
         (
             (
@@ -1182,9 +1188,8 @@ def test_member_digest_names_must_not_clash(
     expected: dict[str, bytes],
     match: str,
 ) -> None:
-    """A digest named like a check archivey already makes (its own CRC-32, or a name
-    in ``expected_hashes``) would replace that check, and two digests sharing a name
-    would keep one; all are refused, and the refused member's stream is closed. The
+    """A digest named like a ``HashAlgorithm`` or a hash the member lists, or like
+    another digest, would share one key with it in the verifier; all are refused, and the refused member's stream is closed. The
     reader translates broadly, so a refusal inside the error boundary would come out
     as ``CorruptionError``."""
     opened: list[BinaryIO] = []
@@ -1200,6 +1205,32 @@ def test_member_digest_names_must_not_clash(
     _plugin_with("clash", reader=Clashing)
     path = _write(tmp_path, build_toya(_ENTRIES), "t.clash")
     with open_archive(path) as reader, pytest.raises(ValueError, match=match):
+        reader.read("docs/a.txt")
+    assert opened
+    assert opened[0].closed
+
+
+def test_member_stream_is_closed_when_a_hasher_factory_fails(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    opened: list[BinaryIO] = []
+
+    def no_hasher() -> hashlib._Hash:
+        raise ValueError("unsupported hash type crc16")
+
+    class FailingFactory(ToyReader):
+        def open_member(
+            self, member: ArchiveMember, locator: tuple[int, int]
+        ) -> MemberData:
+            stream = self._source.view(*locator)
+            opened.append(stream)
+            return MemberData(
+                stream, digests=(MemberDigest("crc16", b"\x12\x34", no_hasher),)
+            )
+
+    _plugin_with("nohasher", reader=FailingFactory)
+    path = _write(tmp_path, build_toya(_ENTRIES), "t.nohasher")
+    with open_archive(path) as reader, pytest.raises(ValueError, match="crc16"):
         reader.read("docs/a.txt")
     assert opened
     assert opened[0].closed

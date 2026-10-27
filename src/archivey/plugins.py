@@ -110,8 +110,9 @@ class MemberDigest(NamedTuple):
     name: str
     """The checksum's name (``"sha1"``), for messages and as its key. Ignoring case, it
     may not repeat another digest's name, be a ``HashAlgorithm`` value (``"crc32"``),
-    or be a key of the member's ``hashes`` or ``expected_hashes``: archivey checks
-    those itself. A refused name raises ``ValueError`` when the member is opened."""
+    which archivey computes itself, or be a key of the member's ``hashes`` or
+    ``expected_hashes``, even one archivey has no hasher for. A refused name raises
+    ``ValueError`` when the member is opened."""
 
     expected: bytes
     """The value the archive stores, as ``digest()`` returns it."""
@@ -329,17 +330,16 @@ class PluginContext:
 
         Where the compressed data ends depends on the method. ``ZSTD`` and ``LZ4`` data
         is one or more frames, decoded together. ``BZIP2`` data is one stream, and a
-        second one is damage. ``LZMA`` and ``LZMA2`` end at their end marker, or at
-        ``size`` when there is none. For every method, bytes left after that end raise
-        ``CorruptionError``.
+        second one is damage. ``LZMA`` and ``LZMA2`` end at their end marker; raw LZMA1,
+        which may have none, then ends at ``size``. For every method, bytes left after
+        that end raise ``CorruptionError``.
 
         ``method`` is one of ``STORED``, ``DEFLATE`` (raw, no zlib or gzip header),
-        ``DEFLATE64``, ``BZIP2``, ``ZSTD``, ``LZ4``, ``BROTLI``,
-        ``LZMA`` (raw LZMA1; ``properties`` is its 5-byte properties: the ``lc``,
-        ``lp``, ``pb`` byte and the dictionary size) and ``LZMA2`` (raw; ``properties``
-        is its 1-byte dictionary size). Any other method raises
-        ``UnsupportedFeatureError``, and a method whose optional package is missing
-        raises ``PackageNotInstalledError``.
+        ``DEFLATE64``, ``BZIP2``, ``ZSTD``, ``LZ4``, ``BROTLI``, ``LZMA`` (raw LZMA1;
+        ``properties`` is its 5-byte properties: the ``lc``, ``lp``, ``pb`` byte and the
+        dictionary size) and ``LZMA2`` (raw; ``properties`` is its 1-byte dictionary
+        size). Any other method raises ``UnsupportedFeatureError``, and a method whose
+        optional package is missing raises ``PackageNotInstalledError``.
 
         ``size`` is the decoded length when the format stores it. Raw LZMA1 may have
         no end marker and needs it then.
