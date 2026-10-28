@@ -1,11 +1,12 @@
 """Compare Archivey against libarchive on libarchive's own uuencoded test archives.
 
-Off by default. Point ``ARCHIVEY_LIBARCHIVE_TEST_FILES`` at a directory of
-libarchive's ``.uu`` test archives: ``libarchive/test`` of a clone of
-https://github.com/libarchive/libarchive, or one directory holding links to the
-``.uu`` files of its ``libarchive/test``, ``cpio/test`` and ``tar/test``::
+Off by default. Point ``ARCHIVEY_LIBARCHIVE_TEST_FILES`` at one directory holding
+links to the ``.uu`` test archives of ``libarchive/test``, ``cpio/test`` and
+``tar/test`` in a clone of https://github.com/libarchive/libarchive (the triage below
+assumes all three; ``test_libarchive_corpus_discovered_archives`` checks it)::
 
-    ARCHIVEY_LIBARCHIVE_TEST_FILES=/path/to/libarchive/libarchive/test \\
+    mkdir corpus && ln -s /path/to/libarchive/{libarchive,cpio,tar}/test/*.uu corpus/
+    ARCHIVEY_LIBARCHIVE_TEST_FILES=$PWD/corpus \\
       uv run --no-sync pytest tests/test_libarchive_corpus.py -q
 
 Use a libarchive as new as the clone: libarchive 3.7.2 (Ubuntu 24.04) decodes the
@@ -31,12 +32,12 @@ Triage (2026-07, rerun 2026-10-28 against libarchive 3.9.0dev with the plugins)
   (``test_compat_lzip_3``).
 
 **ZIP**
-* **GAP** ZIPX XZ (method 95) — no codec path yet.
+* **GAP** ZIPX XZ (method 95) — no codec path yet, with or without WinZip AES
+  around it.
 * ZIPX PPMd / Zstd decode via the shared codec layer when `[recommended]` is
   installed; WinZip AES (method 99) decrypts via the same extra.
 * **GAP** ZIP members whose payload exceeds the declared size (libarchive
   fixtures) — size/CRC checks reject them.
-* **GAP** WinZip AES around XZ (method 95), the same missing codec path.
 * **GAP** assorted ZIP edge cases (extra padding, UTF-8 path presentation,
   MSDOS directory typing).
 
@@ -53,13 +54,15 @@ Triage (2026-07, rerun 2026-10-28 against libarchive 3.9.0dev with the plugins)
 
 **7z**
 * **BUG** Delta in front of LZMA1: the stream is refused as having input after
-  its end (``DataAfterEndError``) though 7-Zip 23.01 tests it OK.
+  its end (``DataAfterEndError``) though 7-Zip 23.01 tests it OK. Fixed by #1069;
+  drop the two entries when it merges.
 
 **RAR**
 * **GAP** some RAR5 extra-field / crypt-only headers; multi-volume sets need
   sibling volumes (skipped like other split volumes).
 * **BUG** an end-of-archive header that stops before its flags field is refused;
-  unrar reads the missing flags as zero.
+  unrar reads the missing flags as zero. Fixed by #1067; drop the entry when it
+  merges.
 
 **CPIO** (with archivey-cpio installed)
 * **POLICY** in a newc or crc link group the data comes with the last name: Archivey
@@ -79,19 +82,20 @@ import os
 import re
 import tempfile
 from collections.abc import Iterator
-from contextlib import suppress
 from pathlib import Path
 
 import pytest
 
 from archivey import (
     ArchiveyConfig,
-    ArchiveyUsageError,
     FormatDetectionError,
+    FormatInfo,
     MemberType,
     detect_format,
     open_archive,
 )
+from archivey.internal.plugin_adapter import registration_scope
+from archivey.internal.registry import get_registry
 from archivey.plugins import register_format
 from archivey.types import ArchiveFormat, ContainerFormat, StreamFormat
 from tests.conftest import ARCHIVEY_TEST_CACHE, binary_refusal, requires
@@ -256,16 +260,16 @@ _XFAIL: dict[str, tuple[bool, str]] = {
     # --- 7z ---
     "test_read_format_7zip_delta_lzma1.7z": (
         True,
-        "BUG: Delta+LZMA1 refused as input after the end; 7-Zip reads it",
+        "BUG: Delta+LZMA1 refused as input after the end; 7-Zip reads it (#1069)",
     ),
     "test_read_format_7zip_delta4_lzma1.7z": (
         True,
-        "BUG: Delta+LZMA1 refused as input after the end; 7-Zip reads it",
+        "BUG: Delta+LZMA1 refused as input after the end; 7-Zip reads it (#1069)",
     ),
     # --- RAR ---
     "test_read_format_rar5_redir_varint_2byte.rar": (
         True,
-        "BUG: an end-of-archive header without its flags field is refused",
+        "BUG: an end-of-archive header without its flags field is refused (#1067)",
     ),
     "test_read_format_rar5_only_crypt_exfld.rar": (
         True,
@@ -364,7 +368,7 @@ def _safe_decode_uu(source: Path, dest: Path) -> bool:
     return True
 
 
-def _materialize_archive(uu_path: Path) -> Path | None:
+def _materialize_archive(uu_path: Path) -> tuple[Path, FormatInfo] | None:
     name = uu_path.name
     if not name.endswith(".uu"):
         return None
@@ -389,7 +393,7 @@ def _materialize_archive(uu_path: Path) -> Path | None:
         base.lower().endswith(".iso.z") or ".cpio." in base.lower()
     ):
         return None
-    return dest
+    return dest, info
 
 
 def _password_candidates(archive_name: str) -> tuple[str | None, ...]:
@@ -490,34 +494,32 @@ _PLUGINS = (
     ("archivey_squashfs", "SquashfsPlugin"),
 )
 
-
-def _register_plugins() -> None:
-    """Register the plugins in packages/ that are installed, so their fixtures are
-    compared instead of skipped as unknown formats."""
-    for module, name in _PLUGINS:
-        try:
-            plugin = getattr(importlib.import_module(module), name)
-        except ImportError:
-            continue
-        # A plugin's own tests may have registered it in this process already.
-        with suppress(ArchiveyUsageError):
-            register_format(plugin)
-
-
 _ROOT = _files_dir()
-if _ROOT is not None:
-    # Only when the corpus runs: a registration lasts for the process, and other
-    # tests in it expect these formats to be unknown.
-    _register_plugins()
 _UU_SOURCES = list(_iter_uu_sources(_ROOT)) if _ROOT is not None else []
 
 pytestmark = [
     pytest.mark.skipif(
         _ROOT is None,
-        reason=f"set {_ENV} to libarchive's libarchive/test directory to run this corpus",
+        reason=f"set {_ENV} to a directory of libarchive's .uu fixtures to run this corpus",
     ),
     requires("libarchive"),
 ]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _plugins() -> Iterator[None]:
+    """Register the plugins in packages/ that are installed, so their fixtures are
+    compared instead of skipped as unknown formats; undone when the module ends."""
+    with registration_scope():
+        for module, name in _PLUGINS:
+            try:
+                plugin = getattr(importlib.import_module(module), name)
+            except ImportError:
+                continue
+            # A plugin's own tests may have registered it in this process already.
+            if get_registry().registered_reader(plugin.format) is None:
+                register_format(plugin)
+        yield
 
 
 @pytest.fixture(scope="module")
@@ -532,13 +534,12 @@ def libarchive_mod():
 def test_native_matches_libarchive_on_libarchive_corpus(
     uu_source: Path, libarchive_mod: object
 ) -> None:
-    archive = _materialize_archive(uu_source)
-    if archive is None:
+    materialized = _materialize_archive(uu_source)
+    if materialized is None:
         pytest.skip(f"unsupported or undecodable fixture {uu_source.name}")
+    archive, info = materialized
 
-    if detect_format(
-        archive, config=_CONFIG
-    ).format.container is ContainerFormat.RAR and (
+    if info.format.container is ContainerFormat.RAR and (
         (refusal := binary_refusal("unrar")) is not None
     ):
         pytest.skip(f"RAR data tests need a RARLAB data program: {refusal}")
@@ -596,6 +597,9 @@ def test_libarchive_corpus_discovered_archives() -> None:
         or "test_read_format_zip.zip" in names
         or any(name.endswith(".zip") for name in names)
     )
+    # The triage counts cpio/test and tar/test fixtures too.
+    for name in ("test_gcpio_compat_ref.newc", "test_patterns_4.tar"):
+        assert name in names, f"{name} missing: link cpio/test and tar/test too"
 
 
 def test_tar_z_detection_upgrades_via_inner_probe() -> None:
@@ -605,7 +609,7 @@ def test_tar_z_detection_upgrades_via_inner_probe() -> None:
     uu = _ROOT / "test_compat_mac-1.tar.Z.uu"
     if not uu.exists():
         pytest.skip("libarchive fixture test_compat_mac-1.tar.Z.uu not present")
-    archive = _materialize_archive(uu)
-    assert archive is not None
-    info = detect_format(archive)
+    materialized = _materialize_archive(uu)
+    assert materialized is not None
+    info = detect_format(materialized[0])
     assert info.format == ArchiveFormat(ContainerFormat.TAR, StreamFormat.UNIX_COMPRESS)
