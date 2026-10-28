@@ -1980,6 +1980,35 @@ def test_a_reader_can_normalize_names_itself(
         assert counts.get(archivey.DiagnosticCode.MEMBER_NAME_NORMALIZED) == 1
 
 
+def test_a_directory_with_data_is_reported(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """A directory listed with a size keeps it, and is reported as for a built-in
+    format."""
+
+    class SizedDirectories(ToyReader):
+        def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+            for record in super().iter_members():
+                if record.member.type is MemberType.DIRECTORY:
+                    record.member.size = record.locator[1]
+                yield record
+
+    _plugin_with("sizeddir", reader=SizedDirectories)
+    data = build_toya(
+        [("d", MemberType.DIRECTORY, b"junk"), ("f", MemberType.FILE, b"ok")]
+    )
+    with open_archive(_write(tmp_path, data, "t.sizeddir")) as reader:
+        members = reader.members()
+        assert [(m.name, m.type, m.size) for m in members] == [
+            ("d/", MemberType.DIRECTORY, 4),
+            ("f", MemberType.FILE, 2),
+        ]
+        reader.members()
+        counts = reader.diagnostics.counts
+        assert counts[archivey.DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED] == 1
+        assert reader.read("d/") == b"junk"
+
+
 def test_read_struct_unpacks_and_raises_truncated(
     clean_registry: None, tmp_path: Path
 ) -> None:

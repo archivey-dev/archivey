@@ -344,7 +344,9 @@ public way to feed it. `SequentialReader.walk()` is that way.
 
 The shared-pass locking (a `CONCURRENT` reader whose walk has a live member stream) is
 TAR's `_pull_member` hand-off, moved into the adapter. It is the risky part of the
-adapter, and the cross-format pass tests cover it.
+adapter. The cross-format pass tests cover TAR's; for a plugin,
+`tests/test_plugins_sequential.py` covers concurrent reads and a walk started again
+after a failed listing.
 
 **As built (first sequential stage, 2026-10-27).** Three points differ from the sketch
 above, each for a reason found while building it:

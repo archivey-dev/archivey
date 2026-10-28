@@ -19,7 +19,7 @@ import logging
 import lzma
 import threading
 from collections.abc import Callable, Generator, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import replace
 from typing import Any, BinaryIO, ClassVar, NoReturn, cast
 
@@ -438,6 +438,21 @@ class _PluginAdapter(BaseArchiveReader):
     def _cost(self, info: PluginArchiveInfo) -> CostReceipt:
         raise NotImplementedError
 
+    def _report_listed(self, member: ArchiveMember, presented: str, index: int) -> None:
+        """The reports archivey makes on every member a plugin lists, whatever its
+        shape: a name normalization, and a directory that declares data."""
+        emit_member_name_normalized(
+            self._diagnostics_collector,
+            member=member,
+            presented_name=presented,
+            archive_name=self._archive_name,
+            member_id=index,
+        )
+        if member.type is MemberType.DIRECTORY and member.size:
+            # No format gives a directory content: the bytes are delivered by a read and
+            # dropped by extraction, as for a built-in format (data model, DR-3).
+            self._emit_directory_data_ignored(member, index)
+
     def _close_archive(self) -> None:
         try:
             with self._translated_errors(), self._handle_guard():
@@ -509,13 +524,7 @@ class PluginReaderAdapter(_PluginAdapter):
                 presented, member.type, backslash_is_separator=False
             )
             member._raw = record.locator
-            emit_member_name_normalized(
-                self._diagnostics_collector,
-                member=member,
-                presented_name=presented,
-                archive_name=self._archive_name,
-                member_id=index,
-            )
+            self._report_listed(member, presented, index)
             index += 1
             yield member
 
@@ -685,7 +694,17 @@ class SequentialReaderAdapter(_PluginAdapter):
                 tuple[ForwardStream, Iterator[MemberSpan], MemberSpan | None] | None
             ) = (forward, walk, first)
         except BaseException:
-            self._release_streams()
+            # The reader is closed as _close_archive closes it: reader, then streams.
+            # A failing close() must not replace the error being raised.
+            try:
+                if self._reader_open:
+                    self._reader_open = False
+                    with suppress(Exception), self._handle_guard():
+                        self._sequential.close()
+            finally:
+                self._release_streams()
+                if self._shared is not None:
+                    self._shared.close()
             raise
         return reader
 
@@ -777,7 +796,12 @@ class SequentialReaderAdapter(_PluginAdapter):
                 f"{name}.walk() yielded {member.name!r} with data_length {length!r}, "
                 "not a whole number of bytes"
             )
-        if member.type in (MemberType.FILE, MemberType.DIRECTORY) and length:
+        # A directory's data is its declared size too: it stays a DIRECTORY, a read
+        # delivers the bytes and the listing reports them (_report_listed).
+        sized = member.type is MemberType.FILE or (
+            member.type is MemberType.DIRECTORY and length
+        )
+        if sized:
             if member.size is None:
                 member.size = length
             elif member.size != length:
@@ -785,8 +809,6 @@ class SequentialReaderAdapter(_PluginAdapter):
                     f"{name}.walk() yielded {member.name!r} with size {member.size} "
                     f"and data_length {length}: a member's data is stored as it is"
                 )
-        elif member.type is MemberType.FILE and member.size is None:
-            member.size = 0
         presented = span.stored_name if span.stored_name is not None else member.name
         member.name = normalize_member_name(
             presented, member.type, backslash_is_separator=False
@@ -797,13 +819,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             expected, custom = self._member_digests(member, span.digests, "walk")
         record = _Span(forward.offset, length, expected, custom or None)
         member._raw = record
-        emit_member_name_normalized(
-            self._diagnostics_collector,
-            member=member,
-            presented_name=presented,
-            archive_name=self._archive_name,
-            member_id=index,
-        )
+        self._report_listed(member, presented, index)
         if (
             member.type is MemberType.SYMLINK
             and self._sequential.link_target_in_data
@@ -875,11 +891,22 @@ class SequentialReaderAdapter(_PluginAdapter):
                 owned.close()
 
     def _close_archive(self) -> None:
+        # A walk taken at open and never listed is still suspended in the plugin's
+        # walk(): finish it first, so its own cleanup runs before close() and over an
+        # open stream, not later in the collector.
         try:
-            super()._close_archive()
+            if self._open_walk is not None:
+                close = getattr(self._open_walk[1], "close", None)
+                self._open_walk = None
+                if close is not None:
+                    with self._translated_errors(), self._handle_guard():
+                        close()
         finally:
-            with self._handle_guard():
-                self._release_streams()
+            try:
+                super()._close_archive()
+            finally:
+                with self._handle_guard():
+                    self._release_streams()
 
 
 # The ``MemberDigest`` names archivey computes itself, with its own hasher.

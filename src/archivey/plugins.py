@@ -8,9 +8,10 @@ A plugin is two classes. A :class:`FormatPlugin` subclass declares the format: i
 returns a reader. The reader subclasses :class:`IndexedReader` (a format with an index:
 list the members first, then open any one of them) or :class:`SequentialReader` (a
 format of header, data, header, data, read in one forward pass, from a pipe too). The
-plugin hands archivey members and bytes; archivey does everything after that the same way it does for a built-in
-format: name normalization and the name checks, listing limits, link resolution, safe
-extraction and its limits, and the size and digest checks on member data.
+plugin hands archivey members and bytes; archivey does everything after that the same
+way it does for a built-in format: name normalization and the name checks, listing
+limits, link resolution, safe extraction and its limits, and the size and digest checks
+on member data.
 
 A program registers a plugin with :func:`register_format`. Nothing is loaded
 automatically. Plugin code runs in the caller's process as trusted code: archivey's
