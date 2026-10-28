@@ -434,10 +434,11 @@ class _MemberDataView(DelegatingStream):
 class _WalkHandoffStream(ReadOnlyIOStream):
     """A pass's member data, read through the walk until the walk moves on.
 
-    The walk's next pull calls :meth:`detach` under the walk lock. From then on the
-    stream reads a view of its own from where it stopped (on a compressed tar, a
-    decoder seek back), so the walk can move on for another caller while the pass is
-    still reading this member. A stream detached after its last read builds no view.
+    The walk's next pull calls :meth:`detach` under the walk lock
+    (``TarReader._before_pull_locked``). From then on the stream reads a view of its own
+    from where it stopped (on a compressed tar, a decoder seek back), so the walk can
+    move on for another caller while the pass is still reading this member. A stream
+    detached after its last read builds no view.
     """
 
     def __init__(self, reader: TarReader, span: TarSpan, data: BinaryIO) -> None:
@@ -528,7 +529,8 @@ class TarReader(BaseArchiveReader):
         self._source = source
         self._compressed = format.stream != StreamFormat.UNCOMPRESSED
         # The one pass stream reading member data through the walk, if any; the walk
-        # detaches it before its next pull (see _pull_member).
+        # detaches it before its next pull (``_before_pull_locked``). Set only under
+        # ``_walk_lock`` (``_walk_data``), so none appears during a batch of pulls.
         self._walk_stream: _WalkHandoffStream | None = None
         # Streaming only: the buffer in front of the codec stream or the source, built
         # by this reader, so closed by it. Random access keeps each walk's view
@@ -731,8 +733,8 @@ class TarReader(BaseArchiveReader):
         assert counted <= cap, (counted, cap)
         return (cap - counted, cap)
 
-    def _pull_member(self) -> ArchiveMember | None:
-        """Pull as the base does, after handing off a pass's stream.
+    def _before_pull_locked(self) -> None:
+        """Hand off a pass's stream before the base pulls.
 
         A pass may still be reading the member the walk is at through the walk. That
         stream moves to a view of its own first (:class:`_WalkHandoffStream`), so a
@@ -740,12 +742,10 @@ class TarReader(BaseArchiveReader):
         ``CONCURRENT``, does not cut it off. The pass's own next pull hands over a
         stream it is about to close, which costs nothing.
         """
-        with self._walk_lock:
-            live = self._walk_stream
-            if live is not None:
-                self._walk_stream = None
-                live.detach()
-            return super()._pull_member()
+        live = self._walk_stream
+        if live is not None:
+            self._walk_stream = None
+            live.detach()
 
     def _register_member(
         self,
