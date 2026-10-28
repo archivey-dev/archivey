@@ -18,7 +18,7 @@ from datetime import UTC
 
 import pytest
 
-import archivey.types
+from archivey.internal import dataclass_copy
 from archivey.internal.hashing import crc32_digest
 from archivey.types import (
     EXTRA_IS_JUNCTION,
@@ -104,11 +104,9 @@ def test_replace_returns_copy_without_mutating_original() -> None:
 
 
 def test_replace_copies_every_field_as_dataclasses_replace_does() -> None:
-    # ``replace`` builds the copy by passing every field to ``__init__`` in order;
-    # that needs every field in ``__init__``, positionally (``_MEMBER_FIELDS``).
+    # ``replace`` copies by position (``copy_with``), not by ``dataclasses.replace``.
     fields = dataclasses.fields(ArchiveMember)
-    assert all(f.init and not f.kw_only for f in fields)
-    assert archivey.types._MEMBER_FIELDS == tuple(f.name for f in fields)
+    assert dataclass_copy._plan(ArchiveMember) is not None
     # A distinct object in every field, so a field copied into the wrong position
     # shows up as the wrong object, not as an equal default.
     given = {f.name: object() for f in fields}

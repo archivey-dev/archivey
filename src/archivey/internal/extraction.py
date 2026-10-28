@@ -29,7 +29,7 @@ import posixpath
 import stat
 import uuid
 from collections.abc import Callable, Collection, Generator, Iterator
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Protocol, assert_never, cast
 
@@ -51,6 +51,7 @@ from archivey.internal.bomb_tracker import (
     AlwaysStopResourceLimitError,
     BombTracker,
 )
+from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.dry_run import DryRun, scratch_for
 from archivey.internal.file_copy_pass import FileCopyPass
 from archivey.internal.filters import (
@@ -1135,7 +1136,7 @@ class ExtractionCoordinator:
         if presented_name is not None and recorded_index is not None:
             self._set_result(
                 recorded_index,
-                replace(
+                copy_with(
                     results[recorded_index],
                     presented_name=presented_name,
                     rewrites=rewrites,
@@ -2038,7 +2039,7 @@ class ExtractionCoordinator:
         )
 
         if original.is_anti:
-            return replace(
+            return copy_with(
                 self._apply_anti_item(original, target), requested_path=requested
             )
 
@@ -2093,11 +2094,11 @@ class ExtractionCoordinator:
         # rename, so it reports the actual (merged) path; every other outcome reports the
         # member's own intended destination, so RENAME shows up as requested_path != path.
         if prior is not None and result.status is ExtractionStatus.EXTRACTED:
-            result = replace(
+            result = copy_with(
                 result, requested_path=result.path, collided_with=collided_with
             )
         else:
-            result = replace(
+            result = copy_with(
                 result, requested_path=requested, collided_with=collided_with
             )
 
@@ -3300,11 +3301,11 @@ class ExtractionCoordinator:
         results = self._state.results
         prior = results[index]
         if prior.presented_name is not None and new.presented_name is None:
-            new = replace(
+            new = copy_with(
                 new, presented_name=prior.presented_name, rewrites=prior.rewrites
             )
         if prior.requested_path is not None and new.requested_path is None:
-            new = replace(new, requested_path=prior.requested_path)
+            new = copy_with(new, requested_path=prior.requested_path)
         results[index] = new
 
     def _append_result(self, new: ExtractionResult) -> int:
@@ -3669,7 +3670,7 @@ class ExtractionCoordinator:
             if prior.status is ExtractionStatus.EXTRACTED:
                 self._set_result(
                     link.result_index,
-                    replace(
+                    copy_with(
                         prior, path=None, status=ExtractionStatus.BLOCKED, error=error
                     ),
                 )
@@ -3727,7 +3728,7 @@ class ExtractionCoordinator:
         # more extracted members than ``results`` contains.
         self._set_result(
             index,
-            replace(
+            copy_with(
                 clobbered,
                 path=None,
                 status=ExtractionStatus.OVERWRITTEN,
