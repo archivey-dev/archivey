@@ -624,6 +624,12 @@ class _RunState:
         default_factory=dict
     )
 
+    # ``dest`` as a string ending in a separator, for ``_physical_path``.
+    dest_prefix: str = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.dest_prefix = os.path.join(os.fspath(self.dest), "")
+
 
 @dataclass
 class _MemberState:
@@ -699,6 +705,9 @@ class ExtractionCoordinator:
         self._current = _MemberState()
         # Set for the length of a dry run; ``None`` on a real run.
         self._dry: DryRun | None = None
+        # ``_parent``'s one-entry cache: the last path asked for, and its parent.
+        self._parent_of: Path | None = None
+        self._parent_path: Path | None = None
         # Set by a dry run, from its scratch tree; see ExtractionReport.
         self.dry_run_top_level: tuple[tuple[str, bool], ...] | None = None
         self.dry_run_links: tuple[tuple[str, str], ...] | None = None
@@ -2212,7 +2221,7 @@ class ExtractionCoordinator:
             return ExtractionResult(
                 original, None, ExtractionStatus.NOT_OVERWRITTEN, None
             )
-        self._makedirs(dest_path.parent, transformed)
+        self._makedirs(self._parent(dest_path), transformed)
         return None
 
     def _resolve_collision(
@@ -2324,6 +2333,19 @@ class ExtractionCoordinator:
                     return written
         return path
 
+    def _parent(self, path: Path) -> Path:
+        """``path.parent``, the same object again for the same ``path``.
+
+        Writing a member asks for its parent three times (``_callers_parent``,
+        ``_make_room`` and the temp file next to it). Each new parent object builds
+        its parts, its string and its comparison key again: a few microseconds a
+        member that one cached object pays once. ``Path`` is immutable, so the cache
+        holds no state to go stale."""
+        if path is not self._parent_of:
+            self._parent_path = path.parent
+            self._parent_of = path
+        return cast("Path", self._parent_path)
+
     def _callers_parent(self, path: Path) -> Path | None:
         """The parent of ``path`` under the destination that the caller holds as an
         entry that is not a directory (a file, or a symlink that does not resolve to
@@ -2335,10 +2357,14 @@ class ExtractionCoordinator:
         wrote is not the caller's: ``_makedirs`` fails the member with an error that
         names it."""
         dest = self._state.dest
-        parent = path.parent
+        if os.path.dirname(os.fspath(path)) == os.fspath(dest):
+            # A member at the top of the destination, compared as strings: a
+            # ``Path`` comparison of a new parent costs a few times more.
+            return None
+        parent = self._parent(path)
         if (
-            parent == dest
-            or parent in self._state.created_dirs
+            parent in self._state.created_dirs
+            or parent == dest
             or os.path.isdir(long_path(parent))
         ):
             # The common case: a directory this run made (``created_dirs`` drops
@@ -2661,7 +2687,14 @@ class ExtractionCoordinator:
         resolved (``_physical_rel``); ``path`` itself when that parent does not resolve
         inside the root."""
         rel = self._physical_rel(path)
-        return self._state.dest / rel if rel is not None else path
+        if rel is None:
+            return path
+        prefix = self._state.dest_prefix
+        if os.fspath(path) == prefix + rel.replace("/", os.sep):
+            # The common case, a parent that resolves to itself: ``path`` is already
+            # that path, and a join would only build an equal one (a few microseconds).
+            return path
+        return self._state.dest / rel
 
     def _collision_key(self, path: Path) -> str:
         """The collision-map key of the entry at ``path``: where it physically is.
@@ -3962,12 +3995,12 @@ class ExtractionCoordinator:
         # exists.
         self._state.tracker.check_recorded_size()
         if self._effective_mode(member) is None:
-            tmp = self._temp_sibling(dest_path.parent)
+            tmp = self._temp_sibling(self._parent(dest_path))
             fd = _open_new_file(tmp, 0o666)
         else:
             # Write straight into the new file's fd (no close+reopen). Its 0o600 keeps
             # the content private until the chmod below.
-            fd, tmp = self._new_temp_file(dest_path.parent)
+            fd, tmp = self._new_temp_file(self._parent(dest_path))
         try:
             with os.fdopen(fd, "wb") as dst:
                 if copy_begins is not None:
