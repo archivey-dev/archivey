@@ -246,7 +246,7 @@ The system SHALL ensure every `ArchiveyError` instance carries:
 | `archive_name` | `str \| None` | Path or source stream `name`; `None` for anonymous streams; never fabricated; **raw** |
 | `member_name` | `str \| None` | Member in context, if any; **raw** |
 | `link_target` | `str \| None` | Symlink/hardlink target in context, if any; **raw** |
-| `format_unconfirmed` | `bool` | `True` when the format claim rested on a content probe alone, with nothing corroborating it (`detected_by="content_probe"`, no matching extension and no inner-TAR upgrade) — **whatever confidence detection reported**; default `False` for every other raise |
+| `format_unconfirmed` | `bool` | `True` when the format claim rested on a content probe alone, with nothing corroborating it (`detected_by="content_probe"`, no matching extension, no inner-TAR upgrade and no self-checking header) — **whatever confidence detection reported**; default `False` for every other raise |
 | `__cause__` | `BaseException \| None` | Original exception via `raise ... from exc` when wrapping |
 
 `__str__` SHALL append `format_unconfirmed=True` when the flag is set (alongside
@@ -431,11 +431,16 @@ and Brotli's compressed-first class, which was moved to `PROBABLE` precisely *be
 flag was confidence-keyed. Separating them also lets confidence be retuned later without
 silently changing which errors are stamped.
 
-A claim SHALL count as **corroborated**, and therefore not stamped, when either of these
+A claim SHALL count as **corroborated**, and therefore not stamped, when any of these
 holds: the filename agrees with the detected format; or the probe hit was upgraded to a
 `TAR_*` format because a TAR header was found in the decompressed prefix, which is a
-second independent signal obtained by actually decompressing. Exact magic and SFX scans do
-not reach this requirement at all, being different detection paths.
+second independent signal obtained by actually decompressing; or the claim came from a
+self-checking header (a TAR header found by its checksum, `format-detection` step 6).
+That last one corroborates itself, whatever the name says (DR-7, trust self-validating
+data over caller hints): its checksum and every numeric field had to hold, so a name
+that disagrees raises a `FORMAT_EXTENSION_CONFLICT` but does not stamp the error. Exact
+magic and SFX scans do not reach this requirement at all, being different detection
+paths.
 
 **"The filename agrees" SHALL be the exact negation of what raises a
 `FORMAT_EXTENSION_CONFLICT`** — the extension's format equals the detected format, or is

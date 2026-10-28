@@ -77,12 +77,13 @@ Multiple readers from the same backend class MUST be independent.
 ### Requirement: Detection owns matching and registry selects by format
 
 The system SHALL keep format detection and backend selection separate.
-`detect_format()` is the authority for source format: it aggregates backend
-`MAGIC`, `TRAILER`, `HEADER_CHECKS`, `EXTENSIONS`, and `CONTENT_PROBES`, performs
-special probes through the detection workspace, consumes no bytes, and raises
-`FormatDetectionError` when no format matches. The registry SHALL map the resolved `ArchiveFormat` to a
-registered available backend. If a detected format has no available backend,
-lookup SHALL raise `PackageNotInstalledError` with the install hint.
+`detect_format()` is the authority for source format: it aggregates backend `MAGIC`,
+`TRAILER`, `HEADER_CHECKS`, `EXTENSIONS`, and `CONTENT_PROBES`, performs special
+probes through the detection workspace, consumes no bytes, and raises
+`FormatDetectionError` when no format matches. The registry SHALL map the resolved
+`ArchiveFormat` to a registered available backend. If a detected format has no
+available backend, lookup SHALL raise `PackageNotInstalledError` with the install
+hint.
 
 A backend that declares the format and sets `READ_IMPLEMENTED` false is not a missing
 dependency. `format_availability` SHALL report `NONE` with an empty `missing`, and

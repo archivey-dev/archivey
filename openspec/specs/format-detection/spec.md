@@ -941,8 +941,9 @@ decodes cleanly or runs out of input there, and both SHALL be accepted.
 
 ### Requirement: A read failure on probe-only evidence names its provenance
 
-When a single-file result's format came from a content probe with **no corroborating
-evidence** (matching extension or inner-TAR upgrade) — at any `DetectionConfidence` — a
+When a result's format came from a content probe with **no corroborating evidence**
+(matching extension, inner-TAR upgrade, or a self-checking header, which corroborates
+itself) — at any `DetectionConfidence` — a
 decode failure while reading the fabricated single member SHALL report that the format
 identification was unconfirmed, rather than presenting as a plain truncation of a file
 whose format is settled. See `error-handling` for the attribute, message, and diagnostic
@@ -961,6 +962,8 @@ cleanly is a success.
 | Probe + `.tar.br` extension reported as bare `BROTLI`, read fails | Corroborated — the deferred inner-TAR case is agreement, not conflict; `format_unconfirmed=False` |
 | Probe + an extension that **disagrees** (`.zip` over Brotli bytes), read fails | Not corroborated; `format_unconfirmed=True`, and a `FORMAT_EXTENSION_CONFLICT` is raised |
 | Probe hit upgraded to `TAR_*` via inner-TAR, read fails | Corroborated; `format_unconfirmed=False` |
+| TAR found by its header checksum (step 6), with no name or a `.tar` name, read fails | Corroborated by the checksum; `format_unconfirmed=False` |
+| TAR found by its header checksum under a name that **disagrees** (`.zip`), read fails | Still corroborated by the checksum; `format_unconfirmed=False`, and a `FORMAT_EXTENSION_CONFLICT` is raised |
 | Probe-only result, read succeeds | Success; no error, no downgrade |
 
 ### Requirement: An inner-TAR upgrade corroborates a content-probe identification

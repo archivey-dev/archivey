@@ -433,13 +433,11 @@ def starts_with_header(prefix: bytes) -> bool:
 
     Detection's check for a TAR without magic: a v7 header, or one an old writer filled
     in without ``ustar``. The block must parse as :func:`parse_header_block` parses it,
-    so its checksum matches its byte sum and every numeric field is a number. Its name
-    must also be non-empty. A zero block is not a header: an empty TAR has no header to
+    so its checksum matches the block's byte sum (the field itself counted as eight
+    spaces) and every numeric field is a number. Its name must also be non-empty. A zero block is not a header: an empty TAR has no header to
     check.
 
-    The checksum field must parse as a number equal to the block's byte sum, with the
-    field itself counted as eight spaces, so text and binary data pass only when built
-    to. It is the test ``tarfile.is_tarfile``
+    Text and binary data pass only when built to. It is the test ``tarfile.is_tarfile``
     and Commons Compress make, and GNU tar's own reading of the first block.
     """
     if len(prefix) < BLOCKSIZE:

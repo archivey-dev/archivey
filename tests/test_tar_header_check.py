@@ -25,6 +25,7 @@ from archivey import (
     open_archive,
 )
 from archivey.detection_cost import BALANCED_BUDGET, TierSkip, TierSkipReason
+from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import ArchiveyError, FormatDetectionError
 from archivey.internal.backends.tar_parser import starts_with_header
 from archivey.internal.backends.tar_reader import TarReadBackend
@@ -96,6 +97,27 @@ def test_truncated_v7_tar_is_not_format_unconfirmed() -> None:
         pytest.raises(ArchiveyError) as caught,
         open_archive(io.BytesIO(data)) as archive,
     ):
+        for _member, stream in archive.stream_members():
+            if stream is not None:
+                stream.read()
+    assert caught.value.format_unconfirmed is False
+
+
+def test_v7_tar_under_a_disagreeing_name_conflicts_but_is_not_unconfirmed(
+    tmp_path: Path,
+) -> None:
+    """A ``.zip`` name disagrees with the header: a conflict, but no stamp (DR-7)."""
+    path = tmp_path / "archive.zip"
+    path.write_bytes(_v7_tar()[:600])
+    info = detect_format(path)
+    assert (info.format, info.confidence, info.detected_by) == (
+        ArchiveFormat.TAR,
+        DetectionConfidence.PROBABLE,
+        "content_probe",
+    )
+    assert info.corroborated is True
+    assert info.diagnostics.counts[DiagnosticCode.FORMAT_EXTENSION_CONFLICT] == 1
+    with pytest.raises(ArchiveyError) as caught, open_archive(path) as archive:
         for _member, stream in archive.stream_members():
             if stream is not None:
                 stream.read()

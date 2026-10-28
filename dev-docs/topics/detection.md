@@ -204,7 +204,9 @@ spaces, every numeric field is octal or base-256, and the name is non-empty. A z
 is not a header.
 
 A hit is `PROBABLE` / `content_probe`, and it is its own corroboration (DR-7): a later
-read failure is not stamped `format_unconfirmed`, as a probe-only choice would be. With
+read failure is not stamped `format_unconfirmed`, as a probe-only choice would be. A name
+that disagrees (a v7 tar named `.zip`) still raises `FORMAT_EXTENSION_CONFLICT`, and the
+error is still not stamped. With
 `max_prefix_bytes` under 512 the step cannot see a whole block, and `unavailable_tiers`
 records `header_check` (§4.1). It runs on every source, named or not, unlike the
 probes (§2.6):
@@ -438,8 +440,8 @@ unique bytes read, far and scanned bytes, decode input and output, and passes.
 three reasons:
 
 - `NOT_ENABLED_BY_POLICY`: the budget turned it off (`probe_completion` under `FAST`,
-  or `header_check` with `max_prefix_bytes=0`).
-  The search is still complete for what the policy asked.
+  or `header_check` with `max_prefix_bytes=0`). The search is still complete for what
+  the policy asked.
 - `CAPABILITY_UNAVAILABLE`: the step could not run here. The inner-TAR probe records it
   if the codec's backend is absent or its decoder cannot be built within the probe's
   reservation (an xz filter chain it cannot decode raw, a zstd window over 128 MiB, a
@@ -447,7 +449,8 @@ three reasons:
   turns it off gives `NOT_ENABLED_BY_POLICY` whatever the backend, and an absent backend
   gives `CAPABILITY_UNAVAILABLE` ahead of `BUDGET_EXHAUSTED`, since more budget would
   not help.
-- `BUDGET_EXHAUSTED`: it started or would have started, and the budget cut it short. The
+- `BUDGET_EXHAUSTED`: it started or would have started, and the budget cut it short
+  (`header_check` with a `max_prefix_bytes` from 1 to 511, under its one block). The
   search is incomplete.
 
 The distinction matters to a caller deciding whether a miss means "not an archive" or "not
