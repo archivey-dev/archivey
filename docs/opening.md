@@ -192,4 +192,5 @@ turned it off. Each entry is an [`OptionalLibrary`][archivey.OptionalLibrary] me
 and any other name is refused, so a typo can't leave a package on. The setting only affects calls
 made with that config: other calls in the same program, on any thread, still use the package.
 `format_availability(fmt, config=...)` and `list_supported_formats(config=...)` answer with the
-excluded packages counted as missing.
+excluded packages counted as missing. A plugin reader that imports a package itself honours the setting
+only if it checks `config.formats.exclude_libraries`, as `archivey-squashfs` does for `lz4`.

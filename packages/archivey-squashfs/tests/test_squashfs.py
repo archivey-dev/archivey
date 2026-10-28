@@ -16,8 +16,12 @@ from archivey_squashfs.reader import SquashfsReader
 
 import archivey
 from archivey import (
+    ArchiveyConfig,
     CorruptionError,
+    FormatPolicy,
     MemberType,
+    OptionalLibrary,
+    PackageNotInstalledError,
     TruncatedError,
     UnsupportedFeatureError,
     detect_format,
@@ -358,3 +362,18 @@ def test_the_package_uses_only_public_archivey() -> None:
 
 def test_the_reader_is_an_indexed_reader() -> None:
     assert issubclass(SquashfsReader, archivey.plugins.IndexedReader)
+
+
+@pytest.mark.skipif(not _LZ4, reason="needs lz4")
+def test_lz4_turned_off_by_the_policy_reads_as_not_installed() -> None:
+    config = ArchiveyConfig(
+        formats=FormatPolicy(exclude_libraries={OptionalLibrary.LZ4})
+    )
+    with (
+        pytest.raises(PackageNotInstalledError, match="exclude_libraries") as e,
+        open_archive(DATA / "lz4.sqfs", config=config) as archive,
+    ):
+        archive.read("a.txt")
+    (component,) = e.value.missing
+    assert component.name is OptionalLibrary.LZ4
+    assert "exclude_libraries" in component.reason

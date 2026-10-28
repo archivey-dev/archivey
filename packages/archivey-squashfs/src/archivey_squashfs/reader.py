@@ -17,6 +17,7 @@ apply, or through a decoder capped at the block's size: ``lz4.block`` for LZ4, a
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import struct
 from collections import OrderedDict
@@ -205,6 +206,30 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
 
     # ── Decoding ─────────────────────────────────────────────────────────────────────
 
+    def _lz4_block_module(self) -> Any:
+        """``lz4.block``, unless it is missing or the caller's policy turns it off."""
+        requirement = MissingComponent(
+            OptionalLibrary.LZ4, "pip install archivey-squashfs[lz4]", ("lz4",)
+        )
+        if OptionalLibrary.LZ4 in self._context.config.formats.exclude_libraries:
+            # Turned off for this call: it reads as not installed, and installing it
+            # would not help.
+            requirement = dataclasses.replace(
+                requirement,
+                reason="ArchiveyConfig.formats.exclude_libraries turns it off",
+            )
+        else:
+            try:
+                import lz4.block
+            except ImportError:
+                pass
+            else:
+                return lz4.block
+        raise PackageNotInstalledError(
+            requirement.message("an LZ4-compressed SquashFS image"),
+            missing=(requirement,),
+        )
+
     def _block_decoder(self, compressor: str) -> Callable[[int, int, int], bytes]:
         """A function that decodes ``length`` bytes at ``start`` to at most ``limit``."""
         method = _DECODED_AS.get(compressor)
@@ -226,22 +251,13 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
 
             return through_archivey
         if compressor == "lz4":
-            try:
-                import lz4.block
-            except ImportError:
-                requirement = MissingComponent(
-                    OptionalLibrary.LZ4, "pip install archivey-squashfs[lz4]", ("lz4",)
-                )
-                raise PackageNotInstalledError(
-                    requirement.message("an LZ4-compressed SquashFS image"),
-                    missing=(requirement,),
-                ) from None
+            lz4_block_module = self._lz4_block_module()
 
             def lz4_block(start: int, length: int, limit: int) -> bytes:
                 raw = self._read_exact(start, length, "an LZ4 block")
                 try:
-                    return lz4.block.decompress(raw, uncompressed_size=limit)
-                except lz4.block.LZ4BlockError as exc:
+                    return lz4_block_module.decompress(raw, uncompressed_size=limit)
+                except lz4_block_module.LZ4BlockError as exc:
                     raise CorruptionError(f"the LZ4 block at {start}: {exc}") from None
 
             return lz4_block
