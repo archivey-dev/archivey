@@ -53,6 +53,7 @@ from tests.sample_archives import (
     skip_unless_runnable,
 )
 from tests.streams_util import (
+    NonSeekableBytesIO,
     assert_non_integer_read_is_type_error,
     assert_non_integer_seek_is_type_error,
     assert_oversized_read_is_overflow_error,
@@ -1052,3 +1053,54 @@ def test_member_stream_advertises_size(member: tuple[Path, str]) -> None:
     with open_archive(source) as ar, ar.open(name) as f:
         size = getattr(f, "size", None)
         assert size is None or size == len(CONTENT)
+
+
+def test_a_stream_built_open_settles_its_seekability_on_first_use() -> None:
+    """``_Opened``: an eager handle over a stream already open is not asked whether it
+    can seek until a caller asks, and then answers as the stream does."""
+    from archivey.internal.streams.archive_stream import ArchiveStream, _Opened
+
+    def no_translation(exc: Exception) -> None:
+        return None
+
+    plain = ArchiveStream(_Opened(io.BytesIO(b"abc")), translate=no_translation)
+    plain._seekable_hint = None
+    assert plain.read(1) == b"a"
+    assert plain.seekable()
+    assert plain.seek(0) == 0
+    assert plain.read() == b"abc"
+
+    forward = ArchiveStream(
+        _Opened(NonSeekableBytesIO(b"abc")), translate=no_translation
+    )
+    forward._seekable_hint = None
+    assert not forward.seekable()
+    with pytest.raises(io.UnsupportedOperation):
+        forward.seek(0)
+
+    # A handle closed before anything asked answers a seek as one asked when built:
+    # a stream that cannot seek refuses, one that can raises the closed-file error.
+    for inner, error in (
+        (NonSeekableBytesIO(b"abc"), io.UnsupportedOperation),
+        (io.BytesIO(b"abc"), ValueError),
+    ):
+        unasked = ArchiveStream(_Opened(inner), translate=no_translation)
+        unasked._seekable_hint = None
+        unasked.close()
+        with pytest.raises(error):
+            unasked.seek(0)
+
+
+def test_a_stream_built_open_over_an_archive_stream_collapses_it() -> None:
+    """``_Opened`` over an ``ArchiveStream`` opens it the usual way, which collapses
+    it, so the handle never wraps another handle."""
+    from archivey.internal.streams.archive_stream import ArchiveStream, _Opened
+
+    def no_translation(exc: Exception) -> None:
+        return None
+
+    nested = ArchiveStream(lambda: io.BytesIO(b"abc"), translate=no_translation)
+    outer = ArchiveStream(_Opened(nested), translate=no_translation)
+    assert not isinstance(outer._inner, ArchiveStream)
+    assert nested.closed
+    assert outer.read() == b"abc"
