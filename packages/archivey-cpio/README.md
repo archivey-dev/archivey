@@ -55,8 +55,9 @@ The reader does not trust the archive. It refuses a header whose fields are not
 numbers, a name over 64 KiB or without its NUL, a variant that changes mid-archive, and
 an archive that ends before its `TRAILER!!!` member. Bytes other than zeros within
 1 MiB after the trailer are reported as `ARCHIVE_TRAILING_DATA`; so is a second
-archive concatenated after the first, which is not listed, as archivey's TAR does. archivey reads and
-skips member data itself, and checks each file's length and, in crc, its checksum.
+archive concatenated after the first, which is not listed, as archivey's TAR does.
+archivey reads and skips member data itself, and checks each file's length and, in
+crc, its checksum.
 
 ## Tests
 
