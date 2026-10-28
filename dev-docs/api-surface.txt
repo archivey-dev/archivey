@@ -901,7 +901,8 @@ attribute archivey.plugins.FormatPlugin.requires = ()
 method archivey.plugins.FormatPlugin.translate_exception(self, exc: Exception) -> ArchiveyError | None
 attribute archivey.plugins.FormatPlugin.uses_encoding = False
 class archivey.plugins.ForwardStream()
-init archivey.plugins.ForwardStream(read: Callable[[int], bytes], skip: Callable[[int, int], None]) -> None
+init archivey.plugins.ForwardStream(read: Callable[[int], bytes], skip: Callable[[int, int], None], decompress: Callable[[int, StreamFormat], ForwardStream] | None = None) -> None
+method archivey.plugins.ForwardStream.decompress(self, stream: StreamFormat) -> ForwardStream
 property archivey.plugins.ForwardStream.offset: int
 method archivey.plugins.ForwardStream.read(self, n: int) -> bytes
 method archivey.plugins.ForwardStream.read_exact(self, n: int) -> bytes

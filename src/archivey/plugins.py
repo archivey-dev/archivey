@@ -35,7 +35,7 @@ from typing import Any, BinaryIO, ClassVar, Generic, NamedTuple, Protocol, TypeV
 
 from archivey.config import ArchiveyConfig
 from archivey.diagnostics import DiagnosticCode, DiagnosticContext
-from archivey.exceptions import ArchiveyError, TruncatedError
+from archivey.exceptions import ArchiveyError, ArchiveyUsageError, TruncatedError
 from archivey.internal.naming import normalize_member_name
 from archivey.internal.streams.blocks import BlockStream
 from archivey.internal.streams.streamtools import ensure_bufferedio
@@ -291,10 +291,14 @@ class ForwardStream:
         self,
         read: Callable[[int], bytes],
         skip: Callable[[int, int], None],
+        decompress: Callable[[int, StreamFormat], ForwardStream] | None = None,
     ) -> None:
         self._read_fn = read
         self._skip_fn = skip
+        self._decompress_fn = decompress
         self._offset = 0
+        # Set once decompress() has handed the rest of the bytes to a decoded stream.
+        self._handed_off = False
 
     @property
     def offset(self) -> int:
@@ -306,6 +310,7 @@ class ForwardStream:
         """Up to ``n`` bytes; fewer only at the end of the archive."""
         if n < 0:
             raise ValueError(f"ForwardStream.read() takes a size of 0 or more, got {n}")
+        self._check_not_handed_off()
         data = self._read_fn(n)
         self._offset += len(data)
         return data
@@ -333,8 +338,40 @@ class ForwardStream:
         ``TruncatedError`` when the archive ends first."""
         if n < 0:
             raise ValueError(f"ForwardStream.skip() takes a size of 0 or more, got {n}")
+        self._check_not_handed_off()
         self._skip_fn(self._offset, n)
         self._offset += n
+
+    def decompress(self, stream: StreamFormat) -> ForwardStream:
+        """The rest of the archive, from :attr:`offset` on, decoded as a ``stream``
+        compression stream (``StreamFormat.GZIP``, ``XZ``, ``ZSTD``, …): the payload of
+        an RPM after its headers, say.
+
+        Read the archive from the returned stream after this call: this one refuses
+        further reads. Its :attr:`offset` counts decoded bytes from 0, and the members
+        the walk yields from then on are read from the decoded bytes, from a pipe too.
+        archivey decodes with its own codecs, under the caller's decoder limits and
+        the decompression-ratio guard. The compression stream is taken to run to the
+        end of the archive: bytes after its end are reported with
+        ``ARCHIVE_TRAILING_DATA``, as after the end of a ``.gz`` file, not refused.
+        ``ValueError`` for a format that is not a compression stream
+        (``UNCOMPRESSED``).
+        """
+        self._check_not_handed_off()
+        if self._decompress_fn is None:
+            raise ArchiveyUsageError(
+                "this ForwardStream was not built by archivey and cannot decompress"
+            )
+        decoded = self._decompress_fn(self._offset, stream)
+        self._handed_off = True
+        return decoded
+
+    def _check_not_handed_off(self) -> None:
+        if self._handed_off:
+            raise ArchiveyUsageError(
+                "the rest of this stream was handed to decompress(): read the stream "
+                "it returned"
+            )
 
 
 class PluginContext:
