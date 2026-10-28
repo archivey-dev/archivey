@@ -69,6 +69,14 @@ def test_readonly_base_read_is_the_runtime_guard() -> None:
         _ForgotRead().read()
 
 
+def test_archive_stream_base_read_is_the_runtime_guard() -> None:
+    # The public base redeclares read(), so it needs the same raising body: on 3.11 a
+    # subclass that omits read() can still be built. Calling the body directly pins it
+    # on every Python version.
+    with pytest.raises(NotImplementedError):
+        ArchiveStream.read(object(), 1)  # type: ignore[arg-type]
+
+
 def test_readonly_base_name_is_absent() -> None:
     """Nameless streams must not expose ``name`` (pycdlib Windows + reopen-by-name)."""
     s = _FixedReader(b"x")
