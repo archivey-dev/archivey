@@ -192,9 +192,9 @@ class ArchiveStream(ReadOnlyIOStream):
     """
 
     # Per-stream state that starts the same on every stream, as class defaults: an
-    # instance assigns one only when it changes, which keeps the constructor cheap
+    # instance assigns one only when it changes, which keeps ``_setup`` cheap
     # (``stream_members()`` builds a stream per member). Each is documented where
-    # ``__init__`` or the method that changes it sets it.
+    # ``_setup`` or the method that changes it sets it.
     _open_error: Exception | None = None
     _open_error_tb: TracebackType | None = None
     _open_interrupted_by: type[BaseException] | None = None
@@ -311,9 +311,7 @@ class ArchiveStream(ReadOnlyIOStream):
         # ``_closing``: ``close()`` reads it. It is a class default, so it is set
         # before the verifier build below, which can raise (a digest diagnostic under
         # a RAISE policy): ``IOBase.__del__`` still calls ``close()`` on an instance
-        # whose ``_setup`` raised. ``close()`` takes ``_verifier``, assigned next, as
-        # the sign that ``_setup`` ran: keep everything ``_close`` reads above it.
-        self._verifier: MemberVerifier | None = verifier
+        # whose ``_setup`` raised.
         # ``_verdict``: the content verdict this stream raised, if any. Every later
         # read and seek raises it again (see ``_fail``). ``_verdict_tb``: its traceback
         # as first raised, where the damage was found. ``_verdict_rewound``: whether
@@ -333,6 +331,11 @@ class ArchiveStream(ReadOnlyIOStream):
         # verifier's flags it survives a rewind. ``_uninterrupted`` and
         # ``_ended_from_start`` start as class defaults (``True``, ``False``).
         self._checks_content = checks_content
+        # ``close()`` takes ``_verifier`` as the sign that ``_setup`` ran, so it is
+        # assigned last of the plain assignments: everything ``_close`` and ``_fail``
+        # read is above it. An instance either has it, or ``_setup`` stopped above it
+        # (only an assert on a misused ``_Opened`` can) and acquired nothing.
+        self._verifier: MemberVerifier | None = verifier
         # A stream's diagnostics are what its own calls emit, from this constructor on:
         # ``read``, ``seek`` and ``close`` enter this scope, on whichever thread calls.
         # Other threads' emits into the same collector stay out, as do the reader's
@@ -1079,9 +1082,8 @@ class ArchiveStream(ReadOnlyIOStream):
             return
         if "_verifier" not in self.__dict__:
             # ``_setup`` never ran: one of its arguments raised after ``_blank()`` made
-            # the instance. It holds nothing to release. ``_setup`` assigns
-            # ``_verifier`` after everything ``_close`` reads and before anything that
-            # can raise, so an instance it ran on always has it.
+            # the instance, or ``_setup`` stopped before ``_verifier`` (see there). It
+            # holds nothing to release.
             super().close()
             return
         scope = getattr(self, "_diagnostics_scope", None)
@@ -1161,7 +1163,7 @@ class ArchiveStream(ReadOnlyIOStream):
                 raise teardown_exc
 
     def __repr__(self) -> str:
-        return f"<ArchiveStream inner={getattr(self, '_inner', None)!r}>"
+        return f"<ArchiveStream inner={self._inner!r}>"
 
 
 def raise_translated(
