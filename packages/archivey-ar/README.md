@@ -40,8 +40,9 @@ macOS ar pads each member with newlines so the next header starts on 8 bytes, an
 counts the padding in the member's size. The padding is then part of the member, as
 llvm-ar and bsdtar extract it too.
 
-`archive.info.format_version` names the dialect, `gnu` or `bsd`. An archive whose names
-all fit in the header shows no sign of GNU or BSD beyond the trailing `/` of a GNU name.
+`archive.info.format_version` names the dialect, `gnu` or `bsd`, from the first name
+or symbol table spelled in a dialect's own way. It is `None` for an archive with no
+members.
 
 A thin archive (`!<thin>`), which only names files kept outside it, raises
 `UnsupportedFeatureError`.
@@ -49,11 +50,12 @@ A thin archive (`!<thin>`), which only names files kept outside it, raises
 ## Safety
 
 The reader does not trust the archive. It refuses a header without its `` `\n `` end
-or with a field that is not a number, a long-name reference before the table or past
-its end, a second table, a BSD name over 64 KiB or longer than its member, and a
-long-name table over 16 MiB (`ResourceLimitError`). An archive that ends inside a
-header or a member's data raises `TruncatedError`. archivey reads and skips member data
-itself, and checks each file's length.
+or with a field that is not a number (spaces on either side are padding, as GNU ar
+reads them; a sign is refused), a long-name reference before the table or past its
+end, a second table, and a BSD name over 64 KiB or longer than its member. A long-name
+table larger than `ListingLimits.max_metadata_bytes` raises `ResourceLimitError`. An
+archive that ends inside a header or a member's data raises `TruncatedError`. archivey
+reads and skips member data itself, and checks each file's length.
 
 ## Tests
 

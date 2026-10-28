@@ -57,10 +57,6 @@ HEADER_SIZE = 60
 _HEADER_END = b"`\n"
 # A BSD name longer than this is damage: no file system takes a path this long.
 MAX_NAME_BYTES = 64 * 1024
-# The GNU long-name table is held in memory for the whole walk. Even very large static
-# libraries keep it to a few MiB.
-MAX_NAME_TABLE_BYTES = 16 * 1024 * 1024
-
 _GNU_SYMBOL_TABLES = (b"/", b"/SYM64/")
 _BSD_SYMBOL_TABLES = (
     b"__.SYMDEF",
@@ -71,18 +67,17 @@ _BSD_SYMBOL_TABLES = (
 
 
 def _field(raw: bytes, base: int, what: str, offset: int) -> int | None:
-    """A numeric header field, or None when it is blank."""
-    text = raw.rstrip(b" ")
+    """A numeric header field, or None when it is blank. Spaces on either side are
+    padding, as GNU ar and libarchive read them; a sign is refused."""
+    text = raw.strip(b" ")
     if not text:
         return None
-    try:
-        if not text.isdigit():
-            raise ValueError(text)
-        return int(text, base)
-    except ValueError:
+    # Digits valid in the base: isdigit() alone would let 8 and 9 into an octal mode.
+    if not text.isdigit() or (base == 8 and not set(text) <= set(b"01234567")):
         raise CorruptionError(
             f"ar header at offset {offset}: the {what} field {raw!r} is not a number"
-        ) from None
+        )
+    return int(text, base)
 
 
 def _time(mtime: int | None) -> datetime | None:
@@ -142,6 +137,10 @@ class ArReader(SequentialReader):
             if name_field.startswith(b"#1/"):
                 self._dialect = self._dialect or "bsd"
                 name_size = _field(name_field[3:], 10, "name length", offset)
+                if name_size is None:
+                    raise CorruptionError(
+                        f"ar header at offset {offset}: the name length is blank"
+                    )
                 if not name_size or name_size > min(size, MAX_NAME_BYTES):
                     raise CorruptionError(
                         f"ar header at offset {offset}: a name of {name_size} bytes "
@@ -155,6 +154,9 @@ class ArReader(SequentialReader):
                     stream.read(size & 1)
                     continue
             elif name_field in _GNU_SYMBOL_TABLES or name_field in _BSD_SYMBOL_TABLES:
+                # The symbol table's spelling names the dialect too.
+                gnu = name_field in _GNU_SYMBOL_TABLES
+                self._dialect = self._dialect or ("gnu" if gnu else "bsd")
                 self._symbol_table = True
                 stream.skip(size)
                 stream.read(size & 1)
@@ -165,10 +167,12 @@ class ArReader(SequentialReader):
                     raise CorruptionError(
                         f"ar archive has a second long-name table at offset {offset}"
                     )
-                if size > MAX_NAME_TABLE_BYTES:
+                # The table is held for the whole walk: text the listing retains.
+                limit = self._context.config.listing_limits.max_metadata_bytes
+                if limit is not None and size > limit:
                     raise ResourceLimitError(
                         f"ar long-name table of {size} bytes, over "
-                        f"{MAX_NAME_TABLE_BYTES}"
+                        f"max_metadata_bytes={limit}"
                     )
                 names = stream.read_exact(size)
                 stream.read(size & 1)

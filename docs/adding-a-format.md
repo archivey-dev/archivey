@@ -42,11 +42,11 @@ and extracts safely.
 
 Three complete plugins outside archivey are in the repository:
 [`packages/archivey-squashfs`](https://github.com/archivey-dev/archivey/tree/main/packages/archivey-squashfs)
-for SquashFS images, a format with an index, and
+for SquashFS images, a format with an index;
 [`packages/archivey-cpio`](https://github.com/archivey-dev/archivey/tree/main/packages/archivey-cpio)
 for CPIO archives and
 [`packages/archivey-ar`](https://github.com/archivey-dev/archivey/tree/main/packages/archivey-ar)
-for ar archives (static libraries), formats read in one pass. None is published.
+for ar archives (static libraries), both read in one pass. None is published.
 
 ## A complete example
 

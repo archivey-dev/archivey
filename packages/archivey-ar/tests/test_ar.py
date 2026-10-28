@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from archivey_ar import AR, ArPlugin, ArReader
 
+import archivey
 from archivey import (
     CorruptionError,
     MemberType,
@@ -92,26 +93,31 @@ def test_list_and_read(name: str) -> None:
             assert member.uid == member.gid == 0
             assert member.modified is not None
             assert member.modified.timestamp() == 0
-        for member_name, data in CONTENT.items():
-            _check_content(name, reader.read(member_name), data)
+        for member_name in CONTENT:
+            _check_content(name, reader.read(member_name), member_name)
 
 
-def _check_content(archive: str, got: bytes, data: bytes) -> None:
-    if archive == "darwin":
-        assert got.startswith(data)
-        assert got[len(data) :] == b"\n" * (len(got) - len(data))
-        assert len(got) - len(data) < 8
-    else:
-        assert got == data
+def _expected(archive: str, name: str, data: bytes) -> bytes:
+    """A member's content as archivey reads it from ``archive``: in darwin.a, padded
+    with newlines so the next header starts on 8 bytes. llvm-ar stores each name in
+    the data area padded with NULs, 36 bytes for the long one and 12 for the rest."""
+    if archive != "darwin":
+        return data
+    stored_name = 36 if name == LONG else 12
+    return data + b"\n" * (-(60 + stored_name + len(data)) % 8)
+
+
+def _check_content(archive: str, got: bytes, name: str) -> None:
+    assert got == _expected(archive, name, CONTENT[name]), (archive, name)
 
 
 def test_the_dialects_hold_the_same_object() -> None:
-    objects = set()
+    with open_archive(DATA / "gnu.a") as reader:
+        obj = reader.read("sym.o")
     for name in ARCHIVES:
         with open_archive(DATA / f"{name}.a") as reader:
-            objects.add(reader.read("sym.o"))
-    assert len(objects) == 1
-    assert next(iter(objects)).startswith(b"\x7fELF")
+            assert reader.read("sym.o") == _expected(name, "sym.o", obj), name
+    assert obj.startswith(b"\x7fELF")
 
 
 @pytest.mark.parametrize("name", ARCHIVES)
@@ -124,8 +130,8 @@ def test_stream_from_a_pipe(name: str) -> None:
             assert stream is not None
             seen[member.name] = stream.read()
     assert list(seen) == NAMES
-    for member_name, content in CONTENT.items():
-        _check_content(name, seen[member_name], content)
+    for member_name in CONTENT:
+        _check_content(name, seen[member_name], member_name)
 
 
 @pytest.mark.parametrize("name", ARCHIVES)
@@ -143,13 +149,17 @@ def test_streams_left_unread(name: str) -> None:
 
 
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
-def test_extract(tmp_path: Path, pipe: bool) -> None:
-    source = _Pipe((DATA / "bsd.a").read_bytes()) if pipe else DATA / "bsd.a"
+@pytest.mark.parametrize("name", ARCHIVES)
+def test_extract(tmp_path: Path, pipe: bool, name: str) -> None:
+    """darwin.a's members extract with their padding, as llvm-ar and bsdtar write
+    them."""
+    path = DATA / f"{name}.a"
+    source = _Pipe(path.read_bytes()) if pipe else path
     dest = tmp_path / "out"
     with open_archive(source, streaming=pipe) as reader:
         reader.extract_all(dest)
-    for member_name, content in CONTENT.items():
-        assert (dest / member_name).read_bytes() == content
+    for member_name in CONTENT:
+        _check_content(name, (dest / member_name).read_bytes(), member_name)
     assert sorted(p.name for p in dest.iterdir()) == sorted(NAMES)
 
 
@@ -198,6 +208,51 @@ def test_blank_fields(tmp_path: Path) -> None:
 def test_an_empty_archive(tmp_path: Path) -> None:
     with open_archive(_archive(tmp_path, b"!<arch>\n")) as reader:
         assert reader.members() == []
+        assert reader.info.format_version is None
+
+
+# Every symbol-table spelling, as a name field and, for the BSD ones, as a #1/ name in
+# the data area (the only way the two longest fit).
+_SYMBOL_TABLES = [
+    ((b"/", b"\0" * 4), "gnu"),
+    ((b"/SYM64/", b"\0" * 8), "gnu"),
+    ((b"__.SYMDEF", b"\0" * 4), "bsd"),
+    ((b"__.SYMDEF SORTED", b"\0" * 4), "bsd"),
+    ((b"__.SYMDEF_64", b"\0" * 4), "bsd"),
+] + [
+    ((b"#1/%d" % len(name), name + b"\0" * 4), "bsd")
+    for name in (
+        b"__.SYMDEF",
+        b"__.SYMDEF SORTED",
+        b"__.SYMDEF_64",
+        b"__.SYMDEF_64 SORTED",
+    )
+]
+
+
+@pytest.mark.parametrize(
+    ("table", "dialect"), _SYMBOL_TABLES, ids=[t[0].decode() for t, _ in _SYMBOL_TABLES]
+)
+def test_a_symbol_table_is_skipped_and_names_the_dialect(
+    tmp_path: Path, table: tuple[bytes, bytes], dialect: str
+) -> None:
+    data = _ar(table, (b"x.txt" + (b"/" if dialect == "gnu" else b""), b"data"))
+    with open_archive(_archive(tmp_path, data)) as reader:
+        assert [m.name for m in reader.members()] == ["x.txt"]
+        assert reader.info.extra["ar.symbol_table"] is True
+        assert reader.info.format_version == dialect
+
+
+def test_fields_padded_on_the_left(tmp_path: Path) -> None:
+    """GNU ar reads numbers with strtol, which skips leading blanks."""
+    header = b"x.txt/".ljust(16) + b"7".rjust(12) + b"0".rjust(6) + b"0".rjust(6)
+    header += b"644".rjust(8) + b"4".rjust(10) + b"`\n"
+    with open_archive(_archive(tmp_path, b"!<arch>\n" + header + b"data")) as reader:
+        (member,) = reader.members()
+        assert (member.size, member.mode) == (4, 0o644)
+        assert member.modified is not None
+        assert member.modified.timestamp() == 7
+        assert reader.read("x.txt") == b"data"
 
 
 def test_a_missing_last_pad_byte_is_harmless(tmp_path: Path) -> None:
@@ -252,15 +307,29 @@ def test_damaged_headers(tmp_path: Path) -> None:
         opened(_ar((b"//", b"a/\n"), (b"//", b"b/\n")))
     with pytest.raises(CorruptionError, match="a name of 99 bytes"):
         opened(_ar((b"#1/99", b"short")))
+    with pytest.raises(CorruptionError, match="the name length is blank"):
+        opened(_ar((b"#1/", b"short")))
+    with pytest.raises(CorruptionError, match="mode field"):
+        opened(_ar((b"x/", b"data")).replace(b"644 ", b"648 ", 1))
+    with pytest.raises(CorruptionError, match="size field"):
+        opened(_ar((b"x/", b"data")).replace(b"4         `", b"-4        `", 1))
     with pytest.raises(CorruptionError, match="no name"):
         opened(_ar((b"", b"data")))
 
 
-def test_a_huge_name_table_is_refused(tmp_path: Path) -> None:
-    header = b"//".ljust(48) + b"999999999".ljust(10) + b"`\n"
-    data = b"!<arch>\n" + header
-    with pytest.raises(ResourceLimitError, match="long-name table"):
-        open_archive(_archive(tmp_path, data), format=AR)
+def test_the_name_table_is_charged_to_max_metadata_bytes(tmp_path: Path) -> None:
+    data = _ar((b"//", b"a-long-member-name.txt/\n"), (b"/0", b"data"))
+    path = _archive(tmp_path, data)
+
+    def config(limit: int | None) -> archivey.ArchiveyConfig:
+        limits = archivey.ListingLimits(max_metadata_bytes=limit)
+        return archivey.ArchiveyConfig(listing_limits=limits)
+
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes=10"):
+        open_archive(path, config=config(10))
+    for limit in (None, 1024):
+        with open_archive(path, config=config(limit)) as reader:
+            assert reader.read("a-long-member-name.txt") == b"data"
 
 
 def test_a_time_past_the_datetime_range(tmp_path: Path) -> None:

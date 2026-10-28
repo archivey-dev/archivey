@@ -65,8 +65,8 @@ arguments. **Both type checkers must stay green** — `ruff` passing is not the 
 and running it alone is the most common self-inflicted CI failure here.
 
 **Format before you commit.** CI runs `ruff format --check` (and `ruff check`) over
-`src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/` and
-`packages/archivey-cpio/ packages/archivey-ar/`, and will fail on drift. Installing the git hook
+`src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/ packages/archivey-cpio/
+packages/archivey-ar/` and will fail on drift. Installing the git hook
 (`./scripts/install-git-hooks.sh`) makes this automatic: staged `*.py` under those
 paths are `ruff check --fix`'d and `ruff format`'d on commit. If you skip the hook,
 run `uv run ruff format` yourself before committing — `ruff format --check` only

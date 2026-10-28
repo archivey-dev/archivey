@@ -2,7 +2,8 @@
 # Writes the test archives in this directory with GNU ar 2.42, bsdtar 3.7.2 (libarchive)
 # and llvm-ar 18. Owners and times are pinned, so running it again gives the same bytes
 # for the same tool versions (sym.o comes from the C compiler, and its bytes follow the
-# compiler's version).
+# compiler's version). Run as root: bsdtar records the files' real owner (it has no
+# deterministic mode, as ar's -D is), and the tests expect uid and gid 0.
 set -euo pipefail
 cd "$(dirname "$0")"
 tree="$(mktemp -d)"
