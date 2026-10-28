@@ -51,7 +51,13 @@ from archivey.exceptions import (
     _UsageValueError,
 )
 from archivey.internal.enum_args import _lookup, normalize_spelling, spelling_table
-from archivey.types import _FORMAT_NAMES, ArchiveFormat, ContainerFormat, StreamFormat
+from archivey.types import (
+    _FORMAT_NAMES,
+    ArchiveFormat,
+    ContainerFormat,
+    PluginContainer,
+    StreamFormat,
+)
 
 __all__ = ["coerce_archive_format", "coerce_stream_or_archive_format"]
 
@@ -132,7 +138,8 @@ def outer_stream_format(fmt: ArchiveFormat) -> StreamFormat | None:
     A raw stream is its codec. A compressed tar is a tar inside a single-file
     compressed stream, and the pair's stream half is that outer codec (detection
     builds the pair from it): ``open_stream`` peels that layer only and returns the tar
-    bytes, as ``gzip.open`` does for a ``.tar.gz``. One rule for an explicit
+    bytes, as ``gzip.open`` does for a ``.tar.gz``. A sequential plugin's compressed
+    pair (``.cpio.gz``) is the same. One rule for an explicit
     ``format=``, a detected format and the accepted-spellings message, so the three
     cannot disagree. Every other container, an uncompressed tar included, has no
     compression layer to remove. ``(RAW_STREAM, UNCOMPRESSED)`` comes back as
@@ -143,8 +150,8 @@ def outer_stream_format(fmt: ArchiveFormat) -> StreamFormat | None:
         return fmt.stream
     if (
         fmt.container is ContainerFormat.TAR
-        and fmt.stream is not StreamFormat.UNCOMPRESSED
-    ):
+        or isinstance(fmt.container, PluginContainer)
+    ) and fmt.stream is not StreamFormat.UNCOMPRESSED:
         return fmt.stream
     return None
 

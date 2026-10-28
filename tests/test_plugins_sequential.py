@@ -9,12 +9,15 @@ their data, as CPIO's do. Each test registers it on a registry restored afterwar
 
 from __future__ import annotations
 
+import bz2
+import gzip
 import io
+import lzma
 import os
 import struct
 import threading
 import zlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import ClassVar
 
@@ -499,3 +502,220 @@ def test_an_os_pipe(toys: ArchiveFormat, tmp_path: Path) -> None:
     finally:
         writer.join()
     assert (dest / "b.bin").read_bytes() == _DATA["b.bin"]
+
+
+# --- Outer compression: a sequential format inside a single-file compression stream ---
+
+_TOYS_GZ = ArchiveFormat(ToysContainer.TOYS, StreamFormat.GZIP)
+
+
+def _gz(data: bytes) -> bytes:
+    return gzip.compress(data, mtime=0)
+
+
+@pytest.mark.parametrize(
+    ("stream", "compress"),
+    [
+        (StreamFormat.GZIP, _gz),
+        (StreamFormat.BZIP2, bz2.compress),
+        (StreamFormat.XZ, lzma.compress),
+    ],
+    ids=["gz", "bz2", "xz"],
+)
+def test_detected_inside_a_compression_stream(
+    toys: ArchiveFormat, stream: StreamFormat, compress: Callable[[bytes], bytes]
+) -> None:
+    data = compress(build_toys(_ENTRIES))
+    info = detect_format(io.BytesIO(data))
+    assert info.format == ArchiveFormat(ToysContainer.TOYS, stream)
+    assert info.detected_by == "content_probe"
+    assert info.from_plugin
+    with open_archive(io.BytesIO(data)) as reader:
+        assert reader.read("b.bin") == _DATA["b.bin"]
+
+
+def test_compressed_extensions_and_spellings(
+    toys: ArchiveFormat, tmp_path: Path
+) -> None:
+    # Nothing in these bytes is a signal: the extension names the pair.
+    path = _write(tmp_path, b"no signal here", "t.toys.gz")
+    info = detect_format(path)
+    assert (info.format, info.detected_by) == (_TOYS_GZ, "extension")
+    assert format_availability("toys.gz").format == _TOYS_GZ
+    assert format_availability("TOYS_GZIP").format == _TOYS_GZ
+    assert format_availability(_TOYS_GZ).required_source is (
+        StreamCapability.FORWARD_ONLY
+    )
+    data = _gz(build_toys(_ENTRIES))
+    with open_archive(io.BytesIO(data), format="toys.gz") as reader:
+        assert reader.format == _TOYS_GZ
+    # open_stream peels the compression layer, as for a compressed tar.
+    with archivey.open_stream(io.BytesIO(data), format=_TOYS_GZ) as stream:
+        assert stream.read() == build_toys(_ENTRIES)
+
+
+def test_compressed_bytes_that_are_not_the_format_stay_a_compressed_file(
+    toys: ArchiveFormat, tmp_path: Path
+) -> None:
+    path = _write(tmp_path, _gz(b"plain text\n" * 100), "t.toys.gz")
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.GZ
+    # A deferred inner determination, as for a .tar.gz, not a conflict.
+    assert DiagnosticCode.FORMAT_EXTENSION_CONFLICT not in info.diagnostics.counts
+
+
+def test_random_access_inside_a_compression_stream(
+    toys: ArchiveFormat, tmp_path: Path
+) -> None:
+    path = _write(tmp_path, _gz(build_toys(_ENTRIES)), "t.toys.gz")
+    with open_archive(path) as reader:
+        assert reader.format == _TOYS_GZ
+        assert [m.name for m in reader.members()] == [
+            "docs/",
+            "docs/a.txt",
+            "link",
+            "b.bin",
+            "empty",
+        ]
+        assert reader.get("link").link_target == "docs/a.txt"  # type: ignore[union-attr]
+        # Out of archive order: going back decodes again from the start.
+        assert reader.read("b.bin") == _DATA["b.bin"]
+        with reader.open("docs/a.txt") as stream:
+            assert stream.read() == b"alpha\n"
+            assert stream.verified is archivey.Verification.CONTENT
+        info = reader.info
+        assert info.is_solid
+        assert info.cost.listing_cost is ListingCost.REQUIRES_DECOMPRESSION
+        assert info.cost.access_cost is AccessCost.SOLID
+        assert info.cost.solid_block_count == 1
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_stream_members_inside_a_compression_stream(
+    toys: ArchiveFormat, tmp_path: Path, pipe: bool
+) -> None:
+    data = _gz(build_toys(_ENTRIES))
+    source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data, "t.toys.gz")
+    with open_archive(source, streaming=True) as reader:
+        assert reader.format == _TOYS_GZ
+        seen = {
+            m.name: (s.read() if s is not None else m.link_target)
+            for m, s in reader.stream_members()
+        }
+    assert seen["b.bin"] == _DATA["b.bin"]
+    assert seen["link"] == "docs/a.txt"
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_extract_all_inside_a_compression_stream(
+    toys: ArchiveFormat, tmp_path: Path, pipe: bool
+) -> None:
+    data = _gz(build_toys(_ENTRIES))
+    source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data, "t.toys.gz")
+    dest = tmp_path / "out"
+    with open_archive(source, streaming=pipe) as reader:
+        reader.extract_all(dest)
+    assert (dest / "b.bin").read_bytes() == _DATA["b.bin"]
+    assert os.readlink(dest / "link") == os.path.join("docs", "a.txt")
+
+
+def test_an_os_pipe_inside_a_compression_stream(
+    toys: ArchiveFormat, tmp_path: Path
+) -> None:
+    data = _gz(build_toys(_ENTRIES))
+    read_fd, write_fd = os.pipe()
+
+    def write() -> None:
+        with open(write_fd, "wb") as out:
+            out.write(data)
+
+    writer = threading.Thread(target=write)
+    writer.start()
+    dest = tmp_path / "out"
+    try:
+        with (
+            open(read_fd, "rb", buffering=0) as pipe,
+            open_archive(pipe, streaming=True) as reader,
+        ):
+            assert reader.format == _TOYS_GZ
+            reader.extract_all(dest)
+    finally:
+        writer.join()
+    assert (dest / "b.bin").read_bytes() == _DATA["b.bin"]
+
+
+def test_concurrent_reads_inside_a_compression_stream(
+    toys: ArchiveFormat, tmp_path: Path
+) -> None:
+    path = _write(tmp_path, _gz(build_toys(_ENTRIES)), "t.toys.gz")
+    results: dict[str, bytes] = {}
+    with open_archive(path, concurrent_operations=True) as reader:
+
+        def read(name: str) -> None:
+            results[name] = reader.read(name)
+
+        threads = [
+            threading.Thread(target=read, args=(name,))
+            for name in ("b.bin", "docs/a.txt") * 4
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    assert results == {"b.bin": _DATA["b.bin"], "docs/a.txt": b"alpha\n"}
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_a_cut_compression_stream_keeps_the_members_before_it(
+    toys: ArchiveFormat, tmp_path: Path, pipe: bool
+) -> None:
+    data = _gz(build_toys(_ENTRIES))
+    cut = data[: len(data) // 2]
+    source = NonSeekableBytesIO(cut) if pipe else _write(tmp_path, cut, "t.toys.gz")
+    names = []
+    with (
+        open_archive(source, streaming=pipe) as reader,
+        pytest.raises(TruncatedError),
+    ):
+        for member, stream in reader.stream_members():
+            names.append(member.name)
+            if stream is not None:
+                stream.read()
+    assert names[:3] == ["docs/", "docs/a.txt", "link"]
+
+
+def test_bytes_after_the_compression_stream_are_reported(
+    toys: ArchiveFormat, tmp_path: Path
+) -> None:
+    path = _write(tmp_path, _gz(build_toys(_ENTRIES)) + b"junk", "t.toys.gz")
+    with open_archive(path, streaming=True) as reader:
+        for _, stream in reader.stream_members():
+            if stream is not None:
+                stream.read()
+        counts = reader.diagnostics.counts
+    assert counts[DiagnosticCode.ARCHIVE_TRAILING_DATA] == 1
+
+
+def test_a_sequential_magic_must_end_within_512_bytes() -> None:
+    class Late(ToysPlugin):
+        format = ArchiveFormat(ToysContainer.CLOSING, StreamFormat.UNCOMPRESSED)
+        extensions = (".late",)
+        magic = (Magic(510, b"LATE"),)
+
+    with (
+        registration_scope(),
+        pytest.raises(ArchiveyUsageError, match="within the first 512 bytes"),
+    ):
+        register_format(Late)
+
+
+def test_a_compressed_extension_another_format_claims_is_refused() -> None:
+    class Gzipped(ToysPlugin):
+        format = ArchiveFormat(ToysContainer.CLOSING, StreamFormat.UNCOMPRESSED)
+        extensions = (".toys.gz",)
+
+    with registration_scope():
+        register_format(Gzipped)
+        # TOYS would add ".toys.gz" for its gzip pair.
+        with pytest.raises(ArchiveyUsageError, match=r"'\.toys\.gz' is already"):
+            register_format(ToysPlugin)
