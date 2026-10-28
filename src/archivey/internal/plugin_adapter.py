@@ -45,6 +45,7 @@ from archivey.internal.base_reader import (
     reject_start_offset,
 )
 from archivey.internal.config import stream_config_from_archivey
+from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.detection import INNER_CONTAINER_PROBE_BYTES
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.format_args import add_plugin_spellings, plugin_spelling_clash
@@ -286,7 +287,7 @@ class _PluginAdapter(BaseArchiveReader):
         return open_codec_stream(
             codec,
             data,
-            config=replace(self._decoder_config, **changes),
+            config=copy_with(self._decoder_config, **changes),
             params=params,
             collector=self._diagnostics_collector,
         )
