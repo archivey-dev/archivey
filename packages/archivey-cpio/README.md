@@ -28,6 +28,9 @@ with archivey.open_archive(sys.stdin.buffer, streaming=True) as archive:
 - All four header variants: binary (either byte order), odc, newc and crc. In crc the
   header's checksum of each file's data is checked as the data is read (not a symlink's,
   whose target is read while listing).
+- afio's large header (`070727`), which afio writes in an odc archive for a member
+  whose fields need more digits (a large uid, a file over 8 GiB). The archive is
+  still `odc`.
 - Files, directories, symlinks (a symlink's target is its data), hard links, and
   devices, FIFOs and sockets (listed as `OTHER`, with `extra["special_file_type"]`).
 - Owner ids, permissions and modification times.

@@ -9,7 +9,10 @@ The variants differ only in the header and the padding:
 - **Binary** (``cpio -H bin``): 26 bytes of 16-bit words, in the writer's byte order,
   told apart by the magic ``0o070707``. Name and data are padded to 2 bytes.
 - **odc** (``-H odc``, POSIX.1 "portable"): 76 bytes of octal ASCII fields after
-  ``070707``. No padding.
+  ``070707``. No padding. afio writes odc too, but switches a member to its *large*
+  header (``070727``, 116 bytes of mostly hexadecimal fields, as libarchive reads it)
+  for a member whose fields it wants wider than odc's (a large uid, a file over
+  8 GiB). That header has odc's rules otherwise, so the archive is still ``odc``.
 - **newc** (``-H newc``, SVR4) and **crc** (``-H crc``): 110 bytes of hexadecimal ASCII
   fields after ``070701`` or ``070702``. Name and data are padded to 4 bytes. In crc,
   the header's ``check`` field is the 32-bit sum of the data bytes.
@@ -42,6 +45,7 @@ from archivey import (
     MemberType,
     ResourceLimitError,
     TruncatedError,
+    UnsupportedFeatureError,
 )
 from archivey.diagnostics import (
     ArchiveEofContext,
@@ -71,6 +75,7 @@ _BINARY_BE = b"\x71\xc7"
 _ODC = b"070707"
 _NEWC = b"070701"
 _CRC = b"070702"
+_AFIO_LARGE = b"070727"
 
 
 class Variant(Enum):
@@ -91,6 +96,23 @@ _BINARY_FIELDS = {
 }
 _ODC_WIDTHS = (6, 6, 6, 6, 6, 6, 6, 11, 6, 11)  # after the magic: 70 bytes
 _NEWC_FIELDS = 13  # 8 hexadecimal digits each, after the magic: 104 bytes
+# afio's large header after the magic, as (offset, width, base, name), and its four
+# separator bytes: 110 bytes. flag is not used.
+_AFIO_LARGE_SIZE = 110
+_AFIO_LARGE_FIELDS = (
+    (0, 8, 16, "dev"),
+    (8, 16, 16, "ino"),
+    (25, 6, 8, "mode"),
+    (31, 8, 16, "uid"),
+    (39, 8, 16, "gid"),
+    (47, 8, 16, "nlink"),
+    (55, 8, 16, "rdev"),
+    (63, 16, 16, "mtime"),
+    (80, 4, 16, "namesize"),
+    (88, 4, 16, "xsize"),
+    (93, 16, 16, "filesize"),
+)
+_AFIO_LARGE_SEPARATORS = ((24, b"m"), (79, b"n"), (92, b"s"), (109, b":"))
 
 _S_IFMT = 0o170000
 _TYPES = {
@@ -272,6 +294,8 @@ class CpioReader(SequentialReader):
             magic += stream.read_exact(4)
             if magic == _ODC:
                 header = self._odc_header(stream, offset)
+            elif magic == _AFIO_LARGE:
+                header = self._afio_large_header(stream, offset)
             elif magic in (_NEWC, _CRC):
                 variant = Variant.NEWC if magic == _NEWC else Variant.CRC
                 header = self._newc_header(stream, variant, offset)
@@ -332,6 +356,40 @@ class CpioReader(SequentialReader):
             mtime,
             name_size,
             size,
+        )
+
+    def _afio_large_header(self, stream: ForwardStream, offset: int) -> Header:
+        """afio's large header: an odc member whose fields need more digits."""
+        raw = stream.read_exact(_AFIO_LARGE_SIZE)
+        for at, separator in _AFIO_LARGE_SEPARATORS:
+            if raw[at : at + 1] != separator:
+                raise CorruptionError(
+                    f"CPIO header at offset {offset}: no {separator.decode()!r} "
+                    f"separator in an afio large header"
+                )
+        values = {
+            name: _number(raw[at : at + width], base, name, offset)
+            for at, width, base, name in _AFIO_LARGE_FIELDS
+        }
+        if values["xsize"]:
+            # Bytes afio may add to the header; neither libarchive nor this reader
+            # knows where they go, so their member cannot be found.
+            raise UnsupportedFeatureError(
+                f"CPIO header at offset {offset}: an afio large header with "
+                f"{values['xsize']} bytes of extra data"
+            )
+        return Header(
+            Variant.ODC,
+            offset,
+            (values["dev"], 0),
+            values["ino"],
+            values["mode"],
+            values["uid"],
+            values["gid"],
+            values["nlink"],
+            values["mtime"],
+            values["namesize"],
+            values["filesize"],
         )
 
     def _newc_header(
