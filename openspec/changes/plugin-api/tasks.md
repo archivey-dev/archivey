@@ -97,13 +97,30 @@ The test of the sequential shape, as the ISO port is of the indexed one (maintai
 
 ## 3. CPIO package
 
-- [ ] 3.1 `packages/archivey-cpio/` (unpublished): a `SequentialReader` for binary, odc,
+- [x] 3.1 `packages/archivey-cpio/` (unpublished): a `SequentialReader` for binary, odc,
       newc, newc-with-CRC; `.cpio.gz` / `.cpio.xz`; read from a file and a pipe.
-- [ ] 3.2 Fixtures written by GNU `cpio` and `bsdcpio`: files, directories, symlinks,
+      *`.cpio.gz` / `.cpio.xz` wait for outer compression (stage 3).*
+- [x] 3.2 Fixtures written by GNU `cpio` and `bsdcpio`: files, directories, symlinks,
       hard links, device nodes (listed as `OTHER`), a damaged checksum, a truncated
-      member.
-- [ ] 3.3 A test that fails if the package imports `archivey.internal`.
-- [ ] 3.4 CI job that installs the package and runs its tests.
+      member. *GNU cpio 2.15 writes all four variants, bsdcpio 3.7.2 odc and newc (its
+      binary writer refuses a FIFO); the damaged and truncated cases are cut from them
+      in the tests.*
+- [x] 3.3 A test that fails if the package imports `archivey.internal`.
+- [x] 3.4 CI job that installs the package and runs its tests.
+
+## 3a. ar package
+
+A second sequential format, written from outside the library (the maintainer asked for
+one more one-pass format to test the interface, 2026-10-28).
+
+- [x] 3a.1 `packages/archivey-ar/` (unpublished): a `SequentialReader` for the GNU
+      (System V, Windows `.lib`) and BSD (macOS) dialects; long-name tables carried
+      across the walk, BSD names read from the data area; symbol tables skipped; thin
+      archives refused.
+- [x] 3a.2 Fixtures written by GNU ar 2.42, bsdtar 3.7.2 and llvm-ar 18
+      (`--format=darwin`); Windows long names, blank fields and damaged headers are
+      built in the tests.
+- [x] 3a.3 The same import check, and a CI job.
 
 ## 3b. SquashFS package
 
@@ -147,5 +164,9 @@ more indexed plugin, 2026-10-27).
       ISO port (group 2) made false in the spec: member data is read through source
       views, not `PyCdlibIO` under the handle lock ("Serialize shared pycdlib handle
       operations"), and two file records sharing one extent raise `CorruptionError`,
-      not `UnsupportedFeatureError` (the record matrix).
+      not `UnsupportedFeatureError` (the record matrix). A `diagnostics` delta too,
+      since a plugin emits archivey's codes: `UnknownMemberTypeContext.stored_type` is
+      the format's own spelling of the type, not only the TAR typeflag byte; and the
+      `zeros_to_eof` format list and `MEMBER_TYPE_UNKNOWN`'s STRICT-exemption rationale
+      read as examples, not as the set of emitters.
 - [ ] 4.3 `dev-docs/IDEAS.md` and `VISION.md`: the public backend API item points here.

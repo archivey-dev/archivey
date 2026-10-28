@@ -51,7 +51,7 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 from archivey.internal.streams.codecs import (
     SINGLE_FILE_CODECS,
     Codec,
@@ -246,7 +246,7 @@ class SingleFileReader(BaseArchiveReader):
         #   opens never clobber the single shared handle position.
         # - Non-seekable: one forward pass; a second open fails loudly once consumed.
         self._shared: SharedSource | None = None
-        self._pending_stream: ArchiveStream | None = None
+        self._pending_stream: ArchiveStreamImpl | None = None
         if self._seekable and (source.path is None or self._measure):
             # A stream source always shares its one handle, handing out views. A path
             # source normally hands the path to the codec (independent FDs) and shares
@@ -538,7 +538,7 @@ class SingleFileReader(BaseArchiveReader):
 
     def _open_codec_stream(
         self, *, attribute_member: bool = True, accelerated: bool = True
-    ) -> ArchiveStream:
+    ) -> ArchiveStreamImpl:
         """Open a fresh decompression stream over the source.
 
         ``attribute_member=False`` leaves ``member_name`` off errors the stream raises, for
@@ -605,7 +605,7 @@ class SingleFileReader(BaseArchiveReader):
             fill_size=fill,
         )
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+    def _open_member(self, member: ArchiveMember) -> ArchiveStreamImpl:
         if self._seekable:
             # Reentrant: every open builds a fresh codec (path → independent FD; stream →
             # SharedSource view). No per-open scratch on self.

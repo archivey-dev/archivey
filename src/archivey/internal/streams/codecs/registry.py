@@ -15,7 +15,7 @@ from archivey.internal.config import (
     StreamConfig,
 )
 from archivey.internal.streams.archive_stream import (
-    ArchiveStream,
+    ArchiveStreamImpl,
     ExceptionTranslator,
     RewindWarning,
     raise_translated,
@@ -191,7 +191,7 @@ def open_codec_stream(
     seekable: bool | None = None,
     on_close: Callable[[], None] | None = None,
     repeat_verdict: bool = True,
-) -> ArchiveStream:
+) -> ArchiveStreamImpl:
     """Open a decompressing stream for ``codec`` with exceptions translated/stamped.
 
     The returned stream wraps the backend so corrupt/truncated/non-seekable errors surface
@@ -217,7 +217,7 @@ def open_codec_stream(
     reaches only the returned stream and ``config`` is passed on unchanged.
 
     ``repeat_verdict=False`` makes the stream raise each error as the decoder raises
-    it, and not repeat the first one after a seek (``ArchiveStream._fail``). It is for
+    it, and not repeat the first one after a seek (``ArchiveStreamImpl._fail``). It is for
     a stream that only a reader's own views read. A read seeks the shared handle when it
     is not already there. Some reads still seek, and one seek is enough to mark the
     stream rewound.
@@ -227,7 +227,7 @@ def open_codec_stream(
     # ``config.seekable`` is False (no accelerator/index). Public ``open_stream`` passes
     # the caller's ``seekable=`` explicitly.
     stream_seekable = True if seekable is None else seekable
-    return ArchiveStream(
+    return ArchiveStreamImpl(
         lambda: backend.open(source, params),
         translate=backend.translate,
         stamp=stamp,

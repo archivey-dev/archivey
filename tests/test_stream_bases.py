@@ -11,6 +11,7 @@ from typing import Never, get_type_hints
 
 import pytest
 
+from archivey import ArchiveStream
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     OneReadEachStream,
@@ -66,6 +67,14 @@ def test_readonly_base_read_is_the_runtime_guard() -> None:
 
     with pytest.raises((TypeError, NotImplementedError)):
         _ForgotRead().read()
+
+
+def test_archive_stream_base_read_is_the_runtime_guard() -> None:
+    # The public base redeclares read(), so it needs the same raising body: on 3.11 a
+    # subclass that omits read() can still be built. Calling the body directly pins it
+    # on every Python version.
+    with pytest.raises(NotImplementedError):
+        ArchiveStream.read(object(), 1)  # type: ignore[arg-type]
 
 
 def test_readonly_base_name_is_absent() -> None:
@@ -433,7 +442,9 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     )
 
     forwards_or_owns = {
-        archive_stream.ArchiveStream,
+        # The public base declares it; its one implementation is the next entry.
+        ArchiveStream,
+        archive_stream.ArchiveStreamImpl,
         blocks.BlockStream,  # owns its resume points: every block start
         bcj2.Bcj2DecoderStream,  # owns its one resume point: the folder start
         rapidgzip_child.RapidgzipChildStream,  # asks the child's rapidgzip index

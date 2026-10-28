@@ -6,7 +6,7 @@ length are checked on a clean sequential read to EOF.
 Two delivery shapes (same rules, different wrappers):
 
 - :class:`MemberVerifier` — the logic object. **Fused into**
-  :class:`~archivey.internal.streams.archive_stream.ArchiveStream` on the member
+  :class:`~archivey.internal.streams.archive_stream.ArchiveStreamImpl` on the member
   hot path (one fewer Python layer; nested codec ``ArchiveStream``s can collapse).
 - :class:`VerifyingStream` — standalone ``BinaryIO`` wrapper around an inner +
   verifier. Kept for codec length backstops and tests; prefer fusion for members.
@@ -187,7 +187,7 @@ class MemberVerifier:
     """Incremental digest/length checker over bytes read from an inner stream.
 
     Not a ``BinaryIO`` itself — :class:`VerifyingStream` and
-    :class:`~archivey.internal.streams.archive_stream.ArchiveStream` own one and
+    :class:`~archivey.internal.streams.archive_stream.ArchiveStreamImpl` own one and
     call :meth:`read` / :meth:`note_seek` / :meth:`finish_on_close` against their
     inner handle.
     """
@@ -969,7 +969,7 @@ class VerifyingStream(ReadOnlyIOStream):
     """Wrap ``inner`` and verify digests/length via a :class:`MemberVerifier`.
 
     Kept for codec length backstops and tests. Member backends fuse the same
-    verifier into :class:`~archivey.internal.streams.archive_stream.ArchiveStream`.
+    verifier into :class:`~archivey.internal.streams.archive_stream.ArchiveStreamImpl`.
     """
 
     def __init__(

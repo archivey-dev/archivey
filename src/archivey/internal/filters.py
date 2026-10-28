@@ -178,6 +178,38 @@ def resolve_or_raise_on_loop(path: Path) -> Path:
     return Path(_realpath_posix(os.path.join(os.getcwd(), path), str(path)))
 
 
+def parent_resolves_within_root(root: Path, rel: str) -> bool:
+    """Whether ``(root / rel).parent`` resolves to ``root`` or a path inside it, for a
+    ``root`` that is already resolved and a relative ``rel``. Raises ``OSError`` as
+    :func:`resolve_or_raise_on_loop` does.
+
+    ``root`` is the result of an earlier resolution, so it holds no symlink and its
+    components need no look-up: on POSIX the walk starts at ``root`` and looks only at
+    the components of ``rel``. A link among them is followed as the full resolution
+    follows it, out of ``root`` too. The extraction coordinator resolves its
+    destination once per run and checks every member's parent with this, rather than
+    walking from ``/`` again for each member. It trusts the destination's own
+    ancestors to stay as they are for the run, as the threat model does. The walk
+    gives a normalized string, so a string prefix compares as ``is_relative_to`` does.
+    """
+    if os.name == "nt":
+        return _within(_resolve_with_pathlib((root / rel).parent), root)
+    start = str(root)
+    # The parent as pathlib takes it: empty and "." parts dropped first, so the
+    # parent of "a/." is the root, not "a".
+    parts = [part for part in rel.split("/") if part not in ("", ".")]
+    try:
+        resolved = _realpath_posix("/".join(parts[:-1]), "", start=start)
+    except OSError as exc:
+        # Named as the full resolution names it; built only here, as it costs Paths.
+        raise OSError(exc.errno, exc.strerror, str((root / rel).parent)) from (
+            exc.__cause__
+        )
+    # ``_realpath_posix`` strips the root's trailing "/" too, so "/" gives "".
+    prefix = start.rstrip("/")
+    return resolved == start or resolved.startswith(prefix + "/")
+
+
 # Links followed in one resolution before it counts as a loop: Linux's own limit
 # (``MAXSYMLINKS``), so a chain the kernel follows is followed here too. The dry run's
 # ``_MAX_LINK_HOPS`` and the CLI hoist's walk use the same bound for the same reason;
@@ -186,12 +218,13 @@ def resolve_or_raise_on_loop(path: Path) -> Path:
 _MAX_LINK_FOLLOWS = 40
 
 
-def _realpath_posix(path: str, asked: str) -> str:
+def _realpath_posix(path: str, asked: str, *, start: str = "") -> str:
     """``os.path.realpath(path)`` that raises instead of guessing (see
     :func:`resolve_or_raise_on_loop`). ``path`` is absolute; ``asked`` is the path
-    the caller passed, for the error."""
+    the caller passed, for the error. With ``start``, an absolute path already
+    resolved, ``path`` is relative to it and the walk begins there."""
     rest = path.split("/")[::-1]
-    resolved = ""
+    resolved = start.rstrip("/")
     follows = 0
     while rest:
         name = rest.pop()
@@ -377,6 +410,7 @@ def check_universal(
     *,
     link_target_on_disk: Callable[[str], str] | None = None,
     show_os_error: Callable[[OSError], None] | None = None,
+    dest_resolved: bool = False,
 ) -> None:
     """Enforce the non-bypassable universal path-safety constraints on ``member``.
 
@@ -396,6 +430,10 @@ def check_universal(
     the error's file names to be built from the ``dest`` given here, which the
     coordinator has already resolved. The coordinator gives it: it removes the
     long-path prefix, and under a dry run it names dest, not the scratch directory.
+
+    ``dest_resolved`` says that ``dest`` is already resolved
+    (:func:`resolve_or_raise_on_loop`), so it is not resolved again. The coordinator
+    resolves its destination once per run and passes it so.
 
     Everything here meets one of two criteria. Either the *write itself* is dangerous
     or impossible — escaping the destination, a NUL the OS truncates on, a device
@@ -454,15 +492,13 @@ def check_universal(
     # lands inside the root. A symlinked *parent* that escapes is still caught.
     is_root = rel in ("", ".")  # "" / "." is the root dir member itself
     try:
-        dest_root = resolve_or_raise_on_loop(dest)
+        dest_root = dest if dest_resolved else resolve_or_raise_on_loop(dest)
         # The root member has no parent to place, so only other members are checked.
-        if not is_root:
-            parent = resolve_or_raise_on_loop((dest_root / rel).parent)
-            if not _within(parent, dest_root):
-                raise FilterRejectionError(
-                    "Member resolves outside the destination root",
-                    member_name=name,
-                )
+        if not is_root and not parent_resolves_within_root(dest_root, rel):
+            raise FilterRejectionError(
+                "Member resolves outside the destination root",
+                member_name=name,
+            )
     except OSError as exc:
         # A path in dest or below it that the resolver cannot follow exactly: a symlink
         # loop the destination already had (links this run creates never loop: one that
@@ -609,6 +645,13 @@ _RESERVED_NAMES = frozenset(
 )
 
 
+# The first three characters of every reserved name, so a path whose upper-cased form
+# holds none of them has no reserved segment (the prefilter in
+# ``_reject_unsafe_segments``). A literal, so the regex guard can read it;
+# ``test_name_policy_prefilters_match_their_constants`` ties it to ``_RESERVED_NAMES``.
+_MAY_BE_RESERVED = re.compile("AUX|COM|CON|LPT|NUL|PRN")
+
+
 def _is_reserved_segment(segment: str) -> bool:
     """Whether ``segment`` names a Windows reserved device: its first dot-separated
     component, stripped of surrounding whitespace the way Win32 strips it."""
@@ -621,8 +664,9 @@ def _is_reserved_segment(segment: str) -> bool:
 _WINDOWS_INVALID_CHARS = frozenset('<>"|?*') | frozenset(map(chr, range(0x01, 0x20)))
 
 
-def _needs_escape(c: str) -> bool:
-    return "\udc80" <= c <= "\udcff" or c in _WINDOWS_INVALID_CHARS
+# A character ``_sanitize_portable_name`` escapes: a surrogateescape byte or one of
+# ``_WINDOWS_INVALID_CHARS`` (the same test ties the two).
+_NEEDS_ESCAPE = re.compile('[\udc80-\udcff<>"|?*\x01-\x1f]')
 
 
 def _sanitize_portable_name(name: str) -> str:
@@ -658,7 +702,7 @@ def _sanitize_portable_name(name: str) -> str:
     too. The collision map sees both spellings as one key, so the second is resolved
     by the ``OverwritePolicy`` rather than silently overwriting the first.
     """
-    if not any(_needs_escape(c) for c in name):
+    if _NEEDS_ESCAPE.search(name) is None:
         return name
     out: list[str] = []
     for c in name:
@@ -673,6 +717,13 @@ def _sanitize_portable_name(name: str) -> str:
     return "".join(out)
 
 
+# The characters ``_strip_trailing_dot_space`` strips off the end of a segment, and a
+# segment that ends in one: the only kind it changes or refuses (the same test ties
+# the two).
+_DOT_SPACE = ". "
+_TRAILING_DOT_SPACE = re.compile(r"[. ](?:[\\/]|\Z)")
+
+
 def _strip_trailing_dot_space(name: str) -> str:
     """O3: strip a trailing dot/space from each path segment — the portable spelling Win32
     itself produces (``stuff_etc.`` → ``stuff_etc``). Deterministic on every OS, so the
@@ -684,6 +735,9 @@ def _strip_trailing_dot_space(name: str) -> str:
     and ``collision_key``: a TAR name keeps ``\\`` as a literal character, and Windows
     then writes it as a separator, so ``foo. \\bar`` must lose its trailing space too.
     The separators themselves are kept as they are; only the segments change."""
+    if _TRAILING_DOT_SPACE.search(name) is None:
+        # No segment ends in a dot or a space, so none changes or is refused.
+        return name
 
     def strip(part: str) -> str:
         # Empty (from a leading/trailing/`//` separator) and the path-navigation spellings
@@ -692,7 +746,7 @@ def _strip_trailing_dot_space(name: str) -> str:
         # check_universal). Stripping them would wrongly collapse the segment to empty.
         if part in ("", ".", ".."):
             return part
-        stripped = part.rstrip(". ")
+        stripped = part.rstrip(_DOT_SPACE)
         if stripped == "":
             raise FilterRejectionError(
                 f"Path segment is entirely dots/spaces: {part!r}", member_name=name
@@ -710,6 +764,10 @@ def _reject_unsafe_segments(
     Both are unsafe (device capture, NTFS alternate data stream), not merely awkward,
     so ``STRICT`` and ``STANDARD`` refuse them on every platform.
     """
+    if ":" not in path and _MAY_BE_RESERVED.search(path.upper()) is None:
+        # Most paths: no segment can name a device. Upper-casing the whole path
+        # gives every segment's upper-cased characters, so a reserved stem is in it.
+        return
     for segment in _SEP_SPLIT.split(path):
         if not segment:
             continue

@@ -310,11 +310,12 @@ def test_niche_names_live_only_in_their_submodule() -> None:
 
 
 def test_no_public_name_reports_an_internal_module() -> None:
-    """Every class and function in ``__all__`` reports ``archivey``, not ``internal``.
+    """Every class and function in ``__all__`` reports a public module, not ``internal``.
 
     ``pickle`` stores ``__module__``, so a name reporting ``archivey.internal.…`` would
-    freeze that path into data callers persist. ``__init__`` pins it for every name
-    defined under ``internal``, including ones added later.
+    freeze that path into data callers persist. ``__init__`` pins it for every function
+    defined under ``internal``, including ones added later. It pins no class, so a
+    public class must be defined in a public module.
     """
     leaked = {
         name: obj.__module__
@@ -335,23 +336,8 @@ def test_no_public_name_reports_an_internal_module() -> None:
     ids=lambda c: c.__name__,
 )
 def test_public_class_type_hints_resolve(cls: type) -> None:
-    """``get_type_hints`` works on every public class, pinned or not.
-
-    A pinned class's string hints would otherwise be looked up in ``archivey``, where
-    names such as ``Path`` are not defined; ``__init__`` resolves them before the pin.
-    """
+    """``get_type_hints`` works on every public class."""
     typing.get_type_hints(cls)
-
-
-def test_pinned_class_source_lookup_fails_loudly() -> None:
-    """``inspect.getsource`` cannot follow the pin; it raises rather than lie.
-
-    Python 3.13+ locates a class by ``__firstlineno__`` in its module's file, which the
-    pin turns into ``__init__.py``; ``__init__`` drops that attribute so the lookup
-    raises ``OSError`` instead of returning unrelated lines.
-    """
-    with pytest.raises(OSError):
-        inspect.getsource(archivey.ArchiveStream)
 
 
 @pytest.mark.parametrize(
@@ -372,31 +358,10 @@ def test_pickles_name_the_public_module(value: object) -> None:
 
 
 def test_pinning_leaves_the_internal_objects_shared() -> None:
-    from archivey.internal.streams import archive_stream
+    from archivey.internal import detection
 
-    assert archive_stream.ArchiveStream is archivey.ArchiveStream
-    assert archivey.ArchiveStream.__module__ == "archivey"
-
-
-# ``ArchiveStream`` is an implementation class on the internal stream base; streams are
-# never pickled, so it stays where it is and the pin covers it.
-_PINNED_CLASSES = {"ArchiveStream"}
-
-
-def test_public_classes_are_defined_in_public_modules() -> None:
-    """A public class lives in a public module, so its ``__module__`` needs no pin.
-
-    The pin in ``__init__`` makes a class defined under ``internal`` report
-    ``archivey``, at the cost of ``inspect.getsource`` and a type-hint workaround. It is
-    the safety net; this test keeps new public classes from leaning on it.
-    """
-    pinned = {
-        name
-        for name in archivey.__all__
-        if isinstance(obj := getattr(archivey, name), type)
-        and obj.__module__ == "archivey"
-    }
-    assert pinned == _PINNED_CLASSES
+    assert detection.detect_format is archivey.detect_format
+    assert archivey.detect_format.__module__ == "archivey"
 
 
 @pytest.mark.parametrize(

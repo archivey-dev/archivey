@@ -137,6 +137,22 @@ To find deprecated calls anywhere in your code, run your tests with
 The public API is what `archivey` and its public submodules export, as listed on the
 [API page](api.md). Anything under `archivey.internal` can change in any release.
 
+A few things you can see aren't part of the API either, and can change in any release:
+
+- The text of messages: an exception's, a diagnostic's `message` and a log record's. Match on
+  archivey's exception types and diagnostic codes, not on message text. A diagnostic's
+  `occurrence_id` means something only within the process that made it.
+- Which library or program decodes the data, such as rapidgzip, pyppmd or `unrar`, as
+  long as the result stays the same. What follows from it can change with it:
+  - the type and message of the library's exception that archivey chains to its own as
+    `__cause__`, so catch archivey's exception types, not the cause;
+  - `accelerator` in a stream rewind's diagnostic context, and `scan` and `error_type`
+    in a seek index's. The diagnostic codes, and the other fields of those contexts, are
+    part of the API.
+- Where a compressed stream can resume after a backward seek, which
+  `ArchiveStream.nearest_resume_offset()` reports, and so which seeks report
+  `STREAM_REWIND_REDECOMPRESSES`. It depends on the decoder.
+
 The same promise covers the `archivey` command's verbs, options and exit codes, as listed on
 the [command-line page](cli.md): a removed or renamed one keeps working for one more minor
 release and prints a deprecation warning. The text it prints for people to read, such as

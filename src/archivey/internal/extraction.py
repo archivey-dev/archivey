@@ -89,7 +89,7 @@ if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
     from archivey.internal.base_reader import BaseArchiveReader
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
 
 _CHUNK = 1024 * 1024  # 1 MiB copy chunk
@@ -382,9 +382,9 @@ def _possible_names(name: str) -> set[str]:
 
 def _until_listing_damage(
     reader: BaseArchiveReader,
-    pairs: Iterator[tuple[ArchiveMember, ArchiveStream | None]],
+    pairs: Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]],
     found: list[CorruptionError],
-) -> Generator[tuple[ArchiveMember, ArchiveStream | None], None, None]:
+) -> Generator[tuple[ArchiveMember, ArchiveStreamImpl | None], None, None]:
     """``pairs``, ending quietly when the listing's own damage ends them.
 
     That damage is appended to ``found`` for the caller to raise once the members
@@ -1375,12 +1375,11 @@ class ExtractionCoordinator:
             if rerooted.name != transformed.name:
                 rerooted_from = transformed.name
             transformed = rerooted
-        dest_root = self._state.dest_root
-        self._check_universal(transformed, dest_root)
+        self._check_universal(transformed)
         portable = apply_name_policy(transformed, self._policy)
         if portable is not transformed:
             try:
-                self._check_universal(portable, dest_root)
+                self._check_universal(portable)
             except ExtractionError as exc:
                 _report_stored_spelling(exc, portable, transformed)
                 raise
@@ -1825,10 +1824,9 @@ class ExtractionCoordinator:
             original.type is MemberType.HARDLINK
             and transformed.type is MemberType.HARDLINK
         )
-        dest_root = self._state.dest_root
         # The checks run on the name that reaches disk; the name policy below runs on
         # the stored one, so its escape of a lone surrogate is the same on every OS.
-        self._check_universal(transformed, dest_root)
+        self._check_universal(transformed)
         if kept_hardlink and self._source_refused(original):
             raise FilterRejectionError(
                 "Hardlink target was refused",
@@ -1878,7 +1876,7 @@ class ExtractionCoordinator:
             # checked above is then not the parent written to, so check again. A
             # symlink "foo" that leaves the destination is refused here.
             try:
-                self._check_universal(portable, dest_root)
+                self._check_universal(portable)
             except ExtractionError as exc:
                 _report_stored_spelling(exc, portable, transformed)
                 raise
@@ -1965,7 +1963,7 @@ class ExtractionCoordinator:
         if self._policy is not ExtractionPolicy.STRICT:
             candidate = reroot_absolute(candidate)
         try:
-            self._check_universal(candidate, self._state.dest_root)
+            self._check_universal(candidate)
             apply_name_policy(candidate, self._policy)
         except FilterRejectionError:
             return True
@@ -1973,8 +1971,9 @@ class ExtractionCoordinator:
             return False
         return False
 
-    def _check_universal(self, member: ArchiveMember, dest_root: Path) -> None:
-        """``check_universal`` on the disk spelling, reporting the stored names.
+    def _check_universal(self, member: ArchiveMember) -> None:
+        """``check_universal`` on the disk spelling, against the run's resolved
+        destination, reporting the stored names.
 
         Every name that reaches disk is checked here first, so a dry run copies in
         what dest holds along it here (``DryRun.bring_in``), before anything of the
@@ -1985,9 +1984,11 @@ class ExtractionCoordinator:
         try:
             check_universal(
                 on_disk,
-                dest_root,
+                self._state.dest_root,
                 link_target_on_disk=self._on_disk,
                 show_os_error=self._rebase_resolved_os_error,
+                # The run resolved it once, at its start (``_RunState.dest_root``).
+                dest_resolved=True,
             )
         except ExtractionError as exc:
             if on_disk is not member:

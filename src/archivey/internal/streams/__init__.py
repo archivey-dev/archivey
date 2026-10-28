@@ -18,8 +18,9 @@ Package map:
 - :mod:`.native_memory` — what PyPy's GC is told about in-process decoders' native
   buffers, and the liblzma end a decoder's close calls (shared by ``codecs`` and the
   engine, so it sits below both).
-- :mod:`.archive_stream` — public member/codec handle: exception translate+stamp,
-  lazy open, nested collapse, fused digest verify, lease/finalizer.
+- :mod:`.archive_stream` — ``ArchiveStreamImpl``, the member/codec handle behind the
+  public ``ArchiveStream``: exception translate+stamp, lazy open, nested collapse,
+  fused digest verify, lease/finalizer.
 - :mod:`.resume` — re-exports ``ask_resume_offset`` (rewind-cost query; the
   helper lives in ``streamtools.binaryio`` as generic ``getattr`` plumbing,
   named exception in that package's docstring).

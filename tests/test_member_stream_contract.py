@@ -53,6 +53,7 @@ from tests.sample_archives import (
     skip_unless_runnable,
 )
 from tests.streams_util import (
+    NonSeekableBytesIO,
     assert_non_integer_read_is_type_error,
     assert_non_integer_seek_is_type_error,
     assert_oversized_read_is_overflow_error,
@@ -984,15 +985,15 @@ def test_member_streams_are_archive_streams(member: tuple[Path, str]) -> None:
     # directory backend, which has nothing to decompress): uniform error
     # translation/stamping, the `size` advertisement, and one place to grow shared
     # handle features.
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
     source, name = member
     with open_archive(source) as ar:
         with ar.open(name) as f:
-            assert isinstance(f, ArchiveStream)
+            assert isinstance(f, ArchiveStreamImpl)
         for m, stream in ar.stream_members():
             if m.is_file:
-                assert isinstance(stream, ArchiveStream)
+                assert isinstance(stream, ArchiveStreamImpl)
             if stream is not None:
                 stream.close()
 
@@ -1004,7 +1005,7 @@ def test_stream_members_do_not_nest_archive_streams(tmp_path: Path) -> None:
     ``_wrap_member_stream``): after first read, the public handle's inner must not
     itself be an ``ArchiveStream``.
     """
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
     path = tmp_path / "a.zip"
     with zipfile.ZipFile(path, "w") as zf:
@@ -1013,11 +1014,11 @@ def test_stream_members_do_not_nest_archive_streams(tmp_path: Path) -> None:
         for member, stream in ar.stream_members():
             if not member.is_file or stream is None:
                 continue
-            assert isinstance(stream, ArchiveStream)
+            assert isinstance(stream, ArchiveStreamImpl)
             assert stream.read() == b"payload"
             inner = stream._inner
             assert inner is not None
-            assert not isinstance(inner, ArchiveStream)
+            assert not isinstance(inner, ArchiveStreamImpl)
             break
         else:
             pytest.fail("expected a file member")
@@ -1029,7 +1030,7 @@ def test_zip_member_fuses_verify_no_verifying_stream_layer(tmp_path: Path) -> No
     After verify-fusion, the codec ArchiveStream collapses through and there is
     no VerifyingStream in the chain (review/archive/2026-07-19-stream-layering/collapse-design.md).
     """
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
     from archivey.internal.streams.streamtools.slice import SlicingStream
     from archivey.internal.streams.verify import VerifyingStream
 
@@ -1037,9 +1038,9 @@ def test_zip_member_fuses_verify_no_verifying_stream_layer(tmp_path: Path) -> No
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as zf:
         zf.writestr("a.bin", b"hello-verify-fuse")
     with open_archive(path) as ar, ar.open("a.bin") as f:
-        assert isinstance(f, ArchiveStream)
+        assert isinstance(f, ArchiveStreamImpl)
         assert f._verifier is not None
-        assert not isinstance(f._inner, ArchiveStream)
+        assert not isinstance(f._inner, ArchiveStreamImpl)
         assert not isinstance(f._inner, VerifyingStream)
         assert isinstance(f._inner, SlicingStream)
         assert f.read() == b"hello-verify-fuse"
@@ -1052,3 +1053,95 @@ def test_member_stream_advertises_size(member: tuple[Path, str]) -> None:
     with open_archive(source) as ar, ar.open(name) as f:
         size = getattr(f, "size", None)
         assert size is None or size == len(CONTENT)
+
+
+def test_a_stream_built_open_settles_its_seekability_on_first_use() -> None:
+    """``_Opened``: an eager handle over a stream already open is not asked whether it
+    can seek until a caller asks, and then answers as the stream does."""
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl, _Opened
+
+    def no_translation(exc: Exception) -> None:
+        return None
+
+    plain = ArchiveStreamImpl(
+        _Opened(io.BytesIO(b"abc"), settle_seekable=True), translate=no_translation
+    )
+    assert plain._seekable_hint is None
+    assert plain.read(1) == b"a"
+    assert plain.seekable()
+    assert plain.seek(0) == 0
+    assert plain.read() == b"abc"
+
+    forward = ArchiveStreamImpl(
+        _Opened(NonSeekableBytesIO(b"abc"), settle_seekable=True),
+        translate=no_translation,
+    )
+    assert not forward.seekable()
+    with pytest.raises(io.UnsupportedOperation):
+        forward.seek(0)
+
+    # A handle closed before anything asked answers a seek as one asked when built:
+    # a stream that cannot seek refuses, one that can raises the closed-file error.
+    for inner, error in (
+        (NonSeekableBytesIO(b"abc"), io.UnsupportedOperation),
+        (io.BytesIO(b"abc"), ValueError),
+    ):
+        unasked = ArchiveStreamImpl(
+            _Opened(inner, settle_seekable=True), translate=no_translation
+        )
+        unasked.close()
+        with pytest.raises(error):
+            unasked.seek(0)
+
+
+def test_a_reader_does_not_ask_a_member_whether_it_can_seek_until_a_caller_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With ``seekable_members=True``, opening and reading a member does not ask the
+    backend's stream whether it can seek (``_wrap_member_stream`` settles it on first
+    use); ``seekable()`` and ``seek()`` then answer as before."""
+    from archivey.internal import base_reader
+
+    path = tmp_path / "a.tar"
+    with tarfile.open(path, "w") as tf:
+        info = tarfile.TarInfo("f")
+        info.size = 3
+        tf.addfile(info, io.BytesIO(b"abc"))
+    asked: list[object] = []
+    real = base_reader.is_seekable
+
+    def counting(stream: object) -> bool:
+        asked.append(stream)
+        return real(stream)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(base_reader, "is_seekable", counting)
+    with open_archive(path, seekable_members=True) as reader, reader.open("f") as s:
+        assert s.read(1) == b"a"
+        assert asked == []
+        assert s.seekable()
+        assert s.seek(0) == 0
+        assert s.read() == b"abc"
+
+
+def test_a_lazy_handle_refuses_an_opened_opener() -> None:
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl, _Opened
+
+    with pytest.raises(AssertionError):
+        ArchiveStreamImpl(
+            _Opened(io.BytesIO(b"abc")), translate=lambda _e: None, lazy=True
+        )
+
+
+def test_a_stream_built_open_over_an_archive_stream_collapses_it() -> None:
+    """``_Opened`` over an ``ArchiveStream`` opens it the usual way, which collapses
+    it, so the handle never wraps another handle."""
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl, _Opened
+
+    def no_translation(exc: Exception) -> None:
+        return None
+
+    nested = ArchiveStreamImpl(lambda: io.BytesIO(b"abc"), translate=no_translation)
+    outer = ArchiveStreamImpl(_Opened(nested), translate=no_translation)
+    assert not isinstance(outer._inner, ArchiveStreamImpl)
+    assert nested.closed
+    assert outer.read() == b"abc"

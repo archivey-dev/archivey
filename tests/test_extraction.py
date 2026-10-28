@@ -19,7 +19,7 @@ import time
 import unicodedata
 import warnings
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -56,12 +56,13 @@ from archivey.internal.filters import (
     _resolve_with_pathlib,
     apply_name_policy,
     check_universal,
+    parent_resolves_within_root,
     resolve_or_raise_on_loop,
     transform_standard,
     transform_strict,
 )
 from archivey.internal.link_watch import LinkWatch
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember, MemberType
 from tests.conftest import binary_refusal, case_sensitive
 from tests.corruption_util import raises_corruption_not_truncation
@@ -2124,6 +2125,64 @@ def test_resolve_or_raise_on_loop_keeps_a_missing_component(tmp_path: Path) -> N
     assert resolve_or_raise_on_loop(path) == tmp_path.resolve() / "d" / "missing" / "f"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize(
+    ("rel", "inside"),
+    [
+        ("f", True),
+        ("d/f", True),
+        ("d//e/f", True),
+        ("d/./e/f", True),
+        ("missing/f", True),
+        ("in/f", True),
+        ("in/deeper/f", True),
+        ("out/f", False),
+        ("abs/f", False),
+        ("file/x/f", True),
+        ("loop/f", None),
+        ("out/.", True),
+        ("out/./", True),
+        ("d/./.", True),
+    ],
+)
+def test_parent_resolves_within_root_matches_the_full_resolution(
+    tmp_path: Path, rel: str, inside: bool | None
+) -> None:
+    # The coordinator resolves the destination once and walks only below it. The
+    # answer, and the error, must be the full walk's from `/`.
+    root = tmp_path / "root"
+    (root / "d" / "e").mkdir(parents=True)
+    (root / "file").write_bytes(b"")
+    (tmp_path / "outside").mkdir()
+    os.symlink("d", root / "in")
+    os.symlink("../outside", root / "out")
+    os.symlink(str(tmp_path / "outside"), root / "abs")
+    os.symlink("loop", root / "loop")
+    root = resolve_or_raise_on_loop(root)
+
+    def outcome(within: Callable[[], bool]) -> object:
+        try:
+            return within()
+        except OSError as exc:
+            return (exc.errno, exc.filename)
+
+    def full() -> bool:
+        return resolve_or_raise_on_loop((root / rel).parent).is_relative_to(root)
+
+    expected = outcome(full)
+    assert expected == (
+        inside if inside is not None else (errno.ELOOP, str(root / "loop"))
+    )
+    assert outcome(lambda: parent_resolves_within_root(root, rel)) == expected
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX root")
+@pytest.mark.parametrize("rel", ["x", "tmp/x", "x/."])
+def test_parent_resolves_within_root_takes_the_filesystem_root(rel: str) -> None:
+    # "/" + "/" is no prefix of any resolved path, so the root needs its own spelling.
+    assert parent_resolves_within_root(Path("/"), rel)
+
+
 def _link_chain_past_path_max(root: Path) -> None:
     """``root/up``: links whose expansion is longer than PATH_MAX, leading to
     ``root``'s parent."""
@@ -3696,7 +3755,7 @@ class _FileThenAntiReader(BaseArchiveReader):
         yield ArchiveMember(type=MemberType.FILE, name="a.txt", size=5)
         yield ArchiveMember(type=MemberType.ANTI, name="a.txt")
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+    def _open_member(self, member: ArchiveMember) -> ArchiveStreamImpl:
         return self._wrap_member_stream(io.BytesIO(b"first"), member.name, size=5)
 
     def _get_archive_info(self) -> ArchiveInfo:

@@ -119,7 +119,7 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 from archivey.internal.streams.codecs import (
     SINGLE_FILE_CODECS,
     codec_for_stream_format,
@@ -829,7 +829,7 @@ class TarReader(BaseArchiveReader):
 
     def _iter_with_data_random_access(
         self,
-    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
         """``stream_members()`` on a random-access reader, in one forward pass.
 
         The base's version lists every member first and then reads their data, which
@@ -856,7 +856,7 @@ class TarReader(BaseArchiveReader):
             with self._translated_errors(member.name):
                 return self._member_body(member, in_walk=True)
 
-        def _open(member: ArchiveMember) -> ArchiveStream | None:
+        def _open(member: ArchiveMember) -> ArchiveStreamImpl | None:
             if not pass_has_data(member):
                 return None
             return self._lazy_member_stream(member, _open_in_walk, track_output=True)
@@ -880,7 +880,7 @@ class TarReader(BaseArchiveReader):
 
     def _iter_with_data(
         self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
-    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
         if not self._streaming:
             yield from self._iter_with_data_random_access()
             return
@@ -890,7 +890,7 @@ class TarReader(BaseArchiveReader):
         # stream unreadable, and the walk reads through whatever it left.
         with self._translated_errors():
 
-            def _open(member: ArchiveMember) -> ArchiveStream | None:
+            def _open(member: ArchiveMember) -> ArchiveStreamImpl | None:
                 if not pass_has_data(member):
                     return None
                 return self._open_member_stream(member, defer_sparse_error=True)
@@ -1666,7 +1666,7 @@ class TarReader(BaseArchiveReader):
             return TruncatedError(f"TAR member data ended early: {exc}")
         return None
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+    def _open_member(self, member: ArchiveMember) -> ArchiveStreamImpl:
         with self._translated_errors(member.name):
             return self._open_member_stream(member, defer_sparse_error=False)
 
@@ -1749,7 +1749,7 @@ class TarReader(BaseArchiveReader):
 
     def _open_member_stream(
         self, member: ArchiveMember, *, defer_sparse_error: bool
-    ) -> ArchiveStream:
+    ) -> ArchiveStreamImpl:
         """Open ``member``'s data. A bad sparse map raises here, or with
         ``defer_sparse_error`` on the first read: a forward-only consumer that skips
         the member does not read the bad map, and the walk moves on to the next

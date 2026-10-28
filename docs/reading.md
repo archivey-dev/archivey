@@ -135,6 +135,16 @@ the next `read()` on a member stream it closed raises `ValueError`, as a closed 
 `close()` has returned, calling it again does nothing; after one that raised, the reader is still
 open and you still have to close it.
 
+The functions you give archivey, such as `on_diagnostic`, `on_progress`, a password provider, or a
+`members=` or `filter=` function, run on the thread whose call to archivey needs them, before that
+call returns. When several threads wait for the member list, the thread that builds it runs the
+functions that listing calls. One case falls outside your calls: a member stream or a
+`stream_members()` pass that you don't close is closed when Python frees it, on whatever thread
+Python frees it on, and a diagnostic that this close reports reaches `on_diagnostic` on that
+thread. That is usually the thread that drops the last reference to it, but for an object caught
+in a reference cycle it is the thread where the garbage collector happens to run. Close streams and passes yourself, or use `with`, to keep every call on your own
+threads. Archivey never calls your code from a thread it started.
+
 ## The same result everywhere
 
 With the `seekable` extra installed, archivey reads large DEFLATE data, and bzip2 data opened with
