@@ -669,6 +669,8 @@ class _ForwardInput(ReadOnlyIOStream):
         if self.closed:
             raise ValueError("I/O operation on closed file.")
         n = check_read_size(n)
+        if n == 0:
+            return b""
         n = n if n > 0 else _WALK_BUFFER
         stream = self._stream
         if isinstance(stream, ReadAheadStream):
@@ -1081,8 +1083,14 @@ class SequentialReaderAdapter(_PluginAdapter):
                 stream_capability=capability,
                 solid_block_count=1,
             )
+        # A sequential plugin declares is_solid when its members share one decode
+        # (compression that starts part-way), so the later headers sit inside it.
         return CostReceipt(
-            listing_cost=ListingCost.REQUIRES_SCANNING,
+            listing_cost=(
+                ListingCost.REQUIRES_DECOMPRESSION
+                if info.is_solid
+                else ListingCost.REQUIRES_SCANNING
+            ),
             access_cost=AccessCost.SOLID if info.is_solid else AccessCost.DIRECT,
             stream_capability=capability,
             solid_block_count=None,
@@ -1107,8 +1115,9 @@ class SequentialReaderAdapter(_PluginAdapter):
                     # Innermost first: a layer reads the one it was opened over.
                     streams, self._layer_streams = self._layer_streams, []
                     self._layer_sources.clear()
-                    # Every stream is closed even when one close raises; the first
-                    # error then propagates, as the sibling closes' do.
+                    # Every stream is closed even when one close raises. ExitStack
+                    # closes them innermost first; the last error raised propagates
+                    # with any earlier one chained as its __context__.
                     with ExitStack() as closing:
                         for stream in streams:
                             closing.callback(stream.close)

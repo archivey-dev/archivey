@@ -208,7 +208,9 @@ class PluginArchiveInfo(NamedTuple):
     """What the reader knows about the archive that archivey cannot work out."""
 
     is_solid: bool = False
-    """Members share one decode, so opening them out of order is slow."""
+    """Members share one decode, so opening them out of order is slow. For a
+    :class:`SequentialFormatPlugin` it also means the later headers sit inside that
+    decode, so the cost receipt says listing needs decompression."""
 
     format_version: str | None = None
     comment: str | None = None
@@ -357,8 +359,8 @@ class ForwardStream:
 
         archivey cannot know the archive is solid before the walk gets here, so a
         format that decompresses part-way says so from :meth:`PluginReader.archive_info`
-        with ``PluginArchiveInfo(is_solid=True)``, and the cost receipt is right from
-        the open.
+        with ``PluginArchiveInfo(is_solid=True)``, and the cost receipt (solid access,
+        listing that needs decompression) is right from the open.
 
         Raises ``ValueError`` for a format that is not a compression stream
         (``UNCOMPRESSED``), and ``ArchiveyUsageError`` when this stream has already

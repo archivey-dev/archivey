@@ -481,7 +481,7 @@ caller's decoder limits and the decompression-ratio guard. The stream the walk c
 `decompress()` on refuses further reads. archivey cannot know the archive holds a
 compression stream before the walk reaches it, so have `archive_info()` return
 `PluginArchiveInfo(is_solid=True)`: the cost receipt then says members are read through
-one stream from the moment the archive opens.
+one stream, and that listing needs decompression, from the moment the archive opens.
 The compressed stream is taken to run to the end of the archive: bytes after its end are
 reported with `ARCHIVE_TRAILING_DATA`, not refused.
 

@@ -827,6 +827,7 @@ def test_decompress_part_way_cost_is_known_at_open(
     assert before.is_solid and after.is_solid
     assert before.cost == after.cost
     assert before.cost.access_cost is AccessCost.SOLID
+    assert before.cost.listing_cost is ListingCost.REQUIRES_DECOMPRESSION
 
 
 def test_decompress_part_way_on_a_pipe_held_open(
@@ -856,6 +857,76 @@ def test_decompress_part_way_on_a_pipe_held_open(
     reader_thread.join(30)
     assert finished, "the pass waited for the writer to close the pipe"
     assert got["b.bin"] == _DATA["b.bin"]
+
+
+def _build_nested() -> bytes:
+    """Two stored members, then gzip holding two more and an xz switch inside it."""
+
+    def switch(stream: StreamFormat) -> bytes:
+        name = stream.value.encode()
+        return _HEADER.pack(_MAGIC, b"Z", len(name), 0, 0) + name
+
+    inner = (
+        build_toys(_ENTRIES[2:4], end=False)
+        + switch(StreamFormat.XZ)
+        + lzma.compress(build_toys(_ENTRIES[4:]))
+    )
+    return (
+        build_toys(_ENTRIES[:2], end=False)
+        + switch(StreamFormat.GZIP)
+        + gzip.compress(inner, mtime=0)
+    )
+
+
+@pytest.mark.parametrize("mode", ["file", "stream-file", "stream-pipe", "held-pipe"])
+def test_decompress_part_way_nested(
+    rpmish: ArchiveFormat, tmp_path: Path, mode: str
+) -> None:
+    """A walk can call decompress() again on the stream decompress() returned: the
+    layers stack, on a file, a pipe, and a pipe whose writer keeps it open."""
+    data = _build_nested()
+    got: dict[str, bytes | str | None] = {}
+
+    def read(source: object) -> None:
+        with open_archive(source, streaming=mode != "file", format=rpmish) as reader:
+            if mode == "file":
+                # Random access, out of order, into both layers.
+                got["empty"] = reader.read("empty")
+                got["b.bin"] = reader.read("b.bin")
+                got["docs/a.txt"] = reader.read("docs/a.txt")
+                return
+            for member, stream in reader.stream_members():
+                got[member.name] = (
+                    stream.read() if stream is not None else member.link_target
+                )
+
+    if mode == "held-pipe":
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, data)
+
+        def run() -> None:
+            with open(read_fd, "rb", buffering=0) as pipe:
+                read(pipe)
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        thread.join(30)
+        finished = not thread.is_alive()
+        os.close(write_fd)
+        thread.join(30)
+        assert finished, "the pass waited for the writer to close the pipe"
+    else:
+        read(
+            NonSeekableBytesIO(data)
+            if mode == "stream-pipe"
+            else _write(tmp_path, data)
+        )
+    if mode != "file":
+        assert list(got) == _RPM_NAMES
+        assert got["link"] == "docs/a.txt"
+    assert got["docs/a.txt"] == b"alpha\n"
+    assert got["b.bin"] == _DATA["b.bin"]
+    assert got["empty"] == b""
 
 
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
