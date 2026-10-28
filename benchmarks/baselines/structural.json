@@ -32,7 +32,7 @@
       "bytes_decompressed": 16384,
       "source_seek_count": 13,
       "unpacked_bytes": 16384,
-      "notes": "WinZip AES-256 AE-2; requires [crypto]"
+      "notes": "WinZip AES-256 AE-2; requires cryptography"
     },
     "zipcrypto_read_all": {
       "bytes_decompressed": 131072,

@@ -127,7 +127,7 @@ VISION's other priorities still rank findings, below those two:
 
 ### Non-goals (don’t demand these in reviews)
 
-- Async public API in v1
+- Async public API before 1.0 (ADR 0005)
 - Compatibility shims for `zipfile` / `py7zr` / `rarfile` APIs
 - Quirk-driven architecture that lets third-party reader quirks leak into core contracts
 - In-place archive modification / encryption-write for 7z/RAR
@@ -221,7 +221,8 @@ Specs are the best current description of the contract, not holy writ.
 - [ ] When a contract does move, the spec and the matching docs move in the **same** change
 - [ ] A spec that yields a worse outcome gets **revised**, not worked around — surface it
   instead of contorting the code to satisfy the letter of the doc
-- [ ] Open threat-model gaps (`O*`) are not closed by prose alone
+- [ ] Open threat-model gaps (`dev-docs/threat-model.md` §5 "Open design gaps") are not
+  closed by prose alone
 
 ## Testing
 

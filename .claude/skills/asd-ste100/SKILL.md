@@ -10,12 +10,13 @@ version: 0.4.0
 > [danyuchn/asd-ste100-skill](https://github.com/danyuchn/asd-ste100-skill) (MIT,
 > `7d4a135`), except for this note. Upstream fixes come in as a re-copy, so keep
 > archivey-specific rules out of this directory — they live in
-> [`AGENTS.md`](../../../AGENTS.md) §Writing English, which says which of the two modes
-> below applies to which kind of text here.
+> [`AGENTS.md`](../../../AGENTS.md) §Writing English, and
+> [`dev-docs/writing-english.md`](../../../dev-docs/writing-english.md) says which of the
+> two modes below applies to which kind of text here.
 >
 > **In this repo the rules are advice, never a gate** (maintainer decision, 2026-09-22),
-> STE-flavored is the default, and Strict is the exception. That section has the ruling
-> and what it means in practice. `unslop` still runs on maintainer-facing prose. This
+> STE-flavored is the default, and Strict is the exception. `dev-docs/writing-english.md`
+> has the ruling and what it means in practice. `unslop` still runs on maintainer-facing prose. This
 > skill and that one cut different things.
 
 ASD-STE100 is a controlled-language standard built by the aerospace and defense industry (ASD, the AeroSpace and Defense Industries Association of Europe) to stop maintenance technicians from misreading English instructions. The standard removes the two biggest sources of misreading: words with more than one meaning, and sentences with more than one possible structure.
