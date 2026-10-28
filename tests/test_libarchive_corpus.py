@@ -66,8 +66,6 @@ Triage (2026-07, rerun 2026-10-28 against libarchive 3.9.0dev with the plugins)
 from __future__ import annotations
 
 import binascii
-import importlib
-import importlib.util
 import io
 import os
 import re
@@ -85,11 +83,9 @@ from archivey import (
     detect_format,
     open_archive,
 )
-from archivey.internal.plugin_adapter import registration_scope
-from archivey.internal.registry import get_registry
-from archivey.plugins import register_format
 from archivey.types import ArchiveFormat, ContainerFormat, StreamFormat
 from tests.conftest import ARCHIVEY_TEST_CACHE, binary_refusal, requires
+from tests.corpus_plugins import installed_plugins
 from tests.sample_archives import publish_cached
 
 _ENV = "ARCHIVEY_LIBARCHIVE_TEST_FILES"
@@ -453,13 +449,6 @@ def _uu_param(path: Path) -> pytest.ParameterSet:
     )
 
 
-# The format plugins in packages/, by module and class.
-_PLUGINS = (
-    ("archivey_cpio", "CpioPlugin"),
-    ("archivey_ar", "ArPlugin"),
-    ("archivey_squashfs", "SquashfsPlugin"),
-)
-
 _ROOT = _files_dir()
 _UU_SOURCES = list(_iter_uu_sources(_ROOT)) if _ROOT is not None else []
 
@@ -476,15 +465,7 @@ pytestmark = [
 def _plugins() -> Iterator[None]:
     """Register the plugins in packages/ that are installed, so their fixtures are
     compared instead of skipped as unknown formats; undone when the module ends."""
-    with registration_scope():
-        for module, name in _PLUGINS:
-            # Not installed: skipped. Installed and failing to import: an error.
-            if importlib.util.find_spec(module) is None:
-                continue
-            plugin = getattr(importlib.import_module(module), name)
-            # A plugin's own tests may have registered it in this process already.
-            if get_registry().registered_reader(plugin.format) is None:
-                register_format(plugin)
+    with installed_plugins():
         yield
 
 

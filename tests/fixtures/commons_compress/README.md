@@ -5,8 +5,9 @@ Apache Commons Compress's `src/test/resources` has three summaries: what Commons
 Compress read (`cc`), what archivey reads from a path (`path`), and what archivey reads
 from a pipe (`pipe`, only when it differs from `path`). A summary is the format or the
 error class, the member count, and a digest of the members' names, types, bytes read and
-CRC-32s. It names files and CRCs only and holds none of their contents.
+CRC-32s. The keys are the corpus paths; nothing of the files' contents, member names or
+CRCs is stored.
 
 `scripts/gen_commons_compress_expected.py` rewrites it. Its docstring says how to get
 the Commons Compress listing that the script needs. The `commons_compress` key records
-the commit the pins were made from.
+the checkout's commit; the script refuses a listing whose files are not that checkout's.

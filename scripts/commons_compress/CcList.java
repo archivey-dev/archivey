@@ -206,6 +206,8 @@ public class CcList {
             StringBuilder b = new StringBuilder("{\"path\":").append(q(line));
             String s = streamMode(p);
             String fmt = null;
+            // Reads the format back out of streamMode's JSON, so it depends on that
+            // string starting {"format":"...: 11 is the length of that prefix.
             if (!s.startsWith("{\"format\":null")) {
                 int i = s.indexOf('"', 11);
                 fmt = s.substring(11, i);

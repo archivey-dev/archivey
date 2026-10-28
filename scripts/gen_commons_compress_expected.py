@@ -111,7 +111,22 @@ def main(argv: list[str] | None = None) -> int:
     cc: dict[str, dict[str, Any] | None] = {}
     for line in args.cc_listing.open(encoding="utf-8"):
         record = json.loads(line)
+        if _RESOURCES not in record["path"]:
+            raise SystemExit(
+                f"{record['path']!r} in the listing is not under {_RESOURCES}"
+            )
         cc[record["path"].split(_RESOURCES, 1)[1]] = cc_summary(record)
+
+    # The listing must come from this checkout: the commit recorded below is its HEAD.
+    in_checkout = {
+        p.relative_to(resources).as_posix() for p in resources.rglob("*") if p.is_file()
+    }
+    if in_checkout != set(cc):
+        raise SystemExit(
+            "the listing is not of this checkout; run CcList on it again. Only in the "
+            f"checkout: {sorted(in_checkout - set(cc))[:5]}; only in the listing: "
+            f"{sorted(set(cc) - in_checkout)[:5]}"
+        )
 
     files: dict[str, dict[str, Any]] = {}
     with installed_plugins():

@@ -46,24 +46,19 @@ Triage (2026-10-28, CC master ``0c20ded``, 1.29.0-SNAPSHOT), in the report's gro
 from __future__ import annotations
 
 import hashlib
-import importlib
-import importlib.util
 import io
 import json
 import os
 import zlib
 from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from archivey import ArchiveyConfig, open_archive
-from archivey.internal.plugin_adapter import registration_scope
-from archivey.internal.registry import get_registry
-from archivey.plugins import register_format
 from archivey.types import ArchiveFormat, ContainerFormat
+from tests.corpus_plugins import PLUGINS, installed_plugins
 
 _ENV = "ARCHIVEY_COMMONS_COMPRESS_TEST_FILES"
 EXPECTED_PATH = (
@@ -79,16 +74,9 @@ PASSWORD = "foo"
 # An 8 GiB member each: reading it takes minutes, so they have no pin.
 SLOW = frozenset({"8.posix.tar.gz", "8.star.tar.gz"})
 
-# The format plugins in packages/, by module, class and the container they read.
-_PLUGINS = (
-    ("archivey_cpio", "CpioPlugin", "cpio"),
-    ("archivey_ar", "ArPlugin", "ar"),
-    ("archivey_squashfs", "SquashfsPlugin", "squashfs"),
-)
-_PLUGIN_CONTAINERS = frozenset(container for _, _, container in _PLUGINS)
 
-# Every file where Archivey's result from a path differs from CC's. Both refusing a
-# file is agreement and needs no entry.
+# Every file where Archivey's result from a path differs from CC's. A file both refuse
+# without listing a member is agreement and needs no entry (see ``agrees_with_cc``).
 _TRIAGE: dict[str, str] = {
     **dict.fromkeys(
         (
@@ -118,6 +106,7 @@ _TRIAGE: dict[str, str] = {
             "dump/max-segment-length.dump",
             "synthetic/long-name/long-name-reversed.dump",
             "synthetic/long-name/long-name.dump",
+            "org/apache/commons/compress/dump/looping_inodes-fail.dump",
         ),
         "MISSING FORMAT: dump",
     ),
@@ -156,6 +145,33 @@ _TRIAGE: dict[str, str] = {
     "COMPRESS-227.zip": (
         "POLICY: two directory entries share one local header; one forward pass "
         "(stream_members) yields its bytes once, then raises"
+    ),
+    **dict.fromkeys(
+        (
+            "COMPRESS-279-fail.tar",
+            "COMPRESS-351.zip",
+            "COMPRESS-529-fail.tar",
+            "COMPRESS-544_truncated_in_content-fail.tar",
+            "COMPRESS-544_truncated_in_padding-fail.tar",
+            "COMPRESS-548.zip",
+            "COMPRESS-647/test.zip",
+            "bla-stored-dd-contradicts-actualsize.zip",
+            "bla-stored-dd-nosig.zip",
+            "bla-stored-dd-sizes-differ.zip",
+            "bla-stored-dd.zip",
+            "org/apache/commons/compress/fuzz/crash-f2efd9eaeb86cda597d07b5e3c3d81363633c2da",
+            "org/apache/commons/compress/zip/ZipFile-method.zip",
+            "org/apache/commons/compress/zip/decompressNextSymbol.bin",
+        ),
+        "BOTH FAIL: CC refuses the open; Archivey lists the members before the "
+        "damage, then raises",
+    ),
+    "org/apache/commons/compress/zip/createBoundedInputStream.bin": (
+        "BOTH FAIL: both fail to read the one member; CC types it OTHER"
+    ),
+    "COMPRESS-553-fail.tar": (
+        "POLICY: a header that does not parse is CorruptionError; CC lists nothing "
+        "and raises nothing"
     ),
     "utf8-7zip-test.zip": "NAMES: Archivey decodes the valid UTF-8 name",
     "COMPRESS-479.zip": "NAMES: Archivey decodes the valid UTF-8 name",
@@ -330,6 +346,9 @@ def list_with_archivey(path: Path, *, pipe: bool) -> dict[str, Any]:
             raw = archive.format.container is ContainerFormat.RAW_STREAM
             for member, stream in archive.stream_members():
                 data: list[Any] = [None, None, None]
+                # The type at yield time, on purpose: a member a pipe pass reads as a
+                # file and the directory later calls a directory is read here, and
+                # rows() then drops the bytes.
                 if stream is not None and member.is_file:
                     crc, size = 0, 0
                     try:
@@ -375,13 +394,15 @@ def _fails(summary: dict[str, Any] | None) -> bool:
 def agrees_with_cc(cc: dict[str, Any] | None, ours: dict[str, Any]) -> bool:
     """Whether Archivey's summary matches CC's.
 
-    Both failing counts, whether the open failed or a member did: CC's errors are
-    Java's and cannot be matched one for one.
+    When either side listed members, the listings must match, member reads that
+    raised included. When neither did, both refusing the file counts: CC's errors are
+    Java's, so their classes are not compared.
     """
-    if _fails(cc) or _fails(ours):
-        return _fails(cc) and _fails(ours)
-    assert cc is not None
-    return (cc["members"], cc["digest"]) == (ours["members"], ours["digest"])
+    if cc is not None and "digest" in cc and "digest" in ours:
+        return (cc["members"], cc["digest"]) == (ours["members"], ours["digest"])
+    if (cc is not None and "digest" in cc) or "digest" in ours:
+        return False
+    return _fails(cc) and _fails(ours)
 
 
 def load_expected() -> dict[str, dict[str, Any]]:
@@ -395,25 +416,12 @@ _EXPECTED = load_expected()
 
 
 def _params() -> Iterator[Any]:
+    if _ROOT is None:  # Nothing to collect: 820 skips would only crowd the summary.
+        return
     for name in sorted(_EXPECTED):
         for pipe in (False, True):
             mode = "pipe" if pipe else "path"
             yield pytest.param(name, pipe, id=f"{mode}:{name}")
-
-
-@contextmanager
-def installed_plugins() -> Iterator[frozenset[str]]:
-    """Register the installed plugins; yield the containers they read."""
-    installed: set[str] = set()
-    with registration_scope():
-        for module, name, container in _PLUGINS:
-            if importlib.util.find_spec(module) is None:
-                continue
-            plugin = getattr(importlib.import_module(module), name)
-            if get_registry().registered_reader(plugin.format) is None:
-                register_format(plugin)
-            installed.add(container)
-        yield frozenset(installed)
 
 
 @pytest.fixture(scope="module")
@@ -433,11 +441,11 @@ def test_archivey_matches_the_pinned_result(
     assert _ROOT is not None
     entry = _EXPECTED[name]
     expected = entry.get("pipe", entry["path"]) if pipe else entry["path"]
-    if missing := sorted(_PLUGIN_CONTAINERS - _plugins):
+    if missing := sorted({module for module, _ in PLUGINS} - _plugins):
         # A damaged ar file is a CorruptionError with the plugin and no format without.
         pytest.skip(f"the pins assume every plugin; not installed: {missing}")
     listing = list_with_archivey(_ROOT / name, pipe=pipe)
-    assert summarize(listing) == expected, json.dumps(listing, indent=1)[:4000]
+    assert summarize(listing) == expected, json.dumps(listing, indent=1)
 
 
 @pytest.mark.skipif(_ROOT is None, reason=f"set {_ENV} to run")
@@ -473,4 +481,10 @@ def test_every_divergence_from_commons_compress_is_triaged() -> None:
         and name not in _PIPE_TRIAGE
     )
     assert not pipe_untriaged, f"pipe differences with no reason: {pipe_untriaged}"
-    assert set(_PIPE_TRIAGE) <= {n for n, e in _EXPECTED.items() if "pipe" in e}
+    pipe_stale = sorted(
+        name
+        for name in _PIPE_TRIAGE
+        if "pipe" not in _EXPECTED.get(name, {})
+        or _EXPECTED[name]["pipe"] == {"error": "StreamNotSeekableError"}
+    )
+    assert not pipe_stale, f"_PIPE_TRIAGE entries with no pipe difference: {pipe_stale}"
