@@ -277,12 +277,13 @@ def _open_new_file(path: Path, mode: int) -> int:
     ``mode`` is the creation mode, so the umask applies to it as it does to any new
     file. The flags are ``mkstemp``'s: ``O_EXCL`` fails loudly on a name that appeared
     underneath us, ``O_NOFOLLOW`` refuses a symlink planted there, and ``O_BINARY`` /
-    ``O_NOINHERIT`` matter on Windows only.
+    ``O_NOINHERIT`` matter on Windows only. The path is passed as a ``str``, so an
+    error names it as a ``str`` on PyPy too, which keeps a ``Path`` there.
     """
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     for extra in ("O_NOFOLLOW", "O_BINARY", "O_NOINHERIT"):
         flags |= getattr(os, extra, 0)
-    return os.open(long_path(path), flags, mode)
+    return os.open(os.fspath(long_path(path)), flags, mode)
 
 
 class _AbortExtraction(Exception):
