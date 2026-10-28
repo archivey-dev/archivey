@@ -1982,6 +1982,8 @@ class ExtractionCoordinator:
                 dest_root,
                 link_target_on_disk=self._on_disk,
                 show_os_error=self._rebase_resolved_os_error,
+                # The run resolved it once, at its start (``_RunState.dest_root``).
+                dest_resolved=True,
             )
         except ExtractionError as exc:
             if on_disk is not member:

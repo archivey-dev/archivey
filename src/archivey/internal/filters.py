@@ -178,6 +178,33 @@ def resolve_or_raise_on_loop(path: Path) -> Path:
     return Path(_realpath_posix(os.path.join(os.getcwd(), path), str(path)))
 
 
+def parent_resolves_within_root(root: Path, rel: str) -> bool:
+    """Whether ``(root / rel).parent`` resolves to ``root`` or a path inside it, for a
+    ``root`` that is already resolved. Raises ``OSError`` as
+    :func:`resolve_or_raise_on_loop` does.
+
+    ``root`` is the result of an earlier resolution, so it holds no symlink and its
+    components need no look-up: on POSIX the walk starts at ``root`` and looks only at
+    the components of ``rel``. A link among them is followed as the full resolution
+    follows it, out of ``root`` too. The extraction coordinator resolves its
+    destination once per run and checks every member's parent with this, rather than
+    walking from ``/`` again for each member. It trusts the destination's own
+    ancestors to stay as they are for the run, as the threat model does. The walk
+    gives a normalized string, so a string prefix compares as ``is_relative_to`` does.
+    """
+    if os.name == "nt":
+        return _within(_resolve_with_pathlib((root / rel).parent), root)
+    start = str(root)
+    try:
+        resolved = _realpath_posix(rel.rpartition("/")[0], "", start=start)
+    except OSError as exc:
+        # Named as the full resolution names it; built only here, as it costs Paths.
+        raise OSError(exc.errno, exc.strerror, str((root / rel).parent)) from (
+            exc.__cause__
+        )
+    return resolved == start or start == "/" or resolved.startswith(start + "/")
+
+
 # Links followed in one resolution before it counts as a loop: Linux's own limit
 # (``MAXSYMLINKS``), so a chain the kernel follows is followed here too. The dry run's
 # ``_MAX_LINK_HOPS`` and the CLI hoist's walk use the same bound for the same reason;
@@ -186,12 +213,13 @@ def resolve_or_raise_on_loop(path: Path) -> Path:
 _MAX_LINK_FOLLOWS = 40
 
 
-def _realpath_posix(path: str, asked: str) -> str:
+def _realpath_posix(path: str, asked: str, *, start: str = "") -> str:
     """``os.path.realpath(path)`` that raises instead of guessing (see
     :func:`resolve_or_raise_on_loop`). ``path`` is absolute; ``asked`` is the path
-    the caller passed, for the error."""
+    the caller passed, for the error. With ``start``, an absolute path already
+    resolved, ``path`` is relative to it and the walk begins there."""
     rest = path.split("/")[::-1]
-    resolved = ""
+    resolved = start.rstrip("/")
     follows = 0
     while rest:
         name = rest.pop()
@@ -377,6 +405,7 @@ def check_universal(
     *,
     link_target_on_disk: Callable[[str], str] | None = None,
     show_os_error: Callable[[OSError], None] | None = None,
+    dest_resolved: bool = False,
 ) -> None:
     """Enforce the non-bypassable universal path-safety constraints on ``member``.
 
@@ -396,6 +425,10 @@ def check_universal(
     the error's file names to be built from the ``dest`` given here, which the
     coordinator has already resolved. The coordinator gives it: it removes the
     long-path prefix, and under a dry run it names dest, not the scratch directory.
+
+    ``dest_resolved`` says that ``dest`` is already resolved
+    (:func:`resolve_or_raise_on_loop`), so it is not resolved again. The coordinator
+    resolves its destination once per run and passes it so.
 
     Everything here meets one of two criteria. Either the *write itself* is dangerous
     or impossible — escaping the destination, a NUL the OS truncates on, a device
@@ -454,15 +487,13 @@ def check_universal(
     # lands inside the root. A symlinked *parent* that escapes is still caught.
     is_root = rel in ("", ".")  # "" / "." is the root dir member itself
     try:
-        dest_root = resolve_or_raise_on_loop(dest)
+        dest_root = dest if dest_resolved else resolve_or_raise_on_loop(dest)
         # The root member has no parent to place, so only other members are checked.
-        if not is_root:
-            parent = resolve_or_raise_on_loop((dest_root / rel).parent)
-            if not _within(parent, dest_root):
-                raise FilterRejectionError(
-                    "Member resolves outside the destination root",
-                    member_name=name,
-                )
+        if not is_root and not parent_resolves_within_root(dest_root, rel):
+            raise FilterRejectionError(
+                "Member resolves outside the destination root",
+                member_name=name,
+            )
     except OSError as exc:
         # A path in dest or below it that the resolver cannot follow exactly: a symlink
         # loop the destination already had (links this run creates never loop: one that
