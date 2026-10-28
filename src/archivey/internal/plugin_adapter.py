@@ -19,7 +19,7 @@ import logging
 import lzma
 import threading
 from collections.abc import Callable, Generator, Iterator, Mapping
-from contextlib import ExitStack, contextmanager, suppress
+from contextlib import contextmanager, suppress
 from dataclasses import replace
 from typing import Any, BinaryIO, ClassVar, NoReturn, cast
 
@@ -36,6 +36,7 @@ from archivey.exceptions import (
     CorruptionError,
     TruncatedError,
     UnsupportedFeatureError,
+    exception_detail,
 )
 from archivey.internal import format_args
 from archivey.internal.base_reader import (
@@ -1115,12 +1116,23 @@ class SequentialReaderAdapter(_PluginAdapter):
                     # Innermost first: a layer reads the one it was opened over.
                     streams, self._layer_streams = self._layer_streams, []
                     self._layer_sources.clear()
-                    # Every stream is closed even when one close raises. ExitStack
-                    # closes them innermost first; the last error raised propagates
-                    # with any earlier one chained as its __context__.
-                    with ExitStack() as closing:
-                        for stream in streams:
-                            closing.callback(stream.close)
+                    # Every stream is closed even when one close raises. The first
+                    # error propagates and each later one is added to it as a note:
+                    # ExitStack would keep only the last, with no __context__.
+                    first: Exception | None = None
+                    for stream in reversed(streams):
+                        try:
+                            stream.close()
+                        except Exception as err:  # noqa: BLE001 — re-raised after the rest close
+                            if first is None:
+                                first = err
+                            else:
+                                first.add_note(
+                                    "closing another layer failed: "
+                                    + exception_detail(err, with_type=True)
+                                )
+                    if first is not None:
+                        raise first
                 finally:
                     if self._codec_stream is not None:
                         codec, self._codec_stream = self._codec_stream, None

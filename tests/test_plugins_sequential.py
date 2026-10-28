@@ -43,6 +43,7 @@ from archivey import (
 from archivey.cost import AccessCost, ListingCost, StreamCapability
 from archivey.diagnostics import DiagnosticCode
 from archivey.internal.plugin_adapter import registration_scope
+from archivey.internal.streams.streamtools import ReadAheadStream
 from archivey.plugins import (
     ForwardStream,
     Magic,
@@ -927,6 +928,30 @@ def test_decompress_part_way_nested(
     assert got["docs/a.txt"] == b"alpha\n"
     assert got["b.bin"] == _DATA["b.bin"]
     assert got["empty"] == b""
+
+
+def test_decompress_part_way_layer_close_errors_are_all_reported(
+    rpmish: ArchiveFormat, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every layer is closed when one close raises; the first error propagates and
+    the later ones are notes on it, not dropped."""
+    path = _write(tmp_path, _build_nested())
+    close = ReadAheadStream.close
+
+    def failing_close(self: ReadAheadStream) -> None:
+        was_closed = self.closed
+        close(self)
+        if not was_closed:
+            raise OSError("close failed")
+
+    monkeypatch.setattr(ReadAheadStream, "close", failing_close)
+    with (
+        pytest.raises(OSError, match="close failed") as raised,
+        open_archive(path, streaming=True, format=rpmish) as reader,
+    ):
+        for _ in reader.stream_members():
+            pass
+    assert any("closing another layer failed" in n for n in raised.value.__notes__)
 
 
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
