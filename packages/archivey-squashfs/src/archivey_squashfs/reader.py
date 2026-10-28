@@ -29,6 +29,8 @@ from archivey import (
     CompressionAlgorithm,
     CorruptionError,
     MemberType,
+    MissingComponent,
+    OptionalLibrary,
     PackageNotInstalledError,
     StreamFormat,
     TruncatedError,
@@ -227,9 +229,12 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
             try:
                 import lz4.block
             except ImportError:
+                requirement = MissingComponent(
+                    OptionalLibrary.LZ4, "pip install archivey-squashfs[lz4]", ("lz4",)
+                )
                 raise PackageNotInstalledError(
-                    "an LZ4-compressed SquashFS image needs the lz4 package: "
-                    "pip install lz4"
+                    requirement.message("an LZ4-compressed SquashFS image"),
+                    missing=(requirement,),
                 ) from None
 
             def lz4_block(start: int, length: int, limit: int) -> bytes:

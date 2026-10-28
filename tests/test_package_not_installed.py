@@ -17,19 +17,21 @@ from archivey import ArchiveFormat, OptionalLibrary, PackageNotInstalledError
 from archivey.internal.registry import format_availability, get_registry
 from archivey.types import MissingComponent
 
-_SRC = Path(__file__).resolve().parents[1] / "src" / "archivey"
+_ROOT = Path(__file__).resolve().parents[1]
+# archivey itself and the plugin packages in this repository.
+_SRCS = (_ROOT / "src" / "archivey", *sorted(_ROOT.glob("packages/*/src")))
 
 # ``spawn_for_stdout``'s refusal for a program that was found but could not start:
 # nothing is missing to name.
-_EMPTY_ON_PURPOSE = {("internal/external/cli.py", "not_started")}
+_EMPTY_ON_PURPOSE = {("src/archivey/internal/external/cli.py", "not_started")}
 
 
 def test_every_raise_passes_missing() -> None:
     """A new raise site without ``missing=`` would give callers an empty tuple."""
     offenders = []
     sites = 0
-    for path in sorted(_SRC.rglob("*.py")):
-        rel = path.relative_to(_SRC).as_posix()
+    for path in sorted(p for src in _SRCS for p in src.rglob("*.py")):
+        rel = path.relative_to(_ROOT).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not (

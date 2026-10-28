@@ -599,6 +599,8 @@ def test_a_replacements_missing_requirement_is_reported_before_it_opens(
     path = tmp_path / "a.zip"
     path.write_bytes(_zip_bytes())
     config = ArchiveyConfig(formats=FormatPolicy(replace={C.ZIP: plugin}))
-    with pytest.raises(PackageNotInstalledError, match="archivey_no_such_module"):
+    with pytest.raises(PackageNotInstalledError, match="archivey_no_such_module") as e:
         open_archive(path, config=config)
     assert _opened == []
+    # The same records format_availability reports, so a caller acts on data.
+    assert [m.name for m in e.value.missing] == ["archivey_no_such_module"]
