@@ -29,14 +29,20 @@ The system SHALL execute format detection with this algorithm:
 6. **Content probes** — formats with no exact magic. Match → `detected_by="content_probe"`.
    Unless `ArchiveyConfig.always_probe_content` is set, only the probe of a stream format
    the source's extension names SHALL run (see *Magic-less formats are detected by a
-   content probe*); `open_stream` SHALL run every probe. In every case the probe of a
-   plugin format that `ArchiveyConfig.formats` does not allow SHALL NOT run.
+   content probe*); `open_stream` SHALL run every probe.
 7. **Extension** — `Path` with a known extension → `GUESS` / `detected_by="extension"`.
 8. `FormatDetectionError` when nothing matched. When step 6 ran only the probes the
    extension allows, the message SHALL name the three ways to read a nameless
    probe-only stream: `format=`, `open_stream()` and `always_probe_content=True`. When
-   the only probe left out is that of a plugin the format policy turns off, the message
-   SHALL name the policy instead, since none of the three reaches that probe.
+   the policy left a plugin out at any step, the message SHALL name the policy
+   instead, since none of the three reaches a plugin that is off.
+
+A plugin format that `ArchiveyConfig.formats` does not allow SHALL NOT be a candidate
+at any step: its magic SHALL NOT match at steps 2 and 4, its probe SHALL NOT run at step
+6, and its extensions SHALL NOT match at step 7, so that an off plugin neither runs code
+nor claims a file an allowed plugin matches. Each step that leaves one out SHALL be
+recorded in `unavailable_tiers` with `NOT_ENABLED_BY_POLICY`. Built-in formats SHALL be
+candidates under every policy.
 
 Steps are ordered attempts, not alternatives: a step that produces no match falls through,
 and attempting one never prevents a later one from running.
@@ -89,7 +95,8 @@ source is a compressed stream, so a probe only picks the codec. Both rules stop 
 caller's format policy: the probe of a plugin format that `ArchiveyConfig.formats` does
 not allow SHALL NOT run, under `always_probe_content=True` and in `open_stream` alike,
 and the skip SHALL be recorded in `unavailable_tiers` as `content_probe` /
-`NOT_ENABLED_BY_POLICY`. Built-in probes are not affected by the policy.
+`NOT_ENABLED_BY_POLICY` (the off plugin's magic and extensions are left out too; see
+*Magic-first detection*). Built-in probes are not affected by the policy.
 The internal detections `open_archive` runs under `format=` (stub check, empty-listing
 rescan) SHALL follow the caller's `always_probe_content`. This covers Brotli (no
 signature), zlib (too-unspecific CMF/FLG), and LZMA Alone (13-byte header whose
@@ -216,3 +223,11 @@ here still opens through a `.lzma` name.
 - **THEN** the plugin's probe is not called
 - **AND** `unavailable_tiers` records `content_probe` as `NOT_ENABLED_BY_POLICY`
 - **AND** the `FormatDetectionError` message names the format policy
+
+#### Scenario: A plugin that is off does not shadow an allowed one
+
+- **WHEN** plugins `A` and `B` are registered in that order, both with magic that
+  matches a file, and a caller opens the file with
+  `FormatPolicy(exclude={A.format.container})`
+- **THEN** detection reports `B`'s format and `B` reads the file
+- **AND** `unavailable_tiers` records `near_magic` as `NOT_ENABLED_BY_POLICY`

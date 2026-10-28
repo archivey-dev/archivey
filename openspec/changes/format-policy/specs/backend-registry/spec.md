@@ -8,7 +8,7 @@
 explicit `format=`, `open_archive` and `open_stream` SHALL refuse a format the policy
 does not allow, with `UnsupportedFeatureError` whose `source_format` is that format and
 whose message names the policy entry that would allow it. The policy SHALL NOT change
-which format detection reports (see `format-detection` for the one exception).
+which built-in format detection reports (see `format-detection` for plugin formats).
 
 #### Scenario: A compression missing from an allow-list is refused
 

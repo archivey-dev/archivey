@@ -38,11 +38,13 @@ readers, including an opt-in path and replacement.
   - `plugins=`: `False` turns off every registered plugin format.
   - `replace=`: a built-in container mapped to the plugin that reads it instead.
   - `allows(fmt)`: whether a format may open under the policy.
-- **Detection does not change.** It finds the true format with every known format.
-  The policy then decides whether that format opens, and which reader opens it. A
-  refused format raises `UnsupportedFeatureError` that names the policy.
-- **The code of a plugin that is off does not run.** Its content probe is skipped in
-  detection; its magic and extensions, which archivey matches itself, still name it.
+- **Detection does not change for built-in formats.** It finds the true format with
+  every built-in format. The policy then decides whether that format opens, and which
+  reader opens it. A refused format raises `UnsupportedFeatureError` that names the
+  policy.
+- **A plugin that is off is left out of detection.** Its magic, extensions and content
+  probe are not used in that call, so its code does not run and an overreaching magic
+  cannot shadow an allowed plugin.
 - **An excluded library** behaves exactly as an absent one does today: accelerators
   fall back, a member that needs it raises `PackageNotInstalledError`, a format that
   needs it refuses at open. Today a caller cannot avoid a library that is installed

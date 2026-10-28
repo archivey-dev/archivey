@@ -25,10 +25,11 @@ Not started. Design approved 2026-10-27; starts once the plugin API stack has me
 
 ## 3. Detection and member open
 
-- [ ] 3.1 Skip the content probe of a plugin the policy turns off, also under
-      `always_probe_content=True` and in `open_stream`; record it as
+- [ ] 3.1 Leave a plugin the policy turns off out of detection: its magic (near and
+      far), its extensions, and its content probe, also under
+      `always_probe_content=True` and in `open_stream`; record each skipped tier as
       `NOT_ENABLED_BY_POLICY`; name the policy in the `FormatDetectionError` message
-      when that was the only probe left out.
+      when it left a plugin out and nothing matched.
 - [ ] 3.2 `exclude_libraries`: carry the excluded names from `ArchiveyConfig.formats` on
       the reader config and the stream config, and pass them to every place that answers
       "is this package available": `LazyOptional`, `registry._optional` /
@@ -52,7 +53,8 @@ Not started. Design approved 2026-10-27; starts once the plugin API stack has me
 ## 4. Tests and docs
 
 - [ ] 4.1 Tests: each row of the `design.md` §3 table; `format=` does not bypass the
-      policy; an off plugin's probe is not called; a replacement reads a ZIP and
+      policy; an off plugin's probe is not called, and its magic does not shadow an allowed
+      plugin that matches the same file; a replacement reads a ZIP and
       `detect_format` answers the same with and without it; the refusals in §5; an
       excluded `pyppmd` makes a PPMd 7z member raise
       `PackageNotInstalledError` while the other members read; an excluded `rapidgzip`

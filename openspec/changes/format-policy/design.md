@@ -28,9 +28,10 @@ with open_archive("upload.bin", config=UPLOADS) as reader:  # a 7z here raises
 
 The rules, in the order archivey applies them:
 
-1. **Detection finds the true format, with every format it knows.** The policy does
-   not change what `detect_format` answers. One exception: the content probe of a plugin
-   that the policy turns off does not run, because that probe is plugin code (§4).
+1. **Detection finds the true format among the formats it may consider.** Every
+   built-in format is always considered, so the policy never changes a built-in answer.
+   A plugin format the policy turns off is not considered at all: its magic, extensions
+   and content probe are left out of that call's detection (§4).
 2. **The policy decides whether that format opens.** A refused format raises
    `UnsupportedFeatureError` with `source_format` set and a message that names the
    policy and the entry to add. `format=` does not bypass the policy.
@@ -155,27 +156,45 @@ other cross-field checks, since a policy cannot see those fields.
 
 ## 4. Detection and plugin code
 
-Detection keeps every table (DR-1, DR-5), with one change. archivey matches magic and
-extensions itself, so a plugin's magic and extensions still name its format when the
-plugin is off, and the open is refused by name. A plugin's **content probe** is the
-plugin's own code, so it does not run when the policy turns that plugin off. A file that
-only that probe would recognise gets `FormatDetectionError`, which is a reported absence
-(DR-1), not a wrong answer. This wins over `always_probe_content=True` and over
-`open_stream`'s rule that every probe runs: both run every probe the policy allows. When
-the only probe left out is an off plugin's, the `FormatDetectionError` message names the
-policy rather than the three ways to read a nameless probe-only stream, none of which
-reaches a plugin that is off. The skip is recorded in the detection receipt as
-`TierSkipReason.NOT_ENABLED_BY_POLICY` (`workspace.record_skip("content_probe", ...)`),
-the reason detection already gives a probe the extension rule leaves out, so the receipt
-does not look like a complete search.
+Detection keeps every built-in table (DR-1, DR-5). A plugin format the policy turns off
+is not a candidate in that call: its magic, its extensions and its content probe are all
+left out, as if the plugin were not registered. The maintainer asked for this
+(2026-10-28), for two reasons:
+
+- **Its code must not run.** A content probe is the plugin's own code.
+- **It must not shadow an allowed plugin.** Plugin magic is matched in registration
+  order. If an off plugin's magic overreaches, it would claim a file that an allowed
+  plugin also matches, and the open would be refused instead of reaching the plugin
+  the caller allowed. Extensions cannot collide (registration refuses a taken one), but
+  they are left out too, so that an off plugin contributes no signal at all.
+
+This is §2's option D applied to plugins only, and the reason D is wrong for built-ins
+does not carry over. Built-in magic always wins over plugin magic (the tie rule), so
+leaving a plugin out never changes a built-in answer. And no format is layered inside a
+plugin format the way TAR sits inside gzip, because the plugin API leaves out outer
+compression around a plugin format. If that is added later, this rule needs a second
+look: with an off plugin left out, `x.cpio.gz` would open as one gzip member.
+
+A file that only an off plugin would recognise gets `FormatDetectionError`, a reported
+absence (DR-1), not a wrong answer. This also holds under `always_probe_content=True` and
+in `open_stream`, which run every probe the policy allows. When the policy left a
+plugin out at any step and nothing matched, the `FormatDetectionError` message names the policy rather than
+the three ways to read a nameless probe-only stream, none of which reaches a plugin that
+is off. Each tier that left an off plugin out (`near_magic`, `far_magic`, `content_probe`,
+`extension`) is recorded in the detection receipt as
+`TierSkipReason.NOT_ENABLED_BY_POLICY`, the reason detection already gives a probe the
+extension rule leaves out, so the receipt does not look like a complete search.
+`format=` naming an off plugin's format is still refused by name, with
+`UnsupportedFeatureError` (§1, rule 2).
 
 **What the policy does not bound.** It decides which *reader* runs, not how much of the
 file detection reads. Far magic, the SFX scan and the built-in content probes still run
 on every input, under `detection_budget`. The security page says so in one sentence.
 
-So `detect_format(source, config=...)` can differ by config in one case only: a file
-that only an off plugin's probe recognises. Built-in probes always run; they are
-archivey's code and the policy is not a reason to report a different format.
+So `detect_format(source, config=...)` can differ by config only for plugin formats: a
+file an off plugin would have claimed gets `FormatDetectionError`, or the allowed plugin
+that also matches it. Built-in signals always run; they are archivey's code and the
+policy is not a reason to report a different built-in format.
 
 The caller can ask `config.formats.allows(info.format)` after `detect_format` to decide
 before opening. `FormatInfo` gets no new field (DR-13).
