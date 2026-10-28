@@ -596,6 +596,12 @@ class _LzmaToSizeDecoder(BaseDecoder):
             format=lzma.FORMAT_RAW, filters=filters
         )
         self._produced = 0
+        # A Delta filter in the chain (7z's Delta coder over LZMA1) turns the zeros
+        # that the range-coder check decodes into copies of the last ``dist`` bytes
+        # of output, so those bytes are kept (_decoded_zeros).
+        deltas = [f["dist"] for f in filters if f.get("id") == lzma.FILTER_DELTA]
+        self._delta: int | None = deltas[0] if len(deltas) == 1 else None
+        self._tail = b""
         # Input not yet given to liblzma: the bytes held back, and input kept while
         # a zero output limit allowed no decoding.
         self._held = b""
@@ -619,6 +625,8 @@ class _LzmaToSizeDecoder(BaseDecoder):
     def _decode(self, data: bytes, limit: int) -> bytes:
         out = self._decomp.decompress(data, limit)
         self._produced += len(out)
+        if self._delta is not None and out:
+            self._tail = (self._tail + out)[-self._delta :]
         if self._decomp.eof:
             # An end marker: at the size, or before it.
             self._state = _DONE if self._produced == self._size else _ENDED_SHORT
@@ -658,11 +666,23 @@ class _LzmaToSizeDecoder(BaseDecoder):
             self._state = _DONE
             return
         else:
-            ok = not more.strip(b"\x00")
+            ok = more == self._decoded_zeros(len(more))
         if ok:
             self._state = _DONE
         else:
             self._surplus()
+
+    def _decoded_zeros(self, n: int) -> bytes:
+        """The first ``n`` bytes the chain outputs when LZMA decodes only zeros.
+
+        Zeros, unless a Delta filter follows LZMA: each output byte is then the one
+        ``dist`` bytes before it, so the output repeats the last ``dist`` bytes (a
+        Delta filter's history starts as zeros). BCJ filters pass zeros through.
+        """
+        if self._delta is None:
+            return bytes(n)
+        period = self._tail.rjust(self._delta, b"\x00")
+        return (period * (n // len(period) + 1))[:n]
 
     def _probe(self, data: bytes) -> None:
         """Look for an end marker in ``data``, input after the output reached size.

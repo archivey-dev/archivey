@@ -530,3 +530,14 @@ def test_7zip_written_archives_read_clean(tmp_path: Path, args: list[str]) -> No
     with archivey.open_archive(archive) as reader:
         read = {m.name: reader.read(m) for m in reader.members() if m.is_file}
     assert read == files
+
+
+@requires_binary("7z")
+@pytest.mark.parametrize("dist", [1, 4])
+def test_7z_delta_over_lzma1_without_marker_reads(
+    tmp_path: Path, payload: bytes, dist: int
+) -> None:
+    # LZMA1 then Delta (7z a -m0=Delta:N -m1=LZMA). The range-coder check decodes
+    # zeros after the stream, and Delta turns those into copies of the last bytes.
+    blob = _7zip(tmp_path, payload, "-t7z", "-mhc=off", f"-m0=Delta:{dist}", "-m1=LZMA")
+    assert _outcome(blob) == _ok(payload)
