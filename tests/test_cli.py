@@ -48,7 +48,7 @@ def _as_pass(
     fake: Callable[..., Generator[tuple[ArchiveMember, object], None, None]],
 ) -> Callable[..., MemberPass]:
     """A generator standing in for ``stream_members()``, returned the way it returns."""
-    return lambda self, members=None: MemberPass(fake(self, members))  # type: ignore[arg-type]
+    return lambda self, members=None: MemberPass._new(fake(self, members))  # type: ignore[arg-type]
 
 
 def _zip(path: Path, entries: dict[str, bytes]) -> Path:
@@ -4604,7 +4604,7 @@ def test_test_verb_escapes_failure_detail(
             raise ArchiveyError(f"Error reading member: /out/{_SPOOF_ANSI}")
             yield  # pragma: no cover - unreachable, makes this a generator
 
-        return MemberPass(_gen())
+        return MemberPass._new(_gen())
 
     monkeypatch.setattr(
         "archivey.internal.base_reader.BaseArchiveReader.stream_members", boom

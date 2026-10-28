@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Collection, Generator, Iterator
 from pathlib import Path
@@ -86,7 +87,23 @@ class MemberPass(Iterator[_T]):
     __slots__ = ("_pass",)
 
     def __init__(self, items: Generator[_T, None, None]) -> None:
+        """Deprecated: a pass comes from ``stream_members()`` or from iterating a reader.
+        Building one directly stops working in archivey 0.4.0."""
+        warnings.warn(
+            "constructing MemberPass directly is deprecated and stops working in "
+            "archivey 0.4.0; get one from stream_members() or by iterating the reader",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self._pass = items
+
+    @classmethod
+    def _new(cls, items: Generator[_T, None, None]) -> MemberPass[_T]:
+        """The pass over ``items``. The reader builds passes through this, not the
+        constructor, so a later version can change what a pass wraps."""
+        member_pass = cls.__new__(cls)
+        member_pass._pass = items
+        return member_pass
 
     def __iter__(self) -> Self:
         return self

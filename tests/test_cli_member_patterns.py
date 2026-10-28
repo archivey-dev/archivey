@@ -440,7 +440,7 @@ def test_a_damaged_index_still_counts_the_untested_members(
             yield next(members)
             raise ReadError("simulated stream failure")
 
-        return MemberPass(_gen())  # type: ignore[arg-type]
+        return MemberPass._new(_gen())  # type: ignore[arg-type]
 
     monkeypatch.setattr(BaseArchiveReader, "stream_members", _dies_after_first)
     assert main(["t", str(archive)]) == EXIT_FAIL

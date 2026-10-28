@@ -783,7 +783,7 @@ def test_archive_stream_open_fn_runs_outside_stream_lock() -> None:
         held["during_open"] = True
         return io.BytesIO(b"xyz")
 
-    stream = ArchiveStream(
+    stream = ArchiveStream._blank()._setup(
         open_fn,
         translate=lambda _e: None,
         lazy=True,

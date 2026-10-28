@@ -44,16 +44,21 @@ from tests.streams_util import ShortReadNonSeekable
 T = TypeVar("T")
 
 
-def _refused(cls: type[T], exc_info: pytest.ExceptionInfo[BaseException]) -> T:
-    """The ``cls`` instance whose ``__init__`` raised ``exc_info``."""
+def _refused(
+    cls: type[T],
+    exc_info: pytest.ExceptionInfo[BaseException],
+    method: str = "__init__",
+) -> T:
+    """The ``cls`` instance whose ``method`` (its constructor by default) raised
+    ``exc_info``."""
     tb = exc_info.tb
     while tb is not None:
         frame = tb.tb_frame
         candidate = frame.f_locals.get("self")
-        if frame.f_code.co_name == "__init__" and isinstance(candidate, cls):
+        if frame.f_code.co_name == method and isinstance(candidate, cls):
             return candidate
         tb = tb.tb_next
-    raise AssertionError(f"no {cls.__name__}.__init__ frame in the traceback")
+    raise AssertionError(f"no {cls.__name__}.{method} frame in the traceback")
 
 
 def _assert_closes_cleanly(obj: io.IOBase) -> None:
@@ -184,13 +189,13 @@ def test_archive_stream_refused_by_verifier_diagnostic_closes_cleanly() -> None:
 
     collector = DiagnosticCollector(policy=DiagnosticPolicy.STRICT)
     with pytest.raises(DiagnosticRaisedError) as caught:
-        ArchiveStream(
+        ArchiveStream._blank()._setup(
             open_fn,
             translate=lambda _e: None,
             collector=collector,
             expected_hashes={"no-such-digest": b"\x00"},  # type: ignore[dict-item]
         )
-    _assert_closes_cleanly(_refused(ArchiveStream, caught))
+    _assert_closes_cleanly(_refused(ArchiveStream, caught, "_setup"))
     assert opened == []  # refused before the member was opened
 
 

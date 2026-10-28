@@ -356,7 +356,7 @@ def test_weak_key_with_no_digest_can_reach_nothing(confirmed: bool) -> None:
             key_in_doubt=lambda: doubt[0],
         )
 
-    with ArchiveStream(watch, translate=lambda _exc: None) as stream:
+    with ArchiveStream._blank()._setup(watch, translate=lambda _exc: None) as stream:
         assert (stream.verified, stream.verifiable) == (NONE, NONE)
         assert stream.read() == _DATA
         # Read to the end, and still nothing proves the key.

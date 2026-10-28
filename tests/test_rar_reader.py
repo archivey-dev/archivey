@@ -552,7 +552,7 @@ def test_rewind_warning_min_redecode_bytes_is_a_cost_floor() -> None:
         suggest_install=False,
         min_redecode_bytes=REWIND_REDECODE_WARN_BYTES,
     )
-    stream = ArchiveStream(
+    stream = ArchiveStream._blank()._setup(
         lambda: io.BytesIO(payload),
         translate=lambda _exc: None,
         rewind_warning=warning,
@@ -567,7 +567,7 @@ def test_rewind_warning_min_redecode_bytes_is_a_cost_floor() -> None:
     finally:
         stream.close()
 
-    quiet = ArchiveStream(
+    quiet = ArchiveStream._blank()._setup(
         lambda: io.BytesIO(payload),
         translate=lambda _exc: None,
         rewind_warning=RewindWarning(codec_name="rar", suggest_install=False),

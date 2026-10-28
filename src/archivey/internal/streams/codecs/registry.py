@@ -227,7 +227,7 @@ def open_codec_stream(
     # ``config.seekable`` is False (no accelerator/index). Public ``open_stream`` passes
     # the caller's ``seekable=`` explicitly.
     stream_seekable = True if seekable is None else seekable
-    return ArchiveStream(
+    return ArchiveStream._blank()._setup(
         lambda: backend.open(source, params),
         translate=backend.translate,
         stamp=stamp,

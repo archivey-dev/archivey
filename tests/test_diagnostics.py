@@ -1171,7 +1171,7 @@ def test_stream_diagnostics_count_its_unverifiable_digest(lazy: bool) -> None:
     from archivey.internal.streams.archive_stream import ArchiveStream
 
     collector = DiagnosticCollector()
-    stream = ArchiveStream(
+    stream = ArchiveStream._blank()._setup(
         lambda: io.BytesIO(b"data"),
         translate=lambda _e: None,
         lazy=lazy,

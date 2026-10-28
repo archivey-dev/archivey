@@ -1661,7 +1661,7 @@ def test_a_planned_index_report_raises_from_the_deferred_seek(wrapper: str) -> N
     hashes = {HashAlgorithm.CRC32: crc32_digest(zlib.crc32(data))}
     stream: BinaryIO
     if wrapper == "ArchiveStream":
-        stream = ArchiveStream(
+        stream = ArchiveStream._blank()._setup(
             lambda: LzipDecompressorStream(io.BytesIO(compressed), collector=collector),
             translate=lambda _exc: None,
             collector=collector,
@@ -1710,7 +1710,7 @@ def test_a_raise_from_seek_leaves_the_member_verifier_in_step(
     hashes = {HashAlgorithm.CRC32: crc32_digest(zlib.crc32(full))}
     stream: BinaryIO
     if wrapper == "ArchiveStream":
-        stream = ArchiveStream(
+        stream = ArchiveStream._blank()._setup(
             lambda: LzipDecompressorStream(io.BytesIO(compressed), collector=collector),
             translate=lambda _exc: None,
             collector=collector,

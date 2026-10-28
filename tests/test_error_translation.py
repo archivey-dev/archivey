@@ -129,7 +129,9 @@ def test_archive_stream_close_failure_still_closes_wrapper() -> None:
             return CorruptionError(f"translated: {exc}")
         return None
 
-    stream = ArchiveStream(lambda: _FailingClose(b"data"), translate=_translate)
+    stream = ArchiveStream._blank()._setup(
+        lambda: _FailingClose(b"data"), translate=_translate
+    )
     with raises_corruption_not_truncation():
         stream.close()
     # The wrapper is closed despite the inner failure: reads are refused and a retried
@@ -163,7 +165,7 @@ def test_a_failed_lazy_open_raises_the_same_error_again() -> None:
             return CorruptionError(f"translated: {exc}")
         return None
 
-    stream = ArchiveStream(_open, translate=_translate, lazy=True)
+    stream = ArchiveStream._blank()._setup(_open, translate=_translate, lazy=True)
     with pytest.raises(CorruptionError) as first:
         stream.read()
     with pytest.raises(CorruptionError) as second:
@@ -214,7 +216,7 @@ def test_an_interrupted_lazy_open_is_not_blamed_on_another_caller() -> None:
         calls += 1
         raise KeyboardInterrupt("ctrl-c during open")
 
-    stream = ArchiveStream(_open, translate=lambda exc: None, lazy=True)
+    stream = ArchiveStream._blank()._setup(_open, translate=lambda exc: None, lazy=True)
     with pytest.raises(KeyboardInterrupt):
         stream.read()
     with pytest.raises(ArchiveyUsageError) as excinfo:
@@ -250,7 +252,7 @@ def test_archive_stream_translates_closed_source_before_backend_translator() -> 
             return CorruptionError(f"mislabeled: {exc}")
         return None
 
-    stream = ArchiveStream(
+    stream = ArchiveStream._blank()._setup(
         lambda: _ClosedUnderneath(b"data"),
         translate=_greedy_value_error_translate,
     )

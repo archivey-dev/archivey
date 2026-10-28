@@ -16,10 +16,11 @@ from __future__ import annotations
 import contextlib
 import io
 import threading
+import warnings
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import TracebackType
-from typing import TYPE_CHECKING, BinaryIO, NoReturn, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, NoReturn, Self, cast
 
 from archivey.config import REWIND_REDECODE_WARN_BYTES
 from archivey.diagnostics import (
@@ -158,28 +159,50 @@ def as_closed_source_error(
 
 
 class ArchiveStream(ReadOnlyIOStream):
-    """Public member/codec stream handle (exception translation + optional verify).
+    """A member's bytes, as a read-only binary file.
 
-    Responsibilities (one class, several optional knobs):
-
-    1. **Translate + stamp** — raw codec/OS errors → ``ArchiveyError`` with archive
-       context (``translate`` / ``stamp``).
-    2. **Lazy open** — ``open_fn`` may run on first read; ``seekable`` is answered from
-       the hint until then.
-    3. **Collapse nested ``ArchiveStream``s** — ``stream_members`` / codec opens often
-       return another ``ArchiveStream``; ``_collapse_nested`` flattens to one wrapper
-       while composing translators and adopting fused verification.
-    4. **Fused verify** — optional ``MemberVerifier`` (digests / ``expected_size``) runs
-       in ``read`` / ``close``. Distinct from bare ``size=`` (fsspec attribute only —
-       does **not** enable length checks).
-    5. **Lease** — ``on_close`` releases reader live-stream state, in ``close()``'s
-       ``finally``. A stream the caller never closes is closed by ``IOBase.__del__``
-       when it is collected, so the lease is released then.
-
-    Prefer constructing via backends / ``open_codec_stream`` rather than by hand.
+    :meth:`~archivey.ArchiveReader.open`, :meth:`~archivey.ForwardArchiveReader.stream_members`
+    and :func:`~archivey.open_stream` return one; there is no need to build one yourself.
+    It is an ``io.RawIOBase``, and ``seekable()`` says whether it can seek.
     """
 
-    def __init__(
+    # Responsibilities (one class, several optional knobs):
+    #
+    # 1. **Translate + stamp** — raw codec/OS errors → ``ArchiveyError`` with archive
+    #    context (``translate`` / ``stamp``).
+    # 2. **Lazy open** — ``open_fn`` may run on first read; ``seekable`` is answered from
+    #    the hint until then.
+    # 3. **Collapse nested ``ArchiveStream``s** — ``stream_members`` / codec opens often
+    #    return another ``ArchiveStream``; ``_collapse_nested`` flattens to one wrapper
+    #    while composing translators and adopting fused verification.
+    # 4. **Fused verify** — optional ``MemberVerifier`` (digests / ``expected_size``) runs
+    #    in ``read`` / ``close``. Distinct from bare ``size=`` (fsspec attribute only —
+    #    does **not** enable length checks).
+    # 5. **Lease** — ``on_close`` releases reader live-stream state, in ``close()``'s
+    #    ``finally``. A stream the caller never closes is closed by ``IOBase.__del__``
+    #    when it is collected, so the lease is released then.
+    #
+    # Built with ``ArchiveStream._blank()._setup(...)``, by backends and
+    # ``open_codec_stream``: callers never build one, so the constructor is not public.
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Deprecated: get a stream from ``ArchiveReader.open()``, ``stream_members()`` or
+        ``open_stream()``. Building one directly stops working in archivey 0.4.0."""
+        warnings.warn(
+            "constructing ArchiveStream directly is deprecated and stops working in "
+            "archivey 0.4.0; get one from ArchiveReader.open(), stream_members() or "
+            "open_stream()",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._setup(*args, **kwargs)
+
+    @classmethod
+    def _blank(cls) -> Self:
+        """An instance that :meth:`_setup` has not run on yet. Call it next."""
+        return cls.__new__(cls)
+
+    def _setup(
         self,
         open_fn: Callable[[], BinaryIO],
         *,
@@ -205,7 +228,7 @@ class ArchiveStream(ReadOnlyIOStream):
         checks_content: bool = False,
         custom_digests: CustomDigests | None = None,
         bounded: bool = False,
-    ) -> None:
+    ) -> Self:
         super().__init__()
         # Named in the closed-source error and returned by ``name``; ``None`` for a
         # stream of no member.
@@ -287,6 +310,7 @@ class ArchiveStream(ReadOnlyIOStream):
                 custom_digests=custom_digests,
                 bounded=bounded,
             )
+        return self
 
     def _init_checks(
         self,

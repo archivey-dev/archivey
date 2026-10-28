@@ -122,7 +122,7 @@ def test_a_value_error_from_the_pass_itself_is_not_translated() -> None:
         finally:
             raise ValueError("from the pass")
 
-    members = MemberPass(failing())
+    members = MemberPass._new(failing())
     next(members)
     with pytest.raises(ValueError, match="from the pass") as info:
         members.close()

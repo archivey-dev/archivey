@@ -2239,7 +2239,7 @@ def test_archive_stream_passthrough_full_count() -> None:
     """Unverified ArchiveStream.read(n) is n-or-terminal over a full-count inner."""
     from archivey.internal.streams.archive_stream import ArchiveStream
 
-    stream = ArchiveStream(
+    stream = ArchiveStream._blank()._setup(
         lambda: io.BytesIO(CONTENT),
         translate=lambda _exc: None,
     )
@@ -2266,7 +2266,7 @@ def test_archive_stream_passthrough_read_stops_on_short_inner() -> None:
                 return super().read(n)
             return super().read(min(3, n)) if n else b""
 
-    stream = ArchiveStream(
+    stream = ArchiveStream._blank()._setup(
         lambda: ShortOnce(CONTENT),
         translate=lambda _exc: None,
     )
@@ -2853,7 +2853,7 @@ def test_verify_fused_archive_stream_slurp_raises() -> None:
     from archivey.internal.streams.archive_stream import ArchiveStream
 
     bad = crc32_digest(zlib.crc32(CONTENT) ^ 0xFFFF)
-    stream = ArchiveStream(
+    stream = ArchiveStream._blank()._setup(
         lambda: io.BytesIO(CONTENT),
         translate=lambda _exc: None,
         expected_hashes={HashAlgorithm.CRC32: bad},
@@ -3436,7 +3436,7 @@ def test_open_codec_raw_raises_what_open_codec_stream_raises(
 
     def via_raw() -> bytes:
         opened = open_codec_raw(codec, io.BytesIO(data), **kwargs)
-        with ArchiveStream(
+        with ArchiveStream._blank()._setup(
             lambda: opened.stream,
             translate=opened.translate,
             rewind_warning=opened.rewind_warning,

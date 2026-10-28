@@ -204,7 +204,7 @@ def _translate(err: Exception) -> ArchiveyError | None:
 
 def test_archive_stream_passes_read_ahead_to_its_codec_stream() -> None:
     inner, source = _decoded(*_CHUNKS)
-    stream = ArchiveStream(lambda: inner, translate=_translate)
+    stream = ArchiveStream._blank()._setup(lambda: inner, translate=_translate)
     assert stream.read_ahead(3, 1000) == _CHUNKS[0]
     assert source.calls == 1
 
@@ -220,7 +220,7 @@ def test_archive_stream_with_a_verifier_reads_through_it() -> None:
     """Bytes from ``read_ahead`` would skip the digest check, so a stream with a
     verifier reads ``n`` through it, and the mismatch is raised."""
     bad = crc32_digest(zlib.crc32(_DATA) ^ 1)
-    stream = ArchiveStream(
+    stream = ArchiveStream._blank()._setup(
         lambda: _NoReadAhead(_DATA),
         translate=_translate,
         expected_hashes={HashAlgorithm.CRC32: bad},
@@ -232,7 +232,7 @@ def test_archive_stream_with_a_verifier_reads_through_it() -> None:
 
 def test_archive_stream_repeats_its_verdict_without_asking_the_codec() -> None:
     inner, source = _decoded(*_CHUNKS, decoder=_FailsOnFeed(3))
-    stream = ArchiveStream(lambda: inner, translate=_translate)
+    stream = ArchiveStream._blank()._setup(lambda: inner, translate=_translate)
     assert stream.read_ahead(200, 1000) == _DATA[:200]
     with pytest.raises(CorruptionError) as first:
         stream.read_ahead(1, 1000)

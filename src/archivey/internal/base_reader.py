@@ -1222,7 +1222,7 @@ class BaseArchiveReader(ArchiveReader):
             else:
                 use_open = open_fn
 
-            return ArchiveStream(
+            return ArchiveStream._blank()._setup(
                 use_open,
                 translate=member_translate,
                 stamp=lambda exc: self._stamp_error_context(exc, member_name),
@@ -1247,7 +1247,7 @@ class BaseArchiveReader(ArchiveReader):
         assert inner is not None
         if track_output:
             inner = self._track_decompressed(inner)
-        return ArchiveStream(
+        return ArchiveStream._blank()._setup(
             lambda: inner,
             translate=member_translate,
             stamp=lambda exc: self._stamp_error_context(exc, member_name),
@@ -3104,7 +3104,7 @@ class BaseArchiveReader(ArchiveReader):
         return OneReadEachStream(counted)
 
     def __iter__(self) -> MemberPass[ArchiveMember]:
-        return MemberPass(self._iter_pass())
+        return MemberPass._new(self._iter_pass())
 
     def _iter_pass(self) -> Generator[ArchiveMember, None, None]:
         self._state.require_open("__iter__")
@@ -3552,7 +3552,7 @@ class BaseArchiveReader(ArchiveReader):
                 "stream_members(file_copy_streams=…) takes True or False, but got "
                 f"{describe_value(file_copy_streams)}."
             )
-        return MemberPass(
+        return MemberPass._new(
             self._stream_members(members, FileCopyPass(streams=file_copy_streams))
         )
 

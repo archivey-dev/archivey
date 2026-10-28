@@ -182,7 +182,7 @@ def test_close_during_a_read_raises_the_closed_file_error() -> None:
 
         return TruncatedError(f"looks damaged: {exc}")
 
-    stream = ArchiveStream(Inner, translate=translate)  # type: ignore[arg-type]
+    stream = ArchiveStream._blank()._setup(Inner, translate=translate)  # type: ignore[arg-type]
     errors: list[BaseException] = []
 
     def read() -> None:
