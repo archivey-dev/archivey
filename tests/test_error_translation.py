@@ -118,7 +118,7 @@ def test_untranslated_exception_propagates_unchanged() -> None:
 
 
 def test_archive_stream_close_failure_still_closes_wrapper() -> None:
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
     class _FailingClose(io.BytesIO):
         def close(self) -> None:
@@ -129,9 +129,7 @@ def test_archive_stream_close_failure_still_closes_wrapper() -> None:
             return CorruptionError(f"translated: {exc}")
         return None
 
-    stream = ArchiveStream._blank()._setup(
-        lambda: _FailingClose(b"data"), translate=_translate
-    )
+    stream = ArchiveStreamImpl(lambda: _FailingClose(b"data"), translate=_translate)
     with raises_corruption_not_truncation():
         stream.close()
     # The wrapper is closed despite the inner failure: reads are refused and a retried
@@ -151,7 +149,7 @@ def test_a_failed_lazy_open_raises_the_same_error_again() -> None:
     """A retry after a failed lazy open does not call the opener again (a half-open
     backend must not be re-entered). It raises the error the first open raised. It
     used to raise a usage error that blamed a concurrent caller."""
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
     calls = 0
 
@@ -165,7 +163,7 @@ def test_a_failed_lazy_open_raises_the_same_error_again() -> None:
             return CorruptionError(f"translated: {exc}")
         return None
 
-    stream = ArchiveStream._blank()._setup(_open, translate=_translate, lazy=True)
+    stream = ArchiveStreamImpl(_open, translate=_translate, lazy=True)
     with pytest.raises(CorruptionError) as first:
         stream.read()
     with pytest.raises(CorruptionError) as second:
@@ -207,7 +205,7 @@ def test_an_interrupted_lazy_open_is_not_blamed_on_another_caller() -> None:
     """A ``KeyboardInterrupt`` during the open is not stored or raised again: it is not
     the stream's error. A retry says the open was interrupted, not that another
     caller holds it, and still does not call the opener again."""
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
     calls = 0
 
@@ -216,7 +214,7 @@ def test_an_interrupted_lazy_open_is_not_blamed_on_another_caller() -> None:
         calls += 1
         raise KeyboardInterrupt("ctrl-c during open")
 
-    stream = ArchiveStream._blank()._setup(_open, translate=lambda exc: None, lazy=True)
+    stream = ArchiveStreamImpl(_open, translate=lambda exc: None, lazy=True)
     with pytest.raises(KeyboardInterrupt):
         stream.read()
     with pytest.raises(ArchiveyUsageError) as excinfo:
@@ -241,7 +239,7 @@ def test_archive_stream_translates_closed_source_before_backend_translator() -> 
     # to ArchiveyUsageError *before* the per-library translator runs, so a
     # backend's generic ValueError mapping (e.g. ZIP's corrupt-offset rule) cannot
     # claim it as corruption.
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
     class _ClosedUnderneath(io.BytesIO):
         def read(self, n: int = -1, /) -> bytes:
@@ -252,7 +250,7 @@ def test_archive_stream_translates_closed_source_before_backend_translator() -> 
             return CorruptionError(f"mislabeled: {exc}")
         return None
 
-    stream = ArchiveStream._blank()._setup(
+    stream = ArchiveStreamImpl(
         lambda: _ClosedUnderneath(b"data"),
         translate=_greedy_value_error_translate,
     )

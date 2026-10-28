@@ -37,7 +37,7 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 from archivey.internal.timestamps import unix_to_datetime
 from archivey.internal.windows_reparse import FILE_ATTRIBUTE_REPARSE_POINT
 from archivey.terminal import display_path, quoted
@@ -565,7 +565,7 @@ class DirectoryReader(BaseArchiveReader):
                 self._gname_cache[gid] = None
         return self._gname_cache[gid]
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+    def _open_member(self, member: ArchiveMember) -> ArchiveStreamImpl:
         # Wrapped like every backend's member stream (the uniform-handle contract): the
         # directory backend has no translator (a genuine OSError propagates unchanged,
         # and the refusals `_open_listed_file` raises for a member that no longer

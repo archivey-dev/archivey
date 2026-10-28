@@ -28,7 +28,7 @@ from archivey import (
 )
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.reader_state import LifecycleState
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 from archivey.reader import ArchiveReader
 from tests.conftest import binary_refusal
 
@@ -262,8 +262,8 @@ def test_close_while_streaming_iteration_suspended_closes_reader(
 @dataclass
 class _SuspendedPass:
     reader: ArchiveReader
-    it: Iterator[tuple[ArchiveMember, ArchiveStream | None]]
-    stream: ArchiveStream
+    it: Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]
+    stream: ArchiveStreamImpl
     source: object
     events: list[str]
 
@@ -783,7 +783,7 @@ def test_archive_stream_open_fn_runs_outside_stream_lock() -> None:
         held["during_open"] = True
         return io.BytesIO(b"xyz")
 
-    stream = ArchiveStream._blank()._setup(
+    stream = ArchiveStreamImpl(
         open_fn,
         translate=lambda _e: None,
         lazy=True,

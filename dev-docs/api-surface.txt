@@ -133,7 +133,6 @@ method archivey.ArchiveReader.open(self, member: str | ArchiveMember) -> Archive
 method archivey.ArchiveReader.read(self, member: str | ArchiveMember) -> bytes
 method archivey.ArchiveReader.stream_members(self, members: MemberSelector = None, *, file_copy_streams: bool = True) -> MemberPass[tuple[ArchiveMember, ArchiveStream | None]]
 class archivey.ArchiveStream(ReadOnlyIOStream)
-init archivey.ArchiveStream(*args: Any, **kwargs: Any) -> None
 method archivey.ArchiveStream.close(self) -> None
 property archivey.ArchiveStream.diagnostics: DiagnosticSummary
 property archivey.ArchiveStream.mode: str
@@ -430,7 +429,6 @@ field archivey.MemberListReport.diagnostics: DiagnosticSummary
 field archivey.MemberListReport.error: ArchiveyError | None
 field archivey.MemberListReport.members: tuple[ArchiveMember, ...]
 class archivey.MemberPass(Iterator)
-init archivey.MemberPass(items: Generator[_T, None, None]) -> None
 method archivey.MemberPass.close(self) -> None
 alias archivey.MemberSelector = Iterable[str | ArchiveMember] | Callable[[ArchiveMember], bool] | None
 class archivey.MemberType(Enum)

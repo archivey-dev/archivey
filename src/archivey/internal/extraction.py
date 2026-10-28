@@ -90,7 +90,7 @@ if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
     from archivey.internal.base_reader import BaseArchiveReader
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
 
 _CHUNK = 1024 * 1024  # 1 MiB copy chunk
@@ -379,9 +379,9 @@ def _possible_names(name: str) -> set[str]:
 
 def _until_listing_damage(
     reader: BaseArchiveReader,
-    pairs: Iterator[tuple[ArchiveMember, ArchiveStream | None]],
+    pairs: Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]],
     found: list[CorruptionError],
-) -> Generator[tuple[ArchiveMember, ArchiveStream | None], None, None]:
+) -> Generator[tuple[ArchiveMember, ArchiveStreamImpl | None], None, None]:
     """``pairs``, ending quietly when the listing's own damage ends them.
 
     That damage is appended to ``found`` for the caller to raise once the members

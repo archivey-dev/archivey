@@ -166,7 +166,7 @@ from archivey.internal.password_confirm import (
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.spool import SpoolBudget
-from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
+from archivey.internal.streams.archive_stream import ArchiveStreamImpl, RewindWarning
 from archivey.internal.streams.crypto import (
     AES_BLOCK_SIZE,
     CRYPTO_REQUIREMENT,
@@ -2936,7 +2936,7 @@ class RarReader(BaseArchiveReader):
         self,
         member: ArchiveMember,
         kept: Callable[[ArchiveMember], BinaryIO | None] | None = None,
-    ) -> ArchiveStream:
+    ) -> ArchiveStreamImpl:
         """Serve a RAR5 file copy from its source member.
 
         A copy carries no data stream: ``unrar p`` emits nothing for it in a full run
@@ -3013,7 +3013,7 @@ class RarReader(BaseArchiveReader):
         sources: FileCopySources | None,
         advance_past: Callable[[int], object],
         pass_costs: dict[int, _DictionaryCost],
-    ) -> ArchiveStream:
+    ) -> ArchiveStreamImpl:
         """A solid pass's lazy stream for a file copy, served from its kept source."""
 
         def kept(source: ArchiveMember) -> BinaryIO | None:
@@ -3059,7 +3059,7 @@ class RarReader(BaseArchiveReader):
 
     def _iter_with_data(
         self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
-    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
         if not self._archive.is_solid or self._decompressor is RarDecompressor.NONE:
             # Nonsolid: default lazy per-member named opens (never ALL-pipe demux).
             # With no program, each member is read directly or refused on its own.
@@ -3134,7 +3134,7 @@ class RarReader(BaseArchiveReader):
             [ArchiveMember, RarMemberInfo, int, bool],
             int | Callable[[], BinaryIO] | None,
         ],
-    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
         """The solid pass over one process's output, demultiplexed by offset.
 
         ``spawn`` starts the process and returns its output stream. ``plan`` gets each
@@ -3178,7 +3178,7 @@ class RarReader(BaseArchiveReader):
                     )
             return solid
 
-        def _open(member: ArchiveMember) -> ArchiveStream | None:
+        def _open(member: ArchiveMember) -> ArchiveStreamImpl | None:
             # Read straight from the archive (RAR3/4 stores the target as plain
             # member data), not through the pipe, so its offsets do not move.
             self._read_pass_link_target(member)
@@ -3542,7 +3542,7 @@ class RarReader(BaseArchiveReader):
         *,
         track_output: bool = True,
         rewind_warning: RewindWarning | None = None,
-    ) -> ArchiveStream:
+    ) -> ArchiveStreamImpl:
         hashes, size, transforms, verify_member = self._payload_verify_args(member)
         return self._wrap_member_stream(
             inner,
@@ -4136,7 +4136,7 @@ class RarReader(BaseArchiveReader):
             costs[id(member)] = peak
         return costs
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+    def _open_member(self, member: ArchiveMember) -> ArchiveStreamImpl:
         raw = member._raw
         assert isinstance(raw, RarMemberInfo)
         if raw.is_file_copy():
@@ -4227,7 +4227,7 @@ class RarReader(BaseArchiveReader):
 
     def _open_decrypted_stored(
         self, member: ArchiveMember, raw: RarMemberInfo
-    ) -> ArchiveStream:
+    ) -> ArchiveStreamImpl:
         """Serve a :meth:`_natively_decryptable` member by decrypting its stored bytes.
 
         The password is picked as for an ``unrar`` read: a RAR5 PswCheck rejects a
@@ -4280,7 +4280,7 @@ class RarReader(BaseArchiveReader):
 
     def _open_encrypted_link_target(
         self, member: ArchiveMember, raw: RarMemberInfo
-    ) -> ArchiveStream:
+    ) -> ArchiveStreamImpl:
         """Open a RAR 2.9-4 symlink's encrypted, stored target for listing.
 
         RAR 2.9-4 records no password check, so one password goes to the read
@@ -4305,7 +4305,7 @@ class RarReader(BaseArchiveReader):
 
     def _open_member_with_program(
         self, member: ArchiveMember, raw: RarMemberInfo
-    ) -> ArchiveStream:
+    ) -> ArchiveStreamImpl:
         """Serve ``member`` through ``unrar``, or ``unar`` when it is selected."""
         if self._unar_policy is not None:
             return self._open_member_with_unar(member, raw, self._unar_policy)
@@ -4496,7 +4496,7 @@ class RarReader(BaseArchiveReader):
 
     def _open_spawned_member(
         self, member: ArchiveMember, spawn: Callable[[], BinaryIO]
-    ) -> ArchiveStream:
+    ) -> ArchiveStreamImpl:
         """Wrap one member's decompressor pipe: respawn on rewind, verify, count.
 
         ``spawn`` starts the process and returns a stream that owns it, already
@@ -4628,7 +4628,7 @@ class RarReader(BaseArchiveReader):
         policy: UnarRarPolicy,
         *,
         dictionary_cost: _DictionaryCost | None = None,
-    ) -> ArchiveStream:
+    ) -> ArchiveStreamImpl:
         """Serve one member from ``unar -i <index>``.
 
         The member is named by its entry index, not by its stored name, so none of the
@@ -4713,7 +4713,7 @@ class RarReader(BaseArchiveReader):
 
     def _iter_solid_with_unar(
         self, policy: UnarRarPolicy, copies: FileCopyPass
-    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
         """The solid pass over one all-entries ``unar`` run.
 
         Driven by :meth:`_drive_solid_pass`, as the ``unrar`` pass is: one process, spawned

@@ -22,7 +22,7 @@ from archivey.cost import (
 )
 from archivey.exceptions import ArchiveyUsageError
 from archivey.internal.base_reader import BaseArchiveReader
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
@@ -62,7 +62,7 @@ class _IndexedReader(BaseArchiveReader):
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield ArchiveMember(type=MemberType.FILE, name="a.txt", size=1)
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+    def _open_member(self, member: ArchiveMember) -> ArchiveStreamImpl:
         return self._wrap_member_stream(io.BytesIO(b"x"), member.name, size=member.size)
 
     def _get_archive_info(self) -> ArchiveInfo:
@@ -80,7 +80,7 @@ class _ForwardOnlyReader(BaseArchiveReader):
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield ArchiveMember(type=MemberType.FILE, name="a.txt", size=1)
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+    def _open_member(self, member: ArchiveMember) -> ArchiveStreamImpl:
         return self._wrap_member_stream(io.BytesIO(b"x"), member.name, size=member.size)
 
     def _get_archive_info(self) -> ArchiveInfo:
@@ -144,7 +144,7 @@ class _OpenCountingReader(_IndexedReader):
         yield ArchiveMember(type=MemberType.FILE, name="a.txt", size=1)
         yield ArchiveMember(type=MemberType.FILE, name="b.txt", size=1)
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+    def _open_member(self, member: ArchiveMember) -> ArchiveStreamImpl:
         self.opens += 1
         return self._wrap_member_stream(io.BytesIO(b"x"), member.name, size=member.size)
 
@@ -329,7 +329,7 @@ class _FailingScanReader(BaseArchiveReader):
         yield ArchiveMember(type=MemberType.FILE, name="a.txt", size=1)
         raise archivey.CorruptionError("scan failed mid-pass")
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+    def _open_member(self, member: ArchiveMember) -> ArchiveStreamImpl:
         return self._wrap_member_stream(io.BytesIO(b"x"), member.name, size=member.size)
 
     def _get_archive_info(self) -> ArchiveInfo:

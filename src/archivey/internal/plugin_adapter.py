@@ -53,7 +53,7 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
+from archivey.internal.streams.archive_stream import ArchiveStreamImpl, RewindWarning
 from archivey.internal.streams.blocks import BlockStream
 from archivey.internal.streams.codecs import (
     Codec,
@@ -547,7 +547,7 @@ class PluginReaderAdapter(_PluginAdapter):
             stream = LockedStream(stream, self._handle_lock)
         return data, stream
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+    def _open_member(self, member: ArchiveMember) -> ArchiveStreamImpl:
         data, stream = self._plugin_member_data(member)
         # Until the ArchiveStream takes the stream over, a raise here (a refused
         # digest name, a hasher factory that fails) leaves archivey owing it a close.
@@ -833,7 +833,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                 member.link_target = target.decode("utf-8", errors="surrogateescape")
         return member
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+    def _open_member(self, member: ArchiveMember) -> ArchiveStreamImpl:
         record = member._raw
         assert isinstance(record, _Span), "a sequential member is missing its span"
         stream: BinaryIO

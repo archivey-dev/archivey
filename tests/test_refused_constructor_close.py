@@ -1,18 +1,14 @@
-"""A stream whose constructor refused its input, or never ran, must still close cleanly.
+"""A stream whose constructor refused its input must still close cleanly.
 
 ``IOBase.__del__`` calls ``close()`` on every instance not marked closed, including
-one whose initialising method raised: ``__init__``, or ``_setup`` for an
-``ArchiveStream``. So ``close()`` must work on whatever that method got through before
-the raise, and an ``ArchiveStream`` that ``_blank()`` made but ``_setup`` never ran on,
-because an argument to ``_setup`` raised first. When it does not, the refusal dies a
-second time in the finalizer, as an ``AttributeError`` reported at an arbitrary later
-moment.
+one whose ``__init__`` raised. So ``close()`` must work on whatever ``__init__`` got
+through before the raise. When it does not, the refusal dies a second time in the
+finalizer, as an ``AttributeError`` reported at an arbitrary later moment.
 
 A GIL build without ``-X dev`` drops that second error silently, so these tests do not
-wait for the collector. They take the half-built object out of the initialising
-method's frame in the traceback, or straight from ``_blank()``, and call ``close()`` on
-it. That is stricter than the finalizer, which skips an instance already marked
-closed: ``close()`` must not raise either way.
+wait for the collector. They take the half-built object out of the ``__init__`` frame
+in the traceback and call ``close()`` on it. That is stricter than the finalizer, which
+skips an instance already marked closed: ``close()`` must not raise either way.
 """
 
 from __future__ import annotations
@@ -36,7 +32,7 @@ from archivey.exceptions import (
 from archivey.internal.backends import zip_aes
 from archivey.internal.backends.zip_aes import WinZipAesDecryptStream
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.streams.archive_stream import ArchiveStream, _Opened
+from archivey.internal.streams.archive_stream import ArchiveStreamImpl, _Opened
 from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     SeekPoint,
@@ -48,21 +44,16 @@ from tests.streams_util import ShortReadNonSeekable
 T = TypeVar("T")
 
 
-def _refused(
-    cls: type[T],
-    exc_info: pytest.ExceptionInfo[BaseException],
-    method: str = "__init__",
-) -> T:
-    """The ``cls`` instance whose ``method`` (its constructor by default) raised
-    ``exc_info``."""
+def _refused(cls: type[T], exc_info: pytest.ExceptionInfo[BaseException]) -> T:
+    """The ``cls`` instance whose ``__init__`` raised ``exc_info``."""
     tb = exc_info.tb
     while tb is not None:
         frame = tb.tb_frame
         candidate = frame.f_locals.get("self")
-        if frame.f_code.co_name == method and isinstance(candidate, cls):
+        if frame.f_code.co_name == "__init__" and isinstance(candidate, cls):
             return candidate
         tb = tb.tb_next
-    raise AssertionError(f"no {cls.__name__}.{method} frame in the traceback")
+    raise AssertionError(f"no {cls.__name__}.__init__ frame in the traceback")
 
 
 def _assert_closes_cleanly(obj: io.IOBase) -> None:
@@ -193,22 +184,14 @@ def test_archive_stream_refused_by_verifier_diagnostic_closes_cleanly() -> None:
 
     collector = DiagnosticCollector(policy=DiagnosticPolicy.STRICT)
     with pytest.raises(DiagnosticRaisedError) as caught:
-        ArchiveStream._blank()._setup(
+        ArchiveStreamImpl(
             open_fn,
             translate=lambda _e: None,
             collector=collector,
             expected_hashes={"no-such-digest": b"\x00"},  # type: ignore[dict-item]
         )
-    _assert_closes_cleanly(_refused(ArchiveStream, caught, "_setup"))
+    _assert_closes_cleanly(_refused(ArchiveStreamImpl, caught))
     assert opened == []  # refused before the member was opened
-
-
-def test_archive_stream_never_set_up_closes_cleanly() -> None:
-    """``_blank()`` makes the instance before ``_setup``'s arguments are evaluated, so
-    an argument that raises leaves one that ``_setup`` never ran on."""
-    stream = ArchiveStream._blank()
-    assert "inner=None" in repr(stream)
-    _assert_closes_cleanly(stream)
 
 
 def test_archive_stream_built_open_refused_by_verifier_closes_its_inner() -> None:
@@ -217,14 +200,14 @@ def test_archive_stream_built_open_refused_by_verifier_closes_its_inner() -> Non
     inner = io.BytesIO(b"payload")
     collector = DiagnosticCollector(policy=DiagnosticPolicy.STRICT)
     with pytest.raises(DiagnosticRaisedError) as caught:
-        ArchiveStream._blank()._setup(
+        ArchiveStreamImpl(
             _Opened(inner),
             translate=lambda _e: None,
             collector=collector,
             expected_hashes={"no-such-digest": b"\x00"},  # type: ignore[dict-item]
         )
     assert not inner.closed
-    _assert_closes_cleanly(_refused(ArchiveStream, caught, method="_setup"))
+    _assert_closes_cleanly(_refused(ArchiveStreamImpl, caught))
     assert inner.closed
 
 
@@ -258,7 +241,7 @@ def test_winzip_aes_stream_refusals_close_cleanly(
 # ``close()`` reads. A new stream class fails here until someone makes that call.
 _REFUSALS_TESTED_ABOVE = {
     "archivey.internal.volumes.ConcatenatedFile",
-    "archivey.ArchiveStream",  # its __module__ is pinned to the public package
+    "archivey.internal.streams.archive_stream.ArchiveStreamImpl",
     "archivey.internal.streams.decompressor_stream.DecompressorStream",
     "archivey.internal.streams.verify.VerifyingStream",
     "archivey.internal.backends.zip_aes.WinZipAesDecryptStream",

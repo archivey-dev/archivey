@@ -73,7 +73,7 @@ reader.members() / .open(m)                          reader.py → base_reader.p
        ├─ seekable decode engine                     internal/streams/decompressor_stream.py
        ├─ AES stage ([recommended])                  internal/streams/crypto.py
        └─ digest / length verification               internal/streams/verify.py
-  └─ ArchiveStream wraps + translates exceptions     internal/streams/archive_stream.py
+  └─ ArchiveStreamImpl wraps + translates exceptions internal/streams/archive_stream.py
 
 reader.extract_all(dest)                             base_reader.py → internal/extraction.py
   └─ member selection                                internal/selection.py

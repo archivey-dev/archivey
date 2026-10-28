@@ -171,7 +171,7 @@ from archivey.internal.password_confirm import (
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import (
-    ArchiveStream,
+    ArchiveStreamImpl,
     ExceptionTranslator,
     RewindWarning,
 )
@@ -2056,7 +2056,7 @@ class ZipReader(BaseArchiveReader):
 
     def _iter_with_data(
         self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
-    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
         """Read the whole directory before the first member's data, then go forward.
 
         The directory is read once and member data in file order after it, so the
@@ -3303,7 +3303,7 @@ class ZipReader(BaseArchiveReader):
         codec: Codec,
         sequential_body: bool = False,
         keyed_settings: bool = False,
-    ) -> ArchiveStream:
+    ) -> ArchiveStreamImpl:
         """Decode a member body through the shared codec layer.
 
         ``body`` is the member's data as the codec sees it: the raw payload of an
@@ -3455,7 +3455,7 @@ class ZipReader(BaseArchiveReader):
         translate: ExceptionTranslator | None = None,
         rewind_warning: RewindWarning | None = None,
         seekable: bool | None = None,
-    ) -> ArchiveStream:
+    ) -> ArchiveStreamImpl:
         """The public member stream, with the stored CRC and size fused in.
 
         ``translate``, ``rewind_warning`` and ``seekable`` go to
@@ -3503,7 +3503,7 @@ class ZipReader(BaseArchiveReader):
 
     def _open_codec_member(
         self, loc: _ZipLocator, member: ArchiveMember
-    ) -> ArchiveStream:
+    ) -> ArchiveStreamImpl:
         """Decode an unencrypted ZIP member through the shared codec layer.
 
         The codec opens bare (``open_codec_raw``), and the member stream carries its
@@ -3616,7 +3616,7 @@ class ZipReader(BaseArchiveReader):
 
     def _open_encrypted_member(
         self, loc: _ZipLocator, member: ArchiveMember
-    ) -> ArchiveStream:
+    ) -> ArchiveStreamImpl:
         """Open a ZipCrypto or WinZip AES member: decrypt stage, then the codec layer.
 
         Both schemes share one password ladder (``password_confirm``). Their cheap key
@@ -3669,7 +3669,7 @@ class ZipReader(BaseArchiveReader):
                 is_aes=False,
             )
 
-        def decode_body(body: BinaryIO) -> ArchiveStream:
+        def decode_body(body: BinaryIO) -> ArchiveStreamImpl:
             return self._decode_body(
                 loc,
                 member,
@@ -3713,10 +3713,10 @@ class ZipReader(BaseArchiveReader):
         loc: _ZipLocator,
         member: ArchiveMember,
         cipher: _ZipCipher,
-        decode_body: Callable[[BinaryIO], ArchiveStream],
+        decode_body: Callable[[BinaryIO], ArchiveStreamImpl],
         *,
         payload_complete: Callable[[], bool],
-    ) -> ArchiveStream:
+    ) -> ArchiveStreamImpl:
         """Open with the one possible password, accepted on its cheap key check."""
         stage = cipher.stage
         if cipher.is_aes:
@@ -3792,10 +3792,10 @@ class ZipReader(BaseArchiveReader):
         loc: _ZipLocator,
         member: ArchiveMember,
         cipher: _ZipCipher,
-        decode_body: Callable[[BinaryIO], ArchiveStream],
+        decode_body: Callable[[BinaryIO], ArchiveStreamImpl],
         *,
         payload_complete: Callable[[], bool],
-    ) -> ArchiveStream:
+    ) -> ArchiveStreamImpl:
         """Pick among several possible passwords with a bounded confirm per candidate."""
         # The central directory's size, which the plan trusts;
         # the fused verifier on the caller's stream checks it at EOF.
@@ -3855,7 +3855,7 @@ class ZipReader(BaseArchiveReader):
             # check all raise from the stage, before anything below can mistake them
             # for a wrong key's garbage.
             body = stage(password)
-            probe: ArchiveStream | None = None
+            probe: ArchiveStreamImpl | None = None
             ended_early: TruncatedError | None = None
             try:
                 try:
@@ -4200,7 +4200,7 @@ class ZipReader(BaseArchiveReader):
         bytes the pass kept in a forward walk."""
         return lambda: self._open_member(member)
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+    def _open_member(self, member: ArchiveMember) -> ArchiveStreamImpl:
         # The member carries its own locator (`_raw`), so data access needs no name/id
         # map, and a duplicate member name can't resolve to the wrong entry.
         loc = member._raw

@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
-import inspect
+import io
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Collection, Generator, Iterator
+from collections.abc import Callable, Collection, Iterator
 from pathlib import Path
 from types import TracebackType
-from typing import TYPE_CHECKING, Self, TypeVar
+from typing import Any, Self, TypeVar, cast
 
 from archivey.config import ExtractionLimits
 from archivey.cost import CostReceipt
 from archivey.detection import FormatInfo
 from archivey.diagnostics import DiagnosticSummary, ExtractionReport, MemberListReport
-from archivey.exceptions import ArchiveyUsageError
+from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.types import (
     AbortOn,
     AbortOnStr,
@@ -30,10 +30,8 @@ from archivey.types import (
     OnErrorStr,
     OverwritePolicy,
     OverwritePolicyStr,
+    Verification,
 )
-
-if TYPE_CHECKING:
-    from archivey.internal.streams.archive_stream import ArchiveStream
 
 # ``types.MemberSelectorArg`` is the one definition; this is its public name.
 MemberSelector = MemberSelectorArg
@@ -50,10 +48,157 @@ MemberSelector = MemberSelectorArg
 """
 
 
-_T = TypeVar("_T")
+_T_co = TypeVar("_T_co", covariant=True)
 
 
-class MemberPass(Iterator[_T]):
+class ArchiveStream(ReadOnlyIOStream):
+    """A member's bytes, as a read-only binary file.
+
+    :meth:`~archivey.ArchiveReader.open`, :meth:`~archivey.ForwardArchiveReader.stream_members`
+    and :func:`~archivey.open_stream` return one; there is no need to build one yourself.
+    It is an ``io.RawIOBase``, and ``seekable()`` says whether it can seek.
+    """
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> Self:
+        if cls is ArchiveStream:
+            # Deprecated direct construction: build archivey's own stream, which then
+            # runs its ``__init__`` with these arguments.
+            warnings.warn(
+                "constructing ArchiveStream directly is deprecated and stops working in "
+                "archivey 0.4.0; get one from ArchiveReader.open(), stream_members() or "
+                "open_stream()",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            from archivey.internal.streams.archive_stream import ArchiveStreamImpl
+
+            return super().__new__(cast("type[Self]", ArchiveStreamImpl))
+        return super().__new__(cls)
+
+    @property
+    @abstractmethod
+    def name(self) -> str:  # pyrefly: ignore[bad-override]  # ty: ignore[invalid-property-type-override]  # base is Never; a member stream has a name
+        """The member's name inside its archive, or raise ``AttributeError``.
+
+        A member stream carries the name its archive gives it, as ``zipfile``'s
+        ``ZipExtFile`` does, so ``open_archive(reader.open(member))`` can match the
+        member's extension during detection (``.tar.br`` and other formats found only by
+        name). It is a member name, not a filesystem path. A stream with no member
+        (``open_stream``) has no name and raises, as ``io.BytesIO`` does.
+        """
+
+    @property
+    @abstractmethod
+    def diagnostics(self) -> DiagnosticSummary:
+        """Diagnostic snapshot for events this stream's own calls emitted, or empty."""
+
+    @property
+    @abstractmethod
+    def size(self) -> int | None:
+        """Total decompressed byte length when cheaply known, else ``None``.
+
+        A member stream knows its size from the archive's metadata. A stream from
+        :func:`~archivey.open_stream` reports it when the format stores it where it can
+        be read without decompressing, and ``None`` otherwise: a BGZF file reports
+        ``None`` until a seek or a read finds its size. A stream from
+        :meth:`~archivey.ForwardArchiveReader.stream_members` that has not opened yet
+        reports ``None`` rather than opening itself just to answer.
+        """
+
+    @property
+    @abstractmethod
+    def verified(self) -> Verification:
+        """How much of this stream's data has been checked so far, as a ``Verification``.
+
+        ``KEY`` once the stream has opened its member and nothing doubts its password,
+        ``STRUCTURE`` once a read has reached the end with the length checks passing,
+        and ``CONTENT`` once a checksum stored with the data has matched every byte. It
+        never goes down: a seek back to the start runs the checks again, and what they
+        proved stays proved. A read that raises leaves it where it was. A stream from
+        ``stream_members()`` opens its member at its first read, and is ``NONE`` until
+        then.
+
+        Compare it with ``verifiable``: a TAR member has no checksum, so ``STRUCTURE``
+        is the most it can reach. Reading this property reads nothing from the archive.
+        """
+
+    @property
+    @abstractmethod
+    def verifiable(self) -> Verification:
+        """The most ``verified`` can reach by a read from the start to the end.
+
+        ``CONTENT`` when the member carries a checksum archivey can compute,
+        ``STRUCTURE`` when it carries none, and ``NONE`` for an encrypted member with no
+        checksum whose password passed only a weak check. It rises when another
+        member's checksum confirms that password. A stream from ``stream_members()``
+        learns what its member carries when it opens, at its first read. Until then it
+        answers from what it knows without opening (the member's stored digest), and
+        the answer can settle lower when it opens: a password watch that only appears
+        then takes a member with no checksum from ``STRUCTURE`` to ``NONE``. Once open,
+        it never falls. Reading this property reads nothing from the archive.
+        """
+
+    @abstractmethod
+    def read(self, n: int | None = -1, /) -> bytes:
+        """Read up to ``n`` bytes of the member; ``-1`` or ``None`` reads to EOF.
+
+        A stream that checks the member's length caps each read at the bytes left while
+        it is still checking. Otherwise ``n`` goes to the decoder as given, so what a
+        very large ``n`` costs is the decoder's: a TAR member's reader allocates a
+        buffer of ``n`` bytes, and ``read(2**62)`` raises ``MemoryError`` there, as
+        ``open(path, "rb").read(2**62)`` does on a plain file. The stream is still
+        usable afterwards.
+        """
+
+    @abstractmethod
+    def read_ahead(self, need: int, n: int, /) -> bytes:
+        """At least ``need`` bytes, or fewer only at the end, and at most ``n``.
+
+        For a reader's own buffer over a codec stream (the TAR walk on a source that
+        cannot seek): the inner's ``read_ahead`` gives what the feed that completes
+        ``need`` decoded, so the buffer does not wait for bytes nobody asked for yet.
+        Errors are those of ``read(need)``. A stream that checks its bytes (a fused
+        verifier) or has a verdict to repeat answers with ``read(n)``.
+        """
+
+    @abstractmethod
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        """Move to ``offset``, as on any ``io`` stream; raises when it can't seek.
+
+        Moving backwards in compressed data can mean decompressing again from the
+        nearest place the decoder can resume from, which
+        :meth:`nearest_resume_offset` reports.
+        """
+
+    @abstractmethod
+    def tell(self, /) -> int:
+        """The current position in the member's decompressed bytes."""
+
+    @abstractmethod
+    def seekable(self) -> bool:
+        """Whether :meth:`seek` works on this stream.
+
+        ``False`` for a stream from :meth:`~archivey.ForwardArchiveReader.stream_members`,
+        and for one from :meth:`~archivey.ArchiveReader.open` unless the archive was
+        opened with ``seekable_members=True``.
+        """
+
+    @abstractmethod
+    def nearest_resume_offset(self, target: int) -> int | None:
+        """The offset, at or before ``target``, that a seek to ``target`` decodes from.
+
+        ``None`` when the stream cannot say. Which offsets a stream can resume from
+        depends on the decoder, so the answer for the same member can change between
+        releases.
+        """
+
+    def close(self) -> None:
+        """Close the stream and release what it holds in the reader. Closing it
+        again does nothing."""
+        super().close()
+
+
+class MemberPass(Iterator[_T_co]):
     """A pass over an archive's members: an iterator that can also be closed, directly
     or by a ``with`` block.
 
@@ -84,52 +229,35 @@ class MemberPass(Iterator[_T]):
                     process(member, stream.read())
     """
 
-    __slots__ = ("_pass",)
+    __slots__ = ()
 
-    def __init__(self, items: Generator[_T, None, None]) -> None:
-        """Deprecated: a pass comes from
-        :meth:`~archivey.ForwardArchiveReader.stream_members` or from iterating a reader.
-        Building one directly stops working in archivey 0.4.0."""
-        warnings.warn(
-            "constructing MemberPass directly is deprecated and stops working in "
-            "archivey 0.4.0; get one from stream_members() or by iterating the reader",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self._pass = items
+    def __new__(cls, *args: Any, **kwargs: Any) -> Self:
+        if cls is MemberPass:
+            # Deprecated direct construction: build archivey's own pass, which then
+            # runs its ``__init__`` with these arguments.
+            warnings.warn(
+                "constructing MemberPass directly is deprecated and stops working in "
+                "archivey 0.4.0; get one from stream_members() or by iterating the "
+                "reader",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            from archivey.internal.member_pass import MemberPassImpl
 
-    @classmethod
-    def _new(cls, items: Generator[_T, None, None]) -> MemberPass[_T]:
-        """The pass over ``items``. The reader builds passes through this, not the
-        constructor, so a later version can change what a pass wraps."""
-        member_pass = cls.__new__(cls)
-        member_pass._pass = items
-        return member_pass
+            return super().__new__(cast("type[Self]", MemberPassImpl))
+        return super().__new__(cls)
 
     def __iter__(self) -> Self:
         return self
 
-    def __next__(self) -> _T:
-        return next(self._pass)
+    @abstractmethod
+    def __next__(self) -> _T_co: ...
 
+    @abstractmethod
     def close(self) -> None:
         """End the pass: close the current member stream and release the reader.
 
         Raises ``ArchiveyUsageError`` while the pass is executing."""
-        if inspect.getgeneratorstate(self._pass) == inspect.GEN_RUNNING:
-            raise _executing_pass_error()
-        try:
-            self._pass.close()
-        except ValueError as exc:
-            # A thread entered ``next()`` after the check above. Only that case is
-            # translated: a ValueError the pass itself raises reaches the caller.
-            # The racing next() may have returned already, so the message decides
-            # too; the check above is the one that decides by state.
-            if inspect.getgeneratorstate(
-                self._pass
-            ) == inspect.GEN_RUNNING or exc.args == ("generator already executing",):
-                raise _executing_pass_error() from exc
-            raise
 
     def __enter__(self) -> Self:
         return self
@@ -141,14 +269,6 @@ class MemberPass(Iterator[_T]):
         tb: TracebackType | None,
     ) -> None:
         self.close()
-
-
-def _executing_pass_error() -> ArchiveyUsageError:
-    return ArchiveyUsageError(
-        "Cannot close a member pass while it is executing: another thread is inside "
-        "next(), or a selector is closing its own pass. Close the pass from outside "
-        "it, once that next() call has returned."
-    )
 
 
 class ForwardArchiveReader(ABC):

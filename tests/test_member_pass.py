@@ -10,6 +10,7 @@ from collections.abc import Generator, Iterator
 import pytest
 
 from archivey import ArchiveyUsageError, MemberPass, open_archive
+from archivey.internal.member_pass import MemberPassImpl
 
 
 def _zip() -> io.BytesIO:
@@ -122,7 +123,7 @@ def test_a_value_error_from_the_pass_itself_is_not_translated() -> None:
         finally:
             raise ValueError("from the pass")
 
-    members = MemberPass._new(failing())
+    members = MemberPassImpl(failing())
     next(members)
     with pytest.raises(ValueError, match="from the pass") as info:
         members.close()

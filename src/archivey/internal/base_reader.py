@@ -92,6 +92,7 @@ from archivey.internal.measurement import (
     SeekCounter,
     measurement_enabled,
 )
+from archivey.internal.member_pass import MemberPassImpl
 from archivey.internal.naming import (
     emit_link_target_controls,
     emit_member_name_controls,
@@ -114,7 +115,7 @@ from archivey.internal.selection import (
 from archivey.internal.sfx import HitValidator
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import (
-    ArchiveStream,
+    ArchiveStreamImpl,
     ExceptionTranslator,
     RewindWarning,
     _Opened,
@@ -741,7 +742,7 @@ class BaseArchiveReader(ArchiveReader):
         """Translate ``exc`` via ``_translate_exception``, stamp context, and raise.
 
         The single backend-side error boundary (the out-of-stream counterpart of
-        ``ArchiveStream._fail``): an already-typed ``ArchiveyError`` is stamped and
+        ``ArchiveStreamImpl._fail``): an already-typed ``ArchiveyError`` is stamped and
         re-raised as-is; a closed source (``as_closed_source_error``) raises a usage
         error naming ``member_name``, as it does inside a member stream; a
         raw exception the translator recognizes is stamped and raised chained to the
@@ -787,9 +788,9 @@ class BaseArchiveReader(ArchiveReader):
 
     def _register_public_stream(
         self,
-        stream: ArchiveStream,
+        stream: ArchiveStreamImpl,
         token: LiveStreamReservation | None = None,
-    ) -> ArchiveStream:
+    ) -> ArchiveStreamImpl:
         """Admit ``stream`` under the live-stream gate and attach lease release on close.
 
         ``token`` is a reservation already taken (eager ``open()``); bind is
@@ -883,11 +884,11 @@ class BaseArchiveReader(ArchiveReader):
         self,
         members: Iterator[ArchiveMember],
         *,
-        open_member: Callable[[ArchiveMember], ArchiveStream | None],
+        open_member: Callable[[ArchiveMember], ArchiveStreamImpl | None],
         close_previous: bool = True,
         cleanup: Callable[[], None] | None = None,
         after_members: Callable[[], None] | None = None,
-    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
         """Shared close-previous / open / yield / finally driver for ``_iter_with_data``.
 
         Backends supply an ``open_member`` hook (return ``None`` for non-file members)
@@ -900,7 +901,7 @@ class BaseArchiveReader(ArchiveReader):
         member wrapper. Double-close with ``stream_members``'s ``finally`` is fine:
         ``ArchiveStream.close`` is idempotent.
         """
-        previous: ArchiveStream | None = None
+        previous: ArchiveStreamImpl | None = None
         try:
             for member in members:
                 if close_previous and previous is not None:
@@ -920,7 +921,7 @@ class BaseArchiveReader(ArchiveReader):
 
     def _iter_with_data(
         self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
-    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
         """Yield (member, stream) pairs in archive order; backs ``stream_members``.
 
         This default is for **random-access / fully-indexed** backends only (ZIP,
@@ -958,7 +959,7 @@ class BaseArchiveReader(ArchiveReader):
             report = self._materialize_members().report
             members = iter(report.members)
 
-        def _open(member: ArchiveMember) -> ArchiveStream | None:
+        def _open(member: ArchiveMember) -> ArchiveStreamImpl | None:
             self._read_pass_link_target(member)
             if pass_has_data(member):
                 return self._lazy_member_stream(member)
@@ -1009,12 +1010,12 @@ class BaseArchiveReader(ArchiveReader):
         open_member: Callable[[ArchiveMember], BinaryIO] | None = None,
         *,
         track_output: bool = False,
-    ) -> ArchiveStream:
+    ) -> ArchiveStreamImpl:
         """A stream over ``member``'s data that defers ``_open_member`` to the first read.
 
         Closing it before any read never opens the member at all. ``_open_member``
         returns an ``ArchiveStream``; nesting is collapsed inside
-        :meth:`ArchiveStream._ensure_open` so the public handle is a **single**
+        :meth:`ArchiveStreamImpl._ensure_open` so the public handle is a **single**
         wrapper. ``open_member`` replaces it, and may return a raw byte stream
         instead: then ``track_output=True``, because nothing inside the opener counts
         the bytes. Deferral does not change what a failed open raises — only when.
@@ -1033,7 +1034,7 @@ class BaseArchiveReader(ArchiveReader):
         )
 
     @abstractmethod
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+    def _open_member(self, member: ArchiveMember) -> ArchiveStreamImpl:
         """Return a data stream for ``member`` (no link following).
 
         Backends wrap the raw handle via ``_wrap_member_stream`` so every member
@@ -1148,7 +1149,7 @@ class BaseArchiveReader(ArchiveReader):
         checks_content: bool = False,
         custom_digests: CustomDigests | None = None,
         bounded: bool = False,
-    ) -> ArchiveStream:
+    ) -> ArchiveStreamImpl:
         """Wrap a raw member stream so read/seek errors route through the backend's
         translator and are stamped with format/archive/member context.
 
@@ -1167,7 +1168,7 @@ class BaseArchiveReader(ArchiveReader):
 
         Pass ``open_fn`` (and ``inner=None``) for a lazy open — one ``ArchiveStream``,
         opened on first read. If ``open_fn`` returns an ``ArchiveStream`` (e.g. from
-        ``_open_member``), :meth:`ArchiveStream._ensure_open` collapses the nesting
+        ``_open_member``), :meth:`ArchiveStreamImpl._ensure_open` collapses the nesting
         automatically so callers never see a double wrapper.
 
         Seekability is gated by ``MemberStreams.SEEKABLE``: without it the wrapper reports
@@ -1215,7 +1216,7 @@ class BaseArchiveReader(ArchiveReader):
                     raw_open: Callable[[], BinaryIO] = open_fn,
                 ) -> BinaryIO:
                     # open_fn should return a bytes stream when tracking here; nested
-                    # ArchiveStream collapse is handled in ArchiveStream._ensure_open
+                    # ArchiveStream collapse is handled in ArchiveStreamImpl._ensure_open
                     # (use track_output=False when open_fn returns ArchiveStream).
                     return self._track_decompressed(raw_open())
 
@@ -1223,7 +1224,7 @@ class BaseArchiveReader(ArchiveReader):
             else:
                 use_open = open_fn
 
-            return ArchiveStream._blank()._setup(
+            return ArchiveStreamImpl(
                 use_open,
                 translate=member_translate,
                 stamp=lambda exc: self._stamp_error_context(exc, member_name),
@@ -1248,21 +1249,21 @@ class BaseArchiveReader(ArchiveReader):
         assert inner is not None
         if track_output:
             inner = self._track_decompressed(inner)
-        # Seekability settled on first use (``ArchiveStream._seek_allowed``): a stream
+        # Seekability settled on first use (``ArchiveStreamImpl._seek_allowed``): a stream
         # that a lazy handle collapses (``_lazy_member_stream``) is never asked. A
         # nested ``ArchiveStream`` is asked now, as its own declaration counts.
         settle_seekable = (
             seekable is None
             and not lazy
             and self._seek_declared()
-            and not isinstance(inner, ArchiveStream)
+            and not isinstance(inner, ArchiveStreamImpl)
         )
         if seekable is None:
             # Ignored when settled on first use.
             seekable = (
                 not settle_seekable and self._seek_declared() and is_seekable(inner)
             )
-        return ArchiveStream._blank()._setup(
+        return ArchiveStreamImpl(
             # An eager handle starts open on ``inner``.
             (lambda: inner)
             if lazy
@@ -3118,7 +3119,7 @@ class BaseArchiveReader(ArchiveReader):
         return OneReadEachStream(counted)
 
     def __iter__(self) -> MemberPass[ArchiveMember]:
-        return MemberPass._new(self._iter_pass())
+        return MemberPassImpl(self._iter_pass())
 
     def _iter_pass(self) -> Generator[ArchiveMember, None, None]:
         self._state.require_open("__iter__")
@@ -3313,7 +3314,7 @@ class BaseArchiveReader(ArchiveReader):
         finally:
             self._state.release_worker(token)
 
-    def open(self, member: str | ArchiveMember) -> ArchiveStream:
+    def open(self, member: str | ArchiveMember) -> ArchiveStreamImpl:
         """Open member for reading. Follows symlinks.
 
         Without ``open_archive(concurrent_operations=True)``, at most one member stream may
@@ -3361,7 +3362,7 @@ class BaseArchiveReader(ArchiveReader):
             # unrar process that is never registered.
             reservation = self._state.reserve_live_stream()
             bound = False
-            stream: ArchiveStream | None = None
+            stream: ArchiveStreamImpl | None = None
             try:
                 opened: list[ArchiveMember] = []
                 stream = self._open_with_link_follow(
@@ -3465,7 +3466,7 @@ class BaseArchiveReader(ArchiveReader):
         member: ArchiveMember,
         visited: set[int],
         opened: list[ArchiveMember] | None = None,
-    ) -> ArchiveStream:
+    ) -> ArchiveStreamImpl:
         """Open ``member``, following links hop by hop until a non-link member.
 
         ``opened``, when given, receives the member whose data the stream reads.
@@ -3551,7 +3552,7 @@ class BaseArchiveReader(ArchiveReader):
         members: MemberSelectorArg = None,
         *,
         file_copy_streams: bool = True,
-    ) -> MemberPass[tuple[ArchiveMember, ArchiveStream | None]]:
+    ) -> MemberPass[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
         """Yield (member, stream) pairs. members is a selector filter (no transform).
 
         The stream is ``None`` for every member :func:`pass_has_data` rejects (see
@@ -3566,13 +3567,13 @@ class BaseArchiveReader(ArchiveReader):
                 "stream_members(file_copy_streams=…) takes True or False, but got "
                 f"{describe_value(file_copy_streams)}."
             )
-        return MemberPass._new(
+        return MemberPassImpl(
             self._stream_members(members, FileCopyPass(streams=file_copy_streams))
         )
 
     def _stream_members(
         self, members: MemberSelectorArg, copies: FileCopyPass
-    ) -> Generator[tuple[ArchiveMember, ArchiveStream | None], None, None]:
+    ) -> Generator[tuple[ArchiveMember, ArchiveStreamImpl | None], None, None]:
         """``stream_members()`` with the file-copy handling given whole.
 
         The extraction coordinator calls this directly, to pass ``keep_source``.
@@ -3597,9 +3598,9 @@ class BaseArchiveReader(ArchiveReader):
         selector: Callable[[ArchiveMember], bool] | None,
         report: CollectionSelector | None = None,
         copies: FileCopyPass = DEFAULT_FILE_COPY_PASS,
-    ) -> Generator[tuple[ArchiveMember, ArchiveStream | None], None, None]:
+    ) -> Generator[tuple[ArchiveMember, ArchiveStreamImpl | None], None, None]:
         token = self._state.acquire_pass("stream_members")
-        current: ArchiveStream | None = None
+        current: ArchiveStreamImpl | None = None
         source_closer: Callable[[], None] | None = None
         try:
             if self._streaming:

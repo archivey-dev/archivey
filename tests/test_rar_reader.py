@@ -543,7 +543,10 @@ def test_seekable_unrar_emits_stream_rewind() -> None:
 def test_rewind_warning_min_redecode_bytes_is_a_cost_floor() -> None:
     """A carrier-declared floor must fire even when discarded member progress is tiny."""
     from archivey.internal.diagnostics_collector import DiagnosticCollector
-    from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
+    from archivey.internal.streams.archive_stream import (
+        ArchiveStreamImpl,
+        RewindWarning,
+    )
 
     collector = DiagnosticCollector()
     payload = b"abcdefghij"
@@ -552,7 +555,7 @@ def test_rewind_warning_min_redecode_bytes_is_a_cost_floor() -> None:
         suggest_install=False,
         min_redecode_bytes=REWIND_REDECODE_WARN_BYTES,
     )
-    stream = ArchiveStream._blank()._setup(
+    stream = ArchiveStreamImpl(
         lambda: io.BytesIO(payload),
         translate=lambda _exc: None,
         rewind_warning=warning,
@@ -567,7 +570,7 @@ def test_rewind_warning_min_redecode_bytes_is_a_cost_floor() -> None:
     finally:
         stream.close()
 
-    quiet = ArchiveStream._blank()._setup(
+    quiet = ArchiveStreamImpl(
         lambda: io.BytesIO(payload),
         translate=lambda _exc: None,
         rewind_warning=RewindWarning(codec_name="rar", suggest_install=False),

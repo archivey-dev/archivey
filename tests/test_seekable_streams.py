@@ -1647,7 +1647,7 @@ def test_a_planned_index_report_raises_from_the_deferred_seek(wrapper: str) -> N
     from archivey.exceptions import DiagnosticRaisedError
     from archivey.internal.diagnostics_collector import DiagnosticCollector
     from archivey.internal.hashing import crc32_digest
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
     from archivey.internal.streams.decompressor_stream import TRAILING_DATA_SEARCH
     from archivey.internal.streams.verify import VerifyingStream
     from archivey.types import HashAlgorithm
@@ -1661,7 +1661,7 @@ def test_a_planned_index_report_raises_from_the_deferred_seek(wrapper: str) -> N
     hashes = {HashAlgorithm.CRC32: crc32_digest(zlib.crc32(data))}
     stream: BinaryIO
     if wrapper == "ArchiveStream":
-        stream = ArchiveStream._blank()._setup(
+        stream = ArchiveStreamImpl(
             lambda: LzipDecompressorStream(io.BytesIO(compressed), collector=collector),
             translate=lambda _exc: None,
             collector=collector,
@@ -1700,7 +1700,7 @@ def test_a_raise_from_seek_leaves_the_member_verifier_in_step(
     """
     from archivey.exceptions import DiagnosticRaisedError
     from archivey.internal.hashing import crc32_digest
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
     from archivey.internal.streams.verify import VerifyingStream
     from archivey.types import HashAlgorithm
 
@@ -1710,7 +1710,7 @@ def test_a_raise_from_seek_leaves_the_member_verifier_in_step(
     hashes = {HashAlgorithm.CRC32: crc32_digest(zlib.crc32(full))}
     stream: BinaryIO
     if wrapper == "ArchiveStream":
-        stream = ArchiveStream._blank()._setup(
+        stream = ArchiveStreamImpl(
             lambda: LzipDecompressorStream(io.BytesIO(compressed), collector=collector),
             translate=lambda _exc: None,
             collector=collector,

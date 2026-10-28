@@ -1168,10 +1168,10 @@ def test_stream_diagnostics_count_its_unverifiable_digest(lazy: bool) -> None:
     any read. A lazy stream enters its diagnostic scope there only when it has a
     digest to check, so this pins that the case is still inside the scope.
     """
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
     collector = DiagnosticCollector()
-    stream = ArchiveStream._blank()._setup(
+    stream = ArchiveStreamImpl(
         lambda: io.BytesIO(b"data"),
         translate=lambda _e: None,
         lazy=lazy,

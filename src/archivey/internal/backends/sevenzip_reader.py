@@ -123,7 +123,7 @@ from archivey.internal.password_confirm import (
 )
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 from archivey.internal.streams.crypto import _AesCbcTruncatedError
 from archivey.internal.streams.streamtools import (
     ReadableStream,
@@ -586,7 +586,8 @@ class SevenZipReader(BaseArchiveReader):
         # pass's step clears or replaces this offer. A cancelled offer costs one decode
         # of the folder, never wrong bytes (the member and thread checks refuse it).
         self._pass_link: (
-            tuple[ArchiveMember, Callable[[], ArchiveStream], threading.Thread] | None
+            tuple[ArchiveMember, Callable[[], ArchiveStreamImpl], threading.Thread]
+            | None
         ) = None
         # A member's or coder's compressed data is the codec's whole input, so a
         # byte its codec leaves unread is refused (``StreamConfig.refuse_input_after_end``).
@@ -773,7 +774,7 @@ class SevenZipReader(BaseArchiveReader):
 
     def _iter_with_data(
         self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
-    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
         current_folder: int | None = None
         folder = self._lazy_folder()
 
@@ -783,7 +784,7 @@ class SevenZipReader(BaseArchiveReader):
                 folder.close()
                 current_folder = folder_index
 
-        def _open(member: ArchiveMember) -> ArchiveStream | None:
+        def _open(member: ArchiveMember) -> ArchiveStreamImpl | None:
             self._pass_link = None
             raw = member._raw
             assert isinstance(raw, _MemberRaw)
@@ -844,7 +845,7 @@ class SevenZipReader(BaseArchiveReader):
         member: ArchiveMember,
         folder_index: int,
         folder_reader: Callable[[int, ArchiveMember], SolidBlockReader],
-    ) -> ArchiveStream | None:
+    ) -> ArchiveStreamImpl | None:
         """A data pass has reached ``member``, a symlink whose target is its data.
 
         The pass yields no stream for it, and its folder decoder only moves when a later
@@ -859,7 +860,7 @@ class SevenZipReader(BaseArchiveReader):
         (see ``_capture_link_data``); the pass yields that stream with it.
         """
 
-        def opener() -> ArchiveStream:
+        def opener() -> ArchiveStreamImpl:
             return self._member_stream_from_solid(
                 lambda: folder_reader(folder_index, member), member
             )
@@ -886,10 +887,10 @@ class SevenZipReader(BaseArchiveReader):
     def _capture_link_data(
         self,
         member: ArchiveMember,
-        opener: Callable[[], ArchiveStream],
+        opener: Callable[[], ArchiveStreamImpl],
         *,
         in_pass: bool = False,
-    ) -> ArchiveStream | None:
+    ) -> ArchiveStreamImpl | None:
         """Read ``member``'s link bytes now and keep them for its resolution.
 
         Reads what ``_read_link_target_data`` would (and nothing for a member it refuses
@@ -1461,7 +1462,7 @@ class SevenZipReader(BaseArchiveReader):
         *,
         open_fn: Callable[[], BinaryIO] | None = None,
         seekable: bool | None = None,
-    ) -> ArchiveStream:
+    ) -> ArchiveStreamImpl:
         verify = member.size is not None or bool(member.hashes)
         return self._wrap_member_stream(
             inner,
@@ -1475,12 +1476,12 @@ class SevenZipReader(BaseArchiveReader):
             verify_member=member if verify else None,
         )
 
-    def _empty_member_stream(self, member: ArchiveMember) -> ArchiveStream:
+    def _empty_member_stream(self, member: ArchiveMember) -> ArchiveStreamImpl:
         return self._wrap_member_stream(io.BytesIO(b""), member.name, size=member.size)
 
     def _member_stream_from_solid(
         self, open_solid: Callable[[], SolidBlockReader], member: ArchiveMember
-    ) -> ArchiveStream:
+    ) -> ArchiveStreamImpl:
         """Hand out a stream whose folder decode and positioning run on first read.
 
         ``open_solid`` opens the member's 7z folder — decompressor setup, and the
@@ -1521,7 +1522,7 @@ class SevenZipReader(BaseArchiveReader):
             reparse_fallback=self._reparse_fallback_type(raw.record),
         )
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+    def _open_member(self, member: ArchiveMember) -> ArchiveStreamImpl:
         raw = member._raw
         assert isinstance(raw, _MemberRaw)
         if raw.folder_index is None:

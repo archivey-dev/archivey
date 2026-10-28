@@ -78,7 +78,7 @@ from archivey.internal.arg_checks import raise_if_text_stream
 # ``archive_stream`` imports nothing back from the source boundary (this module, the
 # detection workspace, ``volumes``), so :func:`seek_is_expensive` can type-test it here
 # without a lazy import.
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 from archivey.internal.streams.streamtools import (
     DEFAULT_UNKNOWN_LENGTH_READ_STEP,
     ReadOnlyIOStream,
@@ -990,7 +990,7 @@ def seek_is_expensive(stream: BinaryIO) -> bool:
     own = getattr(stream, "seek_is_expensive", None)
     if isinstance(own, bool):
         return own
-    return isinstance(underlying_stream(stream), ArchiveStream)
+    return isinstance(underlying_stream(stream), ArchiveStreamImpl)
 
 
 __all__ = ["ArchiveSource", "JoinedVolumes", "seek_is_expensive"]

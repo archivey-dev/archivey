@@ -62,7 +62,7 @@ from archivey.internal.filters import (
     transform_strict,
 )
 from archivey.internal.link_watch import LinkWatch
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember, MemberType
 from tests.conftest import binary_refusal, case_sensitive
 from tests.corruption_util import raises_corruption_not_truncation
@@ -3740,7 +3740,7 @@ class _FileThenAntiReader(BaseArchiveReader):
         yield ArchiveMember(type=MemberType.FILE, name="a.txt", size=5)
         yield ArchiveMember(type=MemberType.ANTI, name="a.txt")
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+    def _open_member(self, member: ArchiveMember) -> ArchiveStreamImpl:
         return self._wrap_member_stream(io.BytesIO(b"first"), member.name, size=5)
 
     def _get_archive_info(self) -> ArchiveInfo:
