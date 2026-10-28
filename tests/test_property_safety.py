@@ -36,7 +36,11 @@ from archivey.exceptions import (
 )
 from archivey.internal.detection import detect_format
 from archivey.internal.filters import (
+    _DOT_SPACE,
+    _MAY_BE_RESERVED,
+    _NEEDS_ESCAPE,
     _RESERVED_NAMES,
+    _TRAILING_DOT_SPACE,
     _WINDOWS_INVALID_CHARS,
     _is_absolute,
     _reject_unsafe_segments,
@@ -791,6 +795,19 @@ def _reference_portable_name_unchanged(name: str) -> bool:
     return not any(
         "\udc80" <= c <= "\udcff" or c in _WINDOWS_INVALID_CHARS for c in name
     )
+
+
+def test_name_policy_prefilters_match_their_constants() -> None:
+    # Each prefilter is the only gate on its loop and a literal the regex guard can
+    # read, so it is tied here to the constant it must match: a constant that grows
+    # past its prefilter fails this test instead of going unchecked.
+    stems = "|".join(sorted({name[:3] for name in _RESERVED_NAMES}))
+    assert stems == _MAY_BE_RESERVED.pattern
+    escaped = {chr(c) for c in range(0x110000) if _NEEDS_ESCAPE.match(chr(c))}
+    surrogates = set(map(chr, range(0xDC80, 0xDD00)))
+    assert escaped == surrogates | _WINDOWS_INVALID_CHARS
+    ends = {chr(c) for c in range(0x3100) if _TRAILING_DOT_SPACE.search("a" + chr(c))}
+    assert ends == set(_DOT_SPACE)
 
 
 @given(_pathish)

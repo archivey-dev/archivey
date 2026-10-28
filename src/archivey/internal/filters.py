@@ -611,8 +611,9 @@ _RESERVED_NAMES = frozenset(
 
 # The first three characters of every reserved name, so a path whose upper-cased form
 # holds none of them has no reserved segment (the prefilter in
-# ``_reject_unsafe_segments``). Built from ``_RESERVED_NAMES`` so the two cannot drift.
-_MAY_BE_RESERVED = re.compile("|".join(sorted({name[:3] for name in _RESERVED_NAMES})))
+# ``_reject_unsafe_segments``). A literal, so the regex guard can read it;
+# ``test_name_policy_prefilters_match_their_constants`` ties it to ``_RESERVED_NAMES``.
+_MAY_BE_RESERVED = re.compile("AUX|COM|CON|LPT|NUL|PRN")
 
 
 def _is_reserved_segment(segment: str) -> bool:
@@ -628,10 +629,8 @@ _WINDOWS_INVALID_CHARS = frozenset('<>"|?*') | frozenset(map(chr, range(0x01, 0x
 
 
 # A character ``_sanitize_portable_name`` escapes: a surrogateescape byte or one of
-# ``_WINDOWS_INVALID_CHARS``, from which the class is built.
-_NEEDS_ESCAPE = re.compile(
-    "[\udc80-\udcff" + "".join(map(re.escape, sorted(_WINDOWS_INVALID_CHARS))) + "]"
-)
+# ``_WINDOWS_INVALID_CHARS`` (the same test ties the two).
+_NEEDS_ESCAPE = re.compile('[\udc80-\udcff<>"|?*\x01-\x1f]')
 
 
 def _sanitize_portable_name(name: str) -> str:
@@ -683,9 +682,10 @@ def _sanitize_portable_name(name: str) -> str:
 
 
 # The characters ``_strip_trailing_dot_space`` strips off the end of a segment, and a
-# segment that ends in one: the only kind it changes or refuses.
+# segment that ends in one: the only kind it changes or refuses (the same test ties
+# the two).
 _DOT_SPACE = ". "
-_TRAILING_DOT_SPACE = re.compile(f"[{re.escape(_DOT_SPACE)}](?:[\\\\/]|\\Z)")
+_TRAILING_DOT_SPACE = re.compile(r"[. ](?:[\\/]|\Z)")
 
 
 def _strip_trailing_dot_space(name: str) -> str:
