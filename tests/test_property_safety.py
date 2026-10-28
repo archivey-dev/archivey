@@ -35,7 +35,15 @@ from archivey.exceptions import (
     FilterRejectionError,
 )
 from archivey.internal.detection import detect_format
-from archivey.internal.filters import _is_absolute, check_universal
+from archivey.internal.filters import (
+    _RESERVED_NAMES,
+    _WINDOWS_INVALID_CHARS,
+    _is_absolute,
+    _reject_unsafe_segments,
+    _sanitize_portable_name,
+    _strip_trailing_dot_space,
+    check_universal,
+)
 from archivey.internal.logs import normalization as normalization_logger
 from archivey.internal.naming import (
     normalize_member_name,
@@ -746,3 +754,66 @@ def test_detect_format_pinned_examples(data: bytes) -> None:
     except ArchiveyError:
         pass
     assert buf.tell() == 0
+
+
+# ---------------------------------------------------------------------------
+# Name-policy prefilters: each skips its per-segment or per-character loop only when
+# the loop would change or refuse nothing.
+# ---------------------------------------------------------------------------
+
+
+def _reference_unsafe_segment(path: str) -> str | None:
+    """The first segment ``_reject_unsafe_segments`` refuses, by its plain definition."""
+    for segment in re.split(r"[\\/]", path):
+        if segment and (
+            segment.partition(".")[0].strip().upper() in _RESERVED_NAMES
+            or ":" in segment
+        ):
+            return segment
+    return None
+
+
+def _reference_strip_trailing_dot_space(name: str) -> str | None:
+    """``_strip_trailing_dot_space`` by its plain definition; ``None`` for a refusal."""
+    parts = re.split(r"([\\/])", name)
+    out = []
+    for part in parts:
+        if part in ("/", "\\", "", ".", ".."):
+            out.append(part)
+        elif not part.rstrip(". "):
+            return None
+        else:
+            out.append(part.rstrip(". "))
+    return "".join(out)
+
+
+def _reference_portable_name_unchanged(name: str) -> bool:
+    return not any(
+        "\udc80" <= c <= "\udcff" or c in _WINDOWS_INVALID_CHARS for c in name
+    )
+
+
+@given(_pathish)
+@example("CON")
+@example("x/ nul .txt/y")
+@example("COM¹")
+@example("a. /b")
+@example("a\x1f")
+def test_name_policy_prefilters_match_the_plain_definitions(name: str) -> None:
+    refused = _reference_unsafe_segment(name)
+    if refused is None:
+        _reject_unsafe_segments(name, member_name=name, where="path")
+    else:
+        with pytest.raises(FilterRejectionError):
+            _reject_unsafe_segments(name, member_name=name, where="path")
+
+    stripped = _reference_strip_trailing_dot_space(name)
+    if stripped is None:
+        with pytest.raises(FilterRejectionError):
+            _strip_trailing_dot_space(name)
+    else:
+        assert _strip_trailing_dot_space(name) == stripped
+
+    assert (_sanitize_portable_name(name) == name) == (
+        _reference_portable_name_unchanged(name)
+    )

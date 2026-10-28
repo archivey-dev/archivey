@@ -609,6 +609,11 @@ _RESERVED_NAMES = frozenset(
 )
 
 
+# Every reserved name starts with one of these, so a path whose upper-cased form has none
+# of them has no reserved segment (the prefilter in ``_reject_unsafe_segments``).
+_MAY_BE_RESERVED = re.compile("CON|PRN|AUX|NUL|COM|LPT")
+
+
 def _is_reserved_segment(segment: str) -> bool:
     """Whether ``segment`` names a Windows reserved device: its first dot-separated
     component, stripped of surrounding whitespace the way Win32 strips it."""
@@ -621,8 +626,9 @@ def _is_reserved_segment(segment: str) -> bool:
 _WINDOWS_INVALID_CHARS = frozenset('<>"|?*') | frozenset(map(chr, range(0x01, 0x20)))
 
 
-def _needs_escape(c: str) -> bool:
-    return "\udc80" <= c <= "\udcff" or c in _WINDOWS_INVALID_CHARS
+# A character ``_sanitize_portable_name`` escapes: a surrogateescape byte or one of
+# ``_WINDOWS_INVALID_CHARS``.
+_NEEDS_ESCAPE = re.compile('[\udc80-\udcff<>"|?*\x01-\x1f]')
 
 
 def _sanitize_portable_name(name: str) -> str:
@@ -658,7 +664,7 @@ def _sanitize_portable_name(name: str) -> str:
     too. The collision map sees both spellings as one key, so the second is resolved
     by the ``OverwritePolicy`` rather than silently overwriting the first.
     """
-    if not any(_needs_escape(c) for c in name):
+    if _NEEDS_ESCAPE.search(name) is None:
         return name
     out: list[str] = []
     for c in name:
@@ -673,6 +679,11 @@ def _sanitize_portable_name(name: str) -> str:
     return "".join(out)
 
 
+# A segment that ends in a dot or a space: the only kind ``_strip_trailing_dot_space``
+# changes or refuses.
+_TRAILING_DOT_SPACE = re.compile(r"[. ](?:[\\/]|$)")
+
+
 def _strip_trailing_dot_space(name: str) -> str:
     """O3: strip a trailing dot/space from each path segment — the portable spelling Win32
     itself produces (``stuff_etc.`` → ``stuff_etc``). Deterministic on every OS, so the
@@ -684,6 +695,9 @@ def _strip_trailing_dot_space(name: str) -> str:
     and ``collision_key``: a TAR name keeps ``\\`` as a literal character, and Windows
     then writes it as a separator, so ``foo. \\bar`` must lose its trailing space too.
     The separators themselves are kept as they are; only the segments change."""
+    if _TRAILING_DOT_SPACE.search(name) is None:
+        # No segment ends in a dot or a space, so none changes or is refused.
+        return name
 
     def strip(part: str) -> str:
         # Empty (from a leading/trailing/`//` separator) and the path-navigation spellings
@@ -710,6 +724,10 @@ def _reject_unsafe_segments(
     Both are unsafe (device capture, NTFS alternate data stream), not merely awkward,
     so ``STRICT`` and ``STANDARD`` refuse them on every platform.
     """
+    if ":" not in path and _MAY_BE_RESERVED.search(path.upper()) is None:
+        # Most paths: no segment can name a device. Upper-casing the whole path
+        # gives every segment's upper-cased characters, so a reserved stem is in it.
+        return
     for segment in _SEP_SPLIT.split(path):
         if not segment:
             continue
