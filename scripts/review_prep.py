@@ -20,13 +20,14 @@ same checks apply to the fix commits before the label goes on again.
     uv run python scripts/review_prep.py                 # sweep + width against origin/main
     uv run python scripts/review_prep.py --base HEAD~1   # just the last commit's fixes
     uv run python scripts/review_prep.py red-on-base tests/test_x.py::test_y ...
-    python3 scripts/review_prep.py tier                  # light, standard or deep, and why
+    uv run python scripts/review_prep.py tier            # light, standard or deep, and why
 
 ``sweep`` only reports: whether a hit is stale needs reading. ``width`` exits 1 when an
 added line is wider than its file allows. ``red-on-base`` prints a table to paste into the
 PR body in place of a prose "fails on main" claim.
 
-``sweep``, ``width`` and ``tier`` are stdlib only and run under any Python 3.10+;
+``sweep``, ``width`` and ``tier`` are stdlib only and run under any Python 3.10+, so a
+reviewer without the project environment runs ``python3 scripts/review_prep.py tier``;
 ``red-on-base`` runs pytest, so it needs the project's environment and refuses to start
 without one.
 """
@@ -343,27 +344,31 @@ def width(files: Iterable[FileDiff], base: str, head: str = "HEAD") -> list[str]
 
 # --- tier: how deep the review goes ----------------------------------------------------
 
-# A pull request is light only when every path it changes is here: prose, tests,
-# benchmarks and agent instructions. `openspec/` is not, because a spec is a contract.
-# NOT_LIGHT takes back the files inside those folders that are gates or contracts
-# themselves: the skip markers, the benchmark gate, the API surface, the threat model, and
-# the two review skills, which change what every later round checks.
+# A pull request is light only when every path it changes is here: user and maintainer
+# prose, tests and benchmarks. Two rules keep the rest out:
+# - What an agent or a review round reads as its own instructions or contracts is never
+#   light: the skills and commands (`.claude/`, `.cursor/`, so they are not listed here)
+#   and the files in NOT_LIGHT.
+# - Neither is a gate inside a light folder: the skip markers and the benchmark gate.
+# `openspec/` is not light either, because a spec is a contract.
 LIGHT_PREFIXES = (
     "docs/",
     "dev-docs/",
     "tests/",
     "benchmarks/",
-    ".claude/",
-    ".cursor/",
 )
 LIGHT_FILES = ("mkdocs.yml",)
 NOT_LIGHT = (
+    # Instructions and contracts
+    "AGENTS.md",
+    "CLAUDE.md",
+    "CONTRIBUTING.md",
+    "dev-docs/design-rules.md",
+    "dev-docs/threat-model.md",
+    "dev-docs/api-surface.txt",
+    # Gates
     "tests/conftest.py",
     "benchmarks/wall_baseline.py",
-    "dev-docs/api-surface.txt",
-    "dev-docs/threat-model.md",
-    ".claude/skills/code-review-skill/",
-    ".claude/skills/address-review-findings/",
 )
 
 # Paths where one bug breaks a safety guarantee for every format: writes stay inside the

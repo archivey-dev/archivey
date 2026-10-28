@@ -240,8 +240,13 @@ def test_tier_is_light_only_when_every_path_is_prose_or_tests() -> None:
     # Gates and contracts inside the light folders are taken back out.
     for gate in ("tests/conftest.py", "dev-docs/threat-model.md"):
         assert prep.tier([gate]).name == "standard", gate
-    assert prep.tier([".claude/skills/code-review-skill/SKILL.md"]).name == "standard"
-    assert prep.tier([".claude/skills/unslop/SKILL.md"]).name == "light"
+    # So are an agent's own instructions, wherever they live.
+    for instructions in (
+        "AGENTS.md",
+        ".claude/skills/steward/SKILL.md",
+        ".cursor/x.md",
+    ):
+        assert prep.tier([instructions]).name == "standard", instructions
 
 
 def test_tier_path_lists_name_paths_that_exist() -> None:
