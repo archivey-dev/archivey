@@ -143,15 +143,21 @@ def _zip_member(body: bytes, plain: bytes, *, method: int, flags: int) -> bytes:
 
 def _7z_coder_stream(raw: bytes) -> tuple[bytes, bytes]:
     """The only coder's packed stream and properties, from a 7z 7-Zip wrote (-mhc=off)."""
+    packed, [(_, props)] = _7z_folder_streams(raw)
+    assert props is not None
+    return packed, props
+
+
+def _7z_folder_streams(raw: bytes) -> tuple[bytes, list[tuple[bytes, bytes | None]]]:
+    """The packed stream and each coder's method and properties, from a 7z 7-Zip wrote
+    (-mhc=off) with one linear folder: coder 0 reads the pack, coder i+1 coder i."""
     sig = sevenzip_parser.read_signature_and_next_header(io.BytesIO(raw))
-    block = sevenzip_parser.parse_header_block(sig.header_data)
-    streams = block.streams
+    streams = sevenzip_parser.parse_header_block(sig.header_data).streams
     (folder,) = streams.folders
-    (coder,) = folder.coders
+    assert folder.bind_pairs == [(i + 1, i) for i in range(len(folder.coders) - 1)]
     start = sevenzip_parser.SIGNATURE_HEADER_SIZE + streams.pack_pos
     packed = raw[start : start + streams.pack_sizes[0]]
-    assert coder.properties is not None
-    return packed, coder.properties
+    return packed, [(c.method, c.properties) for c in folder.coders]
 
 
 @pytest.fixture(params=sorted(_PAYLOADS))
@@ -542,18 +548,6 @@ _DELTA_CHAINS = {
     "delta4": ("-m0=Delta:4",),
     "delta1-delta4": ("-m0=Delta:1", "-m1=Delta:4"),
 }
-
-
-def _7z_folder_streams(raw: bytes) -> tuple[bytes, list[tuple[bytes, bytes | None]]]:
-    """The packed stream and each coder's method and properties, from a 7z 7-Zip wrote
-    (-mhc=off) with one linear folder: coder 0 reads the pack, coder i+1 coder i."""
-    sig = sevenzip_parser.read_signature_and_next_header(io.BytesIO(raw))
-    streams = sevenzip_parser.parse_header_block(sig.header_data).streams
-    (folder,) = streams.folders
-    assert folder.bind_pairs == [(i + 1, i) for i in range(len(folder.coders) - 1)]
-    start = sevenzip_parser.SIGNATURE_HEADER_SIZE + streams.pack_pos
-    packed = raw[start : start + streams.pack_sizes[0]]
-    return packed, [(c.method, c.properties) for c in folder.coders]
 
 
 @pytest.fixture(params=sorted(_DELTA_CHAINS))
