@@ -3,17 +3,18 @@
 ``dataclasses.replace`` looks up every field by name, checks it, and passes them all to
 ``__init__`` as keywords: a few microseconds for a dataclass of ten or twenty fields.
 Extraction copies each member (``ArchiveMember.replace``) and its result
-(``ExtractionResult``) at least once per member, so that adds up. :func:`copy_with`
+(``ExtractionResult``) once each on the default extract path, so that adds up. :func:`copy_with`
 fetches the fields with one ``attrgetter`` and passes them by position instead. Every
 positional copy of a dataclass goes through here; do not add another.
 
-It covers a class whose constructor takes exactly its fields, in field order, each as
-a positional parameter, which is what a call by position needs. A ``__post_init__``
-runs on the copy either way, as it does under ``dataclasses.replace``. A class whose
-constructor differs (an ``InitVar``, a keyword-only or ``init=False`` field, a
-dataclass with ``init=False``), and a name that is not a field, take
-``dataclasses.replace`` and its errors, so a misspelled name is still a ``TypeError``
-at runtime.
+It covers a class of at least two fields whose constructor takes exactly its fields,
+in field order, each as a positional parameter, which is what a call by position
+needs. A ``__post_init__`` runs on the copy either way, as it does under
+``dataclasses.replace``. A class whose constructor differs (an ``InitVar``, a
+keyword-only or ``init=False`` field, a hand-written ``__init__`` with other
+parameters), a class whose signature cannot be read, and a name that is not a field,
+take ``dataclasses.replace`` and its errors, so a misspelled name is still a
+``TypeError`` at runtime.
 
 ``changes`` is typed ``Any``, which is not a check: type checkers verify neither the
 keyword names nor the value types at a call site, as they do for
@@ -50,7 +51,9 @@ def _plan(
         return None
     try:
         parameters = tuple(inspect.signature(cls).parameters.values())
-    except (TypeError, ValueError):  # no signature to read: copy by name
+    # No signature to read, or (from Python 3.14) an annotation that does not evaluate:
+    # copy by name.
+    except (TypeError, ValueError, NameError, AttributeError):
         return None
     # The constructor takes exactly the fields, in order, each by position.
     if tuple(p.name for p in parameters) != names or any(
