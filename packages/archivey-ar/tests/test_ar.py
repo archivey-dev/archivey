@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import ast
+import gzip
 import io
+import lzma
 import random
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -169,6 +171,36 @@ def test_detection() -> None:
         assert info.format == AR, name
         assert info.detected_by == "magic"
         assert info.from_plugin
+
+
+@pytest.mark.parametrize(
+    ("stream", "compress", "suffix"),
+    [
+        (archivey.StreamFormat.GZIP, lambda data: gzip.compress(data, mtime=0), ".gz"),
+        (archivey.StreamFormat.XZ, lzma.compress, ".xz"),
+    ],
+    ids=["gz", "xz"],
+)
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_inside_a_compression_stream(
+    tmp_path: Path,
+    stream: archivey.StreamFormat,
+    compress: Callable[[bytes], bytes],
+    suffix: str,
+    pipe: bool,
+) -> None:
+    """``.a.gz`` and ``.a.xz``: archivey decodes the stream, the reader sees ar."""
+    data = compress((DATA / "gnu.a").read_bytes())
+    path = tmp_path / f"t.a{suffix}"
+    path.write_bytes(data)
+    fmt = archivey.ArchiveFormat(AR.container, stream)
+    assert detect_format(io.BytesIO(data)).format == fmt
+    with open_archive(_Pipe(data) if pipe else path, streaming=pipe) as reader:
+        assert reader.format == fmt
+        seen = {m.name: s.read() for m, s in reader.stream_members() if s is not None}
+    assert list(seen) == NAMES
+    for member_name in CONTENT:
+        _check_content("gnu", seen[member_name], member_name)
 
 
 def test_a_thin_archive_is_refused() -> None:

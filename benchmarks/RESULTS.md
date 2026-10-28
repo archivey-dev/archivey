@@ -342,7 +342,9 @@ lock baseline lives in `benchmarks/tar_iso_lock_baseline.py`).
 ## Third-party peers: py7zr, rarfile, libarchive-c
 
 The tables above compare against the stdlib only. `benchmarks/peers.py` times
-archivey against the other Python readers on the same realistic corpus:
+archivey against the other Python readers on the same realistic corpus, and on a
+second corpus of many small members against `zipfile`, `tarfile`, py7zr and
+libarchive-c (see "Many small members" below):
 
 ```bash
 uv run --extra all python -m benchmarks.peers --scale realistic
@@ -445,6 +447,105 @@ What the numbers show:
 - **Extraction pays a fixed cost per member** on top of reading: ZIP extract is
   about 2.3× ZIP `read_all` for 64 members. Solid 7z goes from 0.77× py7zr on
   `read_all` to 1.13× on `extract`, so the cost is not specific to ZIP.
+
+The extraction rows above predate PRs 1071–1083, which made extraction 15–28% faster
+per member. "Many small members" below has before and after figures. `1f2e12c5` is a
+branch commit, not on `main`; its `src/` matched `main` at `afd8125`.
+
+## Many small members
+
+The harness corpus has 64 members of 256 KiB, so the work each member costs barely
+shows in it. `benchmarks/peers.py` also builds a corpus where that cost dominates:
+4 000 files of 20 to 600 random bytes in 40 directories of 7 subdirectories each (4 320
+entries with the directories, `Scale.small_members`), as ZIP (DEFLATE, and stored),
+TAR, tar.gz and 7z. `zipfile` writes the ZIPs and py7zr the 7z, from a fixed seed. Its
+rows are labelled `4 000 small`.
+
+**What each peer does per member, on `extract`:** archivey runs its default checks
+(path and link safety, atomic writes) and sets mode and mtime. `tarfile` (with
+`filter="data"`) sets mode and mtime too. `zipfile.extractall` writes the bytes only, and
+restores neither. So part of the gap to `zipfile` is work `zipfile` skips, and the
+`tarfile` and `zipfile` ratios are not on the same footing.
+
+**Before and after the per-member speedup (2026-10-28).** Before is `8191bdd4`, the
+`main` just before PR 1071. After is `5b2f2f71`, `main` after PR 1083. The interval
+holds PRs 1071 and 1073–1076 and 1083, which target per-member cost, and also 1065, 1066,
+1068, 1069, 1070 and 1072 (plugins, a 7z Delta fix, docs, the public `ArchiveStream`
+base classes); the attribution to the first group is an inference from what they
+change, backed by the callgrind counts in each PR. The `8191bdd4` tree has no
+small-member corpus, so both trees ran this branch's `peers.py` (copied over the old
+one) against their own `src/`, sharing one `ARCHIVEY_BENCH_CACHE` so both read the same
+archive files. The same 4-core KVM host as the sections above, CPython 3.11.17,
+libarchive-c over libarchive 3.7.2, py7zr 1.1.4. Each tree ran twice, in the order
+before, after, before, after (9 alternating timed calls per side, the default); each
+cell is the mean of a tree's two runs. Each ratio is against the peer timed in the
+same run, so the peer column is given for each tree. Extraction wrote to `/dev/shm`
+(`TMPDIR`), to keep the disk out of it. Ratio is archivey ÷ peer.
+
+| Archive | Operation | Peer | archivey before | peer | ratio before | archivey after | peer | ratio after |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ZIP | list | zipfile | 94 ms | 13 ms | 7.29× | 107 ms | 14 ms | 7.63× |
+| ZIP | read_all | zipfile | 815 ms | 63 ms | 13.04× | 728 ms | 68 ms | 10.73× |
+| ZIP | extract | zipfile | 2 659 ms | 212 ms | 12.52× | 2 115 ms | 209 ms | 10.12× |
+| ZIP | list | libarchive-c | 101 ms | 34 ms | 3.00× | 106 ms | 29 ms | 3.60× |
+| ZIP | read_all | libarchive-c | 824 ms | 44 ms | 18.91× | 755 ms | 44 ms | 17.15× |
+| ZIP | extract | libarchive-c | 2 757 ms | 135 ms | 20.52× | 2 145 ms | 121 ms | 17.72× |
+| TAR | list | tarfile | 347 ms | 223 ms | 1.56× | 359 ms | 221 ms | 1.61× |
+| TAR | read_all | tarfile | 534 ms | 284 ms | 1.88× | 541 ms | 269 ms | 2.01× |
+| TAR | extract | tarfile | 2 236 ms | 793 ms | 2.82× | 1 763 ms | 812 ms | 2.18× |
+| TAR | list | libarchive-c | 356 ms | 18 ms | 19.27× | 410 ms | 23 ms | 18.75× |
+| TAR | read_all | libarchive-c | 498 ms | 31 ms | 16.14× | 559 ms | 40 ms | 13.82× |
+| TAR | extract | libarchive-c | 2 146 ms | 114 ms | 18.85× | 1 831 ms | 119 ms | 15.51× |
+| tar.gz | list | tarfile | 401 ms | 248 ms | 1.61× | 372 ms | 280 ms | 1.33× |
+| tar.gz | read_all | tarfile | 538 ms | 300 ms | 1.79× | 563 ms | 313 ms | 1.79× |
+| tar.gz | extract | tarfile | 2 288 ms | 815 ms | 2.80× | 1 796 ms | 781 ms | 2.30× |
+| tar.gz | list | libarchive-c | 446 ms | 25 ms | 17.91× | 399 ms | 25 ms | 16.05× |
+| tar.gz | read_all | libarchive-c | 547 ms | 40 ms | 13.88× | 578 ms | 37 ms | 15.76× |
+| tar.gz | extract | libarchive-c | 2 347 ms | 115 ms | 20.46× | 1 808 ms | 121 ms | 14.98× |
+| 7z | list | py7zr | 85 ms | 73 ms | 1.17× | 77 ms | 56 ms | 1.38× |
+| 7z | read_all | py7zr | 298 ms | 544 ms | 0.55× | 313 ms | 542 ms | 0.57× |
+| 7z | extract | py7zr | 1 890 ms | 1 183 ms | 1.60× | 1 366 ms | 1 105 ms | 1.24× |
+| 7z | list | libarchive-c | 82 ms | 17 ms | 4.78× | 82 ms | 16 ms | 5.18× |
+| 7z | read_all | libarchive-c | 312 ms | 33 ms | 9.50× | 314 ms | 39 ms | 8.51× |
+| 7z | extract | libarchive-c | 1 848 ms | 106 ms | 17.52× | 1 322 ms | 108 ms | 12.24× |
+
+Read the before/after claim from the archivey columns; a ratio also moves with its
+peer. The 7z `list` row shows why: archivey went from 85 to 77 ms while the ratio rose,
+because py7zr's time in those runs went from 73 to 56 ms.
+
+What the numbers show:
+
+- **Extraction is 15–28% faster in every format** (archivey's own time), and the
+  ratios moved with it: ZIP 12.5× → 10.1× `zipfile`, TAR and tar.gz 2.8× → 2.2–2.3×
+  `tarfile`, 7z 1.6× → 1.24× py7zr. That is where the speedup went (the extraction
+  coordinator: path checks, name policy, landing, member copies).
+- **ZIP `read_all` is 11% faster** (815 → 728 ms), mostly from one `ArchiveStream` per
+  member (PR 1083).
+- **Listing and the TAR, tar.gz and 7z `read_all` rows did not move beyond noise,**
+  though some moved by 10–15%. The same operation timed against the other peer tells
+  the two apart: TAR `list` is +15% in its libarchive-c pair and +3.5% in its
+  `tarfile` pair, TAR `read_all` +12% and +1.3%. Code that changed would move both
+  pairs alike; these disagree, so the spread is the host.
+  PR 1083 also measured the TAR and 7z reads at +0.6% to +2% instructions per member
+  under callgrind. Read single wall-time differences under about 15% here as noise.
+- **archivey is still far from the C reader and from `zipfile` per member.** Against
+  libarchive it is 3.6–19× on listing and 8.5–18× on reading and extraction. Against
+  `tarfile` it is within 1.3–2.3×; against `zipfile` it is 7.6–10.7×, part of which is
+  the mode and mtime work `zipfile` skips (above).
+- **A DEFLATE member costs much more to read than a stored one.** On the `after` tree
+  (two runs, `ZIP stored 4 000 small` against `ZIP 4 000 small`, `zipfile` the peer),
+  `read_all` takes 398–406 ms stored and 732–741 ms deflated: about 85 µs more per
+  member. `zipfile` reads the two in 54–55 and 61–66 ms. A profile puts the difference
+  in the codec set-up for each member: three `dataclasses.replace` calls on config
+  objects (`_with_local_method`, `_member_config`, `_decoder_config`), the decompressor
+  stream's own layers, and four `rapidgzip` eligibility checks.
+
+On the harness corpus (the earlier sections), the same before/after pair, two runs
+each, moved only the extraction rows beyond noise: ZIP `extract` against libarchive-c
+4.2× → 3.2×, TAR `extract` 3.6× → 2.8×, solid 7z `extract` against py7zr 1.24× →
+1.05×. The harness's `zip_extract` against `zipfile` stays unreliable on this host (see
+the note under "Realistic scale"); on the small-member corpus the `zipfile` extract time
+held at 209–212 ms across the four runs, so that row's ratio is stable.
 
 ## Why the published guide no longer quotes numbers
 

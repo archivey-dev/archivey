@@ -17,9 +17,10 @@ A program registers a plugin with :func:`register_format`. Nothing is loaded
 automatically. Plugin code runs in the caller's process as trusted code: archivey's
 limits cover what the plugin hands over, not the plugin's own parser.
 
-What the first version leaves out: outer compression around a plugin format, member
-data a library decodes in a sequential format, self-extracting stubs, multi-volume
-sets, passwords, and new diagnostic codes.
+A sequential format is also read inside each single-file compression stream archivey
+decodes (``.cpio.gz``). What the first version leaves out: an indexed format inside a
+compression stream, member data a library decodes in a sequential format,
+self-extracting stubs, multi-volume sets, passwords, and new diagnostic codes.
 """
 
 from __future__ import annotations
@@ -465,15 +466,17 @@ class PluginContext:
         of ``STORED``, ``DEFLATE`` (raw, no zlib or gzip header), ``DEFLATE64``,
         ``BZIP2``, ``ZSTD``, ``LZ4`` (frames), ``BROTLI``, ``LZMA`` (raw LZMA1;
         ``properties`` is its 5-byte properties: the ``lc``, ``lp``, ``pb`` byte and the
-        dictionary size) and ``LZMA2`` (raw; ``properties`` is its 1-byte dictionary
-        size). As a stream format, the data is a whole stream with its own framing,
+        dictionary size), ``LZMA2`` (raw; ``properties`` is its 1-byte dictionary
+        size) and ``XZ`` (``.xz`` data kept inside a member, as ZIP method 95 keeps
+        it). As a stream format, the data is a whole stream with its own framing,
         decoded as a file of that format is: ``ZLIB`` (deflate with the zlib header and
         Adler-32), ``GZIP``, ``XZ``, ``LZMA_ALONE``, ``LZIP`` and the others
         ``StreamFormat`` names. Any other method raises ``UnsupportedFeatureError``,
         and one whose optional package is missing raises ``PackageNotInstalledError``.
 
         Where the compressed data ends depends on the method. ``ZSTD`` and ``LZ4`` data
-        is one or more frames, decoded together. ``BZIP2`` data is one stream, and a
+        is one or more frames, decoded together, and ``XZ`` data is one or more xz
+        streams with their stream padding. ``BZIP2`` data is one stream, and a
         second one is damage. ``LZMA`` and ``LZMA2`` end at their end marker; raw LZMA1,
         which may have none, then ends at ``size``. For every method, bytes left after
         that end raise ``CorruptionError``. A stream format ends where its format says,
@@ -618,7 +621,14 @@ class SequentialFormatPlugin(FormatPlugin):
     """A format read in one forward pass. Subclass this instead of
     :class:`FormatPlugin`, and implement :meth:`open_sequential` instead of
     :meth:`~FormatPlugin.open`: there is no seekable source to hand over, since the
-    archive may be a pipe. Its bytes reach :meth:`SequentialReader.walk`."""
+    archive may be a pipe. Its bytes reach :meth:`SequentialReader.walk`.
+
+    Registering one also registers the format inside each single-file compression
+    stream archivey decodes, as ``ArchiveFormat(<container>, StreamFormat.GZIP)`` and
+    so on, with each extension followed by the compressor's (``.cpio.gz``). The walk
+    reads the decoded bytes. Detection finds the format inside a compressor by its
+    :attr:`~FormatPlugin.magic` in the first 512 decoded bytes, so each magic must end
+    within them."""
 
     @abstractmethod
     def open_sequential(self, context: PluginContext) -> SequentialReader:

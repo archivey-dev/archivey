@@ -71,6 +71,7 @@ REJECTING_CODECS = frozenset(
         Codec.DEFLATE64,
         Codec.ZSTD,
         Codec.LZ4,
+        Codec.XZ,
     }
 )
 
@@ -84,7 +85,7 @@ PASSWORD_CONFIRM_PREFIX_BYTES = 64 * 1024
 # plaintext prefix. An output-only bound does not constrain a block-transform codec: 64
 # KiB of bzip2 output costs ~905 KB of input on incompressible data, because bzip2 emits
 # nothing until it has read a whole block. The number is the inner-TAR probe's
-# (``detection._INNER_TAR_MAX_PROBE_BYTES``), sized for the same worst-case bzip2 block;
+# (``detection._INNER_CONTAINER_MAX_PROBE_BYTES``), sized for the same worst-case bzip2 block;
 # a test pins the two equal. The probes do not share a helper: detection decodes through
 # a non-consuming peek callable under a detection budget ledger and ends in a ``ustar``
 # check, confirmation decodes a borrowed pack view through a decrypting pipeline. The

@@ -493,6 +493,9 @@ class CompressionAlgorithm(Enum):
     LZ4 = "lz4"
     BROTLI = "brotli"
     PPMD = "ppmd"
+    XZ = "xz"
+    """A complete ``.xz`` stream, with its own header and checks, as a ZIP member with
+    method 95 stores it."""
     BCJ = "bcj"
     """A filter that makes x86 executable code compress better. It does not compress
     by itself."""

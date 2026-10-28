@@ -48,6 +48,7 @@ from archivey.diagnostics import (
 )
 from archivey.internal import format_args
 from archivey.internal.plugin_adapter import registration_scope
+from archivey.internal.registry import get_registry
 from archivey.plugins import (
     FormatPlugin,
     IndexedReader,
@@ -294,7 +295,7 @@ def test_builtin_magic_wins(clean_registry: None) -> None:
         ({"format": ArchiveFormat.ZIP}, "PluginContainer"),
         (
             {"format": ArchiveFormat(ToyContainer.TOYA, StreamFormat.GZIP)},
-            "UNCOMPRESSED",
+            "UNCOMPRESSED stream: an indexed format inside a compression stream",
         ),
     ],
 )
@@ -304,6 +305,19 @@ def test_registration_refusals(
     bad = type("BadPlugin", (ToyPlugin,), attrs)
     with pytest.raises(ArchiveyUsageError, match=match):
         register_format(bad)
+
+
+def test_an_indexed_format_gets_no_compressed_forms(toya: ArchiveFormat) -> None:
+    """Only a sequential format is read inside a compression stream: an indexed one
+    gets no compressed pairs, no compound extensions and no inner magic, so a gzip
+    whose decoded start is the format's magic stays a gzip."""
+    toya_gz = ArchiveFormat(ToyContainer.TOYA, StreamFormat.GZIP)
+    assert toya_gz not in archivey.list_known_formats()
+    registry = get_registry()
+    assert ".toya.gz" not in registry.extension_map()
+    assert all(sig.format != toya for sig in registry.inner_magic_entries())
+    data = lzma.compress(build_toya(_ENTRIES), format=lzma.FORMAT_XZ)
+    assert detect_format(io.BytesIO(data)).format == ArchiveFormat.XZ
 
 
 def test_registration_refuses_clashes(clean_registry: None) -> None:
@@ -951,6 +965,8 @@ def _compress(method: CompressionAlgorithm, data: bytes) -> bytes:
         import lz4.frame
 
         return lz4.frame.compress(data)
+    if method is CompressionAlgorithm.XZ:
+        return lzma.compress(data)
     assert method is CompressionAlgorithm.BROTLI
     import brotli
 
@@ -965,6 +981,7 @@ def _compress(method: CompressionAlgorithm, data: bytes) -> bytes:
         CompressionAlgorithm.BZIP2,
         CompressionAlgorithm.LZMA,
         CompressionAlgorithm.LZMA2,
+        CompressionAlgorithm.XZ,
         pytest.param(CompressionAlgorithm.DEFLATE64, marks=requires("inflate64")),
         pytest.param(CompressionAlgorithm.ZSTD, marks=requires_zstd()),
         pytest.param(CompressionAlgorithm.LZ4, marks=requires("lz4")),
@@ -998,12 +1015,14 @@ def test_decompress_methods(
     [
         pytest.param(CompressionAlgorithm.ZSTD, marks=requires_zstd()),
         pytest.param(CompressionAlgorithm.LZ4, marks=requires("lz4")),
+        CompressionAlgorithm.XZ,
     ],
 )
 def test_decompress_reads_every_frame(
     clean_registry: None, tmp_path: Path, method: CompressionAlgorithm
 ) -> None:
-    """Zstd and LZ4 data may be several frames, and a member reads them all."""
+    """Zstd and LZ4 data may be several frames, and XZ data several streams, and a
+    member reads them all."""
     half = len(_PLAIN) // 2
     stored = _compress(method, _PLAIN[:half]) + _compress(method, _PLAIN[half:])
     register_format(_compressed_plugin(method))
@@ -1057,6 +1076,17 @@ def test_decompress_data_after_end_is_corrupt(
 ) -> None:
     register_format(_compressed_plugin(CompressionAlgorithm.DEFLATE))
     path = _compressed_archive(tmp_path, _raw_deflate(_PLAIN) + b"junk")
+    with open_archive(path) as reader, pytest.raises(CorruptionError):
+        reader.read("m.bin")
+
+
+def test_decompress_xz_member_refuses_data_after_its_streams(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """``XZ`` is the member contract, as in ZIP: bytes that are not stream padding
+    after the last stream are corruption, not trailing data."""
+    register_format(_compressed_plugin(CompressionAlgorithm.XZ))
+    path = _compressed_archive(tmp_path, lzma.compress(_PLAIN) + b"\x00")
     with open_archive(path) as reader, pytest.raises(CorruptionError):
         reader.read("m.bin")
 

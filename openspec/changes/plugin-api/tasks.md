@@ -11,12 +11,12 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
       size and digest verification, `ArchiveInfo` and `CostReceipt` built by the adapter,
       handle lock for plugins that keep their own handle).
 - [x] 1.2a Sequential shape in the adapter: the forward pass over `walk()`
-      (`_iter_with_data`, `_list_before_extraction`, the `_pull_member` hand-off), span
-      windows with skip-on-advance, recorded offsets for random access on a seekable
-      source, link targets read from data. *`SequentialReaderAdapter` serves the walk
-      as the member walk, through the base class's passes; link targets are read
-      while walking (design §2a, "As built"). TAR's one-pass random-access read waits
-      for outer compression.*
+      (`_iter_with_data`, `_list_before_extraction`, the `_before_pull_locked`
+      hand-off), span windows with skip-on-advance, recorded offsets for random access
+      on a seekable source, link targets read from data. *`SequentialReaderAdapter`
+      serves the walk as the member walk, through the base class's passes; link targets
+      are read while walking (design §2a, "As built"). TAR's one-pass random-access read
+      waits for outer compression.*
 - [ ] 1.2c Decoded `MemberSpan.data` (drain on advance, re-walk for random access),
       `ForwardStream.decompress`, `checked` members counted as verified,
       `PluginArchiveInfo.is_solid`. *1a landed `checked` and `is_solid`; the rest is 1b.*
@@ -33,8 +33,12 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
       hasher the plugin supplies for any other (a listed name archivey can hash keeps
       archivey's hasher) (maintainer, 2026-10-26 and 2026-10-27;
       see design.md).
-- [ ] 1.2b Move TAR's codec-stream opening (`_open_byte_stream`) to a helper shared
+- [x] 1.2b Move TAR's codec-stream opening (`_open_byte_stream`) to a helper shared
       with the adapter, for compressed sequential plugins.
+      *`BaseArchiveReader._open_outer_codec_stream`. A sequential plugin is registered
+      for each single-file codec's pair and compound extensions (`.cpio.gz`); its walk
+      reads the decoded stream through a buffer (streaming) or views of it (random
+      access), costed as a compressed TAR is.*
 - [ ] 1.3 `archivey/plugins.py`: `FormatPlugin`, `PluginReader`, `IndexedReader`,
       `SequentialReader`, `MemberRecord`, `MemberSpan`, `MemberData`, `MemberDigest`,
       `Hasher`, `ForwardStream`, `PluginSource`, `PluginContext`, `PluginArchiveInfo`, `Magic`,
@@ -44,23 +48,24 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
       container value or name that is already a `format=` spelling. The sequential
       stage added those three and `SequentialFormatPlugin`;
       `ForwardStream.decompress` comes with outer compression.*
-- [ ] 1.4 Detection: plugin signals counted only when no built-in signal matched at the
+- [x] 1.4 Detection: plugin signals counted only when no built-in signal matched at the
       same or a higher confidence; probes get the peeked prefix only. `_probe_inner_tar`
       becomes an inner-container probe (TAR first, then sequential plugin magic ending
       within 512 bytes), under the same budget. *1a landed the ranking and the probe;
-      the inner-container probe is 1b.*
+      1b the inner-container probe (`_probe_inner_container` over
+      `ReadBackend.INNER_MAGIC`; the tier keeps its name, `inner_tar`).*
 - [x] 1.5 `format_args.py`: plugin spellings after built-in ones. Check the default
       branch of each `ContainerFormat` test in `core.py`, `detection.py`,
       `cli/common.py`, `cli/extract_cmd.py` for a plugin container.
-- [ ] 1.6 Tests: a minimal in-test plugin through `open_archive`, `stream_members`,
+- [x] 1.6 Tests: a minimal in-test plugin through `open_archive`, `stream_members`,
       `extract_all`, `detect_format`, `format_availability`, the CLI; a short member
       stream raises `TruncatedError`; a wrong digest raises; a member named `../x` is
       refused like a built-in's; a plugin magic never outranks a built-in one. A
       sequential test plugin read from a pipe, gzip-compressed, under
       `stream_members`, `extract_all` and a `CONCURRENT` reader. *1a landed the
       indexed tests. The sequential test plugin (`tests/test_plugins_sequential.py`)
-      reads from a file, a non-seekable stream and an OS pipe; gzip waits for outer
-      compression.*
+      reads from a file, a non-seekable stream and an OS pipe, plain and inside gzip,
+      bzip2 and xz.*
 - [x] 1.7 `FormatInfo.from_plugin` (maintainer, 2026-10-25).
 
 ## 2b. TAR onto the sequential shape (after stages 3 and 4)
@@ -99,7 +104,7 @@ The test of the sequential shape, as the ISO port is of the indexed one (maintai
 
 - [x] 3.1 `packages/archivey-cpio/` (unpublished): a `SequentialReader` for binary, odc,
       newc, newc-with-CRC; `.cpio.gz` / `.cpio.xz`; read from a file and a pipe.
-      *`.cpio.gz` / `.cpio.xz` wait for outer compression (stage 3).*
+      *`.cpio.gz` / `.cpio.xz` came with outer compression (stage 3), and `.a.gz` too.*
 - [x] 3.2 Fixtures written by GNU `cpio` and `bsdcpio`: files, directories, symlinks,
       hard links, device nodes (listed as `OTHER`), a damaged checksum, a truncated
       member. *GNU cpio 2.15 writes all four variants, bsdcpio 3.7.2 odc and newc (its

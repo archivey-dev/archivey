@@ -256,7 +256,7 @@ in a real folder named `__MACOSX`.
 
 ## ZIP
 
-- **Needs:** nothing for stored, Deflate, BZip2 and LZMA members, or for ZipCrypto. `[recommended]`
+- **Needs:** nothing for stored, Deflate, BZip2, LZMA and XZ members, or for ZipCrypto. `[recommended]`
   adds Deflate64 and PPMd (`inflate64`, `pyppmd`, the packages the 7z reader uses too), WinZip AES
   (`cryptography`), and Zstandard before Python 3.14 (`backports.zstd`). A missing package raises
   `PackageNotInstalledError` when you read such a member.
@@ -349,14 +349,17 @@ sending side when the ZIP is done.
   succeeds, once the pass reaches the directory.
 - **Both headers declare less than the data decodes to:** the member is refused with
   `CorruptionError`.
-- **Bytes after a member's compressed stream:** a member's compressed data must hold one stream of
-  its codec and nothing else, as 7-Zip checks. Junk, zero bytes, or a second DEFLATE, BZip2 or
-  Zstandard stream raise `CorruptionError` once the data before them has been read, for every
-  method, whatever the declared size and CRC cover. So does an LZMA member without an end marker,
-  or a PPMd member, whose declared size stops short of its data. One zero byte after LZMA data
-  without an end marker reads, because 7-Zip's encoder sometimes writes it. Under ZipCrypto these
-  read as the password-or-damage `EncryptionError` instead, caused by that `CorruptionError`,
-  because the bytes are encrypted. With rapidgzip, one crafted shape may read instead: a long
+- **Bytes after a member's compressed stream:** a member's compressed data must hold its codec's
+  data and nothing else, as 7-Zip checks. For most methods that is one stream. For Zstandard and
+  XZ it is what their own formats define as the data, as in a `.zst` or `.xz` file: one or more
+  Zstandard frames, or one or more xz streams with stream padding (groups of four zero bytes)
+  between and after them. Junk, other zero bytes, or a second DEFLATE or BZip2 stream raise
+  `CorruptionError` once the data before them has been read, for every method, whatever the
+  declared size and CRC cover. So does an LZMA member without an end marker, or a PPMd member,
+  whose declared size stops short of its data. One zero byte after LZMA data without an end
+  marker reads, because 7-Zip's encoder sometimes writes it. Under ZipCrypto these read as the
+  password-or-damage `EncryptionError` instead, caused by that `CorruptionError`, because the
+  bytes are encrypted. With rapidgzip, one crafted shape may read instead: a long
   second DEFLATE stream, with a size and CRC that cover both streams. See
   [Where the guarantees stop](security.md#where-the-guarantees-stop).
 - `ListingLimits.max_members` is checked at open against the entry count the end record declares,
