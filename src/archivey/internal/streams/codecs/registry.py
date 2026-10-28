@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, BinaryIO
 
 from archivey.exceptions import ArchiveyError
@@ -14,6 +14,7 @@ from archivey.internal.config import (
     DEFAULT_STREAM_CONFIG,
     StreamConfig,
 )
+from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.streams.archive_stream import (
     ArchiveStreamImpl,
     ExceptionTranslator,
@@ -346,6 +347,6 @@ def _decoder_config(
         if size is not None:
             changes["compressed_input_size"] = size
     if changes:
-        config = replace(config, **changes)
+        config = copy_with(config, **changes)
     # Fill before resolve_codec so the translator and rewind_warning agree with open.
     return _BY_CODEC[codec].prepare_config(source, config)

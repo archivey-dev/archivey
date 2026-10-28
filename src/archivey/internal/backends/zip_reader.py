@@ -142,6 +142,7 @@ from archivey.internal.backends.zipcrypto import (
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import StreamConfig, stream_config_from_archivey
+from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.hashing import crc32_digest
@@ -3130,7 +3131,7 @@ class ZipReader(BaseArchiveReader):
                     source_format=ArchiveFormat.ZIP,
                 )
         if local_method == loc.method:
-            return replace(loc, data_start=header.data_start)
+            return copy_with(loc, data_start=header.data_start)
         if _WINZIP_AES_METHOD in (local_method, loc.method):
             raise CorruptionError(
                 f"ZIP member {quoted(member.name)}: its local header names compression "
@@ -3141,7 +3142,7 @@ class ZipReader(BaseArchiveReader):
                 source_format=ArchiveFormat.ZIP,
             )
         self._report_local_method(loc, member, local_method)
-        return replace(loc, method=local_method, data_start=header.data_start)
+        return copy_with(loc, method=local_method, data_start=header.data_start)
 
     def _front_cut_message(self, header_offset: int) -> str:
         """The refusal for a local header the directory puts before byte 0.
@@ -3394,16 +3395,23 @@ class ZipReader(BaseArchiveReader):
         # where the opener would read the same value from the same object. A codec
         # header read (LZMA, PPMd) moves it, and the opener then measures the view
         # it puts over the rest.
-        if not is_seekable(body) or body.tell() == 0:
+        body_seekable = is_seekable(body)
+        if not body_seekable or body.tell() == 0:
             input_size = source_byte_size(body)
             if input_size is not None:
                 changes["compressed_input_size"] = input_size
+        # What ``open_codec``'s own config pass would set (``_decoder_config``), so it
+        # finds nothing to change and makes no second copy.
+        if body_seekable != base.source_seekable:
+            changes["source_seekable"] = body_seekable
+        if base.seekable and not body_seekable:
+            changes["seekable"] = False
         if sequential_body:
             changes["use_rapidgzip"] = _sequential_accelerator(base.use_rapidgzip)
             changes["use_indexed_bzip2"] = _sequential_accelerator(
                 base.use_indexed_bzip2
             )
-        return replace(base, **changes)
+        return copy_with(base, **changes)
 
     def _member_codec_params(
         self,

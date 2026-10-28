@@ -64,6 +64,12 @@ class ZlibDecoder(BaseDecoder):
             )
         return ZlibDecoder(self._wbits, natives=self._natives)
 
+    def close(self) -> None:
+        # An in-process ``zlib`` object holds no decoder process, so the attribute
+        # walk of ``BaseDecoder.close`` would find nothing; ZIP closes one per member.
+        if self._natives.isolated:
+            super().close()
+
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
         if self._decomp.eof:
             # Past the end; the stream stops reading once these hold a non-zero byte.

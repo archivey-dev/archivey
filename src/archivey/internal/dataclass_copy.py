@@ -3,7 +3,8 @@
 ``dataclasses.replace`` looks up every field by name, checks it, and passes them all to
 ``__init__`` as keywords: a few microseconds for a dataclass of ten or twenty fields.
 Extraction copies each member (``ArchiveMember.replace``) and its result
-(``ExtractionResult``) at least once per member, so that adds up. :func:`copy_with`
+(``ExtractionResult``) at least once per member, and a reader copies its decoder config
+(``StreamConfig``) and member locator for every member it opens, so that adds up. :func:`copy_with`
 fetches the fields with one ``attrgetter`` and passes them by position instead. Every
 positional copy of a dataclass goes through here; do not add another.
 

@@ -109,6 +109,15 @@ def _rapidgzip_wanted(config: StreamConfig, *, available: bool) -> bool:
     """
     if config.process_isolation is ProcessIsolation.NONE:
         return False
+    size = config.compressed_input_size
+    if (
+        config.use_rapidgzip is AcceleratorMode.AUTO
+        and size is not None
+        and size < RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
+    ):
+        # What ``enabled_for`` answers below for a small input, without first working
+        # out the seek demand: a ZIP of small members asks this several times each.
+        return False
     if (
         config.use_rapidgzip is AcceleratorMode.AUTO
         and config.expected_decompressed_size is None
@@ -182,7 +191,11 @@ def _rapidgzip_enabled(config: StreamConfig, *, available: bool) -> bool:
     """
     if not _rapidgzip_wanted(config, available=available):
         return False
-    return _auto_without_child(config, available=available) is None
+    # ``_auto_without_child`` without asking ``_rapidgzip_wanted`` a second time.
+    return (
+        config.use_rapidgzip is not AcceleratorMode.AUTO
+        or rapidgzip_child_unavailable_reason() is None
+    )
 
 
 def _warn_if_auto_without_child(config: StreamConfig) -> None:
