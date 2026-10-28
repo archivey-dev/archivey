@@ -342,10 +342,10 @@ class ForwardStream:
         self._skip_fn(self._offset, n)
         self._offset += n
 
-    def decompress(self, stream: StreamFormat) -> ForwardStream:
-        """The rest of the archive, from :attr:`offset` on, decoded as a ``stream``
-        compression stream (``StreamFormat.GZIP``, ``XZ``, ``ZSTD``, …): the payload of
-        an RPM after its headers, say.
+    def decompress(self, stream_format: StreamFormat) -> ForwardStream:
+        """The rest of the archive, from :attr:`offset` on, decoded as a
+        ``stream_format`` compression stream (``StreamFormat.GZIP``, ``XZ``, ``ZSTD``,
+        …): the payload of an RPM after its headers, say.
 
         Read the archive from the returned stream after this call: this one refuses
         further reads. Its :attr:`offset` counts decoded bytes from 0, and the members
@@ -354,15 +354,22 @@ class ForwardStream:
         the decompression-ratio guard. The compression stream is taken to run to the
         end of the archive: bytes after its end are reported with
         ``ARCHIVE_TRAILING_DATA``, as after the end of a ``.gz`` file, not refused.
-        ``ValueError`` for a format that is not a compression stream
-        (``UNCOMPRESSED``).
+
+        archivey cannot know the archive is solid before the walk gets here, so a
+        format that decompresses part-way says so from :meth:`PluginReader.archive_info`
+        with ``PluginArchiveInfo(is_solid=True)``, and the cost receipt is right from
+        the open.
+
+        Raises ``ValueError`` for a format that is not a compression stream
+        (``UNCOMPRESSED``), and ``ArchiveyUsageError`` when this stream has already
+        handed off, or was not built by archivey.
         """
         self._check_not_handed_off()
         if self._decompress_fn is None:
             raise ArchiveyUsageError(
                 "this ForwardStream was not built by archivey and cannot decompress"
             )
-        decoded = self._decompress_fn(self._offset, stream)
+        decoded = self._decompress_fn(self._offset, stream_format)
         self._handed_off = True
         return decoded
 

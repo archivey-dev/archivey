@@ -477,8 +477,11 @@ def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
 The returned stream holds the decoded bytes, and its `offset` counts them from 0. The
 members the walk yields after the call are read from those bytes, from a pipe too, with
 random access to them on a file. archivey decodes with its own codecs, under the
-caller's decoder limits and the decompression-ratio guard, and treats the archive as
-solid from there. The stream the walk called `decompress()` on refuses further reads.
+caller's decoder limits and the decompression-ratio guard. The stream the walk called
+`decompress()` on refuses further reads. archivey cannot know the archive holds a
+compression stream before the walk reaches it, so have `archive_info()` return
+`PluginArchiveInfo(is_solid=True)`: the cost receipt then says members are read through
+one stream from the moment the archive opens.
 The compressed stream is taken to run to the end of the archive: bytes after its end are
 reported with `ARCHIVE_TRAILING_DATA`, not refused.
 

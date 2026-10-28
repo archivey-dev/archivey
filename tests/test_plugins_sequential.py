@@ -27,10 +27,13 @@ import archivey
 from archivey import (
     ArchiveFormat,
     ArchiveMember,
+    ArchiveyError,
     ArchiveyUsageError,
     CorruptionError,
+    ExtractionLimits,
     MemberType,
     PluginContainer,
+    ResourceLimitError,
     StreamFormat,
     TruncatedError,
     detect_format,
@@ -45,6 +48,7 @@ from archivey.plugins import (
     Magic,
     MemberDigest,
     MemberSpan,
+    PluginArchiveInfo,
     PluginContext,
     SequentialFormatPlugin,
     SequentialReader,
@@ -729,6 +733,10 @@ class _RpmishReader(ToysReader):
     """TOYS with one more header type: ``Z``, whose name is a ``StreamFormat`` value.
     Everything after it is that compression stream, holding more TOYS headers."""
 
+    def archive_info(self) -> PluginArchiveInfo:
+        # The walk decompresses part-way, so the archive says it is solid up front.
+        return PluginArchiveInfo(is_solid=True)
+
     def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
         while True:
             at = stream.offset
@@ -804,6 +812,79 @@ def test_decompress_part_way_random_access(
             assert member_stream.verified is archivey.Verification.CONTENT
         assert reader.info.is_solid
         assert reader.info.cost.access_cost is AccessCost.SOLID
+
+
+def test_decompress_part_way_cost_is_known_at_open(
+    rpmish: ArchiveFormat, tmp_path: Path
+) -> None:
+    """The plugin declares the archive solid, so the receipt does not change when
+    the walk reaches decompress()."""
+    path = _write(tmp_path, build_rpmish())
+    with open_archive(path, format=rpmish) as reader:
+        before = reader.info
+        reader.members()
+        after = reader.info
+    assert before.is_solid and after.is_solid
+    assert before.cost == after.cost
+    assert before.cost.access_cost is AccessCost.SOLID
+
+
+def test_decompress_part_way_on_a_pipe_held_open(
+    rpmish: ArchiveFormat, tmp_path: Path
+) -> None:
+    """The whole archive is in the pipe and its writer keeps it open: the pass ends
+    without waiting for the writer, as for a TAR (the codec is fed what has
+    arrived)."""
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, build_rpmish())
+    got: dict[str, bytes] = {}
+
+    def read() -> None:
+        with (
+            open(read_fd, "rb", buffering=0) as pipe,
+            open_archive(pipe, streaming=True, format=rpmish) as reader,
+        ):
+            for member, stream in reader.stream_members():
+                if stream is not None:
+                    got[member.name] = stream.read()
+
+    reader_thread = threading.Thread(target=read, daemon=True)
+    reader_thread.start()
+    reader_thread.join(30)
+    finished = not reader_thread.is_alive()
+    os.close(write_fd)
+    reader_thread.join(30)
+    assert finished, "the pass waited for the writer to close the pipe"
+    assert got["b.bin"] == _DATA["b.bin"]
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_decompress_part_way_ratio_guard(
+    rpmish: ArchiveFormat, tmp_path: Path, pipe: bool
+) -> None:
+    """The decoded payload is under the caller's decompression-ratio guard."""
+    entries = [*_ENTRIES[:2], ("bomb.bin", MemberType.FILE, bytes(8 << 20))]
+    name = StreamFormat.GZIP.value.encode()
+    data = (
+        build_toys(entries[:2], end=False)
+        + _HEADER.pack(_MAGIC, b"Z", len(name), 0, 0)
+        + name
+        + gzip.compress(build_toys(entries[2:]), mtime=0)
+    )
+    source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data)
+    with (
+        open_archive(source, streaming=pipe, format=rpmish) as reader,
+        pytest.raises(ResourceLimitError, match="ratio"),
+    ):
+        reader.extract_all(
+            tmp_path / "out",
+            limits=ExtractionLimits(
+                max_ratio=100.0,
+                ratio_activation_threshold=1 << 20,
+                # A pipe has no size: the live guard, on compressed bytes counted.
+                live_ratio_activation_threshold=1 << 20,
+            ),
+        )
 
 
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
@@ -921,3 +1002,33 @@ def test_decompress_part_way_misuse(rpmish: ArchiveFormat, tmp_path: Path) -> No
     plain = _variant(Plain, ToysContainer.BAD_SIZE)
     with pytest.raises(ValueError, match="compression stream format"):
         open_archive(path, format=plain)
+
+
+def test_decompress_misuse_is_not_offered_to_the_plugin_translator(
+    rpmish: ArchiveFormat, tmp_path: Path
+) -> None:
+    """A plugin whose translator maps every ValueError to corruption still gets its
+    own misuse back as a plugin bug, not as a damaged archive."""
+
+    class Plain(_RpmishReader):
+        def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+            stream.decompress(StreamFormat.UNCOMPRESSED)
+            yield from ()
+
+        def translate_exception(self, exc: Exception) -> ArchiveyError | None:
+            if isinstance(exc, ValueError):
+                return CorruptionError(f"translated: {exc}")
+            return None
+
+    class Reuses(Plain):
+        def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+            stream.read_exact(_HEADER.size)
+            stream.decompress(StreamFormat.GZIP)
+            stream.read(1)
+            yield from ()
+
+    path = _write(tmp_path, build_rpmish())
+    with pytest.raises(ValueError, match="compression stream format"):
+        open_archive(path, format=_variant(Plain, ToysContainer.BAD_SIZE))
+    with pytest.raises(ArchiveyUsageError, match="handed to decompress"):
+        open_archive(path, format=_variant(Reuses, ToysContainer.SUM16))
