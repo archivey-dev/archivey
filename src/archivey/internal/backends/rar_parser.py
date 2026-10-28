@@ -3568,7 +3568,9 @@ def _parse_rar5(
             continue
 
         if block_type == _RAR5_ENDARC:
-            endarc_flags, _ = load_vint(hdata, pos)
+            # A header that stops before its flags has none set: unrar reads a field
+            # past the header's end as zero.
+            endarc_flags = load_vint(hdata, pos)[0] if pos < len(hdata) else 0
             needs_next_volume = bool(endarc_flags & _RAR5_ENDARC_NEXT_VOLUME)
             end_block_seen = True
             trailing_at = _scan_after_end_block(

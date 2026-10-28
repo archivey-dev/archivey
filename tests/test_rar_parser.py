@@ -1039,3 +1039,17 @@ def test_unrar_skips_a_rar4_file_headers_pack_size_without_long_block(
     assert "hidden.txt" not in listed.stdout
     with open_archive(path) as archive:
         assert [m.name for m in archive.members_report().members] == ["carrier.bin"]
+
+
+def test_rar5_end_block_without_its_flags_reads() -> None:
+    # An end block whose header stops before its end-of-archive flags (libarchive's
+    # test_read_format_rar5_redir_varint_2byte.rar has one). unrar reads a field past
+    # the header's end as zero, so the flags are zero: the archive ends here.
+    original = (_FIXTURES / "basic_nonsolid__.rar").read_bytes()
+    body = b"\x02\x05\x00"  # header size, ENDARC, header flags; no end flags
+    end_block = struct.pack("<I", zlib.crc32(body)) + body
+    data = original[:-8] + end_block
+    with open_archive(io.BytesIO(data)) as reader:
+        names = [m.name for m in reader.members()]
+    with open_archive(io.BytesIO(original)) as reader:
+        assert names == [m.name for m in reader.members()]
