@@ -273,10 +273,11 @@ The costs were measured on one 2.8 GHz core.
 
 Going over a limit raises `ResourceLimitError`.
 
-If you know which formats you accept, a [`FormatPolicy`](opening.md#configuration) refuses the
-rest before any reader runs on them, including formats a later archivey release adds and plugin
-formats that another library registers. It decides which reader runs, not what detection reads:
-detection still looks for every built-in format, within `detection_budget`.
+If you know which formats you accept, a [`FormatPolicy`](opening.md#configuration) with an
+`only=` list refuses the rest before any reader runs on them, including formats a later archivey
+release adds and plugin formats that another library registers. An `exclude=` list refuses only
+what it names, so a format added later opens. The policy decides which reader runs, not what
+detection reads: detection still looks for every built-in format, within `detection_budget`.
 
 For archives from strangers, the default `policy="strict"` refuses or rewrites every kind of unsafe
 member archivey knows of. The [policy

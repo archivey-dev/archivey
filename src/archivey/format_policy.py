@@ -80,9 +80,9 @@ class FormatPolicy:
     too; ``StreamFormat.UNCOMPRESSED`` always passes. The default policy allows every
     format.
 
-    :func:`~archivey.open_archive`, :func:`~archivey.open_stream` and the CLI refuse a
-    format the policy does not allow with :class:`~archivey.UnsupportedFeatureError`,
-    whose message names the entry to change; ``format=`` does not bypass the policy.
+    :func:`~archivey.open_archive` and :func:`~archivey.open_stream` refuse a format
+    the policy does not allow with :class:`~archivey.UnsupportedFeatureError`,
+    whose message names every entry to change; ``format=`` does not bypass the policy.
     :func:`~archivey.detect_format` reports the true format of a built-in file whatever
     the policy says, so a caller can check :meth:`allows` before opening. A plugin
     format the policy turns off is not detected at all: its magic, extensions and
@@ -145,28 +145,38 @@ class FormatPolicy:
         return self._refusal(fmt) is None
 
     def _refusal(self, fmt: ArchiveFormat) -> str | None:
-        """The refusal text for ``fmt``, naming the entry to change, or ``None``."""
-        reason = self._reason(fmt)
-        if reason is None:
+        """The refusal text for ``fmt``, naming every entry to change, or ``None``."""
+        reasons = self._reasons(fmt)
+        if not reasons:
             return None
-        return f"ArchiveyConfig.formats does not allow {fmt.display_name}: {reason}."
+        return (
+            f"ArchiveyConfig.formats does not allow {fmt.display_name}: "
+            f"{', and '.join(reasons)}."
+        )
 
-    def _reason(self, fmt: ArchiveFormat) -> str | None:
+    def _reasons(self, fmt: ArchiveFormat) -> list[str]:
+        """Why ``fmt`` is refused, one reason per setting to change, so a format that
+        fails on both halves names both in one refusal."""
+        reasons: list[str] = []
+        unlisted: list[_FormatEntry] = []
         container = fmt.container
         if isinstance(container, PluginContainer) and not self.plugins:
-            return "plugins=False turns off every plugin format"
-        if container in self.exclude:
-            return f"exclude= lists {_entry_name(container)}"
-        if self.only is not None and container not in self.only:
-            return f"only= does not list {_entry_name(container)}; add it to open this"
+            reasons.append("plugins=False turns off every plugin format")
+        elif container in self.exclude:
+            reasons.append(f"exclude= lists {_entry_name(container)}")
+        elif self.only is not None and container not in self.only:
+            unlisted.append(container)
         stream = fmt.stream
-        if stream is StreamFormat.UNCOMPRESSED:
-            return None
-        if stream in self.exclude:
-            return f"exclude= lists {_entry_name(stream)}"
-        if self.only is not None and stream not in self.only:
-            return f"only= does not list {_entry_name(stream)}; add it to open this"
-        return None
+        if stream is not StreamFormat.UNCOMPRESSED:
+            if stream in self.exclude:
+                reasons.append(f"exclude= lists {_entry_name(stream)}")
+            elif self.only is not None and stream not in self.only:
+                unlisted.append(stream)
+        if unlisted:
+            names = " or ".join(_entry_name(e) for e in unlisted)
+            pronoun = "it" if len(unlisted) == 1 else "them"
+            reasons.append(f"only= does not list {names}; add {pronoun} to open this")
+        return reasons
 
     @property
     def _turns_off_plugins(self) -> bool:

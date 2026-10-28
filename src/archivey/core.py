@@ -80,7 +80,11 @@ from archivey.internal.registry import (
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.codecs import codec_for_stream_format, open_codec_stream
-from archivey.internal.streams.streamtools import OneReadEachStream, is_stream
+from archivey.internal.streams.streamtools import (
+    OneReadEachStream,
+    is_stream,
+    source_name,
+)
 from archivey.internal.volumes import (
     OpenSourceInput,
     ResolvedSource,
@@ -977,7 +981,9 @@ def _open_stream_from_source(
     # The format the stream is, as open_archive would name it: a bare StreamFormat is
     # its raw stream, and a compressed tar stays a tar, so a policy that refuses TAR
     # refuses its gzip layer here too.
-    _refuse_format_off_by_policy(effective_config, opened_format, None)
+    _refuse_format_off_by_policy(
+        effective_config, opened_format, source_name(codec_input)
+    )
 
     codec = codec_for_stream_format(stream_format)
     # The codec stream is the whole source, so bytes after its end are reported.

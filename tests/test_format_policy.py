@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from archivey import (
+    DEFAULT_ARCHIVEY_CONFIG,
     ArchiveFormat,
     ArchiveyConfig,
     ArchiveyUsageError,
@@ -30,6 +31,7 @@ from archivey import (
     open_stream,
 )
 from archivey.detection_cost import TierSkipReason
+from archivey.internal.detection import probe_config
 from archivey.internal.plugin_adapter import registration_scope
 from archivey.plugins import Magic
 from tests.test_plugins import _ENTRIES, _MAGIC, _plugin_with, build_toya
@@ -190,6 +192,38 @@ def test_a_compression_missing_from_only_is_refused_by_name(tmp_path: Path) -> N
         assert [m.name for m in reader.members()] == ["a.txt"]
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        (
+            {"only": {C.ZIP}},
+            "only= does not list ContainerFormat.TAR or StreamFormat.GZIP; add them",
+        ),
+        (
+            {"exclude": {C.TAR}, "only": {S.GZIP}},
+            "exclude= lists ContainerFormat.TAR.",
+        ),
+        (
+            {"exclude": {C.TAR, S.GZIP}},
+            "exclude= lists ContainerFormat.TAR, and exclude= lists StreamFormat.GZIP.",
+        ),
+        (
+            {"exclude": {S.GZIP}, "only": {C.ZIP}},
+            (
+                "exclude= lists StreamFormat.GZIP, and only= does not list "
+                "ContainerFormat.TAR; add it"
+            ),
+        ),
+    ],
+)
+def test_one_refusal_names_every_entry_to_change(
+    kwargs: dict[str, object], expected: str
+) -> None:
+    refusal = FormatPolicy(**kwargs)._refusal(ArchiveFormat.TAR_GZ)  # type: ignore[arg-type]
+    assert refusal is not None
+    assert expected in refusal
+
+
 def test_format_does_not_bypass_the_policy(tmp_path: Path) -> None:
     path = tmp_path / "a.zip"
     path.write_bytes(_zip_bytes())
@@ -225,8 +259,9 @@ def test_the_policy_refusal_comes_before_the_pipe_refusal() -> None:
 def test_open_stream_follows_the_policy(tmp_path: Path) -> None:
     path = tmp_path / "a.gz"
     path.write_bytes(gzip.compress(b"alpha"))
-    with pytest.raises(UnsupportedFeatureError, match="StreamFormat.GZIP"):
+    with pytest.raises(UnsupportedFeatureError, match="StreamFormat.GZIP") as exc_info:
         open_stream(path, config=_config(exclude={S.GZIP}))
+    assert exc_info.value.archive_name == str(path)
     with pytest.raises(UnsupportedFeatureError, match="ContainerFormat.RAW_STREAM"):
         open_stream(path, format=S.GZIP, config=_config(only={C.TAR, S.GZIP}))
     tar_gz = tmp_path / "a.tar.gz"
@@ -290,6 +325,29 @@ def test_an_off_plugins_extension_is_not_a_guess(
         detect_format(path, config=config)
     with pytest.raises(FormatDetectionError, match="ArchiveyConfig.formats"):
         open_archive(path, config=config)
+
+
+def test_an_unrelated_off_plugin_keeps_the_advice_for_magic_less_streams(
+    clean_registry: None,
+) -> None:
+    # The plugin could never claim these bytes; the message adds the policy to the
+    # advice that reaches the formats the file might be, and claims no probe ran.
+    plugin = _plugin_with("named", magic=(Magic(0, _MAGIC),))
+    data = b"hello world, nothing archive-like here\n" * 20
+    with pytest.raises(FormatDetectionError) as exc_info:
+        detect_format(io.BytesIO(data), config=_config(plugins=False))
+    message = str(exc_info.value)
+    assert "(.lzma, .zz, .br)" in message
+    assert "content probe" not in message
+    assert f"turns off the plugin formats {plugin.format.display_name}" in message
+
+
+def test_internal_detections_carry_the_policy() -> None:
+    # The stub check and the empty-listing rescan detect under probe_config; a caller
+    # whose only setting is the policy must not get the default policy back there.
+    config = _config(plugins=False)
+    assert probe_config(config).formats == config.formats
+    assert probe_config(ArchiveyConfig()) is DEFAULT_ARCHIVEY_CONFIG
 
 
 def test_format_naming_an_off_plugin_is_refused_by_name(

@@ -178,9 +178,10 @@ look: with an off plugin left out, `x.cpio.gz` would open as one gzip member.
 A file that only an off plugin would recognise gets `FormatDetectionError`, a reported
 absence (DR-1), not a wrong answer. This also holds under `always_probe_content=True` and
 in `open_stream`, which run every probe the policy allows. When the policy left a
-plugin out at any step and nothing matched, the `FormatDetectionError` message names the policy rather than
-the three ways to read a nameless probe-only stream, none of which reaches a plugin that
-is off. Each tier that left an off plugin out (`near_magic`, `far_magic`, `content_probe`,
+plugin out at any step and nothing matched, the `FormatDetectionError` message also names
+the policy and the plugin formats it turned off, after the three ways to read a nameless
+probe-only stream: the file may be one of the formats those reach, and none of them
+reaches a plugin that is off. Each tier that left an off plugin out (`near_magic`, `far_magic`, `content_probe`,
 `extension`) is recorded in the detection receipt as
 `TierSkipReason.NOT_ENABLED_BY_POLICY`, the reason detection already gives a probe the
 extension rule leaves out, so the receipt does not look like a complete search.
