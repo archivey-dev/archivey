@@ -214,6 +214,12 @@ are not read through this cap: the header parser has already allocated them, and
 _UnconfirmedEvidence = Literal["extension", "content_probe"]
 
 
+# Members ``_drain_walk`` pulls per hold of the walk lock: enough that the lock and
+# guards cost nothing per member, few enough that a pass on another thread is not kept
+# waiting for a whole listing.
+_DRAIN_BATCH = 256
+
+
 class _UnconfirmedWording(NamedTuple):
     code: DiagnosticCode
     evidence_text: str  # "identified only by {evidence_text}"
@@ -1740,18 +1746,25 @@ class BaseArchiveReader(ArchiveReader):
         out yet, and poisoned in streaming, where the prefix already has.
         """
         with self._walk_lock:
-            self._before_pull_locked()
             return self._pull_members_locked(1)
 
     def _before_pull_locked(self) -> None:
-        """Called under ``_walk_lock`` before a pull: a backend's hand-off of a stream
-        the walk is reading (TAR's ``_WalkHandoffStream``). Nothing by default."""
+        """A backend's hand-off of a stream the walk is reading (TAR's
+        ``_WalkHandoffStream``) before the walk moves. Nothing by default.
 
-    def _pull_members_locked(self, count: int | None) -> ArchiveMember | None:
-        """Pull up to ``count`` members (``None``: to the end of the walk), as
-        ``_pull_member`` describes, and return the last one pulled, or ``None`` once the
-        walk has ended. One guard and one ``try`` cover them all: draining a listing of
-        many small members pulls each one through this loop, not through a call each."""
+        Called under ``_walk_lock`` once per :meth:`_pull_members_locked` call, before
+        one or more pulls, so it must leave nothing for the walk to hand off for the
+        whole batch: whatever it hands off must only be set under ``_walk_lock``, so
+        nothing new appears until the lock is released."""
+
+    def _pull_members_locked(self, count: int) -> ArchiveMember | None:
+        """Pull up to ``count`` members (at least one), as ``_pull_member`` describes,
+        and return the last one pulled, or ``None`` once the walk has ended. One hook
+        call, one guard and one ``try`` cover them all: draining a listing of many small
+        members pulls each one through this loop, not through a call each. Called under
+        ``_walk_lock``."""
+        assert count >= 1, count
+        self._before_pull_locked()
         if self._walk_done:
             return None
         if self._walk_failure is not None:
@@ -1777,16 +1790,17 @@ class BaseArchiveReader(ArchiveReader):
             if self._walk is None:
                 self._account_archive_comment()
                 self._walk = self._iter_members()
+            # Read once for the batch: only ``_end_walk`` and ``_abandon_walk`` drop
+            # ``_walk``, and the loop leaves right after either.
             walk = self._walk
-            # A streaming walk is never started over (``_abandon_walk`` poisons it), so
-            # it has nothing to replay and keeps no log.
             streaming = self._streaming
             member: ArchiveMember | None = None
-            pulled = 0
-            while count is None or pulled < count:
+            for _ in range(count):
                 position = self._walk_position
                 try:
                     if streaming:
+                        # A streaming walk is never started over (``_abandon_walk``
+                        # poisons it), so it has nothing to replay and keeps no log.
                         member = next(walk)
                     else:
                         member = self._pull_replayable(position)
@@ -1800,7 +1814,6 @@ class BaseArchiveReader(ArchiveReader):
                 self._walk_position = position + 1
                 self._index_member_name(member)
                 self._listed.append(member)
-                pulled += 1
             return member
         except BaseException as exc:
             self._abandon_walk(exc)
@@ -1921,10 +1934,14 @@ class BaseArchiveReader(ArchiveReader):
         self._listing_tracker.reset()
 
     def _drain_walk(self) -> None:
-        """Pull to the end of the walk."""
-        with self._walk_lock:
-            self._before_pull_locked()
-            self._pull_members_locked(None)
+        """Pull to the end of the walk, in batches of ``_DRAIN_BATCH`` members.
+
+        Each batch takes ``_walk_lock`` once, so a pass on another thread (under
+        ``CONCURRENT``) waits at most one batch for it, not the whole listing."""
+        while True:
+            with self._walk_lock:
+                if self._pull_members_locked(_DRAIN_BATCH) is None:
+                    return
 
     def _walk_ahead(self) -> None:
         """Drain a streaming walk before its pass reads data; a failure waits for it.
