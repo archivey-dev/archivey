@@ -27,10 +27,13 @@ import archivey
 from archivey import (
     ArchiveFormat,
     ArchiveMember,
+    ArchiveyError,
     ArchiveyUsageError,
     CorruptionError,
+    ExtractionLimits,
     MemberType,
     PluginContainer,
+    ResourceLimitError,
     StreamFormat,
     TruncatedError,
     detect_format,
@@ -40,11 +43,13 @@ from archivey import (
 from archivey.cost import AccessCost, ListingCost, StreamCapability
 from archivey.diagnostics import DiagnosticCode
 from archivey.internal.plugin_adapter import registration_scope
+from archivey.internal.streams.streamtools import ReadAheadStream
 from archivey.plugins import (
     ForwardStream,
     Magic,
     MemberDigest,
     MemberSpan,
+    PluginArchiveInfo,
     PluginContext,
     SequentialFormatPlugin,
     SequentialReader,
@@ -63,6 +68,7 @@ class ToysContainer(PluginContainer):
     BAD_SIZE = "toys-bad-size"
     SUM16 = "toys-sum16"
     CLOSING = "toys-closing"
+    RPMISH = "toys-rpmish"
 
 
 TOYS = ArchiveFormat(ToysContainer.TOYS, StreamFormat.UNCOMPRESSED)
@@ -719,3 +725,406 @@ def test_a_compressed_extension_another_format_claims_is_refused() -> None:
         # TOYS would add ".toys.gz" for its gzip pair.
         with pytest.raises(ArchiveyUsageError, match=r"'\.toys\.gz' is already"):
             register_format(ToysPlugin)
+
+
+# --- ForwardStream.decompress: compression that starts part-way (an RPM payload) ---
+
+
+class _RpmishReader(ToysReader):
+    """TOYS with one more header type: ``Z``, whose name is a ``StreamFormat`` value.
+    Everything after it is that compression stream, holding more TOYS headers."""
+
+    def archive_info(self) -> PluginArchiveInfo:
+        # The walk decompresses part-way, so the archive says it is solid up front.
+        return PluginArchiveInfo(is_solid=True)
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        while True:
+            at = stream.offset
+            magic, code, name_len, length, crc = stream.read_struct(_HEADER)
+            if magic != _MAGIC:
+                raise CorruptionError(f"no TOYS header at offset {at}")
+            if code == b"E":
+                return
+            raw = stream.read_exact(name_len)
+            if code == b"Z":
+                stream = stream.decompress(StreamFormat(raw.decode()))
+                continue
+            member = ArchiveMember(
+                type=_TYPES[code], name=self._context.decode_name(raw), raw_name=raw
+            )
+            yield MemberSpan(
+                member,
+                length,
+                (MemberDigest("crc32", crc.to_bytes(4, "big")),)
+                if code == b"F"
+                else (),
+            )
+            stream.skip(_pad(length))
+
+
+def build_rpmish(
+    stream: StreamFormat = StreamFormat.GZIP,
+    compress: Callable[[bytes], bytes] = lambda data: gzip.compress(data, mtime=0),
+    *,
+    after: bytes = b"",
+) -> bytes:
+    """Two members stored as they are, then a ``Z`` header and the rest compressed."""
+    head = build_toys(_ENTRIES[:2], end=False)
+    name = stream.value.encode()
+    switch = _HEADER.pack(_MAGIC, b"Z", len(name), 0, 0) + name
+    return head + switch + compress(build_toys(_ENTRIES[2:])) + after
+
+
+@pytest.fixture
+def rpmish() -> Iterator[ArchiveFormat]:
+    with registration_scope():
+        yield _variant(_RpmishReader, ToysContainer.RPMISH)
+
+
+_RPM_NAMES = ["docs/", "docs/a.txt", "link", "b.bin", "empty"]
+
+
+@pytest.mark.parametrize(
+    ("stream", "compress"),
+    [
+        (StreamFormat.GZIP, lambda data: gzip.compress(data, mtime=0)),
+        (StreamFormat.XZ, lzma.compress),
+        (StreamFormat.BZIP2, bz2.compress),
+    ],
+    ids=["gz", "xz", "bz2"],
+)
+def test_decompress_part_way_random_access(
+    rpmish: ArchiveFormat,
+    tmp_path: Path,
+    stream: StreamFormat,
+    compress: Callable[[bytes], bytes],
+) -> None:
+    path = _write(tmp_path, build_rpmish(stream, compress))
+    with open_archive(path, format=rpmish) as reader:
+        assert [m.name for m in reader.members()] == _RPM_NAMES
+        assert reader.get("link").link_target == "docs/a.txt"  # type: ignore[union-attr]
+        # Out of order, across the switch, and back.
+        assert reader.read("b.bin") == _DATA["b.bin"]
+        assert reader.read("docs/a.txt") == b"alpha\n"
+        assert reader.read("empty") == b""
+        with reader.open("b.bin") as member_stream:
+            assert member_stream.read() == _DATA["b.bin"]
+            assert member_stream.verified is archivey.Verification.CONTENT
+        assert reader.info.is_solid
+        assert reader.info.cost.access_cost is AccessCost.SOLID
+
+
+def test_decompress_part_way_cost_is_known_at_open(
+    rpmish: ArchiveFormat, tmp_path: Path
+) -> None:
+    """The plugin declares the archive solid, so the receipt does not change when
+    the walk reaches decompress()."""
+    path = _write(tmp_path, build_rpmish())
+    with open_archive(path, format=rpmish) as reader:
+        before = reader.info
+        reader.members()
+        after = reader.info
+    assert before.is_solid and after.is_solid
+    assert before.cost == after.cost
+    assert before.cost.access_cost is AccessCost.SOLID
+    assert before.cost.listing_cost is ListingCost.REQUIRES_DECOMPRESSION
+
+
+def test_decompress_part_way_on_a_pipe_held_open(
+    rpmish: ArchiveFormat, tmp_path: Path
+) -> None:
+    """The whole archive is in the pipe and its writer keeps it open: the pass ends
+    without waiting for the writer, as for a TAR (the codec is fed what has
+    arrived)."""
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, build_rpmish())
+    got: dict[str, bytes] = {}
+
+    def read() -> None:
+        with (
+            open(read_fd, "rb", buffering=0) as pipe,
+            open_archive(pipe, streaming=True, format=rpmish) as reader,
+        ):
+            for member, stream in reader.stream_members():
+                if stream is not None:
+                    got[member.name] = stream.read()
+
+    reader_thread = threading.Thread(target=read, daemon=True)
+    reader_thread.start()
+    reader_thread.join(30)
+    finished = not reader_thread.is_alive()
+    os.close(write_fd)
+    reader_thread.join(30)
+    assert finished, "the pass waited for the writer to close the pipe"
+    assert got["b.bin"] == _DATA["b.bin"]
+
+
+def _build_nested() -> bytes:
+    """Two stored members, then gzip holding two more and an xz switch inside it."""
+
+    def switch(stream: StreamFormat) -> bytes:
+        name = stream.value.encode()
+        return _HEADER.pack(_MAGIC, b"Z", len(name), 0, 0) + name
+
+    inner = (
+        build_toys(_ENTRIES[2:4], end=False)
+        + switch(StreamFormat.XZ)
+        + lzma.compress(build_toys(_ENTRIES[4:]))
+    )
+    return (
+        build_toys(_ENTRIES[:2], end=False)
+        + switch(StreamFormat.GZIP)
+        + gzip.compress(inner, mtime=0)
+    )
+
+
+@pytest.mark.parametrize("mode", ["file", "stream-file", "stream-pipe", "held-pipe"])
+def test_decompress_part_way_nested(
+    rpmish: ArchiveFormat, tmp_path: Path, mode: str
+) -> None:
+    """A walk can call decompress() again on the stream decompress() returned: the
+    layers stack, on a file, a pipe, and a pipe whose writer keeps it open."""
+    data = _build_nested()
+    got: dict[str, bytes | str | None] = {}
+
+    def read(source: object) -> None:
+        with open_archive(source, streaming=mode != "file", format=rpmish) as reader:
+            if mode == "file":
+                # Random access, out of order, into both layers.
+                got["empty"] = reader.read("empty")
+                got["b.bin"] = reader.read("b.bin")
+                got["docs/a.txt"] = reader.read("docs/a.txt")
+                return
+            for member, stream in reader.stream_members():
+                got[member.name] = (
+                    stream.read() if stream is not None else member.link_target
+                )
+
+    if mode == "held-pipe":
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, data)
+
+        def run() -> None:
+            with open(read_fd, "rb", buffering=0) as pipe:
+                read(pipe)
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        thread.join(30)
+        finished = not thread.is_alive()
+        os.close(write_fd)
+        thread.join(30)
+        assert finished, "the pass waited for the writer to close the pipe"
+    else:
+        read(
+            NonSeekableBytesIO(data)
+            if mode == "stream-pipe"
+            else _write(tmp_path, data)
+        )
+    if mode != "file":
+        assert list(got) == _RPM_NAMES
+        assert got["link"] == "docs/a.txt"
+    assert got["docs/a.txt"] == b"alpha\n"
+    assert got["b.bin"] == _DATA["b.bin"]
+    assert got["empty"] == b""
+
+
+def test_decompress_part_way_layer_close_errors_are_all_reported(
+    rpmish: ArchiveFormat, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every layer is closed when one close raises; the first error propagates and
+    the later ones are notes on it, not dropped."""
+    path = _write(tmp_path, _build_nested())
+    close = ReadAheadStream.close
+
+    def failing_close(self: ReadAheadStream) -> None:
+        was_closed = self.closed
+        close(self)
+        if not was_closed:
+            raise OSError("close failed")
+
+    monkeypatch.setattr(ReadAheadStream, "close", failing_close)
+    with (
+        pytest.raises(OSError, match="close failed") as raised,
+        open_archive(path, streaming=True, format=rpmish) as reader,
+    ):
+        for _ in reader.stream_members():
+            pass
+    assert any("closing another layer failed" in n for n in raised.value.__notes__)
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_decompress_part_way_ratio_guard(
+    rpmish: ArchiveFormat, tmp_path: Path, pipe: bool
+) -> None:
+    """The decoded payload is under the caller's decompression-ratio guard."""
+    entries = [*_ENTRIES[:2], ("bomb.bin", MemberType.FILE, bytes(8 << 20))]
+    name = StreamFormat.GZIP.value.encode()
+    data = (
+        build_toys(entries[:2], end=False)
+        + _HEADER.pack(_MAGIC, b"Z", len(name), 0, 0)
+        + name
+        + gzip.compress(build_toys(entries[2:]), mtime=0)
+    )
+    source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data)
+    with (
+        open_archive(source, streaming=pipe, format=rpmish) as reader,
+        pytest.raises(ResourceLimitError, match="ratio"),
+    ):
+        reader.extract_all(
+            tmp_path / "out",
+            limits=ExtractionLimits(
+                max_ratio=100.0,
+                ratio_activation_threshold=1 << 20,
+                # A pipe has no size: the live guard, on compressed bytes counted.
+                live_ratio_activation_threshold=1 << 20,
+            ),
+        )
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_decompress_part_way_streaming(
+    rpmish: ArchiveFormat, tmp_path: Path, pipe: bool
+) -> None:
+    data = build_rpmish()
+    source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data)
+    with open_archive(source, streaming=True, format=rpmish) as reader:
+        seen = {
+            m.name: (s.read() if s is not None else m.link_target)
+            for m, s in reader.stream_members()
+        }
+    assert list(seen) == _RPM_NAMES
+    assert seen["b.bin"] == _DATA["b.bin"]
+    assert seen["link"] == "docs/a.txt"
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_decompress_part_way_extract_all(
+    rpmish: ArchiveFormat, tmp_path: Path, pipe: bool
+) -> None:
+    data = build_rpmish()
+    source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data)
+    dest = tmp_path / "out"
+    with open_archive(source, streaming=pipe, format=rpmish) as reader:
+        reader.extract_all(dest)
+    assert (dest / "docs" / "a.txt").read_bytes() == b"alpha\n"
+    assert (dest / "b.bin").read_bytes() == _DATA["b.bin"]
+
+
+def test_decompress_part_way_concurrent_reads(
+    rpmish: ArchiveFormat, tmp_path: Path
+) -> None:
+    path = _write(tmp_path, build_rpmish())
+    results: dict[str, bytes] = {}
+    with open_archive(path, format=rpmish, concurrent_operations=True) as reader:
+
+        def read(name: str) -> None:
+            results[name] = reader.read(name)
+
+        threads = [
+            threading.Thread(target=read, args=(name,))
+            for name in ("b.bin", "docs/a.txt") * 4
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    assert results == {"b.bin": _DATA["b.bin"], "docs/a.txt": b"alpha\n"}
+
+
+def test_decompress_part_way_walks_again(rpmish: ArchiveFormat, tmp_path: Path) -> None:
+    """A second pass walks from the start again and reads through the layer the
+    first one opened."""
+    path = _write(tmp_path, build_rpmish())
+    with open_archive(path, format=rpmish) as reader:
+        for _ in range(2):
+            got = {
+                m.name: s.read() for m, s in reader.stream_members() if s is not None
+            }
+            assert got["b.bin"] == _DATA["b.bin"]
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_decompress_part_way_cut_short(
+    rpmish: ArchiveFormat, tmp_path: Path, pipe: bool
+) -> None:
+    data = build_rpmish()
+    cut = data[: len(data) - 200]
+    source = NonSeekableBytesIO(cut) if pipe else _write(tmp_path, cut)
+    names = []
+    with (
+        open_archive(source, streaming=pipe, format=rpmish) as reader,
+        pytest.raises(TruncatedError),
+    ):
+        for member, stream in reader.stream_members():
+            names.append(member.name)
+            if stream is not None:
+                stream.read()
+    assert names[:2] == ["docs/", "docs/a.txt"]
+
+
+def test_decompress_part_way_trailing_bytes_are_reported(
+    rpmish: ArchiveFormat, tmp_path: Path
+) -> None:
+    path = _write(tmp_path, build_rpmish(after=b"junk"))
+    with open_archive(path, streaming=True, format=rpmish) as reader:
+        for _, stream in reader.stream_members():
+            if stream is not None:
+                stream.read()
+        counts = reader.diagnostics.counts
+    assert counts[DiagnosticCode.ARCHIVE_TRAILING_DATA] == 1
+
+
+def test_decompress_part_way_misuse(rpmish: ArchiveFormat, tmp_path: Path) -> None:
+    seen: list[ForwardStream] = []
+
+    class Keeps(_RpmishReader):
+        def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+            seen.append(stream)
+            yield from super().walk(stream)
+
+    class Plain(_RpmishReader):
+        def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+            stream.decompress(StreamFormat.UNCOMPRESSED)
+            yield from ()
+
+    path = _write(tmp_path, build_rpmish())
+    keeps = _variant(Keeps, ToysContainer.SUM16)
+    with open_archive(path, format=keeps) as reader:
+        reader.members()
+    with pytest.raises(ArchiveyUsageError, match="handed to decompress"):
+        seen[0].read(1)
+    plain = _variant(Plain, ToysContainer.BAD_SIZE)
+    with pytest.raises(ValueError, match="compression stream format"):
+        open_archive(path, format=plain)
+
+
+def test_decompress_misuse_is_not_offered_to_the_plugin_translator(
+    rpmish: ArchiveFormat, tmp_path: Path
+) -> None:
+    """A plugin whose translator maps every ValueError to corruption still gets its
+    own misuse back as a plugin bug, not as a damaged archive."""
+
+    class Plain(_RpmishReader):
+        def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+            stream.decompress(StreamFormat.UNCOMPRESSED)
+            yield from ()
+
+        def translate_exception(self, exc: Exception) -> ArchiveyError | None:
+            if isinstance(exc, ValueError):
+                return CorruptionError(f"translated: {exc}")
+            return None
+
+    class Reuses(Plain):
+        def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+            stream.read_exact(_HEADER.size)
+            stream.decompress(StreamFormat.GZIP)
+            stream.read(1)
+            yield from ()
+
+    path = _write(tmp_path, build_rpmish())
+    with pytest.raises(ValueError, match="compression stream format"):
+        open_archive(path, format=_variant(Plain, ToysContainer.BAD_SIZE))
+    with pytest.raises(ArchiveyUsageError, match="handed to decompress"):
+        open_archive(path, format=_variant(Reuses, ToysContainer.SUM16))

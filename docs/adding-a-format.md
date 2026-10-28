@@ -461,6 +461,30 @@ bytes, from a file or a pipe.
   `.tar.gz`, and bytes after the compressed stream are reported with
   `ARCHIVE_TRAILING_DATA`.
 
+### Compression that starts part-way
+
+Some formats store headers and then compress the rest: an RPM package is a few headers
+followed by a gzip, xz or zstd stream holding a CPIO archive. A walk reads the headers,
+then calls `stream.decompress(StreamFormat.XZ)` and reads on from the stream it returns:
+
+```python
+def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+    read_rpm_headers(stream)
+    stream = stream.decompress(payload_format)
+    yield from walk_cpio(stream)
+```
+
+The returned stream holds the decoded bytes, and its `offset` counts them from 0. The
+members the walk yields after the call are read from those bytes, from a pipe too, with
+random access to them on a file. archivey decodes with its own codecs, under the
+caller's decoder limits and the decompression-ratio guard. The stream the walk called
+`decompress()` on refuses further reads. archivey cannot know the archive holds a
+compression stream before the walk reaches it, so have `archive_info()` return
+`PluginArchiveInfo(is_solid=True)`: the cost receipt then says members are read through
+one stream, and that listing needs decompression, from the moment the archive opens.
+The compressed stream is taken to run to the end of the archive: bytes after its end are
+reported with `ARCHIVE_TRAILING_DATA`, not refused.
+
 ## Reading untrusted bytes
 
 archivey cannot check how your reader parses the archive, only what it hands back.

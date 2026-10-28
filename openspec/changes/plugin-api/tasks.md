@@ -19,7 +19,9 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
       waits for outer compression.*
 - [ ] 1.2c Decoded `MemberSpan.data` (drain on advance, re-walk for random access),
       `ForwardStream.decompress`, `checked` members counted as verified,
-      `PluginArchiveInfo.is_solid`. *1a landed `checked` and `is_solid`; the rest is 1b.*
+      `PluginArchiveInfo.is_solid`. *1a landed `checked` and `is_solid`;
+      `ForwardStream.decompress` landed after outer compression; decoded data is
+      left.*
 - [x] 1.2d `PluginContext.decompress(data, method, *, size, properties)`: a member's
       compressed bytes through archivey's codec layer, with the caller's config and
       the member's sizes, for raw Deflate, Deflate64, bzip2, Zstandard, LZ4 frames,
@@ -39,15 +41,18 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
       for each single-file codec's pair and compound extensions (`.cpio.gz`); its walk
       reads the decoded stream through a buffer (streaming) or views of it (random
       access), costed as a compressed TAR is.*
-- [ ] 1.3 `archivey/plugins.py`: `FormatPlugin`, `PluginReader`, `IndexedReader`,
+- [x] 1.3 `archivey/plugins.py`: `FormatPlugin`, `PluginReader`, `IndexedReader`,
       `SequentialReader`, `MemberRecord`, `MemberSpan`, `MemberData`, `MemberDigest`,
       `Hasher`, `ForwardStream`, `PluginSource`, `PluginContext`, `PluginArchiveInfo`, `Magic`,
       `register_format`. Registration refuses clashing container values, already
       registered formats, and extensions a built-in format claims. *1a landed all but
       `SequentialReader`, `MemberSpan` and `ForwardStream`, and also refuses a
       container value or name that is already a `format=` spelling. The sequential
-      stage added those three and `SequentialFormatPlugin`;
-      `ForwardStream.decompress` comes with outer compression.*
+      stage added those three and `SequentialFormatPlugin`; a stage after outer
+      compression added `ForwardStream.decompress`, each call a new layer of the walk
+      (a codec over the rest of the walk's buffer when streaming, over a view of the
+      parent layer for random access, kept by where it starts so a second walk
+      reuses it).*
 - [x] 1.4 Detection: plugin signals counted only when no built-in signal matched at the
       same or a higher confidence; probes get the peeked prefix only. `_probe_inner_tar`
       becomes an inner-container probe (TAR first, then sequential plugin magic ending
@@ -175,3 +180,14 @@ more indexed plugin, 2026-10-27).
       `zeros_to_eof` format list and `MEMBER_TYPE_UNKNOWN`'s STRICT-exemption rationale
       read as examples, not as the set of emitters.
 - [ ] 4.3 `dev-docs/IDEAS.md` and `VISION.md`: the public backend API item points here.
+
+## 5. Later: decoders that compound (maintainer, 2026-10-28)
+
+- [ ] 5.1 A public `register_codec()`, the decoder twin of `register_format()`: a codec
+      registered once is read by `open_stream`, as a single-file archive, inside TAR and
+      sequential plugin pairs, by the inner-container probe and by
+      `PluginContext.decompress`. The pair, extension and codec tables become
+      computed on demand instead of at import.
+- [ ] 5.2 LZO as a built-in codec (the lzop stream and raw LZO1X as a member method),
+      python-lzo optional with the pure-Python decoder as the fallback, when SquashFS
+      becomes built-in.
