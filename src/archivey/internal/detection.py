@@ -144,11 +144,12 @@ from archivey.types import (
 if TYPE_CHECKING:
     from archivey.config import ArchiveyConfig
 
-# Decompressed bytes needed to see a TAR ``ustar`` signature at offset 257 (one 512-byte
-# header block covers it).
-_INNER_TAR_PROBE_BYTES = 512
+# Decompressed bytes the inner-container probe decodes: enough to see a TAR ``ustar``
+# signature at offset 257 (one 512-byte header block covers it). Registration keeps a
+# sequential plugin's magic within them, so a plugin cannot make the probe decode more.
+INNER_CONTAINER_PROBE_BYTES = 512
 
-# Upper bound on compressed input the inner-TAR probe reads from the source when the peeked
+# Upper bound on compressed input the inner-container probe reads from the source when the peeked
 # detection prefix is too short. bzip2 is block-transform (BWT) based: it emits no output
 # until a whole block is read, and a block holds up to 900 KB uncompressed (level 9), which
 # for incompressible leading data compresses to just over 900 KB. 1 MiB covers a full
@@ -215,7 +216,7 @@ class _BoundedPeekReader(ReadOnlyIOStream):
     peek; it peeks again only after a seek past what the view has returned.
 
     The seekability reaches the codec only on a random-access source. On a
-    forward-only one, :func:`_probe_inner_tar` hands the codec this reader wrapped
+    forward-only one, :func:`_probe_inner_container` hands the codec this reader wrapped
     in a non-seekable :class:`OneReadEachStream`.
     """
 
@@ -372,17 +373,22 @@ def _match_extension(
     return None
 
 
-def _probe_inner_tar(
+def _probe_inner_container(
     stream_format: StreamFormat,
     peek_more: CandidateView,
     workspace: PrefixWorkspace | None = None,
     *,
     view_arrived: bool = False,
-) -> bool:
-    """Whether decompressing the source yields a TAR (``ustar`` at offset 257).
+) -> ArchiveFormat | None:
+    """The container decompressing the source yields, as its uncompressed format, or
+    ``None``.
 
-    The codec layer decodes the compressed source and the inner ``ustar`` magic confirms a
-    tarball wrapped in the compressor. The decoder reads from a bounded, non-consuming view of
+    The codec layer decodes the compressed source and the first 512 decoded bytes are
+    matched against the registry's inner-container magic (``ReadBackend.INNER_MAGIC``):
+    TAR's ``ustar`` at offset 257 first, then the magic of each registered sequential
+    plugin, which registration keeps within those 512 bytes. So a tarball, or a plugin's
+    sequential archive, wrapped in the compressor is found the same way, and a plugin
+    cannot make the probe decode more. The decoder reads from a bounded, non-consuming view of
     the source (:class:`_BoundedPeekReader` over ``peek_more``), so it pulls exactly as much
     compressed input as it needs to reach the TAR header region and no more.
 
@@ -404,11 +410,11 @@ def _probe_inner_tar(
     fails. A probe that reaches its bound without finding a TAR header records
     ``inner_tar`` as ``BUDGET_EXHAUSTED``: the answer is "not found within budget".
 
-    Returns ``False`` (deferring the determination to open time) when the codec backend is
-    absent, the source is not decodable as this codec, or the decoded output carries no TAR
-    header. An absent backend, or a decoder the probe cannot build within its reservation
+    Returns ``None`` (deferring the determination to open time) when the codec backend is
+    absent, the source is not decodable as this codec, or the decoded output carries no
+    inner-container magic. The tier keeps its name, ``inner_tar``. An absent backend, or a decoder the probe cannot build within its reservation
     (``UnsupportedFeatureError``, ``ResourceLimitError``, ``MemoryError``), records
-    ``inner_tar`` as ``CAPABILITY_UNAVAILABLE``: the answer is "can't tell", not "no TAR".
+    ``inner_tar`` as ``CAPABILITY_UNAVAILABLE``: the answer is "can't tell", not "none".
     Only one reason is recorded, in this order: a budget that turns the tier off
     (``NOT_ENABLED_BY_POLICY``), an absent backend (``CAPABILITY_UNAVAILABLE``), a budget
     that cannot cover the probe (``BUDGET_EXHAUSTED``).
@@ -428,7 +434,7 @@ def _probe_inner_tar(
     try:
         codec = codec_for_stream_format(stream_format)
     except KeyError:
-        return False
+        return None
     # One reason is recorded, in this order: the policy turned the tier off, then the
     # backend is absent (more budget would not help), then the budget cannot cover it.
     if workspace is not None:
@@ -439,11 +445,11 @@ def _probe_inner_tar(
             "inner_tar",
             enabled=budget.max_decode_input > 0 and budget.max_decode_output > 0,
         ):
-            return False
+            return None
     if not is_codec_available(codec):
         if workspace is not None:
             workspace.record_skip("inner_tar", TierSkipReason.CAPABILITY_UNAVAILABLE)
-        return False
+        return None
     limit = _INNER_TAR_MAX_PROBE_BYTES
     if workspace is not None:
         # Cut short: output against the budget's face value, since this is the only
@@ -454,10 +460,10 @@ def _probe_inner_tar(
         if _record_tier_limit(
             workspace,
             "inner_tar",
-            covered=workspace.budget.max_decode_output >= _INNER_TAR_PROBE_BYTES
+            covered=workspace.budget.max_decode_output >= INNER_CONTAINER_PROBE_BYTES
             and workspace.decode_input_left > 0,
         ):
-            return False
+            return None
         limit = min(limit, workspace.decode_input_left, workspace.read_ceiling)
 
     source = _BoundedPeekReader(peek_more, limit, arrived=view_arrived)
@@ -468,7 +474,7 @@ def _probe_inner_tar(
     # a feed split at any byte gives the same output. The wrap cannot seek, so this
     # path relies on every codec reading a non-seekable input forward (the ones that
     # can seek check their input first). A codec that seeks anyway raises an
-    # ``OSError``, caught below, and the probe answers "no inner TAR". A drain
+    # ``OSError``, caught below, and the probe answers "no inner container". A drain
     # (``read(-1)``, or ``read1()`` with no size) would read to the bound or to the
     # end of the source and wait on a held-open pipe, so this path also relies on
     # every codec reading sized chunks.
@@ -484,7 +490,7 @@ def _probe_inner_tar(
                     streaming=True,
                     seekable=not view_arrived,
                     decoder_limits=DecoderLimits.UNLIMITED,
-                    probe_read_bound=_INNER_TAR_PROBE_BYTES,
+                    probe_read_bound=INNER_CONTAINER_PROBE_BYTES,
                     process_isolation=(
                         workspace.isolation
                         if workspace is not None
@@ -493,7 +499,7 @@ def _probe_inner_tar(
                 )
             ),
         ) as stream:
-            head = stream.read(_INNER_TAR_PROBE_BYTES)
+            head = stream.read(INNER_CONTAINER_PROBE_BYTES)
     except (UnsupportedFeatureError, ResourceLimitError, MemoryError):
         # The decoder could not be built within the probe's reservation: a zstd window
         # over the probe's limit, an xz filter chain it cannot decode raw, or an
@@ -502,7 +508,14 @@ def _probe_inner_tar(
     except (ArchiveyError, OSError, ValueError):
         # Not decodable as this codec, or truncated before a full block -> not an inner tar.
         pass
-    found = head[257:262] == b"ustar"
+    found = next(
+        (
+            sig.format
+            for sig in get_registry().inner_magic_entries()
+            if head[sig.offset : sig.offset + len(sig.magic)] == sig.magic
+        ),
+        None,
+    )
     if workspace is not None:
         # Charged on every path: a decode that ran and then failed did the work too.
         workspace.charge_decode(
@@ -511,7 +524,7 @@ def _probe_inner_tar(
         )
         if unavailable:
             workspace.record_skip("inner_tar", TierSkipReason.CAPABILITY_UNAVAILABLE)
-        elif not found and source.hit_limit:
+        elif found is None and source.hit_limit:
             workspace.record_skip("inner_tar", TierSkipReason.BUDGET_EXHAUSTED)
     return found
 
@@ -664,24 +677,30 @@ def _resolve_single_file_or_tar(
     workspace: PrefixWorkspace | None = None,
     view_arrived: bool = False,
 ) -> FormatInfo:
-    """Upgrade a single-file-compressor match to its TAR combo when the payload is a tarball.
+    """Upgrade a single-file-compressor match to its container combo when the payload
+    is a tarball or a sequential plugin's archive.
 
-    A ``RAW_STREAM`` compressor (``.gz``/``.bz2``/``.xz``/…) is probed for an inner TAR; on a
-    hit it becomes ``(TAR, <stream>)`` (e.g. ``TAR_GZ``) reported as ``PROBABLE`` /
-    ``content_probe`` (the inner-TAR test is structural, weaker than an exact magic).
-    An inner-TAR upgrade is corroboration for a probe hit — two independent signals had
-    to hold — so ``corroborated`` is set. Otherwise a matching extension (same stream
+    A ``RAW_STREAM`` compressor (``.gz``/``.bz2``/``.xz``/…) is probed for an inner
+    container (:func:`_probe_inner_container`); on a hit it becomes ``(TAR, <stream>)``
+    (e.g. ``TAR_GZ``), or ``(<plugin container>, <stream>)``, reported as ``PROBABLE`` /
+    ``content_probe`` (the inner test is structural, weaker than an exact magic).
+    An inner-container upgrade is corroboration for a probe hit — two independent signals
+    had to hold — so ``corroborated`` is set. Otherwise a matching extension (same stream
     format) is the corroborating signal. ``peek_more`` gives the probe a bounded,
     non-consuming view of the source to decode from; ``view_arrived`` says it is a
     view that returns what has arrived (:class:`_BoundedPeekReader`).
     """
-    if (
-        fmt.container == ContainerFormat.RAW_STREAM
+    inner = (
+        _probe_inner_container(
+            fmt.stream, peek_more, workspace, view_arrived=view_arrived
+        )
+        if fmt.container == ContainerFormat.RAW_STREAM
         and fmt.stream != StreamFormat.UNCOMPRESSED
-    ) and _probe_inner_tar(fmt.stream, peek_more, workspace, view_arrived=view_arrived):
-        tar_fmt = ArchiveFormat(ContainerFormat.TAR, fmt.stream)
+        else None
+    )
+    if inner is not None:
         return FormatInfo(
-            tar_fmt,
+            ArchiveFormat(inner.container, fmt.stream),
             DetectionConfidence.PROBABLE,
             "content_probe",
             corroborated=True,
@@ -692,17 +711,23 @@ def _resolve_single_file_or_tar(
     return FormatInfo(fmt, base_confidence, base_detected_by, corroborated=corroborated)
 
 
-def _is_deferred_inner_tar(ext_fmt: ArchiveFormat, resolved: ArchiveFormat) -> bool:
-    """Whether a TAR-combo extension over a bare-compressor result is a *benign* mismatch.
+def _is_deferred_inner_container(
+    ext_fmt: ArchiveFormat, resolved: ArchiveFormat
+) -> bool:
+    """Whether a compressed-container extension over a bare-compressor result is a
+    *benign* mismatch.
 
     ``foo.tar.gz`` (extension → ``TAR_GZ``) reported as bare ``GZ`` is the documented
-    deferred case: the inner-TAR probe could not run (codec backend absent) or found no tar,
-    so the bare compressor is reported and the inner-TAR determination is left to open time.
-    That is not a real conflict, so it must not emit a warning.
+    deferred case: the inner-container probe could not run (codec backend absent) or
+    found no magic, so the bare compressor is reported and the inner determination is
+    left to open time. That is not a real conflict, so it must not emit a warning. A
+    sequential plugin's ``foo.cpio.gz`` is the same case.
     """
     return (
         resolved.container == ContainerFormat.RAW_STREAM
-        and ext_fmt.container == ContainerFormat.TAR
+        and ext_fmt.container
+        not in (ContainerFormat.RAW_STREAM, ContainerFormat.UNKNOWN)
+        and ext_fmt.stream != StreamFormat.UNCOMPRESSED
         and ext_fmt.stream == resolved.stream
     )
 
@@ -719,7 +744,7 @@ def _extension_corroborates(
     if ext_match is None:
         return False
     ext_fmt = ext_match[0]
-    return ext_fmt == resolved or _is_deferred_inner_tar(ext_fmt, resolved)
+    return ext_fmt == resolved or _is_deferred_inner_container(ext_fmt, resolved)
 
 
 class _ConflictEvidence(Enum):
@@ -1175,7 +1200,7 @@ def _detect_format_body(
                 trailer_fmt = _match_trailer(workspace, trailers)
                 if trailer_fmt is not None:
                     magic_fmt = trailer_fmt
-            # On a forward-only source the inner-TAR probe reads what has arrived
+            # On a forward-only source the inner-container probe reads what has arrived
             # too: a short ``.gz`` on a held-open pipe decodes its first TAR header
             # without waiting for the writer to close the pipe. A random-access
             # source keeps the seekable view.

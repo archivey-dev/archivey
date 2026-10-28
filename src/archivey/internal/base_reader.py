@@ -168,6 +168,7 @@ from archivey.types import (
     OnErrorStr,
     OverwritePolicy,
     OverwritePolicyStr,
+    StreamFormat,
     TrailerSignature,
 )
 
@@ -369,6 +370,12 @@ class ReadBackend(ABC):
     EXTENSIONS: Mapping[str, ArchiveFormat] = {}
     # Exact magic-byte signals as data (offset, bytes, format), accepted on the byte match.
     MAGIC: tuple[MagicSignature, ...] = ()
+    # Magic the inner-container probe looks for in the first 512 decoded bytes of a
+    # single-file compressed stream, naming the uncompressed container it finds there:
+    # TAR's ``ustar`` makes a ``.gz`` a ``TAR_GZ``, and a sequential plugin's magic makes
+    # one ``(<plugin container>, GZIP)``. Only a backend that reads that container
+    # through every single-file codec declares it.
+    INNER_MAGIC: tuple[MagicSignature, ...] = ()
     # Magic to hunt for *behind an executable stub*, for the formats that ship as
     # self-extracting archives (RAR / 7z / ZIP). The offset is 0 because these are
     # magic at offset 0 of the *payload*, wherever in the file that starts; the
@@ -3179,6 +3186,59 @@ class BaseArchiveReader(ArchiveReader):
         # Outermost, so the codec's buffering takes it as it is and puts no
         # full-count BufferedReader in front of it (ensure_bufferedio).
         return OneReadEachStream(counted)
+
+    def _open_outer_codec_stream(
+        self,
+        source: ArchiveSource,
+        stream_format: StreamFormat,
+        streaming: bool,
+        *,
+        member_streams: MemberStreams,
+    ) -> BinaryIO:
+        """The decoded bytes of an archive inside a compression stream (a ``.tar.gz``,
+        or a sequential plugin format's ``.cpio.xz``): archivey's codec stream over
+        ``source``, which the caller closes.
+
+        A file goes to the codec as its path, as for a bare compressed file: the codec
+        opens its own handle and may use path-only accelerators, and the static ratio
+        applies because the size is known. A stream whose size is not known is counted
+        (:meth:`_codec_input`), so the live decompression-ratio guard can see the
+        compressed bytes consumed. The codec stream is the whole file, so bytes after
+        its end are reported, as bytes after an archive's own end are.
+        """
+        # Imported here: the codec layer imports reader-side modules at load.
+        from archivey.internal.config import stream_config_from_archivey
+        from archivey.internal.streams.codecs import (
+            codec_for_stream_format,
+            open_codec_stream,
+        )
+
+        codec = codec_for_stream_format(stream_format)
+        codec_source: str | BinaryIO
+        if source.path is not None:
+            codec_source = str(source.path)
+        else:
+            codec_source = self._codec_input(source, track_seeks=True)
+        return open_codec_stream(
+            codec,
+            codec_source,
+            config=replace(
+                stream_config_from_archivey(
+                    self._config,
+                    streaming=streaming,
+                    seekable=MemberStreams.SEEKABLE in member_streams,
+                    usage=self._usage,
+                ),
+                report_trailing_data=True,
+            ),
+            stamp=lambda exc: self._stamp_error_context(exc),
+            collector=self._diagnostics_collector,
+            # Random access reads it only through views. A read seeks the shared
+            # handle when it is not already there, and one such seek is enough to
+            # mark the stream rewound. A repeated verdict would drop the prefix of the
+            # read that reaches the damage; each member stream repeats its own.
+            repeat_verdict=streaming,
+        )
 
     def __iter__(self) -> MemberPass[ArchiveMember]:
         return MemberPassImpl(self._iter_pass())

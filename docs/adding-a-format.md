@@ -18,8 +18,9 @@ A plugin reads one of two kinds of format:
   the end. It can be read from a pipe. CPIO and AR are this kind. See
   [Formats read in one pass](#formats-read-in-one-pass).
 
-Formats inside an outer compressor, such as a `.cpio.gz`, come in a later version.
-[What is not supported yet](#what-is-not-supported-yet) has the full list.
+A format read in one pass can also be read inside a compressor, such as a `.cpio.gz`,
+with no extra code; see [Inside a compression stream](#inside-a-compression-stream).
+[What is not supported yet](#what-is-not-supported-yet) lists what a plugin cannot do.
 
 ## What a plugin is
 
@@ -438,6 +439,28 @@ What archivey does with the spans:
 `archive.info.cost` says the listing needs a scan, and `format_availability()` reports
 that it can be read from a source that cannot seek.
 
+### Inside a compression stream
+
+A format read in one pass is often compressed whole, as a `.tar.gz` is: `.cpio.gz`,
+`.a.xz`. archivey reads these with no extra code. Registering the format also registers
+it inside each compression stream archivey decodes, as
+`ArchiveFormat(<your container>, StreamFormat.GZIP)` and so on, and adds your extensions
+followed by the compressor's (`.cpio` gives `.cpio.gz`, `.cpio.xz`, `.cpio.zst`, …), as
+`format=` spellings too. archivey decodes the stream and `walk()` reads the decoded
+bytes, from a file or a pipe.
+
+- **Detection.** A compressed file is first recognised as one gzip or xz member. archivey
+  then decodes its first 512 bytes, the same bytes it decodes to find a TAR inside, and
+  looks for your `magic` in them. So a sequential format's magic must end within the
+  first 512 bytes, and registration refuses one that does not. A format found only by its
+  `probe` is not found inside a compressor: name it with its extension or `format=`.
+- **Cost.** One compression stream holds every member, so the archive is solid:
+  `archive.info.is_solid` is `True`, the listing needs decompression, and with random
+  access, reading a member before the last one read decodes again from the start.
+- **Limits.** The decoder limits and the decompression-ratio guard apply as for a
+  `.tar.gz`, and bytes after the compressed stream are reported with
+  `ARCHIVE_TRAILING_DATA`.
+
 ## Reading untrusted bytes
 
 archivey cannot check how your reader parses the archive, only what it hands back.
@@ -600,7 +623,8 @@ can refuse plugin formats by checking `FormatInfo.from_plugin`.
 
 ## What is not supported yet
 
-- A plugin format inside an outer compressor, such as `.cpio.gz`.
+- A format with an index inside an outer compressor. Only a format read in one pass can
+  be.
 - In a format read in one pass, member data that a library decodes, or that is
   compressed per member: `MemberSpan` describes bytes stored as they are.
 - Self-extracting archives, multi-volume sets and passwords.

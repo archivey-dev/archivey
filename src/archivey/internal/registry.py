@@ -189,6 +189,16 @@ class BackendRegistry:
             entries.extend(cls.MAGIC)
         return entries
 
+    def inner_magic_entries(self) -> list[MagicSignature]:
+        """Magic the inner-container probe matches in decoded bytes (``INNER_MAGIC``).
+
+        Built-in backends first, so TAR's ``ustar`` is tried before any plugin's magic.
+        """
+        entries: list[MagicSignature] = []
+        for cls in (*self._reader_classes, *self._plugin_classes):
+            entries.extend(cls.INNER_MAGIC)
+        return entries
+
     def magic_prefix_walks(self) -> list[tuple[ArchiveFormat, Callable[[bytes], bool]]]:
         """(format, walk) pairs for magic that may sit behind a format's own prefix frames.
 
