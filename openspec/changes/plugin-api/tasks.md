@@ -11,8 +11,8 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
       size and digest verification, `ArchiveInfo` and `CostReceipt` built by the adapter,
       handle lock for plugins that keep their own handle).
 - [x] 1.2a Sequential shape in the adapter: the forward pass over `walk()`
-      (`_iter_with_data`, `_list_before_extraction`, the `_pull_member` hand-off), span
-      windows with skip-on-advance, recorded offsets for random access on a seekable
+      (`_iter_with_data`, `_list_before_extraction`, the `_before_pull_locked`
+      hand-off), span windows with skip-on-advance, recorded offsets for random access on a seekable
       source, link targets read from data. *`SequentialReaderAdapter` serves the walk
       as the member walk, through the base class's passes; link targets are read
       while walking (design §2a, "As built"). TAR's one-pass random-access read waits
