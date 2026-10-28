@@ -52,11 +52,6 @@ Triage (2026-07, rerun 2026-10-28 against libarchive 3.9.0dev with the plugins)
 * **POLICY** names spelled with repeated separators and drive prefixes are
   normalized (``C://///file14`` lists as ``C:/file14``); libarchive keeps them.
 
-**7z**
-* **BUG** Delta in front of LZMA1: the stream is refused as having input after
-  its end (``DataAfterEndError``) though 7-Zip 23.01 tests it OK. Fixed by #1069;
-  drop the two entries when it merges.
-
 **RAR**
 * **GAP** some RAR5 extra-field / crypt-only headers; multi-volume sets need
   sibling volumes (skipped like other split volumes).
@@ -254,15 +249,6 @@ _XFAIL: dict[str, tuple[bool, str]] = {
             "test_gcpio_compat_ref_nosym.crc",
         ),
         (True, "POLICY: a link group lists the member that holds the data as the file"),
-    ),
-    # --- 7z ---
-    "test_read_format_7zip_delta_lzma1.7z": (
-        True,
-        "BUG: Delta+LZMA1 refused as input after the end; 7-Zip reads it (#1069)",
-    ),
-    "test_read_format_7zip_delta4_lzma1.7z": (
-        True,
-        "BUG: Delta+LZMA1 refused as input after the end; 7-Zip reads it (#1069)",
     ),
     # --- RAR ---
     "test_read_format_rar5_only_crypt_exfld.rar": (
