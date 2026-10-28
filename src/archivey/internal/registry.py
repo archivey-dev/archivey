@@ -46,7 +46,7 @@ from archivey.types import (
 )
 
 if TYPE_CHECKING:
-    from archivey.format_policy import FormatPolicy
+    from archivey.plugins import FormatPlugin
 
 
 class ContentProbe(Protocol):
@@ -456,40 +456,40 @@ class BackendRegistry:
         return self._readers.get(fmt)
 
     def reader_for_format(
-        self, fmt: ArchiveFormat, policy: FormatPolicy | None = None
+        self,
+        fmt: ArchiveFormat,
+        *,
+        replacement: type[FormatPlugin] | None = None,
     ) -> type[ReadBackend]:
-        """The backend class that opens ``fmt``: the plugin ``policy`` names in
-        ``replace`` for its container, else the registered one.
+        """The backend class that opens ``fmt``: ``replacement``'s, else the registered
+        one.
 
-        Raises when that backend cannot read here: ``UnsupportedFeatureError`` for no
-        backend or a recognised-only format, ``PackageNotInstalledError`` for a missing
-        package, a replacement plugin's ``requires`` included. The caller has already
-        refused a format the policy does not allow.
+        ``replacement`` is what ``FormatPolicy._replacement_for(fmt)`` answered for the
+        caller's policy; ``None`` asks for the registered backend. Raises when that
+        backend cannot read here: ``UnsupportedFeatureError`` for no backend or a
+        recognised-only format, ``PackageNotInstalledError`` for a missing package, a
+        replacement plugin's ``requires`` included. The caller has already refused a
+        format the policy does not allow.
         """
-        plugin = (
-            policy.replace.get(fmt.container)
-            if policy is not None and isinstance(fmt.container, ContainerFormat)
-            else None
-        )
-        if plugin is not None and plugin.format == fmt:
+        if replacement is not None:
             # Imported here: the plugin adapter imports this module.
             from archivey.internal.plugin_adapter import replacement_backend
 
-            replacement = replacement_backend(plugin)
+            backend = replacement_backend(replacement)
             availability = self._backend_availability(
-                fmt, replacement, check_programs=False, member_codecs=False
+                fmt, backend, check_programs=False, member_codecs=False
             )
             if availability.support is FormatSupport.NONE:
                 hints = "; ".join(
                     f"{m.name} ({m.advice})" for m in availability.missing
                 )
                 raise PackageNotInstalledError(
-                    f"Format {fmt.display_name} is read by {plugin.__name__} "
+                    f"Format {fmt.display_name} is read by {replacement.__name__} "
                     f"(ArchiveyConfig.formats.replace), which is not available: "
                     f"missing {hints}",
                     source_format=fmt,
                 )
-            return replacement
+            return backend
         availability = self.format_availability(fmt)
         if availability.support is FormatSupport.NONE:
             backend_cls = self._readers.get(fmt)

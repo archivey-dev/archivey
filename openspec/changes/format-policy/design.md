@@ -227,6 +227,11 @@ class StrongZipPlugin(FormatPlugin):
     the replacement;
   - an archive found behind an SFX stub (the plugin would see the stub), the same way;
   - a read-once source, with `StreamNotSeekableError`, as for any indexed plugin.
+    (Revised 2026-10-28 during implementation, from `UnsupportedFeatureError`: the
+    generic read-once refusal every indexed plugin gets already raises
+    `StreamNotSeekableError`, before any replacement-specific check could run.)
+  - a raw CD sector image detected as ISO, with the same `UnsupportedFeatureError`
+    the built-in reader gives: the bytes are not an ISO 9660 image.
   The format-specific options (`zip_unflagged_fallback_encoding`, `rar_decompressor`,
   ...) reach the plugin through `PluginContext.config`. Honouring them is the plugin's
   job, and the plugin guide says so.

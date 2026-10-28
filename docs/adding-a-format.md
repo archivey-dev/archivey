@@ -609,7 +609,9 @@ start of the archive. archivey refuses, before `open()` runs, a multi-volume set
 archive behind a self-extracting stub with `UnsupportedFeatureError`, and a source that
 cannot seek with `StreamNotSeekableError`. The format's own config options, such as
 `zip_unflagged_fallback_encoding` or `rar_decompressor`, reach the plugin through
-`PluginContext.config`; honouring them is the plugin's job. A missing module in
+`PluginContext.config`; honouring them is the plugin's job. `password=` does not reach a
+replacement, as it reaches no plugin, so a replaced ZIP, 7z or RAR cannot read an encrypted
+member; `encoding=` reaches it when the plugin sets `uses_encoding`. A missing module in
 `requires` raises `PackageNotInstalledError` naming the plugin, without falling back to
 the built-in reader.
 
@@ -625,7 +627,9 @@ checksum checks on member data. They cannot cover the plugin's own parser, which
 unbounded memory or crash on a crafted file; [Reading untrusted bytes](#reading-untrusted-bytes)
 lists what a plugin's author can do about that. A program that reads untrusted archives
 can turn plugin formats off for a call with `ArchiveyConfig(formats=FormatPolicy(plugins=False))`;
-a plugin format turned off is not detected either, so its code does not run.
+a plugin format turned off is not detected either, so its code does not run. A
+[replacement](#replacing-a-built-in-reader) is not a plugin format, so `plugins=False` does not
+turn it off: a replacement runs only in a call whose config names it in `replace=`.
 
 ## What is not supported yet
 

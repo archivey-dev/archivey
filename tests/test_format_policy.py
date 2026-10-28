@@ -23,6 +23,7 @@ from archivey import (
     ArchiveyConfig,
     ArchiveyUsageError,
     ContainerFormat,
+    DiagnosticCode,
     FormatDetectionError,
     FormatPolicy,
     MemberType,
@@ -48,6 +49,7 @@ from archivey.plugins import (
     SequentialFormatPlugin,
     SequentialReader,
 )
+from tests.test_iso_raw_sectors import _image as _raw_sector_image
 from tests.test_plugins import _ENTRIES, _MAGIC, _plugin_with, build_toya
 from tests.test_sfx import _pe_stub
 
@@ -495,6 +497,61 @@ def test_replacement_refusals(replace: object, match: str) -> None:
 def test_a_replaced_container_must_be_allowed(kwargs: dict[str, object]) -> None:
     with pytest.raises(ArchiveyUsageError, match="turns it off"):
         FormatPolicy(replace={C.ZIP: StdlibZipPlugin}, **kwargs)  # type: ignore[arg-type]
+
+
+def test_plugins_false_does_not_turn_a_replacement_off(tmp_path: Path) -> None:
+    # A replacement is not a plugin format: the call that names it runs it.
+    path = tmp_path / "a.zip"
+    path.write_bytes(_zip_bytes())
+    config = ArchiveyConfig(
+        formats=FormatPolicy(plugins=False, replace={C.ZIP: StdlibZipPlugin})
+    )
+    with open_archive(path, config=config) as reader:
+        assert [m.name for m in reader.members()] == ["a.txt"]
+    assert _opened == ["StdlibZipPlugin"]
+
+
+def test_unused_arguments_name_the_replacement_not_the_format(tmp_path: Path) -> None:
+    path = tmp_path / "a.zip"
+    path.write_bytes(_zip_bytes())
+    with open_archive(
+        path, password="secret", encoding="cp437", config=_REPLACE_ZIP
+    ) as reader:
+        found = {
+            d.code: d
+            for d in reader.diagnostics.retained
+            if d.code
+            in (
+                DiagnosticCode.PASSWORD_ARGUMENT_UNUSED,
+                DiagnosticCode.ENCODING_ARGUMENT_UNUSED,
+            )
+        }
+    assert set(found) == {
+        DiagnosticCode.PASSWORD_ARGUMENT_UNUSED,
+        DiagnosticCode.ENCODING_ARGUMENT_UNUSED,
+    }
+    for record in found.values():
+        assert "StdlibZipPlugin reads it" in record.message
+        assert "carries no encryption" not in record.message
+        assert "decodes member names without it" not in record.message
+        assert "replacement reader" in record.context.reason  # type: ignore[union-attr]
+
+
+class _RecordingIsoPlugin(FormatPlugin):
+    format = ArchiveFormat.ISO
+
+    def open(self, source: PluginSource, context: PluginContext) -> _StdlibZipReader:
+        _opened.append(type(self).__name__)
+        raise AssertionError("the plugin was given a raw sector image")
+
+
+def test_a_replacement_is_not_given_a_raw_sector_image(tmp_path: Path) -> None:
+    path = tmp_path / "disc.bin"
+    path.write_bytes(_raw_sector_image(mode=1))
+    config = ArchiveyConfig(formats=FormatPolicy(replace={C.ISO: _RecordingIsoPlugin}))
+    with pytest.raises(UnsupportedFeatureError, match="raw CD sector image"):
+        open_archive(path, config=config)
+    assert _opened == []
 
 
 def test_a_replacement_is_not_given_a_volume_set(tmp_path: Path) -> None:
