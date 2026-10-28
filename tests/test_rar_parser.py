@@ -1044,7 +1044,12 @@ def test_unrar_skips_a_rar4_file_headers_pack_size_without_long_block(
 # An end block (and a MAIN header) whose header stops before its flags, or inside
 # them: libarchive's test_read_format_rar5_redir_varint_2byte.rar ends with one.
 # unrar 7.00 reads a field past the header's end as zero and lists such archives.
-_CUT_FLAGS = [pytest.param(b"", id="absent"), pytest.param(b"\x80", id="cut")]
+_CUT_FLAGS = [
+    pytest.param(b"", id="absent"),
+    pytest.param(b"\x80", id="cut"),
+    # Longer than any vint load_vint reads: still cut by the header's end.
+    pytest.param(b"\x80" * 12, id="cut-long"),
+]
 _END_BLOCK = bytes.fromhex("1d775651 03 05 04 00")
 
 
@@ -1079,9 +1084,23 @@ def test_rar5_damaged_end_block_without_its_flags_is_the_end_block(
     assert codes == [DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING]
 
 
+def _with_main_header(main: bytes) -> tuple[bytes, bytes]:
+    original = _fixture("basic_nonsolid__.rar").read_bytes()
+    assert original[12] < 0x80  # a one-byte header size
+    assert original[13] == 1  # a MAIN header, with no data area below
+    assert not original[14] & 0x02
+    main_end = 8 + 4 + 1 + original[12]  # signature, CRC, size vint, header
+    return original, original[:8] + main + original[main_end:]
+
+
 @pytest.mark.parametrize("flags", _CUT_FLAGS)
 def test_rar5_main_header_without_its_flags_reads(flags: bytes) -> None:
-    original = _fixture("basic_nonsolid__.rar").read_bytes()
-    main_end = 8 + 4 + 1 + original[12]  # signature, CRC, size vint, header
-    data = original[:8] + _rar5_block(1, flags) + original[main_end:]
+    original, data = _with_main_header(_rar5_block(1, flags))
+    assert _names(data) == _names(original)
+
+
+@pytest.mark.parametrize("volume_number", _CUT_FLAGS)
+def test_rar5_main_header_without_its_volume_number_reads(volume_number: bytes) -> None:
+    # Archive flags 0x02: a volume number follows, and the header ends first.
+    original, data = _with_main_header(_rar5_block(1, b"\x02" + volume_number))
     assert _names(data) == _names(original)

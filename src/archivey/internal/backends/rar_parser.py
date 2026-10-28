@@ -1576,11 +1576,12 @@ def _load_vint_or_zero(
     """A RAR5 vint, or 0 when the header ends before the vint does.
 
     unrar's ``RawRead::GetV`` reads a field that is absent, or cut by the header's
-    end, as zero; checked with unrar 7.00 on a MAIN and an end block without their
-    flags. A vint longer than ``load_vint`` allows, inside the header, still raises.
+    end, as zero; checked with unrar 7.00 on MAIN and end blocks without their flags,
+    with them cut after one and after twelve continuation bytes, and on a MAIN volume
+    number. A vint that ends inside the header but is longer than ``load_vint``
+    allows still raises.
     """
-    rest = buf[pos : pos + 11]
-    if len(rest) < 11 and all(b & 0x80 for b in rest):
+    if all(b & 0x80 for b in buf[pos:]):
         return 0, len(buf)
     return load_vint(buf, pos)
 
@@ -3506,7 +3507,7 @@ def _parse_rar5(
         if block_type == _RAR5_MAIN:
             main_flags, pos = _load_vint_or_zero(hdata, pos)
             if main_flags & _RAR5_MAIN_HAS_VOLNR:
-                volnr, pos = load_vint(hdata, pos)
+                volnr, pos = _load_vint_or_zero(hdata, pos)
                 # RAR5: first volume omits the field (implicit 0); later volumes
                 # store 1 for the second volume, 2 for the third, …
                 if volume_index == 0 and volnr != 0:
