@@ -329,9 +329,9 @@ every reader method thread-safe.
 
 ### Requirement: Random-access member-open is reentrant and reader-state-free
 
-For every random-access backend, `_open_member` SHALL derive the returned stream
-from the member plus immutable/published archive state and coordinated backend
-resources. It MUST NOT keep unsynchronized per-open scratch on the reader that
+For every random-access backend, `_open_member` SHALL derive the member stream it
+opens (returned inside `MemberStreamParts`) from the member plus immutable/published
+archive state and coordinated backend resources. It MUST NOT keep unsynchronized per-open scratch on the reader that
 another open can overwrite. Synchronized shared bookkeeping — operation state,
 stream leases, password/key caches, and backend handle locks — is permitted and
 required where applicable.
