@@ -238,10 +238,11 @@ def test_winzip_aes_stream_refusals_close_cleanly(
 # ``__init__`` that raised on its first line. A class that survives it needs no entry. Every
 # other ``IOBase`` subclass in ``src/`` is listed below, either because a test above covers
 # its refusals or with the reason its ``__init__`` cannot raise before it assigns what
-# ``close()`` reads. A new stream class fails here until someone makes that call.
+# ``close()`` reads. A listed class skips the ``__new__``-alone check, so its tests above
+# must reach every raise in its ``__init__``. A new stream class fails here until someone
+# makes that call.
 _REFUSALS_TESTED_ABOVE = {
     "archivey.internal.volumes.ConcatenatedFile",
-    "archivey.internal.streams.archive_stream.ArchiveStreamImpl",
     "archivey.internal.streams.decompressor_stream.DecompressorStream",
     "archivey.internal.streams.verify.VerifyingStream",
     "archivey.internal.backends.zip_aes.WinZipAesDecryptStream",

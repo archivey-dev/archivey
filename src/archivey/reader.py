@@ -149,6 +149,9 @@ class ArchiveStream(ReadOnlyIOStream):
         ``open(path, "rb").read(2**62)`` does on a plain file. The stream is still
         usable afterwards.
         """
+        # A body, as on ``ReadOnlyIOStream.read``: on 3.11 a subclass that forgets
+        # ``read`` can still be built, and would otherwise read as empty.
+        raise NotImplementedError
 
     @abstractmethod
     def read_ahead(self, need: int, n: int, /) -> bytes:

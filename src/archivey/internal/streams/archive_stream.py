@@ -159,17 +159,18 @@ def as_closed_source_error(
 
 
 class _Opened:
-    """An ``ArchiveStream`` opener that is a stream already open.
+    """An ``ArchiveStreamImpl`` opener that is a stream already open.
 
     Pass ``_Opened(stream)`` as ``open_fn`` with ``lazy=False``: the handle starts open
     on ``stream``, as it would by calling ``lambda: stream``, without the call or the
-    diagnostic scope the call is made in (it emits nothing). An ``ArchiveStream`` is
+    diagnostic scope the call is made in (it emits nothing). An ``ArchiveStreamImpl`` is
     still opened by the call, which collapses it into the handle. Calling it returns
     ``stream``, so it is still an opener wherever one is expected.
 
     With ``settle_seekable``, the handle ignores its ``seekable`` argument and asks
     ``is_seekable(stream)`` on first use (``ArchiveStreamImpl._seek_allowed``) instead. Not
-    for an ``ArchiveStream``, whose own declared seekability the collapse would drop.
+    for an ``ArchiveStreamImpl``, whose own declared seekability the collapse would drop.
+    Only that subclass collapses: the collapse takes over its private state.
     """
 
     __slots__ = ("settle_seekable", "stream")
@@ -219,6 +220,13 @@ class ArchiveStreamImpl(ArchiveStream):
     _verdict_rewound = False
     _uninterrupted = True
     _ended_from_start = False
+    # ``close()`` reads these three as well: ``IOBase.__del__`` closes an instance whose
+    # ``__init__`` raised before assigning them, or never ran, as when a deprecated
+    # ``ArchiveStream(...)`` call has the wrong arguments. ``False`` because ``None``
+    # would ask the inner whether it can seek.
+    _seekable_hint: bool | None = False
+    _verifier: MemberVerifier | None = None
+    _on_close: CloseHook | None = None
 
     def __init__(
         self,
@@ -259,7 +267,7 @@ class ArchiveStreamImpl(ArchiveStream):
             open_fn.stream, ArchiveStreamImpl
         ):
             # A stream already open: the handle starts open on it, as an eager open of
-            # ``lambda: stream`` would, without the call. An ``ArchiveStream`` is
+            # ``lambda: stream`` would, without the call. An ``ArchiveStreamImpl`` is
             # opened the usual way, which collapses it (``_ensure_open``).
             self._inner = open_fn.stream
             self._open_fn: Callable[[], BinaryIO] | None = None
@@ -275,7 +283,7 @@ class ArchiveStreamImpl(ArchiveStream):
         self._open_lock = threading.Lock()
         # ``None``: whatever ``is_seekable(inner)`` answers, asked on first use. Only on
         # a handle built by ``_Opened(..., settle_seekable=True)``.
-        self._seekable_hint: bool | None = None if settle_seekable else seekable
+        self._seekable_hint = None if settle_seekable else seekable
         self._rewind_warning = rewind_warning
         self._size = size
         self._diagnostics_collector = collector
@@ -284,7 +292,7 @@ class ArchiveStreamImpl(ArchiveStream):
         # before the verifier build below, which can raise (a digest diagnostic under
         # a RAISE policy): ``IOBase.__del__`` still calls ``close()`` on an instance
         # whose ``__init__`` raised.
-        self._verifier: MemberVerifier | None = verifier
+        self._verifier = verifier
         # ``_verdict``: the content verdict this stream raised, if any. Every later
         # read and seek raises it again (see ``_fail``). ``_verdict_tb``: its traceback
         # as first raised, where the damage was found. ``_verdict_rewound``: whether
@@ -390,9 +398,7 @@ class ArchiveStreamImpl(ArchiveStream):
 
     @property
     def size(self) -> int | None:
-        """Total decompressed byte length when cheaply known, else ``None``.
-
-        The fsspec-style ``size`` convention (see ``source_byte_size``): the creator may
+        """The fsspec-style ``size`` convention (see ``source_byte_size``): the creator may
         supply it up front (a member stream knows ``member.size`` from the archive
         metadata), else an opened inner decompressor with a cheap ``try_get_size()``
         (a size it already knows, or a scan that reads only the index/trailer) is
@@ -455,7 +461,7 @@ class ArchiveStreamImpl(ArchiveStream):
             self._open_fn = None  # claim: only one caller proceeds to open_fn
         try:
             opened: BinaryIO = open_fn()
-            # Lazy ``stream_members`` open_fn often returns another ``ArchiveStream``
+            # Lazy ``stream_members`` open_fn often returns another ``ArchiveStreamImpl``
             # (from ``_open_member`` → ``_wrap_member_stream``, or a codec stream under
             # that). Collapse here so the public handle is a single wrapper — but adopt
             # the nested translator/stamp/rewind_warning so codec errors stay typed.
@@ -491,7 +497,7 @@ class ArchiveStreamImpl(ArchiveStream):
             raise
 
     def _collapse_nested(self, nested: ArchiveStreamImpl) -> BinaryIO:
-        """Reduce a nested ``ArchiveStream`` to a bytes stream for this handle.
+        """Reduce a nested ``ArchiveStreamImpl`` to a bytes stream for this handle.
 
         If ``nested`` is still lazy, its opener is taken and invoked (this handle is
         opening *now*, so deferral transfers rather than being forced early). If it is
@@ -555,7 +561,8 @@ class ArchiveStreamImpl(ArchiveStream):
                 opened = self._collapse_nested(opened)
             return opened
         raise ArchiveyUsageError(
-            "Cannot collapse nested ArchiveStream: it has no opener and no inner stream."
+            "Cannot collapse nested ArchiveStreamImpl: it has no opener and no inner "
+            "stream."
         )
 
     def _fail_unless_closed(self, e: Exception) -> NoReturn:
@@ -1073,7 +1080,7 @@ class ArchiveStreamImpl(ArchiveStream):
                 raise teardown_exc
 
     def __repr__(self) -> str:
-        return f"<ArchiveStream inner={self._inner!r}>"
+        return f"<{type(self).__name__} inner={self._inner!r}>"
 
 
 def raise_translated(
