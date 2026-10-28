@@ -15,7 +15,6 @@ import shutil
 import struct
 import subprocess
 import tarfile
-import tempfile
 import time
 import unicodedata
 import warnings
@@ -48,6 +47,7 @@ from archivey.exceptions import (
     ResourceLimitError,
     TruncatedError,
 )
+from archivey.internal import extraction as extraction_module
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.bomb_tracker import AlwaysStopResourceLimitError, BombTracker
 from archivey.internal.extraction import _CHUNK, ExtractionCoordinator
@@ -3140,14 +3140,14 @@ def test_orphan_link_whose_temp_file_is_refused_fails_alone(
     # makes the real one.
     src = _orphan_tar_with_link_in_ro(tmp_path)
     dest = tmp_path / "out"
-    mkstemp = tempfile.mkstemp
+    open_new_file = extraction_module._open_new_file
 
-    def refuse_in_ro(*args: object, **kwargs: object) -> tuple[int, str]:
-        if Path(str(kwargs["dir"])).name == "ro":
-            raise PermissionError(errno.EACCES, "Permission denied", kwargs["dir"])
-        return mkstemp(*args, **kwargs)  # type: ignore[arg-type]
+    def refuse_in_ro(path: Path, mode: int) -> int:
+        if path.parent.name == "ro":
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        return open_new_file(path, mode)
 
-    monkeypatch.setattr(tempfile, "mkstemp", refuse_in_ro)
+    monkeypatch.setattr(extraction_module, "_open_new_file", refuse_in_ro)
     with open_archive(src) as r:
         results = r.extract_all(
             dest, members=["ro/L1.txt", "L2.txt"], on_error=OnError.CONTINUE
@@ -6077,3 +6077,30 @@ def test_a_staging_file_the_filesystem_keeps_is_logged(
     with open_archive(archive) as reader:
         reader.extract_all(tmp_path / "out", on_error="continue")
     assert "staged for 'f.txt'" in caplog.text
+
+
+def test_a_taken_temp_name_moves_on_to_the_next(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The run's temp names are a token and a count; one that is taken (O_EXCL) is
+    # skipped, the file lands, and no temp file is left.
+    src = tmp_path / "a.tar"
+    src.write_bytes(_tar_bytes([("file", "d/f.txt", b"x")]))
+    open_new_file = extraction_module._open_new_file
+    tried: list[str] = []
+
+    def first_name_taken(path: Path, mode: int) -> int:
+        tried.append(path.name)
+        if len(tried) == 1:
+            raise FileExistsError(errno.EEXIST, "File exists", str(path))
+        return open_new_file(path, mode)
+
+    monkeypatch.setattr(extraction_module, "_open_new_file", first_name_taken)
+    dest = tmp_path / "out"
+    with open_archive(src) as r:
+        r.extract_all(dest)
+    assert (dest / "d" / "f.txt").read_bytes() == b"x"
+    assert len(tried) == 2
+    assert len(set(tried)) == 2
+    assert all(name.startswith(".archivey-tmp-") for name in tried)
+    assert sorted(p.name for p in (dest / "d").iterdir()) == ["f.txt"]

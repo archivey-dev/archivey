@@ -27,7 +27,6 @@ import io
 import os
 import posixpath
 import stat
-import tempfile
 import uuid
 from collections.abc import Callable, Collection, Generator, Iterator
 from dataclasses import dataclass, field, replace
@@ -104,6 +103,8 @@ _CHUNK = 1024 * 1024  # 1 MiB copy chunk
 # there (a staging directory holds a running pipe extraction's only copy of its
 # data). Documented in docs/extracting.md; keep the value and that doc in sync.
 _TMP_PREFIX = ".archivey-tmp-"
+# Names ``_new_temp_file`` tries before it gives up, as ``tempfile.TMP_MAX``.
+_TEMP_ATTEMPTS = 10000
 
 # A module attribute, not ``os.name`` at each use, so a test can take the Windows path
 # on POSIX.
@@ -575,6 +576,9 @@ class _RunState:
     # resolution, so each of those clears it (``_note_link_change`` and
     # ``_resolutions_changed``).
     resolved_parents: dict[str, str] = field(default_factory=dict)
+    # Names of the run's temp files (``_new_temp_file``): a random token, then a count.
+    temp_token: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    temp_count: int = 0
     # ``_hardlink_chain_end``'s memo: a hard link's ``_member_id`` -> the first
     # member on its chain that is not a HARDLINK, or ``None``.
     hardlink_ends: dict[int, ArchiveMember | None] = field(default_factory=dict)
@@ -3741,6 +3745,14 @@ class ExtractionCoordinator:
         (``_make_room_for_parents``), so any other failure is the filesystem's, and
         propagates unchanged.
         """
+        try:
+            if stat.S_ISDIR(os.lstat(long_path(path)).st_mode):
+                # Already a directory, the common case: ``os.makedirs`` would create
+                # nothing, and nothing below would change. One ``lstat`` instead of four
+                # calls.
+                return
+        except OSError:
+            pass
         # The components that do not exist yet: this run creates them, so a directory
         # member naming one later is not the caller's (``_is_callers_directory``).
         missing: list[Path] = []
@@ -3950,12 +3962,9 @@ class ExtractionCoordinator:
             tmp = self._temp_sibling(dest_path.parent)
             fd = _open_new_file(tmp, 0o666)
         else:
-            # mkstemp hands back an already-open fd; write straight into it (no
-            # close+reopen). Its 0o600 keeps the content private until the chmod below.
-            fd, tmp_name = tempfile.mkstemp(
-                dir=long_path(dest_path.parent), prefix=_TMP_PREFIX
-            )
-            tmp = Path(tmp_name)
+            # Write straight into the new file's fd (no close+reopen). Its 0o600 keeps
+            # the content private until the chmod below.
+            fd, tmp = self._new_temp_file(dest_path.parent)
         try:
             with os.fdopen(fd, "wb") as dst:
                 if copy_begins is not None:
@@ -3969,7 +3978,7 @@ class ExtractionCoordinator:
                     emit_progress=self._current.emit_progress,
                 )
             self._apply_metadata(tmp, member)
-            self._swap_into_place(tmp, dest_path, member)
+            self._swap_into_place(tmp, dest_path, member, fresh=True)
         except BaseException:
             # os.replace consumes the temp on success; on any earlier failure remove it so
             # no .archivey-tmp-* file is left behind (the existing destination is untouched).
@@ -4189,7 +4198,9 @@ class ExtractionCoordinator:
             return False
         return self._occupied(dest) if atomic else os.path.lexists(long_path(dest))
 
-    def _swap_into_place(self, tmp: Path, dest: Path, member: ArchiveMember) -> None:
+    def _swap_into_place(
+        self, tmp: Path, dest: Path, member: ArchiveMember, *, fresh: bool = False
+    ) -> None:
         """Move the staged temp ``tmp`` onto ``dest`` with ``os.replace``, the last step
         of every atomic write (``_write_file_atomic``, ``_place_link``).
 
@@ -4199,7 +4210,9 @@ class ExtractionCoordinator:
         routes onto a link to the same file). ``dest`` then already names the right
         file, so only the temp name is left, and it is removed here. After a real
         rename the temp name is gone and the unlink finds nothing. The unlink covers
-        Windows either way.
+        Windows either way. ``fresh`` says ``tmp`` is a file this write created, which
+        no other name can share, so on POSIX the rename always takes the temp name and
+        the unlink is skipped.
 
         Any error from the unlink is ignored: ``os.replace`` has already put the member
         in place, and a temp name left behind is a stray the docs call safe to delete,
@@ -4220,8 +4233,31 @@ class ExtractionCoordinator:
                 if not self._taken_after_check(dest, atomic=True):
                     raise
                 raise self._already_exists(dest, member) from exc
+            if fresh and os.name != "nt":
+                return
             with contextlib.suppress(OSError):
                 os.unlink(long_path(tmp))
+
+    def _new_temp_file(self, parent: Path) -> tuple[int, Path]:
+        """Create a new ``.archivey-tmp-*`` file in ``parent`` at mode 0o600 and return
+        its open fd and its path, as ``tempfile.mkstemp`` does, with the same flags
+        (``_open_new_file``).
+
+        The names are this run's random token and a counter, rather than ``mkstemp``'s
+        random draw per file, which cost a few microseconds a member. ``O_EXCL`` fails
+        on a name that is taken, and the next number is tried.
+        """
+        state = self._state
+        for _ in range(_TEMP_ATTEMPTS):
+            state.temp_count += 1
+            path = parent / f"{_TMP_PREFIX}{state.temp_token}{state.temp_count:x}"
+            try:
+                return _open_new_file(path, 0o600), path
+            except FileExistsError:
+                continue
+        raise FileExistsError(
+            errno.EEXIST, "No usable temporary name found", str(parent)
+        )
 
     @staticmethod
     def _temp_sibling(parent: Path) -> Path:
