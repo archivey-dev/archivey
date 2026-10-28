@@ -75,9 +75,9 @@ jobs:
         # the everyday recommended install; core-only is covered by the test matrix.
         run: uv sync --group dev --extra all
       - name: Ruff lint
-        run: uv run ruff check src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/ packages/archivey-cpio/
+        run: uv run ruff check src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/ packages/archivey-cpio/ packages/archivey-ar/
       - name: Ruff format
-        run: uv run ruff format --check src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/ packages/archivey-cpio/
+        run: uv run ruff format --check src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/ packages/archivey-cpio/ packages/archivey-ar/
       - name: Pyrefly
         run: uv run pyrefly check
       - name: ty
@@ -807,6 +807,30 @@ jobs:
       - name: Pytest
         run: uv run --no-sync pytest packages/archivey-cpio/tests -q --no-cov -rs
 
+  # The ar reader in packages/archivey-ar: a second format read in one forward pass, to
+  # test the same API from a different shape (a long-name table carried across the walk,
+  # names stored in the data area). Its own tests, against archives GNU ar, bsdtar and
+  # llvm-ar wrote (tests/data/make-archives.sh), from a file and from a pipe.
+  ar-plugin:
+    name: archivey-ar plugin
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Set up Python
+        run: uv python install 3.11
+      - name: Sync, then install the package over it
+        run: |
+          uv sync --group dev
+          uv pip install -e packages/archivey-ar --no-deps
+      - name: Pytest
+        run: uv run --no-sync pytest packages/archivey-ar/tests -q --no-cov -rs
+
   # The one required check of the merge queue (ruleset on main). It runs only for a
   # merge_group and fails when any job above failed or was cancelled; a matrix leg with
   # continue-on-error does not count. On a pull request it is skipped, and the
@@ -815,7 +839,7 @@ jobs:
   gate:
     name: CI gate
     if: ${{ always() && github.event_name == 'merge_group' }}
-    needs: [lint, test, unar-distro-packages, free-threaded-concurrency, pypy, benchmark, squashfs-plugin, cpio-plugin]
+    needs: [lint, test, unar-distro-packages, free-threaded-concurrency, pypy, benchmark, squashfs-plugin, cpio-plugin, ar-plugin]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
