@@ -136,8 +136,14 @@ def test_a_deflated_zip_member_builds_one_decoder_config(
 
     with open_archive(io.BytesIO(buf.getvalue())) as reader:
         reader.members()
+        # Pin the real plan first: computed under the patch, it would read the patched
+        # signature, cache ``None`` and send every later copy to the fallback.
+        monkeypatch.setitem(
+            dataclass_copy._PLANS, StreamConfig, dataclass_copy._plan(StreamConfig)
+        )
         monkeypatch.setattr(StreamConfig, "__init__", counting)
         for member, stream in reader.stream_members():
             assert stream is not None
             assert stream.read() == data[member.name]
     assert built == len(data)  # one per member
+    assert dataclass_copy._PLANS[StreamConfig] is not None
