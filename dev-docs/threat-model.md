@@ -78,7 +78,10 @@ no member replaces the destination itself.
   (`filters.disk_spelling`, which the coordinator applies first), special files
   (devices, FIFOs, sockets), and a non-directory member whose normalized name is
   `"."` or `""` (which would replace the destination root with a file). It resolves
-  the parent and checks containment, and checks symlink targets lexically. A
+  the parent and checks containment, and checks symlink targets lexically. The
+  coordinator resolves the destination once per run; `parent_resolves_within_root`
+  then walks only the member's own components below it, so the destination's
+  ancestors are trusted to stay as they are for the run. A
   rejection names the member as listed, not its disk spelling. The resolution
   (`resolve_or_raise_on_loop`) is archivey's own walk on POSIX, one link at a time as
   the kernel goes: a component it cannot look at raises and the member is refused.
