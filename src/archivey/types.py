@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, tzinfo
 from enum import Enum, Flag, IntEnum, StrEnum, auto
 from operator import attrgetter
@@ -1252,9 +1252,10 @@ class ArchiveMember:
         """Return a copy with the given fields changed; never mutates self.
 
         ``object`` is not a check: neither the keyword names nor the value types are
-        verified statically, so a misspelled field or a wrongly typed value is still
-        a ``TypeError`` from ``dataclasses.replace`` at runtime. Typing the names
-        would need a per-field ``TypedDict``, which is deliberately deferred.
+        verified statically. A misspelled field is still a ``TypeError`` from
+        ``dataclasses.replace`` at runtime; a wrongly typed value is accepted, and
+        shows up only where it is used. Typing the names would need a per-field
+        ``TypedDict``, which is deliberately deferred.
 
         No listing holds the copy, so nothing stamps ``is_current`` on it or resolves
         its links to members; its ``member_state_final`` waits only on an unread link
@@ -1268,13 +1269,13 @@ class ArchiveMember:
             # What ``dataclasses.replace`` does, a few times faster: every field
             # passed to ``__init__``, positionally, in field order. Extraction copies
             # each member several times. Anything else, a subclass or a name that is
-            # not a field, takes ``replace`` and its errors.
+            # not a field, takes ``dataclasses.replace`` and its errors.
             values = list(_member_field_values(self))
             for key, value in kwargs.items():
                 values[_MEMBER_FIELD_INDEX[key]] = value
             copy = cls(*values)
         else:
-            copy = replace(self, **kwargs)
+            copy = dataclasses.replace(self, **kwargs)
         copy._listing_pending = False
         copy._size_unread = False
         return copy

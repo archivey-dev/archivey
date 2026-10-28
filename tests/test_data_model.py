@@ -109,30 +109,19 @@ def test_replace_copies_every_field_as_dataclasses_replace_does() -> None:
     fields = dataclasses.fields(ArchiveMember)
     assert all(f.init and not f.kw_only for f in fields)
     assert archivey.types._MEMBER_FIELDS == tuple(f.name for f in fields)
-    target = ArchiveMember(type=MemberType.FILE, name="t")
-    m = ArchiveMember(
-        type=MemberType.SYMLINK,
-        name="a",
-        raw_name=b"a",
-        size=3,
-        mode=0o777,
-        uname="u",
-        link_target="t",
-        link_target_member=target,
-        hashes={HashAlgorithm.CRC32: crc32_digest(1)},
-        extra=MemberExtra({"third.party": 1}),
-        _member_id=7,
-        _archive_id="x",
-        _raw=object(),
-        _link_target_resolved=True,
-    )
-    for changes in ({}, {"name": "b", "mode": None}, {"_member_id": 8}):
+    # A distinct object in every field, so a field copied into the wrong position
+    # shows up as the wrong object, not as an equal default.
+    given = {f.name: object() for f in fields}
+    m = ArchiveMember(**given)  # type: ignore[arg-type]
+    every = {f.name: object() for f in fields}  # each keyword to its own position
+    for changes in ({}, {"name": "b", "mode": None}, {"_member_id": 8}, every):
         fast = m.replace(**changes)
         slow = dataclasses.replace(m, **changes)
-        for f in dataclasses.fields(ArchiveMember):
+        for f in fields:
             if f.name in ("_listing_pending", "_size_unread"):
                 continue  # replace() clears both on the copy
             assert getattr(fast, f.name) is getattr(slow, f.name), f.name
+            assert getattr(fast, f.name) is changes.get(f.name, given[f.name]), f.name
     with pytest.raises(TypeError, match="unexpected keyword argument 'nope'"):
         m.replace(nope=1)
 
