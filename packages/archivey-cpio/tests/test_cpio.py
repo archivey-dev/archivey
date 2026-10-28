@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 from archivey_cpio import CPIO, CpioPlugin, CpioReader
+from archivey_cpio.reader import MAX_NAME_BYTES
 
 import archivey
 from archivey import (
@@ -279,15 +280,76 @@ def test_not_a_cpio_archive(tmp_path: Path) -> None:
         open_archive(_archive(tmp_path, bytes(bad)), format="cpio")
 
 
+TRAILER = b"TRAILER!!!"
+_FILE = 0o100644
+
+
+def _newc(*members: tuple[bytes, int, int, int, bytes], nul: bool = True) -> bytes:
+    """A newc archive of (name, mode, inode, nlink, data) members, then the trailer.
+    ``nul=False`` leaves the first member's name without its NUL."""
+    out = bytearray()
+    for i, (name, mode, ino, nlink, data) in enumerate(
+        members + ((TRAILER, 0, 0, 1, b""),)
+    ):
+        stored = name if (i == 0 and not nul) else name + b"\0"
+        fields = (ino, mode, 0, 0, nlink, 0, len(data), 0, 0, 0, 0, len(stored), 0)
+        header = b"070701" + b"".join(b"%08X" % value for value in fields)
+        out += header + stored + bytes(-(len(header) + len(stored)) % 4)
+        out += data + bytes(-len(data) % 4)
+    return bytes(out)
+
+
 def test_too_many_held_links(tmp_path: Path) -> None:
+    """The reader's own bound on links held back for their data: archivey's
+    max_members counts yielded members only, and a held link is not yet one."""
+    links = [(f"l{i}".encode(), _FILE, 7, 6, b"") for i in range(5)]
+    data = _newc(*links, (b"data", _FILE, 7, 6, b"x"))
     config = archivey.ArchiveyConfig(
-        listing_limits=archivey.ListingLimits(max_members=1)
+        listing_limits=archivey.ListingLimits(max_members=2)
     )
     with (
-        open_archive(DATA / "gnu-newc.cpio", config=config) as reader,
-        pytest.raises(ResourceLimitError),
+        pytest.raises(ResourceLimitError, match="waiting for their data"),
+        open_archive(_archive(tmp_path, data), config=config) as reader,
     ):
         reader.members()
+
+
+def test_a_held_link_keeps_its_stored_name(tmp_path: Path) -> None:
+    """A held hard link is reported when its name is normalized, as any member is."""
+    data = _newc((b"dir//weird", _FILE, 7, 2, b""), (b"plain", _FILE, 7, 2, b"x"))
+    path = _archive(tmp_path, data)
+    with open_archive(path) as reader:
+        members = reader.members()
+        counts = reader.diagnostics.counts
+    assert [(m.name, m.type) for m in members] == [
+        ("plain", MemberType.FILE),
+        ("dir/weird", MemberType.HARDLINK),
+    ]
+    assert counts[DiagnosticCode.MEMBER_NAME_NORMALIZED] == 1
+    strict = archivey.ArchiveyConfig(diagnostic_policy=archivey.DiagnosticPolicy.STRICT)
+    with (
+        pytest.raises(archivey.DiagnosticRaisedError),
+        open_archive(path, config=strict) as reader,
+    ):
+        reader.members()
+
+
+def test_hostile_headers(tmp_path: Path) -> None:
+    def opened(data: bytes) -> None:
+        with open_archive(_archive(tmp_path, data), format="cpio") as reader:
+            reader.members()
+
+    with pytest.raises(CorruptionError, match="not NUL-terminated"):
+        opened(_newc((b"a", _FILE, 1, 1, b"x"), nul=False))
+    with pytest.raises(CorruptionError, match="is crc, in a newc archive"):
+        mixed = bytearray(_newc((b"a", _FILE, 1, 1, b"x"), (b"b", _FILE, 2, 1, b"y")))
+        # The second header: 110 + "a\0" + pad (112), then the data and its pad (116).
+        mixed[116:122] = b"070702"
+        opened(bytes(mixed))
+    long_name = bytearray(_newc((b"a", _FILE, 1, 1, b"x")))
+    long_name[94:102] = b"%08X" % (MAX_NAME_BYTES + 1)
+    with pytest.raises(CorruptionError, match=f"a name of {MAX_NAME_BYTES + 1} bytes"):
+        opened(bytes(long_name))
 
 
 def _imports(path: Path) -> Iterator[str]:

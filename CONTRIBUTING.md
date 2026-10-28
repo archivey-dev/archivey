@@ -60,8 +60,9 @@ uv run pre-commit run --all-files  # optional: framework hooks over the whole tr
 
 Pyrefly and ty are scoped to `src/`, `packages/archivey-squashfs/src/` and
 `packages/archivey-cpio/src/` (the library and the in-repo plugin packages), so every
-command above runs clean with no extra path arguments. **Both type checkers must stay green** — `ruff` passing is not the gate,
-and running it alone is the most common self-inflicted CI failure here.
+command above runs clean with no extra path arguments. **Both type checkers must stay
+green** — `ruff` passing is not the gate, and running it alone is the most common
+self-inflicted CI failure here.
 
 **Format before you commit.** CI runs `ruff format --check` (and `ruff check`) over
 `src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/ packages/archivey-cpio/`
