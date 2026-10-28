@@ -624,8 +624,9 @@ class FormatHandler(ABC):
     caller; archivey calls :meth:`open` on an instance it makes."""
 
     format: ClassVar[ArchiveFormat]
-    """The format, built from a :class:`~archivey.PluginContainer` member and
-    ``StreamFormat.UNCOMPRESSED``."""
+    """The format, with ``StreamFormat.UNCOMPRESSED``. A plugin builds it from a
+    :class:`~archivey.PluginContainer` member; a built-in format keeps its
+    :class:`~archivey.ContainerFormat` member."""
 
     extensions: ClassVar[tuple[str, ...]] = ()
     """File extensions with the dot (``".cpio"``). An extension a built-in format

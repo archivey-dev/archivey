@@ -1,7 +1,7 @@
 """The adapter between ``archivey.formats`` and the internal reader machinery.
 
-A plugin reader does not subclass :class:`BaseArchiveReader`. Two subclasses serve every
-plugin: :class:`IndexedReaderAdapter` implements the four abstract methods by calling an
+A format reader does not subclass :class:`BaseArchiveReader`. Two subclasses serve every
+one, built-in or plugin: :class:`IndexedReaderAdapter` implements the four abstract methods by calling an
 :class:`~archivey.formats.IndexedReader`, and :class:`SequentialReaderAdapter` by
 walking a :class:`~archivey.formats.SequentialReader`, so the walk, the passes, link
 handling and extraction stay internal (the ``plugin-api`` OpenSpec change, design §1
@@ -9,6 +9,8 @@ and §2a).
 
 :func:`register_plugin` builds one :class:`ReadBackend` subclass per plugin and
 registers it after the built-in backends, so a built-in signal always wins (§4).
+:func:`register_builtin_format` builds one for a built-in format, registered with the
+other built-in backends.
 """
 
 from __future__ import annotations

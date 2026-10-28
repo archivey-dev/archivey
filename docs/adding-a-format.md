@@ -1,17 +1,19 @@
 # Adding a format
 
-archivey reads most formats through a small set of shared structures, `archivey.formats`.
-A format describes itself and hands archivey its members and their bytes, and archivey
-does the heavy lifting: name checks, limits, links, digests, extraction, and decoding the
-compression around or inside the archive. Built-in formats such as ISO 9660 are written
-this way, and the same structures are public, so a program or a separate package (a
-*plugin*) can add a format of its own. A format added this way works with `open_archive`,
-`detect_format`, `format=`, `format_availability`, the format lists, extraction and the
-`archivey` command, as the built-in formats do.
+`archivey.formats` is a small set of shared structures for reading a format. A format
+describes itself and hands archivey its members and their bytes, and archivey does the
+heavy lifting: name checks, limits, links, digests, extraction, and decoding the
+compression around or inside the archive. The built-in ISO 9660 reader is written this
+way, and more built-in formats are planned on it (CPIO, ar, SquashFS, and TAR). The same
+structures are public, so a program or a separate package (a *plugin*) can add a format
+of its own. A format added this way works with `open_archive`, `detect_format`,
+`format=`, `format_availability`, the format lists, extraction and the `archivey`
+command, as the built-in formats do.
 
-Formats that do not fit this model, or that need special features or the last bit of
-speed (ZIP, 7z, RAR, TAR), are written directly against archivey's internal reader
-classes instead. That route is not public.
+The other built-in readers (ZIP, 7z, RAR, TAR, the single-file compressors and
+directories) are written directly against archivey's internal reader classes. That route
+is for formats that do not fit this model, or that need special features or more speed,
+and it is not public.
 
 !!! warning "Provisional"
     `archivey.formats` can change in a minor release until a plugin outside archivey has
