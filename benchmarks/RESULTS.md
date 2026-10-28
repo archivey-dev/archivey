@@ -544,7 +544,8 @@ On the harness corpus (the earlier sections), the same before/after pair, two ru
 each, moved only the extraction rows beyond noise: ZIP `extract` against libarchive-c
 4.2× → 3.2×, TAR `extract` 3.6× → 2.8×, solid 7z `extract` against py7zr 1.24× →
 1.05×. The harness's `zip_extract` against `zipfile` stays unreliable on this host (see
-the note under "Realistic scale").
+the note under "Realistic scale"); on the small-member corpus the `zipfile` extract time
+held at 209–212 ms across the four runs, so that row's ratio is stable.
 
 ## Why the published guide no longer quotes numbers
 
