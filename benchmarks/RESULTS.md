@@ -552,12 +552,18 @@ held at 209–212 ms across the four runs, so that row's ratio is stable.
 (DEFLATE set-up per member), 1088 (string fast paths in the extraction coordinator)
 and 1090 (listing pulls in batches). The interval also holds PRs 1080 (ZIP XZ method)
 and 1091 (plugin formats inside a compression stream), which add paths this corpus
-does not take. Same
-method as above: the same `peers.py`, one shared `ARCHIVEY_BENCH_CACHE`, extraction to
-`/dev/shm`, CPython 3.11.17, py7zr 1.1.4, libarchive-c over libarchive 3.7.2, two runs
-per tree in the order before, after, before, after. The container restarted between
-the two rounds, so the second round may have run on another host of the same kind;
-each ratio still comes from one run. Times are means of the two runs.
+does not take, and 1085 (this corpus and the first round's notes; benchmarks and docs
+only). Same method as above: the same `peers.py`, one shared `ARCHIVEY_BENCH_CACHE`,
+extraction to `/dev/shm`, CPython 3.11.17, py7zr 1.1.4, libarchive-c over libarchive
+3.7.2, two runs per tree in the order before, after, before, after. Times are means of
+the two runs, and each ratio comes from one run.
+
+The host was not the first round's, and it changed within this round: the container
+restarted between the two runs of each tree, and the same tree ran up to 30% faster
+after the restart. `5b2f2f71` is also 23–30% faster here than in the first round's
+"after" column on every row not bound by its peer (ZIP `read_all` 728 against 631 ms).
+So read only ratios and the before/after differences within this round; absolute times
+do not compare across rounds.
 
 Wall time is too noisy here to show a 2–5% change, so the instruction counts come
 first. They are callgrind's count per member on the same corpus (`PYTHONHASHSEED=0`,
@@ -606,23 +612,34 @@ The wall-clock rows (ms; ratio is archivey ÷ peer):
 
 What the second round shows:
 
-- **Reading a DEFLATE ZIP member is 13% cheaper** in instructions, and ZIP `read_all`
-  fell from 631 to 560 ms (10.9× → 9.6× `zipfile`). That is PR 1087: one decoder config
-  per member instead of three copies, and fewer rapidgzip eligibility checks. The gap
-  between a stored and a deflated member, about 85 µs above, is now about 55 µs of
-  wall time (350 against 560 ms for 4 000 members) and 260 000 instructions.
-- **Extraction is 3–10% cheaper** in instructions in every format (PRs 1086, 1087 and
-  1088). The wall rows agree in direction for ZIP, TAR and 7z; single wall differences
-  under about 15% are still noise on this host.
-- **Listing is 2–3% cheaper** in every format (PR 1090 and the copies in 1086). Too
-  small to read from the wall rows.
+- **Reading a DEFLATE ZIP member is 13% cheaper** in instructions, and ZIP (DEFLATE)
+  `read_all` fell from 631 to 560 ms (10.9× → 9.6× `zipfile`). That is PR 1087: one
+  decoder config per member instead of three copies, and fewer rapidgzip eligibility
+  checks. Within this round, the extra cost of a deflated member over a stored one fell
+  from about 73 µs ((631 − 339) ms ÷ 4 000) to about 52 µs ((560 − 350) ms ÷ 4 000), and
+  from about 356 000 to 259 000 instructions. The first round's "about 85 µs" was
+  measured on another host.
+- **Extraction is 2.8–10.1% cheaper** in instructions (TAR least, ZIP (DEFLATE) most;
+  PRs 1086, 1087 and 1088). The wall rows agree in direction for ZIP (DEFLATE), TAR and
+  7z.
+- **Listing is 1.6–3.1% cheaper** in instructions (tar.gz least, ZIP most; PR 1090 and
+  the copies in 1086). Too small to read from the wall rows.
+- **Some wall rows moved the other way, all inside the noise band.** The three ZIP
+  stored rows rose 2–5% while their instruction counts fell 2.8–4.7%, and the tar.gz
+  `read_all` pair against libarchive-c rose 14%. The ZIP `extract` ratio against
+  `zipfile` rose (11.2× → 11.5×) though archivey's own time fell from 1 633 to 1 474 ms,
+  because `zipfile` ran faster in the "after" runs (146 → 129 ms). Single wall
+  differences under about 15% are still noise here.
 - **Where archivey stands now:** 6.4× `zipfile` to list a ZIP and 9.6× to read one,
-  1.4–2.2× `tarfile`, 0.5–1.3× py7zr; against libarchive-c 3–20× on listing and 9–18×
+  1.3–2.2× `tarfile`, 0.5–1.3× py7zr; against libarchive-c 3–20× on listing and 9–18×
   on reading and extraction.
 
-The harness corpus (64 members of 256 KiB), run twice per tree alongside, moved by no
-more than its run-to-run noise: its rows are dominated by decoding, which these PRs do
-not touch.
+The harness corpus (64 members of 256 KiB) ran twice per tree alongside, before the
+restart. Its rows are dominated by decoding, which these PRs do not touch, and they
+moved by no more than their run-to-run noise. Leaving out one 132 ms `zip_extract` run
+on the "before" tree (the other was 53 ms), the largest change in a row's mean was
+`tar_open_list`, +19% (3.7 → 4.3 ms), while the two runs of one tree differed by up to
+27% on the same rows (`targz_read_all_accel_on`, 115 against 91 ms).
 
 ## Why the published guide no longer quotes numbers
 
