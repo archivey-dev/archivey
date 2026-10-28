@@ -14,22 +14,28 @@ each is labelled `needs-minor`.
       `basic_nonsolid__rar4.rar` and a solid RAR5 in the test, from committed
       fixtures (header end byte, name byte, size vint, type byte set to `ENDARC`,
       SERVICE, MAIN and `CRYPT`, plain and solid for SERVICE, the 3rd and 5th headers
-      damaged, the 3rd and 4th damaged), and pin
+      damaged, the 3rd and 4th damaged, and a solid RAR5 with a digest-less member after
+      the skip, crafted as `tests/test_rar_undecodable_names.py` does), and pin
       `unrar lb` / `unrar t` on each, and `lsar` where the design measured it, in a test
       that skips without the program (DR-24).
 - [ ] 1.2 `rar_parser.py`: in both walks, on a damaged header after MAIN, compute the
       next position from the damaged sizes, confirm the header there and the one after
       it (CRC, type, fields; a damaged one after it by the same rule) and resume; never
-      past a damaged header that does not parse in full or whose type reads `ENDARC`;
+      past a damaged header that does not parse in full or whose type reads as anything
+      but FILE or SERVICE (RAR 1.5-4: FILE, NEWSUB or an accepted old sub-block type);
       keep a skipped FILE-typed header as an unlisted entry; record each span on
       `RarArchive` with a cap; keep `damaged` as the first. Encrypted headers do not
       resume.
 - [ ] 1.3 `ARCHIVE_DAMAGE_SKIPPED`, `DamageSkippedContext`, `DiagnosticCodeStr`, the
       diagnostics catalogue row and the API surface listing.
 - [ ] 1.4 `rar_reader.py`, `rar_unar.py`: emit the diagnostic per span during the walk.
-      Count unlisted entries as payload FILE entries in the solid-pass split (`unrar` and
-      `unar`), the include mask selection, the glob refusal, the dictionary check and
-      `unar_entry_index`. An unlisted entry whose name `unrar` cannot read the way
+      Count every unlisted entry, payload or not, in `unar_entry_index`; count the
+      unlisted entries that are payload members in the solid-pass split (`unrar` and
+      `unar`), the include mask selection, the glob refusal and the dictionary check.
+      After a skip in a solid stream, a member with no stored digest raises
+      `CorruptionError` after a SERVICE-typed skip with data and emits
+      `DIGEST_UNVERIFIABLE` (`reason="after_damaged_header"`) after a FILE-typed one.
+      An unlisted entry whose name `unrar` cannot read the way
       archivey does takes the mask rule's `UnsupportedFeatureError` (and `auto`'s route
       to `unar`).
 - [ ] 1.5 Tests: the `format-rar` damaged-header matrix in both access modes,
@@ -39,7 +45,8 @@ each is labelled `needs-minor`.
       `unar` that archivey accepts), a duplicate name across a skip, and a crafted RAR
       1.5-4 whose damaged size lands on a header that passes CRC16 while the next does
       not (the two-header check), and the new rows of the four modified counting
-      requirements (solid split, mask, glob refusal, dictionary).
+      requirements (solid split, mask, glob refusal, dictionary), the solid SERVICE-typed
+      row (every member after the skip fails its digest), and both digest-less rows.
 - [ ] 1.6 `formats/rar.md` §1: replace "unrar searches past the damage" with what the
       source and the measurements show, and add the resume rule and its reasons.
       `docs/errors-and-diagnostics.md`: the new code.

@@ -121,7 +121,17 @@ for where the first damaged header said the next one is.
 The solid SERVICE row is what the digest rule is for: the split counts no bytes for the
 skipped block, which matches what `unrar p` emits, but the solid decoder state after it
 is wrong, so the next member's own digest fails. A member there with no stored digest
-raises `CorruptionError` naming the skip instead.
+raises `CorruptionError` naming the skip instead: archivey knows those bytes are wrong,
+and DR-1 ranks a refusal above wrong data.
+
+That refusal is scoped to the stream archivey knows is broken. After a confirmed
+FILE-typed skip, `unrar` decodes the skipped data and the bytes are right (the name-byte
+measurement below: the same 41 bytes and MD5 as the intact archive); only the split
+rests on an unpacked size no CRC vouched for. A member there with no stored digest is
+DR-1's unknowable case, so its bytes are returned with `DIGEST_UNVERIFIABLE`
+(`reason="after_damaged_header"`) naming the skip, as the merged spec already serves a
+cut-short `unrar` member with nothing checking it. The code is in
+`ARCHIVE_INTEGRITY_CODES`, so `STRICT` still refuses.
 
 Each later damaged header gets the same rule. The walk reads each header once, so the
 cost grows with the number of headers and the walk makes no extra reads on an intact
