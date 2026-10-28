@@ -1,27 +1,39 @@
 """Compare Archivey against libarchive on libarchive's own uuencoded test archives.
 
-Off by default. Point ``ARCHIVEY_LIBARCHIVE_TEST_FILES`` at libarchive's
-``libarchive/test`` directory (clone https://github.com/libarchive/libarchive and
-use ``…/libarchive/test``)::
+Off by default. Point ``ARCHIVEY_LIBARCHIVE_TEST_FILES`` at one directory holding
+links to the ``.uu`` test archives of ``libarchive/test``, ``cpio/test`` and
+``tar/test`` in a clone of https://github.com/libarchive/libarchive (the triage below
+assumes all three; ``test_libarchive_corpus_discovered_archives`` checks it)::
 
-    ARCHIVEY_LIBARCHIVE_TEST_FILES=/path/to/libarchive/libarchive/test \\
+    mkdir corpus && ln -sf /path/to/libarchive/{libarchive,cpio,tar}/test/*.uu corpus/
+    ARCHIVEY_LIBARCHIVE_TEST_FILES=$PWD/corpus \\
       uv run --no-sync pytest tests/test_libarchive_corpus.py -q
+
+Use a libarchive as new as the clone: libarchive 3.7.2 (Ubuntu 24.04) decodes the
+ARM and ARM64 filters of the 7z fixtures wrongly and hangs on
+``test_read_filter_gzip_recursive.gz``. ``python-libarchive-c`` loads the library
+the ``LIBARCHIVE`` variable names, so a build of the clone can be used without
+installing it (``cmake -S libarchive -B build -DENABLE_TEST=OFF``, then
+``LIBARCHIVE=build/libarchive/libarchive.so``).
+
+The format plugins in ``packages/`` (CPIO, ar, SquashFS) are registered when they
+are installed (``uv pip install -e packages/archivey-cpio``), so their fixtures are
+compared too; without them those fixtures are skipped as unknown formats.
 
 Reference ``.uu`` blobs are decoded into ``ARCHIVEY_TEST_CACHE`` on first use.
 Skips archives libarchive cannot open, non-primary split volumes, libarchive
 fuzz/crash fixtures, and formats Archivey does not implement.
 
-Triage (2026-07, vs libarchive ``libarchive/test``) — known failures marked
-``xfail``:
+Triage (2026-07, rerun 2026-10-28 against libarchive 3.9.0dev with the plugins)
+— known failures marked ``xfail``:
 
 **Compress / filter**
-* **GAP** ``.tlz`` with raw LZMA Alone payloads — extension maps to TAR+lzip;
-  Archivey has no TAR+LZMA-Alone stream format.
 * **HARNESS** bare ``.lz`` that libarchive does not list as an archive
   (``test_compat_lzip_3``).
 
 **ZIP**
-* **GAP** ZIPX XZ (method 95) — no codec path yet.
+* **GAP** ZIPX XZ (method 95) — no codec path yet, with or without WinZip AES
+  around it.
 * ZIPX PPMd / Zstd decode via the shared codec layer when `[recommended]` is
   installed; WinZip AES (method 99) decrypts via the same extra.
 * **GAP** ZIP members whose payload exceeds the declared size (libarchive
@@ -31,17 +43,33 @@ Triage (2026-07, vs libarchive ``libarchive/test``) — known failures marked
 
 **TAR / sparse / nested**
 * **GAP** GNU sparse variants / PAX edge headers that stdlib ``tarfile`` rejects.
-* **NESTED** ``*.iso.Z`` / ``*.cpio.gz`` — outer compress around a non-TAR
-  container Archivey does not compose (skipped, not xfail).
+* **NESTED** ``*.iso.Z`` / ``*.cpio.gz`` (and the other compressed ``*.cpio.*``)
+  — outer compress around a non-TAR container Archivey does not compose yet
+  (skipped, not xfail).
+* **POLICY** a V7 directory (a regular-file header whose name ends in ``/``) with a
+  size: Archivey skips the data the size declares, as GNU tar does; libarchive
+  reads none and so lists one more member.
+* **POLICY** names spelled with repeated separators and drive prefixes are
+  normalized (``C://///file14`` lists as ``C:/file14``); libarchive keeps them.
 
 **RAR**
 * **GAP** some RAR5 extra-field / crypt-only headers; multi-volume sets need
   sibling volumes (skipped like other split volumes).
+
+**CPIO** (with archivey-cpio installed)
+* **POLICY** in a newc or crc link group the data comes with the last name: Archivey
+  lists that member as the file and the earlier names as hard links to it, where
+  libarchive lists the first name as the file.
+* **SKIP** compressed ``*.cpio.*``, RPM packages (not read), the afio fixtures
+  libarchive does not open on their own, and names in legacy encodings, which
+  ``python-libarchive-c`` cannot return.
 """
 
 from __future__ import annotations
 
 import binascii
+import importlib
+import importlib.util
 import io
 import os
 import re
@@ -51,7 +79,17 @@ from pathlib import Path
 
 import pytest
 
-from archivey import FormatDetectionError, MemberType, detect_format, open_archive
+from archivey import (
+    ArchiveyConfig,
+    FormatDetectionError,
+    FormatInfo,
+    MemberType,
+    detect_format,
+    open_archive,
+)
+from archivey.internal.plugin_adapter import registration_scope
+from archivey.internal.registry import get_registry
+from archivey.plugins import register_format
 from archivey.types import ArchiveFormat, ContainerFormat, StreamFormat
 from tests.conftest import ARCHIVEY_TEST_CACHE, binary_refusal, requires
 from tests.sample_archives import publish_cached
@@ -76,6 +114,10 @@ _PASSWORDS: dict[str, str] = {
 # Try these when an archive name hints at encryption but has no explicit mapping.
 _ENCRYPTION_NAME_HINTS = ("encrypt", "aes", "password", "psw")
 _FALLBACK_PASSWORDS = ("password", "test_password_zipx", "12345678", "secret")
+
+# libarchive reads every fixture by its content, whatever its name (the binary CPIO
+# ones are named .bin), so Archivey runs every content probe too.
+_CONFIG = ArchiveyConfig(always_probe_content=True)
 
 # Continuation volumes — open via the first part only.
 _SKIP_NAMES = frozenset(
@@ -113,6 +155,8 @@ _SKIP_NAMES = frozenset(
         "test_write_disk_appledouble.cpio.gz",
         # GNU sparse skip-entry OOMs/segfaults the process — skip rather than xfail.
         "test_read_format_gtar_sparse_skip_entry.tar.Z",
+        # One volume of a split .Z: not an archive, and the parts are not joined.
+        "test_read_filter_compress_multi_volume.part01",
     }
 )
 
@@ -124,18 +168,6 @@ _PART_RE = re.compile(
 # Triaged divergences. Values are (strict, reason).
 _XFAIL: dict[str, tuple[bool, str]] = {
     # --- compress / filter ---
-    "test_compat_lzma_1.tlz": (
-        True,
-        "GAP: .tlz extension maps to TAR+lzip; payload is raw LZMA Alone",
-    ),
-    "test_compat_lzma_2.tlz": (
-        True,
-        "GAP: .tlz extension maps to TAR+lzip; payload is raw LZMA Alone",
-    ),
-    "test_compat_lzma_3.tlz": (
-        True,
-        "GAP: .tlz extension maps to TAR+lzip; payload is raw LZMA Alone",
-    ),
     "test_compat_lzip_3.lz": (
         True,
         "HARNESS: libarchive lists no members for this bare lzip fixture",
@@ -154,6 +186,10 @@ _XFAIL: dict[str, tuple[bool, str]] = {
     "test_read_data_into_fd_size_exceeds_declared_stored.zip": (
         True,
         "GAP: stdlib zipfile rejects payload larger than declared size",
+    ),
+    "test_read_format_zip_winzip_aes256_large_xz.zip": (
+        True,
+        "GAP: ZIPX XZ unsupported (no ZIP method-95 codec path yet)",
     ),
     "test_read_format_zip_size_exceeds_declared_deflate.zip": (
         True,
@@ -196,34 +232,32 @@ _XFAIL: dict[str, tuple[bool, str]] = {
         True,
         "GAP: empty TAR with GNU label member-set differs from libarchive",
     ),
-    "test_read_format_gtar_redundant_L.tar.Z": (
+    "test_compat_tar_directory_1.tar": (
         True,
-        "GAP: GNU long-name (L) handling differs from libarchive",
+        "POLICY: a V7 directory's declared size is skipped, as GNU tar does",
     ),
-    "test_read_format_gtar_sparse_length.tar.Z": (
+    "test_patterns_4.tar": (
         True,
-        "GAP: GNU sparse length / hole presentation differs from libarchive",
+        "POLICY: repeated separators in names are normalized",
     ),
-    "test_read_format_tar_empty_pax.tar.Z": (
-        True,
-        "GAP: empty PAX TAR over unix-compress rejected by stdlib tarfile",
+    # --- CPIO (the archivey-cpio plugin) ---
+    **dict.fromkeys(
+        (
+            "test_gcpio_compat_ref.newc",
+            "test_gcpio_compat_ref.crc",
+            "test_gcpio_compat_ref_nosym.newc",
+            "test_gcpio_compat_ref_nosym.crc",
+        ),
+        (True, "POLICY: a link group lists the member that holds the data as the file"),
     ),
     # --- RAR ---
     "test_read_format_rar5_only_crypt_exfld.rar": (
         True,
         "GAP: RAR5 crypt-only extra field parsing",
     ),
-    "test_read_format_rar5_unsupported_exfld.rar": (
-        True,
-        "GAP: RAR5 unsupported extra field parsing",
-    ),
     "test_read_format_rar_unbound_staticdata.rar": (
         True,
         "GAP: RAR3 unbound static data / zero header size",
-    ),
-    "test_read_format_rar5_extra_field_version.rar": (
-        True,
-        "GAP: RAR5 version extra-field member naming",
     ),
 }
 
@@ -310,7 +344,7 @@ def _safe_decode_uu(source: Path, dest: Path) -> bool:
     return True
 
 
-def _materialize_archive(uu_path: Path) -> Path | None:
+def _materialize_archive(uu_path: Path) -> tuple[Path, FormatInfo] | None:
     name = uu_path.name
     if not name.endswith(".uu"):
         return None
@@ -319,7 +353,7 @@ def _materialize_archive(uu_path: Path) -> Path | None:
     if not _safe_decode_uu(uu_path, dest):
         return None
     try:
-        info = detect_format(dest)
+        info = detect_format(dest, config=_CONFIG)
     except (FormatDetectionError, OSError, ValueError):
         if dest.exists():
             dest.unlink(missing_ok=True)
@@ -332,12 +366,10 @@ def _materialize_archive(uu_path: Path) -> Path | None:
     # composed Archivey format. Skip rather than compare against libarchive's
     # multi-filter open.
     if info.format.container is ContainerFormat.RAW_STREAM and (
-        base.lower().endswith(".iso.z")
-        or base.lower().endswith(".cpio.gz")
-        or base.lower().endswith(".cpio.z")
+        base.lower().endswith(".iso.z") or ".cpio." in base.lower()
     ):
         return None
-    return dest
+    return dest, info
 
 
 def _password_candidates(archive_name: str) -> tuple[str | None, ...]:
@@ -431,16 +463,39 @@ def _uu_param(path: Path) -> pytest.ParameterSet:
     )
 
 
+# The format plugins in packages/, by module and class.
+_PLUGINS = (
+    ("archivey_cpio", "CpioPlugin"),
+    ("archivey_ar", "ArPlugin"),
+    ("archivey_squashfs", "SquashfsPlugin"),
+)
+
 _ROOT = _files_dir()
 _UU_SOURCES = list(_iter_uu_sources(_ROOT)) if _ROOT is not None else []
 
 pytestmark = [
     pytest.mark.skipif(
         _ROOT is None,
-        reason=f"set {_ENV} to libarchive's libarchive/test directory to run this corpus",
+        reason=f"set {_ENV} to a directory of libarchive's .uu fixtures to run this corpus",
     ),
     requires("libarchive"),
 ]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _plugins() -> Iterator[None]:
+    """Register the plugins in packages/ that are installed, so their fixtures are
+    compared instead of skipped as unknown formats; undone when the module ends."""
+    with registration_scope():
+        for module, name in _PLUGINS:
+            # Not installed: skipped. Installed and failing to import: an error.
+            if importlib.util.find_spec(module) is None:
+                continue
+            plugin = getattr(importlib.import_module(module), name)
+            # A plugin's own tests may have registered it in this process already.
+            if get_registry().registered_reader(plugin.format) is None:
+                register_format(plugin)
+        yield
 
 
 @pytest.fixture(scope="module")
@@ -455,11 +510,12 @@ def libarchive_mod():
 def test_native_matches_libarchive_on_libarchive_corpus(
     uu_source: Path, libarchive_mod: object
 ) -> None:
-    archive = _materialize_archive(uu_source)
-    if archive is None:
+    materialized = _materialize_archive(uu_source)
+    if materialized is None:
         pytest.skip(f"unsupported or undecodable fixture {uu_source.name}")
+    archive, info = materialized
 
-    if archive.suffix.lower() == ".rar" and (
+    if info.format.container is ContainerFormat.RAR and (
         (refusal := binary_refusal("unrar")) is not None
     ):
         pytest.skip(f"RAR data tests need a RARLAB data program: {refusal}")
@@ -477,7 +533,7 @@ def test_native_matches_libarchive_on_libarchive_corpus(
     ):
         pytest.importorskip("cryptography")
 
-    with open_archive(archive, password=password) as native:
+    with open_archive(archive, password=password, config=_CONFIG) as native:
         native_by_name = {_normalize_name(m.name): m for m in native.members()}
 
         assert set(native_by_name) == set(oracle_infos), (
@@ -517,6 +573,9 @@ def test_libarchive_corpus_discovered_archives() -> None:
         or "test_read_format_zip.zip" in names
         or any(name.endswith(".zip") for name in names)
     )
+    # The triage counts cpio/test and tar/test fixtures too.
+    for name in ("test_gcpio_compat_ref.newc", "test_patterns_4.tar"):
+        assert name in names, f"{name} missing: link cpio/test and tar/test too"
 
 
 def test_tar_z_detection_upgrades_via_inner_probe() -> None:
@@ -526,7 +585,7 @@ def test_tar_z_detection_upgrades_via_inner_probe() -> None:
     uu = _ROOT / "test_compat_mac-1.tar.Z.uu"
     if not uu.exists():
         pytest.skip("libarchive fixture test_compat_mac-1.tar.Z.uu not present")
-    archive = _materialize_archive(uu)
-    assert archive is not None
-    info = detect_format(archive)
+    materialized = _materialize_archive(uu)
+    assert materialized is not None
+    info = detect_format(materialized[0])
     assert info.format == ArchiveFormat(ContainerFormat.TAR, StreamFormat.UNIX_COMPRESS)
