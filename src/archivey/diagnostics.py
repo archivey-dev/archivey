@@ -170,9 +170,10 @@ class DiagnosticCode(StrEnum):
     Utility writes a member over 4 GiB without ZIP64. archivey corrects them, or
     lists ``size`` as ``None`` until a read can tell."""
     MEMBER_TYPE_UNKNOWN = "member_type_unknown"
-    """A TAR member has a typeflag archivey does not know. One that declares data is
-    listed as a ``FILE``, as GNU tar extracts it; one that declares none stays
-    ``OTHER``."""
+    """A member's stored type is one archivey does not know: a TAR typeflag, or the
+    file-type bits of another format's mode (a format plugin may report it). One that
+    declares data is listed as a ``FILE``, as GNU tar extracts it; one that declares
+    none stays ``OTHER``."""
     # No per-member extraction outcome has a code here. Extraction returns a structured
     # per-item report, so ``ExtractionResult`` is the sole carrier of those facts — see
     # the placement clause in ``openspec/specs/diagnostics``.
@@ -443,7 +444,8 @@ class ArchiveEofContext(_JsonSafeContext):
       header and its last packed stream, ``"rar"`` for a RAR volume's end-of-archive
       block, ``"iso"`` for the furthest of an ISO image's volume space, the partitions
       its MBR or GPT lists and the GPT backup header, ``"zip"`` for the end of a ZIP's
-      end-of-central-directory record and its declared comment. ``observed_bytes`` is
+      end-of-central-directory record and its declared comment; a format plugin names
+      its own format (``"cpio"`` for the CPIO trailer). ``observed_bytes`` is
       that byte's offset past the end. RAR emits one per volume, and its offset counts from that
       volume's end block, unlike member offsets, which count across the whole set; the
       message names the volume.
@@ -822,14 +824,17 @@ class SizeWrapContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class UnknownMemberTypeContext(_JsonSafeContext):
-    """A TAR member header has a typeflag archivey does not know.
+    """A member header has a type archivey does not know: a TAR typeflag, or the
+    file-type bits of another format's mode, from a format plugin.
 
-    POSIX reserves ``A`` to ``Z`` for vendors and leaves the rest undefined; GNU tar
+    For TAR, POSIX reserves ``A`` to ``Z`` for vendors and leaves the rest undefined; GNU tar
     extracts any typeflag it does not know as a regular file and warns ("Unknown file
     type"). A header that declares data is listed as a ``FILE`` of that ``size``,
     readable and extracted (design rule DR-25); one that declares none stays ``OTHER``.
-    ``stored_type`` is the typeflag byte as a one-character string (the byte as
-    Latin-1), the same byte as ``extra["tar.type"]``; ``size`` is the member's
+    ``stored_type`` is the format's own spelling of the type: for TAR the typeflag byte
+    as a one-character string (the byte as Latin-1), the same byte as
+    ``extra["tar.type"]``; a plugin chooses its own (CPIO's is the mode's file-type
+    bits in octal, ``"0o130000"``). ``size`` is the member's
     ``size``, ``None`` for an ``OTHER`` member. Advisory: the bytes are delivered and
     nothing is hidden, so it is not in :data:`ARCHIVE_INTEGRITY_CODES`.
     """

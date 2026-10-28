@@ -10,10 +10,13 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
       `PluginReaderAdapter(BaseArchiveReader)` (locator on `_raw`, name normalization,
       size and digest verification, `ArchiveInfo` and `CostReceipt` built by the adapter,
       handle lock for plugins that keep their own handle).
-- [ ] 1.2a Sequential shape in the adapter: the forward pass over `walk()`
+- [x] 1.2a Sequential shape in the adapter: the forward pass over `walk()`
       (`_iter_with_data`, `_list_before_extraction`, the `_pull_member` hand-off), span
       windows with skip-on-advance, recorded offsets for random access on a seekable
-      source, link targets read from data.
+      source, link targets read from data. *`SequentialReaderAdapter` serves the walk
+      as the member walk, through the base class's passes; link targets are read
+      while walking (design §2a, "As built"). TAR's one-pass random-access read waits
+      for outer compression.*
 - [ ] 1.2c Decoded `MemberSpan.data` (drain on advance, re-walk for random access),
       `ForwardStream.decompress`, `checked` members counted as verified,
       `PluginArchiveInfo.is_solid`. *1a landed `checked` and `is_solid`; the rest is 1b.*
@@ -38,7 +41,9 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
       `register_format`. Registration refuses clashing container values, already
       registered formats, and extensions a built-in format claims. *1a landed all but
       `SequentialReader`, `MemberSpan` and `ForwardStream`, and also refuses a
-      container value or name that is already a `format=` spelling.*
+      container value or name that is already a `format=` spelling. The sequential
+      stage added those three and `SequentialFormatPlugin`;
+      `ForwardStream.decompress` comes with outer compression.*
 - [ ] 1.4 Detection: plugin signals counted only when no built-in signal matched at the
       same or a higher confidence; probes get the peeked prefix only. `_probe_inner_tar`
       becomes an inner-container probe (TAR first, then sequential plugin magic ending
@@ -53,8 +58,21 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
       refused like a built-in's; a plugin magic never outranks a built-in one. A
       sequential test plugin read from a pipe, gzip-compressed, under
       `stream_members`, `extract_all` and a `CONCURRENT` reader. *1a landed the
-      indexed tests; the sequential test plugin is 1b.*
+      indexed tests. The sequential test plugin (`tests/test_plugins_sequential.py`)
+      reads from a file, a non-seekable stream and an OS pipe; gzip waits for outer
+      compression.*
 - [x] 1.7 `FormatInfo.from_plugin` (maintainer, 2026-10-25).
+
+## 2b. TAR onto the sequential shape (after stages 3 and 4)
+
+The test of the sequential shape, as the ISO port is of the indexed one (maintainer,
+2026-10-28): it may stay internal for speed afterwards.
+
+- [ ] 2b.1 `ForwardStream.peek(n)`: TAR looks at the block after a link with a size, and
+      replays blocks at its end checks. On a pipe the peeked bytes are buffered and
+      served to the next read (maintainer, 2026-10-28).
+- [ ] 2b.2 Port `TarWalker` to `walk()` after outer compression (stage 3) and decoded
+      member data for sparse files (stage 4); benchmark against the built-in reader.
 
 ## 2. ISO onto the interface
 
@@ -79,13 +97,30 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
 
 ## 3. CPIO package
 
-- [ ] 3.1 `packages/archivey-cpio/` (unpublished): a `SequentialReader` for binary, odc,
+- [x] 3.1 `packages/archivey-cpio/` (unpublished): a `SequentialReader` for binary, odc,
       newc, newc-with-CRC; `.cpio.gz` / `.cpio.xz`; read from a file and a pipe.
-- [ ] 3.2 Fixtures written by GNU `cpio` and `bsdcpio`: files, directories, symlinks,
+      *`.cpio.gz` / `.cpio.xz` wait for outer compression (stage 3).*
+- [x] 3.2 Fixtures written by GNU `cpio` and `bsdcpio`: files, directories, symlinks,
       hard links, device nodes (listed as `OTHER`), a damaged checksum, a truncated
-      member.
-- [ ] 3.3 A test that fails if the package imports `archivey.internal`.
-- [ ] 3.4 CI job that installs the package and runs its tests.
+      member. *GNU cpio 2.15 writes all four variants, bsdcpio 3.7.2 odc and newc (its
+      binary writer refuses a FIFO); the damaged and truncated cases are cut from them
+      in the tests.*
+- [x] 3.3 A test that fails if the package imports `archivey.internal`.
+- [x] 3.4 CI job that installs the package and runs its tests.
+
+## 3a. ar package
+
+A second sequential format, written from outside the library (the maintainer asked for
+one more one-pass format to test the interface, 2026-10-28).
+
+- [x] 3a.1 `packages/archivey-ar/` (unpublished): a `SequentialReader` for the GNU
+      (System V, Windows `.lib`) and BSD (macOS) dialects; long-name tables carried
+      across the walk, BSD names read from the data area; symbol tables skipped; thin
+      archives refused.
+- [x] 3a.2 Fixtures written by GNU ar 2.42, bsdtar 3.7.2 and llvm-ar 18
+      (`--format=darwin`); Windows long names, blank fields and damaged headers are
+      built in the tests.
+- [x] 3a.3 The same import check, and a CI job.
 
 ## 3b. SquashFS package
 
@@ -129,5 +164,9 @@ more indexed plugin, 2026-10-27).
       ISO port (group 2) made false in the spec: member data is read through source
       views, not `PyCdlibIO` under the handle lock ("Serialize shared pycdlib handle
       operations"), and two file records sharing one extent raise `CorruptionError`,
-      not `UnsupportedFeatureError` (the record matrix).
+      not `UnsupportedFeatureError` (the record matrix). A `diagnostics` delta too,
+      since a plugin emits archivey's codes: `UnknownMemberTypeContext.stored_type` is
+      the format's own spelling of the type, not only the TAR typeflag byte; and the
+      `zeros_to_eof` format list and `MEMBER_TYPE_UNKNOWN`'s STRICT-exemption rationale
+      read as examples, not as the set of emitters.
 - [ ] 4.3 `dev-docs/IDEAS.md` and `VISION.md`: the public backend API item points here.

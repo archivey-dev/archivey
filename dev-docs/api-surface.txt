@@ -901,6 +901,13 @@ attribute archivey.plugins.FormatPlugin.probe = None
 attribute archivey.plugins.FormatPlugin.requires = ()
 method archivey.plugins.FormatPlugin.translate_exception(self, exc: Exception) -> ArchiveyError | None
 attribute archivey.plugins.FormatPlugin.uses_encoding = False
+class archivey.plugins.ForwardStream()
+init archivey.plugins.ForwardStream(read: Callable[[int], bytes], skip: Callable[[int, int], None]) -> None
+property archivey.plugins.ForwardStream.offset: int
+method archivey.plugins.ForwardStream.read(self, n: int) -> bytes
+method archivey.plugins.ForwardStream.read_exact(self, n: int) -> bytes
+method archivey.plugins.ForwardStream.read_struct(self, fmt: str | struct.Struct) -> tuple[Any, ...]
+method archivey.plugins.ForwardStream.skip(self, n: int) -> None
 class archivey.plugins.Hasher(Protocol)
 init archivey.plugins.Hasher(*args, **kwargs)
 method archivey.plugins.Hasher.digest(self) -> bytes
@@ -928,6 +935,11 @@ class archivey.plugins.MemberRecord(tuple, Generic[LocatorT])
 field archivey.plugins.MemberRecord.locator: LocatorT
 field archivey.plugins.MemberRecord.member: ArchiveMember
 field archivey.plugins.MemberRecord.stored_name: str | None
+class archivey.plugins.MemberSpan(tuple)
+field archivey.plugins.MemberSpan.data_length: int
+field archivey.plugins.MemberSpan.digests: tuple[MemberDigest, ...]
+field archivey.plugins.MemberSpan.member: ArchiveMember
+field archivey.plugins.MemberSpan.stored_name: str | None
 class archivey.plugins.PluginArchiveInfo(tuple)
 field archivey.plugins.PluginArchiveInfo.comment: str | None
 field archivey.plugins.PluginArchiveInfo.extra: Mapping[str, object]
@@ -954,6 +966,22 @@ method archivey.plugins.PluginSource.read_exact(self, offset: int, n: int) -> by
 method archivey.plugins.PluginSource.read_struct(self, offset: int, fmt: str | struct.Struct) -> tuple[Any, ...]
 property archivey.plugins.PluginSource.size: int | None
 method archivey.plugins.PluginSource.view(self, start: int, length: int | None = None) -> BinaryIO
+class archivey.plugins.SequentialFormatPlugin(FormatPlugin)
+attribute archivey.plugins.SequentialFormatPlugin.extensions = ()
+attribute archivey.plugins.SequentialFormatPlugin.install_hint = None
+attribute archivey.plugins.SequentialFormatPlugin.magic = ()
+method archivey.plugins.SequentialFormatPlugin.open(self, source: PluginSource, context: PluginContext) -> PluginReader
+method archivey.plugins.SequentialFormatPlugin.open_sequential(self, context: PluginContext) -> SequentialReader
+attribute archivey.plugins.SequentialFormatPlugin.probe = None
+attribute archivey.plugins.SequentialFormatPlugin.requires = ()
+method archivey.plugins.SequentialFormatPlugin.translate_exception(self, exc: Exception) -> ArchiveyError | None
+attribute archivey.plugins.SequentialFormatPlugin.uses_encoding = False
+class archivey.plugins.SequentialReader(PluginReader)
+method archivey.plugins.SequentialReader.archive_info(self) -> PluginArchiveInfo
+method archivey.plugins.SequentialReader.close(self) -> None
+attribute archivey.plugins.SequentialReader.link_target_in_data = False
+method archivey.plugins.SequentialReader.translate_exception(self, exc: Exception) -> ArchiveyError | None
+method archivey.plugins.SequentialReader.walk(self, stream: ForwardStream) -> Iterator[MemberSpan]
 function archivey.plugins.block_stream(size: int, block_size: int, read_block: Callable[[int], bytes | BinaryIO]) -> BinaryIO
 function archivey.plugins.buffered_stream(stream: BinaryIO | io.RawIOBase) -> BinaryIO
 function archivey.plugins.register_format(plugin: type[FormatPlugin]) -> None

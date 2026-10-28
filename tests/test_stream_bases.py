@@ -398,7 +398,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.source as source_mod
     import archivey.internal.streams.codecs.bcj2_filter as bcj2
     import archivey.internal.streams.streamtools.slice as slice_mod
-    from archivey.internal import detection, password_confirm
+    from archivey.internal import detection, password_confirm, plugin_adapter
     from archivey.internal.backends import (
         rar_copy_sources,
         rar_reader,
@@ -506,6 +506,9 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         tar_reader._WalkHandoffStream,
         # A random-access member's data view: the view's offsets, forwarded.
         tar_reader._MemberDataView,
+        # A sequential plugin's member data in a streaming pass: stored bytes read
+        # forward from the walk's stream, like TAR's slice; no codec above it.
+        plugin_adapter._SpanWindow,
         # A ZIP member's compressed bytes, read forward from the local-header walk's
         # stream in one pass, below any codec: compressed offsets, no table.
         zip_local_walk.MemberData,

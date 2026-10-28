@@ -454,14 +454,16 @@ def _rar4_short_header(size: int) -> bytes:
 @pytest.mark.parametrize(
     ("data", "message"),
     [
-        # No type at all; a main header with no archive flags; a file header that
-        # ends after its type and flags.
+        # No type at all; a file header that ends after its type and flags.
         *(
             pytest.param(
                 _rar5_short_header(body), "variable-length integer", id=f"rar5-{i}"
             )
-            for i, body in enumerate((b"", b"\x01\x00", b"\x02\x00"))
+            for i, body in ((0, b""), (2, b"\x02\x00"))
         ),
+        # A main header that stops before its archive flags is not here: it reads,
+        # with no flags, as unrar reads it. test_rar_parser.py covers that, in
+        # test_rar5_main_header_without_its_flags_reads.
         *(
             pytest.param(
                 _rar4_short_header(s), "Invalid RAR3 header size", id=f"rar4-{s}"

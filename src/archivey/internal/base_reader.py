@@ -117,6 +117,7 @@ from archivey.internal.streams.archive_stream import (
     ArchiveStream,
     ExceptionTranslator,
     RewindWarning,
+    _Opened,
     as_closed_source_error,
     compose_translators,
 )
@@ -1247,16 +1248,29 @@ class BaseArchiveReader(ArchiveReader):
         assert inner is not None
         if track_output:
             inner = self._track_decompressed(inner)
+        # Seekability settled on first use (``ArchiveStream._seek_allowed``): a stream
+        # that a lazy handle collapses (``_lazy_member_stream``) is never asked. A
+        # nested ``ArchiveStream`` is asked now, as its own declaration counts.
+        settle_seekable = (
+            seekable is None
+            and not lazy
+            and self._seek_declared()
+            and not isinstance(inner, ArchiveStream)
+        )
+        if seekable is None:
+            # Ignored when settled on first use.
+            seekable = (
+                not settle_seekable and self._seek_declared() and is_seekable(inner)
+            )
         return ArchiveStream._blank()._setup(
-            lambda: inner,
+            # An eager handle starts open on ``inner``.
+            (lambda: inner)
+            if lazy
+            else _Opened(inner, settle_seekable=settle_seekable),
             translate=member_translate,
             stamp=lambda exc: self._stamp_error_context(exc, member_name),
             lazy=lazy,
-            seekable=(
-                self._seek_declared() and is_seekable(inner)
-                if seekable is None
-                else seekable
-            ),
+            seekable=seekable,
             size=size,
             collector=self._diagnostics_collector,
             expected_hashes=expected_hashes,

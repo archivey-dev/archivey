@@ -344,7 +344,36 @@ public way to feed it. `SequentialReader.walk()` is that way.
 
 The shared-pass locking (a `CONCURRENT` reader whose walk has a live member stream) is
 TAR's `_pull_member` hand-off, moved into the adapter. It is the risky part of the
-adapter, and the cross-format pass tests cover it.
+adapter. The cross-format pass tests cover TAR's; for a plugin,
+`tests/test_plugins_sequential.py` covers concurrent reads and a walk started again
+after a failed listing.
+
+**As built (first sequential stage, 2026-10-27).** Three points differ from the sketch
+above, each for a reason found while building it:
+
+- **`SequentialFormatPlugin.open_sequential(context)`, not `open(source=None, ...)`.**
+  Typing `FormatPlugin.open`'s source as `PluginSource | None` makes every indexed
+  plugin's `open(self, source: PluginSource, ...)` an incompatible override under a type
+  checker (ty reports it as a Liskov violation), and leaves each one to assert the
+  source is there. A subclass with its own method keeps the indexed signature as it is,
+  and the adapter knows the shape from the class before it opens anything, which
+  `SUPPORTS_STREAMING_NON_SEEKABLE` needs at registration.
+- **A symlink's target is read while walking**, not through `_LINK_TARGETS_IN_DATA`. On
+  a pipe the bytes go past once, so the walk is the only place to read them; reading them
+  there in every mode gives the target before the member is registered, as a TAR header
+  does, so the name and target checks run in one place for every pass. The read is
+  capped at `MAX_LINK_TARGET_BYTES`, and a longer target is reported as too long, as for
+  ZIP and 7z.
+- **A random-access pass lists, then reads.** The base class's pass (materialize, then
+  open each member from the offset the walk recorded) is correct for a seekable
+  uncompressed source. TAR's one-pass `_iter_with_data_random_access` matters for a
+  compressed source, and comes with outer compression.
+
+`MemberSpan` is `(member, data_length, digests, stored_name)`. The decoded-data fields
+(`data`, `checked`) come with the stage that reads library-decoded data, appended so a
+plugin that passes fields by position keeps working. Stages: (1) the shape over stored
+data, file and pipe; (2) the CPIO package; (3) outer compression with
+`ForwardStream.decompress` and the inner-container probe; (4) decoded data.
 
 ### 2b. Checked against real libraries
 
@@ -491,9 +520,13 @@ a pipe. A test fails if the package imports from `archivey.internal`.
 
 One CPIO detail the interface does not solve: newc stores a hard-linked file's data with
 the **last** of its links, and the earlier ones are empty. Backward-only hard links
-cannot name a later member, so the plugin reports the earlier names as empty files
-with a member-level note until a forward pass can tell. This is the plugin's call, not
-the interface's, and the CPIO package documents it.
+cannot name a later member. This is the plugin's call, not the interface's, and the
+CPIO package documents it. *As built:* the reader holds the empty links back until the
+link with the data arrives, yields that one as the `FILE` and then the held ones as
+`HARDLINK` members to it, so every name extracts with the content. The listing order
+moves those names after the data's, and a group whose data never comes (an empty
+file's) is yielded at the trailer. The held links are bounded by
+`ListingLimits.max_members`.
 
 ### 8. Will the code be cleaner?
 
