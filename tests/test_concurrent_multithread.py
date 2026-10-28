@@ -7,6 +7,7 @@ not claimed covered by the core-only free-threaded job.
 
 from __future__ import annotations
 
+import gc
 import gzip
 import io
 import tarfile
@@ -14,10 +15,19 @@ import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import BinaryIO
 
 import pytest
 
-from archivey import open_archive
+from archivey import (
+    AcceleratorMode,
+    ArchiveMember,
+    ArchiveyConfig,
+    DiagnosticCode,
+    ProcessIsolation,
+    open_archive,
+    open_stream,
+)
 from archivey.exceptions import ArchiveyUsageError
 from archivey.types import MemberStreams
 
@@ -755,8 +765,6 @@ def test_members_report_shares_the_worker_slot_with_open(tmp_path: Path) -> None
 def test_callbacks_run_on_the_calling_thread(tmp_path: Path) -> None:
     """``on_diagnostic``, ``filter=`` and ``on_progress`` run on the thread whose call
     needs them (reading.md §"Several members at once"), not on a thread of archivey's."""
-    from archivey import ArchiveyConfig
-
     path = tmp_path / "names.zip"
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr("./a.txt", b"payload")  # normalized to "a.txt": one diagnostic
@@ -770,10 +778,10 @@ def test_callbacks_run_on_the_calling_thread(tmp_path: Path) -> None:
         config = ArchiveyConfig(
             on_diagnostic=lambda _d: seen["diagnostic"].add(threading.get_ident())
         )
-        with open_archive(path, concurrent_operations=True, config=config) as reader:
+        with open_archive(path, config=config) as reader:
             reader.members()
 
-            def keep(member):
+            def keep(member: ArchiveMember) -> ArchiveMember:
                 seen["filter"].add(threading.get_ident())
                 return member
 
@@ -788,3 +796,91 @@ def test_callbacks_run_on_the_calling_thread(tmp_path: Path) -> None:
         worker = pool.submit(work).result()
     assert worker != threading.get_ident()
     assert seen == {"diagnostic": {worker}, "filter": {worker}, "progress": {worker}}
+
+
+def test_shared_listing_runs_its_callbacks_on_the_building_thread(
+    tmp_path: Path,
+) -> None:
+    """Threads that wait for the member list another thread builds run none of the
+    callbacks that listing makes; the building thread runs all of them."""
+    path = tmp_path / "names.zip"
+    count = 200
+    with zipfile.ZipFile(path, "w") as zf:
+        for i in range(count):
+            zf.writestr(f"./m{i}.txt", b"x")  # each name normalized: one diagnostic
+    callers: list[int] = []
+    callers_lock = threading.Lock()
+
+    def record(_d: object) -> None:
+        with callers_lock:
+            callers.append(threading.get_ident())
+
+    workers = 4
+    barrier = threading.Barrier(workers)
+    config = ArchiveyConfig(on_diagnostic=record)
+    with open_archive(path, concurrent_operations=True, config=config) as reader:
+
+        def first_touch() -> int:
+            barrier.wait()
+            assert len(reader.members()) == count
+            return threading.get_ident()
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            idents = {
+                f.result() for f in [pool.submit(first_touch) for _ in range(workers)]
+            }
+    assert len(callers) == count
+    assert len(set(callers)) == 1
+    assert set(callers) <= idents
+
+
+def test_child_process_decode_reports_on_the_calling_thread() -> None:
+    """A stream decoded in a child process reports to ``on_diagnostic`` on the thread
+    that read it."""
+    blob = gzip.compress(bytes(range(256)) * 40_000, compresslevel=1)
+    callers: list[tuple[int, DiagnosticCode]] = []
+    config = ArchiveyConfig(
+        process_isolation=ProcessIsolation.NATIVE_DECODERS,
+        use_rapidgzip=AcceleratorMode.OFF,
+        on_diagnostic=lambda d: callers.append((threading.get_ident(), d.code)),
+    )
+
+    def work() -> int:
+        with open_stream(io.BytesIO(blob), seekable=True, config=config) as stream:
+            stream.read()
+            stream.seek(0)  # discards everything decoded: a rewind report
+            stream.read(10)
+        return threading.get_ident()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        worker = pool.submit(work).result()
+    assert callers == [(worker, DiagnosticCode.STREAM_REWIND_REDECOMPRESSES)]
+
+
+def test_collected_stream_reports_on_the_thread_that_frees_it() -> None:
+    """The one case outside the caller's calls: a stream left open is closed when it
+    is freed, and a diagnostic that close reports runs ``on_diagnostic`` there."""
+    fixture = (
+        Path(__file__).parent / "fixtures" / "zipcrypto" / "check_byte_collision.zip"
+    )
+    callers: list[tuple[int, DiagnosticCode]] = []
+    config = ArchiveyConfig(
+        on_diagnostic=lambda d: callers.append((threading.get_ident(), d.code))
+    )
+    # A wrong password that passes stored.txt's check byte: a partial read under it
+    # reports ENCRYPTED_MEMBER_UNVERIFIED when the stream closes.
+    with open_archive(fixture, password="wrong896", config=config) as reader:
+
+        def leak() -> list[BinaryIO]:
+            stream = reader.open("stored.txt")
+            stream.read(16)
+            return [stream]
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            held = pool.submit(leak).result()
+        assert callers == []
+        held.clear()  # the last reference: freed, and closed, on this thread
+        gc.collect()
+        assert callers == [
+            (threading.get_ident(), DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED)
+        ]

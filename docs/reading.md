@@ -137,8 +137,12 @@ open and you still have to close it.
 
 The functions you give archivey, such as `on_diagnostic`, `on_progress`, a password provider, or a
 `members=` or `filter=` function, run on the thread whose call to archivey needs them, before that
-call returns. Archivey never calls your code from a thread of its own. When several threads wait
-for the member list, the thread that builds it runs the functions that listing calls.
+call returns. When several threads wait for the member list, the thread that builds it runs the
+functions that listing calls. One case falls outside your calls: a member stream or a
+`stream_members()` pass that you don't close is closed when Python frees it, on whichever thread
+drops the last reference to it, and a diagnostic that this close reports reaches `on_diagnostic`
+on that thread. Close streams and passes yourself, or use `with`, to keep every call on your own
+threads. Archivey never calls your code from a thread it started.
 
 ## The same result everywhere
 

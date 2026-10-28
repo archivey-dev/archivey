@@ -435,7 +435,8 @@ from racing a call on them.
 
 Archivey SHALL call a function the caller passed (`on_diagnostic`, `on_progress`,
 a password provider, a `members=` selector function, a `filter=` function) on the
-thread whose call into archivey needs it, before that call returns. Archivey SHALL
+thread whose call into archivey needs it, before that call returns, except while
+the garbage collector closes a stream or pass the caller left open. Archivey SHALL
 NOT call caller code from a thread it started.
 
 #### Scenario: callback thread matrix
@@ -454,4 +455,13 @@ functions that listing calls; the threads waiting for it do not.
 
 Whatever decodes the data (an accelerator, a decoder in a child process, an external
 program), its reports come back to the calling thread, which runs the caller's
-functions.
+functions: a backward seek in a `.gz` stream decoded in a child under
+`ProcessIsolation.NATIVE_DECODERS` reports `STREAM_REWIND_REDECOMPRESSES` to
+`on_diagnostic` on the thread that seeked.
+
+#### Scenario: a stream the collector closes
+
+A member stream or `stream_members()` pass the caller drops without closing is
+closed when it is freed, on whichever thread drops the last reference. A diagnostic
+that close reports (`ENCRYPTED_MEMBER_UNVERIFIED` for a partly read ZipCrypto member)
+reaches `on_diagnostic` on that thread.

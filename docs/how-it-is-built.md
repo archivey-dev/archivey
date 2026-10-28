@@ -139,14 +139,15 @@ The public API is what `archivey` and its public submodules export, as listed on
 
 A few things you can see aren't part of the API either, and can change in any release:
 
-- The text of an exception's message, and the exception chained to it as `__cause__` or
-  `__context__`. Catch archivey's exception types, not a message or the library error
-  behind it.
-- The text of log messages.
+- The text of messages: an exception's, a diagnostic's `message` and a log record's. A
+  diagnostic's `occurrence_id` means something only within the process that made it.
 - Which library or program decodes the data, such as rapidgzip, pyppmd or `unrar`, as
-  long as the result stays the same. The fields of a diagnostic that name one can change
-  with it: `accelerator` in a stream rewind's context, and `scan` and `error_type` in a
-  seek index's context. The diagnostic codes and their other fields are part of the API.
+  long as the result stays the same. What follows from it can change with it:
+  - the type and message of the library's exception that archivey chains to its own as
+    `__cause__`, so catch archivey's exception types, not the cause;
+  - `accelerator` in a stream rewind's diagnostic context, and `scan` and `error_type`
+    in a seek index's. The diagnostic codes, and the other fields of those contexts, are
+    part of the API.
 - Where a compressed stream can resume after a backward seek, which
   `ArchiveStream.nearest_resume_offset()` reports, and so which seeks report
   `STREAM_REWIND_REDECOMPRESSES`. It depends on the decoder.
