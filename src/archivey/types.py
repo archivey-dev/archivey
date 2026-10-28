@@ -409,7 +409,7 @@ def _bind_exception_hint() -> None:
     """
     from archivey import exceptions
 
-    exceptions.MissingComponent = MissingComponent  # type: ignore[attr-defined]
+    exceptions.MissingComponent = MissingComponent
 
 
 _bind_exception_hint()

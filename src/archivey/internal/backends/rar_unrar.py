@@ -258,7 +258,7 @@ def rarlab_unrar_missing() -> tuple[MissingComponent, ...]:
     try:
         find_rarlab_unrar()
     except PackageNotInstalledError as exc:
-        return exc.missing or (MissingComponent("unrar", str(exc)),)
+        return exc.missing
     return ()
 
 

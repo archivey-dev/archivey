@@ -2666,6 +2666,6 @@ IsoReadBackend = register_builtin_plugin(
         "its volume descriptors and directory records are at absolute offsets in "
         "the image"
     ),
-    OPTIONAL_DEPENDENCY=_PYCDLIB_REQUIREMENT.name,
+    OPTIONAL_DEPENDENCY=OptionalLibrary.PYCDLIB,
     INSTALL_HINT=_PYCDLIB_REQUIREMENT.install_hint,
 )

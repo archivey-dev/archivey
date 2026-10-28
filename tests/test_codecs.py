@@ -3133,6 +3133,21 @@ def test_conftest_names_the_same_unused_packages_as_deps() -> None:
     assert set(UNUSED_UNDER_PYPY_NAMES) == set(codecs_module.deps._UNUSED_UNDER_PYPY)
 
 
+def _missing_component_calls() -> Iterator[tuple[str, ast.Call]]:
+    """Every ``MissingComponent(...)`` call with a positional name under ``src/``."""
+    src = Path(__file__).resolve().parent.parent / "src"
+    for path in sorted(src.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "MissingComponent"
+                and node.args
+            ):
+                yield f"{path.relative_to(src)}:{node.lineno}", node
+
+
 def test_every_requirement_on_an_unused_package_carries_its_reason() -> None:
     """Each ``MissingComponent`` naming a package in ``deps._UNUSED_UNDER_PYPY`` passes
     ``reason=deps.unused_reason(<name>)``, so a read under PyPy gives the reason and not
@@ -3141,39 +3156,81 @@ def test_every_requirement_on_an_unused_package_carries_its_reason() -> None:
     Read from the source: the requirement is built when its module is imported, and on
     CPython both the argument and its default are ``""``, so a live object cannot tell.
     """
-    unused = {lib.name for lib in codecs_module.deps._UNUSED_UNDER_PYPY}
-    src = Path(__file__).resolve().parent.parent / "src"
+    # Member *names* (``"LZ4"``), which is what ``OptionalLibrary.LZ4`` unparses to
+    # once its prefix is cut; the members' values are the package names.
+    unused_member_names = {lib.name for lib in codecs_module.deps._UNUSED_UNDER_PYPY}
     seen: set[str] = set()
+    offenders = []
+    for where, node in _missing_component_calls():
+        member = ast.unparse(node.args[0])
+        name = member.removeprefix("OptionalLibrary.")
+        if name not in unused_member_names:
+            continue
+        seen.add(name)
+        reason = next((k.value for k in node.keywords if k.arg == "reason"), None)
+        if reason is None or ast.unparse(reason) != f"deps.unused_reason({member})":
+            offenders.append(f"{where}: {name}")
+    assert not offenders, "requirement without its unused reason:\n" + "\n".join(
+        offenders
+    )
+    assert seen == unused_member_names, (
+        f"no requirement found for {sorted(unused_member_names - seen)}"
+    )
+
+
+def test_archivey_names_its_own_packages_by_the_member() -> None:
+    """The maintainer's rule (2026-10-28): a ``MissingComponent`` for one of
+    archivey's optional packages names it by its ``OptionalLibrary`` member, not a
+    string, so the name cannot drift from what ``exclude_libraries`` accepts."""
+    values = set(OptionalLibrary)
+    offenders = [
+        f"{where}: {node.args[0].value!r}"
+        for where, node in _missing_component_calls()
+        if isinstance(node.args[0], ast.Constant) and node.args[0].value in values
+    ]
+    assert not offenders, "a package named by a string:\n" + "\n".join(offenders)
+
+
+# Modules archivey imports by name that are not optional packages of its own.
+_NOT_OPTIONAL_LIBRARIES = {"__pypy__": "PyPy's own module, for memory pressure"}
+
+
+def test_every_optional_package_archivey_imports_is_an_optional_library() -> None:
+    """``OptionalLibrary`` lists every optional package archivey imports by name.
+
+    A package missing from it could not be turned off with
+    ``FormatPolicy(exclude_libraries=)``, and nothing else would say so. So every
+    module name passed as a string to ``importlib.import_module``, ``find_spec``,
+    ``_optional`` or ``LazyOptional`` must belong to a member's package, or be listed
+    above with its reason.
+    """
+    packages = {value.split(".")[0] for value in OptionalLibrary} | {
+        str(value) for value in OptionalLibrary
+    }
+    importers = {"import_module", "find_spec", "_optional", "LazyOptional"}
+    src = Path(__file__).resolve().parent.parent / "src" / "archivey"
+    found: set[str] = set()
     offenders = []
     for path in sorted(src.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            if not (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "MissingComponent"
-                and node.args
-            ):
+            if not (isinstance(node, ast.Call) and node.args):
                 continue
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
             first = node.args[0]
-            where = f"{path.relative_to(src)}:{node.lineno}"
-            if isinstance(first, ast.Constant) and first.value in set(OptionalLibrary):
-                # The maintainer's rule (2026-10-28): archivey names its own packages
-                # by the OptionalLibrary member, not a string.
-                offenders.append(f"{where}: {first.value!r} instead of the member")
+            if name not in importers or not isinstance(first, ast.Constant):
                 continue
-            member = ast.unparse(first)
-            name = member.removeprefix("OptionalLibrary.")
-            if name not in unused:
-                continue
-            seen.add(name)
-            reason = next((k.value for k in node.keywords if k.arg == "reason"), None)
-            if reason is None or ast.unparse(reason) != f"deps.unused_reason({member})":
-                offenders.append(f"{where}: {name}")
-    assert not offenders, "requirement without its unused reason:\n" + "\n".join(
+            module = str(first.value)
+            found.add(module)
+            top = module.split(".")[0]
+            known = module in packages or top in packages
+            if not known and module not in _NOT_OPTIONAL_LIBRARIES:
+                offenders.append(f"{path.relative_to(src)}:{node.lineno}: {module}")
+    assert len(found) > 5, "the scan found almost no imports, so it guards nothing"
+    assert not offenders, "imported but not an OptionalLibrary:\n" + "\n".join(
         offenders
     )
-    assert seen == unused, f"no requirement found for {sorted(unused - seen)}"
 
 
 def test_no_source_file_advertises_a_deleted_extra() -> None:

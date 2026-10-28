@@ -706,7 +706,7 @@ def _bind_policy_hint() -> None:
     """
     from archivey import format_policy
 
-    format_policy.FormatPlugin = FormatPlugin  # type: ignore[attr-defined]
+    format_policy.FormatPlugin = FormatPlugin
 
 
 _bind_policy_hint()

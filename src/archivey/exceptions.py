@@ -356,15 +356,20 @@ class PackageNotInstalledError(ArchiveyError):
     when one member does (a PPMd member without ``pyppmd``). The message names what to
     install, or for an excluded package says the policy turned it off.
 
-    :attr:`missing` holds the same components as data, the ones
-    :attr:`FormatAvailability.missing <archivey.FormatAvailability.missing>` reports.
-    A component whose ``name`` is in the caller's ``exclude_libraries`` was refused by
-    that policy, and has it as its ``reason``; any other one needs installing.
+    :attr:`missing` holds what is absent as data, so a caller can act on a refusal
+    without parsing its message. A component whose ``name`` is in the caller's
+    ``exclude_libraries`` was refused by that policy, and has it as its ``reason``; any
+    other one needs installing.
     """
 
     missing: tuple[MissingComponent, ...]
-    """The packages and programs this raise is about. Empty only when a program was
-    found but could not start, where nothing is missing to name."""
+    """The packages and programs this raise is about, as the
+    :class:`~archivey.MissingComponent` records that
+    :attr:`FormatAvailability.missing <archivey.FormatAvailability.missing>` also
+    holds. Usually one. When there are more, each is an alternative the message names,
+    and any one of them lets the read go ahead: a stored, encrypted RAR member reads
+    with a RARLAB program or with ``cryptography``. Empty only when a program was found
+    but could not start, where nothing is missing to name."""
 
     def __init__(
         self,

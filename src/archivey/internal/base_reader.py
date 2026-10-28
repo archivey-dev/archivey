@@ -432,8 +432,9 @@ class ReadBackend(ABC):
     # `del encoding`-ing it, which is how five of them used to differ from ZIP and TAR
     # with no signal at all.
     USES_ENCODING: bool = False
-    # Name of the optional dependency this backend needs (e.g. "pycdlib"); the registry
-    # derives availability centrally from whether it imports. ``None`` for core backends.
+    # The optional package this backend needs, such as ``OptionalLibrary.PYCDLIB``; the
+    # registry derives availability centrally from whether it imports. ``None`` for core
+    # backends.
     OPTIONAL_DEPENDENCY: OptionalLibrary | None = None
     # More modules the backend imports, checked after ``OPTIONAL_DEPENDENCY`` the same
     # way. Only plugin backends set it (``FormatPlugin.requires``); ``INSTALL_HINT``
