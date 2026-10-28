@@ -32,10 +32,8 @@ Triage (2026-07, rerun 2026-10-28 against libarchive 3.9.0dev with the plugins)
   (``test_compat_lzip_3``).
 
 **ZIP**
-* **GAP** ZIPX XZ (method 95) — no codec path yet, with or without WinZip AES
-  around it.
-* ZIPX PPMd / Zstd decode via the shared codec layer when `[recommended]` is
-  installed; WinZip AES (method 99) decrypts via the same extra.
+* ZIPX XZ decodes via the shared codec layer in core; PPMd and Zstd do when
+  `[recommended]` is installed, and WinZip AES (method 99) decrypts via the same extra.
 * **GAP** ZIP members whose payload exceeds the declared size (libarchive
   fixtures) — size/CRC checks reject them.
 * **GAP** assorted ZIP edge cases (extra padding, UTF-8 path presentation,
@@ -173,12 +171,8 @@ _XFAIL: dict[str, tuple[bool, str]] = {
         "HARNESS: libarchive lists no members for this bare lzip fixture",
     ),
     # --- ZIP ---
-    # ZIPX PPMd8 / Zstd / WinZip AES now decode via the shared codec / cryptography paths;
+    # ZIPX XZ / PPMd8 / Zstd / WinZip AES now decode via the shared codec / cryptography paths;
     # they are no longer xfailed (AES fixtures use passwords from `_PASSWORDS`).
-    "test_read_format_zip_xz_multi.zipx": (
-        True,
-        "GAP: ZIPX XZ unsupported (no ZIP method-95 codec path yet)",
-    ),
     "test_read_data_into_fd_size_exceeds_declared_deflate.zip": (
         True,
         "GAP: stdlib zipfile rejects payload larger than declared size",
@@ -186,10 +180,6 @@ _XFAIL: dict[str, tuple[bool, str]] = {
     "test_read_data_into_fd_size_exceeds_declared_stored.zip": (
         True,
         "GAP: stdlib zipfile rejects payload larger than declared size",
-    ),
-    "test_read_format_zip_winzip_aes256_large_xz.zip": (
-        True,
-        "GAP: ZIPX XZ unsupported (no ZIP method-95 codec path yet)",
     ),
     "test_read_format_zip_size_exceeds_declared_deflate.zip": (
         True,

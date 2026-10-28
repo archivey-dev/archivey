@@ -71,6 +71,7 @@ REJECTING_CODECS = frozenset(
         Codec.DEFLATE64,
         Codec.ZSTD,
         Codec.LZ4,
+        Codec.XZ,
     }
 )
 
