@@ -402,8 +402,10 @@ unique bytes read, far and scanned bytes, decode input and output, and passes.
 `FormatInfo.unavailable_tiers` lists each step that did not run, as a `TierSkip` with one of
 three reasons:
 
-- `NOT_ENABLED_BY_POLICY`: the budget turned it off (`probe_completion` under `FAST`).
-  The search is still complete for what the policy asked.
+- `NOT_ENABLED_BY_POLICY`: the budget turned it off (`probe_completion` under `FAST`), or
+  `ArchiveyConfig.formats` turned off a plugin format whose signal the step would have
+  used (`near_magic`, `far_magic`, `content_probe` or `extension`). The search is still
+  complete for what the caller asked.
 - `CAPABILITY_UNAVAILABLE`: the step could not run here. The inner-TAR probe records it
   if the codec's backend is absent or its decoder cannot be built within the probe's
   reservation (an xz filter chain it cannot decode raw, a zstd window over 128 MiB, a

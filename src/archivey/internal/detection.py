@@ -1132,9 +1132,7 @@ def _detect_format_body(
     # allowed plugin also matches. Built-in formats are candidates under every policy,
     # so their answer never depends on it. Each tier that loses an entry is recorded
     # below, once the workspace exists.
-    off_near: list[MagicSignature] = []
-    off_far: list[MagicSignature] = []
-    off_extension = off_probe = False
+    off_near = off_far = off_extension = off_probe = False
     off_formats: set[ArchiveFormat] = set()
     if formats._turns_off_plugins:
 
@@ -1144,14 +1142,15 @@ def _detect_format_body(
                 return True
             return False
 
+        kept_magic: list[MagicSignature] = []
         for e in magic_entries:
-            if is_off(e.format):
-                fits = e.offset + len(e.magic) <= DETECTION_LIMIT
-                (off_near if fits else off_far).append(e)
-        if off_near or off_far:
-            magic_entries = [
-                e for e in magic_entries if e not in off_near and e not in off_far
-            ]
+            if not is_off(e.format):
+                kept_magic.append(e)
+            elif e.offset + len(e.magic) <= DETECTION_LIMIT:
+                off_near = True
+            else:
+                off_far = True
+        magic_entries = kept_magic
         kept_extensions = {
             ext: fmt for ext, fmt in extension_map.items() if not is_off(fmt)
         }
@@ -1171,8 +1170,8 @@ def _detect_format_body(
             return _attach_receipt(info, workspace)
 
         for tier, left_out in (
-            ("near_magic", bool(off_near)),
-            ("far_magic", bool(off_far)),
+            ("near_magic", off_near),
+            ("far_magic", off_far),
             ("content_probe", off_probe),
             ("extension", off_extension),
         ):
@@ -1421,13 +1420,11 @@ def _detect_format_body(
                 "ArchiveyConfig(always_probe_content=True)."
             )
         if off_formats:
-            # The three ways above do not reach a plugin the policy turns off, so the
-            # message names the policy instead.
+            # Added to the advice above, not in its place: the file may be one of the
+            # formats that advice reaches, and only the policy reaches an off plugin.
             names = ", ".join(sorted(f.display_name for f in off_formats))
-            message = (
-                "Could not detect archive format: no magic bytes, content probe or "
-                "file extension matched among the formats ArchiveyConfig.formats "
-                f"allows. It turns off the plugin formats {names}, so they were not "
-                "tried."
+            message += (
+                f" ArchiveyConfig.formats turns off the plugin formats {names}, so "
+                "they were not tried."
             )
         raise FormatDetectionError(message, archive_name=name)
