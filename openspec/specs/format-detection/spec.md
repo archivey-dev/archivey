@@ -285,7 +285,11 @@ caller's format policy: the probe of a plugin format that `ArchiveyConfig.format
 not allow SHALL NOT run, under `always_probe_content=True` and in `open_stream` alike,
 and the skip SHALL be recorded in `unavailable_tiers` as `content_probe` /
 `NOT_ENABLED_BY_POLICY` (the off plugin's magic and extensions are left out too; see
-*Magic-first detection*). Built-in probes are not affected by the policy.
+*Magic-first detection*). `exclude_libraries` is the one entry that reaches built-in
+probes: a probe whose format needs a package the policy turns off (its stream codec's,
+or a plugin's `requires`) SHALL NOT run, so the package is not called. Nothing SHALL be
+recorded for that skip: an excluded package reads as absent, and a probe whose package
+is absent records nothing either.
 The internal detections `open_archive` runs under `format=` (stub check, empty-listing
 rescan) SHALL follow the caller's `always_probe_content`. This covers Brotli (no
 signature), zlib (too-unspecific CMF/FLG), and LZMA Alone (13-byte header whose

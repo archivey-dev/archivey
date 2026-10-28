@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from archivey.exceptions import _UsageTypeError, _UsageValueError
 from archivey.internal.arg_checks import check_instance
 from archivey.internal.enum_args import coerce_enum_collection
+from archivey.internal.excluded_libraries import is_excluded_module
 from archivey.types import (
     ArchiveFormat,
     ContainerFormat,
@@ -132,7 +133,9 @@ def _check_named_plugins(
             if plugin.format.container in listed
         )
     for where, plugin in named:
-        clash = sorted(name for name in plugin.requires if name in excluded)
+        clash = sorted(
+            name for name in plugin.requires if is_excluded_module(name, excluded)
+        )
         if clash:
             raise _UsageValueError(
                 f"{_CALL} {where} {plugin.__name__}, which requires "
@@ -210,9 +213,11 @@ class FormatPolicy:
     content probe are left out of that call, and the detection receipt records each
     tier that left one out as ``NOT_ENABLED_BY_POLICY``.
 
-    The policy decides which reader runs, not what detection reads: magic, the
-    self-extracting archive scan and the built-in content probes still run on every
-    input, within ``ArchiveyConfig.detection_budget``.
+    Otherwise the policy decides which reader runs, not what detection reads: magic,
+    the self-extracting archive scan and the built-in content probes still run on every
+    input, within ``ArchiveyConfig.detection_budget``. The one exception is a content
+    probe whose format needs a package ``exclude_libraries`` turns off, which does not
+    run, so the package is not called.
 
     ``replace=`` reads a built-in container with a plugin instead of the built-in
     reader (see :attr:`replace`)::

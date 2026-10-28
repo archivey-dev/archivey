@@ -8,6 +8,7 @@ call in the process, on any thread, sees the package as it is.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import gzip
 import io
 import subprocess
@@ -17,6 +18,7 @@ import threading
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -42,9 +44,10 @@ from archivey.internal.plugin_adapter import registration_scope
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.brotli_codec import BrotliCodec
 from archivey.plugins import PluginContext, PluginSource
+from archivey.types import OptionalLibraryStr
 from tests.conftest import requires, requires_binary, requires_zstd, run_7z
 from tests.test_format_policy import StdlibZipPlugin
-from tests.test_plugins import _ENTRIES, _plugin_with, build_toya
+from tests.test_plugins import _ENTRIES, _MAGIC, _plugin_with, build_toya
 
 C = ContainerFormat
 L = OptionalLibrary
@@ -53,10 +56,12 @@ _SRC = Path(__file__).resolve().parents[1] / "src" / "archivey"
 _RAR_FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 
 
-def _excluding(*libraries: OptionalLibrary | str, **config: object) -> ArchiveyConfig:
-    return ArchiveyConfig(
-        formats=FormatPolicy(exclude_libraries=libraries),  # type: ignore[arg-type]
-        **config,  # type: ignore[arg-type]
+def _excluding(
+    *libraries: OptionalLibrary | OptionalLibraryStr, **config: Any
+) -> ArchiveyConfig:
+    """A config whose policy excludes ``libraries``, with ``config``'s other fields."""
+    return dataclasses.replace(
+        ArchiveyConfig(formats=FormatPolicy(exclude_libraries=libraries)), **config
     )
 
 
@@ -143,6 +148,43 @@ def test_an_unnamed_plugin_that_needs_an_excluded_package_reads_as_none(
     with pytest.raises(PackageNotInstalledError) as exc_info:
         open_archive(path, config=config)
     assert exc_info.value.missing == availability.missing
+
+
+@requires("cryptography")
+def test_a_plugin_requiring_a_submodule_of_an_excluded_package_reads_as_none(
+    clean_registry: None,
+) -> None:
+    # ``requires`` names modules, so a submodule of an excluded package is off too.
+    plugin = _plugin_with("subneedy", requires=("cryptography.hazmat",))
+    assert format_availability(plugin.format).support is FormatSupport.FULL
+    availability = format_availability(plugin.format, config=_excluding(L.CRYPTOGRAPHY))
+    assert availability.support is FormatSupport.NONE
+    (component,) = availability.missing
+    assert component.reason == EXCLUDED_REASON
+    with pytest.raises(ArchiveyUsageError, match="which requires"):
+        FormatPolicy(only={plugin.format.container}, exclude_libraries={L.CRYPTOGRAPHY})
+
+
+def test_a_plugin_probe_does_not_run_when_its_package_is_excluded(
+    clean_registry: None,
+) -> None:
+    # A probe is handed no policy, so archivey leaves it out rather than let it import
+    # an excluded package on untrusted bytes.
+    calls: list[bytes] = []
+
+    def probe(prefix: bytes) -> bool:
+        calls.append(prefix)
+        return prefix.startswith(_MAGIC)
+
+    plugin = _plugin_with("probedneedy", probe=probe, requires=("cryptography",))
+    data = build_toya(_ENTRIES)
+    config = _excluding(L.CRYPTOGRAPHY, always_probe_content=True)
+    with pytest.raises(FormatDetectionError):
+        detect_format(io.BytesIO(data), config=config)
+    assert calls == []
+    other = _excluding(L.PYPPMD, always_probe_content=True)
+    assert detect_format(io.BytesIO(data), config=other).format == plugin.format
+    assert calls
 
 
 # --- codecs -----------------------------------------------------------------------------
@@ -416,20 +458,37 @@ def test_an_excluded_cryptography_refuses_rar_header_decryption() -> None:
 
 # The entry points into AES. Each takes the call's excluded set; a call that left it
 # out would decrypt with cryptography although the policy turns it off.
-_CRYPTO_ENTRIES = frozenset(
-    {
-        "get_crypto_backend",
-        "open_aes_decrypt_stage",
-        "open_aes_ctr_stage",
-        "open_aes_decrypt_stream",
-        "AesDecryptStream",
-        "open_winzip_aes_member",
-        "open_winzip_aes_forward",
-        "WinZipAesDecryptStream",
-        "WinZipAesForwardStream",
-        "_HeaderDecryptStream",
-    }
-)
+# Each call that carries the policy to a cipher, with the keyword that carries it. Their
+# defaults mean "no exclusions" for the test callers, so a production call that leaves
+# the keyword out would decrypt under a policy that turns ``cryptography`` off.
+_CRYPTO_ENTRIES = {
+    **dict.fromkeys(
+        (
+            "get_crypto_backend",
+            "open_aes_decrypt_stage",
+            "open_aes_ctr_stage",
+            "open_aes_decrypt_stream",
+            "AesDecryptStream",
+            "open_winzip_aes_member",
+            "open_winzip_aes_forward",
+            "WinZipAesDecryptStream",
+            "WinZipAesForwardStream",
+            "_HeaderDecryptStream",
+            # RAR header decryption reaches the cipher through the parser.
+            "parse_rar_archive",
+            "parse_rar_volumes",
+            "_parse_rar_volume",
+            "_parse_rar3",
+            "_parse_rar5",
+        ),
+        "excluded",
+    ),
+    # A 7z folder's AES stage takes the policy from its ``StreamConfig``.
+    **dict.fromkeys(
+        ("open_folder_pipeline", "decode_folder_to_bytes", "decode_encoded_header"),
+        "stream_config",
+    ),
+}
 
 
 def test_every_crypto_entry_call_passes_the_excluded_set() -> None:
@@ -448,8 +507,8 @@ def test_every_crypto_entry_call_passes_the_excluded_set() -> None:
             # ``get_crypto_backend(excluded)`` takes it positionally.
             if node.args and name == "get_crypto_backend":
                 continue
-            if not any(k.arg == "excluded" for k in node.keywords):
+            if not any(k.arg == _CRYPTO_ENTRIES[name] for k in node.keywords):
                 rel = path.relative_to(_SRC).as_posix()
                 offenders.append(f"{rel}:{node.lineno} {name}")
     assert sites > 10, "the scan found almost no call sites, so it guards nothing"
-    assert not offenders, "crypto entry without excluded=: " + ", ".join(offenders)
+    assert not offenders, "crypto entry without the policy: " + ", ".join(offenders)

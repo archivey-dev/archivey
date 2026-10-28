@@ -17,7 +17,10 @@ NO_EXCLUSIONS: frozenset[OptionalLibrary] = frozenset()
 """The excluded set of a call whose policy excludes nothing: every check as without one."""
 
 EXCLUDED_REASON = "ArchiveyConfig.formats.exclude_libraries turns it off"
-"""``MissingComponent.reason`` for an excluded package: installing it would not help."""
+"""``MissingComponent.reason`` for an excluded package: installing it would not help.
+
+archivey-squashfs keeps a copy, since a plugin cannot import this module; its tests
+compare the two, so a reword here must reach it."""
 
 
 def as_excluded(component: MissingComponent) -> MissingComponent:
@@ -30,3 +33,10 @@ def as_reported(
 ) -> MissingComponent:
     """``component`` with the policy as its reason when ``excluded`` names it."""
     return as_excluded(component) if component.name in excluded else component
+
+
+def is_excluded_module(module: str, excluded: frozenset[OptionalLibrary]) -> bool:
+    """Whether ``module`` is an excluded package or part of one: ``lz4.block`` is off
+    when ``excluded`` holds ``lz4``. A plugin's ``requires`` names modules, not
+    packages."""
+    return any(module == lib or module.startswith(f"{lib}.") for lib in excluded)

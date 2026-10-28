@@ -363,10 +363,12 @@ class PackageNotInstalledError(ArchiveyError):
     """
 
     missing: tuple[MissingComponent, ...]
-    """The packages and programs this raise is about, as the
-    :class:`~archivey.MissingComponent` records that
-    :attr:`FormatAvailability.missing <archivey.FormatAvailability.missing>` also
-    holds. Usually one. When there are more, each is an alternative the message names,
+    """The packages and programs this raise is about, a
+    :class:`~archivey.MissingComponent` each: the type
+    :attr:`FormatAvailability.missing <archivey.FormatAvailability.missing>` is made of,
+    though a refusal can name a component no availability query reports, such as a
+    program a member read needs or a package a plugin imports for some files only.
+    Usually one. When there are more, each is an alternative the message names,
     and any one of them lets the read go ahead: a stored, encrypted RAR member reads
     with a RARLAB program or with ``cryptography``. Empty only when a program was found
     but could not start, where nothing is missing to name."""

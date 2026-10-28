@@ -493,7 +493,11 @@ that names a plugin (in `replace=`, or a plugin container in `only=`) whose `req
 holds an excluded package SHALL be refused at construction with `ArchiveyUsageError`.
 A registered plugin the policy does not name, whose `requires` holds an excluded
 package, SHALL read as NONE under that config, and opening one of its files SHALL raise
-`PackageNotInstalledError` naming the policy.
+`PackageNotInstalledError` naming the policy. Its content probe SHALL NOT run under that
+config, since a probe is not handed the policy and may import what `requires` names; a
+file only that probe recognises is then not detected. A `requires` entry names a module,
+and one inside an excluded package (`lz4.block` when `lz4` is excluded) counts as
+excluded.
 
 #### Scenario: An excluded pyppmd refuses only the PPMd member
 

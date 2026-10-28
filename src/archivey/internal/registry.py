@@ -24,7 +24,11 @@ from archivey.exceptions import (
 )
 from archivey.internal.arg_checks import check_config
 from archivey.internal.base_reader import ReadBackend
-from archivey.internal.excluded_libraries import NO_EXCLUSIONS, as_reported
+from archivey.internal.excluded_libraries import (
+    NO_EXCLUSIONS,
+    as_excluded,
+    is_excluded_module,
+)
 from archivey.internal.format_args import coerce_archive_format
 from archivey.internal.sfx import HitValidator
 from archivey.internal.streams.codecs import (
@@ -326,7 +330,7 @@ class BackendRegistry:
             *((dep,) if dep is not None else ()),
             *backend_cls.REQUIRED_MODULES,
         ):
-            if name in excluded or _optional(name) is None:
+            if is_excluded_module(name, excluded) or _optional(name) is None:
                 return name
         return None
 
@@ -413,7 +417,11 @@ class BackendRegistry:
             return FormatAvailability(
                 fmt,
                 FormatSupport.NONE,
-                (as_reported(MissingComponent(dep, hint), excluded),),
+                (
+                    as_excluded(MissingComponent(dep, hint))
+                    if is_excluded_module(dep, excluded)
+                    else MissingComponent(dep, hint),
+                ),
                 required_source,
             )
 
@@ -481,6 +489,23 @@ class BackendRegistry:
         # refusal and the queryable ``required_source`` cannot drift apart.
         return (
             self.format_availability(fmt).required_source is StreamCapability.SEEKABLE
+        )
+
+    def needs_excluded_package(
+        self, fmt: ArchiveFormat, excluded: frozenset[OptionalLibrary]
+    ) -> bool:
+        """Whether the backend registered for ``fmt`` needs a module ``excluded`` turns
+        off: its ``OPTIONAL_DEPENDENCY`` or one of its ``REQUIRED_MODULES``."""
+        backend = self._readers.get(fmt)
+        if backend is None or not excluded:
+            return False
+        dep = backend.OPTIONAL_DEPENDENCY
+        return any(
+            is_excluded_module(name, excluded)
+            for name in (
+                *((dep,) if dep is not None else ()),
+                *backend.REQUIRED_MODULES,
+            )
         )
 
     def registered_reader(self, fmt: ArchiveFormat) -> type[ReadBackend] | None:

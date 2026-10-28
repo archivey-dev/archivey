@@ -581,7 +581,9 @@ When a module is missing, `format_availability()` reports the format as
 
 A caller can turn an optional package off with `FormatPolicy(exclude_libraries=)`.
 archivey checks `requires` against it, so a plugin that names the package there needs
-nothing more. A plugin that imports an optional package only for some files, outside
+nothing more: the format reads as not available, and its content probe does not run. A
+probe is not handed the policy, so it must not import anything `requires` does not
+name. A plugin that imports an optional package only for some files, outside
 `requires`, checks `context.config.formats.exclude_libraries` itself before it imports
 the package, and raises `PackageNotInstalledError` with a `MissingComponent` whose
 `reason` says the policy turned it off. `archivey-squashfs` does this for `lz4`.

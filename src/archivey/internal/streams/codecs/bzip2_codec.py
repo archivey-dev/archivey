@@ -51,6 +51,7 @@ from archivey.internal.streams.codecs.rapidgzip_select import (
     _open_rapidgzip,
     _rapidgzip_present,
     _rapidgzip_requirement,
+    _rapidgzip_unused_reason,
     _refuse_forward_only_accelerator,
     _require_rapidgzip_child,
     _StdlibSeekContract,
@@ -75,7 +76,6 @@ from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.types import (
     ArchiveFormat,
     MagicSignature,
-    OptionalLibrary,
     StreamFormat,
 )
 
@@ -884,13 +884,14 @@ class Bzip2Codec(StreamCodec):
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         # An engaged accelerator no longer suppresses the report: its index can be sparse
         # enough that a backward seek still re-decodes megabytes. The distance decides.
+        unused_reason = _rapidgzip_unused_reason(config)
         return RewindWarning(
             "bzip2",
             accelerator="rapidgzip",
             suggest_install=not _bzip2_uses_accelerator(config)
             and not deps.rapidgzip.available()
-            and not deps.unused_reason(OptionalLibrary.RAPIDGZIP),
-            unused_reason=deps.unused_reason(OptionalLibrary.RAPIDGZIP),
+            and not unused_reason,
+            unused_reason=unused_reason,
         )
 
     def _accelerator_data_error(self, exc: Exception) -> bool:

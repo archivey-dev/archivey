@@ -488,6 +488,7 @@ def _probe_inner_tar(
                     seekable=not view_arrived,
                     decoder_limits=DecoderLimits.UNLIMITED,
                     probe_read_bound=_INNER_TAR_PROBE_BYTES,
+                    excluded_libraries=excluded,
                     process_isolation=(
                         workspace.isolation
                         if workspace is not None
@@ -1163,15 +1164,22 @@ def _detect_format_body(
         probes = kept_probes
     excluded = formats.exclude_libraries
     if excluded:
-        # A probe that decodes with a package the policy turns off does not run, so the
-        # package is not called; with the package absent the probe would answer no.
+        # A probe whose format needs a package the policy turns off does not run, so the
+        # package is not called: a codec's probe decodes with it, and a plugin's probe
+        # is handed no policy and may import what its ``requires`` names. Nothing is
+        # recorded in ``unavailable_tiers``: an excluded package reads as absent, and
+        # with it absent the probe would run and answer no, which records nothing
+        # either, so the two stay alike.
         from archivey.internal.streams.codecs import stream_codec_for_format
 
         probes = [
             (fmt, probe)
             for fmt, probe in probes
-            if fmt.stream is StreamFormat.UNCOMPRESSED
-            or not stream_codec_for_format(fmt.stream).excluded_by(excluded)
+            if not registry.needs_excluded_package(fmt, excluded)
+            and (
+                fmt.stream is StreamFormat.UNCOMPRESSED
+                or not stream_codec_for_format(fmt.stream).excluded_by(excluded)
+            )
         ]
     name = source_name(source)
     ext_match = _match_extension(name, extension_map)
