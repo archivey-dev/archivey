@@ -135,6 +135,11 @@ the next `read()` on a member stream it closed raises `ValueError`, as a closed 
 `close()` has returned, calling it again does nothing; after one that raised, the reader is still
 open and you still have to close it.
 
+The functions you give archivey, such as `on_diagnostic`, `on_progress`, a password provider, or a
+`members=` or `filter=` function, run on the thread whose call to archivey needs them, before that
+call returns. Archivey never calls your code from a thread of its own. When several threads wait
+for the member list, the thread that builds it runs the functions that listing calls.
+
 ## The same result everywhere
 
 With the `seekable` extra installed, archivey reads large DEFLATE data, and bzip2 data opened with

@@ -750,3 +750,41 @@ def test_members_report_shares_the_worker_slot_with_open(tmp_path: Path) -> None
             t.join(timeout=10)
         assert not errors
         stream_box["s"].close()  # type: ignore[union-attr]
+
+
+def test_callbacks_run_on_the_calling_thread(tmp_path: Path) -> None:
+    """``on_diagnostic``, ``filter=`` and ``on_progress`` run on the thread whose call
+    needs them (reading.md §"Several members at once"), not on a thread of archivey's."""
+    from archivey import ArchiveyConfig
+
+    path = tmp_path / "names.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("./a.txt", b"payload")  # normalized to "a.txt": one diagnostic
+    seen: dict[str, set[int]] = {
+        "diagnostic": set(),
+        "filter": set(),
+        "progress": set(),
+    }
+
+    def work() -> int:
+        config = ArchiveyConfig(
+            on_diagnostic=lambda _d: seen["diagnostic"].add(threading.get_ident())
+        )
+        with open_archive(path, concurrent_operations=True, config=config) as reader:
+            reader.members()
+
+            def keep(member):
+                seen["filter"].add(threading.get_ident())
+                return member
+
+            reader.extract_all(
+                tmp_path / "out",
+                filter=keep,
+                on_progress=lambda _p: seen["progress"].add(threading.get_ident()),
+            )
+        return threading.get_ident()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        worker = pool.submit(work).result()
+    assert worker != threading.get_ident()
+    assert seen == {"diagnostic": {worker}, "filter": {worker}, "progress": {worker}}
