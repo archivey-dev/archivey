@@ -1039,6 +1039,35 @@ class SequentialReaderAdapter(_PluginAdapter):
                 member.link_target = target.decode("utf-8", errors="surrogateescape")
         return member
 
+    def _pass_reads_through_walk(self) -> bool:
+        """A random-access pass reads through the walk until it ends, so a
+        compressed archive (``.cpio.gz``, or one a walk decompresses part-way) is
+        decoded once for the headers and the data, not once for each."""
+        return True
+
+    def _open_member_in_walk(self, member: ArchiveMember) -> MemberStreamParts:
+        record = member._raw
+        assert isinstance(record, _Span), "a sequential member is missing its span"
+        shared = record.layer.shared
+        assert shared is not None
+
+        def reopen(start: int) -> BinaryIO:
+            return shared.view(record.offset + start, record.length - start)
+
+        with self._walk_lock:
+            forward = record.layer.forward
+            # The walk is at the data's start only while it is on the member's
+            # layer: a decompress() in the step after it moved the walk on.
+            in_place = (
+                self._layer is not None
+                and forward is self._layer.forward
+                and forward.offset == record.offset
+            )
+            stream = self._walk_handoff(
+                _SpanWindow(forward, record) if in_place else None, reopen
+            )
+        return self._span_parts(member, record, stream)
+
     def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         record = member._raw
         assert isinstance(record, _Span), "a sequential member is missing its span"
@@ -1057,6 +1086,12 @@ class SequentialReaderAdapter(_PluginAdapter):
             shared = record.layer.shared
             assert shared is not None
             stream = shared.view(record.offset, record.length)
+        return self._span_parts(member, record, stream)
+
+    def _span_parts(
+        self, member: ArchiveMember, record: _Span, stream: BinaryIO
+    ) -> MemberStreamParts:
+        """``member``'s parts over ``stream``, its data window or view."""
         expected = record.expected if record.expected is not None else member.hashes
         return self._member_parts(
             stream,

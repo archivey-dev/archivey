@@ -468,6 +468,8 @@ bytes, from a file or a pipe.
 - **Cost.** One compression stream holds every member, so the archive is solid:
   `archive.info.is_solid` is `True`, the listing needs decompression, and with random
   access, reading a member before the last one read decodes again from the start.
+  `stream_members()` and `extract_all()` read each member's data as the walk reaches
+  it, so they decode the archive once, as for a `.tar.gz`.
 - **Limits.** The decoder limits and the decompression-ratio guard apply as for a
   `.tar.gz`, and bytes after the compressed stream are reported with
   `ARCHIVE_TRAILING_DATA`.
