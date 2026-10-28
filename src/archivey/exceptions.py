@@ -334,6 +334,10 @@ class UnsupportedFeatureError(ArchiveyError):
     given). The problem is the archive, not the calling code: that raises
     :class:`ArchiveyUsageError`.
 
+    It is also raised for a format the caller's :class:`~archivey.FormatPolicy`
+    (``ArchiveyConfig.formats``) does not allow. ``source_format`` is that format, and
+    ``config.formats.allows(exc.source_format)`` tells this case apart.
+
     An unknown compression method, codec or version number read from a header with no
     checksum (a ZIP method, for example) may also mean that header is damaged. Archivey
     reports it as unsupported because it cannot tell the two apart.

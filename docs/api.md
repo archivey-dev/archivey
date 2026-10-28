@@ -92,6 +92,7 @@ See [Configuration](opening.md#configuration), [Passwords](opening.md#passwords)
 
 ::: archivey.ArchiveyConfig
 ::: archivey.DEFAULT_ARCHIVEY_CONFIG
+::: archivey.FormatPolicy
 ::: archivey.ExtractionLimits
 ::: archivey.ListingLimits
 ::: archivey.DecoderLimits

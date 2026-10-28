@@ -86,6 +86,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.format_policy import FormatPolicy
 from archivey.internal.filters import sanitize_names
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.reader import (
@@ -164,6 +165,7 @@ __all__ = [
     "FormatAvailability",
     "FormatDetectionError",
     "FormatInfo",
+    "FormatPolicy",
     "FormatSupport",
     "ForwardArchiveReader",
     "HashAlgorithm",

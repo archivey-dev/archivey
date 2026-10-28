@@ -60,6 +60,7 @@ from archivey import (
     DecoderLimits,
     DiagnosticPolicy,
     ExtractionLimits,
+    FormatPolicy,
     ListingLimits,
     SpoolLimits,
     detect_format,
@@ -508,6 +509,15 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 "diagnostic_policy",
                 bad,
                 lambda b=bad: _with_config(archive, out(), diagnostic_policy=b),
+            )
+        )
+    for bad in ("x", 0, FormatPolicy, None, frozenset()):
+        rows.append(
+            _case(
+                "ArchiveyConfig",
+                "formats",
+                bad,
+                lambda b=bad: _with_config(archive, out(), formats=b),
             )
         )
     for bad in ("x", -1, True, 1.5, None):

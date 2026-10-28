@@ -27,6 +27,7 @@ from archivey import (
 )
 from archivey.config import ArchiveyConfig
 from archivey.exceptions import FormatDetectionError
+from archivey.format_policy import FormatPolicy
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams import codecs as codecs_module
 from archivey.internal.streams.streamtools import source_name
@@ -1535,7 +1536,12 @@ def test_content_probes_share_one_decode_allowance() -> None:
         collector = collector_from_config(DEFAULT_ARCHIVEY_CONFIG)
         try:
             info = _detect_format_body(
-                io.BytesIO(data), collector, budget, receipt, always_probe=True
+                io.BytesIO(data),
+                collector,
+                budget,
+                receipt,
+                always_probe=True,
+                formats=FormatPolicy(),
             )
         except FormatDetectionError:
             info = None
