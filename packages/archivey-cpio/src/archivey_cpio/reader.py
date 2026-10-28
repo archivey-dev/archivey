@@ -74,7 +74,9 @@ _CRC = b"070702"
 
 
 class Variant(Enum):
-    """A CPIO header variant, by the name GNU cpio's ``-H`` option gives it."""
+    """A CPIO header variant, by the name GNU cpio's ``-H`` option gives it, and
+    ``bin-be`` for a binary archive in the other byte order: GNU cpio writes ``bin`` in
+    the host's order, and ``-H`` has no name for the other."""
 
     BINARY_LE = "bin"
     BINARY_BE = "bin-be"
@@ -142,7 +144,9 @@ class _LinkGroup:
     it has arrived, and the empty links held back until it does."""
 
     name: str | None = None
-    held: list[ArchiveMember] = field(default_factory=list)
+    # Each held member with the name it was stored under, for the adapter's report of
+    # a normalized name (MemberSpan.stored_name).
+    held: list[tuple[ArchiveMember, str]] = field(default_factory=list)
 
 
 def _pad(n: int, align: int) -> int:
@@ -214,7 +218,7 @@ class CpioReader(SequentialReader):
                             f"CPIO archive holds more than {limit} hard links waiting "
                             "for their data, over max_members"
                         )
-                    group.held.append(member)
+                    group.held.append((member, stored))
                     held += 1
                     stream.skip(size + self._data_pad(header))
                     continue
@@ -224,11 +228,11 @@ class CpioReader(SequentialReader):
             stream.skip(self._data_pad(header))
             if member.type is MemberType.FILE and header.nlink > 1:
                 group = groups[key]
-                for link in group.held:
+                for link, link_stored in group.held:
                     link.type = MemberType.HARDLINK
                     link.link_target = member.name
                     link.size = None
-                    yield MemberSpan(link, 0)
+                    yield MemberSpan(link, 0, stored_name=link_stored)
                 held -= len(group.held)
                 group.held.clear()
 
@@ -240,14 +244,14 @@ class CpioReader(SequentialReader):
         for group in groups.values():
             if not group.held:
                 continue
-            first, *rest = group.held
+            (first, first_stored), *rest = group.held
             first.size = 0
-            yield MemberSpan(first, 0)
-            for link in rest:
+            yield MemberSpan(first, 0, stored_name=first_stored)
+            for link, link_stored in rest:
                 link.type = MemberType.HARDLINK
                 link.link_target = first.name
                 link.size = None
-                yield MemberSpan(link, 0)
+                yield MemberSpan(link, 0, stored_name=link_stored)
 
     def _defers_link_data(self) -> bool:
         return self._variant in (Variant.NEWC, Variant.CRC)
@@ -424,12 +428,18 @@ class CpioReader(SequentialReader):
     def _digests(
         self, header: Header, member: ArchiveMember
     ) -> tuple[MemberDigest, ...]:
+        # Only a FILE's data goes through the member stream that checks digests; a
+        # symlink's target is read while walking, so a digest declared for it would be
+        # a check that never runs.
         if header.variant is not Variant.CRC or member.type is not MemberType.FILE:
             return ()
         return (MemberDigest("cpio-crc", header.check.to_bytes(4, "big"), Sum32),)
 
     def _check_end(self, stream: ForwardStream) -> None:
-        """After the trailer: zero padding only, within the first MiB."""
+        """After the trailer: zero padding only, within the first MiB. A second archive
+        concatenated after the first (an initramfs often is one) is reported here, not
+        listed, as archivey's TAR does (``dev-docs/formats/tar.md`` §6): its members
+        belong to an archive the caller did not name."""
         scanned = 0
         while scanned < TRAILING_SCAN:
             chunk = stream.read(min(64 * 1024, TRAILING_SCAN - scanned))

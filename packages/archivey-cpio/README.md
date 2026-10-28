@@ -26,12 +26,15 @@ with archivey.open_archive(sys.stdin.buffer, streaming=True) as archive:
 ## What it reads
 
 - All four header variants: binary (either byte order), odc, newc and crc. In crc the
-  header's checksum of each file's data is checked as the data is read.
+  header's checksum of each file's data is checked as the data is read (not a symlink's,
+  whose target is read while listing).
 - Files, directories, symlinks (a symlink's target is its data), hard links, and
   devices, FIFOs and sockets (listed as `OTHER`, with `extra["special_file_type"]`).
 - Owner ids, permissions and modification times.
 
-`archive.info.format_version` names the variant, as GNU cpio's `-H` option does.
+`archive.info.format_version` names the variant as GNU cpio's `-H` option does (`bin`,
+`odc`, `newc`, `crc`), with `bin-be` for a binary archive in the other byte order, which
+`-H` has no name for.
 
 ## Hard links
 
@@ -51,8 +54,10 @@ raises `ResourceLimitError`.
 The reader does not trust the archive. It refuses a header whose fields are not
 numbers, a name over 64 KiB or without its NUL, a variant that changes mid-archive, and
 an archive that ends before its `TRAILER!!!` member. Bytes other than zeros within
-1 MiB after the trailer are reported as `ARCHIVE_TRAILING_DATA`. archivey reads and
-skips member data itself, and checks each file's length and, in crc, its checksum.
+1 MiB after the trailer are reported as `ARCHIVE_TRAILING_DATA`; so is a second
+archive concatenated after the first, which is not listed, as archivey's TAR does.
+archivey reads and skips member data itself, and checks each file's length and, in
+crc, its checksum.
 
 ## Tests
 

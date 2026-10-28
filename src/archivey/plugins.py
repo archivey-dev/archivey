@@ -555,11 +555,15 @@ class SequentialReader(PluginReader):
 
     @abstractmethod
     def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
-        """Yield every member once, in archive order, and return at the end of the
-        archive. Check what the format puts at its end (a trailer, an end marker)
-        here, and raise ``CorruptionError`` or ``TruncatedError`` for damage: archivey
-        keeps the members yielded before it. On a seekable source archivey may walk
-        again from the start, with a new stream; the members must be the same."""
+        """Yield every member once, and return at the end of the archive. Each span's
+        data starts where the stream is when it is yielded, so the stream only moves
+        forward; members usually come in archive order, but a format may need another
+        (a hard link listed before the member it names must wait for it, since a link
+        names an earlier member). Check what the format puts at its end (a trailer, an
+        end marker) here, and raise ``CorruptionError`` or ``TruncatedError`` for
+        damage: archivey keeps the members yielded before it. On a seekable source
+        archivey may walk again from the start, with a new stream; the members and
+        their order must be the same."""
 
 
 class FormatPlugin(ABC):
