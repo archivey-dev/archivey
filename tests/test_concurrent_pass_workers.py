@@ -897,17 +897,43 @@ def test_listing_after_an_abandoned_pass_refuses_the_same_way_each_time(
     assert len(set(messages)) == 1, messages
 
 
-@pytest.mark.parametrize("extra", [-1, 0, 1, base_reader._DRAIN_BATCH])
-def test_listing_drains_across_batch_boundaries(extra: int) -> None:
-    """``members()`` pulls in batches of ``_DRAIN_BATCH``; every member is listed, in
-    order, however the count falls."""
-    names = [f"f{i}" for i in range(base_reader._DRAIN_BATCH + extra)]
+def _many_members(fmt: str, names: list[str]) -> bytes:
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        for name in names:
-            zf.writestr(name, b"")
-    with open_archive(io.BytesIO(buf.getvalue()), concurrent_operations=True) as reader:
-        assert [m.name for m in reader.members()] == names
+    if fmt == "zip":
+        with zipfile.ZipFile(buf, "w") as zf:
+            for name in names:
+                zf.writestr(name, b"x")
+    else:
+        with tarfile.open(fileobj=buf, mode="w:gz" if fmt == "tar.gz" else "w") as tf:
+            for name in names:
+                info = tarfile.TarInfo(name)
+                info.size = 1
+                tf.addfile(info, io.BytesIO(b"x"))
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("extra", [-1, 0, 1, base_reader._DRAIN_BATCH])
+@pytest.mark.parametrize(
+    ("fmt", "streaming"),
+    [("zip", False), ("zip", True), ("tar", False), ("tar.gz", False)],
+    ids=["zip", "zip-streaming", "tar", "tar.gz"],
+)
+def test_listing_drains_across_batch_boundaries(
+    fmt: str, streaming: bool, extra: int
+) -> None:
+    """A listing pulls in batches of ``_DRAIN_BATCH``; every member is listed, in
+    order, however the count falls. A streaming ZIP pass drains through the streaming
+    branch (``_walk_ahead``), and a TAR runs its hand-off hook once per batch."""
+    names = [f"f{i}" for i in range(base_reader._DRAIN_BATCH + extra)]
+    data = _many_members(fmt, names)
+    with open_archive(
+        io.BytesIO(data), streaming=streaming, concurrent_operations=not streaming
+    ) as reader:
+        if streaming:
+            listed = [m.name for m, _ in reader.stream_members()]
+        else:
+            listed = [m.name for m in reader.members()]
+    assert listed == names
 
 
 def test_listing_lets_a_waiting_thread_in_between_batches(

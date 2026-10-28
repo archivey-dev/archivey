@@ -86,16 +86,16 @@ Three things about this path are worth knowing before you debug it:
 - **A reader lists its members once, and every method hands out the same objects.**
   `BaseArchiveReader` owns one member list (`_listed`) filled by one pull over the
   backend's `_iter_members()`. The peek, `members()`, `members_report()`, `get()`,
-  `stream_members()` and `extract_all()` all read that list; `_pull_member` stamps,
-  checks and accounts each member exactly once, so per-member work needs no dedupe. The
-  walk runs once when it completes. A random-access walk that fails without terminal
-  damage is discarded and may be retried, which is why `_iter_members()` must still
-  yield in a stable order; a streaming one poisons the reader. Last-entry-wins
-  `is_current` is stamped once, when the walk ends (`_end_walk`). A streaming pass keeps
-  its own cursor into the list and finalizes links only when that cursor passes the end,
-  so a peek that drains the walk does not finalize a pass the caller then abandons.
-  `ArchiveMember` is mutable and filled in place (ADR 0007), and there is now only one
-  object per member to fill.
+  `stream_members()` and `extract_all()` all read that list; `_pull_members_locked`
+  stamps, checks and accounts each member exactly once (one at a time, or a listing's
+  batches), so per-member work needs no dedupe. The walk runs once when it completes. A
+  random-access walk that fails without terminal damage is discarded and may be retried,
+  which is why `_iter_members()` must still yield in a stable order; a streaming one
+  poisons the reader. Last-entry-wins `is_current` is stamped once, when the walk ends
+  (`_end_walk`). A streaming pass keeps its own cursor into the list and finalizes links
+  only when that cursor passes the end, so a peek that drains the walk does not finalize
+  a pass the caller then abandons. `ArchiveMember` is mutable and filled in place (ADR
+  0007), and there is now only one object per member to fill.
 - **"Backend" means archivey's class, not the third-party code.** `ReadBackend` /
   `ZipReadBackend` are ours; the library a backend wraps (stdlib `zipfile`, `pycdlib`, the
   `unrar` binary) is **the library**. Handbook pages tag a limitation **format** (inherent),
