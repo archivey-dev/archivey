@@ -94,11 +94,13 @@ class DiagnosticCode(StrEnum):
     """The listing finished without error and found no members."""
     ENCODING_ARGUMENT_UNUSED = "encoding_argument_unused"
     """``encoding=`` was passed for a format that decodes member names without it
-    (7z, a directory, a single-file format)."""
+    (7z, a directory, a single-file format), or for a format whose replacement reader
+    (``FormatPolicy(replace=)``) does not apply one."""
     PASSWORD_ARGUMENT_UNUSED = "password_argument_unused"
     """A password was passed for a format with no encryption (TAR, ISO, a directory,
-    a single-file format). A password provider callable is not reported, since such a
-    format never calls it."""
+    a single-file format), or for a format whose replacement reader
+    (``FormatPolicy(replace=)``) takes no password. A password provider callable is not
+    reported, since such a reader never calls it."""
     SCAN_DIRECTORY_VANISHED = "scan_directory_vanished"
     """A directory opened as an archive changed while it was read: a subdirectory
     listed earlier was gone."""

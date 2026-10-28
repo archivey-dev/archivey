@@ -165,7 +165,8 @@ class FormatPolicy:
     false. The plugin gets what any indexed plugin gets, a seekable source from the
     start of the archive, so a multi-volume set and an archive behind a
     self-extracting stub are refused with :class:`~archivey.UnsupportedFeatureError`,
-    and a source that cannot seek with :class:`~archivey.StreamNotSeekableError`. The
+    a source that cannot seek with :class:`~archivey.StreamNotSeekableError`, and a
+    raw CD sector image detected as ISO as the built-in reader refuses it. The
     format's own ``ArchiveyConfig`` options reach the plugin through
     ``PluginContext.config``."""
 

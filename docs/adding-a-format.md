@@ -606,8 +606,9 @@ there, before any open.
 
 The replacement gets what any indexed plugin gets: a source that can seek, from the
 start of the archive. archivey refuses, before `open()` runs, a multi-volume set and an
-archive behind a self-extracting stub with `UnsupportedFeatureError`, and a source that
-cannot seek with `StreamNotSeekableError`. The format's own config options, such as
+archive behind a self-extracting stub with `UnsupportedFeatureError`, a source that
+cannot seek with `StreamNotSeekableError`, and a raw CD sector image detected as ISO as
+the built-in reader refuses it, since its bytes are not an ISO 9660 image. The format's own config options, such as
 `zip_unflagged_fallback_encoding` or `rar_decompressor`, reach the plugin through
 `PluginContext.config`; honouring them is the plugin's job. `password=` does not reach a
 replacement, as it reaches no plugin, so a replaced ZIP, 7z or RAR cannot read an encrypted
