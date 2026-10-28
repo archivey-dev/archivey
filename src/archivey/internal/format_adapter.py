@@ -185,7 +185,10 @@ class _PluginAdapter(BaseArchiveReader):
         # under CONCURRENT every call into it, and every read of a stream it returned,
         # takes one lock (``_handle_guard``). The exception is ``translate_exception``,
         # which ``base_reader`` runs outside the lock. The views of ``ReaderSource``
-        # need none, but archivey cannot tell which kind of reader it was given.
+        # need none, but archivey cannot tell which kind of reader it was given. A
+        # random-access pass's member data read through the walk takes ``_walk_lock``
+        # instead (``_open_member_in_walk``): it reads archivey's own walk stream, not
+        # the plugin, and the walk is the only other reader of that stream.
         if MemberStreams.CONCURRENT in member_streams:
             self._handle_lock = threading.Lock()
         # Views over a seekable source, when the reader shape uses them.
@@ -1054,6 +1057,10 @@ class SequentialReaderAdapter(_PluginAdapter):
         def reopen(start: int) -> BinaryIO:
             return shared.view(record.offset + start, record.length - start)
 
+        # _walk_lock, not _handle_guard: the window reads the walk's own stream, which
+        # only the walk also reads, and every walk step runs under _walk_lock; the
+        # walk detaches this stream before it moves (_before_pull_locked). The views
+        # it falls back to are serialized by the SharedSource.
         with self._walk_lock:
             forward = record.layer.forward
             # The walk is at the data's start only while it is on the member's
@@ -1063,7 +1070,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                 and forward is self._layer.forward
                 and forward.offset == record.offset
             )
-            stream = self._walk_handoff(
+            stream = self._walk_handoff_locked(
                 _SpanWindow(forward, record) if in_place else None, reopen
             )
         return self._span_parts(member, record, stream)

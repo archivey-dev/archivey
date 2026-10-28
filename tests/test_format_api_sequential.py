@@ -651,6 +651,35 @@ def test_random_access_pass_decodes_once(
     assert source.bytes_read < len(data) * 1.2, (source.bytes_read, len(data))
 
 
+@pytest.mark.parametrize("mode", ["plain", "gzip", "pipe"])
+def test_extract_past_a_listing_limit_writes_the_members_before_it(
+    toys: ArchiveFormat, tmp_path: Path, mode: str
+) -> None:
+    """The pass registers each member with the limits enforced: the members before the
+    one that crosses a limit are written, then ``ResourceLimitError`` is raised, in
+    either access mode (DR-5; the safe-extraction damaged-listing matrix)."""
+    data = build_toys(_INCOMPRESSIBLE)
+    if mode == "gzip":
+        data = _gz(data)
+    config = archivey.ArchiveyConfig(
+        listing_limits=archivey.ListingLimits(max_members=3)
+    )
+    source = (
+        NonSeekableBytesIO(data)
+        if mode == "pipe"
+        else _write(tmp_path, data, "t.toys.gz" if mode == "gzip" else "t.toys")
+    )
+    dest = tmp_path / "out"
+    with (
+        open_archive(source, config=config, streaming=mode == "pipe") as reader,
+        pytest.raises(archivey.ResourceLimitError),
+    ):
+        reader.extract_all(dest)
+    assert (dest / "one.bin").read_bytes() == _INCOMPRESSIBLE[1][2]
+    assert (dest / "two.bin").read_bytes() == _INCOMPRESSIBLE[2][2]
+    assert not (dest / "three.bin").exists()
+
+
 @pytest.mark.parametrize("shape", ["gzip", "part-way"])
 def test_random_access_pass_member_survives_the_walk_moving_on(
     toys: ArchiveFormat, rpmish: ArchiveFormat, shape: str

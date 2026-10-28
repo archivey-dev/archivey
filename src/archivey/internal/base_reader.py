@@ -708,7 +708,7 @@ class BaseArchiveReader(ArchiveReader):
         # It is taken after the materialization election, never before it.
         self._walk_lock = threading.RLock()
         # A random-access pass's member stream that reads through the walk
-        # (``_walk_handoff``); the walk detaches it before its next pull
+        # (``_walk_handoff_locked``); the walk detaches it before its next pull
         # (``_before_pull_locked``). Set only under ``_walk_lock``, so none appears
         # during a batch of pulls.
         self._walk_stream: WalkHandoffStream | None = None
@@ -1017,7 +1017,9 @@ class BaseArchiveReader(ArchiveReader):
         serves the same list, and the pass links a hardlink to an earlier member only,
         as the streaming pass does. The pass has its own cursor over the reader's one
         walk, so a pass abandoned early does not make the next one start part-way. A
-        pass over a listing that is already complete is the default's.
+        pass over a listing that is already complete is the default's, which reads the
+        members' data in archive order: one forward sweep too, after one seek back to
+        the first member.
         """
 
         def _open(member: ArchiveMember) -> ArchiveStreamImpl | None:
@@ -1798,7 +1800,7 @@ class BaseArchiveReader(ArchiveReader):
         """Hand off a pass's stream before the walk moves.
 
         A random-access pass may still be reading the member the walk is at through
-        the walk (:meth:`_walk_handoff`). That stream moves to a view of its own first
+        the walk (:meth:`_walk_handoff_locked`). That stream moves to a view of its own first
         (:class:`WalkHandoffStream`), so a pull for another caller, such as
         ``members()`` from another thread under ``CONCURRENT``, does not cut it off.
         The pass's own next pull hands over a stream it is about to close, which costs
@@ -1813,7 +1815,7 @@ class BaseArchiveReader(ArchiveReader):
             self._walk_stream = None
             live.detach()
 
-    def _walk_handoff(
+    def _walk_handoff_locked(
         self, in_place: BinaryIO | None, reopen: Callable[[int], BinaryIO]
     ) -> BinaryIO:
         """A pass's member data, through the walk when the walk is at it.
@@ -2162,8 +2164,8 @@ class BaseArchiveReader(ArchiveReader):
         Called by the extraction coordinator before its pass. On a random-access reader
         the default lists every member first, with the limits enforced, so nothing is
         written from an archive over them. A backend whose listing is itself a scan of
-        the data may instead list as members arrive during the pass (TAR), and not
-        decode the archive twice. A streaming reader always does that: its one pass is
+        the data may instead list as members arrive during the pass (TAR, a sequential
+        format: :meth:`_pass_reads_through_walk`), and not decode the archive twice. A streaming reader always does that: its one pass is
         the listing. Every pass enforces the limits as it registers members.
 
         A listing that ends in damage does not raise here: the pass writes the
@@ -2173,7 +2175,8 @@ class BaseArchiveReader(ArchiveReader):
         (:meth:`_pass_reads_through_walk`) lists as members arrive too, until the walk
         has ended: it registers each member with the limits enforced, so
         ``ResourceLimitError`` is raised at the member that crosses a cap, before it is
-        written, as ``members()`` raises it.
+        written, as ``members()`` raises it. The members before it are written, as a
+        streaming pass writes them (DR-5).
         """
         if not self._streaming and (
             self._walk_done or not self._pass_reads_through_walk()
@@ -2187,12 +2190,13 @@ class BaseArchiveReader(ArchiveReader):
         yes: until the walk has ended, ``stream_members()`` and extraction then share
         one forward pass with it, through :meth:`_open_member_in_walk`, and a solid
         archive is decoded once instead of once for the headers and again for the
-        data. False by default."""
+        data. False by default. A backend with file copies (``FileCopyPass``) must not
+        say yes: this pass does not take them."""
         return False
 
     def _open_member_in_walk(self, member: ArchiveMember) -> MemberStreamParts:
         """``member``'s data for a pass that reads through the walk
-        (:meth:`_pass_reads_through_walk`), usually through :meth:`_walk_handoff`."""
+        (:meth:`_pass_reads_through_walk`), usually through :meth:`_walk_handoff_locked`."""
         raise NotImplementedError
 
     def _account_archive_comment(self) -> None:

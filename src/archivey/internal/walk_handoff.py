@@ -1,9 +1,10 @@
 """A random-access pass's member data, read through the member walk until it moves on.
 
-A pass over a solid archive (a compressed TAR, a compressed sequential format) reads
-each member's data through the walk's own stream, so the archive is decoded once. When
+A random-access pass of a backend whose listing is a scan of the data (TAR, a sequential
+format) reads each member's data through the walk's own stream. On a solid archive (a
+compressed one) that is where it pays: the archive is decoded once, not twice. When
 the walk moves on before the pass has read the member to its end, the stream reads a
-view of its own from where it stopped instead (``BaseArchiveReader._walk_handoff``).
+view of its own from where it stopped instead (``BaseArchiveReader._walk_handoff_locked``).
 """
 
 from __future__ import annotations

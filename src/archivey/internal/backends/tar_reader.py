@@ -1590,9 +1590,9 @@ class TarReader(BaseArchiveReader):
 
     def _walk_data(self, span: TarSpan) -> BinaryIO:
         """``span``'s data for a pass, through the walk when the walk is at it
-        (:meth:`_walk_handoff`). Called under the walk lock."""
+        (:meth:`_walk_handoff_locked`). Called under the walk lock."""
         data = self._walker.open_data(span)
-        return self._walk_handoff(
+        return self._walk_handoff_locked(
             data if data.in_place() else None,
             lambda start: self._independent_data(span, start),
         )
