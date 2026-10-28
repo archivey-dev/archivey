@@ -1,26 +1,30 @@
-"""Add a read-only archive format from outside archivey.
+"""The shared structures archivey reads formats with, open to formats from outside.
 
 **Provisional.** This interface may change in a minor release until a plugin outside
 this repository has used it. Pin the archivey version a plugin is tested with.
 
-A plugin is two classes. A :class:`FormatPlugin` subclass declares the format: its
-:class:`~archivey.ArchiveFormat`, file extensions, magic bytes, and an ``open()`` that
-returns a reader. The reader subclasses :class:`IndexedReader` (a format with an index:
-list the members first, then open any one of them) or :class:`SequentialReader` (a
-format of header, data, header, data, read in one forward pass, from a pipe too). The
-plugin hands archivey members and bytes; archivey does everything after that the same
-way it does for a built-in format: name normalization and the name checks, listing
+A format that fits the model is two classes, whether it is built in (ISO 9660) or added
+by a program or a separate package (a plugin). A :class:`FormatHandler` subclass
+declares the format: its :class:`~archivey.ArchiveFormat`, file extensions, magic bytes,
+and an ``open()`` that returns a reader. The reader subclasses :class:`IndexedReader` (a
+format with an index: list the members first, then open any one of them) or
+:class:`SequentialReader` (a format of header, data, header, data, read in one forward
+pass, from a pipe too). The reader hands archivey members and bytes; archivey does the
+rest the same way for every format: name normalization and the name checks, listing
 limits, link resolution, safe extraction and its limits, and the size and digest checks
-on member data.
+on member data. Formats that do not fit, or need special features or more speed, are
+written against archivey's internal reader classes instead.
 
-A program registers a plugin with :func:`register_format`. Nothing is loaded
+A program registers a format with :func:`register_format`. Nothing is loaded
 automatically. Plugin code runs in the caller's process as trusted code: archivey's
-limits cover what the plugin hands over, not the plugin's own parser.
+limits cover what the reader hands over, not the reader's own parser.
 
 A sequential format is also read inside each single-file compression stream archivey
-decodes (``.cpio.gz``). What the first version leaves out: an indexed format inside a
-compression stream, member data a library decodes in a sequential format,
-self-extracting stubs, multi-volume sets, passwords, and new diagnostic codes.
+decodes (``.cpio.gz``), and its walk can hand the rest of the archive to one of
+archivey's codecs part-way (:meth:`ForwardStream.decompress`). What the first version
+leaves out: an indexed format inside a compression stream, member data a library decodes
+in a sequential format, self-extracting stubs, multi-volume sets, passwords, and new
+diagnostic codes.
 """
 
 from __future__ import annotations
@@ -49,7 +53,8 @@ from archivey.types import (
 )
 
 __all__ = [
-    "FormatPlugin",
+    "FormatHandler",
+    "FormatReader",
     "ForwardStream",
     "Hasher",
     "IndexedReader",
@@ -58,12 +63,11 @@ __all__ = [
     "MemberDigest",
     "MemberRecord",
     "MemberSpan",
-    "PluginArchiveInfo",
     "PluginContainer",
-    "PluginContext",
-    "PluginReader",
-    "PluginSource",
-    "SequentialFormatPlugin",
+    "ReaderArchiveInfo",
+    "ReaderContext",
+    "ReaderSource",
+    "SequentialFormatHandler",
     "SequentialReader",
     "block_stream",
     "buffered_stream",
@@ -94,7 +98,7 @@ class MemberRecord(NamedTuple, Generic[LocatorT]):
     and hands it back to :meth:`IndexedReader.open_member`."""
 
     stored_name: str | None = None
-    """The decoded name before :meth:`PluginContext.normalize_name`, when the reader
+    """The decoded name before :meth:`ReaderContext.normalize_name`, when the reader
     normalized ``member.name`` itself so that a report it made while listing names
     the member as callers see it. archivey reports the change from this name."""
 
@@ -149,7 +153,7 @@ class MemberData(NamedTuple):
     stream: BinaryIO | io.RawIOBase
     """The member's decoded bytes, read from the start. archivey closes it. A stream
     that is neither an :class:`io.BufferedIOBase` nor one archivey made (a view, a
-    :meth:`PluginContext.decompress` result, :func:`block_stream`) may return fewer
+    :meth:`ReaderContext.decompress` result, :func:`block_stream`) may return fewer
     bytes than asked before the end, as an :class:`io.RawIOBase` may: archivey asks
     again for the rest. A buffered stream is taken at its word, as
     :class:`io.BufferedIOBase` promises: a short read from it is its end."""
@@ -168,7 +172,7 @@ class MemberData(NamedTuple):
     bounded: bool = False
     """The stream never returns more than ``ArchiveMember.size`` bytes: a decoder
     that stops at the size, or a library stream with the same promise. archivey sets
-    it itself for a :meth:`PluginSource.view` or a :func:`block_stream` no longer than
+    it itself for a :meth:`ReaderSource.view` or a :func:`block_stream` no longer than
     the member. archivey then skips the
     one-byte read past the end that looks for extra data, which is a measurable part
     of opening a small member. A stream that ends early still raises
@@ -204,12 +208,12 @@ class MemberSpan(NamedTuple):
     normalized ``member.name`` itself to report on the member before yielding it."""
 
 
-class PluginArchiveInfo(NamedTuple):
+class ReaderArchiveInfo(NamedTuple):
     """What the reader knows about the archive that archivey cannot work out."""
 
     is_solid: bool = False
     """Members share one decode, so opening them out of order is slow. For a
-    :class:`SequentialFormatPlugin` it also means the later headers sit inside that
+    :class:`SequentialFormatHandler` it also means the later headers sit inside that
     decode, so the cost receipt says listing needs decompression."""
 
     format_version: str | None = None
@@ -219,7 +223,7 @@ class PluginArchiveInfo(NamedTuple):
     (``"cpio.variant"``)."""
 
 
-class PluginSource:
+class ReaderSource:
     """The archive's bytes for an indexed reader. Always seekable.
 
     archivey builds it. Each :meth:`view` has its own position, so two member streams
@@ -358,8 +362,8 @@ class ForwardStream:
         ``ARCHIVE_TRAILING_DATA``, as after the end of a ``.gz`` file, not refused.
 
         archivey cannot know the archive is solid before the walk gets here, so a
-        format that decompresses part-way says so from :meth:`PluginReader.archive_info`
-        with ``PluginArchiveInfo(is_solid=True)``, and the cost receipt (solid access,
+        format that decompresses part-way says so from :meth:`FormatReader.archive_info`
+        with ``ReaderArchiveInfo(is_solid=True)``, and the cost receipt (solid access,
         listing that needs decompression) is right from the open.
 
         Raises ``ValueError`` for a format that is not a compression stream
@@ -383,7 +387,7 @@ class ForwardStream:
             )
 
 
-class PluginContext:
+class ReaderContext:
     """What an open archive needs from archivey. archivey builds it."""
 
     def __init__(
@@ -503,7 +507,7 @@ class PluginContext:
         """Decode one member's compressed bytes with archivey's own decoders.
 
         ``data`` holds exactly the member's compressed bytes, usually a
-        :meth:`PluginSource.view` of them. The returned stream gives the decoded bytes;
+        :meth:`ReaderSource.view` of them. The returned stream gives the decoded bytes;
         return it in :class:`MemberData`. It applies the caller's decoder limits,
         process isolation and accelerator settings, and translates the decoder's errors
         itself, so ``translate_exception`` never sees them.
@@ -535,19 +539,19 @@ class PluginContext:
         return self._decompress(data, method, size, properties)
 
 
-class PluginReader(ABC):
+class FormatReader(ABC):
     """One open archive. Subclass :class:`IndexedReader` or :class:`SequentialReader`,
     not this class."""
 
-    def archive_info(self) -> PluginArchiveInfo:
+    def archive_info(self) -> ReaderArchiveInfo:
         """Archive-level details. The default says nothing beyond the defaults."""
-        return PluginArchiveInfo()
+        return ReaderArchiveInfo()
 
     def translate_exception(self, exc: Exception) -> ArchiveyError | None:
         """Map an exception from the plugin's library to an archivey exception.
 
         Return ``None`` to let ``exc`` propagate as it is, or to fall back to
-        :meth:`FormatPlugin.translate_exception`. An archivey exception the plugin
+        :meth:`FormatHandler.translate_exception`. An archivey exception the plugin
         raises itself (``CorruptionError``, ``TruncatedError``,
         ``UnsupportedFeatureError``) needs no translation.
         """
@@ -557,7 +561,7 @@ class PluginReader(ABC):
         """Release what ``open()`` acquired. archivey closes the source itself."""
 
 
-class IndexedReader(PluginReader, Generic[LocatorT]):
+class IndexedReader(FormatReader, Generic[LocatorT]):
     """A format with an index: list the members, then open any one of them.
 
     Parametrize it with the locator type, ``IndexedReader[tuple[int, int]]``, so a
@@ -582,7 +586,7 @@ class IndexedReader(PluginReader, Generic[LocatorT]):
         :class:`MemberRecord` carried."""
 
 
-class SequentialReader(PluginReader):
+class SequentialReader(FormatReader):
     """A format of header, data, header, data: read in one forward pass, so from a
     pipe as well as a file.
 
@@ -615,7 +619,7 @@ class SequentialReader(PluginReader):
         their order must be the same."""
 
 
-class FormatPlugin(ABC):
+class FormatHandler(ABC):
     """One format: what identifies it, and how to open it. Never instantiated by a
     caller; archivey calls :meth:`open` on an instance it makes."""
 
@@ -637,7 +641,7 @@ class FormatPlugin(ABC):
 
     uses_encoding: ClassVar[bool] = False
     """Whether the reader applies ``encoding=`` (through
-    :meth:`PluginContext.decode_name`). When ``False``, a caller's ``encoding=`` is
+    :meth:`ReaderContext.decode_name`). When ``False``, a caller's ``encoding=`` is
     reported as unused."""
 
     requires: ClassVar[tuple[str, ...]] = ()
@@ -658,35 +662,35 @@ class FormatPlugin(ABC):
         return None
 
     @abstractmethod
-    def open(self, source: PluginSource, context: PluginContext) -> PluginReader:
+    def open(self, source: ReaderSource, context: ReaderContext) -> FormatReader:
         """Open the archive. Raise ``CorruptionError`` or ``TruncatedError`` when its
         structure is damaged, as a built-in reader does."""
 
 
-class SequentialFormatPlugin(FormatPlugin):
+class SequentialFormatHandler(FormatHandler):
     """A format read in one forward pass. Subclass this instead of
-    :class:`FormatPlugin`, and implement :meth:`open_sequential` instead of
-    :meth:`~FormatPlugin.open`: there is no seekable source to hand over, since the
+    :class:`FormatHandler`, and implement :meth:`open_sequential` instead of
+    :meth:`~FormatHandler.open`: there is no seekable source to hand over, since the
     archive may be a pipe. Its bytes reach :meth:`SequentialReader.walk`.
 
     Registering one also registers the format inside each single-file compression
     stream archivey decodes, as ``ArchiveFormat(<container>, StreamFormat.GZIP)`` and
     so on, with each extension followed by the compressor's (``.cpio.gz``). The walk
     reads the decoded bytes. Detection finds the format inside a compressor by its
-    :attr:`~FormatPlugin.magic` in the first 512 decoded bytes, so each magic must end
+    :attr:`~FormatHandler.magic` in the first 512 decoded bytes, so each magic must end
     within them."""
 
     @abstractmethod
-    def open_sequential(self, context: PluginContext) -> SequentialReader:
+    def open_sequential(self, context: ReaderContext) -> SequentialReader:
         """Make the reader. Nothing is read yet: a format whose start does not parse
         raises from the first step of :meth:`SequentialReader.walk`, which archivey
         takes when it opens the archive."""
 
-    def open(self, source: PluginSource, context: PluginContext) -> PluginReader:
+    def open(self, source: ReaderSource, context: ReaderContext) -> FormatReader:
         """Not called for a sequential format: archivey calls
         :meth:`open_sequential`."""
         raise TypeError(
-            f"{type(self).__name__} is a SequentialFormatPlugin: archivey calls "
+            f"{type(self).__name__} is a SequentialFormatHandler: archivey calls "
             "open_sequential(), not open()"
         )
 
@@ -694,7 +698,7 @@ class SequentialFormatPlugin(FormatPlugin):
 _register_lock = threading.Lock()
 
 
-def register_format(plugin: type[FormatPlugin]) -> None:
+def register_format(plugin: type[FormatHandler]) -> None:
     """Make archivey read the format ``plugin`` declares, in this process.
 
     Register before other threads open archives: detection reads the registry
@@ -710,8 +714,8 @@ def register_format(plugin: type[FormatPlugin]) -> None:
     """
     # Imported here: the registry imports the backends, and they import this module's
     # neighbours, so a module-level import would be circular for a caller that imports
-    # archivey.plugins first.
-    from archivey.internal.plugin_adapter import register_plugin
+    # archivey.formats first.
+    from archivey.internal.format_adapter import register_plugin
 
     with _register_lock:
         register_plugin(plugin)
@@ -724,7 +728,7 @@ def block_stream(
 
     The file is ``size`` bytes in blocks of ``block_size``, the last one shorter, as
     SquashFS, CAB, WIM and CSO store them. ``read_block(i)`` returns block ``i``
-    decoded: the stream ``PluginContext.decompress`` gives, or bytes from the plugin's
+    decoded: the stream ``ReaderContext.decompress`` gives, or bytes from the plugin's
     own decoder. archivey asks a stream for one byte more than the block, and refuses
     the block if it gets it; a decoder that buffers rounds that ask up to its buffer,
     so a block that decodes to far more costs the block and about one buffer. archivey

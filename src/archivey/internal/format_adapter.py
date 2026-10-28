@@ -1,9 +1,9 @@
-"""The adapter between ``archivey.plugins`` and the internal reader machinery.
+"""The adapter between ``archivey.formats`` and the internal reader machinery.
 
 A plugin reader does not subclass :class:`BaseArchiveReader`. Two subclasses serve every
-plugin: :class:`PluginReaderAdapter` implements the four abstract methods by calling an
-:class:`~archivey.plugins.IndexedReader`, and :class:`SequentialReaderAdapter` by
-walking a :class:`~archivey.plugins.SequentialReader`, so the walk, the passes, link
+plugin: :class:`IndexedReaderAdapter` implements the four abstract methods by calling an
+:class:`~archivey.formats.IndexedReader`, and :class:`SequentialReaderAdapter` by
+walking a :class:`~archivey.formats.SequentialReader`, so the walk, the passes, link
 handling and extraction stay internal (the ``plugin-api`` OpenSpec change, design §1
 and §2a).
 
@@ -37,6 +37,21 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
     exception_detail,
+)
+from archivey.formats import (
+    FormatHandler,
+    FormatReader,
+    ForwardStream,
+    Hasher,
+    IndexedReader,
+    MemberData,
+    MemberDigest,
+    MemberSpan,
+    ReaderArchiveInfo,
+    ReaderContext,
+    ReaderSource,
+    SequentialFormatHandler,
+    SequentialReader,
 )
 from archivey.internal import format_args
 from archivey.internal.base_reader import (
@@ -83,21 +98,6 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.internal.streams.streamtools.binaryio import read_blocking
 from archivey.internal.streams.verify import CustomDigests, hasher_factory
-from archivey.plugins import (
-    FormatPlugin,
-    ForwardStream,
-    Hasher,
-    IndexedReader,
-    MemberData,
-    MemberDigest,
-    MemberSpan,
-    PluginArchiveInfo,
-    PluginContext,
-    PluginReader,
-    PluginSource,
-    SequentialFormatPlugin,
-    SequentialReader,
-)
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -138,7 +138,7 @@ def _reads_full(stream: object) -> bool:
     member stream needs no :class:`FullCountStream` in front of it.
 
     A buffered stream does. So does every stream archivey made, a
-    ``PluginSource.view()`` or a ``PluginContext.decompress()`` result: the stream layer
+    ``ReaderSource.view()`` or a ``ReaderContext.decompress()`` result: the stream layer
     keeps that rule, and a short read from one is its end. Anything else may be an
     ``io.RawIOBase`` that stops a read early (at a block boundary, say), and the
     wrapper's cost when it does not is one call per read and no copy.
@@ -150,11 +150,11 @@ class _PluginAdapter(BaseArchiveReader):
     """What the adapters of both reader shapes share: the context, errors, digests,
     archive info and close."""
 
-    _reader: PluginReader
+    _reader: FormatReader
 
     def __init__(
         self,
-        plugin: FormatPlugin,
+        plugin: FormatHandler,
         source: ArchiveSource,
         format: ArchiveFormat,
         streaming: bool,
@@ -182,7 +182,7 @@ class _PluginAdapter(BaseArchiveReader):
         # The plugin may hold a handle of its own (a library over ``source.path``), so
         # under CONCURRENT every call into it, and every read of a stream it returned,
         # takes one lock (``_handle_guard``). The exception is ``translate_exception``,
-        # which ``base_reader`` runs outside the lock. The views of ``PluginSource``
+        # which ``base_reader`` runs outside the lock. The views of ``ReaderSource``
         # need none, but archivey cannot tell which kind of reader it was given.
         if MemberStreams.CONCURRENT in member_streams:
             self._handle_lock = threading.Lock()
@@ -203,7 +203,7 @@ class _PluginAdapter(BaseArchiveReader):
         # The walk position of the member being listed: the id registration will
         # stamp on it, for a report made before it is yielded.
         self._walk_index = 0
-        context = PluginContext(
+        context = ReaderContext(
             encoding=encoding,
             archive_name=archive_name,
             config=config,
@@ -214,7 +214,7 @@ class _PluginAdapter(BaseArchiveReader):
         self._reader = self._open_reader(context)
         self._reader_open = True
 
-    def _open_reader(self, context: PluginContext) -> PluginReader:
+    def _open_reader(self, context: ReaderContext) -> FormatReader:
         """Call the plugin's ``open``, and check what it returned."""
         raise NotImplementedError
 
@@ -234,7 +234,7 @@ class _PluginAdapter(BaseArchiveReader):
         size: int | None,
         properties: bytes | None,
     ) -> BinaryIO:
-        """``PluginContext.decompress``: ``data`` through archivey's codec layer."""
+        """``ReaderContext.decompress``: ``data`` through archivey's codec layer."""
         codec = (
             codec_for_stream_format(method)
             if isinstance(method, StreamFormat)
@@ -242,7 +242,7 @@ class _PluginAdapter(BaseArchiveReader):
         )
         if codec is None:
             raise UnsupportedFeatureError(
-                f"PluginContext.decompress() does not decode {method.name}",
+                f"ReaderContext.decompress() does not decode {method.name}",
                 source_format=self._format,
                 archive_name=self._archive_name,
             )
@@ -307,17 +307,17 @@ class _PluginAdapter(BaseArchiveReader):
         details: DiagnosticContext,
         member: ArchiveMember | None,
     ) -> None:
-        """``PluginContext.report``: one diagnostic, with the archive and member filled
+        """``ReaderContext.report``: one diagnostic, with the archive and member filled
         in."""
         if code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE:
             raise ArchiveyUsageError(
                 "report SYMLINK_TARGET_UNAVAILABLE with "
-                "PluginContext.link_target_unavailable()"
+                "ReaderContext.link_target_unavailable()"
             )
         try:
             validate_code_context(code, details)
         except ValueError as exc:
-            raise ArchiveyUsageError(f"PluginContext.report(): {exc}") from None
+            raise ArchiveyUsageError(f"ReaderContext.report(): {exc}") from None
         fill: dict[str, object] = {}
         if getattr(details, "archive_name", "") is None:
             fill["archive_name"] = self._archive_name
@@ -447,10 +447,10 @@ class _PluginAdapter(BaseArchiveReader):
             extra=extra,
         )
 
-    def _cost(self, info: PluginArchiveInfo) -> CostReceipt:
+    def _cost(self, info: ReaderArchiveInfo) -> CostReceipt:
         raise NotImplementedError
 
-    def _is_solid(self, info: PluginArchiveInfo) -> bool:
+    def _is_solid(self, info: ReaderArchiveInfo) -> bool:
         # One compression stream around a sequential format makes it solid, as for a
         # compressed TAR.
         return info.is_solid or self._format.stream is not StreamFormat.UNCOMPRESSED
@@ -479,17 +479,17 @@ class _PluginAdapter(BaseArchiveReader):
                 self._shared.close()
 
 
-class PluginReaderAdapter(_PluginAdapter):
-    """Serves an :class:`~archivey.plugins.IndexedReader` through the internal reader
+class IndexedReaderAdapter(_PluginAdapter):
+    """Serves an :class:`~archivey.formats.IndexedReader` through the internal reader
     contract."""
 
-    def _open_reader(self, context: PluginContext) -> IndexedReader[Any]:
+    def _open_reader(self, context: ReaderContext) -> IndexedReader[Any]:
         source = self._source
         assert source is not None
         self._shared = shared = SharedSource(
             source, wrap_handle=self._seek_handle_wrapper()
         )
-        plugin_source = PluginSource(
+        plugin_source = ReaderSource(
             shared.view, shared.size, source.path, shared.read_at
         )
         with self._translated_errors(), self._handle_guard():
@@ -500,7 +500,7 @@ class PluginReaderAdapter(_PluginAdapter):
         self._MEMBER_LIST_UPFRONT = reader.member_list_upfront
         return reader
 
-    def _cost(self, info: PluginArchiveInfo) -> CostReceipt:
+    def _cost(self, info: ReaderArchiveInfo) -> CostReceipt:
         return CostReceipt(
             listing_cost=(
                 ListingCost.INDEXED
@@ -712,15 +712,15 @@ class _SpanWindow(ReadOnlyIOStream):
 
 
 class SequentialReaderAdapter(_PluginAdapter):
-    """Serves a :class:`~archivey.plugins.SequentialReader`: its walk is the member
+    """Serves a :class:`~archivey.formats.SequentialReader`: its walk is the member
     walk, and member data is a window of the walk's stream (a streaming pass) or a
     view of the source at the offset the walk recorded (random access)."""
 
     _MEMBER_LIST_UPFRONT = False
 
-    def _open_reader(self, context: PluginContext) -> SequentialReader:
+    def _open_reader(self, context: ReaderContext) -> SequentialReader:
         plugin = self._plugin
-        assert isinstance(plugin, SequentialFormatPlugin)
+        assert isinstance(plugin, SequentialFormatHandler)
         source = self._source
         assert source is not None
         # Streaming: the buffer the walk reads through, made here, so closed here.
@@ -1068,7 +1068,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             custom_digests=record.custom,
         )
 
-    def _cost(self, info: PluginArchiveInfo) -> CostReceipt:
+    def _cost(self, info: ReaderArchiveInfo) -> CostReceipt:
         assert self._source is not None
         capability = (
             StreamCapability.SEEKABLE
@@ -1078,7 +1078,7 @@ class SequentialReaderAdapter(_PluginAdapter):
         if self._compressed:
             # One compression stream over all members, as a compressed TAR. A walk
             # that decompresses part-way is not known to until it gets there, so its
-            # plugin says so up front with ``PluginArchiveInfo.is_solid``.
+            # plugin says so up front with ``ReaderArchiveInfo.is_solid``.
             return CostReceipt(
                 listing_cost=ListingCost.REQUIRES_DECOMPRESSION,
                 access_cost=AccessCost.SOLID,
@@ -1172,7 +1172,7 @@ _STREAM_CODECS: dict[StreamFormat, Codec] = {
 # The ``MemberDigest`` names archivey computes itself, with its own hasher.
 _ALGORITHMS = {str(algorithm): algorithm for algorithm in HashAlgorithm}
 
-# The methods ``PluginContext.decompress`` decodes. PPMd, the branch filters and RAR
+# The methods ``ReaderContext.decompress`` decodes. PPMd, the branch filters and RAR
 # need parameters or framing a plain method name cannot carry.
 _PLUGIN_CODECS: dict[CompressionAlgorithm, Codec] = {
     CompressionAlgorithm.STORED: Codec.STORED,
@@ -1191,7 +1191,7 @@ _PLUGIN_CODECS: dict[CompressionAlgorithm, Codec] = {
 class _PluginBackend(ReadBackend):
     """Base of the backend class :func:`register_plugin` builds for each plugin."""
 
-    PLUGIN: ClassVar[type[FormatPlugin]]
+    PLUGIN: ClassVar[type[FormatHandler]]
 
     def open_read(
         self,
@@ -1210,8 +1210,8 @@ class _PluginBackend(ReadBackend):
         reject_start_offset(start_offset, format, archive_name)
         adapter = (
             SequentialReaderAdapter
-            if issubclass(self.PLUGIN, SequentialFormatPlugin)
-            else PluginReaderAdapter
+            if issubclass(self.PLUGIN, SequentialFormatHandler)
+            else IndexedReaderAdapter
         )
         return adapter(
             self.PLUGIN(),
@@ -1269,10 +1269,10 @@ def _prefix_probe(probe: object) -> ContentProbe:
     return content_probe
 
 
-def _check_plugin(plugin: type[FormatPlugin]) -> ArchiveFormat:
-    if not (isinstance(plugin, type) and issubclass(plugin, FormatPlugin)):
+def _check_plugin(plugin: type[FormatHandler]) -> ArchiveFormat:
+    if not (isinstance(plugin, type) and issubclass(plugin, FormatHandler)):
         raise ArchiveyUsageError(
-            f"register_format() takes a FormatPlugin subclass, got {plugin!r}"
+            f"register_format() takes a FormatHandler subclass, got {plugin!r}"
         )
     fmt = getattr(plugin, "format", None)
     if not isinstance(fmt, ArchiveFormat):
@@ -1284,7 +1284,7 @@ def _check_plugin(plugin: type[FormatPlugin]) -> ArchiveFormat:
             f"{plugin.__name__}.format must use a PluginContainer member as its "
             f"container, got {fmt.container!r}"
         )
-    sequential = issubclass(plugin, SequentialFormatPlugin)
+    sequential = issubclass(plugin, SequentialFormatHandler)
     if fmt.stream != StreamFormat.UNCOMPRESSED:
         raise ArchiveyUsageError(
             f"{plugin.__name__}.format must have an UNCOMPRESSED stream: "
@@ -1365,7 +1365,7 @@ def _compressed_formats(fmt: ArchiveFormat) -> tuple[ArchiveFormat, ...]:
 
 
 def _extensions(
-    plugin: type[FormatPlugin], fmt: ArchiveFormat, *, sequential: bool
+    plugin: type[FormatHandler], fmt: ArchiveFormat, *, sequential: bool
 ) -> dict[str, ArchiveFormat]:
     """The plugin's extensions, and for a sequential format each one followed by a
     compression stream's (``.cpio`` gives ``.cpio.gz``, ``.cpio.xz``, …)."""
@@ -1382,10 +1382,10 @@ def _extensions(
 
 
 def _backend_class(
-    plugin: type[FormatPlugin], fmt: ArchiveFormat, overrides: Mapping[str, object]
+    plugin: type[FormatHandler], fmt: ArchiveFormat, overrides: Mapping[str, object]
 ) -> type[_PluginBackend]:
     probe = plugin.probe
-    sequential = issubclass(plugin, SequentialFormatPlugin)
+    sequential = issubclass(plugin, SequentialFormatHandler)
     magic = tuple(MagicSignature(m.offset, m.data, fmt) for m in plugin.magic)
     attrs: dict[str, object] = {
         "PLUGIN": plugin,
@@ -1406,7 +1406,7 @@ def _backend_class(
     return type(f"{plugin.__name__}Backend", (_PluginBackend,), attrs)
 
 
-def register_plugin(plugin: type[FormatPlugin]) -> None:
+def register_plugin(plugin: type[FormatHandler]) -> None:
     """Build the backend class for ``plugin`` and register it (``register_format``)."""
     fmt = _check_plugin(plugin)
     backend = _backend_class(plugin, fmt, {})
@@ -1415,10 +1415,10 @@ def register_plugin(plugin: type[FormatPlugin]) -> None:
         add_plugin_spellings(each)
 
 
-def register_builtin_plugin(
-    plugin: type[FormatPlugin], **overrides: object
+def register_builtin_format(
+    plugin: type[FormatHandler], **overrides: object
 ) -> type[ReadBackend]:
-    """Register a built-in format whose reader is written against ``archivey.plugins``.
+    """Register a built-in format whose reader is written against ``archivey.formats``.
 
     The format keeps its built-in container, extensions, magic and place among the
     built-in backends, so detection does not change and ``FormatInfo.from_plugin`` is

@@ -34,8 +34,8 @@ from archivey.exceptions import (
     StreamNotSeekableError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends.iso_reader import IsoPlugin, _strip_version
-from archivey.internal.plugin_adapter import PluginReaderAdapter
+from archivey.internal.backends.iso_reader import IsoHandler, _strip_version
+from archivey.internal.format_adapter import IndexedReaderAdapter
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.streamtools import (
     DEFAULT_UNKNOWN_LENGTH_READ_STEP,
@@ -458,7 +458,7 @@ def test_a_parser_error_is_named_without_its_repr() -> None:
 
 def test_an_error_from_this_backends_own_code_is_not_called_damage() -> None:
     exc = AttributeError("'NoneType' object has no attribute 'ce_entries'")
-    translated = IsoPlugin().translate_exception(exc)
+    translated = IsoHandler().translate_exception(exc)
     assert isinstance(translated, CorruptionError)
     assert str(translated) == (
         "Error reading ISO image: a structure in the image could not be parsed "
@@ -843,7 +843,7 @@ def test_a_path_source_is_read_through_the_archive_source(
     source that can record what was asked of it.
     """
     with open_archive(rock_ridge_iso) as reader:
-        assert isinstance(reader, PluginReaderAdapter)
+        assert isinstance(reader, IndexedReaderAdapter)
         assert isinstance(reader._source, ArchiveSource)
         assert reader._source.path == rock_ridge_iso
         # pycdlib reads a view of the shared source, which reads the archive source.

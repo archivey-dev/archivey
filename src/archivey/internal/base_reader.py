@@ -452,7 +452,7 @@ class ReadBackend(ABC):
     # derives availability centrally from whether it imports. ``None`` for core backends.
     OPTIONAL_DEPENDENCY: str | None = None
     # More modules the backend imports, checked after ``OPTIONAL_DEPENDENCY`` the same
-    # way. Only plugin backends set it (``FormatPlugin.requires``); ``INSTALL_HINT``
+    # way. Only plugin backends set it (``FormatHandler.requires``); ``INSTALL_HINT``
     # covers them all.
     REQUIRED_MODULES: tuple[str, ...] = ()
     # Human-readable install hint surfaced when the dependency is absent

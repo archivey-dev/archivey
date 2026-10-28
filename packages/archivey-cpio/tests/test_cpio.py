@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from archivey_cpio import CPIO, CpioPlugin, CpioReader
+from archivey_cpio import CPIO, CpioHandler, CpioReader
 from archivey_cpio.reader import MAX_NAME_BYTES
 
 import archivey
@@ -29,7 +29,7 @@ from archivey import (
     open_archive,
 )
 from archivey.diagnostics import DiagnosticCode
-from archivey.plugins import SequentialReader, register_format
+from archivey.formats import SequentialReader, register_format
 
 DATA = Path(__file__).parent / "data"
 PACKAGE = Path(__file__).parents[1] / "src" / "archivey_cpio"
@@ -74,7 +74,7 @@ ARCHIVES = {
 
 @pytest.fixture(scope="session", autouse=True)
 def _registered() -> None:
-    register_format(CpioPlugin)
+    register_format(CpioHandler)
 
 
 class _Pipe(io.RawIOBase):
@@ -484,7 +484,7 @@ def test_the_package_uses_only_public_archivey() -> None:
     """The point of the package: a format added from outside, through the plugin API."""
     used = {name for path in PACKAGE.rglob("*.py") for name in _imports(path)}
     archivey_modules = {name for name in used if name.split(".")[0] == "archivey"}
-    assert archivey_modules == {"archivey", "archivey.diagnostics", "archivey.plugins"}
+    assert archivey_modules == {"archivey", "archivey.diagnostics", "archivey.formats"}
 
 
 def test_the_reader_is_a_sequential_reader() -> None:

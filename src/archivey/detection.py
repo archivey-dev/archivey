@@ -110,7 +110,7 @@ class FormatInfo:
 
     @property
     def from_plugin(self) -> bool:
-        """Whether ``format`` is one a plugin added (``archivey.plugins``), not a
+        """Whether ``format`` is one a plugin added (``archivey.formats``), not a
         built-in one. A plugin's parser is not covered by archivey's limits, so a
         caller that reads untrusted input can refuse such a format."""
         return isinstance(self.format.container, PluginContainer)

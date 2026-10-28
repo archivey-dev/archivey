@@ -59,7 +59,7 @@ _CONST_KEYS = {
 
 # Written by tests, not by the library. See tests/test_codec_descriptor.py
 # (`synthetic.header_len`), tests/test_data_model.py (open-bag example) and
-# tests/test_plugins.py (a plugin's own `ArchiveInfo` key, `solid.blocks`).
+# tests/test_format_api.py (a plugin's own `ArchiveInfo` key, `solid.blocks`).
 _TEST_ONLY_EXTRA_KEYS = frozenset(
     {"synthetic.header_len", "third.party", "solid.blocks"}
 )
