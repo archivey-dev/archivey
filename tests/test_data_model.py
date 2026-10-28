@@ -19,6 +19,7 @@ from datetime import UTC
 import pytest
 
 import archivey.types
+from archivey.internal import extraction
 from archivey.internal.hashing import crc32_digest
 from archivey.types import (
     EXTRA_IS_JUNCTION,
@@ -29,6 +30,7 @@ from archivey.types import (
     CompressionAlgorithm,
     CompressionMethod,
     ContainerFormat,
+    ExtractionResult,
     HashAlgorithm,
     MemberExtra,
     MemberType,
@@ -124,6 +126,27 @@ def test_replace_copies_every_field_as_dataclasses_replace_does() -> None:
             assert getattr(fast, f.name) is changes.get(f.name, given[f.name]), f.name
     with pytest.raises(TypeError, match="unexpected keyword argument 'nope'"):
         m.replace(nope=1)
+
+
+def test_replace_result_copies_every_field_as_dataclasses_replace_does() -> None:
+    # ``_replace_result`` passes every field to ``__init__`` in order; that needs
+    # every field in ``__init__``, positionally (``_RESULT_FIELDS``).
+    fields = dataclasses.fields(ExtractionResult)
+    assert all(f.init and not f.kw_only for f in fields)
+    assert extraction._RESULT_FIELDS == tuple(f.name for f in fields)
+    # A distinct object in every field, so a field copied into the wrong position
+    # shows up as the wrong object, not as an equal default.
+    given = {f.name: object() for f in fields}
+    r = ExtractionResult(**given)  # type: ignore[arg-type]
+    every = {f.name: object() for f in fields}
+    for changes in ({}, {"path": None, "requested_path": "p"}, every):
+        fast = extraction._replace_result(r, **changes)
+        slow = dataclasses.replace(r, **changes)
+        for f in fields:
+            assert getattr(fast, f.name) is getattr(slow, f.name), f.name
+            assert getattr(fast, f.name) is changes.get(f.name, given[f.name]), f.name
+    with pytest.raises(KeyError, match="nope"):
+        extraction._replace_result(r, nope=1)
 
 
 def test_unavailable_fields_default_to_none() -> None:

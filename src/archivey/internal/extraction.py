@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import bisect
 import contextlib
+import dataclasses
 import errno
 import io
 import os
@@ -29,7 +30,8 @@ import posixpath
 import stat
 import uuid
 from collections.abc import Callable, Collection, Generator, Iterator
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
+from operator import attrgetter
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Protocol, assert_never, cast
 
@@ -90,6 +92,25 @@ if TYPE_CHECKING:
 
     from archivey.internal.base_reader import BaseArchiveReader
     from archivey.internal.streams.archive_stream import ArchiveStreamImpl
+
+
+# ``ExtractionResult``'s fields in ``__init__`` order, for ``_replace_result``. Every
+# field is an ``__init__`` parameter that can be passed by position
+# (``test_replace_result_copies_every_field_as_dataclasses_replace_does``).
+_RESULT_FIELDS = tuple(f.name for f in dataclasses.fields(ExtractionResult))
+_RESULT_FIELD_INDEX = {name: i for i, name in enumerate(_RESULT_FIELDS)}
+_result_field_values = attrgetter(*_RESULT_FIELDS)
+
+
+def _replace_result(result: ExtractionResult, **changes: object) -> ExtractionResult:
+    """``dataclasses.replace(result, **changes)``, a few times faster: every field
+    passed to ``__init__`` by position, in field order. Each extracted member's result
+    is copied at least once (``_settle_placement``). A name that is not a field is a
+    ``KeyError``."""
+    values = list(_result_field_values(result))
+    for key, value in changes.items():
+        values[_RESULT_FIELD_INDEX[key]] = value
+    return ExtractionResult(*values)
 
 
 _CHUNK = 1024 * 1024  # 1 MiB copy chunk
@@ -1124,7 +1145,7 @@ class ExtractionCoordinator:
         if presented_name is not None and recorded_index is not None:
             self._set_result(
                 recorded_index,
-                replace(
+                _replace_result(
                     results[recorded_index],
                     presented_name=presented_name,
                     rewrites=rewrites,
@@ -2027,7 +2048,7 @@ class ExtractionCoordinator:
         )
 
         if original.is_anti:
-            return replace(
+            return _replace_result(
                 self._apply_anti_item(original, target), requested_path=requested
             )
 
@@ -2082,11 +2103,11 @@ class ExtractionCoordinator:
         # rename, so it reports the actual (merged) path; every other outcome reports the
         # member's own intended destination, so RENAME shows up as requested_path != path.
         if prior is not None and result.status is ExtractionStatus.EXTRACTED:
-            result = replace(
+            result = _replace_result(
                 result, requested_path=result.path, collided_with=collided_with
             )
         else:
-            result = replace(
+            result = _replace_result(
                 result, requested_path=requested, collided_with=collided_with
             )
 
@@ -3261,11 +3282,11 @@ class ExtractionCoordinator:
         results = self._state.results
         prior = results[index]
         if prior.presented_name is not None and new.presented_name is None:
-            new = replace(
+            new = _replace_result(
                 new, presented_name=prior.presented_name, rewrites=prior.rewrites
             )
         if prior.requested_path is not None and new.requested_path is None:
-            new = replace(new, requested_path=prior.requested_path)
+            new = _replace_result(new, requested_path=prior.requested_path)
         results[index] = new
 
     def _append_result(self, new: ExtractionResult) -> int:
@@ -3630,7 +3651,7 @@ class ExtractionCoordinator:
             if prior.status is ExtractionStatus.EXTRACTED:
                 self._set_result(
                     link.result_index,
-                    replace(
+                    _replace_result(
                         prior, path=None, status=ExtractionStatus.BLOCKED, error=error
                     ),
                 )
@@ -3688,7 +3709,7 @@ class ExtractionCoordinator:
         # more extracted members than ``results`` contains.
         self._set_result(
             index,
-            replace(
+            _replace_result(
                 clobbered,
                 path=None,
                 status=ExtractionStatus.OVERWRITTEN,
