@@ -5,7 +5,7 @@ links to the ``.uu`` test archives of ``libarchive/test``, ``cpio/test`` and
 ``tar/test`` in a clone of https://github.com/libarchive/libarchive (the triage below
 assumes all three; ``test_libarchive_corpus_discovered_archives`` checks it)::
 
-    mkdir corpus && ln -s /path/to/libarchive/{libarchive,cpio,tar}/test/*.uu corpus/
+    mkdir corpus && ln -sf /path/to/libarchive/{libarchive,cpio,tar}/test/*.uu corpus/
     ARCHIVEY_LIBARCHIVE_TEST_FILES=$PWD/corpus \\
       uv run --no-sync pytest tests/test_libarchive_corpus.py -q
 
@@ -77,6 +77,7 @@ from __future__ import annotations
 
 import binascii
 import importlib
+import importlib.util
 import io
 import os
 import re
@@ -512,10 +513,10 @@ def _plugins() -> Iterator[None]:
     compared instead of skipped as unknown formats; undone when the module ends."""
     with registration_scope():
         for module, name in _PLUGINS:
-            try:
-                plugin = getattr(importlib.import_module(module), name)
-            except ImportError:
+            # Not installed: skipped. Installed and failing to import: an error.
+            if importlib.util.find_spec(module) is None:
                 continue
+            plugin = getattr(importlib.import_module(module), name)
             # A plugin's own tests may have registered it in this process already.
             if get_registry().registered_reader(plugin.format) is None:
                 register_format(plugin)
