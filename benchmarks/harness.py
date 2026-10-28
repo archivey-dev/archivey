@@ -450,7 +450,7 @@ def _unrar_available() -> bool:
 
 
 def _crypto_available() -> bool:
-    """True when the ``cryptography`` package is importable (``[crypto]`` extra)."""
+    """True when the ``cryptography`` package is importable (``[recommended]`` extra)."""
     return importlib.util.find_spec("cryptography") is not None
 
 
@@ -473,7 +473,7 @@ def missing_baseline_requirements() -> list[str]:
         ),
         (
             _crypto_available(),
-            "cryptography — zip_aes_read_all / encrypted RAR; install the [crypto] extra",
+            "cryptography — zip_aes_read_all / encrypted RAR; install the [recommended] extra",
         ),
         (
             _unrar_available(),
@@ -644,7 +644,7 @@ def run_cases(
         )
     )
 
-    # --- ZIP WinZip AES (VerifyingStream + [crypto]; skip when extra absent) ---
+    # --- ZIP WinZip AES (VerifyingStream + cryptography; skip when extra absent) ---
     if fixtures.zip_aes_path is not None and _crypto_available():
         aes_path = fixtures.zip_aes_path
         _m_wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
@@ -659,7 +659,7 @@ def run_cases(
                 bdec,
                 seeks,
                 unpacked_bytes=unpacked,
-                notes="WinZip AES-256 AE-2; requires [crypto]",
+                notes="WinZip AES-256 AE-2; requires cryptography",
             )
         )
 

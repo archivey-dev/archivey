@@ -12,12 +12,10 @@ description: |
 
 # Write user docs
 
-How the user docs rewrite was written (PR #523, started 2026-09-29, in a `new_docs/` tree
-that replaced `docs/` once it covered it), kept so the next pages are written the same
-way. The maintainer found the old
-`docs/` too flat, too prescriptive and too detailed. This process fixed that by working
-in small agreed steps and by putting "reads as if a person wrote it" above the sentence
-rules, below only being true and being impossible to misread.
+How user docs pages are written here. Pages written to sentence rules alone came out too
+flat, too prescriptive and too detailed, so this process works in small agreed steps and
+puts "reads as if a person wrote it" above the sentence rules, below only being true
+and being impossible to misread.
 
 This skill sets the voice for **all user docs prose**, in `docs/`. Its loop
 is for writing or rewriting a page with the maintainer. For a one-sentence fix, use the
@@ -177,6 +175,6 @@ Where they conflicted, this is how it was settled:
   Mechanics above is the result.
 - **STE strictness.** STE's caps (one instruction per sentence, word limits, avoid -ing)
   are a check for real procedures and warnings only. Applied to whole pages they produced
-  the flat docs this rewrite replaced.
+  the flat docs this process replaced.
 - **The pile.** Both process skills assume the exploring is done. Here it wasn't, which is
   why step 1 builds the pile before any writing starts.

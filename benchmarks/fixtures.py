@@ -6,7 +6,7 @@ Two scales:
 - ``realistic`` — multi-MiB corpora for wall-time ratios vs stdlib (VISION ≤1.3× surface).
 
 Large solid 7z/RAR archives are generated when py7zr / ``rar`` are available.
-WinZip AES ZIPs need the ``[crypto]`` extra to build (and to decrypt under archivey).
+WinZip AES ZIPs need the ``[recommended]`` extra to build (and to decrypt under archivey).
 """
 
 from __future__ import annotations
@@ -147,7 +147,7 @@ def build_zip_aes(
 ) -> int:
     """Build a multi-member WinZip AES-256 (AE-2) ZIP; return unpacked bytes.
 
-    Requires ``cryptography`` (the same ``[crypto]`` extra needed to decrypt). Returns
+    Requires ``cryptography`` (the same ``[recommended]`` extra needed to decrypt). Returns
     0 and leaves ``path`` absent when the extra is missing.
     """
     try:

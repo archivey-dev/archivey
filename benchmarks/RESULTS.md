@@ -320,7 +320,7 @@ extra pass through liblzma's LZMA2 chunk layer, not the bytes.
 | solid 7z sequential | decode-once (also pinned in `test_measurement.py`) |
 | solid 7z random `read()` | ~32.5× re-decode at realistic scale (520 MiB for 16 MiB, n=64), recorded only; at ci scale (16.5× in the committed baseline) PR CI gates it at 1.5× that baseline |
 | solid RAR decode-once | structural gate on committed `basic_solid__.rar` + unit test (`unrar`) |
-| encrypted RAR / ZIP AES / ZIP LZMA / in-ZIP accel | structural gate cases (T3); skip when `unrar` / `[crypto]` / `[seekable]` absent |
+| encrypted RAR / ZIP AES / ZIP LZMA / in-ZIP accel | structural gate cases (T3); skip when `unrar` / `cryptography` / `[seekable]` absent |
 | solid RAR random | smoke + seek baseline; byte re-decode not observable via unrar pipe (P9) |
 
 ISO / directory: measurement is wired; harness cases are out of scope (ISO
