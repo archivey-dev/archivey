@@ -18,6 +18,9 @@ archivey 0.4.0, a direct call SHALL still work and SHALL emit a `DeprecationWarn
 
 #### Scenario: private factories
 
-Archivey builds a stream with `ArchiveStream._blank()._setup(...)` and a pass with
-`MemberPass._new(...)`. `dev-docs/api-surface.txt` lists
-`init archivey.ArchiveStream(*args, **kwargs)`, with no internal parameter types.
+Archivey builds both through private factories, whose names are not public API.
+
+#### Scenario: the published constructor
+
+The public constructor of `ArchiveStream` lists no internal parameter types:
+`init archivey.ArchiveStream(*args, **kwargs)`.

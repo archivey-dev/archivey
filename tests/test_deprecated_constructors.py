@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
+import gzip
 import io
+import warnings
+import zipfile
 
 import pytest
 
-from archivey import ArchiveStream, MemberPass
+from archivey import ArchiveStream, MemberPass, open_archive, open_stream
 
 
 def test_archive_stream_constructor_warns_and_still_reads() -> None:
@@ -30,10 +33,6 @@ def test_member_pass_constructor_warns_and_still_iterates() -> None:
 
 
 def test_readers_build_streams_and_passes_without_warning(tmp_path) -> None:
-    import warnings
-    import zipfile
-
-    from archivey import open_archive
 
     path = tmp_path / "a.zip"
     with zipfile.ZipFile(path, "w") as zf:
@@ -45,3 +44,8 @@ def test_readers_build_streams_and_passes_without_warning(tmp_path) -> None:
             with reader.stream_members() as members:
                 for _member, stream in members:
                     assert stream is not None and stream.read() == b"payload"
+            assert [m.name for m in reader] == ["a.txt"]
+        gz = tmp_path / "a.gz"
+        gz.write_bytes(gzip.compress(b"payload"))
+        with open_stream(gz) as stream:
+            assert stream.read() == b"payload"

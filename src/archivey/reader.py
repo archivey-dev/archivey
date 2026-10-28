@@ -87,7 +87,8 @@ class MemberPass(Iterator[_T]):
     __slots__ = ("_pass",)
 
     def __init__(self, items: Generator[_T, None, None]) -> None:
-        """Deprecated: a pass comes from ``stream_members()`` or from iterating a reader.
+        """Deprecated: a pass comes from
+        :meth:`~archivey.ForwardArchiveReader.stream_members` or from iterating a reader.
         Building one directly stops working in archivey 0.4.0."""
         warnings.warn(
             "constructing MemberPass directly is deprecated and stops working in "

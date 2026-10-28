@@ -182,12 +182,19 @@ class ArchiveStream(ReadOnlyIOStream):
     #    ``finally``. A stream the caller never closes is closed by ``IOBase.__del__``
     #    when it is collected, so the lease is released then.
     #
-    # Built with ``ArchiveStream._blank()._setup(...)``, by backends and
-    # ``open_codec_stream``: callers never build one, so the constructor is not public.
+    # Archivey builds one with ``ArchiveStream._blank()._setup(...)``, in the backends
+    # and ``open_codec_stream``, and never calls ``__init__``, which is deprecated and
+    # goes away in 0.4.0. Two calls rather than one private classmethod: a classmethod
+    # taking ``*args, **kwargs`` would lose ``_setup``'s typed keyword parameters at
+    # every call site, and a typed one would repeat its signature. ``_blank()`` runs
+    # before ``_setup``'s arguments are evaluated, so ``close`` and ``__repr__`` accept
+    # an instance ``_setup`` never ran on.
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
-        """Deprecated: get a stream from ``ArchiveReader.open()``, ``stream_members()`` or
-        ``open_stream()``. Building one directly stops working in archivey 0.4.0."""
+        """Deprecated: get a stream from :meth:`~archivey.ArchiveReader.open`,
+        :meth:`~archivey.ForwardArchiveReader.stream_members` or
+        :func:`~archivey.open_stream`. Building one directly stops working in archivey
+        0.4.0."""
         warnings.warn(
             "constructing ArchiveStream directly is deprecated and stops working in "
             "archivey 0.4.0; get one from ArchiveReader.open(), stream_members() or "
@@ -1009,6 +1016,11 @@ class ArchiveStream(ReadOnlyIOStream):
     def close(self) -> None:
         if self.closed:
             return
+        if "_closing" not in self.__dict__:
+            # ``_setup`` never ran: one of its arguments raised after ``_blank()`` made
+            # the instance. It holds nothing to release.
+            super().close()
+            return
         scope = getattr(self, "_diagnostics_scope", None)
         if scope is None:
             self._close()
@@ -1079,7 +1091,7 @@ class ArchiveStream(ReadOnlyIOStream):
                 raise teardown_exc
 
     def __repr__(self) -> str:
-        return f"<ArchiveStream inner={self._inner!r}>"
+        return f"<ArchiveStream inner={getattr(self, '_inner', None)!r}>"
 
 
 def raise_translated(

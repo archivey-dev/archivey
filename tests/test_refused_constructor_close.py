@@ -1,13 +1,14 @@
 """A stream whose constructor refused its input must still close cleanly.
 
 ``IOBase.__del__`` calls ``close()`` on every instance not marked closed, including
-one whose ``__init__`` raised. So ``close()`` must work on whatever ``__init__`` got
-through before the raise. When it does not, the refusal dies a second time in the
-finalizer, as an ``AttributeError`` reported at an arbitrary later moment.
+one whose initialising method raised: ``__init__``, or ``_setup`` for an
+``ArchiveStream``. So ``close()`` must work on whatever that method got through before
+the raise. When it does not, the refusal dies a second time in the finalizer, as an
+``AttributeError`` reported at an arbitrary later moment.
 
 A GIL build without ``-X dev`` drops that second error silently, so these tests do not
-wait for the collector. They take the half-built object out of the ``__init__`` frame
-in the traceback and call ``close()`` on it. That is stricter than the finalizer, which
+wait for the collector. They take the half-built object out of the initialising
+method's frame in the traceback and call ``close()`` on it. That is stricter than the finalizer, which
 skips an instance already marked closed: ``close()`` must not raise either way.
 """
 
@@ -197,6 +198,14 @@ def test_archive_stream_refused_by_verifier_diagnostic_closes_cleanly() -> None:
         )
     _assert_closes_cleanly(_refused(ArchiveStream, caught, "_setup"))
     assert opened == []  # refused before the member was opened
+
+
+def test_archive_stream_never_set_up_closes_cleanly() -> None:
+    """``_blank()`` makes the instance before ``_setup``'s arguments are evaluated, so
+    an argument that raises leaves one that ``_setup`` never ran on."""
+    stream = ArchiveStream._blank()
+    assert "inner=None" in repr(stream)
+    _assert_closes_cleanly(stream)
 
 
 @pytest.mark.parametrize(
