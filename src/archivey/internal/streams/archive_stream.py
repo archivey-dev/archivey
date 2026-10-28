@@ -165,12 +165,18 @@ class _Opened:
     diagnostic scope the call is made in (it emits nothing). An ``ArchiveStream`` is
     still opened by the call, which collapses it into the handle. Calling it returns
     ``stream``, so it is still an opener wherever one is expected.
+
+    With ``settle_seekable``, the handle ignores its ``seekable`` argument and asks
+    ``is_seekable(stream)`` on first use (``ArchiveStream._seek_allowed``) instead. Not
+    for an ``ArchiveStream``, whose own declared seekability the collapse would drop.
     """
 
-    __slots__ = ("stream",)
+    __slots__ = ("settle_seekable", "stream")
 
-    def __init__(self, stream: BinaryIO) -> None:
+    def __init__(self, stream: BinaryIO, *, settle_seekable: bool = False) -> None:
+        assert not (settle_seekable and isinstance(stream, ArchiveStream))
         self.stream = stream
+        self.settle_seekable = settle_seekable
 
     def __call__(self) -> BinaryIO:
         return self.stream
@@ -245,6 +251,10 @@ class ArchiveStream(ReadOnlyIOStream):
         # Named in the closed-source error and returned by ``name``; ``None`` for a
         # stream of no member.
         self._member_name = member_name
+        settle_seekable = False
+        if type(open_fn) is _Opened:
+            assert not lazy, "_Opened is the opener of an eager handle"
+            settle_seekable = open_fn.settle_seekable
         if type(open_fn) is _Opened and not isinstance(open_fn.stream, ArchiveStream):
             # A stream already open: the handle starts open on it, as an eager open of
             # ``lambda: stream`` would, without the call. An ``ArchiveStream`` is
@@ -261,10 +271,9 @@ class ArchiveStream(ReadOnlyIOStream):
         self._translate = translate
         self._stamp = stamp if stamp is not None else _noop_stamp
         self._open_lock = threading.Lock()
-        # ``None`` (set by ``BaseArchiveReader._wrap_member_stream`` after the build):
-        # whatever ``is_seekable(inner)`` answers, asked on first use. Only on a stream
-        # built open (``_Opened``).
-        self._seekable_hint: bool | None = seekable
+        # ``None``: whatever ``is_seekable(inner)`` answers, asked on first use. Only on
+        # a handle built by ``_Opened(..., settle_seekable=True)``.
+        self._seekable_hint: bool | None = None if settle_seekable else seekable
         self._rewind_warning = rewind_warning
         self._size = size
         self._diagnostics_collector = collector
@@ -1024,7 +1033,10 @@ class ArchiveStream(ReadOnlyIOStream):
         # readable()/writable()/write() come from ReadOnlyIOStream.
         # Undeclared SEEKABLE forces forward-only even when the inner handle could seek
         # (directory uniformity / declared-capabilities contract).
-        if not self._seek_allowed():
+        if self._seekable_hint is None:
+            # Settled now, by asking the inner: no need to ask it twice.
+            return self._seek_allowed()
+        if not self._seekable_hint:
             return False
         if self._inner is not None:
             return is_seekable(self._inner)

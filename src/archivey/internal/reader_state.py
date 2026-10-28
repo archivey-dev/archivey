@@ -202,9 +202,11 @@ class ReaderState:
         member_streams: MemberStreams,
         open_site: OpenSite | None,
     ) -> None:
-        self.concurrent: bool
-        self.seekable: bool
         self.member_streams = member_streams
+        # The two flags as plain attributes: a ``Flag`` membership test costs about
+        # half a microsecond, and every member stream asks several times.
+        self.concurrent = MemberStreams.CONCURRENT in member_streams
+        self.seekable = MemberStreams.SEEKABLE in member_streams
         self.open_site = open_site
         self._lock = threading.RLock()
         self._materialization_cv = threading.Condition(self._lock)
@@ -262,18 +264,6 @@ class ReaderState:
         # The thread that currently owns the materialization election, for same-thread
         # re-entry detection (deep review N4a).
         self._materializing_thread: int | None = None
-
-    @property
-    def member_streams(self) -> MemberStreams:
-        return self._member_streams
-
-    @member_streams.setter
-    def member_streams(self, value: MemberStreams) -> None:
-        # The two flags as plain attributes: a ``Flag`` membership test costs about
-        # half a microsecond, and every member stream asks several times.
-        self._member_streams = value
-        self.concurrent = MemberStreams.CONCURRENT in value
-        self.seekable = MemberStreams.SEEKABLE in value
 
     def require_open(self, op: str) -> None:
         with self._lock:

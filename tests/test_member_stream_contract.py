@@ -1063,17 +1063,19 @@ def test_a_stream_built_open_settles_its_seekability_on_first_use() -> None:
     def no_translation(exc: Exception) -> None:
         return None
 
-    plain = ArchiveStream(_Opened(io.BytesIO(b"abc")), translate=no_translation)
-    plain._seekable_hint = None
+    plain = ArchiveStream(
+        _Opened(io.BytesIO(b"abc"), settle_seekable=True), translate=no_translation
+    )
+    assert plain._seekable_hint is None
     assert plain.read(1) == b"a"
     assert plain.seekable()
     assert plain.seek(0) == 0
     assert plain.read() == b"abc"
 
     forward = ArchiveStream(
-        _Opened(NonSeekableBytesIO(b"abc")), translate=no_translation
+        _Opened(NonSeekableBytesIO(b"abc"), settle_seekable=True),
+        translate=no_translation,
     )
-    forward._seekable_hint = None
     assert not forward.seekable()
     with pytest.raises(io.UnsupportedOperation):
         forward.seek(0)
@@ -1084,11 +1086,48 @@ def test_a_stream_built_open_settles_its_seekability_on_first_use() -> None:
         (NonSeekableBytesIO(b"abc"), io.UnsupportedOperation),
         (io.BytesIO(b"abc"), ValueError),
     ):
-        unasked = ArchiveStream(_Opened(inner), translate=no_translation)
-        unasked._seekable_hint = None
+        unasked = ArchiveStream(
+            _Opened(inner, settle_seekable=True), translate=no_translation
+        )
         unasked.close()
         with pytest.raises(error):
             unasked.seek(0)
+
+
+def test_a_reader_does_not_ask_a_member_whether_it_can_seek_until_a_caller_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With ``seekable_members=True``, opening and reading a member does not ask the
+    backend's stream whether it can seek (``_wrap_member_stream`` settles it on first
+    use); ``seekable()`` and ``seek()`` then answer as before."""
+    from archivey.internal import base_reader
+
+    path = tmp_path / "a.tar"
+    with tarfile.open(path, "w") as tf:
+        info = tarfile.TarInfo("f")
+        info.size = 3
+        tf.addfile(info, io.BytesIO(b"abc"))
+    asked: list[object] = []
+    real = base_reader.is_seekable
+
+    def counting(stream: object) -> bool:
+        asked.append(stream)
+        return real(stream)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(base_reader, "is_seekable", counting)
+    with open_archive(path, seekable_members=True) as reader, reader.open("f") as s:
+        assert s.read(1) == b"a"
+        assert asked == []
+        assert s.seekable()
+        assert s.seek(0) == 0
+        assert s.read() == b"abc"
+
+
+def test_a_lazy_handle_refuses_an_opened_opener() -> None:
+    from archivey.internal.streams.archive_stream import ArchiveStream, _Opened
+
+    with pytest.raises(AssertionError):
+        ArchiveStream(_Opened(io.BytesIO(b"abc")), translate=lambda _e: None, lazy=True)
 
 
 def test_a_stream_built_open_over_an_archive_stream_collapses_it() -> None:
