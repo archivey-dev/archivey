@@ -7,6 +7,7 @@ plus missing-backend → ``PackageNotInstalledError`` and corrupt-body → ``Cor
 from __future__ import annotations
 
 import io
+import lzma
 import struct
 import subprocess
 import zipfile
@@ -103,6 +104,8 @@ def _7z_zip(tmp_path: Path, method: str, payload: bytes) -> Path:
             pytest.skip(
                 f"7z wrote ZIP method {info.compress_type} instead of PPMd (98)"
             )
+        if method == "XZ" and info.compress_type != 95:
+            pytest.skip(f"7z wrote ZIP method {info.compress_type} instead of XZ (95)")
     return archive
 
 
@@ -126,6 +129,63 @@ def test_zip_ppmd_roundtrip(tmp_path: Path) -> None:
         assert len(members) == 1
         assert members[0].compression[0].algo is CompressionAlgorithm.PPMD
         assert ar.read(members[0]) == _PAYLOAD
+
+
+@requires_binary("7z")
+def test_zip_xz_written_by_7zip_reads(tmp_path: Path) -> None:
+    archive = _7z_zip(tmp_path, "XZ", _PAYLOAD)
+    with open_archive(archive) as ar:
+        (member,) = ar.members()
+        assert member.compression[0].algo is CompressionAlgorithm.XZ
+        assert ar.read(member) == _PAYLOAD
+    with archive.open("rb") as source, open_archive(source, streaming=True) as ar:
+        read = [(member, stream.read()) for member, stream in ar.stream_members()]
+    ((member, content),) = read
+    assert member.compression[0].algo is CompressionAlgorithm.XZ
+    assert content == _PAYLOAD
+
+
+@pytest.mark.parametrize(
+    "filters",
+    [
+        pytest.param(None, id="lzma2"),
+        pytest.param(
+            [{"id": lzma.FILTER_X86}, {"id": lzma.FILTER_LZMA2}], id="bcj_lzma2"
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "check", [lzma.CHECK_CRC64, lzma.CHECK_SHA256, lzma.CHECK_NONE]
+)
+def test_zip_xz_handbuilt_roundtrip(
+    filters: list[dict[str, int]] | None, check: int
+) -> None:
+    compressed = lzma.compress(_PAYLOAD, check=check, filters=filters)
+    data = _build_minimal_zip(b"x.bin", compressed, _PAYLOAD, 95)
+    with open_archive(io.BytesIO(data)) as ar:
+        (member,) = ar.members()
+        assert member.compression[0].algo is CompressionAlgorithm.XZ
+        assert ar.read(member) == _PAYLOAD
+
+
+@pytest.mark.parametrize("chunk", [None, 7], ids=["whole", "chunked"])
+@pytest.mark.parametrize(
+    "padding", [b"", b"\x00" * 4, b"\x00" * 8], ids=["none", "four", "eight"]
+)
+def test_zip_xz_member_reads_every_stream(chunk: int | None, padding: bytes) -> None:
+    # 7-Zip reads a ZIP XZ member as an .xz file: further streams, and stream padding
+    # in groups of four zeros (XZ spec 2.2), are part of the data.
+    second = b"second stream\n"
+    compressed = lzma.compress(_PAYLOAD) + padding + lzma.compress(second) + padding
+    data = _build_minimal_zip(b"x.bin", compressed, _PAYLOAD + second, 95)
+    assert _read_whole(data, chunk) == _PAYLOAD + second
+
+
+def test_zip_xz_member_with_a_second_stream_past_its_size_is_corrupt() -> None:
+    compressed = lzma.compress(_PAYLOAD) + lzma.compress(b"second")
+    data = _build_minimal_zip(b"x.bin", compressed, _PAYLOAD, 95)
+    with pytest.raises(CorruptionError, match="declared size"):
+        _read_whole(data, None)
 
 
 @requires_zstd()
@@ -452,6 +512,55 @@ def test_zip_member_with_input_after_its_stream_is_corrupt(
     assert _7z_test_fails(tmp_path, data)
     with pytest.raises(CorruptionError, match="left after its end"):
         _read_whole(data, chunk)
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        pytest.param(b"\x00", id="zero"),
+        pytest.param(b"\x00" * 3, id="three_zeros"),
+        pytest.param(b"\x00" * 5, id="five_zeros"),
+        pytest.param(b"JUNKJUNK", id="junk"),
+        pytest.param(b"JUNK" * 8, id="long_junk"),
+    ],
+)
+@pytest.mark.parametrize("chunk", [None, 7], ids=["whole", "chunked"])
+def test_zip_xz_member_with_input_after_its_streams_is_corrupt(
+    tmp_path: Path, tail: bytes, chunk: int | None
+) -> None:
+    # Zeros that do not fill a group of four are not stream padding. 7-Zip 23.01 and
+    # 26.05 fail these members ("Data Error", or "There are some data after the end
+    # of the payload data").
+    data = _build_minimal_zip(b"x.bin", lzma.compress(_PAYLOAD) + tail, _PAYLOAD, 95)
+    with pytest.raises(CorruptionError, match="left after its end"):
+        _read_whole(data, chunk)
+
+
+@requires_binary("7z")
+@pytest.mark.parametrize(
+    ("tail", "fails"),
+    [(b"", False), (b"\x00" * 4, False), (b"\x00", True), (b"JUNKJUNK", True)],
+    ids=["none", "padding", "zero", "junk"],
+)
+def test_zip_xz_input_after_its_streams_matches_7zip(
+    tmp_path: Path, tail: bytes, fails: bool
+) -> None:
+    data = _build_minimal_zip(b"x.bin", lzma.compress(_PAYLOAD) + tail, _PAYLOAD, 95)
+    assert _7z_test_fails(tmp_path, data) is fails
+
+
+def test_zip_zipcrypto_xz_member_reads() -> None:
+    data = build_zipcrypto_zip(
+        b"pw",
+        b"c.bin",
+        _PAYLOAD,
+        compression=95,
+        compressed=lzma.compress(_PAYLOAD),
+    )
+    with open_archive(io.BytesIO(data), password=b"pw") as ar:
+        (member,) = ar.members()
+        assert member.compression[0].algo is CompressionAlgorithm.XZ
+        assert ar.read(member) == _PAYLOAD
 
 
 @requires_zstd()

@@ -697,6 +697,9 @@ class _XzState:
         self.truncated = False
         # Bytes fed past the last stream that start no further one (see Decoder).
         self.trailing_bytes: int | None = None
+        # Whether any byte that is not stream padding followed the last stream, a zero
+        # too (see Decoder.input_after_end).
+        self.input_after_end = False
 
     def feed(
         self, data: bytes, max_length: int = -1
@@ -712,10 +715,15 @@ class _XzState:
         """End the data before ``rest``: bytes past a stream that start no further one.
 
         Zeros are padding, as XZ's own stream padding is; the first non-zero byte
-        starts the trailing data.
+        starts the trailing data. ``rest`` holds no complete stream padding (the
+        4-byte groups of zeros are stripped before a header is looked for), so any
+        byte of it is input after the end: zeros that do not fill a group of four
+        too, which xz-utils and 7-Zip refuse.
         """
         self._finished = True
         self._buf.clear()
+        if rest:
+            self.input_after_end = True
         rest = rest.lstrip(b"\x00")
         if rest:
             self.trailing_bytes = len(rest)
@@ -1097,6 +1105,12 @@ class XzDecoder(BaseDecoder):
         return getattr(self._engine, "trailing_bytes", None)
 
     @property
+    def input_after_end(self) -> bool:
+        # Further streams and stream padding are part of the xz data, so they are not
+        # input after its end: 7-Zip reads them in a ZIP member too.
+        return getattr(self._engine, "input_after_end", False)
+
+    @property
     def needs_input(self) -> bool:
         return self._engine.needs_input
 
@@ -1214,6 +1228,7 @@ def XzDecompressorStream(
     seekable: bool = True,
     decoder_limits: DecoderLimits = DecoderLimits(),
     report_trailing_data: bool = False,
+    refuse_input_after_end: bool = False,
     initial_index: PrebuiltIndex | None = None,
     natives: Natives = IN_PROCESS,
 ) -> DecompressorStream:
@@ -1257,6 +1272,7 @@ def XzDecompressorStream(
         codec_name="xz",
         seekable=seekable,
         report_trailing_data=report_trailing_data,
+        refuse_input_after_end=refuse_input_after_end,
         initial_index=initial_index,
     )
     stream_cell[0] = stream

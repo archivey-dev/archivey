@@ -781,7 +781,7 @@ comparison with the CDH that reports a mismatch), slices the source, and dispatc
 the ZIP method id to the shared codec layer.
 
 The reason is coverage and uniformity, in that order. `ZipExtFile` handles STORED, DEFLATE,
-BZIP2 and LZMA; the codec layer adds Deflate64 (9), Zstd (93) and PPMd (98), which the
+BZIP2 and LZMA; the codec layer adds Deflate64 (9), Zstd (93), XZ (95) and PPMd (98), which the
 registry already advertised for ZIP. It also puts ZIP member reads on the same
 `VerifyingStream` and the same exception translation as every other backend, so a corrupt
 body raises `CorruptionError` and a cut-short one raises `TruncatedError` through shared
@@ -814,6 +814,11 @@ table below records. A Zstd member (method 93) reads every frame, skippable ones
 a `.zst` file and a 7z Zstd coder do: RFC 8878 defines Zstd data as one or more frames,
 and the member's sizes and CRC check the whole output (maintainer, 2026-10-21). Bytes
 after the last frame that start no frame are refused like any other input after the end. An
+XZ member (method 95) reads the same way, for the same reason: the xz format (spec §2.2)
+defines its data as one or more streams with stream padding (groups of four zero bytes)
+between and after them, and 7-Zip 23.01 and 26.05 read such a member in full. Zero bytes that
+do not fill a group of four, or any other byte after the last stream, are input after the
+end; 7-Zip fails those members too. An
 LZMA member with bit 1 clear, and a PPMd member, end at their declared size, and their
 input must end there too: right after it for LZMA (or one zero byte later, which 7-Zip's
 encoder sometimes writes), after the end mark PPMd8 must carry. So a declared size short
