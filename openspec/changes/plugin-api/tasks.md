@@ -97,6 +97,20 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
 - [x] 3.3 A test that fails if the package imports `archivey.internal`.
 - [x] 3.4 CI job that installs the package and runs its tests.
 
+## 3a. ar package
+
+A second sequential format, written from outside the library (the maintainer asked for
+one more one-pass format to test the interface, 2026-10-28).
+
+- [x] 3a.1 `packages/archivey-ar/` (unpublished): a `SequentialReader` for the GNU
+      (System V, Windows `.lib`) and BSD (macOS) dialects; long-name tables carried
+      across the walk, BSD names read from the data area; symbol tables skipped; thin
+      archives refused.
+- [x] 3a.2 Fixtures written by GNU ar 2.42, bsdtar 3.7.2 and llvm-ar 18
+      (`--format=darwin`); Windows long names, blank fields and damaged headers are
+      built in the tests.
+- [x] 3a.3 The same import check, and a CI job.
+
 ## 3b. SquashFS package
 
 A second indexed format, written from outside the library (the maintainer asked for one

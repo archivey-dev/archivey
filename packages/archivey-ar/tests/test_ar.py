@@ -1,0 +1,289 @@
+"""archivey-ar against archives written by GNU ar, bsdtar and llvm-ar
+(``data/make-archives.sh``), read from a file and from a pipe."""
+
+from __future__ import annotations
+
+import ast
+import io
+import random
+from collections.abc import Iterator
+from pathlib import Path
+
+import pytest
+from archivey_ar import AR, ArPlugin, ArReader
+
+from archivey import (
+    CorruptionError,
+    MemberType,
+    ResourceLimitError,
+    TruncatedError,
+    UnsupportedFeatureError,
+    detect_format,
+    open_archive,
+)
+from archivey.plugins import SequentialReader, register_format
+
+DATA = Path(__file__).parent / "data"
+PACKAGE = Path(__file__).parents[1] / "src" / "archivey_ar"
+
+LONG = "a-file-name-longer-than-sixteen.txt"
+CONTENT = {
+    "a.txt": b"hello\n",
+    "odd.bin": random.Random(1).randbytes(1001),
+    LONG: b"long\n",
+}
+NAMES = ["a.txt", "odd.bin", LONG, "sym.o"]
+# archive: (dialect, whether it has a symbol table, the member mode)
+# macOS ar pads each member with newlines so the next header starts on 8 bytes, and
+# counts the padding in the member's size: llvm-ar and bsdtar extract it too.
+ARCHIVES = {
+    "gnu": ("gnu", True, 0o644),
+    "bsd": ("bsd", False, 0o644),
+    "darwin": ("bsd", True, 0o644),
+}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _registered() -> None:
+    register_format(ArPlugin)
+
+
+class _Pipe(io.RawIOBase):
+    """A source that cannot seek, as a pipe."""
+
+    def __init__(self, data: bytes) -> None:
+        self._inner = io.BytesIO(data)
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b) -> int:  # type: ignore[override]
+        return self._inner.readinto(b)
+
+
+def _archive(tmp_path: Path, data: bytes, name: str = "t.a") -> Path:
+    path = tmp_path / name
+    path.write_bytes(data)
+    return path
+
+
+def _ar(*members: tuple[bytes, bytes]) -> bytes:
+    """An ar archive of (name field, data) pairs, the name field written as given."""
+    out = bytearray(b"!<arch>\n")
+    for name, data in members:
+        out += name.ljust(16) + b"0".ljust(12) + b"0".ljust(6) + b"0".ljust(6)
+        out += b"644".ljust(8) + str(len(data)).encode().ljust(10) + b"`\n" + data
+        out += b"\n" * (len(data) & 1)
+    return bytes(out)
+
+
+@pytest.mark.parametrize("name", ARCHIVES)
+def test_list_and_read(name: str) -> None:
+    dialect, symbols, mode = ARCHIVES[name]
+    with open_archive(DATA / f"{name}.a") as reader:
+        assert reader.format == AR
+        assert reader.info.format_version == dialect
+        assert reader.info.extra["ar.symbol_table"] is symbols
+        members = reader.members()
+        assert [m.name for m in members] == NAMES
+        for member in members:
+            assert member.type is MemberType.FILE
+            assert member.mode == mode
+            assert member.uid == member.gid == 0
+            assert member.modified is not None
+            assert member.modified.timestamp() == 0
+        for member_name, data in CONTENT.items():
+            _check_content(name, reader.read(member_name), data)
+
+
+def _check_content(archive: str, got: bytes, data: bytes) -> None:
+    if archive == "darwin":
+        assert got.startswith(data)
+        assert got[len(data) :] == b"\n" * (len(got) - len(data))
+        assert len(got) - len(data) < 8
+    else:
+        assert got == data
+
+
+def test_the_dialects_hold_the_same_object() -> None:
+    objects = set()
+    for name in ARCHIVES:
+        with open_archive(DATA / f"{name}.a") as reader:
+            objects.add(reader.read("sym.o"))
+    assert len(objects) == 1
+    assert next(iter(objects)).startswith(b"\x7fELF")
+
+
+@pytest.mark.parametrize("name", ARCHIVES)
+def test_stream_from_a_pipe(name: str) -> None:
+    data = (DATA / f"{name}.a").read_bytes()
+    seen: dict[str, bytes] = {}
+    with open_archive(_Pipe(data), streaming=True) as reader:
+        assert reader.format == AR
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            seen[member.name] = stream.read()
+    assert list(seen) == NAMES
+    for member_name, content in CONTENT.items():
+        _check_content(name, seen[member_name], content)
+
+
+@pytest.mark.parametrize("name", ARCHIVES)
+def test_streams_left_unread(name: str) -> None:
+    """The walk resumes after a member whose stream was not read, or read in part."""
+    data = (DATA / f"{name}.a").read_bytes()
+    with open_archive(_Pipe(data), streaming=True) as reader:
+        names = []
+        for member, stream in reader.stream_members():
+            names.append(member.name)
+            if member.name == LONG:
+                assert stream is not None
+                assert stream.read(2) == b"lo"
+    assert names == NAMES
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_extract(tmp_path: Path, pipe: bool) -> None:
+    source = _Pipe((DATA / "bsd.a").read_bytes()) if pipe else DATA / "bsd.a"
+    dest = tmp_path / "out"
+    with open_archive(source, streaming=pipe) as reader:
+        reader.extract_all(dest)
+    for member_name, content in CONTENT.items():
+        assert (dest / member_name).read_bytes() == content
+    assert sorted(p.name for p in dest.iterdir()) == sorted(NAMES)
+
+
+def test_detection() -> None:
+    for name in ARCHIVES:
+        info = detect_format(io.BytesIO((DATA / f"{name}.a").read_bytes()))
+        assert info.format == AR, name
+        assert info.detected_by == "magic"
+        assert info.from_plugin
+
+
+def test_a_thin_archive_is_refused() -> None:
+    with pytest.raises(UnsupportedFeatureError, match="thin"):
+        open_archive(DATA / "thin.a")
+
+
+def test_windows_long_names_end_with_a_nul(tmp_path: Path) -> None:
+    table = b"first-long-member-name.obj\0second-long-member-name.obj\0"
+    data = _ar(
+        (b"/", b"\0\0\0\0"),
+        (b"/", b"\0\0\0\0\0\0"),
+        (b"//", table),
+        (b"/0", b"one"),
+        (b"/27", b"two"),
+        (b"short.obj/", b"three"),
+    )
+    with open_archive(_archive(tmp_path, data, "t.lib")) as reader:
+        assert [m.name for m in reader.members()] == [
+            "first-long-member-name.obj",
+            "second-long-member-name.obj",
+            "short.obj",
+        ]
+        assert reader.read("second-long-member-name.obj") == b"two"
+        assert reader.info.extra["ar.symbol_table"] is True
+
+
+def test_blank_fields(tmp_path: Path) -> None:
+    raw = bytearray(_ar((b"x.txt/", b"data")))
+    raw[8 + 16 : 8 + 48] = b" " * 32  # mtime, uid, gid, mode
+    with open_archive(_archive(tmp_path, bytes(raw))) as reader:
+        (member,) = reader.members()
+        assert (member.modified, member.uid, member.gid, member.mode) == (None,) * 4
+        assert reader.read("x.txt") == b"data"
+
+
+def test_an_empty_archive(tmp_path: Path) -> None:
+    with open_archive(_archive(tmp_path, b"!<arch>\n")) as reader:
+        assert reader.members() == []
+
+
+def test_a_missing_last_pad_byte_is_harmless(tmp_path: Path) -> None:
+    data = _ar((b"odd/", b"abc"))
+    with open_archive(_archive(tmp_path, data[:-1])) as reader:
+        assert reader.read("odd") == b"abc"
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_a_cut_archive_keeps_the_members_before_the_cut(
+    tmp_path: Path, pipe: bool
+) -> None:
+    data = (DATA / "gnu.a").read_bytes()
+    cut = data[: data.index(CONTENT["odd.bin"][:64]) + 500]
+    source = _Pipe(cut) if pipe else _archive(tmp_path, cut)
+    names = []
+    with (
+        open_archive(source, streaming=pipe) as reader,
+        pytest.raises(TruncatedError),
+    ):
+        for member, stream in reader.stream_members():
+            names.append(member.name)
+            assert stream is not None
+            stream.read()
+    assert names == ["a.txt", "odd.bin"]
+
+
+def test_damaged_headers(tmp_path: Path) -> None:
+    good = _ar((b"x.txt/", b"data"))
+
+    def opened(data: bytes) -> None:
+        with open_archive(_archive(tmp_path, data), format=AR) as reader:
+            reader.members()
+
+    with pytest.raises(TruncatedError, match="empty"):
+        opened(b"")
+    with pytest.raises(TruncatedError, match="magic"):
+        opened(b"!<ar")
+    with pytest.raises(CorruptionError, match="No ar magic"):
+        opened(b"!<arch>X" + good[8:])
+    with pytest.raises(TruncatedError, match="header"):
+        opened(good[:30])
+    with pytest.raises(CorruptionError, match="No ar member header"):
+        opened(good[:66] + b"xx" + good[68:])
+    with pytest.raises(CorruptionError, match="size field"):
+        opened(good[:56] + b"x" + good[57:])
+    with pytest.raises(CorruptionError, match="long-name table"):
+        opened(_ar((b"/0", b"data")))
+    with pytest.raises(CorruptionError, match="past the"):
+        opened(_ar((b"//", b"name/\n"), (b"/40", b"data")))
+    with pytest.raises(CorruptionError, match="second long-name table"):
+        opened(_ar((b"//", b"a/\n"), (b"//", b"b/\n")))
+    with pytest.raises(CorruptionError, match="a name of 99 bytes"):
+        opened(_ar((b"#1/99", b"short")))
+    with pytest.raises(CorruptionError, match="no name"):
+        opened(_ar((b"", b"data")))
+
+
+def test_a_huge_name_table_is_refused(tmp_path: Path) -> None:
+    header = b"//".ljust(48) + b"999999999".ljust(10) + b"`\n"
+    data = b"!<arch>\n" + header
+    with pytest.raises(ResourceLimitError, match="long-name table"):
+        open_archive(_archive(tmp_path, data), format=AR)
+
+
+def test_a_time_past_the_datetime_range(tmp_path: Path) -> None:
+    raw = bytearray(_ar((b"x/", b"data")))
+    raw[8 + 16 : 8 + 28] = b"999999999999"
+    with open_archive(_archive(tmp_path, bytes(raw))) as reader:
+        assert reader.members()[0].modified is None
+
+
+def _imports(path: Path) -> Iterator[str]:
+    for node in ast.walk(ast.parse(path.read_text())):
+        if isinstance(node, ast.Import):
+            yield from (alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            yield node.module
+
+
+def test_the_package_uses_only_public_archivey() -> None:
+    """The point of the package: a format added from outside, through the plugin API."""
+    used = {name for path in PACKAGE.rglob("*.py") for name in _imports(path)}
+    archivey_modules = {name for name in used if name.split(".")[0] == "archivey"}
+    assert archivey_modules == {"archivey", "archivey.plugins"}
+
+
+def test_the_reader_is_a_sequential_reader() -> None:
+    assert issubclass(ArReader, SequentialReader)

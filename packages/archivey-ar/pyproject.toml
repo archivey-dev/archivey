@@ -1,0 +1,24 @@
+# Unix ar archives for archivey, as a format plugin outside the library. It uses only
+# `archivey.plugins` and archivey's public names (tests/test_ar.py checks), as a second
+# check, after archivey-cpio, of the API for formats read in one forward pass. Not
+# published.
+
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "archivey-ar"
+version = "0.1.0.dev0"
+description = "Unix ar archives for archivey"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [
+    { name = "Davi Figueiredo", email = "archivey@davitf.com" }
+]
+classifiers = ["Private :: Do Not Upload"]
+dependencies = ["archivey"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/archivey_ar"]

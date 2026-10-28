@@ -40,11 +40,13 @@ same way it does for a built-in format: it normalizes member names, checks them,
 the listing limits, resolves links, checks each member's size and checksum as it is read,
 and extracts safely.
 
-Two complete plugins outside archivey are in the repository:
+Three complete plugins outside archivey are in the repository:
 [`packages/archivey-squashfs`](https://github.com/archivey-dev/archivey/tree/main/packages/archivey-squashfs)
 for SquashFS images, a format with an index, and
 [`packages/archivey-cpio`](https://github.com/archivey-dev/archivey/tree/main/packages/archivey-cpio)
-for CPIO archives, a format read in one pass. Neither is published.
+for CPIO archives and
+[`packages/archivey-ar`](https://github.com/archivey-dev/archivey/tree/main/packages/archivey-ar)
+for ar archives (static libraries), formats read in one pass. None is published.
 
 ## A complete example
 
