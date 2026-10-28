@@ -12,8 +12,9 @@ each is labelled `needs-minor`.
 
 - [ ] 1.1 Fixtures: generate damaged copies of `basic_nonsolid__.rar`,
       `basic_nonsolid__rar4.rar` and a solid RAR5 in the test, from committed
-      fixtures (header end byte, name byte, size vint, type byte set to `ENDARC` and to
-      SERVICE, the 3rd and 5th headers damaged, the 3rd and 4th damaged), and pin
+      fixtures (header end byte, name byte, size vint, type byte set to `ENDARC`,
+      SERVICE, MAIN and `CRYPT`, plain and solid for SERVICE, the 3rd and 5th headers
+      damaged, the 3rd and 4th damaged), and pin
       `unrar lb` / `unrar t` on each, and `lsar` where the design measured it, in a test
       that skips without the program (DR-24).
 - [ ] 1.2 `rar_parser.py`: in both walks, on a damaged header after MAIN, compute the

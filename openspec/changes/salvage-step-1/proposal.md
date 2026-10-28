@@ -26,7 +26,8 @@ salvage. This change is their design.
 
 - **RAR walk:** when a header after MAIN fails its CRC, the walk computes the next
   header's position from the damaged header's size fields, as `unrar` does. It goes on
-  only if the damaged header parses, its type does not read as `ENDARC` (which ends
+  only if the damaged header parses, its type reads as FILE or SERVICE (RAR 1.5-4:
+  FILE, NEWSUB or an accepted sub-block type; an `ENDARC` or `CRYPT` type ends
   `unrar`'s walk too), and the header there and the one after it pass their own CRCs
   and are types that may follow MAIN. Otherwise it stops, as today. archivey does not
   list the member whose header is damaged. Each skipped header emits the new

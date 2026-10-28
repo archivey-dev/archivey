@@ -18,12 +18,12 @@ error depend on the size of the caller's reads.
   on, and every later member is listed. A later member is readable unless a read of it
   depends on a field of the skipped header that no CRC vouched for; then that read
   fails, with the error that field's own rule names. If the checks fail, the walk stops
-  there, as today. So does a damaged header whose type reads as the end block, as it
-  stops `unrar`. The skipped header is kept internally so that `unrar` and `unar`, which
-  still see it, are addressed correctly, and a damaged solid archive is still read in
-  one pass. The pass still ends with `CorruptionError`, after all the members, as for a
-  missing middle volume. A new diagnostic, `ARCHIVE_DAMAGE_SKIPPED`, reports each
-  skipped header.
+  there, as today. So does a damaged header whose type reads as anything but a member
+  or service header (the end block stops `unrar` too). A skipped FILE header is kept
+  internally so that `unrar` and `unar`, which still see it, are addressed correctly,
+  and a damaged solid archive is still read in one pass. The pass still ends with
+  `CorruptionError`, after all the members, as for a missing middle volume. A new
+  diagnostic, `ARCHIVE_DAMAGE_SKIPPED`, reports each skipped header.
 - **The prefix before a decode error.** The decoder is fed in fixed 64 KiB steps
   whatever the caller's read size, so the same damaged stream gives the same good bytes
   however it is read.

@@ -90,23 +90,38 @@ When a header after MAIN fails its CRC (today: `_RarHeaderCrcError`, recorded in
 
 **Fields that steer the tools.** The damaged header's fields are trusted for two things
 only: its sizes, to find the next header, which the confirmation checks; and its type,
-name and sizes, to count the entry the way `unrar` and `lsar` count it (§"The tools
-still see the skipped header"). A field those programs act on to end their walk ends
-archivey's too. Measured on unrar 7.00 and lsar 1.10.1, with the third FILE header of
-`basic_nonsolid__.rar` changed:
+name, unpacked size, dictionary size and the fields that decide whether it is a payload
+member (directory flag, host attributes, RAR5 redirect record), to count the entry the
+way `unrar` and `lsar` count it (§"The tools still see the skipped header"). A field
+those programs act on to end their walk ends archivey's too, and so does a type the walk
+would refuse one header later: the damaged header's type must be FILE or SERVICE (RAR
+1.5-4: FILE, NEWSUB or an accepted old sub-block type). Measured on unrar 7.00 and lsar
+1.10.1, with the third FILE header of `basic_nonsolid__.rar` changed (and of
+`basic_solid__.rar` in the solid row):
 
 | Change | `unrar lb` | `lsar` | archivey (this design) |
 | --- | --- | --- | --- |
 | Type byte set to `ENDARC` (5) | 2 members, exit 3 | 2 members | 2 members, then `CorruptionError` |
-| Type byte set to SERVICE (3) | 5 members ("the file header is corrupt"), exit 3 | 5 members | 5 members, one `ARCHIVE_DAMAGE_SKIPPED` |
+| Type byte set to SERVICE (3) | 5 members ("the file header is corrupt"), exit 3; `unrar p` emits 25 of 41 bytes (not the skipped member's 16); a mask on its name emits 0 bytes | 5 members | 5 members, one `ARCHIVE_DAMAGE_SKIPPED` |
+| Solid, type byte set to SERVICE (3) | 5 members; `unrar p` emits 13 + 12 bytes, the 12 wrong; `unrar t`: "checksum error" on the next member | 5 members | 5 members; the next member raises `CorruptionError` from its digest |
+| Type byte set to MAIN (1) | 5 members, no message for the skipped one | 5 members | 2 members, then `CorruptionError` |
+| Type byte set to `CRYPT` (4) | 2 members ("Unknown encryption method") | 5 members | 2 members, then `CorruptionError` |
 | Last bytes of the 3rd and 5th headers flipped | 6 members | 6 members | 4 members, two `ARCHIVE_DAMAGE_SKIPPED` |
 | Last bytes of the 3rd and 4th headers flipped | 6 members | 6 members | 2 members, then `CorruptionError` |
 
 The first row is why a damaged header typed as `ENDARC` does not resume: resuming would
 list members whose bytes `unrar p` never emits (the handbook records the same for the
-second FILE header). The last row is the one place this design lists fewer members than
-both tools, and it is the confirmation's cost: no CRC vouches for where the first
-damaged header said the next one is.
+second FILE header). `CRYPT` stops `unrar` the same way. A MAIN-typed header is not
+inert either: MAIN carries the archive flags (solid, volume) that decide what `unrar`
+does, so archivey stops there rather than argue which of two MAIN headers `unrar`
+obeyed. That row and the adjacent-damage row are the places this design lists fewer
+members than both tools. The adjacent one is the confirmation's cost: no CRC vouches
+for where the first damaged header said the next one is.
+
+The solid SERVICE row is what the digest rule is for: the split counts no bytes for the
+skipped block, which matches what `unrar p` emits, but the solid decoder state after it
+is wrong, so the next member's own digest fails. A member there with no stored digest
+raises `CorruptionError` naming the skip instead.
 
 Each later damaged header gets the same rule. The walk reads each header once, so the
 cost grows with the number of headers and the walk makes no extra reads on an intact
@@ -229,13 +244,13 @@ other than FILE takes no index and is in no count, because `lsar` does not list 
 `unrar` neither emits nor selects it (the SERVICE row above). Counting it would shift
 every later `unar -i` read onto its neighbour.
 
-So the parse keeps each skipped header as an **unlisted entry**: the fields as the
-damaged header holds them (name, type, unpacked size, flags), parsed the way the walk
-parses any header. It is never a member and is never returned, but every computation in
-the table counts it as the tools do. This works because the tools read the same damaged
-bytes, and the one field they read as control rather than as a count, the type, is
-handled in the rule itself (a damaged `ENDARC` type stops the walk, a FILE type makes
-an unlisted entry, and any other type is counted nowhere). Measured: on
+So the parse keeps each skipped header whose type reads as FILE as an **unlisted
+entry**: the fields as the damaged header holds them (name, type, unpacked size, flags),
+parsed the way the walk parses any header. It is never a member and is never returned,
+but every computation in the table counts it as the tools do. This works because the
+tools read the same damaged bytes, and the one field they read as control rather than
+as a count, the type, is handled in the rule itself (a FILE type makes an unlisted
+entry, a SERVICE type is counted nowhere, and any other type stops the walk). Measured: on
 `basic_solid__.rar` with a damaged name byte in the third FILE header, `unrar p` writes
 the same 41 bytes, with the same MD5, as for the intact archive. The output layout
 follows the damaged header's sizes, because `unrar` uses them.
