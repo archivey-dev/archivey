@@ -38,9 +38,9 @@ today OLE compound files), and the error then names that evidence. A non-archive
 also stops the SFX scan.
 
 The steps run strongest-signal-first: near magic → SFX scan → **far magic** → trailer
-magic → content probes → extension. Both signals ahead of the probes are there for the
-same reason — a probe is the weakest evidence archivey has, and one asked to judge
-arbitrary bytes will sometimes say yes:
+magic → self-checking header → content probes → extension. The signals ahead of the
+probes are there for the same reason — a probe is the weakest evidence archivey has, and
+one asked to judge arbitrary bytes will sometimes say yes:
 
 - A **self-extracting** archive has no archive magic at offset 0 at all: a prefix
   (executable stub or ``#!`` launcher) comes first. When the leading bytes look
@@ -64,6 +64,13 @@ arbitrary bytes will sometimes say yes:
   replaces it. The read is a cheap seek that restores the handle. A non-seekable source
   and an ``ArchiveStream`` are not seeked to the end; a tail already inside the prefix
   (a short pipe, which the far-magic peek reads to its end) still matches.
+- A **self-checking header** is a first block that proves its format with no magic in
+  it (``ReadBackend.HEADER_CHECKS``; today a v7 TAR header, whose checksum must equal
+  its byte sum and whose numeric fields must parse). It is ``PROBABLE`` /
+  ``content_probe``, and it runs on every source, named or not: the check is arithmetic
+  over the peeked window, and a scan of 200 333 local files found no block that passed
+  it outside a real tar. The inner-TAR probe accepts it too, so a gzipped v7 tar is
+  ``TAR_GZ``.
 """
 
 from __future__ import annotations
@@ -379,11 +386,13 @@ def _probe_inner_tar(
     *,
     view_arrived: bool = False,
 ) -> bool:
-    """Whether decompressing the source yields a TAR (``ustar`` at offset 257).
+    """Whether decompressing the source yields a TAR (``ustar`` at offset 257, or a first
+    header that checks itself).
 
-    The codec layer decodes the compressed source and the inner ``ustar`` magic confirms a
-    tarball wrapped in the compressor. The decoder reads from a bounded, non-consuming view of
-    the source (:class:`_BoundedPeekReader` over ``peek_more``), so it pulls exactly as much
+    The codec layer decodes the compressed source and the inner ``ustar`` magic, or for a
+    v7 tar the first header's checksum, confirms a tarball wrapped in the compressor. The
+    decoder reads from a bounded, non-consuming view of the source
+    (:class:`_BoundedPeekReader` over ``peek_more``), so it pulls exactly as much
     compressed input as it needs to reach the TAR header region and no more.
 
     Accelerators are forced ``OFF`` on both paths: a declared seek demand must not flip
@@ -502,7 +511,12 @@ def _probe_inner_tar(
     except (ArchiveyError, OSError, ValueError):
         # Not decodable as this codec, or truncated before a full block -> not an inner tar.
         pass
-    found = head[257:262] == b"ustar"
+    # The ``ustar`` magic, or a first header that checks itself (a v7 tar has no magic).
+    found = head[257:262] == b"ustar" or any(
+        check(head)
+        for fmt, check in get_registry().header_checks()
+        if fmt.container is ContainerFormat.TAR
+    )
     if workspace is not None:
         # Charged on every path: a decode that ran and then failed did the work too.
         workspace.charge_decode(
@@ -1257,7 +1271,24 @@ def _detect_format_body(
                 _ConflictEvidence.MAGIC,
             )
 
-        # 5. Content probes, unless the prefix is a confirmed executable or a known
+        # 5. Self-checking headers: a format with no magic whose first block proves
+        # itself (a v7 TAR header, by its checksum). Before the content probes, and not
+        # held back by the name as they are: the check is arithmetic over bytes already
+        # peeked, and text or binary data passes only when built to.
+        for check_fmt, check in registry.header_checks():
+            if check(data):
+                corroborated = _extension_corroborates(ext_match, check_fmt)
+                return conclude(
+                    FormatInfo(
+                        check_fmt,
+                        DetectionConfidence.PROBABLE,
+                        "content_probe",
+                        corroborated=corroborated,
+                    ),
+                    _ConflictEvidence.CONTENT_PROBE,
+                )
+
+        # 6. Content probes, unless the prefix is a confirmed executable or a known
         # non-archive signature. The reason is kept for the error below. Unless the
         # config asks for all of them, only the probe of the format the extension names
         # runs: a probe is the weakest evidence, and on an unnamed source it is the only
@@ -1330,7 +1361,7 @@ def _detect_format_body(
                     )
                     return conclude(info, _ConflictEvidence.CONTENT_PROBE)
 
-        # 6. Extension-only guess.
+        # 7. Extension-only guess.
         if ext_fmt is not None:
             return _attach_receipt(
                 FormatInfo(ext_fmt, DetectionConfidence.GUESS, "extension"),

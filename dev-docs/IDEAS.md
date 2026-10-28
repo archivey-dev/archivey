@@ -81,7 +81,7 @@ Each idea carries a status:
 - **Extension-first detection, and stopping early on agreement.** *Needs design.* Try the
   formats a filename suggests first, then fall back to the full sweep, so a misnamed file
   is still found. Content probes already follow the name: by default only the probe the
-  extension names runs ([`topics/detection.md`](topics/detection.md) §2.5). A second step is to stop as soon as the extension and the content agree, which
+  extension names runs ([`topics/detection.md`](topics/detection.md) §2.6). A second step is to stop as soon as the extension and the content agree, which
   saves the later scan tiers; the sound version may skip the expensive tiers but never a
   cheap exact-magic check. On `/usr`, near magic already settles almost every file, so the
   saving needs a Brotli-heavy corpus to show (the detection-algorithm

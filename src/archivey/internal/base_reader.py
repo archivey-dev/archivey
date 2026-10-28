@@ -402,6 +402,11 @@ class ReadBackend(ABC):
     # probe instead: (format, probe) pairs, where the probe inspects a peeked prefix and
     # returns True on a match (Brotli has no signature; zlib's 2-byte header is too weak).
     CONTENT_PROBES: tuple[tuple[ArchiveFormat, ContentProbe], ...] = ()
+    # Formats this backend reads whose first block checks itself, with no magic to find:
+    # (format, check) pairs, where the check takes the peeked prefix and returns True
+    # when it opens with such a block (a v7 TAR header, by its checksum). Stronger
+    # evidence than a content probe, so it runs on every source, named or not.
+    HEADER_CHECKS: tuple[tuple[ArchiveFormat, Callable[[bytes], bool]], ...] = ()
     # Exact magic at the start of a fixed-length block at EOF. A hit is ``magic`` /
     # ``CERTAIN``, and it outranks a near-magic format listed in ``preempts``.
     TRAILER: tuple[TrailerSignature, ...] = ()
