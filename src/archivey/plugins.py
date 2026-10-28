@@ -17,9 +17,10 @@ A program registers a plugin with :func:`register_format`. Nothing is loaded
 automatically. Plugin code runs in the caller's process as trusted code: archivey's
 limits cover what the plugin hands over, not the plugin's own parser.
 
-What the first version leaves out: outer compression around a plugin format, member
-data a library decodes in a sequential format, self-extracting stubs, multi-volume
-sets, passwords, and new diagnostic codes.
+A sequential format is also read inside each single-file compression stream archivey
+decodes (``.cpio.gz``). What the first version leaves out: an indexed format inside a
+compression stream, member data a library decodes in a sequential format,
+self-extracting stubs, multi-volume sets, passwords, and new diagnostic codes.
 """
 
 from __future__ import annotations
@@ -620,7 +621,14 @@ class SequentialFormatPlugin(FormatPlugin):
     """A format read in one forward pass. Subclass this instead of
     :class:`FormatPlugin`, and implement :meth:`open_sequential` instead of
     :meth:`~FormatPlugin.open`: there is no seekable source to hand over, since the
-    archive may be a pipe. Its bytes reach :meth:`SequentialReader.walk`."""
+    archive may be a pipe. Its bytes reach :meth:`SequentialReader.walk`.
+
+    Registering one also registers the format inside each single-file compression
+    stream archivey decodes, as ``ArchiveFormat(<container>, StreamFormat.GZIP)`` and
+    so on, with each extension followed by the compressor's (``.cpio.gz``). The walk
+    reads the decoded bytes. Detection finds the format inside a compressor by its
+    :attr:`~FormatPlugin.magic` in the first 512 decoded bytes, so each magic must end
+    within them."""
 
     @abstractmethod
     def open_sequential(self, context: PluginContext) -> SequentialReader:

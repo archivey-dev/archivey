@@ -48,6 +48,7 @@ from archivey.diagnostics import (
 )
 from archivey.internal import format_args
 from archivey.internal.plugin_adapter import registration_scope
+from archivey.internal.registry import get_registry
 from archivey.plugins import (
     FormatPlugin,
     IndexedReader,
@@ -294,7 +295,7 @@ def test_builtin_magic_wins(clean_registry: None) -> None:
         ({"format": ArchiveFormat.ZIP}, "PluginContainer"),
         (
             {"format": ArchiveFormat(ToyContainer.TOYA, StreamFormat.GZIP)},
-            "UNCOMPRESSED",
+            "UNCOMPRESSED stream: an indexed format inside a compression stream",
         ),
     ],
 )
@@ -304,6 +305,19 @@ def test_registration_refusals(
     bad = type("BadPlugin", (ToyPlugin,), attrs)
     with pytest.raises(ArchiveyUsageError, match=match):
         register_format(bad)
+
+
+def test_an_indexed_format_gets_no_compressed_forms(toya: ArchiveFormat) -> None:
+    """Only a sequential format is read inside a compression stream: an indexed one
+    gets no compressed pairs, no compound extensions and no inner magic, so a gzip
+    whose decoded start is the format's magic stays a gzip."""
+    toya_gz = ArchiveFormat(ToyContainer.TOYA, StreamFormat.GZIP)
+    assert toya_gz not in archivey.list_known_formats()
+    registry = get_registry()
+    assert ".toya.gz" not in registry.extension_map()
+    assert all(sig.format != toya for sig in registry.inner_magic_entries())
+    data = lzma.compress(build_toya(_ENTRIES), format=lzma.FORMAT_XZ)
+    assert detect_format(io.BytesIO(data)).format == ArchiveFormat.XZ
 
 
 def test_registration_refuses_clashes(clean_registry: None) -> None:
