@@ -28,9 +28,9 @@ with archivey.open_archive(sys.stdin.buffer, streaming=True) as archive:
 - All four header variants: binary (either byte order), odc, newc and crc. In crc the
   header's checksum of each file's data is checked as the data is read (not a symlink's,
   whose target is read while listing).
-- afio's large header (`070727`), which afio writes in an odc archive for a member
-  whose fields need more digits (a large uid, a file over 8 GiB). The archive is
-  still `odc`.
+- afio's large header (`070727`), which afio writes in an odc archive, as afio(1)
+  says, for a file over 2 GB, a uid or gid over 65535, or an archive of more than 64K
+  hard-linked files. The archive is still `odc`.
 - Files, directories, symlinks (a symlink's target is its data), hard links, and
   devices, FIFOs and sockets (listed as `OTHER`, with `extra["special_file_type"]`).
 - Owner ids, permissions and modification times.
@@ -56,7 +56,9 @@ raises `ResourceLimitError`.
 
 The reader does not trust the archive. It refuses a header whose fields are not
 numbers, a name over 64 KiB or without its NUL, a variant that changes mid-archive, and
-an archive that ends before its `TRAILER!!!` member. Bytes other than zeros within
+an archive that ends before its `TRAILER!!!` member; and, as unsupported
+(`UnsupportedFeatureError`) rather than damage, an afio large header that declares
+extra bytes, since nothing says where they go. Bytes other than zeros within
 1 MiB after the trailer are reported as `ARCHIVE_TRAILING_DATA`. A second archive
 concatenated after the first is such data: archivey lists the first archive's members
 and not the second's, as its TAR reader stops at the first trailer. archivey reads and
