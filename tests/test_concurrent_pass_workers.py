@@ -956,6 +956,8 @@ def test_listing_lets_a_waiting_thread_in_between_batches(
         nonlocal pulled
         pulled += 1
         if pulled == 1:  # under the lock: the waiter blocks until a release
+            # A drain batch, not a one-member pull that releases the lock at once.
+            assert count == base_reader._DRAIN_BATCH, count
 
             def wait_for_the_lock() -> None:
                 with self._walk_lock:
