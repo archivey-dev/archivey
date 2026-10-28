@@ -461,9 +461,9 @@ def _rar4_short_header(size: int) -> bytes:
             )
             for i, body in ((0, b""), (2, b"\x02\x00"))
         ),
-        # A main header with no archive flags has none, as unrar reads it; the walk
-        # goes on from the header's declared end and fails on the zeros there.
-        pytest.param(_rar5_short_header(b"\x01\x00"), "CRC mismatch", id="rar5-1"),
+        # A main header that stops before its archive flags is not here: it reads,
+        # with no flags, as unrar reads it. test_rar_parser.py covers that, in
+        # test_rar5_main_header_without_its_flags_reads.
         *(
             pytest.param(
                 _rar4_short_header(s), "Invalid RAR3 header size", id=f"rar4-{s}"
