@@ -19,9 +19,10 @@ each is labelled `needs-minor`.
 - [ ] 1.2 `rar_parser.py`: in both walks, on a damaged header after MAIN, compute the
       next position from the damaged sizes, confirm the header there and the one after
       it (CRC, type, fields; a damaged one after it by the same rule) and resume; never
-      past a damaged header that does not parse in full or whose type reads `ENDARC`; keep the skipped header as an unlisted entry;
-      record each span on `RarArchive` with a cap; keep `damaged` as the first.
-      Encrypted headers do not resume.
+      past a damaged header that does not parse in full or whose type reads `ENDARC`;
+      keep a skipped FILE-typed header as an unlisted entry; record each span on
+      `RarArchive` with a cap; keep `damaged` as the first. Encrypted headers do not
+      resume.
 - [ ] 1.3 `ARCHIVE_DAMAGE_SKIPPED`, `DamageSkippedContext`, `DiagnosticCodeStr`, the
       diagnostics catalogue row and the API surface listing.
 - [ ] 1.4 `rar_reader.py`, `rar_unar.py`: emit the diagnostic per span during the walk.

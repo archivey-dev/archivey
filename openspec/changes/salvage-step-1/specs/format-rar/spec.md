@@ -41,30 +41,39 @@ skipped header SHALL emit `ARCHIVE_DAMAGE_SKIPPED` (`diagnostics`). Each later d
 header SHALL get the same rule. The skipped spans the reader keeps SHALL be capped, with
 any past the cap counted.
 
-A skipped header's fields are trusted only as `unrar` and `lsar` use them: its sizes say
-where the next header is, which the confirming headers then check, and its type, name
-and sizes say how those programs count the entry. A field they act on to end the walk
-SHALL end archivey's walk too: a damaged header whose type reads as `ENDARC`, and that
-is not taken as the damaged end block, ends the walk there, as it ends theirs (unrar
-7.00 and lsar 1.10.1 list only the members before it).
+A skipped header's fields are trusted only as `unrar` and `lsar` use them. Its sizes say
+where the next header is, which the confirming headers then check. Its type, name,
+unpacked size, dictionary size, and the fields that decide whether a FILE header is a
+payload member (the directory flag, the host attributes, the RAR5 redirect record) say
+how those programs count the entry. A field they act on to end the walk SHALL end
+archivey's walk too: a damaged header whose type reads as `ENDARC`, and that is not
+taken as the damaged end block, ends the walk there, as it ends theirs (unrar 7.00 and
+lsar 1.10.1 list only the members before it).
 
-**Unlisted entries.** `unrar` and `lsar` still read a skipped header as an entry, by its
-damaged fields. The reader SHALL keep each skipped header's fields as an entry that is
-never listed or returned, and SHALL count it as those programs do. A *payload FILE
-entry* is a payload FILE member that is listed, or an unlisted entry whose type reads as
-FILE and that the same rules make a payload member (not a directory, link or file
-copy). The requirements that count what `unrar` decodes count payload FILE entries:
-"Stream solid RAR archives through one unrar pipe", "Return a named member's own bytes
-when its mask selects others", "Refuse a glob member name whose mask also matches
-earlier members" and "Count the RAR dictionary against the decoder memory cap". The
-`unar -i` index of "Read RAR member data with unar" counts every entry in parse order,
-unlisted ones included. An unlisted entry whose name cannot be read the way `unrar`
-reads it is refused as an earlier member is in the mask requirement:
-`UnsupportedFeatureError` naming `rar_decompressor='unar'`, and under `auto` "Under
-auto, read a member unrar cannot name with unar" applies. A damaged size or dictionary
-is counted as it reads. A solid pass SHALL stay one process. Each listed member SHALL
-still be checked by its own digest, so a damaged unpacked size makes the later members
-of a solid pass fail their digests rather than return wrong bytes.
+**Unlisted entries.** `unrar` and `lsar` still read a skipped FILE header as an entry, by
+its damaged fields. A skipped header whose type reads as anything other than FILE is not
+an entry for them: `lsar` does not list it, `unrar p` emits nothing for it, and no
+include mask selects it (measured with the type byte set to SERVICE). The reader SHALL
+keep each skipped header whose type reads as FILE as an *unlisted entry*: never listed or
+returned, and counted as those programs count it. It SHALL count a skipped header of any
+other type nowhere. Each count includes:
+
+- the `unar -i` index of "Read RAR member data with unar": every unlisted entry, payload
+  or not, since `lsar` gives every FILE header an index;
+- the split in "Stream solid RAR archives through one unrar pipe", the selection and
+  skipped bytes in "Return a named member's own bytes when its mask selects others", the
+  refusal in "Refuse a glob member name whose mask also matches earlier members", and
+  the counts in "Count the RAR dictionary against the decoder memory cap": the *payload
+  FILE entries*, that is, the listed payload FILE members and the unlisted entries that
+  the same rules make payload members (not a directory, link or file copy).
+
+An unlisted entry whose name cannot be read the way `unrar` reads it is refused as an
+earlier member is in the mask requirement: `UnsupportedFeatureError` naming
+`rar_decompressor='unar'`, and under `auto` "Under auto, read a member unrar cannot name
+with unar" applies. A damaged size or dictionary is counted as it reads. A solid pass
+SHALL stay one process. Each listed member SHALL still be checked by its own digest, so
+a damaged unpacked size makes the later members of a solid pass fail their digests
+rather than return wrong bytes.
 
 **Volumes.** The walk SHALL go on to the next volume only when the last member header
 it read with an intact CRC says that its data continues there. The next volume's first
@@ -100,7 +109,7 @@ message also names a cut in that header or damage to it, under the condition tha
 | The last bytes of the third and fifth FILE headers flipped (the fifth is the header after the one that confirms the third) | The other four listed; two `ARCHIVE_DAMAGE_SKIPPED`; the error names the third (`unrar lb`: six) |
 | The last bytes of the third and fourth FILE headers flipped (adjacent) | Two members listed; `CorruptionError` after them (`unrar lb` and `lsar`: six, with no CRC vouching for the fourth's position) |
 | The third FILE header's type byte flipped to `ENDARC` | Two members listed; `CorruptionError` after them (`unrar lb` and `lsar`: the same two) |
-| The third FILE header's type byte flipped to SERVICE | The other five listed; one `ARCHIVE_DAMAGE_SKIPPED` (`unrar lb` and `lsar`: the same five) |
+| The third FILE header's type byte flipped to SERVICE | The other five listed and read, also with `rar_decompressor="unar"` (no unlisted entry, so no index shift); one `ARCHIVE_DAMAGE_SKIPPED` (`unrar lb` and `lsar`: the same five) |
 | Plain, one byte of the MAIN header flipped | `CorruptionError` at open |
 | The same, the header at the computed position passes but the header after it does not | Two members listed; no `ARCHIVE_DAMAGE_SKIPPED`; `CorruptionError` after them |
 | Solid RAR5, a name byte of a FILE header damaged and confirmed, `stream_members()` | One `unrar p` process; every listed member reads its own bytes |
@@ -248,11 +257,11 @@ and emits them concatenated ahead of the target.
 When the mask built from a member's stored name also matches **earlier** payload FILE
 entries (listed members, or the unlisted entries of "A damaged header after the main
 header SHALL list the members before it"), the system SHALL raise
-`UnsupportedFeatureError` rather than read the member. The error SHALL name the configuration flag that allows the read. On a non-solid
-archive it SHALL also name the number of bytes of earlier matching entries that
-`unrar` would decompress first. On a solid archive those members are already inside
-the solid prefix the read pays, so the error SHALL NOT describe that count as an
-avoidable extra decode.
+`UnsupportedFeatureError` rather than read the member. The error SHALL name the
+configuration flag that allows the read. On a non-solid archive it SHALL also name the
+number of bytes of earlier matching entries that `unrar` would decompress first. On a
+solid archive those members are already inside the solid prefix the read pays, so the
+error SHALL NOT describe that count as an avoidable extra decode.
 
 `ArchiveyConfig.rar_allow_glob_member_concatenation` SHALL default to `False`. When set
 to `True` the read SHALL proceed and return the member's own bytes, skipping the earlier

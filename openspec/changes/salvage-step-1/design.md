@@ -75,12 +75,15 @@ When a header after MAIN fails its CRC (today: `_RarHeaderCrcError`, recorded in
    zeros after an intact end block). When the resumed header is itself the end block,
    its CRC and the zeros-or-nothing after it are the two checks. If either check fails,
    stop where the walk stops today; the tentatively parsed header is dropped. The walk
-   reads the second header anyway, so the check costs one held-back header, not a read.
-   When the second header is itself damaged, it gets this same rule, and the two
-   headers that confirm it confirm the first resume too. If the second resume is not
-   confirmed, neither is the first, and the walk stops at the first damage. Two damaged
-   headers in a row (no intact header between them) therefore stop the walk: nothing
-   vouches for the first one's sizes.
+   reads the second header anyway, so the check adds no read. When the second header is
+   itself damaged, it gets this same rule, and the two headers that confirm it confirm
+   the first resume too. The first resume then waits on the whole chain: on an archive
+   where every other header is damaged, it is decided at the end of the chain. That
+   needs no bound, because the RAR walk builds the whole member table at open anyway;
+   the held-back headers are table rows the walk keeps in any case. If the second resume
+   is not confirmed, neither is the first, and the walk stops at the first damage. Two
+   damaged headers in a row (no intact header between them) therefore stop the walk:
+   nothing vouches for the first one's sizes.
 3. **Go on** from the first confirmed header with the ordinary walk. The damaged header
    is **not listed** (decision 1). It is kept as an *unlisted entry* (below), and its
    span (`damaged_at`, `resumed_at`) is recorded.
@@ -211,27 +214,31 @@ which is computed from archivey's table:
 | Solid `stream_members()` pass | One `unrar p` (or one all-entries `unar` run); the output is split by the unpacked sizes of the payload entries in order |
 | `unrar` include mask | The mask can select other entries; the target's bytes come after skipping the unpacked sizes of the selected entries before it |
 | Glob refusal and dictionary check | Count the bytes and dictionaries of the entries the mask selects before the target |
-| `unar -i` | The entry's index in parse order |
+| `unar -i` | The entry's index in `lsar`'s list, one entry per FILE header in archive order (directories and links included) |
 
 Four merged `format-rar` requirements count over *members* in these places: "Stream
 solid RAR archives through one unrar pipe", "Return a named member's own bytes when its
 mask selects others", "Refuse a glob member name whose mask also matches earlier
 members" and "Count the RAR dictionary against the decoder memory cap". The delta
-modifies all four to count *payload FILE entries*, defined once in the damaged-header
-requirement as the listed payload members plus the unlisted entries whose type reads
-as FILE. The `unar` requirement already counts entries in parse order, so it is not
-modified.
+modifies all four to count *payload FILE entries*: the listed payload members plus the
+unlisted entries that are payload members. The merged `unar` requirement fixes how a
+member is addressed (by index in parse order) but not which headers take an index, so
+the damaged-header requirement states that domain: one index per FILE header, an
+unlisted entry included, payload or not. A skipped header whose type reads as anything
+other than FILE takes no index and is in no count, because `lsar` does not list it and
+`unrar` neither emits nor selects it (the SERVICE row above). Counting it would shift
+every later `unar -i` read onto its neighbour.
 
 So the parse keeps each skipped header as an **unlisted entry**: the fields as the
 damaged header holds them (name, type, unpacked size, flags), parsed the way the walk
 parses any header. It is never a member and is never returned, but every computation in
 the table counts it as the tools do. This works because the tools read the same damaged
 bytes, and the one field they read as control rather than as a count, the type, is
-handled in the rule itself (a damaged `ENDARC` type stops the walk; any other type is
-counted as that type). Measured: on `basic_solid__.rar` with a damaged name byte in the third FILE
-header, `unrar p` writes the same 41 bytes, with the same MD5, as for the intact
-archive. The output layout follows the damaged header's sizes, because `unrar` uses
-them.
+handled in the rule itself (a damaged `ENDARC` type stops the walk, a FILE type makes
+an unlisted entry, and any other type is counted nowhere). Measured: on
+`basic_solid__.rar` with a damaged name byte in the third FILE header, `unrar p` writes
+the same 41 bytes, with the same MD5, as for the intact archive. The output layout
+follows the damaged header's sizes, because `unrar` uses them.
 
 Two rules keep this from becoming a guess:
 

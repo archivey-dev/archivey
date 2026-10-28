@@ -19,8 +19,8 @@ salvage. This change is their design.
    the decoder up to 1 MiB of compressed input in one call when `n` is large. When
    that call raises, zlib drops everything the call decoded. On a 14.4 MB `.gz` with
    64 damaged bytes in the middle, 64 KiB reads get 7 143 424 good bytes and 1 MiB reads
-   get 6 291 456 (found by an internal code sweep, tracked internally). DR-5 says the same input gives
-   the same outcome.
+   get 6 291 456 (found by an internal code sweep, tracked internally). DR-5 says the
+   same input gives the same outcome.
 
 ## What Changes
 
@@ -29,17 +29,19 @@ salvage. This change is their design.
   only if the damaged header parses, its type does not read as `ENDARC` (which ends
   `unrar`'s walk too), and the header there and the one after it pass their own CRCs
   and are types that may follow MAIN. Otherwise it stops, as today. archivey does not
-  list the member whose header is damaged. Each skipped header emits the new `ARCHIVE_DAMAGE_SKIPPED`. The pass still ends
-  in `CorruptionError`, now after every member the walk reached, as for a missing middle
-  volume. Encrypted headers stop at the damage, as `unrar` does.
-- **What `unrar` and `unar` still see:** both programs still read the skipped header as
-  an entry. The reader keeps it as an *unlisted entry*, never returned, and counts it
+  list the member whose header is damaged. Each skipped header emits the new
+  `ARCHIVE_DAMAGE_SKIPPED`. The pass still ends in `CorruptionError`, now after every
+  member the walk reached, as for a missing middle volume. Encrypted headers stop at the
+  damage, as `unrar` does.
+- **What `unrar` and `unar` still see:** both programs still read a skipped FILE header
+  as an entry. The reader keeps it as an *unlisted entry*, never returned, and counts it
   wherever it addresses a member in those programs by position: the split of a solid
   pass's single output, include-mask selection, the glob refusal, the dictionary check
-  and the `unar -i` index. The four `format-rar` requirements that count members there
-  now count *payload FILE entries*. A solid pass stays one process. A read that cannot
-  be addressed because of a skipped header's name raises the `UnsupportedFeatureError`
-  the mask rule already raises.
+  and the `unar -i` index. A skipped header whose type reads as anything else is in none
+  of these, as it is in neither program. The four `format-rar` requirements that count
+  members there now count *payload FILE entries*. A solid pass stays one process. A read
+  that cannot be addressed because of a skipped header's name raises the
+  `UnsupportedFeatureError` the mask rule already raises.
 - **Decoder feeding:** `DecompressorStream` feeds its decoder in fixed slices of 64 KiB
   of compressed input. The slices are aligned to the decoder's start, and each call asks
   for at most 64 KiB of output, whatever the caller's `n`. The bytes returned before a
