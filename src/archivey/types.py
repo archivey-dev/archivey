@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, tzinfo
 from enum import Enum, Flag, IntEnum, StrEnum, auto
 from pathlib import Path
@@ -20,6 +20,7 @@ from typing import (
 
 from archivey.cost import CostReceipt, StreamCapability
 from archivey.exceptions import ArchiveyError
+from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.enum_args import coerce_enum
 
 if TYPE_CHECKING:
@@ -90,6 +91,22 @@ class ContainerFormat(StrEnum):
     :class:`~archivey.ArchiveyUsageError`."""
 
 
+class PluginContainer(StrEnum):
+    """Base class for a container enum that a format plugin defines.
+
+    A plugin subclasses it with one member per container it adds, and builds its
+    :class:`~archivey.ArchiveFormat` from that member::
+
+        class CpioContainer(PluginContainer):
+            CPIO = "cpio"
+
+        CPIO = ArchiveFormat(CpioContainer.CPIO, StreamFormat.UNCOMPRESSED)
+
+    Provisional, with the rest of ``archivey.formats``. Code that matches on
+    ``ArchiveFormat.container`` needs a default case once a plugin is registered.
+    """
+
+
 class StreamFormat(StrEnum):
     """The compression around the whole container, the second half of an
     :class:`~archivey.ArchiveFormat`. Each value is the format's file extension."""
@@ -128,8 +145,9 @@ class ArchiveFormat:
     and an unknown spelling raises :class:`~archivey.ArchiveyUsageError` there.
     """
 
-    container: ContainerFormat
-    """The archive format, such as ``ZIP`` or ``TAR``."""
+    container: ContainerFormat | PluginContainer
+    """The archive format, such as ``ZIP`` or ``TAR``, or a member of a
+    :class:`~archivey.PluginContainer` subclass for a format a plugin adds."""
 
     stream: StreamFormat
     """The compression around the archive, such as ``GZIP`` for a ``.tar.gz``, or
@@ -143,8 +161,9 @@ class ArchiveFormat:
         # Holding members makes the two agree. A member of another enum is refused
         # as a container, but left as it is as a stream: the codec registry is keyed
         # on these pairs, and a codec registered from outside
-        # (``tests/test_codec_descriptor.py`` does) brings its own stream enum.
-        if not isinstance(self.container, ContainerFormat):
+        # (``tests/test_codec_descriptor.py`` does) brings its own stream enum. A
+        # plugin's container is kept as it is too (``archivey.formats``).
+        if not isinstance(self.container, (ContainerFormat, PluginContainer)):
             object.__setattr__(
                 self,
                 "container",
@@ -213,14 +232,17 @@ class ArchiveFormat:
 
         Uses the predefined named-instance attribute name (``ZIP``, ``TAR_GZ``, …).
         A pair with no named constant, such as ``tar.lz``, gets
-        ``CONTAINER_STREAM`` from the two enum member names (``"TAR_LZIP"``); its
-        ``repr()`` stays the explicit constructor form. ``_FORMAT_NAMES`` is
+        ``CONTAINER_STREAM`` from the two enum member names (``"TAR_LZIP"``), or the
+        container name alone when the stream is ``UNCOMPRESSED`` (a plugin's
+        ``"CPIO"``); its ``repr()`` stays the explicit constructor form. ``_FORMAT_NAMES`` is
         populated just after the class definition — safe at runtime because this
         property is never called before the module is fully loaded.
         """
         name = _FORMAT_NAMES.get(self)
         if name is not None:
             return name
+        if self.stream == StreamFormat.UNCOMPRESSED:
+            return self.container.name
         return f"{self.container.name}_{self.stream.name}"
 
     def __repr__(self) -> str:
@@ -471,6 +493,9 @@ class CompressionAlgorithm(Enum):
     LZ4 = "lz4"
     BROTLI = "brotli"
     PPMD = "ppmd"
+    XZ = "xz"
+    """A complete ``.xz`` stream, with its own header and checks, as a ZIP member with
+    method 95 stores it."""
     BCJ = "bcj"
     """A filter that makes x86 executable code compress better. It does not compress
     by itself."""
@@ -1229,9 +1254,10 @@ class ArchiveMember:
         """Return a copy with the given fields changed; never mutates self.
 
         ``object`` is not a check: neither the keyword names nor the value types are
-        verified statically, so a misspelled field or a wrongly typed value is still
-        a ``TypeError`` from ``dataclasses.replace`` at runtime. Typing the names
-        would need a per-field ``TypedDict``, which is deliberately deferred.
+        verified statically. A misspelled field is still a ``TypeError`` from
+        ``dataclasses.replace`` at runtime; a wrongly typed value is accepted, and
+        shows up only where it is used. Typing the names would need a per-field
+        ``TypedDict``, which is deliberately deferred.
 
         No listing holds the copy, so nothing stamps ``is_current`` on it or resolves
         its links to members; its ``member_state_final`` waits only on an unread link
@@ -1240,7 +1266,9 @@ class ArchiveMember:
         a copy, so a copy whose target is never read keeps reading ``False``. A read
         fills a late ``size`` into the reader's own member, never into a copy.
         """
-        copy = replace(self, **kwargs)
+        # Extraction copies each member several times; ``copy_with`` is
+        # ``dataclasses.replace``, a few times faster.
+        copy = copy_with(self, **kwargs)
         copy._listing_pending = False
         copy._size_unread = False
         return copy

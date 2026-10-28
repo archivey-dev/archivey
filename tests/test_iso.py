@@ -34,9 +34,13 @@ from archivey.exceptions import (
     StreamNotSeekableError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends.iso_reader import IsoReader, _strip_version
+from archivey.internal.backends.iso_reader import IsoHandler, _strip_version
+from archivey.internal.format_adapter import IndexedReaderAdapter
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
+from archivey.internal.streams.streamtools import (
+    DEFAULT_UNKNOWN_LENGTH_READ_STEP,
+    SharedView,
+)
 from archivey.types import FormatSupport
 from tests.conftest import requires, requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
@@ -266,8 +270,8 @@ def test_read_empty_member(rock_ridge_iso: Path) -> None:
 
 
 def test_seek_within_opened_member(rock_ridge_iso: Path) -> None:
-    # The opened member stream is seekable (PyCdlibIO via _PyCdlibStream/DelegatingStream)
-    # once SEEKABLE is declared.
+    # The opened member stream (a view of the file's extent) is seekable once
+    # SEEKABLE is declared.
     with (
         open_archive(rock_ridge_iso, seekable_members=True) as ar,
         ar.open("file.txt") as f,
@@ -453,9 +457,8 @@ def test_a_parser_error_is_named_without_its_repr() -> None:
 
 
 def test_an_error_from_this_backends_own_code_is_not_called_damage() -> None:
-    reader = IsoReader.__new__(IsoReader)
     exc = AttributeError("'NoneType' object has no attribute 'ce_entries'")
-    translated = reader._translate_exception(exc)
+    translated = IsoHandler().translate_exception(exc)
     assert isinstance(translated, CorruptionError)
     assert str(translated) == (
         "Error reading ISO image: a structure in the image could not be parsed "
@@ -840,10 +843,12 @@ def test_a_path_source_is_read_through_the_archive_source(
     source that can record what was asked of it.
     """
     with open_archive(rock_ridge_iso) as reader:
-        assert isinstance(reader, IsoReader)
+        assert isinstance(reader, IndexedReaderAdapter)
         assert isinstance(reader._source, ArchiveSource)
         assert reader._source.path == rock_ridge_iso
-        assert reader._iso._cdfp is reader._source
+        # pycdlib reads a view of the shared source, which reads the archive source.
+        assert isinstance(reader._reader._iso._cdfp, SharedView)
+        assert reader._shared._handle is reader._source
         assert [m.name for m in reader.members()]
 
 
@@ -1301,8 +1306,8 @@ def test_the_record_walk_descends_each_directory_extent_once() -> None:
 
     with open_archive(io.BytesIO(out.getvalue())) as ar:
         reader: Any = ar
-        a = reader._iso.get_record(iso_path="/A")
-        b = reader._iso.get_record(iso_path="/A/B")
+        a = reader._reader._iso.get_record(iso_path="/A")
+        b = reader._reader._iso.get_record(iso_path="/A/B")
         b.children.append(a)  # B now lists its own parent A as a child
         names = [m.name for m in ar.members()]
     assert sorted(names) == ["A/", "A/B/", "A/B/A/", "A/B/F"]
@@ -1422,7 +1427,8 @@ def _split_into_extents(
     multi-extent flag when ``flags[i]`` is true. With every flag set, the records are
     one file, as a writer stores it. A record without the flag ends its file, so the
     next record with the same identifier is an unrelated file. The second record
-    starts ``gap`` blocks after the first ends. All the records fit in the root
+    starts ``gap`` blocks after the first ends, and the last is ``gap`` blocks
+    shorter, so the records still end where the file did. All the records fit in the root
     directory's sector, whose padding absorbs the new ones.
     """
     buf = bytearray(image)
@@ -1453,7 +1459,7 @@ def _split_into_extents(
         records.append(bytes(chunk))
     last = bytearray(record)
     both_endian(last, 2, extent + len(flags) + gap)
-    both_endian(last, 10, size - 2048 * len(flags))
+    both_endian(last, 10, size - 2048 * (len(flags) + gap))
     records.append(bytes(last))
     sector_end = root + 2048
     rest = bytes(buf[offset + length : sector_end])
@@ -1488,13 +1494,28 @@ def test_a_multi_extent_file_lists_and_reads_every_extent() -> None:
         assert ar.read("Z.TXT") == b"hi"
 
 
-def test_a_multi_extent_file_with_a_gap_is_refused() -> None:
-    """Extents that are not back to back are refused rather than read as one run."""
-    image = _split_into_extents(_image_with_two_block_file(), b"BIG.BIN;1", gap=1)
-    with open_archive(io.BytesIO(image)) as ar:
+def test_a_multi_extent_file_with_a_gap_reads_each_extent_where_it_is() -> None:
+    """Extents need not be back to back: each is read where its record puts it, and
+    the block between them is skipped. Read as one run from the first extent, the
+    skipped ``b`` block came back as file data."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new()
+    content = b"a" * 2048 + b"b" * 2048 + b"c" * 1000
+    iso.add_fp(io.BytesIO(content), len(content), "/BIG.BIN;1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    image = _split_into_extents(out.getvalue(), b"BIG.BIN;1", gap=1)
+    with open_archive(io.BytesIO(image), seekable_members=True) as ar:
         assert ar.get("BIG.BIN").size == 3048
-        with pytest.raises(UnsupportedFeatureError, match="not contiguous"):
-            ar.read("BIG.BIN")
+        assert ar.read("BIG.BIN") == b"a" * 2048 + b"c" * 1000
+        with ar.open("BIG.BIN") as stream:
+            stream.seek(2040)
+            assert stream.read(16) == b"a" * 8 + b"c" * 8
+            stream.seek(0)
+            assert stream.read(4) == b"aaaa"
 
 
 def test_a_repeated_identifier_without_the_flag_lists_each_file(tmp_path: Path) -> None:
@@ -1576,8 +1597,8 @@ def test_records_sharing_an_extent_keep_their_own_multi_extent_flags() -> None:
         first_member, second_member = ar.members()
         assert [first_member.size, second_member.size] == [4096, 1000]
         assert ar.read(second_member) == b"c" * 1000
-        # The first member's two extents are the same block, so not back to back.
-        with pytest.raises(UnsupportedFeatureError, match="not contiguous"):
+        # The first member's two extents are the same block, so they overlap.
+        with pytest.raises(CorruptionError, match="overlap"):
             ar.read(first_member)
 
 
@@ -2332,6 +2353,59 @@ def test_a_malformed_rock_ridge_entry_costs_its_own_member_only() -> None:
         assert diagnostic.context.record == ""
         assert "version 99" in diagnostic.context.reason
         assert by_name["bbb"].diagnostics == ()
+
+
+def test_a_report_made_while_listing_names_the_member_as_listed() -> None:
+    """A directory's name ends in ``/`` once normalized; a report made while the
+    member was typed names it the same way, so the two can be matched."""
+    from archivey import DiagnosticCode
+
+    def populate(iso: Any) -> None:
+        iso.add_directory("/DDD", rr_name="ddd")
+
+    data = _cut_after(_build_rr_iso(populate), b"ddd")
+    with open_archive(io.BytesIO(data)) as ar:
+        ddd = {m.name: m for m in ar.members()}["ddd/"]
+        [diagnostic] = ddd.diagnostics
+        assert diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        assert diagnostic.context.member_name == "ddd/"
+        assert "ddd/" in diagnostic.message
+
+
+def test_a_directory_record_without_entries_is_named_as_listed() -> None:
+    """The report for a record with no Rock Ridge entries names a directory with its
+    ``/``, in the message as in the context."""
+    from archivey import DiagnosticCode
+
+    def populate(iso: Any) -> None:
+        iso.add_directory("/DDD", rr_name="ddd")
+
+    data = bytearray(_build_rr_iso(populate))
+    # The directory record, not the path table entry: its identifier length sits
+    # at offset 32 and the identifier at 33.
+    at = next(
+        i
+        for i in range(len(data))
+        if data.startswith(b"DDD", i)
+        and i >= 33
+        and data[i - 1] == 3
+        and data[i - 33] >= 33 + 3
+    )
+    start = at - 33
+    extent = int.from_bytes(data[start + 2 : start + 6], "little") * 2048
+    # The directory's own ``.`` and ``..`` records lose their entries too, or pycdlib
+    # refuses children with Rock Ridge under a parent without it.
+    dot = extent
+    dotdot = dot + data[dot]
+    for record, ident_len in ((start, 3), (dot, 1), (dotdot, 1)):
+        su = record + 33 + ident_len + (1 if ident_len % 2 == 0 else 0)
+        data[su : record + data[record]] = bytes(record + data[record] - su)
+    with open_archive(io.BytesIO(bytes(data))) as ar:
+        ddd = {m.name: m for m in ar.members()}["DDD/"]
+        [diagnostic] = ddd.diagnostics
+        assert diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        assert diagnostic.context.member_name == "DDD/"
+        assert "'DDD/'" in diagnostic.message
 
 
 def test_an_area_cut_before_its_nm_entry_lists_under_the_iso_name() -> None:

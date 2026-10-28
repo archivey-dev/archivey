@@ -54,6 +54,7 @@ PUBLIC_MODULES = (
     "archivey.detection_cost",
     "archivey.diagnostics",
     "archivey.paths",
+    "archivey.formats",
     "archivey.terminal",
 )
 
@@ -72,6 +73,11 @@ OPEN_ENUMS = frozenset(
 CODE_LITERALS = frozenset({"archivey.diagnostics.DiagnosticCodeStr"})
 
 _SKIP_NAMES = frozenset({"__version__"})
+#: Classes whose constructor only archivey calls: a plugin receives these objects,
+#: so their ``__init__`` is internal even though the class is public.
+_SKIP_INIT = frozenset(
+    {"archivey.formats.ReaderContext", "archivey.formats.ReaderSource"}
+)
 
 
 # ── Formatting ───────────────────────────────────────────────────────────────────────
@@ -91,6 +97,8 @@ def _fmt_type(tp: object) -> str:
         return "..."
     if isinstance(tp, typing.ForwardRef):
         return tp.__forward_arg__
+    if isinstance(tp, typing.TypeVar):
+        return tp.__name__
     origin = typing.get_origin(tp)
     if origin is typing.Union or isinstance(tp, types.UnionType):
         return " | ".join(_fmt_type(arg) for arg in typing.get_args(tp))
@@ -202,8 +210,22 @@ def _own_classes(cls: type) -> list[type]:
     ]
 
 
+def _bases(cls: type) -> list[object]:
+    """``cls.__bases__``, with a bare ``Generic`` given its type parameters."""
+    generic = [
+        b
+        for b in cls.__dict__.get("__orig_bases__", ())
+        if typing.get_origin(b) is typing.Generic
+    ]
+    return [
+        generic[0] if b is typing.Generic and generic else b
+        for b in cls.__bases__
+        if b is not object
+    ]
+
+
 def _class_lines(qualname: str, cls: type) -> Iterator[str]:
-    bases = ", ".join(_fmt_type(b) for b in cls.__bases__ if b is not object)
+    bases = ", ".join(_fmt_type(b) for b in _bases(cls))
     yield f"class {qualname}({bases})"
     if issubclass(cls, enum.Enum):
         tag = "open-enum" if qualname in OPEN_ENUMS else "enum"
@@ -211,9 +233,11 @@ def _class_lines(qualname: str, cls: type) -> Iterator[str]:
         for member in cls:
             yield f"value {qualname}.{member.name} = {member.value!r}"
     own = _own_classes(cls)
-    if not issubclass(cls, enum.Enum) and "__init__" in {
-        n for c in own for n in vars(c)
-    }:
+    if (
+        not issubclass(cls, enum.Enum)
+        and qualname not in _SKIP_INIT
+        and "__init__" in {n for c in own for n in vars(c)}
+    ):
         yield f"init {qualname}{_fmt_signature(cls)}"
     fields: dict[str, str] = {}
     for c in reversed(own):

@@ -119,6 +119,7 @@ class XzCodec(_SizedLzmaCodec):
             seekable=config.seekable,
             decoder_limits=config.decoder_limits,
             report_trailing_data=config.report_trailing_data,
+            refuse_input_after_end=config.refuse_input_after_end,
             initial_index=config.seek_index,
             natives=natives_for(config.process_isolation),
         )
@@ -596,6 +597,17 @@ class _LzmaToSizeDecoder(BaseDecoder):
             format=lzma.FORMAT_RAW, filters=filters
         )
         self._produced = 0
+        # Delta filters in the chain (7z's Delta coders over LZMA1) turn the zeros
+        # that the range-coder check decodes into copies of earlier output, so the
+        # last ``sum(dist)`` bytes of output are kept (_decoded_zeros). The chain's
+        # other filters are LZMA itself, last: the 7z planner ends an LZMA1 chain
+        # before its first BCJ (sevenzip_pipeline._plan_lzma_family), and a filter dict
+        # without ``dist`` gets liblzma's default, 1.
+        self._deltas = [
+            f.get("dist", 1) for f in filters if f.get("id") == lzma.FILTER_DELTA
+        ]
+        self._history = sum(self._deltas)
+        self._tail = b""
         # Input not yet given to liblzma: the bytes held back, and input kept while
         # a zero output limit allowed no decoding.
         self._held = b""
@@ -619,6 +631,9 @@ class _LzmaToSizeDecoder(BaseDecoder):
     def _decode(self, data: bytes, limit: int) -> bytes:
         out = self._decomp.decompress(data, limit)
         self._produced += len(out)
+        if self._history and out:
+            keep = self._history
+            self._tail = out[-keep:] if len(out) >= keep else (self._tail + out)[-keep:]
         if self._decomp.eof:
             # An end marker: at the size, or before it.
             self._state = _DONE if self._produced == self._size else _ENDED_SHORT
@@ -658,11 +673,38 @@ class _LzmaToSizeDecoder(BaseDecoder):
             self._state = _DONE
             return
         else:
-            ok = not more.strip(b"\x00")
+            ok = more == self._decoded_zeros(len(more))
         if ok:
             self._state = _DONE
         else:
             self._surplus()
+
+    def _decoded_zeros(self, n: int) -> bytes:
+        """The first ``n`` bytes the chain outputs when LZMA decodes only zeros.
+
+        Zeros, unless Delta filters follow LZMA. A Delta decoder adds to each byte
+        the output ``dist`` bytes before it (a history that starts as zeros), and
+        that is invertible: its input is ``out[i] - out[i - dist]``. So the chain's
+        last ``sum(dist)`` bytes give every stage's last output bytes, outermost
+        (``filters[0]``, whose output is the chain's) first, and the zeros are run
+        through the stages from LZMA outwards.
+        """
+        if not self._history:
+            return bytes(n)
+        out = self._tail.rjust(self._history, b"\x00")
+        histories = []
+        for dist in self._deltas:
+            histories.append(out[-dist:])
+            out = bytes((out[i] - out[i - dist]) & 0xFF for i in range(dist, len(out)))
+        data = bytes(n)
+        for dist, history in zip(
+            reversed(self._deltas), reversed(histories), strict=True
+        ):
+            buf = bytearray(history)
+            for byte in data:
+                buf.append((byte + buf[-dist]) & 0xFF)
+            data = bytes(buf[dist:])
+        return data
 
     def _probe(self, data: bytes) -> None:
         """Look for an end marker in ``data``, input after the output reached size.

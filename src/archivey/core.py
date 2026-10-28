@@ -78,7 +78,6 @@ from archivey.internal.registry import (
     list_supported_formats,
 )
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.codecs import codec_for_stream_format, open_codec_stream
 from archivey.internal.streams.streamtools import OneReadEachStream, is_stream
 from archivey.internal.volumes import (
@@ -89,7 +88,7 @@ from archivey.internal.volumes import (
     is_sfx_stub_name,
     resolve_source,
 )
-from archivey.reader import ArchiveReader, ForwardArchiveReader
+from archivey.reader import ArchiveReader, ArchiveStream, ForwardArchiveReader
 from archivey.terminal import display_path
 from archivey.types import (
     ArchiveFormat,

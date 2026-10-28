@@ -1,0 +1,24 @@
+# CPIO archives for archivey, as a format plugin outside the library. It uses only
+# `archivey.formats` and archivey's public names (tests/test_cpio.py checks), so it is
+# the proof that a format read in one forward pass can be added from outside. Not
+# published.
+
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "archivey-cpio"
+version = "0.1.0.dev0"
+description = "CPIO archives for archivey"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [
+    { name = "Davi Figueiredo", email = "archivey@davitf.com" }
+]
+classifiers = ["Private :: Do Not Upload"]
+dependencies = ["archivey"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/archivey_cpio"]

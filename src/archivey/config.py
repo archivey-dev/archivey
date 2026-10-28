@@ -29,19 +29,24 @@ class AcceleratorMode(Enum):
     """Whether to use an optional accelerator that gives seekable streams over a codec."""
 
     AUTO = "auto"
-    """Use it only when seekable streams were asked for (``seekable_members=True`` on
-    ``open_archive``, ``seekable=True`` on ``open_stream``), its package is installed,
+    """Use it when seekable streams were asked for (``seekable_members=True`` on
+    ``open_archive``, ``seekable=True`` on ``open_stream``), or for gzip, zlib and raw
+    deflate on Linux and macOS a large sequential read (below), its package is installed,
     and the compressed input is known to be large enough to pay for it:
     :data:`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` for gzip, zlib and raw deflate, and
     :data:`INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE` for bzip2. An input of unknown size
     counts as large enough. For gzip, zlib and raw deflate the decompressed size must
     also be known, so that a truncated stream cannot be read short without an error.
-    Otherwise the standard library decodes the stream."""
+    Also for gzip, zlib and raw deflate, on Linux and macOS, a read with no seeking asked
+    for uses it when the source can seek, the compressed input is known to be at least
+    :data:`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`, and the data compresses 3:1 or less, since
+    rapidgzip decodes in parallel. Otherwise the standard library decodes the stream."""
     ON = "on"
     """Always use it. Raises :class:`~archivey.PackageNotInstalledError` when its
     package is not installed."""
     OFF = "off"
-    """Never use it. The standard library decodes the stream."""
+    """Never use it. The standard library decodes the stream. Set both ``use_rapidgzip``
+    and ``use_indexed_bzip2`` to this when results must not depend on the machine."""
 
     def enabled_for(
         self,
@@ -55,18 +60,20 @@ class AcceleratorMode(Enum):
 
         ``ON`` always returns ``True`` (the caller checks availability and raises
         ``PackageNotInstalledError`` if the package is missing — the user asked for it
-        explicitly; ``min_size`` is ignored). ``AUTO`` enables it only when
-        seekability is declared and the package is available, so a missing package
-        falls back silently. When ``min_size`` is set and ``input_size`` is known and
-        strictly below that threshold, ``AUTO`` also falls back (tiny members do not
-        repay per-stream accelerator setup). Unknown ``input_size`` keeps the
-        pre-threshold AUTO behaviour.
+        explicitly; ``min_size`` is ignored). ``AUTO`` enables it only when ``seekable``
+        is true and the package is available, so a missing package falls back silently.
+        ``seekable`` is the demand for the accelerator: declared seeking, or for the
+        DEFLATE family also a large sequential read judged worth it
+        (``_sequential_read_pays`` in ``codecs/rapidgzip_select.py``). When ``min_size``
+        is set and ``input_size`` is known and strictly below that threshold, ``AUTO``
+        also falls back (tiny members do not repay per-stream accelerator setup).
+        Unknown ``input_size`` keeps the pre-threshold AUTO behaviour.
         """
         if self is AcceleratorMode.OFF:
             return False
         if self is AcceleratorMode.ON:
             return True
-        # AUTO: only pay for seek machinery when the caller asked for seekable streams.
+        # AUTO: only pay for the accelerator when there is demand for it (above).
         if not (available and seekable):
             return False
         return not (
@@ -670,11 +677,14 @@ class ArchiveyConfig:
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     """Whether to use the ``rapidgzip`` accelerator for gzip, zlib and raw deflate.
 
-    It gives seekable member streams over those codecs. Under ``AUTO`` it is used only
-    when the compressed input is known to be at least
+    It gives seekable member streams over those codecs, and decodes in parallel. Under
+    ``AUTO`` it is used only when the compressed input is known to be at least
     ``RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`` bytes (or its size is unknown) and the
     decompressed size can be verified, so a truncated stream cannot be swallowed
-    silently.
+    silently. With seeking asked for, that is enough. Without it, ``AUTO`` uses it only
+    on Linux and macOS, when the size is known, the source can seek and the data
+    compresses 3:1 or less: more compressible data, and Windows, where the child starts
+    more slowly, read faster with the standard library.
 
     rapidgzip runs in a child Python process, because it aborts the process on a stream
     that ends early; starting one costs about 45 ms, which is why the ``AUTO`` threshold

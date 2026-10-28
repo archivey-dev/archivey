@@ -850,7 +850,7 @@ def test_a_checksum_this_install_cannot_compute_does_not_count_as_survival(
     bytes handed back.
     """
     _no_rar_binaries(monkeypatch, tmp_path)
-    monkeypatch.setattr(verify, "_make_hasher", lambda key: None)
+    monkeypatch.setattr(verify, "hasher_factory", lambda key: None)
     path = _cut_short(tmp_path, "stored_m0.rar", "cut_short_crc32.rar")
 
     with open_archive(path) as archive:

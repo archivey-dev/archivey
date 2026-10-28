@@ -11,6 +11,8 @@ metadata:
 
 Sync delta specs from a change to main specs.
 
+**In this repo**, deltas reach `openspec/specs/` through `openspec archive "<name>" --yes` (`CONTRIBUTING.md` §"Archiving an OpenSpec change"), so a sync is never a substitute for the archive. The archive skips what a sync already applied.
+
 This is an **agent-driven** operation - you will read delta specs and directly edit main specs to apply the changes. This allows intelligent merging (e.g., adding a scenario without copying the entire requirement).
 
 **Input**: Optionally specify a change name. If omitted, check if it can be inferred from conversation context. If vague or ambiguous you MUST prompt for available changes.

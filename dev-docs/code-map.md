@@ -73,7 +73,7 @@ reader.members() / .open(m)                          reader.py → base_reader.p
        ├─ seekable decode engine                     internal/streams/decompressor_stream.py
        ├─ AES stage ([recommended])                  internal/streams/crypto.py
        └─ digest / length verification               internal/streams/verify.py
-  └─ ArchiveStream wraps + translates exceptions     internal/streams/archive_stream.py
+  └─ ArchiveStreamImpl wraps + translates exceptions internal/streams/archive_stream.py
 
 reader.extract_all(dest)                             base_reader.py → internal/extraction.py
   └─ member selection                                internal/selection.py
@@ -86,16 +86,16 @@ Three things about this path are worth knowing before you debug it:
 - **A reader lists its members once, and every method hands out the same objects.**
   `BaseArchiveReader` owns one member list (`_listed`) filled by one pull over the
   backend's `_iter_members()`. The peek, `members()`, `members_report()`, `get()`,
-  `stream_members()` and `extract_all()` all read that list; `_pull_member` stamps,
-  checks and accounts each member exactly once, so per-member work needs no dedupe. The
-  walk runs once when it completes. A random-access walk that fails without terminal
-  damage is discarded and may be retried, which is why `_iter_members()` must still
-  yield in a stable order; a streaming one poisons the reader. Last-entry-wins
-  `is_current` is stamped once, when the walk ends (`_end_walk`). A streaming pass keeps
-  its own cursor into the list and finalizes links only when that cursor passes the end,
-  so a peek that drains the walk does not finalize a pass the caller then abandons.
-  `ArchiveMember` is mutable and filled in place (ADR 0007), and there is now only one
-  object per member to fill.
+  `stream_members()` and `extract_all()` all read that list; `_pull_members_locked`
+  stamps, checks and accounts each member exactly once (one at a time, or a listing's
+  batches), so per-member work needs no dedupe. The walk runs once when it completes. A
+  random-access walk that fails without terminal damage is discarded and may be retried,
+  which is why `_iter_members()` must still yield in a stable order; a streaming one
+  poisons the reader. Last-entry-wins `is_current` is stamped once, when the walk ends
+  (`_end_walk`). A streaming pass keeps its own cursor into the list and finalizes links
+  only when that cursor passes the end, so a peek that drains the walk does not finalize
+  a pass the caller then abandons. `ArchiveMember` is mutable and filled in place (ADR
+  0007), and there is now only one object per member to fill.
 - **"Backend" means archivey's class, not the third-party code.** `ReadBackend` /
   `ZipReadBackend` are ours; the library a backend wraps (stdlib `zipfile`, `pycdlib`, the
   `unrar` binary) is **the library**. Handbook pages tag a limitation **format** (inherent),
@@ -124,7 +124,7 @@ Three things about this path are worth knowing before you debug it:
 | TAR internals | `tar_parser.py` (header parser and `TarWalker`, over the source or archivey's own decompressor; sparse maps and their checks) · `tar_reader.py` (members, member streams, the end-of-archive checks) · `streams/streamtools/sparse.py` (`SparseStream`, a sparse member's logical bytes) · `detection.py` `_probe_inner_tar` (a tar inside a compressor); handbook [`formats/tar.md`](formats/tar.md) |
 | ISO internals | `iso_reader.py` (`pycdlib` boundary, record walk, raw-sector refusal); handbook [`formats/iso.md`](formats/iso.md) |
 | Directory pseudo-archive | `directory_reader.py` (the `scandir` walk, scan-race diagnostics, hardlink grouping, open-by-path); handbook [`formats/directory.md`](formats/directory.md) |
-| A codec, or adding one | `streams/codecs/`: one `<name>_codec.py` per codec (`registry.py` lists them), its engine beside it (`<name>_decoder.py`, framing and resume helpers, the PPMd and rapidgzip child processes and workers), and the rapidgzip modules for the accelerator; handbook [`formats/single-file.md`](formats/single-file.md) and the codec's own page |
+| A codec, or adding one | `streams/codecs/`: one `<name>_codec.py` per codec (`registry.py` lists them), its engine beside it (`<name>_decoder.py`, framing and resume helpers, the PPMd and rapidgzip child processes and workers), and the rapidgzip modules for the accelerator; which decoders run in a child and why: handbook [`topics/process-isolation.md`](topics/process-isolation.md); handbook [`formats/single-file.md`](formats/single-file.md) and the codec's own page |
 | Seeking inside a compressed stream | `streams/decompressor_stream.py`; spec `seekable-decompressor-streams` |
 | Stream wrapping / slicing / locking | `streams/streamtools/`; handbook [`topics/stream-ownership.md`](topics/stream-ownership.md); archived review `review/archive/2026-07-19-stream-layering/` |
 | Extraction safety, path traversal, symlinks | `internal/filters.py` + `internal/extraction.py`; a later member changing where an earlier link resolves: `internal/link_watch.py`; Windows paths past `MAX_PATH`: `internal/long_paths.py`; `dev-docs/threat-model.md` |

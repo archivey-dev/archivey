@@ -10,6 +10,7 @@ construction of uncommon container×codec pairs, ``file_extension``) and the
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 import pickle
 from collections.abc import Hashable
@@ -17,6 +18,7 @@ from datetime import UTC
 
 import pytest
 
+from archivey.internal import dataclass_copy
 from archivey.internal.hashing import crc32_digest
 from archivey.types import (
     EXTRA_IS_JUNCTION,
@@ -99,6 +101,27 @@ def test_replace_returns_copy_without_mutating_original() -> None:
     assert copy.name == "b.txt"
     assert copy.mode == 0o644  # untouched fields carried over
     assert m.name == "a.txt"  # original never mutated
+
+
+def test_replace_copies_every_field_as_dataclasses_replace_does() -> None:
+    # ``replace`` copies by position (``copy_with``), not by ``dataclasses.replace``.
+    fields = dataclasses.fields(ArchiveMember)
+    assert dataclass_copy._plan(ArchiveMember) is not None
+    # A distinct object in every field, so a field copied into the wrong position
+    # shows up as the wrong object, not as an equal default.
+    given = {f.name: object() for f in fields}
+    m = ArchiveMember(**given)  # type: ignore[arg-type]
+    every = {f.name: object() for f in fields}  # each keyword to its own position
+    for changes in ({}, {"name": "b", "mode": None}, {"_member_id": 8}, every):
+        fast = m.replace(**changes)
+        slow = dataclasses.replace(m, **changes)
+        for f in fields:
+            if f.name in ("_listing_pending", "_size_unread"):
+                continue  # replace() clears both on the copy
+            assert getattr(fast, f.name) is getattr(slow, f.name), f.name
+            assert getattr(fast, f.name) is changes.get(f.name, given[f.name]), f.name
+    with pytest.raises(TypeError, match="unexpected keyword argument 'nope'"):
+        m.replace(nope=1)
 
 
 def test_unavailable_fields_default_to_none() -> None:

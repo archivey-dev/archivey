@@ -1,7 +1,7 @@
 """Seek-point plumbing shared by the decompressing streams.
 
 ``ask_resume_offset`` is the rewind-cost query used by
-``ArchiveStream._maybe_warn_rewind``. This is an archivey concept — seek-point tables
+``ArchiveStreamImpl._maybe_warn_rewind``. This is an archivey concept — seek-point tables
 on decompressing streams. Implementations:
 
 - own a table — ``DecompressorStream``, ``RapidgzipChildStream`` (the child's index)

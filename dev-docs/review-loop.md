@@ -146,7 +146,8 @@ assistant, answers only people.
 
 - **Merging.** Nothing here merges, approves, or pushes to `main`. An agent may merge a
   straightforward PR by hand once its review approves and CI is green; tricky ones go to
-  the maintainer (`AGENTS.md` §Working with the maintainer).
+  the maintainer (`AGENTS.md` §Working with the maintainer). Every review thread must
+  be resolved first ([`address-review-findings`](../.claude/skills/address-review-findings/SKILL.md) §7).
 - **The review's own judgement.** `code-review-skill` runs with `Read`, `Grep`, `Glob`,
   `Bash` and `WebFetch`. It reports; it does not edit.
 - **Reaching the maintainer.** The workflow puts the question on the pull request.

@@ -256,7 +256,7 @@ in a real folder named `__MACOSX`.
 
 ## ZIP
 
-- **Needs:** nothing for stored, Deflate, BZip2 and LZMA members, or for ZipCrypto. `[recommended]`
+- **Needs:** nothing for stored, Deflate, BZip2, LZMA and XZ members, or for ZipCrypto. `[recommended]`
   adds Deflate64 and PPMd (`inflate64`, `pyppmd`, the packages the 7z reader uses too), WinZip AES
   (`cryptography`), and Zstandard before Python 3.14 (`backports.zstd`). A missing package raises
   `PackageNotInstalledError` when you read such a member.
@@ -349,14 +349,17 @@ sending side when the ZIP is done.
   succeeds, once the pass reaches the directory.
 - **Both headers declare less than the data decodes to:** the member is refused with
   `CorruptionError`.
-- **Bytes after a member's compressed stream:** a member's compressed data must hold one stream of
-  its codec and nothing else, as 7-Zip checks. Junk, zero bytes, or a second DEFLATE, BZip2 or
-  Zstandard stream raise `CorruptionError` once the data before them has been read, for every
-  method, whatever the declared size and CRC cover. So does an LZMA member without an end marker,
-  or a PPMd member, whose declared size stops short of its data. One zero byte after LZMA data
-  without an end marker reads, because 7-Zip's encoder sometimes writes it. Under ZipCrypto these
-  read as the password-or-damage `EncryptionError` instead, caused by that `CorruptionError`,
-  because the bytes are encrypted. With rapidgzip, one crafted shape may read instead: a long
+- **Bytes after a member's compressed stream:** a member's compressed data must hold its codec's
+  data and nothing else, as 7-Zip checks. For most methods that is one stream. For Zstandard and
+  XZ it is what their own formats define as the data, as in a `.zst` or `.xz` file: one or more
+  Zstandard frames, or one or more xz streams with stream padding (groups of four zero bytes)
+  between and after them. Junk, other zero bytes, or a second DEFLATE or BZip2 stream raise
+  `CorruptionError` once the data before them has been read, for every method, whatever the
+  declared size and CRC cover. So does an LZMA member without an end marker, or a PPMd member,
+  whose declared size stops short of its data. One zero byte after LZMA data without an end
+  marker reads, because 7-Zip's encoder sometimes writes it. Under ZipCrypto these read as the
+  password-or-damage `EncryptionError` instead, caused by that `CorruptionError`, because the
+  bytes are encrypted. With rapidgzip, one crafted shape may read instead: a long
   second DEFLATE stream, with a size and CRC that cover both streams. See
   [Where the guarantees stop](security.md#where-the-guarantees-stop).
 - `ListingLimits.max_members` is checked at open against the entry count the end record declares,
@@ -949,8 +952,9 @@ would need its own copy of it), or when `unar` is known to misread the archive.
   (`xorriso -zisofs version_2=on -set_filter_r --zisofs /`, under the `ZF` or the `Z2` tag), and a
   zisofs entry too short to parse, list with `CompressionAlgorithm.UNKNOWN` and refuse to read with
   `UnsupportedFeatureError`.
-- A file of 4 GiB or more, stored in several extents, lists and reads as one member. Extents that
-  are not back to back are refused with `UnsupportedFeatureError`.
+- A file of 4 GiB or more, stored in several extents, lists and reads as one member, wherever
+  its extents sit in the image. Extents that overlap each other are refused with
+  `CorruptionError`.
 - A bootable image lists its El Torito boot catalog (`boot.catalog`, `BOOT.CAT`) as an ordinary
   file, with the catalog's bytes as its data, as a mounted image shows it.
 - A Rock Ridge device node, FIFO or socket over an empty extent follows
@@ -1150,21 +1154,22 @@ file; with `format=`, a `.bz2` opens at once. Close the sending side when the fi
   decodes at any setting, and raises `UnsupportedFeatureError`. Detection reads a sample of the
   stream with no cap, so a frame declaring 2 GiB has that much address space reserved while
   `open_archive` detects it, whatever the cap.
-- With the `[seekable]` rapidgzip accelerator on a seekable `.gz`, archivey adds its own checks,
-  because rapidgzip can end a cut file with no error. If rapidgzip returns nothing, the standard
-  library reads the file instead. Otherwise the trailer at the end of the file is checked: in a
-  file of one gzip member, against the checksum and length of all the data read; in a file of
-  several members, against the end of the data. For that, archivey saves the checksum every
-  4 MiB as it reads and reads back at most 4 MiB from rapidgzip per check, whatever the size
-  of the last member. After a seek that skipped data, the check still runs, and also reads
-  back the skipped part of the last member; past about 64 MiB of that, the standard library
-  reads the whole file again instead, which gives the right result but takes longer. A wrong
-  length in a member before the last is not caught, but every member's checksum still is, so
-  the data is right. A cut file built on purpose can still read short with no error, if its
-  last eight bytes are made to match the end of the data. So when you need certainty, set
-  `ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF)`. This applies to a bare `.gz` or
-  `open_stream` (and bare zlib or raw Deflate), not to ZIP or 7z members, whose stored CRC and
-  size catch short or wrong data.
+- With the `[seekable]` rapidgzip accelerator on a seekable `.gz` (by default from 16 MiB, with
+  `seekable_members=True`, or on Linux and macOS without it when the file compresses 3:1 or
+  less), archivey adds its own checks, because rapidgzip can end a cut file with no error. If
+  rapidgzip returns nothing, the standard library reads the file instead. Otherwise the trailer
+  at the end of the file is checked: in a file of one gzip member, against the checksum and
+  length of all the data read; in a file of several members, against the end of the data. For
+  that, archivey saves the checksum every 4 MiB as it reads and reads back at most 4 MiB from
+  rapidgzip per check, whatever the size of the last member. After a seek that skipped data, the
+  check still runs, and also reads back the skipped part of the last member; past about 64 MiB
+  of that, the standard library reads the whole file again instead, which gives the right result
+  but takes longer. A wrong length in a member before the last is not caught, but every member's
+  checksum still is, so the data is right. A cut file built on purpose can still read short with
+  no error, if its last eight bytes are made to match the end of the data. So when you need
+  certainty, set `ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF)`. This applies to a bare
+  `.gz` or `open_stream` (and bare zlib or raw Deflate), not to ZIP or 7z members, whose stored
+  CRC and size catch short or wrong data.
 - The `[seekable]` accelerator's bzip2 decoder reads input that is not bzip2 as an empty stream.
   When it yields nothing, archivey decodes the source again with the standard library, so a damaged
   `.bz2` raises the same error whether or not `seekable_members=True` engaged the accelerator.

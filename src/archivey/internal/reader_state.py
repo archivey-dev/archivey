@@ -63,7 +63,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from archivey.internal.open_site import OpenSite
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
 
 T = TypeVar("T")
@@ -203,6 +203,10 @@ class ReaderState:
         open_site: OpenSite | None,
     ) -> None:
         self.member_streams = member_streams
+        # The two flags as plain attributes: a ``Flag`` membership test costs about
+        # half a microsecond, and every member stream asks several times.
+        self.concurrent = MemberStreams.CONCURRENT in member_streams
+        self.seekable = MemberStreams.SEEKABLE in member_streams
         self.open_site = open_site
         self._lock = threading.RLock()
         self._materialization_cv = threading.Condition(self._lock)
@@ -224,7 +228,7 @@ class ReaderState:
         # (:meth:`live_streams`). Weak, so this map never keeps a dropped stream alive:
         # a dropped stream's ``close()`` runs from ``IOBase.__del__`` and releases its
         # entry (:meth:`release_live_stream_id`).
-        self._live_streams: dict[int, weakref.ref[ArchiveStream]] = {}
+        self._live_streams: dict[int, weakref.ref[ArchiveStreamImpl]] = {}
         self._reservations: set[LiveStreamReservation] = set()
         # Leases of live streams and reservations only.
         self._lease_count = 0
@@ -260,14 +264,6 @@ class ReaderState:
         # The thread that currently owns the materialization election, for same-thread
         # re-entry detection (deep review N4a).
         self._materializing_thread: int | None = None
-
-    @property
-    def concurrent(self) -> bool:
-        return MemberStreams.CONCURRENT in self.member_streams
-
-    @property
-    def seekable(self) -> bool:
-        return MemberStreams.SEEKABLE in self.member_streams
 
     def require_open(self, op: str) -> None:
         with self._lock:
@@ -585,25 +581,29 @@ class ReaderState:
         :meth:`release_reservation`.
         """
         with self._lock:
-            self._require_lifecycle_open_locked("open()")
-            if not (self.concurrent or self._internal_opens_active_locked()) and (
-                self._live_streams or self._reservations
-            ):
-                site = self.open_site
-                loc = site.location if site is not None else "<unknown>"
-                raise _overlap_refused(
-                    "A member stream is already open on this reader. Close it "
-                    "before opening another, or reopen the archive with "
-                    "concurrent_operations=True "
-                    f"(this archive was opened without concurrent_operations at {loc})."
-                )
+            self._admit_live_stream_locked()
             token = LiveStreamReservation()
             self._reservations.add(token)
-            self._lease_count += 1
             return token
 
+    def _admit_live_stream_locked(self) -> None:
+        """The live-stream gate: refuse a second stream, or take a lease for one."""
+        self._require_lifecycle_open_locked("open()")
+        if not (self.concurrent or self._internal_opens_active_locked()) and (
+            self._live_streams or self._reservations
+        ):
+            site = self.open_site
+            loc = site.location if site is not None else "<unknown>"
+            raise _overlap_refused(
+                "A member stream is already open on this reader. Close it "
+                "before opening another, or reopen the archive with "
+                "concurrent_operations=True "
+                f"(this archive was opened without concurrent_operations at {loc})."
+            )
+        self._lease_count += 1
+
     def bind_live_stream(
-        self, token: LiveStreamReservation, stream: ArchiveStream
+        self, token: LiveStreamReservation, stream: ArchiveStreamImpl
     ) -> None:
         """Consume ``token``, recording ``id(stream)`` as the live stream.
 
@@ -627,16 +627,24 @@ class ReaderState:
             self._reservations.discard(token)
             return self._release_lease_locked()
 
-    def acquire_live_stream(self, stream: ArchiveStream) -> None:
+    def acquire_live_stream(self, stream: ArchiveStreamImpl) -> None:
         """Register a public member stream; enforce the single-live-stream gate.
 
-        Implemented as reserve-then-bind so the eager ``open()`` path and the lazy
-        ``stream_members`` path share one gate check.
+        The gate and the record of reserve-then-bind, in one step: the eager ``open()``
+        path reserves first, and the lazy ``stream_members`` path, which has its stream
+        already, comes here. Both share the gate check (``_admit_live_stream_locked``).
         """
-        token = self.reserve_live_stream()
-        self.bind_live_stream(token, stream)
+        ref = weakref.ref(stream)
+        _retry_after_collecting(lambda: self._acquire_live_stream_once(stream, ref))
 
-    def release_live_stream(self, stream: ArchiveStream) -> bool:
+    def _acquire_live_stream_once(
+        self, stream: ArchiveStreamImpl, ref: weakref.ref[ArchiveStreamImpl]
+    ) -> None:
+        with self._lock:
+            self._admit_live_stream_locked()
+            self._live_streams[id(stream)] = ref
+
+    def release_live_stream(self, stream: ArchiveStreamImpl) -> bool:
         """Release a stream lease. Returns True if the caller should run teardown."""
         return self.release_live_stream_id(id(stream))
 
@@ -655,7 +663,7 @@ class ReaderState:
                 return False
             return self._release_lease_locked()
 
-    def live_streams(self) -> list[ArchiveStream]:
+    def live_streams(self) -> list[ArchiveStreamImpl]:
         """The registered member streams not yet released, in registration order."""
         with self._lock:
             refs = list(self._live_streams.values())

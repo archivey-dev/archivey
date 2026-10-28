@@ -62,6 +62,7 @@ See [Format](opening.md#format).
 
 ::: archivey.ArchiveFormat
 ::: archivey.ContainerFormat
+::: archivey.PluginContainer
 ::: archivey.StreamFormat
 ::: archivey.MemberType
 ::: archivey.CompressionMethod

@@ -17,7 +17,7 @@ the status — this page states the behaviour and links the row.
 | Access cost | `DIRECT` — every file is one extent (or one run of extents) at an absolute sector |
 | Stream capability | `SEEKABLE` |
 | Core dependencies | None can read it: ISO needs `pycdlib`, which is in `[recommended]` |
-| Refuses | Non-seekable sources, before `pycdlib` is consulted (`StreamNotSeekableError`, not `PackageNotInstalledError`) · raw CD sector images (`.bin`), by name, also before `pycdlib` is consulted · a multi-extent file whose extents are not back to back · reading a zisofs2 member · writing |
+| Refuses | Non-seekable sources, before `pycdlib` is consulted (`StreamNotSeekableError`, not `PackageNotInstalledError`) · raw CD sector images (`.bin`), by name, also before `pycdlib` is consulted · a multi-extent file whose extents overlap each other (`CorruptionError`) · reading a zisofs2 member · writing |
 | Accepts and ignores | `password=` (`PASSWORD_ARGUMENT_UNUSED`) |
 | `encoding=` | Applied to a Rock Ridge or plain name, or a Rock Ridge link target, whose bytes are not valid UTF-8; without it, such a Rock Ridge name takes its Joliet name when the two line up (§2.2) |
 
@@ -282,19 +282,24 @@ tree is listed there.
 
 ### 2.3 Member data
 
-Reading a file is a `PyCdlibIO` over an inode, wrapped as `_PyCdlibStream` and entered at
-open. There is no decoding, no password and nothing to verify. Seeking is supported when
+Reading a file is a view of the archive source over the file's extent
+(`ReaderSource.view`), or one view per extent joined into one stream (`JoinedViews`) for
+a multi-extent file. Nothing goes through `pycdlib`'s file object. A view cannot return
+more than the file's bytes, so the member promises `bounded=True`. There is no decoding
+apart from zisofs, no password and nothing to verify. Seeking is supported when
 `seekable_members=True`.
 
-The inode is `pycdlib`'s own when it covers the file. Three kinds of record need one built
-here, over the extents read straight from the image (`_data_inode`):
+The span is the directory record's own when `pycdlib` describes the file as written.
+Three kinds of record need a layout, worked out while listing and used by `_data_spans`:
 
 - **A multi-extent file.** In parse mode `pycdlib` gives each extent its own inode and
   links the records through `data_continuation`, so the first record's inode covers only
-  the first extent. archivey sums the chain and reads it as one run. Writers put the
-  extents back to back — xorriso and libarchive's fixture both do — and the ISO 9660
-  standard does not require it, so a chain with a gap is refused with
-  `UnsupportedFeatureError` rather than read as one run.
+  the first extent. archivey sums the chain and reads each extent where its record puts
+  it, in record order. Writers put the extents back to back (xorriso and libarchive's
+  fixture both do), but the ISO 9660 standard does not require it, and the Linux kernel
+  reads each section where it is, so a gap between extents is read, not refused.
+  Extents that overlap each other are refused with `CorruptionError`: no writer makes
+  them, and they would let a small image list a file many times its size.
 
   `pycdlib` builds that chain for a file record whose identifier repeats the record just
   before it on disc, and sets the multi-extent flag on the earlier record in memory while
@@ -329,8 +334,8 @@ here, over the extents read straight from the image (`_data_inode`):
   data read.
 - **The boot catalog.** `pycdlib` keeps it in memory and gives its record no inode. Its
   extent still holds the bytes, which is what a mounted image shows. Because it has no
-  inode, `pycdlib` never clamped its length to the image either; the inode built here
-  stops at the end of the image, like any other (§4).
+  inode, `pycdlib` never clamped its length to the image either; its view is read as
+  far as the image goes, like any other (§4).
 - **A file cut by the end of the image.** `pycdlib` clamps a file whose data runs past
   the end of the image to end there, and overwrites the declared length with the clamped
   one on every record sharing the inode: zero when the extent starts at the end, negative
@@ -353,9 +358,11 @@ here, over the extents read straight from the image (`_data_inode`):
   anywhere after its ISO 9660 trees fails here too, at the anchor `pycdlib` reads in the
   volume's last block, so a cut UDF image does not open even when its files survive.
 
-`MemberStreams.CONCURRENT` puts one per-reader lock around everything that moves
-`pycdlib`'s shared image handle: `PyCdlibIO` construction and entry, every read and seek,
-close. Correctness only: the lock serialises parallel reads of one image.
+`MemberStreams.CONCURRENT` puts the adapter's per-reader lock around every call into the
+reader and every read and seek of a member stream. `pycdlib` moves the shared image
+handle only while listing; member reads go through views, which need no lock but take it
+anyway, since the adapter cannot tell a view from a library's stream. Correctness only:
+the lock serialises parallel reads of one image.
 
 ### 2.4 Extract
 
@@ -499,7 +506,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A Rock Ridge name written in Latin-1 lists with `\udcXX` escapes | **format** | Rock Ridge names have no charset field, and this image has no Joliet name that lines up with it (none, cut at 64 characters, or a directory with no file under it). Pass `encoding=` (§2.2) |
 | A file exists in the listing of one tool and not another | **format** | The trees are independent (§1). archivey picks Rock Ridge first, 7-Zip Joliet first |
 | A DVD image lists 8.3 names while the disc shows long ones | **archivey** | Long names are in UDF, which is not read (§3) |
-| A multi-extent file with non-contiguous extents raises `UnsupportedFeatureError` on read | **archivey** | Its `size` is right; reading it would need a chained stream rather than one run. No writer seen does this (§2.3) |
+| A multi-extent file whose extents overlap each other raises `CorruptionError` on read | **archivey** | Its `size` lists; no writer makes overlapping extents, and reading them would let a small image produce a huge file (§2.3) |
 | Two members share their bytes, and extraction writes both | **format** | Hardlinks are records sharing an extent; there is no hardlink record to map to `HARDLINK` |
 | Two members have one name and different bytes, and one of them is a resource fork | **format** | An associated file (flag bit 2) shares its data file's identifier; both records list, in on-disc order, and the later one is current (§2.3). Nothing on the member marks which is the fork |
 | Opening a large image is slow and listing is instant | **library** | `open_fp` parses every tree up front (§2.2). The cost class `INDEXED` is still right: nothing is decoded |
@@ -516,7 +523,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Call `pycdlib`'s private `_yield_children` | It is the one place that skips extra multi-extent records and follows relocation; the tests run it on every supported `pycdlib` | Reimplementing both, which duplicates the fragile part |
 | Hide `rr_moved` by its contents | The name is a writer convention, and a real directory may carry it | Hiding by name |
 | List old plain-ISO versions under their stored identifier, not current | Same shape as RAR file history, so extraction writes the newest and nothing is lost from the listing | Dropping old versions; listing all under one name |
-| Read a multi-extent file as one run, and refuse a gap | Every writer seen writes the extents back to back, so one inode covers them; a gap is refused rather than read wrong | A chained stream over per-extent inodes, not needed by any image seen |
+| Read each extent of a multi-extent file where it is, joined; refuse overlapping extents | ECMA-119 does not require the extents to be back to back, and the kernel reads each section where it is. Maintainer, 2026-10-27, thread "Implement the plugin API" ("yes please", to joining per-extent views): this reverses the earlier call to read one run and refuse a gap, made when reading went through `pycdlib`'s inode; once reads became views of the source, the chained stream was a few lines. Reopen if an image needs overlapping extents | One run with a gap refused (the earlier call) |
 | List the boot catalog as an ordinary file, read from its extent | It is a file in the tree, and 7-Zip lists it the same way; its bytes are on disc | Hiding it; synthesising 7-Zip's `[BOOT]` entries |
 | `format_version` is `None` | ISO 9660 stores no level; `pycdlib`'s inference read 3 on nearly every image | Passing the inference through |
 | Filter System Use bytes before `pycdlib` parses them, only inside archivey's own `open_fp` | One odd record otherwise costs every member, and zisofs is a valid image. A `ContextVar` confines the wrapper to archivey's opens, so a program using `pycdlib` directly keeps its behaviour | Patching `pycdlib` for the whole process; a per-entry leniency layer that retries `pycdlib`'s parse, which would need its partly built state undone |
@@ -563,7 +570,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Device node is `OTHER`; plain versions keep the newest current; a directory keeps a `;N` suffix |
 | `TF` long-form dates; `TF` wins over the record date |
 | Boot catalog reads and extracts, and one declared past the image end reads short |
-| Multi-extent size and data; a gap refused; a repeated identifier without the on-disc flag starts a member of its own, also after a real multi-extent file and when two records share an extent; a repeated superseded version stays not current; a directory and a file with one identifier both list, and so do an associated file and a file in either order; the raw directory walk crosses sector padding |
+| Multi-extent size and data; a gap read around, overlapping extents refused; a repeated identifier without the on-disc flag starts a member of its own, also after a real multi-extent file and when two records share an extent; a repeated superseded version stays not current; a directory and a file with one identifier both list, and so do an associated file and a file in either order; the raw directory walk crosses sector padding |
 | No interchange-level guess |
 | A loop in `pycdlib`'s own walk refused at open, in all three trees and in UDF |
 | UDF tree counted against `max_members` and `max_metadata_bytes` at open |

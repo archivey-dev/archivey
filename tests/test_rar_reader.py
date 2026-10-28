@@ -60,6 +60,7 @@ from archivey.internal.backends.rar_parser import (
     parse_rar_volumes,
 )
 from archivey.internal.external.cli import terminate_process
+from archivey.internal.streams.respawn import RespawnStream
 from archivey.reader import ArchiveReader
 from archivey.terminal import display_path
 from archivey.types import (
@@ -397,7 +398,7 @@ def test_unrar_respawn_overrun_probe_sees_trailing_bytes() -> None:
     def spawn() -> io.BytesIO:
         return io.BytesIO(payload)
 
-    stream = rar_reader._RespawnStream(spawn, spawn(), size=declared)
+    stream = RespawnStream(spawn, spawn(), size=declared, what="unrar output")
     assert stream.read(declared) == payload[:declared]
     assert stream.read(1) == payload[declared : declared + 1]
     stream.seek(0)
@@ -413,16 +414,16 @@ def test_unrar_respawn_boundary_read_is_one_byte() -> None:
     def spawn() -> io.BytesIO:
         return io.BytesIO(payload)
 
-    stream = rar_reader._RespawnStream(spawn, spawn(), size=declared)
+    stream = RespawnStream(spawn, spawn(), size=declared, what="unrar output")
     assert stream.read(declared) == payload[:declared]
     assert stream.read(-1) == payload[declared : declared + 1]
 
 
 def test_unrar_respawn_overrun_probe_noop_seek_does_not_kill_pipe() -> None:
-    """After a probe byte past declared size, clamp ``_pipe_pos`` so SEEK_CUR is free.
+    """After a probe byte past declared size, clamp ``_inner_pos`` so SEEK_CUR is free.
 
     The probe is the fused-verify one-byte read at ``pos == size``. Without the
-    clamp, ``_pipe_pos`` sits at ``_size + 1`` and the next seek — including a
+    clamp, ``_inner_pos`` sits at ``_size + 1`` and the next seek — including a
     no-op ``SEEK_CUR`` — kills the live process. That only happens when unrar
     emitted extra bytes (already ``CorruptionError`` on the same call).
     """
@@ -440,7 +441,7 @@ def test_unrar_respawn_overrun_probe_noop_seek_does_not_kill_pipe() -> None:
         return _TrackClose(payload)
 
     inner = spawn()
-    stream = rar_reader._RespawnStream(spawn, inner, size=declared)
+    stream = RespawnStream(spawn, inner, size=declared, what="unrar output")
     assert stream.read(declared) == payload[:declared]
     assert stream.read(1) == payload[declared : declared + 1]
     assert closed == []
@@ -463,7 +464,7 @@ def test_unrar_respawn_failed_seek_leaves_position() -> None:
     def spawn() -> io.BytesIO:
         return io.BytesIO(b"x" * 20)
 
-    stream = rar_reader._RespawnStream(spawn, _CloseBoom(b"x" * 20), size=20)
+    stream = RespawnStream(spawn, _CloseBoom(b"x" * 20), size=20, what="unrar output")
     assert stream.read(10) == b"x" * 10
     assert stream.tell() == 10
     with pytest.raises(OSError, match="close failed"):
@@ -481,7 +482,7 @@ def test_unrar_respawn_seek_end_does_not_drain_or_respawn() -> None:
         spawns += 1
         return io.BytesIO(payload)
 
-    stream = rar_reader._RespawnStream(spawn, spawn(), size=len(payload))
+    stream = RespawnStream(spawn, spawn(), size=len(payload), what="unrar output")
     assert spawns == 1
     assert stream.seek(0, io.SEEK_END) == len(payload)
     assert spawns == 1
@@ -542,7 +543,10 @@ def test_seekable_unrar_emits_stream_rewind() -> None:
 def test_rewind_warning_min_redecode_bytes_is_a_cost_floor() -> None:
     """A carrier-declared floor must fire even when discarded member progress is tiny."""
     from archivey.internal.diagnostics_collector import DiagnosticCollector
-    from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
+    from archivey.internal.streams.archive_stream import (
+        ArchiveStreamImpl,
+        RewindWarning,
+    )
 
     collector = DiagnosticCollector()
     payload = b"abcdefghij"
@@ -551,7 +555,7 @@ def test_rewind_warning_min_redecode_bytes_is_a_cost_floor() -> None:
         suggest_install=False,
         min_redecode_bytes=REWIND_REDECODE_WARN_BYTES,
     )
-    stream = ArchiveStream(
+    stream = ArchiveStreamImpl(
         lambda: io.BytesIO(payload),
         translate=lambda _exc: None,
         rewind_warning=warning,
@@ -566,7 +570,7 @@ def test_rewind_warning_min_redecode_bytes_is_a_cost_floor() -> None:
     finally:
         stream.close()
 
-    quiet = ArchiveStream(
+    quiet = ArchiveStreamImpl(
         lambda: io.BytesIO(payload),
         translate=lambda _exc: None,
         rewind_warning=RewindWarning(codec_name="rar", suggest_install=False),

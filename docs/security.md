@@ -107,18 +107,19 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
 - **Limits apply to each archive separately.** A small archive can hold archives that each expand
   up to the limit, and those can hold more, so the total grows with every level you extract. Be
   careful if you extract archives found inside other archives.
-- **Accelerators are on by default for seekable streams.** If you open an archive with
+- **Accelerators are on by default for large streams.** If you open an archive with
   `seekable_members=True` and the `seekable` extra is installed, archivey reads bzip2 data of 1 MiB
-  or more compressed, and DEFLATE data of 16 MiB or more, through rapidgzip. DEFLATE is the
-  compression in gzip files and in most ZIP members. rapidgzip marks places in the stream it can
+  or more compressed, and DEFLATE data of 16 MiB or more, through rapidgzip. On Linux and macOS it
+  also reads DEFLATE data of 16 MiB or more through rapidgzip without that option, when the file can
+  seek and the data compresses 3:1 or less, because rapidgzip decompresses in parallel. DEFLATE is
+  the compression in gzip files and in most ZIP members. rapidgzip marks places in the stream it can
   restart from as it reads, so a seek jumps to the nearest one instead of decompressing from the
   start. rapidgzip can crash on some damaged data, so it runs in a separate process, for bzip2 too,
   and if it crashes, the standard library's decoder takes over and reports what it finds. To avoid
-  it, pass
-  `config=archivey.ArchiveyConfig(use_rapidgzip=archivey.AcceleratorMode.OFF,
+  it, pass `config=archivey.ArchiveyConfig(use_rapidgzip=archivey.AcceleratorMode.OFF,
   use_indexed_bzip2=archivey.AcceleratorMode.OFF)`.
 
-    rapidgzip gives the same results as the standard library but for one crafted shape: a ZIP
+    rapidgzip gives the same results as the standard library except for one crafted shape: a ZIP
     member or 7z coder holding two DEFLATE streams, with a size and CRC that cover both. With
     rapidgzip you may get both streams when the second is long. It depends on the data, on
     how many cores the machine has and on the platform, so the same member may read on one

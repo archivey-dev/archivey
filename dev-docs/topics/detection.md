@@ -194,13 +194,16 @@ ZIP appended to a JPEG is still not found (§5).
 
 **Which probes run.** By default only the probe of a stream format the source's extension
 names: `.lzma`, `.zz`, `.zlib`, `.br`, `.brotli`, their `.tar.` forms, and LZMA Alone for
-`.tlz`, which lzma-utils used before lzip took the name. A source with no name or another
-extension runs no probe. Whenever the name leaves a probe out, even if another one runs,
-the step is recorded as `content_probe` / `NOT_ENABLED_BY_POLICY`.
-`ArchiveyConfig.always_probe_content=True` runs every probe, and `open_stream` always does,
-because its caller already says the source is a compressed stream; there a probe only
-picks the codec. The reason is evidence, not cost: on a nameless source a probe is the
-only evidence, and real files pass it. A scan of a backup drive
+`.tlz`, which lzma-utils used before lzip took the name. A plugin format's probe is keyed
+by the format rather than its stream, because every plugin format shares `UNCOMPRESSED`
+with ZIP, TAR and the rest: it runs only when the extension names that plugin format. A
+source with no name or another extension runs no probe. Whenever the name leaves a probe
+out, even if another one runs, the step is recorded as `content_probe` /
+`NOT_ENABLED_BY_POLICY`. `ArchiveyConfig.always_probe_content=True` runs every probe, and
+`open_stream` always does, because its caller already says the source is a compressed
+stream; there a probe only picks the codec. The reason is evidence, not cost: on a
+nameless source a probe is the only evidence, and real files pass it. A scan of a backup
+drive
 ([`investigations/2026-10-backup-scan.md`](../investigations/2026-10-backup-scan.md))
 found about 27 300 of its 57 390 "archives" through the probes: 26 681 git loose objects,
 435 non-Brotli files claimed as Brotli and 51 non-LZMA files claimed as LZMA Alone. A raw

@@ -78,7 +78,10 @@ no member replaces the destination itself.
   (`filters.disk_spelling`, which the coordinator applies first), special files
   (devices, FIFOs, sockets), and a non-directory member whose normalized name is
   `"."` or `""` (which would replace the destination root with a file). It resolves
-  the parent and checks containment, and checks symlink targets lexically. A
+  the parent and checks containment, and checks symlink targets lexically. The
+  coordinator resolves the destination once per run; `parent_resolves_within_root`
+  then walks only the member's own components below it, so the destination's
+  ancestors are trusted to stay as they are for the run. A
   rejection names the member as listed, not its disk spelling. The resolution
   (`resolve_or_raise_on_loop`) is archivey's own walk on POSIX, one link at a time as
   the kernel goes: a component it cannot look at raises and the member is refused.
@@ -871,8 +874,8 @@ raw library exception, and never a silent wrong answer. Genuine I/O errors propa
 unchanged, and no handler swallows or reclassifies an unknown exception.
 
 **Mechanism.** Each backend translates its library's exceptions. For ISO,
-`IsoReader._translate_exception` maps `_PYCDLIB_ERRORS`: pycdlib's exception base plus
-the bare `IndexError`, `struct.error`, `UnicodeDecodeError`, `AttributeError`,
+`IsoHandler.translate_exception` maps `_PYCDLIB_ERRORS`, for errors in `open()` and those
+the reader does not translate itself: pycdlib's exception base plus the bare `IndexError`, `struct.error`, `UnicodeDecodeError`, `AttributeError`,
 `KeyError` and `ValueError` fuzzing found it raising, but never `OSError`. Advisories
 that are not errors are `Diagnostic` values with stable codes and a per-code policy
 (`IGNORE` / `COLLECT` / `RAISE`), attached to the surface they concern, with logging as
@@ -1186,7 +1189,15 @@ keep a hostile archive from getting that far. Public:
 ### Accelerators on by default, and unbounded in time
 
 `AcceleratorMode.AUTO` engages the `[seekable]` accelerators when installed and a caller
-asks for seeking. They are third-party C++ that can busy-loop on crafted input, in a
+asks for seeking, and, for the DEFLATE family on Linux and macOS, on a large sequential
+read too: 16 MiB or more that compresses 3:1 or less ([`formats/gzip.md`](formats/gzip.md)
+§2.3). The sizes behind that choice come from the file (a ZIP or 7z member's declared
+sizes, the gzip ISIZE trailer), so a hostile file picks which decoder a default open
+gets. Either one is a decoder the caller accepted by installing `[seekable]`, and either
+way the checks of [`docs/security.md`](../docs/security.md#where-the-guarantees-stop) apply:
+the shapes that read differently under rapidgzip (DR-5a), and the crafted cut `.gz` it
+can read short, are now on the default path of a plain open, not only of a declared
+seek. They are third-party C++ that can busy-loop on crafted input, in a
 thread no Python timeout can cleanly interrupt. The gzip-family decoder runs in a child
 process, so an abort costs only the member, but a loop there has no read timeout. The
 Atheris accelerator targets fuzz them ([Parsers survive hostile bytes](#parsers-survive-hostile-bytes))

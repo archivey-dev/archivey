@@ -135,6 +135,42 @@ the next `read()` on a member stream it closed raises `ValueError`, as a closed 
 `close()` has returned, calling it again does nothing; after one that raised, the reader is still
 open and you still have to close it.
 
+The functions you give archivey, such as `on_diagnostic`, `on_progress`, a password provider, or a
+`members=` or `filter=` function, run on the thread whose call to archivey needs them, before that
+call returns. When several threads wait for the member list, the thread that builds it runs the
+functions that listing calls. One case falls outside your calls: a member stream or a
+`stream_members()` pass that you don't close is closed when Python frees it, on whatever thread
+Python frees it on, and a diagnostic that this close reports reaches `on_diagnostic` on that
+thread. That is usually the thread that drops the last reference to it, but for an object caught
+in a reference cycle it is the thread where the garbage collector happens to run. Close streams and passes yourself, or use `with`, to keep every call on your own
+threads. Archivey never calls your code from a thread it started.
+
+## The same result everywhere
+
+With the `seekable` extra installed, archivey reads large DEFLATE data, and bzip2 data opened with
+`seekable_members=True`, through the rapidgzip [accelerator](security.md#where-the-guarantees-stop),
+which is faster on large files. It returns the same data and errors as the standard library and
+tools such as 7-Zip and unzip, except for a few files built on purpose, which no known tool writes:
+a ZIP or 7z member holding two DEFLATE streams under one CRC
+([Where the guarantees stop](security.md#where-the-guarantees-stop)), and a cut `.gz` whose last
+bytes are made to look like its trailer
+([Limits and accelerators](formats.md#limits-and-accelerators)). For the first, the result can also
+change with how many cores the machine has and with the platform. If your code must give the same
+answer as other tools, on every machine, and you would rather it be slower than differ, turn the
+accelerator off:
+
+```python
+config = archivey.ArchiveyConfig(
+    use_rapidgzip=archivey.AcceleratorMode.OFF,
+    use_indexed_bzip2=archivey.AcceleratorMode.OFF,
+)
+with archivey.open_archive("data.zip", config=config) as archive:
+    ...
+```
+
+The standard library then decodes everything. A backward seek in gzip or bzip2 data decompresses
+again from the start of the member, and a large gzip file reads on one core.
+
 ## Why these aren't on by default
 
 Seeking and reading several members at once are off by default, and `streaming=True` turns off
@@ -155,3 +191,4 @@ format, and the mistake shows up during development.
 | Read from a pipe | `streaming=True` | [TAR, ZIP and single compressed files only](#reading-once) |
 | Seek inside a member | `seekable_members=True` | [A backward seek may decompress again](#seeking-inside-a-member), and a seek that [jumps over data](errors-and-diagnostics.md#damaged-archives) stops the checksum check |
 | Read members from several threads | `concurrent_operations=True` | [Slow on sources where each jump is costly](#several-members-at-once) |
+| Get the same result as other tools, on every machine | `use_rapidgzip` and `use_indexed_bzip2` set to `OFF` in `ArchiveyConfig` | [Large gzip and bzip2 reads are slower](#the-same-result-everywhere) |

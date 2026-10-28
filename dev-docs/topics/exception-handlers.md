@@ -29,7 +29,7 @@ shape.
 | **Cleanup and re-raise** | `BaseException` | the original | `core.open_archive`, `TarReader.__init__`, `_bounded_member_pipe` |
 | **Error combination** | `Exception` (or `BaseException` when an interrupt must not skip the mandatory step) | the first error, or an `ExceptionGroup`; never nothing | `ArchiveStream.close`, `_maybe_teardown`, `ProcessOutputStream.close` |
 | **Primary error wins** | `Exception` | the error already in flight; the cleanup failure is attached as a note or dropped | `BaseArchiveReader.open`, `note_raised_seek` |
-| **Translator handoff** | `Exception` | a translated `ArchiveyError` `from` the original, or the original unchanged | `ArchiveStream._fail`, `_TranslatedErrorBoundary` |
+| **Translator handoff** | `Exception` | a translated `ArchiveyError` `from` the original, or the original unchanged | `ArchiveStreamImpl._fail`, `_TranslatedErrorBoundary` |
 | **Teardown hygiene** | `Exception` | nothing | finalizers, `PpmdDecoder._quiesce_worker` |
 | **C-boundary trap** | `Exception` | nothing now; the parked exception later | `RapidgzipChildStream._answer_source` |
 | **Diagnostic probe** | `Exception`, narrowed | a fallback value | `nearest_resume_offset`, `_probe_past_declared` |
