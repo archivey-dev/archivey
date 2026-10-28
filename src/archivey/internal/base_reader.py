@@ -1740,9 +1740,18 @@ class BaseArchiveReader(ArchiveReader):
         out yet, and poisoned in streaming, where the prefix already has.
         """
         with self._walk_lock:
-            return self._pull_member_locked()
+            self._before_pull_locked()
+            return self._pull_members_locked(1)
 
-    def _pull_member_locked(self) -> ArchiveMember | None:
+    def _before_pull_locked(self) -> None:
+        """Called under ``_walk_lock`` before a pull: a backend's hand-off of a stream
+        the walk is reading (TAR's ``_WalkHandoffStream``). Nothing by default."""
+
+    def _pull_members_locked(self, count: int | None) -> ArchiveMember | None:
+        """Pull up to ``count`` members (``None``: to the end of the walk), as
+        ``_pull_member`` describes, and return the last one pulled, or ``None`` once the
+        walk has ended. One guard and one ``try`` cover them all: draining a listing of
+        many small members pulls each one through this loop, not through a call each."""
         if self._walk_done:
             return None
         if self._walk_failure is not None:
@@ -1768,24 +1777,30 @@ class BaseArchiveReader(ArchiveReader):
             if self._walk is None:
                 self._account_archive_comment()
                 self._walk = self._iter_members()
-            position = self._walk_position
-            try:
-                if self._streaming:
-                    # A streaming walk is never started over (``_abandon_walk`` poisons
-                    # it), so it has nothing to replay and keeps no log.
-                    member = next(self._walk)
-                else:
-                    member = self._pull_replayable(position)
-            except StopIteration:
-                self._end_walk(None)
-                return None
-            except CorruptionError as exc:
-                self._end_walk(exc)
-                return None
-            self._register_member(position, member)
-            self._walk_position = position + 1
-            self._index_member_name(member)
-            self._listed.append(member)
+            walk = self._walk
+            # A streaming walk is never started over (``_abandon_walk`` poisons it), so
+            # it has nothing to replay and keeps no log.
+            streaming = self._streaming
+            member: ArchiveMember | None = None
+            pulled = 0
+            while count is None or pulled < count:
+                position = self._walk_position
+                try:
+                    if streaming:
+                        member = next(walk)
+                    else:
+                        member = self._pull_replayable(position)
+                except StopIteration:
+                    self._end_walk(None)
+                    return None
+                except CorruptionError as exc:
+                    self._end_walk(exc)
+                    return None
+                self._register_member(position, member)
+                self._walk_position = position + 1
+                self._index_member_name(member)
+                self._listed.append(member)
+                pulled += 1
             return member
         except BaseException as exc:
             self._abandon_walk(exc)
@@ -1907,8 +1922,9 @@ class BaseArchiveReader(ArchiveReader):
 
     def _drain_walk(self) -> None:
         """Pull to the end of the walk."""
-        while self._pull_member() is not None:
-            pass
+        with self._walk_lock:
+            self._before_pull_locked()
+            self._pull_members_locked(None)
 
     def _walk_ahead(self) -> None:
         """Drain a streaming walk before its pass reads data; a failure waits for it.
