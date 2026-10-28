@@ -6,6 +6,14 @@
 
 <!-- The problem it solves, or the decision it follows. -->
 
+## Risk
+
+<!-- What could break, and for whom, if this change is wrong.
+Tier: the line `uv run python scripts/review_prep.py tier` prints (light, standard or deep).
+Public API: "none", or the names added, changed or removed (the diff of
+dev-docs/api-surface.txt lists them). Removing or renaming a public name is the
+maintainer's call. -->
+
 ## Tests
 
 <!-- The tests that cover the change, and the gates you ran: ./scripts/check.sh,

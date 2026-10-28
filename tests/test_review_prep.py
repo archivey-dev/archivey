@@ -228,3 +228,29 @@ def test_outcome_names_what_a_non_red_run_means() -> None:
     )
     imported = "E   ImportError: cannot import name 'thing' from 'archivey.x'"
     assert prep._outcome(2, imported).startswith("errors at collection: ImportError")
+
+
+def test_tier_is_light_only_when_every_path_is_prose_or_tests() -> None:
+    light = prep.tier(["docs/extracting.md", "tests/test_x.py", "README.md"])
+    assert (light.name, light.api_changed) == ("light", False)
+    # A spec is a contract, and a nested `.md` outside the light folders is not prose.
+    assert prep.tier(["docs/x.md", "openspec/specs/cli/spec.md"]).name == "standard"
+    assert prep.tier(["src/archivey/core.py", "tests/test_x.py"]).name == "standard"
+    assert prep.tier([]).name == "standard"
+
+
+def test_tier_is_deep_on_a_safety_path_and_the_maintainer_merges_workflows() -> None:
+    safety = prep.tier(["src/archivey/internal/extraction.py", "docs/x.md"])
+    assert (safety.name, safety.maintainer_merges) == ("deep", False)
+    assert safety.reasons == ["src/archivey/internal/extraction.py"]
+    assert prep.tier(["src/archivey/internal/external/unar.py"]).name == "deep"
+    workflow = prep.tier([".github/workflows/ci.yml"])
+    assert (workflow.name, workflow.maintainer_merges) == ("deep", True)
+    # A directory entry matches by prefix, a file entry only exactly.
+    assert prep.tier(["src/archivey/paths.pyi"]).name == "standard"
+
+
+def test_tier_reports_a_public_api_change() -> None:
+    t = prep.tier(["src/archivey/core.py", "dev-docs/api-surface.txt"])
+    assert t.api_changed
+    assert prep.tier_report(t)[-1] == "public API: changed (dev-docs/api-surface.txt)"

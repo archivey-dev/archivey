@@ -68,6 +68,31 @@ this list and §6 disagree, §6 wins; edit both together.
 It holds the coding and testing rules; `code-pr.md` says which of them PRs here break and
 does not restate them.
 
+### How deep: the tier
+
+A pull request's changed paths set how deep the review goes, not its author or its size. Run
+`python3 scripts/review_prep.py tier` first (stdlib only; it compares against
+`origin/main`). It prints the tier, the paths that decided it, and whether
+`dev-docs/api-surface.txt` changed. The path lists live in that script.
+
+- **Light** — every changed path is prose, tests, benchmarks or agent instructions. Read
+  the diff and the files it touches. Open `CONTRIBUTING.md`, the handbook and the domain
+  checklist only for what a change reaches into. Finding discipline does not change: what
+  you find is still reported and labeled. The verdict is 🔄 only for a 🔴, so a light PR
+  ends in one round otherwise.
+- **Standard** — the review this skill and its reference docs describe, unchanged.
+- **Deep** — a path where a bug breaks the safety contract, or a workflow or release file.
+  Everything in Standard, plus [`threat-model.md`](../../../dev-docs/threat-model.md) and
+  [`security-review-guide.md`](reference/security-review-guide.md). For each deep path,
+  check the guarantee it carries (writes stay inside the destination, resources stay
+  bounded, archive-supplied input never reaches a command line) and name what you checked
+  in the Snapshot. On a fix round, trace every fix outward (`fix-round.md`), not only the
+  ones that moved a contract. When the script says the maintainer merges, say so in
+  block 1.
+
+The Snapshot line names the tier. Check the PR body's Risk section against the script: a
+public API change the body does not declare is 🟡, and a wrong tier line is 🟢.
+
 **Authoritative sources — open when a finding touches them:**
 [`VISION.md`](../../../VISION.md) (product tie-breaker),
 [`openspec/specs/`](../../../openspec/specs/) (capability contracts, revisable when wrong),
@@ -203,8 +228,8 @@ For the maintainer skimming without the code open. Half a screen unless the chan
   (`POST .../pulls/{n}/comments` returns each comment's `html_url`, and §6 records that
   a review body cannot be edited afterwards through the MCP tools). A finding whose thread
   URL you genuinely cannot get is listed with its `file:line` alone rather than held back.
-- **Snapshot** — one line: size (approx. lines / small|medium|large), the scope you
-  reviewed, and gates (CI status, §6). The verdict is already in the header, so the
+- **Snapshot** — one line: size (approx. lines / small|medium|large), the tier (§1), the
+  scope you reviewed, and gates (CI status, §6). The verdict is already in the header, so the
   Snapshot does not restate it.
 - **Pass 1 (cold)** — first look at a code PR only: one line naming what the code alone did
   not explain before you opened the PR body or the design, each with its finding ID, or
