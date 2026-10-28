@@ -2,17 +2,17 @@
 
 Reads CPIO archives (`.cpio`) with [archivey](https://github.com/archivey-dev/archivey),
 as a format plugin read in one forward pass, so from a pipe too. It is written against
-`archivey.plugins` only, as a check that such a format can be added from outside
+`archivey.formats` only, as a check that such a format can be added from outside
 archivey. It is not published.
 
 ```python
 import sys
 
 import archivey
-from archivey.plugins import register_format
-from archivey_cpio import CpioPlugin
+from archivey.formats import register_format
+from archivey_cpio import CpioHandler
 
-register_format(CpioPlugin)
+register_format(CpioHandler)
 
 with archivey.open_archive("initramfs.cpio") as archive:
     archive.extract_all("initramfs/")

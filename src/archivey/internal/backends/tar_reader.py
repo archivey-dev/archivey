@@ -54,7 +54,6 @@ import re
 import threading
 from collections.abc import Iterator, Mapping
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import replace
 from datetime import datetime
 from typing import BinaryIO, Literal, cast
 
@@ -103,7 +102,6 @@ from archivey.internal.base_reader import (
     pass_has_data,
     reject_start_offset,
 )
-from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.logs import (
@@ -125,8 +123,6 @@ from archivey.internal.streams.archive_stream import (
 )
 from archivey.internal.streams.codecs import (
     SINGLE_FILE_CODECS,
-    codec_for_stream_format,
-    open_codec_stream,
 )
 from archivey.internal.streams.decompressor_stream import _StreamChecksumError
 from archivey.internal.streams.streamtools import (
@@ -438,10 +434,11 @@ class _MemberDataView(DelegatingStream):
 class _WalkHandoffStream(ReadOnlyIOStream):
     """A pass's member data, read through the walk until the walk moves on.
 
-    The walk's next pull calls :meth:`detach` under the walk lock. From then on the
-    stream reads a view of its own from where it stopped (on a compressed tar, a
-    decoder seek back), so the walk can move on for another caller while the pass is
-    still reading this member. A stream detached after its last read builds no view.
+    The walk's next pull calls :meth:`detach` under the walk lock
+    (``TarReader._before_pull_locked``). From then on the stream reads a view of its own
+    from where it stopped (on a compressed tar, a decoder seek back), so the walk can
+    move on for another caller while the pass is still reading this member. A stream
+    detached after its last read builds no view.
     """
 
     def __init__(self, reader: TarReader, span: TarSpan, data: BinaryIO) -> None:
@@ -532,7 +529,8 @@ class TarReader(BaseArchiveReader):
         self._source = source
         self._compressed = format.stream != StreamFormat.UNCOMPRESSED
         # The one pass stream reading member data through the walk, if any; the walk
-        # detaches it before its next pull (see _pull_member).
+        # detaches it before its next pull (``_before_pull_locked``). Set only under
+        # ``_walk_lock`` (``_walk_data``), so none appears during a batch of pulls.
         self._walk_stream: _WalkHandoffStream | None = None
         # Streaming only: the buffer in front of the codec stream or the source, built
         # by this reader, so closed by it. Random access keeps each walk's view
@@ -615,38 +613,8 @@ class TarReader(BaseArchiveReader):
         """The TAR bytes: the source for a plain tar, archivey's codec stream for a
         compressed one."""
         if self._compressed:
-            codec = codec_for_stream_format(format.stream)
-            codec_source: str | BinaryIO
-            if source.path is not None:
-                # A file goes to the codec as its path, as for a bare compressed file:
-                # the codec opens its own handle and may use path-only accelerators, and
-                # the static ratio applies because the size is known.
-                codec_source = str(source.path)
-            else:
-                # A stream whose size is not known is counted, so the live
-                # decompression-ratio guard can see compressed bytes consumed.
-                codec_source = self._codec_input(source, track_seeks=True)
-            stream = open_codec_stream(
-                codec,
-                codec_source,
-                # The codec stream is the whole file, so bytes after its end are
-                # reported, as bytes after the TAR trailer are.
-                config=replace(
-                    stream_config_from_archivey(
-                        self._config,
-                        streaming=streaming,
-                        seekable=MemberStreams.SEEKABLE in member_streams,
-                        usage=self._usage,
-                    ),
-                    report_trailing_data=True,
-                ),
-                stamp=lambda exc: self._stamp_error_context(exc),
-                collector=self._diagnostics_collector,
-                # Random access reads it only through views. A read seeks the shared
-                # handle when it is not already there, and one such seek is enough to
-                # mark the stream rewound. A repeated verdict would drop the prefix of
-                # the read that reaches the damage; each member stream repeats its own.
-                repeat_verdict=streaming,
+            stream = self._open_outer_codec_stream(
+                source, format.stream, streaming, member_streams=member_streams
             )
             self._owned_codec_stream = stream
             if not streaming:
@@ -765,8 +733,8 @@ class TarReader(BaseArchiveReader):
         assert counted <= cap, (counted, cap)
         return (cap - counted, cap)
 
-    def _pull_member(self) -> ArchiveMember | None:
-        """Pull as the base does, after handing off a pass's stream.
+    def _before_pull_locked(self) -> None:
+        """Hand off a pass's stream before the base pulls.
 
         A pass may still be reading the member the walk is at through the walk. That
         stream moves to a view of its own first (:class:`_WalkHandoffStream`), so a
@@ -774,12 +742,10 @@ class TarReader(BaseArchiveReader):
         ``CONCURRENT``, does not cut it off. The pass's own next pull hands over a
         stream it is about to close, which costs nothing.
         """
-        with self._walk_lock:
-            live = self._walk_stream
-            if live is not None:
-                self._walk_stream = None
-                live.detach()
-            return super()._pull_member()
+        live = self._walk_stream
+        if live is not None:
+            self._walk_stream = None
+            live.detach()
 
     def _register_member(
         self,
@@ -1822,11 +1788,13 @@ class TarReadBackend(ReadBackend):
     FORMATS: tuple[ArchiveFormat, ...] = _TAR_FORMATS
     EXTENSIONS: Mapping[str, ArchiveFormat] = _TAR_EXTENSIONS
     # Plain tar is recognized by the POSIX/GNU "ustar" magic at offset 257. Compressed tars
-    # carry only their outer codec's magic; detection's inner-TAR probe (see internal/
-    # detection.py) decompresses a prefix and finds this same signature to report TAR_GZ etc.
+    # carry only their outer codec's magic; detection's inner-container probe (see
+    # internal/detection.py) decompresses a prefix and finds this same signature, as
+    # INNER_MAGIC, to report TAR_GZ etc.
     MAGIC: tuple[MagicSignature, ...] = (
         MagicSignature(257, b"ustar", ArchiveFormat.TAR),
     )
+    INNER_MAGIC: tuple[MagicSignature, ...] = MAGIC
     # TAR is walkable front-to-back, so streaming=True works on a non-seekable source
     # (random access always needs a seekable one — that side is format-independent).
     SUPPORTS_STREAMING_NON_SEEKABLE = True

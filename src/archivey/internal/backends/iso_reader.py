@@ -87,9 +87,19 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
     exception_detail,
 )
+from archivey.formats import (
+    FormatHandler,
+    IndexedReader,
+    Magic,
+    MemberData,
+    MemberRecord,
+    ReaderArchiveInfo,
+    ReaderContext,
+    ReaderSource,
+)
 from archivey.internal.base_reader import special_file_has_data_report
+from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.listing_limits import check_metadata_budget
-from archivey.internal.plugin_adapter import register_builtin_plugin
 from archivey.internal.streams.codecs.isolated import (
     IN_PROCESS,
     Natives,
@@ -103,16 +113,6 @@ from archivey.internal.timestamps import TimestampIssue
 from archivey.internal.trailing_scan import first_nonzero_offset
 from archivey.internal.unix_mode import special_file_type
 from archivey.internal.volumes import JoinedViews
-from archivey.plugins import (
-    FormatPlugin,
-    IndexedReader,
-    Magic,
-    MemberData,
-    MemberRecord,
-    PluginArchiveInfo,
-    PluginContext,
-    PluginSource,
-)
 from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_SPECIAL_FILE_TYPE,
@@ -1397,12 +1397,12 @@ class _ZisofsStream(io.RawIOBase):
 class IsoReader(IndexedReader["DirectoryRecord"]):
     """Reads an ISO 9660 image via ``pycdlib`` (Rock Ridge / Joliet / plain).
 
-    Written against ``archivey.plugins`` (``IsoPlugin``): the adapter holds the handle
+    Written against ``archivey.formats`` (``IsoHandler``): the adapter holds the handle
     lock around every call into it and around the streams it returns, translates
     errors through :meth:`translate_exception`, and checks each member's size.
     """
 
-    def __init__(self, source: PluginSource, context: PluginContext) -> None:
+    def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
         self._context = context
         self._source = source
         self._archive_name = context.archive_name
@@ -1456,7 +1456,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         # a short read, which pycdlib reports as an invalid directory record. When
         # the file holds less than the image declares, ``_cut_short`` makes that a
         # ``TruncatedError``; otherwise, as for a full-length image whose directory
-        # declares too much, ``IsoPlugin.translate_exception`` makes it a
+        # declares too much, ``IsoHandler.translate_exception`` makes it a
         # ``CorruptionError``. pycdlib never closes a file object it was handed
         # (``_managing_fp`` is set only by ``open()``), so the reader closes the view
         # (``_release_archive_handles``). ``_raw_directory`` reads a directory's
@@ -2496,7 +2496,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             stream.close()
             raise
 
-    def archive_info(self) -> PluginArchiveInfo:
+    def archive_info(self) -> ReaderArchiveInfo:
         pvd = self._iso.pvd
         # The standard allows d-characters only, but writers store the -V text as it
         # was given (xorriso: UTF-8). It records no charset, as a Rock Ridge name does
@@ -2507,7 +2507,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         # a multi-byte encoding= never meets the padding and a label's own trailing
         # character (a no-break space, say) stays.
         volume_id = self._decode_bytes_name(pvd.volume_identifier.rstrip(b" "))
-        return PluginArchiveInfo(
+        return ReaderArchiveInfo(
             # ISO 9660 stores no interchange level. pycdlib infers one from the
             # names it walks and reports 3 for nearly every image, so it is not
             # passed on as if it were read from the image.
@@ -2617,8 +2617,8 @@ def refuse_raw_sector_image(
     )
 
 
-class IsoPlugin(FormatPlugin):
-    """ISO 9660 images, read through ``archivey.plugins`` (requires ``pycdlib``)."""
+class IsoHandler(FormatHandler):
+    """ISO 9660 images, read through ``archivey.formats`` (requires ``pycdlib``)."""
 
     format = ArchiveFormat.ISO
     extensions = (".iso",)
@@ -2633,7 +2633,7 @@ class IsoPlugin(FormatPlugin):
     )
     uses_encoding = True  # for Rock Ridge and plain names that are not valid UTF-8
 
-    def open(self, source: PluginSource, context: PluginContext) -> IsoReader:
+    def open(self, source: ReaderSource, context: ReaderContext) -> IsoReader:
         return IsoReader(source, context)
 
     def translate_exception(self, exc: Exception) -> ArchiveyError | None:
@@ -2654,8 +2654,8 @@ class IsoPlugin(FormatPlugin):
         return None
 
 
-IsoReadBackend = register_builtin_plugin(
-    IsoPlugin,
+IsoReadBackend = register_builtin_format(
+    IsoHandler,
     # pycdlib addresses the image by absolute offsets (volume descriptors at 32 KiB),
     # so even a forward-only pass needs a seekable source. The same requirement the
     # reader raises from, so the hint reported by listing / format_availability and

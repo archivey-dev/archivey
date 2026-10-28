@@ -6,6 +6,7 @@ import contextlib
 import logging
 import sys
 import threading
+import time
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import (
@@ -168,6 +169,7 @@ from archivey.types import (
     OnErrorStr,
     OverwritePolicy,
     OverwritePolicyStr,
+    StreamFormat,
     TrailerSignature,
 )
 
@@ -212,6 +214,12 @@ are not read through this cap: the header parser has already allocated them, and
 
 
 _UnconfirmedEvidence = Literal["extension", "content_probe"]
+
+
+# Members ``_drain_walk`` pulls per hold of the walk lock: enough that the lock and
+# guards cost nothing per member, few enough that a pass on another thread is not kept
+# waiting for a whole listing.
+_DRAIN_BATCH = 256
 
 
 class _UnconfirmedWording(NamedTuple):
@@ -369,6 +377,12 @@ class ReadBackend(ABC):
     EXTENSIONS: Mapping[str, ArchiveFormat] = {}
     # Exact magic-byte signals as data (offset, bytes, format), accepted on the byte match.
     MAGIC: tuple[MagicSignature, ...] = ()
+    # Magic the inner-container probe looks for in the first 512 decoded bytes of a
+    # single-file compressed stream, naming the uncompressed container it finds there:
+    # TAR's ``ustar`` makes a ``.gz`` a ``TAR_GZ``, and a sequential plugin's magic makes
+    # one ``(<plugin container>, GZIP)``. Only a backend that reads that container
+    # through every single-file codec declares it.
+    INNER_MAGIC: tuple[MagicSignature, ...] = ()
     # Magic to hunt for *behind an executable stub*, for the formats that ship as
     # self-extracting archives (RAR / 7z / ZIP). The offset is 0 because these are
     # magic at offset 0 of the *payload*, wherever in the file that starts; the
@@ -438,7 +452,7 @@ class ReadBackend(ABC):
     # derives availability centrally from whether it imports. ``None`` for core backends.
     OPTIONAL_DEPENDENCY: str | None = None
     # More modules the backend imports, checked after ``OPTIONAL_DEPENDENCY`` the same
-    # way. Only plugin backends set it (``FormatPlugin.requires``); ``INSTALL_HINT``
+    # way. Only plugin backends set it (``FormatHandler.requires``); ``INSTALL_HINT``
     # covers them all.
     REQUIRED_MODULES: tuple[str, ...] = ()
     # Human-readable install hint surfaced when the dependency is absent
@@ -1740,9 +1754,25 @@ class BaseArchiveReader(ArchiveReader):
         out yet, and poisoned in streaming, where the prefix already has.
         """
         with self._walk_lock:
-            return self._pull_member_locked()
+            return self._pull_members_locked(1)
 
-    def _pull_member_locked(self) -> ArchiveMember | None:
+    def _before_pull_locked(self) -> None:
+        """A backend's hand-off of a stream the walk is reading (TAR's
+        ``_WalkHandoffStream``) before the walk moves. Nothing by default.
+
+        Called under ``_walk_lock`` once per :meth:`_pull_members_locked` call, before
+        one or more pulls, so it must leave nothing for the walk to hand off for the
+        whole batch: whatever it hands off must only be set under ``_walk_lock``, so
+        nothing new appears until the lock is released."""
+
+    def _pull_members_locked(self, count: int) -> ArchiveMember | None:
+        """Pull up to ``count`` members (at least one), as ``_pull_member`` describes,
+        and return the last one pulled, or ``None`` once the walk has ended. One hook
+        call, one guard and one ``try`` cover them all: draining a listing of many small
+        members pulls each one through this loop, not through a call each. Called under
+        ``_walk_lock``."""
+        assert count >= 1, count
+        self._before_pull_locked()
         if self._walk_done:
             return None
         if self._walk_failure is not None:
@@ -1768,24 +1798,30 @@ class BaseArchiveReader(ArchiveReader):
             if self._walk is None:
                 self._account_archive_comment()
                 self._walk = self._iter_members()
-            position = self._walk_position
-            try:
-                if self._streaming:
-                    # A streaming walk is never started over (``_abandon_walk`` poisons
-                    # it), so it has nothing to replay and keeps no log.
-                    member = next(self._walk)
-                else:
-                    member = self._pull_replayable(position)
-            except StopIteration:
-                self._end_walk(None)
-                return None
-            except CorruptionError as exc:
-                self._end_walk(exc)
-                return None
-            self._register_member(position, member)
-            self._walk_position = position + 1
-            self._index_member_name(member)
-            self._listed.append(member)
+            # Read once for the batch: only ``_end_walk`` and ``_abandon_walk`` drop
+            # ``_walk``, and the loop leaves right after either.
+            walk = self._walk
+            streaming = self._streaming
+            member: ArchiveMember | None = None
+            for _ in range(count):
+                position = self._walk_position
+                try:
+                    if streaming:
+                        # A streaming walk is never started over (``_abandon_walk``
+                        # poisons it), so it has nothing to replay and keeps no log.
+                        member = next(walk)
+                    else:
+                        member = self._pull_replayable(position)
+                except StopIteration:
+                    self._end_walk(None)
+                    return None
+                except CorruptionError as exc:
+                    self._end_walk(exc)
+                    return None
+                self._register_member(position, member)
+                self._walk_position = position + 1
+                self._index_member_name(member)
+                self._listed.append(member)
             return member
         except BaseException as exc:
             self._abandon_walk(exc)
@@ -1906,9 +1942,23 @@ class BaseArchiveReader(ArchiveReader):
         self._listing_tracker.reset()
 
     def _drain_walk(self) -> None:
-        """Pull to the end of the walk."""
-        while self._pull_member() is not None:
-            pass
+        """Pull to the end of the walk, in batches of ``_DRAIN_BATCH`` members.
+
+        Each batch takes ``_walk_lock`` once. On a ``CONCURRENT`` reader the drain also
+        yields between batches, so a pass on another thread waits about one batch for it,
+        not the whole listing."""
+        concurrent = self._state.concurrent
+        while True:
+            with self._walk_lock:
+                if self._pull_members_locked(_DRAIN_BATCH) is None:
+                    return
+            if concurrent:
+                # Under the GIL a release alone is no hand-off: this thread keeps
+                # running and takes the lock again before a waiter gets to run. A short
+                # sleep gives the GIL up so a waiter can take the lock (``sleep(0)``
+                # hands over less reliably). It is a syscall, about 0.5 µs per member
+                # in wall time, so only a reader that can have such a waiter pays it.
+                time.sleep(1e-6)
 
     def _walk_ahead(self) -> None:
         """Drain a streaming walk before its pass reads data; a failure waits for it.
@@ -3179,6 +3229,59 @@ class BaseArchiveReader(ArchiveReader):
         # Outermost, so the codec's buffering takes it as it is and puts no
         # full-count BufferedReader in front of it (ensure_bufferedio).
         return OneReadEachStream(counted)
+
+    def _open_outer_codec_stream(
+        self,
+        source: ArchiveSource,
+        stream_format: StreamFormat,
+        streaming: bool,
+        *,
+        member_streams: MemberStreams,
+    ) -> BinaryIO:
+        """The decoded bytes of an archive inside a compression stream (a ``.tar.gz``,
+        or a sequential plugin format's ``.cpio.xz``): archivey's codec stream over
+        ``source``, which the caller closes.
+
+        A file goes to the codec as its path, as for a bare compressed file: the codec
+        opens its own handle and may use path-only accelerators, and the static ratio
+        applies because the size is known. A stream whose size is not known is counted
+        (:meth:`_codec_input`), so the live decompression-ratio guard can see the
+        compressed bytes consumed. The codec stream is the whole file, so bytes after
+        its end are reported, as bytes after an archive's own end are.
+        """
+        # Imported here: the codec layer imports reader-side modules at load.
+        from archivey.internal.config import stream_config_from_archivey
+        from archivey.internal.streams.codecs import (
+            codec_for_stream_format,
+            open_codec_stream,
+        )
+
+        codec = codec_for_stream_format(stream_format)
+        codec_source: str | BinaryIO
+        if source.path is not None:
+            codec_source = str(source.path)
+        else:
+            codec_source = self._codec_input(source, track_seeks=True)
+        return open_codec_stream(
+            codec,
+            codec_source,
+            config=replace(
+                stream_config_from_archivey(
+                    self._config,
+                    streaming=streaming,
+                    seekable=MemberStreams.SEEKABLE in member_streams,
+                    usage=self._usage,
+                ),
+                report_trailing_data=True,
+            ),
+            stamp=lambda exc: self._stamp_error_context(exc),
+            collector=self._diagnostics_collector,
+            # Random access reads it only through views. A read seeks the shared
+            # handle when it is not already there, and one such seek is enough to
+            # mark the stream rewound. A repeated verdict would drop the prefix of the
+            # read that reaches the damage; each member stream repeats its own.
+            repeat_verdict=streaming,
+        )
 
     def __iter__(self) -> MemberPass[ArchiveMember]:
         return MemberPassImpl(self._iter_pass())

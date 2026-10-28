@@ -141,7 +141,7 @@ class BackendRegistry:
         self._readers: dict[ArchiveFormat, type[ReadBackend]] = {}
         # Unique reader classes in registration order (a class may serve several formats).
         self._reader_classes: list[type[ReadBackend]] = []
-        # Plugin backends (``archivey.plugins.register_format``), kept apart so every
+        # Plugin backends (``archivey.formats.register_format``), kept apart so every
         # detection table lists them after the built-in backends and the stream codecs:
         # detection takes the first match in table order, so a built-in signal wins.
         self._plugin_classes: list[type[ReadBackend]] = []
@@ -187,6 +187,16 @@ class BackendRegistry:
             entries.extend(codec.magic)
         for cls in self._plugin_classes:
             entries.extend(cls.MAGIC)
+        return entries
+
+    def inner_magic_entries(self) -> list[MagicSignature]:
+        """Magic the inner-container probe matches in decoded bytes (``INNER_MAGIC``).
+
+        Built-in backends first, so TAR's ``ustar`` is tried before any plugin's magic.
+        """
+        entries: list[MagicSignature] = []
+        for cls in (*self._reader_classes, *self._plugin_classes):
+            entries.extend(cls.INNER_MAGIC)
         return entries
 
     def magic_prefix_walks(self) -> list[tuple[ArchiveFormat, Callable[[bytes], bool]]]:

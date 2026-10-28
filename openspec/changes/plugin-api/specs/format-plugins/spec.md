@@ -1,11 +1,11 @@
 ## ADDED Requirements
 
-### Requirement: A package adds a format through archivey.plugins
+### Requirement: A package adds a format through archivey.formats
 
 The system SHALL let a package outside archivey add a read-only format by subclassing
-`archivey.plugins.FormatPlugin` and one of `archivey.plugins.IndexedReader` or
-`archivey.plugins.SequentialReader`, and calling
-`archivey.plugins.register_format()`. A plugin reader SHALL NOT subclass or see
+`archivey.formats.FormatHandler` and one of `archivey.formats.IndexedReader` or
+`archivey.formats.SequentialReader`, and calling
+`archivey.formats.register_format()`. A plugin reader SHALL NOT subclass or see
 `BaseArchiveReader`. An internal adapter SHALL present it as an ordinary
 `ArchiveReader`.
 
@@ -77,8 +77,10 @@ without an `open_member` from the plugin.
 
 ### Requirement: Sequential plugin formats are detected inside compression streams
 
-Detection SHALL check registered sequential plugins' magic inside a gzip, bzip2, xz or
-zstd stream after TAR, within the prefix and budget the inner-TAR probe uses today.
+Detection SHALL check registered sequential plugins' magic inside any single-file
+compression stream archivey decodes (gzip, bzip2, xz, zstd and the rest, the set a
+compressed TAR has) after TAR, within the prefix and budget the inner-TAR probe uses
+today.
 
 #### Scenario: compressed plugin format
 

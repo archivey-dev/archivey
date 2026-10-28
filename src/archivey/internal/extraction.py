@@ -29,7 +29,7 @@ import posixpath
 import stat
 import uuid
 from collections.abc import Callable, Collection, Generator, Iterator
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Protocol, assert_never, cast
 
@@ -51,6 +51,7 @@ from archivey.internal.bomb_tracker import (
     AlwaysStopResourceLimitError,
     BombTracker,
 )
+from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.dry_run import DryRun, scratch_for
 from archivey.internal.file_copy_pass import FileCopyPass
 from archivey.internal.filters import (
@@ -624,6 +625,14 @@ class _RunState:
         default_factory=dict
     )
 
+    # The string a ``dest / name`` join puts before ``name``, for ``_physical_path`` and
+    # ``_callers_parent``: built by pathlib's own join, so it agrees with pathlib's
+    # spelling (``""`` for ``Path(".")``, ``"/"`` for the root, ``"C:"`` for a drive).
+    dest_prefix: str = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.dest_prefix = os.fspath(self.dest / "_")[:-1]
+
 
 @dataclass
 class _MemberState:
@@ -699,6 +708,9 @@ class ExtractionCoordinator:
         self._current = _MemberState()
         # Set for the length of a dry run; ``None`` on a real run.
         self._dry: DryRun | None = None
+        # ``_parent``'s one-entry cache: the last path asked for, and its parent.
+        self._parent_of: Path | None = None
+        self._parent_path: Path | None = None
         # Set by a dry run, from its scratch tree; see ExtractionReport.
         self.dry_run_top_level: tuple[tuple[str, bool], ...] | None = None
         self.dry_run_links: tuple[tuple[str, str], ...] | None = None
@@ -1124,7 +1136,7 @@ class ExtractionCoordinator:
         if presented_name is not None and recorded_index is not None:
             self._set_result(
                 recorded_index,
-                replace(
+                copy_with(
                     results[recorded_index],
                     presented_name=presented_name,
                     rewrites=rewrites,
@@ -2027,7 +2039,7 @@ class ExtractionCoordinator:
         )
 
         if original.is_anti:
-            return replace(
+            return copy_with(
                 self._apply_anti_item(original, target), requested_path=requested
             )
 
@@ -2082,11 +2094,11 @@ class ExtractionCoordinator:
         # rename, so it reports the actual (merged) path; every other outcome reports the
         # member's own intended destination, so RENAME shows up as requested_path != path.
         if prior is not None and result.status is ExtractionStatus.EXTRACTED:
-            result = replace(
+            result = copy_with(
                 result, requested_path=result.path, collided_with=collided_with
             )
         else:
-            result = replace(
+            result = copy_with(
                 result, requested_path=requested, collided_with=collided_with
             )
 
@@ -2212,7 +2224,7 @@ class ExtractionCoordinator:
             return ExtractionResult(
                 original, None, ExtractionStatus.NOT_OVERWRITTEN, None
             )
-        self._makedirs(dest_path.parent, transformed)
+        self._makedirs(self._parent(dest_path), transformed)
         return None
 
     def _resolve_collision(
@@ -2324,6 +2336,20 @@ class ExtractionCoordinator:
                     return written
         return path
 
+    def _parent(self, path: Path) -> Path:
+        """``path.parent``, the same object again for the same ``path``.
+
+        Writing a member asks for its parent up to three times (``_callers_parent``,
+        which a member at the top of the destination answers without it,
+        ``_make_room`` and the temp file next to it). Each new parent object builds
+        its parts, its string and its comparison key again: a few microseconds a
+        member that one cached object pays once. ``Path`` is immutable, so the cache
+        holds no state to go stale."""
+        if path is not self._parent_of:
+            self._parent_path = path.parent
+            self._parent_of = path
+        return cast("Path", self._parent_path)
+
     def _callers_parent(self, path: Path) -> Path | None:
         """The parent of ``path`` under the destination that the caller holds as an
         entry that is not a directory (a file, or a symlink that does not resolve to
@@ -2335,10 +2361,17 @@ class ExtractionCoordinator:
         wrote is not the caller's: ``_makedirs`` fails the member with an error that
         names it."""
         dest = self._state.dest
-        parent = path.parent
+        spelled = os.fspath(path)
+        if spelled == self._state.dest_prefix + os.path.basename(spelled):
+            # A member at the top of the destination, compared as strings: a
+            # ``Path`` comparison of a new parent costs a few times more.
+            return None
+        parent = self._parent(path)
+        # ``parent == dest`` still catches what the string test cannot: a destination
+        # equal under ``Path`` rules but spelled differently (case on Windows).
         if (
-            parent == dest
-            or parent in self._state.created_dirs
+            parent in self._state.created_dirs
+            or parent == dest
             or os.path.isdir(long_path(parent))
         ):
             # The common case: a directory this run made (``created_dirs`` drops
@@ -2661,7 +2694,14 @@ class ExtractionCoordinator:
         resolved (``_physical_rel``); ``path`` itself when that parent does not resolve
         inside the root."""
         rel = self._physical_rel(path)
-        return self._state.dest / rel if rel is not None else path
+        if rel is None:
+            return path
+        prefix = self._state.dest_prefix
+        if os.fspath(path) == prefix + rel.replace("/", os.sep):
+            # The common case, a parent that resolves to itself: ``path`` is already
+            # that path, and a join would only build an equal one (a few microseconds).
+            return path
+        return self._state.dest / rel
 
     def _collision_key(self, path: Path) -> str:
         """The collision-map key of the entry at ``path``: where it physically is.
@@ -3261,11 +3301,11 @@ class ExtractionCoordinator:
         results = self._state.results
         prior = results[index]
         if prior.presented_name is not None and new.presented_name is None:
-            new = replace(
+            new = copy_with(
                 new, presented_name=prior.presented_name, rewrites=prior.rewrites
             )
         if prior.requested_path is not None and new.requested_path is None:
-            new = replace(new, requested_path=prior.requested_path)
+            new = copy_with(new, requested_path=prior.requested_path)
         results[index] = new
 
     def _append_result(self, new: ExtractionResult) -> int:
@@ -3630,7 +3670,7 @@ class ExtractionCoordinator:
             if prior.status is ExtractionStatus.EXTRACTED:
                 self._set_result(
                     link.result_index,
-                    replace(
+                    copy_with(
                         prior, path=None, status=ExtractionStatus.BLOCKED, error=error
                     ),
                 )
@@ -3688,7 +3728,7 @@ class ExtractionCoordinator:
         # more extracted members than ``results`` contains.
         self._set_result(
             index,
-            replace(
+            copy_with(
                 clobbered,
                 path=None,
                 status=ExtractionStatus.OVERWRITTEN,
@@ -3962,12 +4002,12 @@ class ExtractionCoordinator:
         # exists.
         self._state.tracker.check_recorded_size()
         if self._effective_mode(member) is None:
-            tmp = self._temp_sibling(dest_path.parent)
+            tmp = self._temp_sibling(self._parent(dest_path))
             fd = _open_new_file(tmp, 0o666)
         else:
             # Write straight into the new file's fd (no close+reopen). Its 0o600 keeps
             # the content private until the chmod below.
-            fd, tmp = self._new_temp_file(dest_path.parent)
+            fd, tmp = self._new_temp_file(self._parent(dest_path))
         try:
             with os.fdopen(fd, "wb") as dst:
                 if copy_begins is not None:

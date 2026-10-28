@@ -4,16 +4,18 @@
 from __future__ import annotations
 
 import ast
+import gzip
 import io
+import lzma
 import os
 import random
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from archivey_cpio import CPIO, CpioPlugin, CpioReader
+from archivey_cpio import CPIO, CpioHandler, CpioReader
 from archivey_cpio.reader import MAX_NAME_BYTES
 
 import archivey
@@ -27,7 +29,7 @@ from archivey import (
     open_archive,
 )
 from archivey.diagnostics import DiagnosticCode
-from archivey.plugins import SequentialReader, register_format
+from archivey.formats import SequentialReader, register_format
 
 DATA = Path(__file__).parent / "data"
 PACKAGE = Path(__file__).parents[1] / "src" / "archivey_cpio"
@@ -72,7 +74,7 @@ ARCHIVES = {
 
 @pytest.fixture(scope="session", autouse=True)
 def _registered() -> None:
-    register_format(CpioPlugin)
+    register_format(CpioHandler)
 
 
 class _Pipe(io.RawIOBase):
@@ -210,6 +212,34 @@ def test_detection() -> None:
     not_cpio = io.BytesIO(b"\xc7\x71" + bytes(40))
     with pytest.raises(archivey.FormatDetectionError):
         detect_format(not_cpio, config=probing)
+
+
+@pytest.mark.parametrize(
+    ("stream", "compress"),
+    [
+        (archivey.StreamFormat.GZIP, lambda data: gzip.compress(data, mtime=0)),
+        (archivey.StreamFormat.XZ, lzma.compress),
+    ],
+    ids=["gz", "xz"],
+)
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_inside_a_compression_stream(
+    stream: archivey.StreamFormat, compress: Callable[[bytes], bytes], pipe: bool
+) -> None:
+    """``.cpio.gz`` and ``.cpio.xz``: archivey decodes the stream, the reader sees
+    cpio, found by its magic in the decoded bytes."""
+    data = compress((DATA / "gnu-newc.cpio").read_bytes())
+    fmt = archivey.ArchiveFormat(CPIO.container, stream)
+    assert detect_format(io.BytesIO(data)).format == fmt
+    source = _Pipe(data) if pipe else io.BytesIO(data)
+    with open_archive(source, streaming=pipe) as reader:
+        assert reader.format == fmt
+        members = []
+        for member, member_stream in reader.stream_members():
+            members.append(member)
+            if member.name in CONTENT and member_stream is not None:
+                assert member_stream.read() == CONTENT[member.name], member.name
+    _check_listing(members, "newc")
 
 
 def _offset_of(data: bytes, content: bytes) -> int:
@@ -454,7 +484,7 @@ def test_the_package_uses_only_public_archivey() -> None:
     """The point of the package: a format added from outside, through the plugin API."""
     used = {name for path in PACKAGE.rglob("*.py") for name in _imports(path)}
     archivey_modules = {name for name in used if name.split(".")[0] == "archivey"}
-    assert archivey_modules == {"archivey", "archivey.diagnostics", "archivey.plugins"}
+    assert archivey_modules == {"archivey", "archivey.diagnostics", "archivey.formats"}
 
 
 def test_the_reader_is_a_sequential_reader() -> None:

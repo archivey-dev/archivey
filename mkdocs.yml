@@ -75,7 +75,7 @@ plugins:
           - cli.md: The archivey command (list, test, extract, info) and its exit codes
           - recipes.md: Complete scripts for dataset downloads, HTTP streams, and checking uploaded archives
           - formats.md: Per-format behaviour, extras each format needs, and format-specific member fields
-          - adding-a-format.md: Adding a read-only format from outside archivey with the provisional archivey.plugins API
+          - adding-a-format.md: Adding a read-only format with the provisional archivey.formats API, the structures built-in readers share too
           - migrating.md: Equivalent calls and behaviour differences from zipfile, tarfile, py7zr and rarfile
         Reference:
           - api.md: Every public class, function and exception, generated from the docstrings

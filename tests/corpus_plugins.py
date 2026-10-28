@@ -9,15 +9,15 @@ import importlib.util
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from archivey.internal.plugin_adapter import registration_scope
+from archivey.formats import register_format
+from archivey.internal.format_adapter import registration_scope
 from archivey.internal.registry import get_registry
-from archivey.plugins import register_format
 
 # Module and class of each plugin in packages/. A new plugin goes here.
 PLUGINS = (
-    ("archivey_cpio", "CpioPlugin"),
-    ("archivey_ar", "ArPlugin"),
-    ("archivey_squashfs", "SquashfsPlugin"),
+    ("archivey_cpio", "CpioHandler"),
+    ("archivey_ar", "ArHandler"),
+    ("archivey_squashfs", "SquashfsHandler"),
 )
 
 
@@ -30,9 +30,9 @@ def installed_plugins() -> Iterator[frozenset[str]]:
         for module, name in PLUGINS:
             if importlib.util.find_spec(module) is None:
                 continue
-            plugin = getattr(importlib.import_module(module), name)
+            handler = getattr(importlib.import_module(module), name)
             # A plugin's own tests may have registered it in this process already.
-            if get_registry().registered_reader(plugin.format) is None:
-                register_format(plugin)
+            if get_registry().registered_reader(handler.format) is None:
+                register_format(handler)
             installed.add(module)
         yield frozenset(installed)

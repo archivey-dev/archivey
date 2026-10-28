@@ -1,14 +1,16 @@
-"""The adapter between ``archivey.plugins`` and the internal reader machinery.
+"""The adapter between ``archivey.formats`` and the internal reader machinery.
 
-A plugin reader does not subclass :class:`BaseArchiveReader`. Two subclasses serve every
-plugin: :class:`PluginReaderAdapter` implements the four abstract methods by calling an
-:class:`~archivey.plugins.IndexedReader`, and :class:`SequentialReaderAdapter` by
-walking a :class:`~archivey.plugins.SequentialReader`, so the walk, the passes, link
+A format reader does not subclass :class:`BaseArchiveReader`. Two subclasses serve every
+one, built-in or plugin: :class:`IndexedReaderAdapter` implements the four abstract methods by calling an
+:class:`~archivey.formats.IndexedReader`, and :class:`SequentialReaderAdapter` by
+walking a :class:`~archivey.formats.SequentialReader`, so the walk, the passes, link
 handling and extraction stay internal (the ``plugin-api`` OpenSpec change, design §1
 and §2a).
 
 :func:`register_plugin` builds one :class:`ReadBackend` subclass per plugin and
 registers it after the built-in backends, so a built-in signal always wins (§4).
+:func:`register_builtin_format` builds one for a built-in format, registered with the
+other built-in backends.
 """
 
 from __future__ import annotations
@@ -36,6 +38,22 @@ from archivey.exceptions import (
     CorruptionError,
     TruncatedError,
     UnsupportedFeatureError,
+    exception_detail,
+)
+from archivey.formats import (
+    FormatHandler,
+    FormatReader,
+    ForwardStream,
+    Hasher,
+    IndexedReader,
+    MemberData,
+    MemberDigest,
+    MemberSpan,
+    ReaderArchiveInfo,
+    ReaderContext,
+    ReaderSource,
+    SequentialFormatHandler,
+    SequentialReader,
 )
 from archivey.internal import format_args
 from archivey.internal.base_reader import (
@@ -45,6 +63,8 @@ from archivey.internal.base_reader import (
     reject_start_offset,
 )
 from archivey.internal.config import stream_config_from_archivey
+from archivey.internal.dataclass_copy import copy_with
+from archivey.internal.detection import INNER_CONTAINER_PROBE_BYTES
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.format_args import add_plugin_spellings, plugin_spelling_clash
 from archivey.internal.logs import detection as detection_logger
@@ -56,6 +76,7 @@ from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import MemberStreamParts, RewindWarning
 from archivey.internal.streams.blocks import BlockStream
 from archivey.internal.streams.codecs import (
+    SINGLE_FILE_CODECS,
     Codec,
     CodecParams,
     codec_for_stream_format,
@@ -66,6 +87,7 @@ from archivey.internal.streams.respawn import RespawnStream
 from archivey.internal.streams.streamtools import (
     FullCountStream,
     LockedStream,
+    OneReadEachStream,
     ReadAheadStream,
     ReadOnlyIOStream,
     SharedSource,
@@ -73,25 +95,11 @@ from archivey.internal.streams.streamtools import (
     check_read_size,
     ensure_bufferedio,
     is_seekable,
+    read_arrived,
     source_byte_size,
 )
 from archivey.internal.streams.streamtools.binaryio import read_blocking
 from archivey.internal.streams.verify import CustomDigests, hasher_factory
-from archivey.plugins import (
-    FormatPlugin,
-    ForwardStream,
-    Hasher,
-    IndexedReader,
-    MemberData,
-    MemberDigest,
-    MemberSpan,
-    PluginArchiveInfo,
-    PluginContext,
-    PluginReader,
-    PluginSource,
-    SequentialFormatPlugin,
-    SequentialReader,
-)
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -132,7 +140,7 @@ def _reads_full(stream: object) -> bool:
     member stream needs no :class:`FullCountStream` in front of it.
 
     A buffered stream does. So does every stream archivey made, a
-    ``PluginSource.view()`` or a ``PluginContext.decompress()`` result: the stream layer
+    ``ReaderSource.view()`` or a ``ReaderContext.decompress()`` result: the stream layer
     keeps that rule, and a short read from one is its end. Anything else may be an
     ``io.RawIOBase`` that stops a read early (at a block boundary, say), and the
     wrapper's cost when it does not is one call per read and no copy.
@@ -144,11 +152,11 @@ class _PluginAdapter(BaseArchiveReader):
     """What the adapters of both reader shapes share: the context, errors, digests,
     archive info and close."""
 
-    _reader: PluginReader
+    _reader: FormatReader
 
     def __init__(
         self,
-        plugin: FormatPlugin,
+        plugin: FormatHandler,
         source: ArchiveSource,
         format: ArchiveFormat,
         streaming: bool,
@@ -176,7 +184,7 @@ class _PluginAdapter(BaseArchiveReader):
         # The plugin may hold a handle of its own (a library over ``source.path``), so
         # under CONCURRENT every call into it, and every read of a stream it returned,
         # takes one lock (``_handle_guard``). The exception is ``translate_exception``,
-        # which ``base_reader`` runs outside the lock. The views of ``PluginSource``
+        # which ``base_reader`` runs outside the lock. The views of ``ReaderSource``
         # need none, but archivey cannot tell which kind of reader it was given.
         if MemberStreams.CONCURRENT in member_streams:
             self._handle_lock = threading.Lock()
@@ -197,7 +205,7 @@ class _PluginAdapter(BaseArchiveReader):
         # The walk position of the member being listed: the id registration will
         # stamp on it, for a report made before it is yielded.
         self._walk_index = 0
-        context = PluginContext(
+        context = ReaderContext(
             encoding=encoding,
             archive_name=archive_name,
             config=config,
@@ -208,7 +216,7 @@ class _PluginAdapter(BaseArchiveReader):
         self._reader = self._open_reader(context)
         self._reader_open = True
 
-    def _open_reader(self, context: PluginContext) -> PluginReader:
+    def _open_reader(self, context: ReaderContext) -> FormatReader:
         """Call the plugin's ``open``, and check what it returned."""
         raise NotImplementedError
 
@@ -228,7 +236,7 @@ class _PluginAdapter(BaseArchiveReader):
         size: int | None,
         properties: bytes | None,
     ) -> BinaryIO:
-        """``PluginContext.decompress``: ``data`` through archivey's codec layer."""
+        """``ReaderContext.decompress``: ``data`` through archivey's codec layer."""
         codec = (
             codec_for_stream_format(method)
             if isinstance(method, StreamFormat)
@@ -236,7 +244,7 @@ class _PluginAdapter(BaseArchiveReader):
         )
         if codec is None:
             raise UnsupportedFeatureError(
-                f"PluginContext.decompress() does not decode {method.name}",
+                f"ReaderContext.decompress() does not decode {method.name}",
                 source_format=self._format,
                 archive_name=self._archive_name,
             )
@@ -284,7 +292,7 @@ class _PluginAdapter(BaseArchiveReader):
         return open_codec_stream(
             codec,
             data,
-            config=replace(self._decoder_config, **changes),
+            config=copy_with(self._decoder_config, **changes),
             params=params,
             collector=self._diagnostics_collector,
         )
@@ -301,17 +309,17 @@ class _PluginAdapter(BaseArchiveReader):
         details: DiagnosticContext,
         member: ArchiveMember | None,
     ) -> None:
-        """``PluginContext.report``: one diagnostic, with the archive and member filled
+        """``ReaderContext.report``: one diagnostic, with the archive and member filled
         in."""
         if code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE:
             raise ArchiveyUsageError(
                 "report SYMLINK_TARGET_UNAVAILABLE with "
-                "PluginContext.link_target_unavailable()"
+                "ReaderContext.link_target_unavailable()"
             )
         try:
             validate_code_context(code, details)
         except ValueError as exc:
-            raise ArchiveyUsageError(f"PluginContext.report(): {exc}") from None
+            raise ArchiveyUsageError(f"ReaderContext.report(): {exc}") from None
         fill: dict[str, object] = {}
         if getattr(details, "archive_name", "") is None:
             fill["archive_name"] = self._archive_name
@@ -342,6 +350,12 @@ class _PluginAdapter(BaseArchiveReader):
         )
 
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
+        # A plugin that broke the interface is a plugin bug, not a fault in the
+        # archive: not offered to the plugin's translator, which may map every
+        # ValueError to corruption. These are raised from inside the walk, so the
+        # boundary cannot sit outside them as it does for _wrong_reader's checks.
+        if isinstance(exc, ArchiveyUsageError) or getattr(exc, _PLUGIN_BUG, False):
+            return None
         translated = (
             self._reader.translate_exception(exc) if self._reader_open else None
         )
@@ -426,7 +440,7 @@ class _PluginAdapter(BaseArchiveReader):
         return ArchiveInfo(
             format=self._format,
             format_version=info.format_version,
-            is_solid=info.is_solid,
+            is_solid=self._is_solid(info),
             member_count=None,
             comment=info.comment,
             is_encrypted=False,
@@ -435,8 +449,13 @@ class _PluginAdapter(BaseArchiveReader):
             extra=extra,
         )
 
-    def _cost(self, info: PluginArchiveInfo) -> CostReceipt:
+    def _cost(self, info: ReaderArchiveInfo) -> CostReceipt:
         raise NotImplementedError
+
+    def _is_solid(self, info: ReaderArchiveInfo) -> bool:
+        # One compression stream around a sequential format makes it solid, as for a
+        # compressed TAR.
+        return info.is_solid or self._format.stream is not StreamFormat.UNCOMPRESSED
 
     def _report_listed(self, member: ArchiveMember, presented: str, index: int) -> None:
         """The reports archivey makes on every member a plugin lists, whatever its
@@ -462,17 +481,17 @@ class _PluginAdapter(BaseArchiveReader):
                 self._shared.close()
 
 
-class PluginReaderAdapter(_PluginAdapter):
-    """Serves an :class:`~archivey.plugins.IndexedReader` through the internal reader
+class IndexedReaderAdapter(_PluginAdapter):
+    """Serves an :class:`~archivey.formats.IndexedReader` through the internal reader
     contract."""
 
-    def _open_reader(self, context: PluginContext) -> IndexedReader[Any]:
+    def _open_reader(self, context: ReaderContext) -> IndexedReader[Any]:
         source = self._source
         assert source is not None
         self._shared = shared = SharedSource(
             source, wrap_handle=self._seek_handle_wrapper()
         )
-        plugin_source = PluginSource(
+        plugin_source = ReaderSource(
             shared.view, shared.size, source.path, shared.read_at
         )
         with self._translated_errors(), self._handle_guard():
@@ -483,7 +502,7 @@ class PluginReaderAdapter(_PluginAdapter):
         self._MEMBER_LIST_UPFRONT = reader.member_list_upfront
         return reader
 
-    def _cost(self, info: PluginArchiveInfo) -> CostReceipt:
+    def _cost(self, info: ReaderArchiveInfo) -> CostReceipt:
         return CostReceipt(
             listing_cost=(
                 ListingCost.INDEXED
@@ -593,19 +612,38 @@ class PluginReaderAdapter(_PluginAdapter):
             raise
 
 
+class _Layer:
+    """One stream a walk reads: the archive's bytes, or the decoded bytes of a
+    compression stream the walk started with ``ForwardStream.decompress``.
+
+    ``forward`` is the walk's stream over it. ``stream`` is what ``forward`` reads: the
+    streaming buffer, or a random-access walk's own view. ``shared`` (random access
+    only) gives member data views of it, at the offsets ``forward`` counts.
+    """
+
+    __slots__ = ("forward", "shared", "stream")
+
+    def __init__(self, stream: BinaryIO, shared: SharedSource | None) -> None:
+        self.stream = stream
+        self.shared = shared
+        self.forward: ForwardStream
+
+
 class _Span:
     """Where a sequential member's data is, on its ``_raw``: ``length`` bytes from
-    ``offset`` of the archive, with the digests its header stored."""
+    ``offset`` of its layer's stream, with the digests its header stored."""
 
-    __slots__ = ("custom", "expected", "length", "offset")
+    __slots__ = ("custom", "expected", "layer", "length", "offset")
 
     def __init__(
         self,
+        layer: _Layer,
         offset: int,
         length: int,
         expected: Mapping[HashAlgorithm, bytes] | None,
         custom: CustomDigests | None,
     ) -> None:
+        self.layer = layer
         self.offset = offset
         self.length = length
         self.expected = expected
@@ -617,6 +655,31 @@ class _Span:
 _SKIP_BY_READING = 64 * 1024
 # The walk's read buffer: headers are small reads.
 _WALK_BUFFER = 64 * 1024
+
+
+class _ForwardInput(ReadOnlyIOStream):
+    """A compression stream that starts part-way through a streaming walk: the rest of
+    the walk's buffer, read forward. Each read takes what the buffer holds or one
+    read of what has arrived, never a full count, so a codec fed from it does not wait
+    on a pipe whose writer keeps it open (TAR's rule)."""
+
+    def __init__(self, stream: BinaryIO) -> None:
+        super().__init__()
+        # The walk's buffer: archivey's ReadAheadStream (over a codec, or a parent
+        # layer) or a BufferedReader over the source's arrived view.
+        self._stream = stream
+
+    def read(self, n: int | None = -1, /) -> bytes:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        n = check_read_size(n)
+        if n == 0:
+            return b""
+        n = n if n > 0 else _WALK_BUFFER
+        stream = self._stream
+        if isinstance(stream, ReadAheadStream):
+            return stream.read_arrived(n)
+        return read_arrived(stream, n)
 
 
 class _SpanWindow(ReadOnlyIOStream):
@@ -651,33 +714,42 @@ class _SpanWindow(ReadOnlyIOStream):
 
 
 class SequentialReaderAdapter(_PluginAdapter):
-    """Serves a :class:`~archivey.plugins.SequentialReader`: its walk is the member
+    """Serves a :class:`~archivey.formats.SequentialReader`: its walk is the member
     walk, and member data is a window of the walk's stream (a streaming pass) or a
     view of the source at the offset the walk recorded (random access)."""
 
     _MEMBER_LIST_UPFRONT = False
 
-    def _open_reader(self, context: PluginContext) -> SequentialReader:
+    def _open_reader(self, context: ReaderContext) -> SequentialReader:
         plugin = self._plugin
-        assert isinstance(plugin, SequentialFormatPlugin)
+        assert isinstance(plugin, SequentialFormatHandler)
         source = self._source
         assert source is not None
         # Streaming: the buffer the walk reads through, made here, so closed here.
         self._owned_stream: BinaryIO | None = None
-        # Random access: the current walk's own buffered view (``_new_walk``).
-        self._walk_view: BinaryIO | None = None
+        # Random access: the current walk's own buffered views (``_new_walk``), one
+        # per layer it reads.
+        self._walk_views: list[BinaryIO] = []
+        # The layer the walk reads now: the archive's, or the last stream it
+        # decompressed (``_decompress_layer``).
+        self._layer: _Layer | None = None
+        # The layer of the member a streaming pass yielded last.
         self._forward: ForwardStream | None = None
-        if self._streaming:
-            # The walk and the member windows read one stream, as a TAR pass does.
-            self._handle_lock = self._handle_lock or threading.Lock()
-            # On a pipe, the buffer fills from what has arrived, so a short archive
-            # whose writer keeps the pipe open opens at once (TAR's rule).
-            raw = source if source.seekable() else cast(BinaryIO, source.arrived_view())
-            self._owned_stream = cast(
-                BinaryIO, ensure_bufferedio(self._track_source_seeks(raw))
-            )
-        else:
-            self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
+        # Streams ``ForwardStream.decompress`` opened, closed with the reader. Random
+        # access keeps each layer's codec and views by where it starts, so a walk
+        # started over reads through the ones it opened before.
+        self._layer_streams: list[BinaryIO] = []
+        self._layer_sources: dict[tuple[int, int, StreamFormat], SharedSource] = {}
+        # A compressed pair (``.cpio.gz``): the codec stream the walk and the member
+        # data read, as TAR's (``_open_outer_codec_stream``). The walk sees decoded
+        # bytes only.
+        self._codec_stream: BinaryIO | None = None
+        self._compressed = self._format.stream is not StreamFormat.UNCOMPRESSED
+        try:
+            self._open_streams(source, member_streams=self._member_streams)
+        except BaseException:
+            self._release_streams()
+            raise
         try:
             with self._translated_errors(), self._handle_guard():
                 reader = plugin.open_sequential(context)
@@ -687,12 +759,13 @@ class SequentialReaderAdapter(_PluginAdapter):
             self._reader_open = True
             # The first step of the walk is taken now, so a file that is not one of
             # the format's archives fails to open (DR-15b), as a TAR does.
-            forward, walk = self._new_walk()
+            walk = self._new_walk()
             with self._translated_errors(), self._handle_guard():
                 first = next(walk, None)
-            self._open_walk: (
-                tuple[ForwardStream, Iterator[MemberSpan], MemberSpan | None] | None
-            ) = (forward, walk, first)
+            self._open_walk: tuple[Iterator[MemberSpan], MemberSpan | None] | None = (
+                walk,
+                first,
+            )
         except BaseException:
             # The reader is closed as _close_archive closes it: reader, then streams.
             # A failing close() must not replace the error being raised.
@@ -708,23 +781,81 @@ class SequentialReaderAdapter(_PluginAdapter):
             raise
         return reader
 
-    def _new_walk(self) -> tuple[ForwardStream, Iterator[MemberSpan]]:
+    def _open_streams(
+        self, source: ArchiveSource, *, member_streams: MemberStreams
+    ) -> None:
+        """Open what the walk reads: a buffer over the source (streaming) or views of
+        it (random access), over the decoded bytes when the format is compressed."""
+        if self._streaming:
+            # The walk and the member windows read one stream, as a TAR pass does.
+            self._handle_lock = self._handle_lock or threading.Lock()
+        if self._compressed:
+            codec = self._codec_stream = self._open_outer_codec_stream(
+                source,
+                self._format.stream,
+                self._streaming,
+                member_streams=member_streams,
+            )
+            if self._streaming:
+                # The walk reads small headers: a buffer in front makes each one a
+                # copy from memory, not a decoder call. On a source that cannot seek,
+                # the codec reads what has arrived, and so does this buffer (TAR's
+                # rule).
+                self._owned_stream = ReadAheadStream(
+                    codec, _WALK_BUFFER, fill_arrived=not source.seekable()
+                )
+            else:
+                # Each walk buffers its own view (_new_walk), and member data is a
+                # view too: a read that is not where the decoder is seeks it, which
+                # decodes again from the start when it goes back (a solid archive).
+                self._shared = SharedSource(codec)
+            return
+        if self._streaming:
+            # On a pipe, the buffer fills from what has arrived, so a short archive
+            # whose writer keeps the pipe open opens at once (TAR's rule).
+            raw = source if source.seekable() else cast(BinaryIO, source.arrived_view())
+            self._owned_stream = cast(
+                BinaryIO, ensure_bufferedio(self._track_source_seeks(raw))
+            )
+        else:
+            self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
+
+    def _new_walk(self) -> Iterator[MemberSpan]:
         """A walk from the start of the archive, over a stream of its own."""
         if self._streaming:
             stream = self._owned_stream
             assert stream is not None
+            layer = _Layer(stream, None)
             # Read forward only: the source may not start at offset 0 of its handle.
-            seekable = False
+            self._layer = self._layer_forward(layer, seekable=False)
         else:
             assert self._shared is not None
             # Only one walk runs at a time: a walk started over replaces the last
-            # one's view.
+            # one's views.
             self._close_walk_view()
-            stream = self._walk_view = ReadAheadStream(
-                self._shared.view(0, None), _WALK_BUFFER, rewind_oversize=True
+            self._layer = self._random_access_layer(
+                self._shared, compressed=self._compressed
             )
-            seekable = True
-        size = self._shared.size if self._shared is not None else None
+        forward = self._layer.forward
+        with self._translated_errors(), self._handle_guard():
+            return iter(self._sequential.walk(forward))
+
+    def _random_access_layer(self, shared: SharedSource, *, compressed: bool) -> _Layer:
+        """A layer over ``shared`` with a walk view of its own."""
+        # A plain file: a read larger than the buffer rewinds the prefetched tail and
+        # returns the file's own bytes. A codec keeps the join, since rewinding it
+        # would decode the tail again; and a skip reads through it, which is what a
+        # seek of the decoder would do, and finds where the data ends.
+        view = ReadAheadStream(
+            shared.view(0, None), _WALK_BUFFER, rewind_oversize=not compressed
+        )
+        self._walk_views.append(view)
+        return self._layer_forward(_Layer(view, shared), seekable=not compressed)
+
+    def _layer_forward(self, layer: _Layer, *, seekable: bool) -> _Layer:
+        """Give ``layer`` the walk's ``ForwardStream`` over its stream."""
+        stream = layer.stream
+        size = layer.shared.size if layer.shared is not None else None
 
         def skip(offset: int, n: int) -> None:
             end = offset + n
@@ -741,27 +872,103 @@ class SequentialReaderAdapter(_PluginAdapter):
                     )
                 left -= len(chunk)
 
-        forward = ForwardStream(functools.partial(read_blocking, stream), skip)
-        with self._translated_errors(), self._handle_guard():
-            walk = iter(self._sequential.walk(forward))
-        return forward, walk
+        layer.forward = ForwardStream(
+            functools.partial(read_blocking, stream),
+            skip,
+            functools.partial(self._decompress_layer, layer),
+        )
+        return layer
+
+    def _decompress_layer(
+        self, parent: _Layer, offset: int, stream_format: StreamFormat
+    ) -> ForwardStream:
+        """``ForwardStream.decompress``: a layer over the decoded bytes of the
+        compression stream that starts at ``offset`` of ``parent``, which becomes the
+        layer the walk reads."""
+        codec = (
+            None
+            if stream_format is StreamFormat.UNCOMPRESSED
+            else _STREAM_CODECS.get(stream_format)
+        )
+        if codec is None:
+            error = ValueError(
+                f"ForwardStream.decompress() takes a compression stream format, got "
+                f"{stream_format!r}"
+            )
+            setattr(error, _PLUGIN_BUG, True)
+            raise error
+        # The member decoder's config (same limits, same ratio guard), except that the
+        # stream runs to the end of the archive, as a .gz file's does: bytes after its
+        # end are reported, as bytes after an archive's end are, not refused.
+        config = replace(
+            self._decoder_config,
+            refuse_input_after_end=False,
+            report_trailing_data=True,
+        )
+        if self._streaming:
+            # The parent is done (the ForwardStream that called this refuses reads
+            # now), so the codec reads its buffer straight on, one read of what has
+            # arrived each time: outermost, so the codec puts no full-count buffer in
+            # front of it (as _codec_input does for an outer stream).
+            raw = _ForwardInput(parent.stream)
+            decoded = open_codec_stream(
+                codec,
+                OneReadEachStream(self._wrap_compressed_input(raw)),
+                config=config,
+                stamp=self._stamp_error_context,
+                collector=self._diagnostics_collector,
+            )
+            self._layer_streams.append(decoded)
+            assert self._source is not None
+            buffered = ReadAheadStream(
+                decoded, _WALK_BUFFER, fill_arrived=not self._source.seekable()
+            )
+            self._layer_streams.append(buffered)
+            layer = self._layer_forward(_Layer(buffered, None), seekable=False)
+        else:
+            assert parent.shared is not None
+            # The parent's source is held for the reader's life (``self._shared``, or
+            # this table), so its id cannot be reused while the key is in use.
+            key = (id(parent.shared), offset, stream_format)
+            shared = self._layer_sources.get(key)
+            if shared is None:
+                view = parent.shared.view(offset, None)
+                self._layer_streams.append(view)
+                decoded = open_codec_stream(
+                    codec,
+                    self._wrap_compressed_input(view),
+                    config=config,
+                    stamp=self._stamp_error_context,
+                    collector=self._diagnostics_collector,
+                    # Read only through views, as a compressed TAR's codec is.
+                    repeat_verdict=False,
+                )
+                self._layer_streams.append(decoded)
+                shared = self._layer_sources[key] = SharedSource(decoded)
+            layer = self._random_access_layer(shared, compressed=True)
+        self._layer = layer
+        return layer.forward
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
         boundary = self._translated_errors()
         guard = self._handle_guard()
         if self._open_walk is not None:
-            forward, walk, span = self._open_walk
+            walk, span = self._open_walk
             self._open_walk = None
         else:
-            forward, walk = self._new_walk()
+            walk = self._new_walk()
             self._walk_index = 0
             with boundary, guard:
                 span = next(walk, None)
-        self._forward = forward
         index = 0
         while span is not None:
             self._walk_index = index
-            member = self._take_span(span, forward, index)
+            # The layer the walk read this span's header from: a decompress() in the
+            # step that yielded it moved the walk onto a new one.
+            layer = self._layer
+            assert layer is not None
+            forward = self._forward = layer.forward
+            member = self._take_span(span, layer, index)
             yield member
             index += 1
             self._walk_index = index
@@ -776,9 +983,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                     forward.skip(left)
                 span = next(walk, None)
 
-    def _take_span(
-        self, span: object, forward: ForwardStream, index: int
-    ) -> ArchiveMember:
+    def _take_span(self, span: object, layer: _Layer, index: int) -> ArchiveMember:
         """The member a span describes, checked, named and placed."""
         name = type(self._reader).__name__
         if not isinstance(span, MemberSpan):
@@ -817,7 +1022,8 @@ class SequentialReaderAdapter(_PluginAdapter):
         custom: CustomDigests | None = None
         if span.digests:
             expected, custom = self._member_digests(member, span.digests, "walk")
-        record = _Span(forward.offset, length, expected, custom or None)
+        forward = layer.forward
+        record = _Span(layer, forward.offset, length, expected, custom or None)
         member._raw = record
         self._report_listed(member, presented, index)
         if (
@@ -839,7 +1045,7 @@ class SequentialReaderAdapter(_PluginAdapter):
         stream: BinaryIO
         if self._streaming:
             forward = self._forward
-            if forward is None or forward.offset != record.offset:
+            if forward is not record.layer.forward or forward.offset != record.offset:
                 raise ArchiveyUsageError(
                     f"the data of {quoted(member.name)} is no longer readable: the "
                     "pass has moved on"
@@ -848,8 +1054,9 @@ class SequentialReaderAdapter(_PluginAdapter):
             assert self._handle_lock is not None
             stream = LockedStream(stream, self._handle_lock)
         else:
-            assert self._shared is not None
-            stream = self._shared.view(record.offset, record.length)
+            shared = record.layer.shared
+            assert shared is not None
+            stream = shared.view(record.offset, record.length)
         expected = record.expected if record.expected is not None else member.hashes
         return self._member_parts(
             stream,
@@ -863,22 +1070,39 @@ class SequentialReaderAdapter(_PluginAdapter):
             custom_digests=record.custom,
         )
 
-    def _cost(self, info: PluginArchiveInfo) -> CostReceipt:
+    def _cost(self, info: ReaderArchiveInfo) -> CostReceipt:
         assert self._source is not None
+        capability = (
+            StreamCapability.SEEKABLE
+            if self._source.seekable()
+            else StreamCapability.FORWARD_ONLY
+        )
+        if self._compressed:
+            # One compression stream over all members, as a compressed TAR. A walk
+            # that decompresses part-way is not known to until it gets there, so its
+            # plugin says so up front with ``ReaderArchiveInfo.is_solid``.
+            return CostReceipt(
+                listing_cost=ListingCost.REQUIRES_DECOMPRESSION,
+                access_cost=AccessCost.SOLID,
+                stream_capability=capability,
+                solid_block_count=1,
+            )
+        # A sequential plugin declares is_solid when its members share one decode
+        # (compression that starts part-way), so the later headers sit inside it.
         return CostReceipt(
-            listing_cost=ListingCost.REQUIRES_SCANNING,
-            access_cost=AccessCost.SOLID if info.is_solid else AccessCost.DIRECT,
-            stream_capability=(
-                StreamCapability.SEEKABLE
-                if self._source.seekable()
-                else StreamCapability.FORWARD_ONLY
+            listing_cost=(
+                ListingCost.REQUIRES_DECOMPRESSION
+                if info.is_solid
+                else ListingCost.REQUIRES_SCANNING
             ),
+            access_cost=AccessCost.SOLID if info.is_solid else AccessCost.DIRECT,
+            stream_capability=capability,
             solid_block_count=None,
         )
 
     def _close_walk_view(self) -> None:
-        if self._walk_view is not None:
-            view, self._walk_view = self._walk_view, None
+        views, self._walk_views = self._walk_views, []
+        for view in reversed(views):
             view.close()
 
     def _release_streams(self) -> None:
@@ -886,9 +1110,36 @@ class SequentialReaderAdapter(_PluginAdapter):
         try:
             self._close_walk_view()
         finally:
-            if self._owned_stream is not None:
-                owned, self._owned_stream = self._owned_stream, None
-                owned.close()
+            try:
+                if self._owned_stream is not None:
+                    owned, self._owned_stream = self._owned_stream, None
+                    owned.close()
+            finally:
+                try:
+                    # Innermost first: a layer reads the one it was opened over.
+                    streams, self._layer_streams = self._layer_streams, []
+                    self._layer_sources.clear()
+                    # Every stream is closed even when one close raises. The first
+                    # error propagates and each later one is added to it as a note:
+                    # ExitStack would keep only the last, with no __context__.
+                    first: Exception | None = None
+                    for stream in reversed(streams):
+                        try:
+                            stream.close()
+                        except Exception as err:  # noqa: BLE001 — re-raised after the rest close
+                            if first is None:
+                                first = err
+                            else:
+                                first.add_note(
+                                    "closing another layer failed: "
+                                    + exception_detail(err, with_type=True)
+                                )
+                    if first is not None:
+                        raise first
+                finally:
+                    if self._codec_stream is not None:
+                        codec, self._codec_stream = self._codec_stream, None
+                        codec.close()
 
     def _close_archive(self) -> None:
         # A walk taken at open and never listed is still suspended in the plugin's
@@ -896,7 +1147,7 @@ class SequentialReaderAdapter(_PluginAdapter):
         # open stream, not later in the collector.
         try:
             if self._open_walk is not None:
-                close = getattr(self._open_walk[1], "close", None)
+                close = getattr(self._open_walk[0], "close", None)
                 self._open_walk = None
                 if close is not None:
                     with self._translated_errors(), self._handle_guard():
@@ -909,10 +1160,21 @@ class SequentialReaderAdapter(_PluginAdapter):
                     self._release_streams()
 
 
+# Set on an error that reports a plugin breaking the interface, so the plugin's own
+# ``translate_exception`` is not offered it (``_PluginAdapter._translate_exception``).
+_PLUGIN_BUG = "_archivey_plugin_bug"
+
+# The compression streams ``ForwardStream.decompress`` decodes: each single-file codec.
+_STREAM_CODECS: dict[StreamFormat, Codec] = {
+    codec.stream_format: codec_for_stream_format(codec.stream_format)
+    for codec in SINGLE_FILE_CODECS
+    if codec.stream_format is not None
+}
+
 # The ``MemberDigest`` names archivey computes itself, with its own hasher.
 _ALGORITHMS = {str(algorithm): algorithm for algorithm in HashAlgorithm}
 
-# The methods ``PluginContext.decompress`` decodes. PPMd, the branch filters and RAR
+# The methods ``ReaderContext.decompress`` decodes. PPMd, the branch filters and RAR
 # need parameters or framing a plain method name cannot carry.
 _PLUGIN_CODECS: dict[CompressionAlgorithm, Codec] = {
     CompressionAlgorithm.STORED: Codec.STORED,
@@ -931,7 +1193,7 @@ _PLUGIN_CODECS: dict[CompressionAlgorithm, Codec] = {
 class _PluginBackend(ReadBackend):
     """Base of the backend class :func:`register_plugin` builds for each plugin."""
 
-    PLUGIN: ClassVar[type[FormatPlugin]]
+    PLUGIN: ClassVar[type[FormatHandler]]
 
     def open_read(
         self,
@@ -950,8 +1212,8 @@ class _PluginBackend(ReadBackend):
         reject_start_offset(start_offset, format, archive_name)
         adapter = (
             SequentialReaderAdapter
-            if issubclass(self.PLUGIN, SequentialFormatPlugin)
-            else PluginReaderAdapter
+            if issubclass(self.PLUGIN, SequentialFormatHandler)
+            else IndexedReaderAdapter
         )
         return adapter(
             self.PLUGIN(),
@@ -1009,10 +1271,10 @@ def _prefix_probe(probe: object) -> ContentProbe:
     return content_probe
 
 
-def _check_plugin(plugin: type[FormatPlugin]) -> ArchiveFormat:
-    if not (isinstance(plugin, type) and issubclass(plugin, FormatPlugin)):
+def _check_plugin(plugin: type[FormatHandler]) -> ArchiveFormat:
+    if not (isinstance(plugin, type) and issubclass(plugin, FormatHandler)):
         raise ArchiveyUsageError(
-            f"register_format() takes a FormatPlugin subclass, got {plugin!r}"
+            f"register_format() takes a FormatHandler subclass, got {plugin!r}"
         )
     fmt = getattr(plugin, "format", None)
     if not isinstance(fmt, ArchiveFormat):
@@ -1024,10 +1286,15 @@ def _check_plugin(plugin: type[FormatPlugin]) -> ArchiveFormat:
             f"{plugin.__name__}.format must use a PluginContainer member as its "
             f"container, got {fmt.container!r}"
         )
+    sequential = issubclass(plugin, SequentialFormatHandler)
     if fmt.stream != StreamFormat.UNCOMPRESSED:
         raise ArchiveyUsageError(
-            f"{plugin.__name__}.format must have an UNCOMPRESSED stream: outer "
-            "compression around a plugin format is not supported yet"
+            f"{plugin.__name__}.format must have an UNCOMPRESSED stream: "
+            + (
+                "archivey adds the compressed forms of a sequential format itself"
+                if sequential
+                else "an indexed format inside a compression stream is not supported"
+            )
         )
     registry = get_registry()
     if registry.registered_reader(fmt) is not None:
@@ -1045,21 +1312,23 @@ def _check_plugin(plugin: type[FormatPlugin]) -> ArchiveFormat:
                 f"{plugin.__name__}: container value {value!r} is already used by "
                 f"{other.display_name}"
             )
-    clash = plugin_spelling_clash(fmt)
-    if clash is not None:
-        spelling, owner = clash
-        raise ArchiveyUsageError(
-            f"{plugin.__name__}: format= spelling {spelling!r} already names "
-            f"{owner.display_name}; choose a container value and member name no "
-            "format uses"
-        )
-    claimed = {ext.lower(): owner for ext, owner in registry.extension_map().items()}
+    for each in (fmt, *(_compressed_formats(fmt) if sequential else ())):
+        clash = plugin_spelling_clash(each)
+        if clash is not None:
+            spelling, owner = clash
+            raise ArchiveyUsageError(
+                f"{plugin.__name__}: format= spelling {spelling!r} already names "
+                f"{owner.display_name}; choose a container value and member name no "
+                "format uses"
+            )
     for ext in plugin.extensions:
         if not ext.startswith(".") or len(ext) < 2:
             raise ArchiveyUsageError(
                 f"{plugin.__name__}: extension {ext!r} must be a dot followed by at "
                 "least one character"
             )
+    claimed = {ext.lower(): owner for ext, owner in registry.extension_map().items()}
+    for ext in _extensions(plugin, fmt, sequential=sequential):
         owner = claimed.get(ext.lower())
         if owner is not None:
             raise ArchiveyUsageError(
@@ -1072,25 +1341,66 @@ def _check_plugin(plugin: type[FormatPlugin]) -> ArchiveFormat:
                 f"{plugin.__name__}: magic {magic!r} needs a non-negative offset "
                 "and at least one byte"
             )
+        end = magic.offset + len(magic.data)
+        if sequential and end > INNER_CONTAINER_PROBE_BYTES:
+            # Detection finds a sequential format inside a compression stream by this
+            # magic, in the bytes it already decodes for TAR's: one that ends later
+            # would make it decode more.
+            raise ArchiveyUsageError(
+                f"{plugin.__name__}: magic {magic!r} ends at byte {end}; a sequential "
+                f"format's magic must end within the first {INNER_CONTAINER_PROBE_BYTES} "
+                "bytes"
+            )
     if plugin.probe is not None and not callable(plugin.probe):
         raise ArchiveyUsageError(f"{plugin.__name__}.probe must be callable or None")
     return fmt
 
 
+def _compressed_formats(fmt: ArchiveFormat) -> tuple[ArchiveFormat, ...]:
+    """``fmt`` inside each single-file compression stream archivey decodes, as
+    ``TAR_GZ`` is TAR inside gzip."""
+    return tuple(
+        ArchiveFormat(fmt.container, codec.stream_format)
+        for codec in SINGLE_FILE_CODECS
+        if codec.stream_format is not None
+    )
+
+
+def _extensions(
+    plugin: type[FormatHandler], fmt: ArchiveFormat, *, sequential: bool
+) -> dict[str, ArchiveFormat]:
+    """The plugin's extensions, and for a sequential format each one followed by a
+    compression stream's (``.cpio`` gives ``.cpio.gz``, ``.cpio.xz``, …)."""
+    extensions = dict.fromkeys(plugin.extensions, fmt)
+    if sequential:
+        for codec in SINGLE_FILE_CODECS:
+            if codec.stream_format is None:
+                continue
+            pair = ArchiveFormat(fmt.container, codec.stream_format)
+            for ext in plugin.extensions:
+                for codec_ext in codec.extensions:
+                    extensions[f"{ext}{codec_ext}"] = pair
+    return extensions
+
+
 def _backend_class(
-    plugin: type[FormatPlugin], fmt: ArchiveFormat, overrides: Mapping[str, object]
+    plugin: type[FormatHandler], fmt: ArchiveFormat, overrides: Mapping[str, object]
 ) -> type[_PluginBackend]:
     probe = plugin.probe
+    sequential = issubclass(plugin, SequentialFormatHandler)
+    magic = tuple(MagicSignature(m.offset, m.data, fmt) for m in plugin.magic)
     attrs: dict[str, object] = {
         "PLUGIN": plugin,
-        "FORMATS": (fmt,),
-        "EXTENSIONS": dict.fromkeys(plugin.extensions, fmt),
-        "MAGIC": tuple(MagicSignature(m.offset, m.data, fmt) for m in plugin.magic),
+        # A sequential format reads through every single-file compression stream.
+        "FORMATS": (fmt, *(_compressed_formats(fmt) if sequential else ())),
+        "EXTENSIONS": _extensions(plugin, fmt, sequential=sequential),
+        "MAGIC": magic,
+        "INNER_MAGIC": magic if sequential else (),
         "CONTENT_PROBES": (((fmt, _prefix_probe(probe)),) if probe is not None else ()),
         "USES_ENCODING": bool(plugin.uses_encoding),
         "NON_SEEKABLE_REASON": "its reader needs random access to the archive",
         # A sequential format reads a pipe in a streaming pass.
-        "SUPPORTS_STREAMING_NON_SEEKABLE": issubclass(plugin, SequentialFormatPlugin),
+        "SUPPORTS_STREAMING_NON_SEEKABLE": sequential,
         "INSTALL_HINT": plugin.install_hint,
         "REQUIRED_MODULES": tuple(plugin.requires),
         **overrides,
@@ -1098,17 +1408,19 @@ def _backend_class(
     return type(f"{plugin.__name__}Backend", (_PluginBackend,), attrs)
 
 
-def register_plugin(plugin: type[FormatPlugin]) -> None:
+def register_plugin(plugin: type[FormatHandler]) -> None:
     """Build the backend class for ``plugin`` and register it (``register_format``)."""
     fmt = _check_plugin(plugin)
-    get_registry().register_plugin_backend(_backend_class(plugin, fmt, {}))
-    add_plugin_spellings(fmt)
+    backend = _backend_class(plugin, fmt, {})
+    get_registry().register_plugin_backend(backend)
+    for each in backend.FORMATS:
+        add_plugin_spellings(each)
 
 
-def register_builtin_plugin(
-    plugin: type[FormatPlugin], **overrides: object
+def register_builtin_format(
+    plugin: type[FormatHandler], **overrides: object
 ) -> type[ReadBackend]:
-    """Register a built-in format whose reader is written against ``archivey.plugins``.
+    """Register a built-in format whose reader is written against ``archivey.formats``.
 
     The format keeps its built-in container, extensions, magic and place among the
     built-in backends, so detection does not change and ``FormatInfo.from_plugin`` is
