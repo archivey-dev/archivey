@@ -3,13 +3,16 @@
 ``IOBase.__del__`` calls ``close()`` on every instance not marked closed, including
 one whose initialising method raised: ``__init__``, or ``_setup`` for an
 ``ArchiveStream``. So ``close()`` must work on whatever that method got through before
-the raise. When it does not, the refusal dies a second time in the finalizer, as an
-``AttributeError`` reported at an arbitrary later moment.
+the raise, and an ``ArchiveStream`` that ``_blank()`` made but ``_setup`` never ran on,
+because an argument to ``_setup`` raised first. When it does not, the refusal dies a
+second time in the finalizer, as an ``AttributeError`` reported at an arbitrary later
+moment.
 
 A GIL build without ``-X dev`` drops that second error silently, so these tests do not
 wait for the collector. They take the half-built object out of the initialising
-method's frame in the traceback and call ``close()`` on it. That is stricter than the finalizer, which
-skips an instance already marked closed: ``close()`` must not raise either way.
+method's frame in the traceback, or straight from ``_blank()``, and call ``close()`` on
+it. That is stricter than the finalizer, which skips an instance already marked
+closed: ``close()`` must not raise either way.
 """
 
 from __future__ import annotations

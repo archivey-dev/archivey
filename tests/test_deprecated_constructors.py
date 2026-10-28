@@ -33,7 +33,6 @@ def test_member_pass_constructor_warns_and_still_iterates() -> None:
 
 
 def test_readers_build_streams_and_passes_without_warning(tmp_path) -> None:
-
     path = tmp_path / "a.zip"
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr("a.txt", b"payload")

@@ -22,5 +22,6 @@ Archivey builds both through private factories, whose names are not public API.
 
 #### Scenario: the published constructor
 
-The public constructor of `ArchiveStream` lists no internal parameter types:
-`init archivey.ArchiveStream(*args, **kwargs)`.
+`dev-docs/api-surface.txt` lists
+`init archivey.ArchiveStream(*args: Any, **kwargs: Any) -> None`: the published
+constructor carries no internal parameter types.
