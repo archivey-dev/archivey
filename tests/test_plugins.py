@@ -1424,13 +1424,13 @@ def test_an_inferred_bound_reaches_the_member_stream(
     from archivey.internal.base_reader import BaseArchiveReader
 
     seen: list[bool] = []
-    original = BaseArchiveReader._wrap_member_stream
+    original = BaseArchiveReader._member_parts
 
     def spy(self, *args, **kwargs):  # type: ignore[no-untyped-def]
         seen.append(kwargs.get("bounded", False))
         return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(BaseArchiveReader, "_wrap_member_stream", spy)
+    monkeypatch.setattr(BaseArchiveReader, "_member_parts", spy)
 
     class Copying(ToyReader):
         def open_member(

@@ -119,7 +119,10 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStreamImpl
+from archivey.internal.streams.archive_stream import (
+    ArchiveStreamImpl,
+    MemberStreamParts,
+)
 from archivey.internal.streams.codecs import (
     SINGLE_FILE_CODECS,
     codec_for_stream_format,
@@ -893,7 +896,7 @@ class TarReader(BaseArchiveReader):
             def _open(member: ArchiveMember) -> ArchiveStreamImpl | None:
                 if not pass_has_data(member):
                     return None
-                return self._open_member_stream(member, defer_sparse_error=True)
+                return self._streamed_member_stream(member)
 
             yield from self._drive_pass_streams(
                 self._begin_forward_pass(),
@@ -1666,9 +1669,11 @@ class TarReader(BaseArchiveReader):
             return TruncatedError(f"TAR member data ended early: {exc}")
         return None
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStreamImpl:
+    def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         with self._translated_errors(member.name):
-            return self._open_member_stream(member, defer_sparse_error=False)
+            return self._member_parts(
+                self._member_body(member, in_walk=False), member.name, size=member.size
+            )
 
     def _member_body(self, member: ArchiveMember, *, in_walk: bool) -> BinaryIO:
         """``member``'s bytes, before the public wrapper.
@@ -1747,19 +1752,16 @@ class TarReader(BaseArchiveReader):
         self._walk_stream = stream
         return stream
 
-    def _open_member_stream(
-        self, member: ArchiveMember, *, defer_sparse_error: bool
-    ) -> ArchiveStreamImpl:
-        """Open ``member``'s data. A bad sparse map raises here, or with
-        ``defer_sparse_error`` on the first read: a forward-only consumer that skips
-        the member does not read the bad map, and the walk moves on to the next
-        header by the member's stored size.
+    def _streamed_member_stream(self, member: ArchiveMember) -> ArchiveStreamImpl:
+        """Open ``member``'s data for a streaming pass. A bad sparse map raises on the
+        first read: a forward-only consumer that skips the member does not read the
+        bad map, and the walk moves on to the next header by the member's stored size.
 
         A random-access pass does not come through here: it opens the raw body
         (see :meth:`_member_body`) and wraps it once."""
         span = member._raw
         assert isinstance(span, TarSpan), "TAR member is missing its span"
-        if defer_sparse_error and span.sparse is not None:
+        if span.sparse is not None:
             sparse_error = validate_sparse_map(
                 span.sparse, span.size, span.stored_size, quoted(member.name)
             )
@@ -1770,13 +1772,13 @@ class TarReader(BaseArchiveReader):
                 ) -> BinaryIO:
                     raise error
 
-                return self._wrap_member_stream(
-                    None, member.name, open_fn=_refuse, size=member.size
-                )
-        return self._wrap_member_stream(
-            self._member_body(member, in_walk=False),
-            member.name,
-            size=member.size,
+                return self._wrap_member_stream(member.name, _refuse, size=member.size)
+        return self._member_stream(
+            self._member_parts(
+                self._member_body(member, in_walk=False),
+                member.name,
+                size=member.size,
+            )
         )
 
     def _get_archive_info(self) -> ArchiveInfo:

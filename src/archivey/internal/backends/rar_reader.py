@@ -166,7 +166,11 @@ from archivey.internal.password_confirm import (
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.spool import SpoolBudget
-from archivey.internal.streams.archive_stream import ArchiveStreamImpl, RewindWarning
+from archivey.internal.streams.archive_stream import (
+    ArchiveStreamImpl,
+    MemberStreamParts,
+    RewindWarning,
+)
 from archivey.internal.streams.crypto import (
     AES_BLOCK_SIZE,
     CRYPTO_REQUIREMENT,
@@ -2936,7 +2940,7 @@ class RarReader(BaseArchiveReader):
         self,
         member: ArchiveMember,
         kept: Callable[[ArchiveMember], BinaryIO | None] | None = None,
-    ) -> ArchiveStreamImpl:
+    ) -> MemberStreamParts:
         """Serve a RAR5 file copy from its source member.
 
         A copy carries no data stream: ``unrar p`` emits nothing for it in a full run
@@ -2974,7 +2978,7 @@ class RarReader(BaseArchiveReader):
         # Checked as the source's bytes from the pipe are; not counted as decoded
         # output, since the pass already counted them once.
         hashes, vsize, transforms, verify_member = self._payload_verify_args(source)
-        return self._wrap_member_stream(
+        return self._member_parts(
             self._watch_unverified(stream, source),
             member.name,
             size=member.size,
@@ -3028,11 +3032,10 @@ class RarReader(BaseArchiveReader):
 
         return self._register_public_stream(
             self._wrap_member_stream(
-                None,
                 member.name,
-                open_fn=lambda: self._open_file_copy(member, kept),
+                lambda: self._open_file_copy(member, kept),
                 size=member.size,
-                # ``_open_file_copy`` returns an ArchiveStream; see _lazy_member_stream.
+                # ``_open_file_copy`` returns parts; see _lazy_member_stream.
                 track_output=False,
                 seekable=self._seek_declared(),
             )
@@ -3263,9 +3266,8 @@ class RarReader(BaseArchiveReader):
             # the one live-stream slot and is refused beside a live ``open()``.
             return self._register_public_stream(
                 self._wrap_member_stream(
-                    None,
                     member.name,
-                    open_fn=open_fn,
+                    open_fn,
                     size=member.size,
                     track_output=False,
                     seekable=False,
@@ -3535,16 +3537,16 @@ class RarReader(BaseArchiveReader):
             return None, None, None, None
         return expected, member.size, transforms, member
 
-    def _wrap_payload_stream(
+    def _payload_parts(
         self,
         inner: BinaryIO,
         member: ArchiveMember,
         *,
         track_output: bool = True,
         rewind_warning: RewindWarning | None = None,
-    ) -> ArchiveStreamImpl:
+    ) -> MemberStreamParts:
         hashes, size, transforms, verify_member = self._payload_verify_args(member)
-        return self._wrap_member_stream(
+        return self._member_parts(
             inner,
             member.name,
             size=member.size,
@@ -3772,7 +3774,9 @@ class RarReader(BaseArchiveReader):
             # the ``no_target_data`` arm below.
             self._link_target_from_data(
                 member,
-                lambda: self._open_encrypted_link_target(member, raw),
+                lambda: self._member_stream(
+                    self._open_encrypted_link_target(member, raw)
+                ),
                 reparse_fallback=None,
             )
             return
@@ -4136,7 +4140,7 @@ class RarReader(BaseArchiveReader):
             costs[id(member)] = peak
         return costs
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStreamImpl:
+    def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         raw = member._raw
         assert isinstance(raw, RarMemberInfo)
         if raw.is_file_copy():
@@ -4180,7 +4184,7 @@ class RarReader(BaseArchiveReader):
                     source_format=ArchiveFormat.RAR,
                 )
             inner: BinaryIO = self._direct_view(raw)
-            return self._wrap_payload_stream(inner, member)
+            return self._payload_parts(inner, member)
 
         if raw.encryption_unknown and self._is_directly_sliceable(raw):
             # This member's bytes are stored and sitting right there; the only thing
@@ -4189,7 +4193,7 @@ class RarReader(BaseArchiveReader):
             # that survived the damage can still say, and needs no ``unrar``; when none
             # did, this raises. See ``_confirm_unsettled_plaintext``.
             self._confirm_unsettled_plaintext(raw, member)
-            return self._wrap_payload_stream(self._direct_view(raw), member)
+            return self._payload_parts(self._direct_view(raw), member)
 
         if self._decrypts_natively(raw):
             return self._open_decrypted_stored(member, raw)
@@ -4227,7 +4231,7 @@ class RarReader(BaseArchiveReader):
 
     def _open_decrypted_stored(
         self, member: ArchiveMember, raw: RarMemberInfo
-    ) -> ArchiveStreamImpl:
+    ) -> MemberStreamParts:
         """Serve a :meth:`_natively_decryptable` member by decrypting its stored bytes.
 
         The password is picked as for an ``unrar`` read: a RAR5 PswCheck rejects a
@@ -4257,7 +4261,7 @@ class RarReader(BaseArchiveReader):
         with _close_on_error(trimmed):
             watched = self._watch_unverified(trimmed, member)
         with _close_on_error(watched):
-            return self._wrap_payload_stream(watched, member)
+            return self._payload_parts(watched, member)
 
     def _stored_data_password(self, member: ArchiveMember, raw: RarMemberInfo) -> str:
         """The password :meth:`_open_decrypted_stored` decrypts ``member`` with."""
@@ -4280,7 +4284,7 @@ class RarReader(BaseArchiveReader):
 
     def _open_encrypted_link_target(
         self, member: ArchiveMember, raw: RarMemberInfo
-    ) -> ArchiveStreamImpl:
+    ) -> MemberStreamParts:
         """Open a RAR 2.9-4 symlink's encrypted, stored target for listing.
 
         RAR 2.9-4 records no password check, so one password goes to the read
@@ -4305,7 +4309,7 @@ class RarReader(BaseArchiveReader):
 
     def _open_member_with_program(
         self, member: ArchiveMember, raw: RarMemberInfo
-    ) -> ArchiveStreamImpl:
+    ) -> MemberStreamParts:
         """Serve ``member`` through ``unrar``, or ``unar`` when it is selected."""
         if self._unar_policy is not None:
             return self._open_member_with_unar(member, raw, self._unar_policy)
@@ -4496,7 +4500,7 @@ class RarReader(BaseArchiveReader):
 
     def _open_spawned_member(
         self, member: ArchiveMember, spawn: Callable[[], BinaryIO]
-    ) -> ArchiveStreamImpl:
+    ) -> MemberStreamParts:
         """Wrap one member's decompressor pipe: respawn on rewind, verify, count.
 
         ``spawn`` starts the process and returns a stream that owns it, already
@@ -4527,8 +4531,8 @@ class RarReader(BaseArchiveReader):
                 )
             inner = self._watch_unverified(inner, member)
             # Folder/pipe output already counted; avoid double-counting at the member wrap.
-            # Fused verify in _wrap_payload_stream bounds/checks declared size + digests.
-            return self._wrap_payload_stream(
+            # Fused verify in _payload_parts bounds/checks declared size + digests.
+            return self._payload_parts(
                 inner, member, track_output=False, rewind_warning=rewind
             )
         except BaseException:
@@ -4628,7 +4632,7 @@ class RarReader(BaseArchiveReader):
         policy: UnarRarPolicy,
         *,
         dictionary_cost: _DictionaryCost | None = None,
-    ) -> ArchiveStreamImpl:
+    ) -> MemberStreamParts:
         """Serve one member from ``unar -i <index>``.
 
         The member is named by its entry index, not by its stored name, so none of the

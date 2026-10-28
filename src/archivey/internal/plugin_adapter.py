@@ -53,7 +53,7 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStreamImpl, RewindWarning
+from archivey.internal.streams.archive_stream import MemberStreamParts, RewindWarning
 from archivey.internal.streams.blocks import BlockStream
 from archivey.internal.streams.codecs import (
     Codec,
@@ -547,10 +547,10 @@ class PluginReaderAdapter(_PluginAdapter):
             stream = LockedStream(stream, self._handle_lock)
         return data, stream
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStreamImpl:
+    def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         data, stream = self._plugin_member_data(member)
-        # Until the ArchiveStream takes the stream over, a raise here (a refused
-        # digest name, a hasher factory that fails) leaves archivey owing it a close.
+        # Until the parts take the stream over, a raise here (a refused digest name,
+        # a hasher factory that fails) leaves archivey owing it a close.
         try:
             expected, custom_digests = (
                 self._member_digests(member, data.digests, "open_member")
@@ -572,7 +572,7 @@ class PluginReaderAdapter(_PluginAdapter):
                 rewind = RewindWarning(
                     codec_name=self._format.display_name, suggest_install=False
                 )
-            return self._wrap_member_stream(
+            return self._member_parts(
                 stream,
                 member.name,
                 size=member.size,
@@ -833,7 +833,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                 member.link_target = target.decode("utf-8", errors="surrogateescape")
         return member
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStreamImpl:
+    def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         record = member._raw
         assert isinstance(record, _Span), "a sequential member is missing its span"
         stream: BinaryIO
@@ -851,7 +851,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             assert self._shared is not None
             stream = self._shared.view(record.offset, record.length)
         expected = record.expected if record.expected is not None else member.hashes
-        return self._wrap_member_stream(
+        return self._member_parts(
             stream,
             member.name,
             size=member.size,

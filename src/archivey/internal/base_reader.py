@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import sys
 import threading
@@ -117,6 +118,7 @@ from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import (
     ArchiveStreamImpl,
     ExceptionTranslator,
+    MemberStreamParts,
     RewindWarning,
     _Opened,
     as_closed_source_error,
@@ -534,10 +536,10 @@ class BaseArchiveReader(ArchiveReader):
 
     - ``_iter_members()``       — yield every :class:`ArchiveMember` once, in archive
       order.
-    - ``_open_member(member)``  — return a ``FILE`` member's data stream, wrapped via
-      ``_wrap_member_stream`` (every member handle the library hands out is an
-      ``ArchiveStream``: uniform error translation/stamping, the ``size``
-      advertisement, and room to grow shared handle features).
+    - ``_open_member(member)``  — open a ``FILE`` member's data and return it as
+      ``_member_parts(raw, ...)``. One ``ArchiveStream`` then serves it (every member
+      handle the library hands out is one: uniform error translation/stamping, the
+      ``size`` advertisement, and room to grow shared handle features).
     - ``_get_archive_info()``   — return the :class:`ArchiveInfo` (format, solidity,
       cost, …).
     - ``_close_archive()``      — release resources (called exactly once, via
@@ -1007,38 +1009,44 @@ class BaseArchiveReader(ArchiveReader):
     def _lazy_member_stream(
         self,
         member: ArchiveMember,
-        open_member: Callable[[ArchiveMember], BinaryIO] | None = None,
+        open_member: Callable[[ArchiveMember], BinaryIO | MemberStreamParts]
+        | None = None,
         *,
         track_output: bool = False,
     ) -> ArchiveStreamImpl:
         """A stream over ``member``'s data that defers ``_open_member`` to the first read.
 
         Closing it before any read never opens the member at all. ``_open_member``
-        returns an ``ArchiveStream``; nesting is collapsed inside
-        :meth:`ArchiveStreamImpl._ensure_open` so the public handle is a **single**
-        wrapper. ``open_member`` replaces it, and may return a raw byte stream
-        instead: then ``track_output=True``, because nothing inside the opener counts
-        the bytes. Deferral does not change what a failed open raises — only when.
+        returns the member's parts, and this handle takes them over
+        (:meth:`ArchiveStreamImpl._adopt`): it is the only handle the member gets.
+        ``open_member`` replaces it, and may return a raw byte stream instead: then
+        ``track_output=True``, because nothing inside the opener counts the bytes.
+        Deferral does not change what a failed open raises — only when.
         """
         opener = self._open_member if open_member is None else open_member
         return self._register_public_stream(
             self._wrap_member_stream(
-                None,
                 member.name,
-                open_fn=lambda: opener(member),
+                lambda: opener(member),
                 size=member.size,
-                # Default False: ``_open_member`` already counts inside its wrap.
+                # Default False: ``_open_member`` already counts, in ``_member_parts``.
                 track_output=track_output,
                 seekable=self._seek_declared(),
             )
         )
 
-    @abstractmethod
-    def _open_member(self, member: ArchiveMember) -> ArchiveStreamImpl:
-        """Return a data stream for ``member`` (no link following).
+    def _open_member_handle(self, member: ArchiveMember) -> ArchiveStreamImpl:
+        """``_open_member`` as an open handle, for code that reads the member itself."""
+        return self._member_stream(self._open_member(member))
 
-        Backends wrap the raw handle via ``_wrap_member_stream`` so every member
-        stream the library hands out is an ``ArchiveStream``.
+    @abstractmethod
+    def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
+        """Open ``member``'s data (no link following) and say how to serve it.
+
+        Backends return ``_member_parts(raw, member.name, ...)``. The caller serves the
+        parts with one handle: ``reader.open()`` builds it (``_member_stream``), and a
+        lazy handle takes them over on its first read (``_lazy_member_stream``). Code
+        that reads the member itself calls ``_open_member_handle``.
 
         **Reentrancy invariant (random-access backends).** For a backend that advertises
         independent member open (``streaming=False``, byte-range / independent access —
@@ -1129,11 +1137,9 @@ class BaseArchiveReader(ArchiveReader):
 
     def _wrap_member_stream(
         self,
-        inner: BinaryIO | None,
         member_name: str | None,
+        open_fn: Callable[[], BinaryIO | MemberStreamParts],
         *,
-        open_fn: Callable[[], BinaryIO] | None = None,
-        lazy: bool = False,
         size: int | None = None,
         track_output: bool = True,
         seekable: bool | None = None,
@@ -1150,128 +1156,42 @@ class BaseArchiveReader(ArchiveReader):
         custom_digests: CustomDigests | None = None,
         bounded: bool = False,
     ) -> ArchiveStreamImpl:
-        """Wrap a raw member stream so read/seek errors route through the backend's
+        """A member stream that calls ``open_fn`` on its first read: one
+        ``ArchiveStream``, whose read/seek errors route through the backend's
         translator and are stamped with format/archive/member context.
 
-        ``checks_content`` says that ``inner`` checks every byte against a checksum of
-        its own when read from the start to the end, and raises on a mismatch (a
-        plugin's ``MemberData.checked``): such a read counts as ``CONTENT``.
-        ``custom_digests`` are digests whose hasher the caller supplies (a plugin's
-        ``MemberData.digests``), checked as ``expected_hashes`` are. ``bounded`` says
-        ``inner`` never returns a byte past ``expected_size`` (a plugin's
-        ``MemberData.bounded``): the read past the end that looks for one is skipped.
+        The arguments are :meth:`_member_parts`'s, and ``seekable`` defaults to
+        declared. If ``open_fn`` returns ``MemberStreamParts`` (from ``_open_member``),
+        the handle takes them over (:meth:`ArchiveStreamImpl._adopt`); if it returns an
+        ``ArchiveStream``, :meth:`ArchiveStreamImpl._ensure_open` collapses the nesting.
+        Either way callers never see a double wrapper. With ``track_output``, the bytes
+        ``open_fn`` returns are counted, so pass ``track_output=False`` when it returns
+        parts or an ``ArchiveStream``: those count their own. A never-opened handle
+        skips verify on close, so solid unread members stay cheap.
 
-        Backends return ``_wrap_member_stream(raw, member.name, size=member.size)`` from
-        ``_open_member`` so a decode error surfaces as a stamped ``ArchiveyError`` rather
-        than a raw codec exception, and so the handle advertises its decompressed length
-        (the fsspec-style ``size``) for cheap nested-archive source sizing.
-
-        Pass ``open_fn`` (and ``inner=None``) for a lazy open — one ``ArchiveStream``,
-        opened on first read. If ``open_fn`` returns an ``ArchiveStream`` (e.g. from
-        ``_open_member``), :meth:`ArchiveStreamImpl._ensure_open` collapses the nesting
-        automatically so callers never see a double wrapper.
-
-        Seekability is gated by ``MemberStreams.SEEKABLE``: without it the wrapper reports
-        non-seekable even when ``inner`` could seek. Pass ``seekable=`` to override the
-        default (eager: declared ∧ ``is_seekable(inner)``; lazy: declared).
-
-        When measurement is on and ``track_output`` is true (the default), decoded bytes
-        delivered through this handle are added to :attr:`bytes_decompressed`. Solid
-        backends that already count at the folder/block decode layer pass
-        ``track_output=False`` to avoid double-counting. When ``open_fn`` may return an
-        ``ArchiveStream``, pass ``track_output=False`` (counting belongs on that inner
-        wrap); collapse happens in ``_ensure_open``.
-
-        Pass ``expected_hashes`` / ``expected_size`` to fuse container digest and
-        length verification into the returned ``ArchiveStream`` (no separate
-        ``VerifyingStream`` layer). A never-opened lazy handle skips verify on
-        close, so solid unread members stay cheap.
-
-        For a member with no ``expected_size``, ``end_check`` is called with its
-        length when a read reaches its end, before the digest verdict, and raises to
-        refuse it. ``fill_size=True`` with ``verify_member`` gives
-        ``verify_member.size`` that length: once the digests match, or, with no
-        digest to check, once a read from the start that skips no byte reaches the
-        end cleanly (``MemberVerifier``). It is the late size of a member whose format
-        records none, or records one that cannot be trusted (a macOS ZIP's size
-        modulo 2³²).
-
-        ``translate`` is the translator of a codec ``inner`` was opened with
-        (:func:`~archivey.internal.streams.codecs.registry.open_codec_raw`). It is asked
-        before the backend's, as it would be had ``inner`` been the codec's own
-        ``ArchiveStream`` collapsed into this one.
+        A stream already open is served by ``_member_stream(_member_parts(...))``.
         """
-        if (inner is None) == (open_fn is None):
-            raise TypeError("exactly one of inner or open_fn is required")
-        member_translate = (
-            self._translate_exception
-            if translate is None
-            else compose_translators(translate, self._translate_exception)
-        )
-
-        if open_fn is not None:
-            if track_output:
-
-                def tracked_open(
-                    raw_open: Callable[[], BinaryIO] = open_fn,
-                ) -> BinaryIO:
-                    # open_fn should return a bytes stream when tracking here; nested
-                    # ArchiveStream collapse is handled in ArchiveStreamImpl._ensure_open
-                    # (use track_output=False when open_fn returns ArchiveStream).
-                    return self._track_decompressed(raw_open())
-
-                use_open: Callable[[], BinaryIO] = tracked_open
-            else:
-                use_open = open_fn
-
-            return ArchiveStreamImpl(
-                use_open,
-                translate=member_translate,
-                stamp=lambda exc: self._stamp_error_context(exc, member_name),
-                lazy=True,
-                seekable=(self._seek_declared() if seekable is None else seekable),
-                size=size,
-                collector=self._diagnostics_collector,
-                expected_hashes=expected_hashes,
-                expected_size=expected_size,
-                digest_transforms=digest_transforms,
-                verify_member=verify_member,
-                end_check=end_check,
-                fill_size=fill_size,
-                archive_name=self._archive_name,
-                rewind_warning=rewind_warning,
-                member_name=member_name,
-                checks_content=checks_content,
-                custom_digests=custom_digests,
-                bounded=bounded,
-            )
-
-        assert inner is not None
         if track_output:
-            inner = self._track_decompressed(inner)
-        # Seekability settled on first use (``ArchiveStreamImpl._seek_allowed``): a stream
-        # that a lazy handle collapses (``_lazy_member_stream``) is never asked. A
-        # nested ``ArchiveStream`` is asked now, as its own declaration counts.
-        settle_seekable = (
-            seekable is None
-            and not lazy
-            and self._seek_declared()
-            and not isinstance(inner, ArchiveStreamImpl)
-        )
-        if seekable is None:
-            # Ignored when settled on first use.
-            seekable = (
-                not settle_seekable and self._seek_declared() and is_seekable(inner)
-            )
+
+            def tracked_open(
+                raw_open: Callable[[], BinaryIO | MemberStreamParts] = open_fn,
+            ) -> BinaryIO:
+                # open_fn returns a bytes stream when tracking here (see above).
+                return self._track_decompressed(cast("BinaryIO", raw_open()))
+
+            use_open: Callable[[], BinaryIO | MemberStreamParts] = tracked_open
+        else:
+            use_open = open_fn
         return ArchiveStreamImpl(
-            # An eager handle starts open on ``inner``.
-            (lambda: inner)
-            if lazy
-            else _Opened(inner, settle_seekable=settle_seekable),
-            translate=member_translate,
+            use_open,
+            translate=(
+                self._translate_exception
+                if translate is None
+                else compose_translators(translate, self._translate_exception)
+            ),
             stamp=lambda exc: self._stamp_error_context(exc, member_name),
-            lazy=lazy,
-            seekable=seekable,
+            lazy=True,
+            seekable=(self._seek_declared() if seekable is None else seekable),
             size=size,
             collector=self._diagnostics_collector,
             expected_hashes=expected_hashes,
@@ -1287,6 +1207,144 @@ class BaseArchiveReader(ArchiveReader):
             custom_digests=custom_digests,
             bounded=bounded,
         )
+
+    def _member_parts(
+        self,
+        inner: BinaryIO,
+        member_name: str | None,
+        *,
+        size: int | None = None,
+        track_output: bool = True,
+        seekable: bool | None = None,
+        expected_hashes: Mapping[HashAlgorithm, bytes] | None = None,
+        expected_size: int | None = None,
+        digest_transforms: Mapping[HashAlgorithm, Callable[[bytes], bytes]]
+        | None = None,
+        verify_member: ArchiveMember | None = None,
+        end_check: Callable[[int], None] | None = None,
+        fill_size: bool = False,
+        rewind_warning: RewindWarning | None = None,
+        translate: ExceptionTranslator | None = None,
+        checks_content: bool = False,
+        custom_digests: CustomDigests | None = None,
+        bounded: bool = False,
+    ) -> MemberStreamParts:
+        """A raw member stream and how to serve it: what ``_open_member`` returns.
+
+        The handle that serves it (``_member_stream``, or a lazy handle that adopts it)
+        routes read/seek errors through the backend's translator and stamps them with
+        format/archive/member context, so a decode error surfaces as a stamped
+        ``ArchiveyError`` rather than a raw codec exception. ``size`` is the handle's
+        decompressed length (the fsspec-style ``size``), for cheap nested-archive
+        source sizing.
+
+        ``checks_content`` says that ``inner`` checks every byte against a checksum of
+        its own when read from the start to the end, and raises on a mismatch (a
+        plugin's ``MemberData.checked``): such a read counts as ``CONTENT``.
+        ``custom_digests`` are digests whose hasher the caller supplies (a plugin's
+        ``MemberData.digests``), checked as ``expected_hashes`` are. ``bounded`` says
+        ``inner`` never returns a byte past ``expected_size`` (a plugin's
+        ``MemberData.bounded``): the read past the end that looks for one is skipped.
+
+        Seekability is gated by ``MemberStreams.SEEKABLE``: without it the handle reports
+        non-seekable even when ``inner`` could seek. Pass ``seekable=`` to override the
+        default, declared ∧ ``is_seekable(inner)``. A lazy handle that adopts the parts
+        keeps its own (declared).
+
+        When measurement is on and ``track_output`` is true (the default), decoded bytes
+        delivered through the handle are added to :attr:`bytes_decompressed`. Solid
+        backends that already count at the folder/block decode layer pass
+        ``track_output=False`` to avoid double-counting.
+
+        Pass ``expected_hashes`` / ``expected_size`` to fuse container digest and
+        length verification into the handle (no separate ``VerifyingStream`` layer).
+
+        For a member with no ``expected_size``, ``end_check`` is called with its
+        length when a read reaches its end, before the digest verdict, and raises to
+        refuse it. ``fill_size=True`` with ``verify_member`` gives
+        ``verify_member.size`` that length: once the digests match, or, with no
+        digest to check, once a read from the start that skips no byte reaches the
+        end cleanly (``MemberVerifier``). It is the late size of a member whose format
+        records none, or records one that cannot be trusted (a macOS ZIP's size
+        modulo 2³²).
+
+        ``translate`` is the translator of a codec ``inner`` was opened with
+        (:func:`~archivey.internal.streams.codecs.registry.open_codec_raw`). It is asked
+        before the backend's, as it would be had ``inner`` been the codec's own
+        ``ArchiveStream`` collapsed into this one.
+        """
+        if track_output:
+            inner = self._track_decompressed(inner)
+        if seekable is None and (
+            # A nested ``ArchiveStream`` is asked now, as its own declaration counts.
+            # Any other stream is asked on first use, if ever: a lazy handle that
+            # adopts the parts never asks.
+            not self._seek_declared() or isinstance(inner, ArchiveStreamImpl)
+        ):
+            seekable = self._seek_declared() and is_seekable(inner)
+        # Positional: this runs once per member, and keywords cost more than the
+        # build itself. The names match the parameters, in order.
+        return MemberStreamParts(
+            inner,
+            member_name,
+            self._stamp_error_context,
+            translate,
+            seekable,
+            size,
+            rewind_warning,
+            checks_content,
+            self._diagnostics_collector,
+            self._archive_name,
+            expected_hashes,
+            expected_size,
+            digest_transforms,
+            verify_member,
+            end_check,
+            fill_size,
+            custom_digests,
+            bounded,
+        )
+
+    def _member_stream(self, parts: MemberStreamParts) -> ArchiveStreamImpl:
+        """The handle that serves ``parts``, open on their stream.
+
+        The handle owns the stream from here. If building it raises (a digest the
+        verifier refuses under a ``RAISE`` policy), the stream is closed.
+        """
+        stamp = parts.stamp
+        member_name = parts.member_name
+        translate = parts.translate
+        try:
+            return ArchiveStreamImpl(
+                # ``seekable=None``: settled on first use
+                # (``ArchiveStreamImpl._seek_allowed``).
+                _Opened(parts.inner, settle_seekable=parts.seekable is None),
+                translate=(
+                    self._translate_exception
+                    if translate is None
+                    else compose_translators(translate, self._translate_exception)
+                ),
+                stamp=lambda exc: stamp(exc, member_name),
+                seekable=bool(parts.seekable),
+                size=parts.size,
+                collector=parts.collector,
+                expected_hashes=parts.expected_hashes,
+                expected_size=parts.expected_size,
+                digest_transforms=parts.digest_transforms,
+                verify_member=parts.verify_member,
+                end_check=parts.end_check,
+                fill_size=parts.fill_size,
+                archive_name=parts.archive_name,
+                rewind_warning=parts.rewind_warning,
+                member_name=member_name,
+                checks_content=parts.checks_content,
+                custom_digests=parts.custom_digests,
+                bounded=parts.bounded,
+            )
+        except BaseException:
+            with contextlib.suppress(Exception):
+                parts.inner.close()
+            raise
 
     @abstractmethod
     def _get_archive_info(self) -> ArchiveInfo: ...
@@ -3540,7 +3598,7 @@ class BaseArchiveReader(ArchiveReader):
             )
         if opened is not None:
             opened.append(current)
-        return self._open_member(current)
+        return self._open_member_handle(current)
 
     def read(self, member: str | ArchiveMember) -> bytes:
         """Read member data as bytes."""
