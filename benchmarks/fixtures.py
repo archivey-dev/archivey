@@ -47,6 +47,8 @@ class Scale:
     # Tiny-payload listing corpora (header/member-build cost, not codec cost).
     list_members: int
     nonsolid_list_members: int
+    # Many small files (20-600 bytes) for ``benchmarks/peers.py``: per-member cost.
+    small_members: int
 
 
 SCALES: dict[str, Scale] = {
@@ -67,6 +69,7 @@ SCALES: dict[str, Scale] = {
         solid_member_size=64 * 1024,
         list_members=1_000,
         nonsolid_list_members=256,
+        small_members=200,
     ),
     # ~16 MiB ZIP/TAR, 32 MiB gzip, ~16 MiB solid — wall-time vs stdlib.
     "realistic": Scale(
@@ -78,6 +81,7 @@ SCALES: dict[str, Scale] = {
         solid_member_size=256 * 1024,
         list_members=10_000,
         nonsolid_list_members=1_000,
+        small_members=4_000,
     ),
 }
 
