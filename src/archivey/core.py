@@ -21,7 +21,7 @@ import errno
 import os
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, Literal, cast, overload
+from typing import TYPE_CHECKING, BinaryIO, Literal, NoReturn, cast, overload
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
@@ -71,6 +71,7 @@ from archivey.internal.format_args import (
 from archivey.internal.format_provenance import FormatProvenance
 from archivey.internal.open_site import OpenSite, capture_open_site
 from archivey.internal.password import _PasswordCandidates
+from archivey.internal.plugin_adapter import replacement_backend
 from archivey.internal.registry import (
     format_availability,
     get_registry,
@@ -104,6 +105,7 @@ from archivey.types import (
 if TYPE_CHECKING:
     from archivey.internal.base_reader import ReadBackend
     from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.plugins import FormatPlugin
 
 __all__ = [
     "DEFAULT_ARCHIVEY_CONFIG",
@@ -492,6 +494,32 @@ def _refuse_format_off_by_policy(
         )
 
 
+def _replacement_plugin(
+    config: ArchiveyConfig, fmt: ArchiveFormat
+) -> type[FormatPlugin] | None:
+    """The plugin ``config.formats.replace`` names to read ``fmt``, else ``None``."""
+    plugin = (
+        config.formats.replace.get(fmt.container)
+        if isinstance(fmt.container, ContainerFormat)
+        else None
+    )
+    return plugin if plugin is not None and plugin.format == fmt else None
+
+
+def _refuse_for_replacement(
+    plugin: type[FormatPlugin],
+    what: str,
+    fmt: ArchiveFormat,
+    archive_name: str | None,
+) -> NoReturn:
+    raise UnsupportedFeatureError(
+        f"{fmt.display_name} is read by {plugin.__name__} (ArchiveyConfig.formats."
+        f"replace), and a replacement plugin cannot read {what}.",
+        source_format=fmt,
+        archive_name=archive_name,
+    )
+
+
 class _SourceSlot:
     """The source an open is working on, closing each one it is replaced by."""
 
@@ -680,6 +708,21 @@ def _open_resolved(
     # would be said about the file, so the caller is not told to install a package or
     # buffer a pipe for a format it does not want to open.
     _refuse_format_off_by_policy(config, resolved_format, archive_name)
+    replacement = _replacement_plugin(config, resolved_format)
+    if replacement is not None:
+        # A replacement gets what any indexed plugin gets: the archive from its start,
+        # in one file. What the built-in reader does around that is not offered.
+        if resolved.volume_count > 1:
+            _refuse_for_replacement(
+                replacement, "a multi-volume set", resolved_format, archive_name
+            )
+        if detected is not None and detected.payload_offset > 0:
+            _refuse_for_replacement(
+                replacement,
+                "an archive behind a self-extracting stub",
+                resolved_format,
+                archive_name,
+            )
 
     # ZIP is here for 7-Zip's ``-v`` byte slices, which rejoin into an ordinary ZIP.
     # Info-ZIP's spanned sets never reach this point as a joined source (they are not
@@ -696,7 +739,11 @@ def _open_resolved(
     # of the availability check, so the answer does not depend on pycdlib; a
     # non-seekable source is left to the read-once refusal below, which is also ahead
     # of it.
-    if resolved_format == ArchiveFormat.ISO and archive_source.seekable():
+    if (
+        resolved_format == ArchiveFormat.ISO
+        and replacement is None
+        and archive_source.seekable()
+    ):
         refuse_raw_sector_image(archive_source, resolved_format, archive_name)
 
     # Detection claims a recognised-only format (DMG) so this refusal can name it and
@@ -729,8 +776,17 @@ def _open_resolved(
     # half below: a refused open reports the same ``password=`` / ``encoding=``
     # diagnostics whichever half refuses it. They read only class attributes, so they
     # need no optional package.
-    if source_is_read_once and registry.needs_seekable_source(resolved_format):
-        refused_cls = registry.registered_reader(resolved_format)
+    needs_seek = (
+        not replacement_backend(replacement).SUPPORTS_STREAMING_NON_SEEKABLE
+        if replacement is not None
+        else registry.needs_seekable_source(resolved_format)
+    )
+    if source_is_read_once and needs_seek:
+        refused_cls = (
+            replacement_backend(replacement)
+            if replacement is not None
+            else registry.registered_reader(resolved_format)
+        )
         assert refused_cls is not None  # needs_seekable_source is False without one
         _note_unused_arguments(
             refused_cls,
@@ -748,7 +804,7 @@ def _open_resolved(
             archive_name=archive_name,
         )
 
-    backend_cls = registry.reader_for_format(resolved_format)
+    backend_cls = registry.reader_for_format(resolved_format, config.formats)
 
     # The capability half above emits these too, so either refusal half reports them.
     _note_unused_arguments(

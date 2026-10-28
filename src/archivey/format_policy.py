@@ -9,12 +9,16 @@ an allowed plugin matches.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from archivey.exceptions import _UsageTypeError, _UsageValueError
 from archivey.internal.arg_checks import check_instance
 from archivey.types import ArchiveFormat, ContainerFormat, PluginContainer, StreamFormat
+
+if TYPE_CHECKING:
+    from archivey.plugins import FormatPlugin
 
 __all__ = ["FormatPolicy"]
 
@@ -62,6 +66,47 @@ def _coerce_entries(values: object, *, param: str) -> frozenset[_FormatEntry]:
     return frozenset(entries)
 
 
+class _Replacements(Mapping[ContainerFormat, "type[FormatPlugin]"]):
+    """A read-only, hashable mapping, so a policy and the config holding it stay
+    hashable as every other config field is."""
+
+    __slots__ = ("_items",)
+
+    def __init__(self, items: Mapping[ContainerFormat, type[FormatPlugin]]) -> None:
+        self._items = dict(items)
+
+    def __getitem__(self, key: ContainerFormat) -> type[FormatPlugin]:
+        return self._items[key]
+
+    def __iter__(self) -> Iterator[ContainerFormat]:
+        return iter(self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __hash__(self) -> int:
+        return hash(frozenset(self._items.items()))
+
+    def __repr__(self) -> str:
+        return repr(self._items)
+
+
+def _coerce_replacements(values: object) -> _Replacements:
+    if not isinstance(values, Mapping):
+        raise _UsageTypeError(
+            f"{_CALL} takes a mapping of ContainerFormat to FormatPlugin subclass for "
+            f"replace=, got {values!r}."
+        )
+    if values:
+        # Imported here, and only when there is something to check: the plugin adapter
+        # imports the config, which builds a default policy as it loads.
+        from archivey.internal.plugin_adapter import check_replacement
+
+        for container, plugin in values.items():
+            check_replacement(container, plugin)
+    return _Replacements(values)
+
+
 @dataclass(frozen=True, init=False)
 class FormatPolicy:
     """Which formats one call may open.
@@ -92,6 +137,11 @@ class FormatPolicy:
     The policy decides which reader runs, not what detection reads: magic, the
     self-extracting archive scan and the built-in content probes still run on every
     input, within ``ArchiveyConfig.detection_budget``.
+
+    ``replace=`` reads a built-in container with a plugin instead of the built-in
+    reader (see :attr:`replace`)::
+
+        MY_ZIP = ArchiveyConfig(formats=FormatPolicy(replace={C.ZIP: MyZipPlugin}))
     """
 
     only: frozenset[ContainerFormat | PluginContainer | StreamFormat] | None
@@ -104,6 +154,21 @@ class FormatPolicy:
     """Whether registered plugin formats may open. Use ``False`` with ``exclude``;
     under ``only`` a plugin opens only when its container is listed."""
 
+    replace: Mapping[ContainerFormat, type[FormatPlugin]]
+    """Built-in containers read by a plugin instead of the built-in reader.
+
+    A key is ``ContainerFormat.ZIP``, ``SEVEN_Z``, ``RAR`` or ``ISO``. Its plugin is a
+    ``archivey.plugins.FormatPlugin`` that is not registered: its ``format`` is
+    the built-in one (``ArchiveFormat.ZIP``), and it declares no ``extensions``,
+    ``magic`` or ``probe``, because the file is found by the built-in detection. The
+    reader's ``format`` is the built-in format and ``format_info.from_plugin`` is
+    false. The plugin gets what any indexed plugin gets, a seekable source from the
+    start of the archive, so a multi-volume set and an archive behind a
+    self-extracting stub are refused with :class:`~archivey.UnsupportedFeatureError`,
+    and a source that cannot seek with :class:`~archivey.StreamNotSeekableError`. The
+    format's own ``ArchiveyConfig`` options reach the plugin through
+    ``PluginContext.config``."""
+
     # A hand-written __init__, as DiagnosticPolicy has: the parameters take any
     # iterable, and the fields always hold frozensets.
     def __init__(
@@ -112,6 +177,7 @@ class FormatPolicy:
         only: Iterable[ContainerFormat | PluginContainer | StreamFormat] | None = None,
         exclude: Iterable[ContainerFormat | PluginContainer | StreamFormat] = (),
         plugins: bool = True,
+        replace: Mapping[ContainerFormat, type[FormatPlugin]] | None = None,
     ) -> None:
         only_parsed = None if only is None else _coerce_entries(only, param="only=")
         exclude_parsed = _coerce_entries(exclude, param="exclude=")
@@ -136,6 +202,16 @@ class FormatPolicy:
                     f"{_CALL} lists the plugin containers {names} in only= but sets "
                     "plugins=False. Drop one of the two."
                 )
+        replace_parsed = _coerce_replacements({} if replace is None else replace)
+        for container in replace_parsed:
+            if container in exclude_parsed or (
+                only_parsed is not None and container not in only_parsed
+            ):
+                raise _UsageValueError(
+                    f"{_CALL} replaces {_entry_name(container)} but only= or exclude= "
+                    "turns it off. Allow the container, or drop the replacement."
+                )
+        object.__setattr__(self, "replace", replace_parsed)
         object.__setattr__(self, "only", only_parsed)
         object.__setattr__(self, "exclude", exclude_parsed)
         object.__setattr__(self, "plugins", plugins)

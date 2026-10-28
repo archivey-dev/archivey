@@ -23,9 +23,10 @@ A `FormatPolicy(replace={container: plugin})` SHALL open that built-in container
 the plugin's reader. Detection SHALL stay the built-in's, `reader.format` SHALL be the
 built-in format, and `format_info.from_plugin` SHALL stay false.
 
-The replacement SHALL NOT be given a multi-volume set, an archive found behind an SFX
-stub, or a read-once source. Each SHALL raise `UnsupportedFeatureError` that names the
-replacement, before the plugin's `open` runs.
+The replacement SHALL NOT be given a multi-volume set or an archive found behind an SFX
+stub; each SHALL raise `UnsupportedFeatureError` that names the replacement. A read-once
+source SHALL raise `StreamNotSeekableError`, as it does for any indexed plugin. Each
+refusal SHALL come before the plugin's `open` runs.
 
 #### Scenario: A ZIP opens with the replacement
 

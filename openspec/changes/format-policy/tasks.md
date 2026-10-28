@@ -31,22 +31,22 @@ last one archives the change.
 
 ## 2. Replacement plugins (part 2)
 
-- [ ] 2.1 `FormatPolicy(replace=)`, with the checks in `design.md` §5: the plugin's
+- [x] 2.1 `FormatPolicy(replace=)`, with the checks in `design.md` §5: the plugin's
       `format` is a built-in `ArchiveFormat(key, UNCOMPRESSED)` for ZIP, 7z, RAR or ISO,
       it declares no extensions, magic or probe, and `only` or `exclude` does not turn
       the replaced container off.
-- [ ] 2.2 `BackendRegistry.reader_for_format(fmt, policy)`: return the replacement
+- [x] 2.2 `BackendRegistry.reader_for_format(fmt, policy)`: return the replacement
       backend, after checking its `requires` (a missing one raises
       `PackageNotInstalledError` before the plugin's `open` runs). Replacement backends:
       `_backend_class` over the built-in format with no detection signals, cached per
       plugin class.
-- [ ] 2.3 `core.py`: refuse multi-volume sets, SFX-found archives and read-once sources
+- [x] 2.3 `core.py`: refuse multi-volume sets, SFX-found archives and read-once sources
       for a replaced container, before the plugin's `open` runs.
-- [ ] 2.4 Tests: a replacement reads a ZIP, `reader.format` is the built-in format and
+- [x] 2.4 Tests: a replacement reads a ZIP, `reader.format` is the built-in format and
       `from_plugin` is false, `detect_format` answers the same with and without it; the
       construction refusals; a replacement is refused on a volume set, an SFX-found
       archive and a pipe.
-- [ ] 2.5 Docs and spec: the "Adding a format" guide (replacement plugins); the
+- [x] 2.5 Docs and spec: the "Adding a format" guide (replacement plugins); the
       `FormatPlugin.format`, `extensions`, `magic` and `probe` docstrings in
       `plugins.py`, which today describe registration only; the `format-plugins` delta.
 

@@ -1,8 +1,8 @@
 > **Design approved 2026-10-27** (option A and every call in `design.md` §7). The
 > implementation builds on the plugin API (`plugin-api`) and lands in three pull
 > requests, one per part of `tasks.md`. This change carries deltas for
-> `backend-registry`, `format-detection`, `packaging-and-extras` and `error-handling`;
-> the `format-plugins` delta comes with part 2 (replacement plugins).
+> `backend-registry`, `format-detection`, `format-plugins`, `packaging-and-extras` and
+> `error-handling`.
 
 ## Why
 
