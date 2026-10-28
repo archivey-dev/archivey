@@ -4,10 +4,10 @@
 ``__init__`` as keywords: a few microseconds for a dataclass of ten or twenty fields.
 Extraction copies each member (``ArchiveMember.replace``) and its result
 (``ExtractionResult``) once each on the default extract path, and a reader copies its
-decoder config (``StreamConfig``), and ZIP its member locator, for every member it
-opens, so that adds up. :func:`copy_with` fetches the fields with one ``attrgetter`` and
-passes them by position instead. Every positional copy of a dataclass goes through here;
-do not add another.
+decoder config (``StreamConfig``) for every member it opens, as the ZIP reader also
+copies its member locator, so that adds up. :func:`copy_with` fetches the fields with
+one ``attrgetter`` and passes them by position instead. Every positional copy of a
+dataclass goes through here; do not add another.
 
 It covers a class of at least two fields whose constructor takes exactly its fields,
 in field order, each as a positional parameter, which is what a call by position
