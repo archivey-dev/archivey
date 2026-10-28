@@ -13,10 +13,12 @@ error depend on the size of the caller's reads.
 
 - **RAR, past a damaged header.** When a header after MAIN fails its CRC, the walk
   takes the next header's position from the damaged header's own size fields, as
-  `unrar` does. Archivey adds one check that `unrar` does not make: the header found
+  `unrar` does. Archivey adds two checks that `unrar` does not make: the header found
   there, and the one after it, must each pass their own CRC. If they pass, the walk goes
-  on, and every later member is listed and readable. If not, the walk stops there, as
-  today. The skipped header is kept internally so that `unrar` and `unar`, which still
+  on, and every later member is listed. A later member is readable unless its bytes
+  depend on a field of the skipped header that no CRC vouched for (then its own digest
+  fails). If not, the walk stops there, as today. So does a damaged header whose type
+  reads as the end block, as it stops `unrar`. The skipped header is kept internally so that `unrar` and `unar`, which still
   see it, are addressed correctly, and a damaged solid archive is still read in one
   pass. The pass still ends with `CorruptionError`, after all the members, as for a
   missing middle volume. A new diagnostic, `ARCHIVE_DAMAGE_SKIPPED`, reports each

@@ -26,17 +26,20 @@ salvage. This change is their design.
 
 - **RAR walk:** when a header after MAIN fails its CRC, the walk computes the next
   header's position from the damaged header's size fields, as `unrar` does. It goes on
-  only if the header there and the one after it pass their own CRCs and are types that
-  may follow MAIN. Otherwise it stops, as today. archivey does not list the member whose header is
-  damaged. Each skipped header emits the new `ARCHIVE_DAMAGE_SKIPPED`. The pass still ends
+  only if the damaged header parses, its type does not read as `ENDARC` (which ends
+  `unrar`'s walk too), and the header there and the one after it pass their own CRCs
+  and are types that may follow MAIN. Otherwise it stops, as today. archivey does not
+  list the member whose header is damaged. Each skipped header emits the new `ARCHIVE_DAMAGE_SKIPPED`. The pass still ends
   in `CorruptionError`, now after every member the walk reached, as for a missing middle
   volume. Encrypted headers stop at the damage, as `unrar` does.
 - **What `unrar` and `unar` still see:** both programs still read the skipped header as
   an entry. The reader keeps it as an *unlisted entry*, never returned, and counts it
   wherever it addresses a member in those programs by position: the split of a solid
-  pass's single output, include-mask selection, and the `unar -i` index. A solid pass
-  stays one process. When a field that addressing needs does not parse, the reads that
-  depend on it raise `CorruptionError` instead of guessing.
+  pass's single output, include-mask selection, the glob refusal, the dictionary check
+  and the `unar -i` index. The four `format-rar` requirements that count members there
+  now count *payload FILE entries*. A solid pass stays one process. A read that cannot
+  be addressed because of a skipped header's name raises the `UnsupportedFeatureError`
+  the mask rule already raises.
 - **Decoder feeding:** `DecompressorStream` feeds its decoder in fixed slices of 64 KiB
   of compressed input. The slices are aligned to the decoder's start, and each call asks
   for at most 64 KiB of output, whatever the caller's `n`. The bytes returned before a
