@@ -91,9 +91,9 @@ each path is on its list, live in that script.
   [`security-review-guide.md`](reference/security-review-guide.md). For each deep path,
   check the guarantee it carries (writes stay inside the destination, resources stay
   bounded, archive-supplied input never reaches a command line or a terminal as anything
-  but inert text) and name what you checked in the Snapshot. On a fix round, trace every fix outward (`fix-round.md`), not only the
-  ones that moved a contract. When the script says the maintainer merges, say so in
-  block 1.
+  but inert text) and name what you checked in the Snapshot. On a fix round, trace every
+  fix outward (`fix-round.md`), not only the ones that moved a contract. When the script
+  says the maintainer merges, say so in block 1.
 
 The Snapshot line names the tier. Check the PR body's Risk section against the script: a
 public API change the body does not declare is 🟡, and a wrong tier line is 🟢.
