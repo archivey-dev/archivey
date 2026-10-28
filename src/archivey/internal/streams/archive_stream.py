@@ -157,6 +157,31 @@ def as_closed_source_error(
     return None
 
 
+class _Opened:
+    """An ``ArchiveStream`` opener that is a stream already open.
+
+    Pass ``_Opened(stream)`` as ``open_fn`` with ``lazy=False``: the handle starts open
+    on ``stream``, as it would by calling ``lambda: stream``, without the call or the
+    diagnostic scope the call is made in (it emits nothing). An ``ArchiveStream`` is
+    still opened by the call, which collapses it into the handle. Calling it returns
+    ``stream``, so it is still an opener wherever one is expected.
+
+    With ``settle_seekable``, the handle ignores its ``seekable`` argument and asks
+    ``is_seekable(stream)`` on first use (``ArchiveStream._seek_allowed``) instead. Not
+    for an ``ArchiveStream``, whose own declared seekability the collapse would drop.
+    """
+
+    __slots__ = ("settle_seekable", "stream")
+
+    def __init__(self, stream: BinaryIO, *, settle_seekable: bool = False) -> None:
+        assert not (settle_seekable and isinstance(stream, ArchiveStream))
+        self.stream = stream
+        self.settle_seekable = settle_seekable
+
+    def __call__(self) -> BinaryIO:
+        return self.stream
+
+
 class ArchiveStream(ReadOnlyIOStream):
     """Public member/codec stream handle (exception translation + optional verify).
 
@@ -178,6 +203,22 @@ class ArchiveStream(ReadOnlyIOStream):
 
     Prefer constructing via backends / ``open_codec_stream`` rather than by hand.
     """
+
+    # Per-stream state that starts the same on every stream, as class defaults: an
+    # instance assigns one only when it changes, which keeps the constructor cheap
+    # (``stream_members()`` builds a stream per member). Each is documented where
+    # ``__init__`` or the method that changes it sets it.
+    _open_error: Exception | None = None
+    _open_error_tb: TracebackType | None = None
+    _open_interrupted_by: type[BaseException] | None = None
+    _inner: BinaryIO | None = None
+    _rewind_warned = False
+    _closing = False
+    _verdict: ArchiveyError | None = None
+    _verdict_tb: TracebackType | None = None
+    _verdict_rewound = False
+    _uninterrupted = True
+    _ended_from_start = False
 
     def __init__(
         self,
@@ -210,37 +251,43 @@ class ArchiveStream(ReadOnlyIOStream):
         # Named in the closed-source error and returned by ``name``; ``None`` for a
         # stream of no member.
         self._member_name = member_name
-        self._open_fn: Callable[[], BinaryIO] | None = open_fn
-        # The error a failed lazy open raised, and its traceback: a retry raises it
-        # again instead of calling ``open_fn`` a second time.
-        self._open_error: Exception | None = None
-        self._open_error_tb: TracebackType | None = None
-        # The type of a ``BaseException`` (``KeyboardInterrupt``) that stopped the lazy
-        # open. Not the stream's error, so it is not raised again; a retry names it.
-        self._open_interrupted_by: type[BaseException] | None = None
+        settle_seekable = False
+        if type(open_fn) is _Opened:
+            assert not lazy, "_Opened is the opener of an eager handle"
+            settle_seekable = open_fn.settle_seekable
+        if type(open_fn) is _Opened and not isinstance(open_fn.stream, ArchiveStream):
+            # A stream already open: the handle starts open on it, as an eager open of
+            # ``lambda: stream`` would, without the call. An ``ArchiveStream`` is
+            # opened the usual way, which collapses it (``_ensure_open``).
+            self._inner = open_fn.stream
+            self._open_fn: Callable[[], BinaryIO] | None = None
+        else:
+            self._open_fn = open_fn
+        # ``_open_error`` / ``_open_error_tb``: the error a failed lazy open raised,
+        # and its traceback: a retry raises it again instead of calling ``open_fn`` a
+        # second time. ``_open_interrupted_by``: the type of a ``BaseException``
+        # (``KeyboardInterrupt``) that stopped the lazy open. Not the stream's error,
+        # so it is not raised again; a retry names it.
         self._translate = translate
         self._stamp = stamp if stamp is not None else _noop_stamp
-        self._inner: BinaryIO | None = None
         self._open_lock = threading.Lock()
-        self._seekable_hint = seekable
+        # ``None``: whatever ``is_seekable(inner)`` answers, asked on first use. Only on
+        # a handle built by ``_Opened(..., settle_seekable=True)``.
+        self._seekable_hint: bool | None = None if settle_seekable else seekable
         self._rewind_warning = rewind_warning
-        self._rewind_warned = False
         self._size = size
         self._diagnostics_collector = collector
         self._on_close = on_close
-        # ``close()`` reads this. Assign it before the verifier build below, which can
-        # raise (a digest diagnostic under a RAISE policy): ``IOBase.__del__`` still
-        # calls ``close()`` on an instance whose ``__init__`` raised.
-        self._closing = False
+        # ``_closing``: ``close()`` reads it. It is a class default, so it is set
+        # before the verifier build below, which can raise (a digest diagnostic under
+        # a RAISE policy): ``IOBase.__del__`` still calls ``close()`` on an instance
+        # whose ``__init__`` raised.
         self._verifier: MemberVerifier | None = verifier
-        # The content verdict this stream raised, if any. Every later read and seek
-        # raises it again (see ``_fail``).
-        self._verdict: ArchiveyError | None = None
-        # Its traceback as first raised: where the damage was found.
-        self._verdict_tb: TracebackType | None = None
-        # Whether the caller has seeked since the verdict last raised. A seek restarts
-        # the decode, so the prefix reads again; the read that reaches the end raises.
-        self._verdict_rewound = False
+        # ``_verdict``: the content verdict this stream raised, if any. Every later
+        # read and seek raises it again (see ``_fail``). ``_verdict_tb``: its traceback
+        # as first raised, where the damage was found. ``_verdict_rewound``: whether
+        # the caller has seeked since the verdict last raised. A seek restarts the
+        # decode, so the prefix reads again; the read that reaches the end raises.
         # False for a stream that only a reader's own views read. A read seeks the
         # shared handle when it is not already there. Some reads still seek, and one
         # seek is enough to mark the stream rewound, so a short read that ends at the
@@ -252,10 +299,9 @@ class ArchiveStream(ReadOnlyIOStream):
         # for a read that reached the end with no seek since position 0
         # (``_uninterrupted``): a seek through an index skips bytes the decoder never
         # saw. ``_ended_from_start`` keeps that such a read happened; like the
-        # verifier's flags it survives a rewind.
+        # verifier's flags it survives a rewind. ``_uninterrupted`` and
+        # ``_ended_from_start`` start as class defaults (``True``, ``False``).
         self._checks_content = checks_content
-        self._uninterrupted = True
-        self._ended_from_start = False
         # A stream's diagnostics are what its own calls emit, from this constructor on:
         # ``read``, ``seek`` and ``close`` enter this scope, on whichever thread calls.
         # Other threads' emits into the same collector stay out, as do the reader's
@@ -265,8 +311,11 @@ class ArchiveStream(ReadOnlyIOStream):
         )
         # Only an eager open and a digest the verifier cannot check emit here, so a
         # lazy stream with no digest skips entering the scope: ``stream_members()``
-        # builds one such stream per member.
-        can_emit = not lazy or (bool(expected_hashes) and verifier is None)
+        # builds one such stream per member. A stream built open (``_Opened``)
+        # opens nothing.
+        can_emit = (not lazy and self._inner is None) or (
+            bool(expected_hashes) and verifier is None
+        )
         with (
             collector.inside(self._diagnostics_scope)
             if can_emit
@@ -321,7 +370,7 @@ class ArchiveStream(ReadOnlyIOStream):
                 custom_digests=custom_digests,
                 bounded=bounded,
             )
-        if not lazy:
+        if not lazy and self._inner is None:
             self._ensure_open()
 
     @property
@@ -714,8 +763,16 @@ class ArchiveStream(ReadOnlyIOStream):
         finally:
             leave_scope(stack, scope)
 
+    def _seek_allowed(self) -> bool:
+        """The seekability this handle was built with, settled on first use."""
+        hint = self._seekable_hint
+        if hint is None:
+            inner = self._inner
+            hint = self._seekable_hint = inner is not None and is_seekable(inner)
+        return hint
+
     def _seek(self, offset: int, whence: int) -> int:
-        if not self._seekable_hint:
+        if not self._seek_allowed():
             raise io.UnsupportedOperation("seek")
         # The arguments are checked after seekability, as a buffered reader over a pipe
         # does: ``seek(1.5)`` there is UnsupportedOperation, not TypeError. On a seekable
@@ -976,6 +1033,9 @@ class ArchiveStream(ReadOnlyIOStream):
         # readable()/writable()/write() come from ReadOnlyIOStream.
         # Undeclared SEEKABLE forces forward-only even when the inner handle could seek
         # (directory uniformity / declared-capabilities contract).
+        if self._seekable_hint is None:
+            # Settled now, by asking the inner: no need to ask it twice.
+            return self._seek_allowed()
         if not self._seekable_hint:
             return False
         if self._inner is not None:
@@ -1007,6 +1067,13 @@ class ArchiveStream(ReadOnlyIOStream):
         # Catch ``Exception`` (not ``BaseException``): KeyboardInterrupt/SystemExit must
         # still propagate; dual-failure grouping is for ordinary close/teardown errors.
         close_exc: Exception | None = None
+        if self._seekable_hint is None:
+            # Settled before the inner goes, so a seek after close() answers as it
+            # would had the handle been asked when it was built.
+            try:
+                self._seek_allowed()
+            except Exception:  # noqa: BLE001 - an inner that cannot say cannot seek
+                self._seekable_hint = False
         try:
             inner = self._inner
             verifier = self._verifier

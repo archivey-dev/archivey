@@ -32,7 +32,7 @@ from archivey.exceptions import (
 from archivey.internal.backends import zip_aes
 from archivey.internal.backends.zip_aes import WinZipAesDecryptStream
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import ArchiveStream, _Opened
 from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     SeekPoint,
@@ -192,6 +192,23 @@ def test_archive_stream_refused_by_verifier_diagnostic_closes_cleanly() -> None:
         )
     _assert_closes_cleanly(_refused(ArchiveStream, caught))
     assert opened == []  # refused before the member was opened
+
+
+def test_archive_stream_built_open_refused_by_verifier_closes_its_inner() -> None:
+    """A handle built open (``_Opened``) owns its inner before the verifier build
+    raises, so the half-built handle's close takes the inner down too."""
+    inner = io.BytesIO(b"payload")
+    collector = DiagnosticCollector(policy=DiagnosticPolicy.STRICT)
+    with pytest.raises(DiagnosticRaisedError) as caught:
+        ArchiveStream(
+            _Opened(inner),
+            translate=lambda _e: None,
+            collector=collector,
+            expected_hashes={"no-such-digest": b"\x00"},  # type: ignore[dict-item]
+        )
+    assert not inner.closed
+    _assert_closes_cleanly(_refused(ArchiveStream, caught))
+    assert inner.closed
 
 
 @pytest.mark.parametrize(
