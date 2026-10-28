@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import open_archive
+from archivey import DiagnosticCode, open_archive
 from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
@@ -1041,15 +1041,47 @@ def test_unrar_skips_a_rar4_file_headers_pack_size_without_long_block(
         assert [m.name for m in archive.members_report().members] == ["carrier.bin"]
 
 
-def test_rar5_end_block_without_its_flags_reads() -> None:
-    # An end block whose header stops before its end-of-archive flags (libarchive's
-    # test_read_format_rar5_redir_varint_2byte.rar has one). unrar reads a field past
-    # the header's end as zero, so the flags are zero: the archive ends here.
-    original = (_FIXTURES / "basic_nonsolid__.rar").read_bytes()
-    body = b"\x02\x05\x00"  # header size, ENDARC, header flags; no end flags
-    end_block = struct.pack("<I", zlib.crc32(body)) + body
-    data = original[:-8] + end_block
+# An end block (and a MAIN header) whose header stops before its flags, or inside
+# them: libarchive's test_read_format_rar5_redir_varint_2byte.rar ends with one.
+# unrar 7.00 reads a field past the header's end as zero and lists such archives.
+_CUT_FLAGS = [pytest.param(b"", id="absent"), pytest.param(b"\x80", id="cut")]
+_END_BLOCK = bytes.fromhex("1d775651 03 05 04 00")
+
+
+def _with_end_block(end_block: bytes) -> tuple[bytes, bytes]:
+    original = _fixture("basic_nonsolid__.rar").read_bytes()
+    assert original[-8:] == _END_BLOCK
+    return original, original[:-8] + end_block
+
+
+def _names(data: bytes) -> list[str]:
     with open_archive(io.BytesIO(data)) as reader:
-        names = [m.name for m in reader.members()]
-    with open_archive(io.BytesIO(original)) as reader:
-        assert names == [m.name for m in reader.members()]
+        return [m.name for m in reader.members()]
+
+
+@pytest.mark.parametrize("flags", _CUT_FLAGS)
+def test_rar5_end_block_without_its_flags_reads(flags: bytes) -> None:
+    original, data = _with_end_block(_rar5_block(5, flags))
+    assert _names(data) == _names(original)
+
+
+@pytest.mark.parametrize("flags", _CUT_FLAGS)
+def test_rar5_damaged_end_block_without_its_flags_is_the_end_block(
+    flags: bytes,
+) -> None:
+    # The CRC-failed header is no larger than an end block's, so it is taken for one.
+    end_block = bytearray(_rar5_block(5, flags))
+    end_block[0] ^= 0x01
+    original, data = _with_end_block(bytes(end_block))
+    with open_archive(io.BytesIO(data)) as reader:
+        assert [m.name for m in reader.members()] == _names(original)
+        codes = [d.code for d in reader.diagnostics.retained]
+    assert codes == [DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING]
+
+
+@pytest.mark.parametrize("flags", _CUT_FLAGS)
+def test_rar5_main_header_without_its_flags_reads(flags: bytes) -> None:
+    original = _fixture("basic_nonsolid__.rar").read_bytes()
+    main_end = 8 + 4 + 1 + original[12]  # signature, CRC, size vint, header
+    data = original[:8] + _rar5_block(1, flags) + original[main_end:]
+    assert _names(data) == _names(original)

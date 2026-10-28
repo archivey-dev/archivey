@@ -1304,7 +1304,8 @@ def _rar5_end_block_shaped(hdata: bytes, pos: int) -> bool:
     """Whether a RAR5 header from ``pos`` (its type field) has an end block's shape.
 
     That is the type, block flags with neither an extra nor a data area, then the
-    end-of-archive flags, and nothing after them. A FILE or service header declares
+    end-of-archive flags (absent, or cut by the header's end, as the walk reads
+    them: ``_load_vint_or_zero``), and nothing after them. A FILE or service header declares
     a data area. A MAIN header with no extra and no data area passes this; the blocks
     that follow it in any archive with members keep it out (see
     ``dev-docs/formats/rar.md``).
@@ -1314,7 +1315,7 @@ def _rar5_end_block_shaped(hdata: bytes, pos: int) -> bool:
         block_flags, pos = load_vint(hdata, pos)
         if block_flags & (_RAR5_FLAG_EXTRA | _RAR5_FLAG_DATA):
             return False
-        _end_flags, pos = load_vint(hdata, pos)
+        _end_flags, pos = _load_vint_or_zero(hdata, pos)
     except CorruptionError:
         return False
     return pos == len(hdata)
@@ -1567,6 +1568,21 @@ def load_vint(buf: bytes | bytearray | memoryview, pos: int) -> tuple[int, int]:
         if b < 0x80:
             return res, pos
     raise CorruptionError("Invalid RAR5 variable-length integer")
+
+
+def _load_vint_or_zero(
+    buf: bytes | bytearray | memoryview, pos: int
+) -> tuple[int, int]:
+    """A RAR5 vint, or 0 when the header ends before the vint does.
+
+    unrar's ``RawRead::GetV`` reads a field that is absent, or cut by the header's
+    end, as zero; checked with unrar 7.00 on a MAIN and an end block without their
+    flags. A vint longer than ``load_vint`` allows, inside the header, still raises.
+    """
+    rest = buf[pos : pos + 11]
+    if len(rest) < 11 and all(b & 0x80 for b in rest):
+        return 0, len(buf)
+    return load_vint(buf, pos)
 
 
 def _load_byte(buf: bytes | bytearray | memoryview, pos: int) -> tuple[int, int]:
@@ -3488,7 +3504,7 @@ def _parse_rar5(
         ) = parsed
 
         if block_type == _RAR5_MAIN:
-            main_flags, pos = load_vint(hdata, pos)
+            main_flags, pos = _load_vint_or_zero(hdata, pos)
             if main_flags & _RAR5_MAIN_HAS_VOLNR:
                 volnr, pos = load_vint(hdata, pos)
                 # RAR5: first volume omits the field (implicit 0); later volumes
@@ -3568,9 +3584,7 @@ def _parse_rar5(
             continue
 
         if block_type == _RAR5_ENDARC:
-            # A header that stops before its flags has none set: unrar reads a field
-            # past the header's end as zero.
-            endarc_flags = load_vint(hdata, pos)[0] if pos < len(hdata) else 0
+            endarc_flags = _load_vint_or_zero(hdata, pos)[0]
             needs_next_volume = bool(endarc_flags & _RAR5_ENDARC_NEXT_VOLUME)
             end_block_seen = True
             trailing_at = _scan_after_end_block(
