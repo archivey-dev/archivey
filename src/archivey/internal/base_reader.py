@@ -1937,18 +1937,21 @@ class BaseArchiveReader(ArchiveReader):
     def _drain_walk(self) -> None:
         """Pull to the end of the walk, in batches of ``_DRAIN_BATCH`` members.
 
-        Each batch takes ``_walk_lock`` once, and the drain yields between batches, so a
-        pass on another thread (under ``CONCURRENT``) waits about one batch for it, not
-        the whole listing."""
+        Each batch takes ``_walk_lock`` once. On a ``CONCURRENT`` reader the drain also
+        yields between batches, so a pass on another thread waits about one batch for it,
+        not the whole listing."""
+        concurrent = self._state.concurrent
         while True:
             with self._walk_lock:
                 if self._pull_members_locked(_DRAIN_BATCH) is None:
                     return
-            # Under the GIL a release alone is no hand-off: this thread keeps running
-            # and takes the lock again before a waiter gets to run. A short sleep gives
-            # the GIL up so a waiter can take the lock; ``sleep(0)`` hands over less
-            # reliably. One per batch costs nothing measurable.
-            time.sleep(1e-6)
+            if concurrent:
+                # Under the GIL a release alone is no hand-off: this thread keeps
+                # running and takes the lock again before a waiter gets to run. A short
+                # sleep gives the GIL up so a waiter can take the lock (``sleep(0)``
+                # hands over less reliably). It is a syscall, about 0.5 µs per member
+                # in wall time, so only a reader that can have such a waiter pays it.
+                time.sleep(1e-6)
 
     def _walk_ahead(self) -> None:
         """Drain a streaming walk before its pass reads data; a failure waits for it.
