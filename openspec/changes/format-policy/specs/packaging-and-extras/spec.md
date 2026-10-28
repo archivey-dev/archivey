@@ -20,7 +20,11 @@ The `PackageNotInstalledError` for an excluded package SHALL list it in `missing
 `error-handling`, *PackageNotInstalledError carries its missing components*), with the
 policy as its `reason`.
 
-`exclude_libraries` SHALL accept only archivey's own optional package names. A policy
+`exclude_libraries` SHALL take `OptionalLibrary` members or their string values
+(`OptionalLibraryStr`, a `Literal` of exactly those values), and store
+`frozenset[OptionalLibrary]`. Any other entry SHALL be refused at construction with
+`ArchiveyUsageError` that lists the accepted names; a misspelled name SHALL NOT be
+accepted and ignored. A policy
 that names a plugin (in `replace=`, or a plugin container in `only=`) whose `requires`
 holds an excluded package SHALL be refused at construction with `ArchiveyUsageError`.
 A registered plugin the policy does not name, whose `requires` holds an excluded
@@ -46,3 +50,8 @@ package, SHALL read as NONE under that config, and opening one of its files SHAL
 - **AND** with both names excluded the open raises `PackageNotInstalledError` that names
   the policy
 
+#### Scenario: A misspelled library name is refused
+
+- **WHEN** a caller builds `FormatPolicy(exclude_libraries={"pyppm"})`
+- **THEN** construction raises `ArchiveyUsageError` that lists the `OptionalLibrary` names
+- **AND** a type checker reports the same call as an error

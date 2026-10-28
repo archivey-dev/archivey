@@ -6,8 +6,11 @@ Not started. Design approved 2026-10-27; starts once the plugin API stack has me
 
 - [ ] 1.1 `FormatPolicy` (frozen; `only`, `exclude`, `exclude_libraries`, `plugins`,
       `replace`; `allows()`), with the construction checks in `design.md` §3, §5 and
-      §5a: the fixed set of library names, and a named plugin whose `requires` holds an
-      excluded package. Exported at the root.
+      §5a: `exclude_libraries` takes `OptionalLibrary | OptionalLibraryStr` and stores
+      `frozenset[OptionalLibrary]`, refusing any other entry; a named plugin whose
+      `requires` holds an excluded package is refused. `FormatPolicy`, `OptionalLibrary`
+      and `OptionalLibraryStr` exported at the root; a test pins the `Literal` against
+      the enum.
 - [ ] 1.2 `ArchiveyConfig.formats: FormatPolicy = FormatPolicy()`, and the cross-field
       check in `ArchiveyConfig.__post_init__` (an excluded `rapidgzip` with
       `use_rapidgzip=ON` or `use_indexed_bzip2=ON`).

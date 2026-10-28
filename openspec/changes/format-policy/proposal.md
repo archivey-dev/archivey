@@ -33,8 +33,9 @@ readers, including an opt-in path and replacement.
   arguments:
   - `only=`: containers and compressions that may open. `None` (the default) means all.
   - `exclude=`: containers and compressions that may not open.
-  - `exclude_libraries=`: optional packages (`pyppmd`, `inflate64`, ...) that read as
-    not installed for the call.
+  - `exclude_libraries=`: optional packages that read as not installed for the call,
+    named by the new `OptionalLibrary` enum (`OptionalLibrary.PYPPMD`, or `"pyppmd"`
+    typed as a `Literal`).
   - `plugins=`: `False` turns off every registered plugin format.
   - `replace=`: a built-in container mapped to the plugin that reads it instead.
   - `allows(fmt)`: whether a format may open under the policy.
@@ -65,7 +66,8 @@ Nothing changes for a caller who does not set `formats`.
   (plugin probes filtered), `internal/plugin_adapter.py` (replacement backends), the
   codec and backend availability checks (`deps.py`), `core.py` (one check at the reader
   choice, and the volume and SFX refusals for a replacement).
-- Public API: one new root name, one new config field, a keyword `config=` on
+- Public API: three new root names (`FormatPolicy`, `OptionalLibrary`,
+  `OptionalLibraryStr`), one new config field, a keyword `config=` on
   `format_availability` and `list_supported_formats`, and a `missing` attribute on
   `PackageNotInstalledError`. All additive. The
   `UnsupportedFeatureError` and `PackageNotInstalledError` docstrings widen to cover a

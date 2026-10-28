@@ -104,7 +104,7 @@ FormatEntry = ContainerFormat | PluginContainer | StreamFormat
 class FormatPolicy:
     only: frozenset[FormatEntry] | None = None
     exclude: frozenset[FormatEntry] = frozenset()
-    exclude_libraries: frozenset[str] = frozenset()  # §5a
+    exclude_libraries: frozenset[OptionalLibrary] = frozenset()  # §5a
     plugins: bool = True
     replace: Mapping[ContainerFormat, type[FormatPlugin]] = {}  # stored read-only
 
@@ -243,13 +243,38 @@ and one algorithm can have several (deflate decodes through `zlib` or `rapidgzip
 turning off `DEFLATE` would also turn off the safe path.
 
 ```python
-FormatPolicy(exclude_libraries={"pyppmd", "inflate64"})
+class OptionalLibrary(StrEnum):
+    PYPPMD = "pyppmd"
+    INFLATE64 = "inflate64"
+    BROTLI = "brotli"
+    LZ4 = "lz4"
+    BACKPORTS_ZSTD = "backports.zstd"
+    COMPRESSION_ZSTD = "compression.zstd"
+    RAPIDGZIP = "rapidgzip"
+    PYCDLIB = "pycdlib"
+    CRYPTOGRAPHY = "cryptography"
+
+OptionalLibraryStr = Literal["pyppmd", "inflate64", ...]  # one per member
+
+FormatPolicy(exclude_libraries={OptionalLibrary.PYPPMD, "inflate64"})
 ```
+
+**The type.** The maintainer asked (2026-10-28) for an enum or a literal set, so that a
+caller knows exactly which names exist and a typo cannot silently leave a library on.
+`exclude_libraries` follows `DiagnosticPolicy(ignore=)`: it takes
+`Iterable[OptionalLibrary | OptionalLibraryStr]` and stores
+`frozenset[OptionalLibrary]`. A type checker rejects a wrong name in either spelling,
+an editor completes both, and the docs list the members. Construction still converts
+each entry with `OptionalLibrary(name)` and refuses anything else with
+`ArchiveyUsageError` that lists the members, for a caller without a type checker. A
+test pins the `Literal` against the enum, as for `DiagnosticCodeStr`.
 
 - **The names** are the package names that `MissingComponent.name` (on
   `FormatAvailability.missing`) already reports: `pyppmd`, `inflate64`, `brotli`, `lz4`,
-  `backports.zstd`, `rapidgzip`, `pycdlib`, `cryptography`. The set is fixed: it does not
-  read the plugin registry, so a policy accepts the same names whenever it is built.
+  `backports.zstd`, `rapidgzip`, `pycdlib`, `cryptography`, one `OptionalLibrary`
+  member each. The set is fixed: it does not read the plugin registry, so a policy
+  accepts the same names whenever it is built. A new optional package adds a member
+  and a `Literal` entry in the same change.
   `compression.zstd` is accepted too: it is the zstd module
   on 3.14 and later, and an optional part of a CPython build. An entry names a module,
   not a capability, so excluding one zstd module falls through to the other, as when it
