@@ -20,7 +20,7 @@ same checks apply to the fix commits before the label goes on again.
     uv run python scripts/review_prep.py                 # sweep + width against origin/main
     uv run python scripts/review_prep.py --base HEAD~1   # just the last commit's fixes
     uv run python scripts/review_prep.py red-on-base tests/test_x.py::test_y ...
-    uv run python scripts/review_prep.py tier            # light, standard or deep, and why
+    python3 scripts/review_prep.py tier                  # light, standard or deep, and why
 
 ``sweep`` only reports: whether a hit is stale needs reading. ``width`` exits 1 when an
 added line is wider than its file allows. ``red-on-base`` prints a table to paste into the
@@ -345,6 +345,9 @@ def width(files: Iterable[FileDiff], base: str, head: str = "HEAD") -> list[str]
 
 # A pull request is light only when every path it changes is here: prose, tests,
 # benchmarks and agent instructions. `openspec/` is not, because a spec is a contract.
+# NOT_LIGHT takes back the files inside those folders that are gates or contracts
+# themselves: the skip markers, the benchmark gate, the API surface, the threat model, and
+# the two review skills, which change what every later round checks.
 LIGHT_PREFIXES = (
     "docs/",
     "dev-docs/",
@@ -354,13 +357,30 @@ LIGHT_PREFIXES = (
     ".cursor/",
 )
 LIGHT_FILES = ("mkdocs.yml",)
+NOT_LIGHT = (
+    "tests/conftest.py",
+    "benchmarks/wall_baseline.py",
+    "dev-docs/api-surface.txt",
+    "dev-docs/threat-model.md",
+    ".claude/skills/code-review-skill/",
+    ".claude/skills/address-review-findings/",
+)
 
-# Paths where a bug breaks the safety contract (a write outside the destination, an
-# unbounded resource, a command run on archive-supplied input) or the release itself. One
-# of them makes the pull request deep. Edit the list here; the skill does not repeat it.
+# Paths where one bug breaks a safety guarantee for every format: writes stay inside the
+# destination, resources stay bounded, archive-supplied input never reaches a command
+# line or a terminal as anything but inert text. One of them makes the pull request deep.
+# Edit the list here; the skill does not repeat it.
+#
+# Format parsers and codecs (`internal/backends/`, `internal/streams/codecs/`) stay
+# standard by design, though they read hostile bytes: listing them would make nearly
+# every format PR deep, and they have their own defences that a review round does not
+# replace (the fuzzing jobs, the CVE replays, the hostile-input checklist every standard
+# round runs).
 DEEP_SECURITY = (
     "src/archivey/paths.py",
     "src/archivey/config.py",
+    "src/archivey/internal/config.py",
+    "src/archivey/terminal.py",
     "src/archivey/internal/extraction.py",
     "src/archivey/internal/file_copy_pass.py",
     "src/archivey/internal/link_watch.py",
@@ -403,7 +423,8 @@ def tier(paths: Iterable[str]) -> Tier:
     heavier = [
         p
         for p in paths
-        if not (
+        if _matches(p, NOT_LIGHT)
+        or not (
             _matches(p, LIGHT_PREFIXES)
             or p in LIGHT_FILES
             or ("/" not in p and p.endswith(".md"))

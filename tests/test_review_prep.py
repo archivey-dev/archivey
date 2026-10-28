@@ -237,6 +237,18 @@ def test_tier_is_light_only_when_every_path_is_prose_or_tests() -> None:
     assert prep.tier(["docs/x.md", "openspec/specs/cli/spec.md"]).name == "standard"
     assert prep.tier(["src/archivey/core.py", "tests/test_x.py"]).name == "standard"
     assert prep.tier([]).name == "standard"
+    # Gates and contracts inside the light folders are taken back out.
+    for gate in ("tests/conftest.py", "dev-docs/threat-model.md"):
+        assert prep.tier([gate]).name == "standard", gate
+    assert prep.tier([".claude/skills/code-review-skill/SKILL.md"]).name == "standard"
+    assert prep.tier([".claude/skills/unslop/SKILL.md"]).name == "light"
+
+
+def test_tier_path_lists_name_paths_that_exist() -> None:
+    # A renamed file would stop matching and quietly drop its pull requests to standard.
+    for entry in prep.DEEP_SECURITY + prep.DEEP_MAINTAINER + prep.NOT_LIGHT:
+        path = ROOT / entry
+        assert path.is_dir() if entry.endswith("/") else path.is_file(), entry
 
 
 def test_tier_is_deep_on_a_safety_path_and_the_maintainer_merges_workflows() -> None:
@@ -246,6 +258,12 @@ def test_tier_is_deep_on_a_safety_path_and_the_maintainer_merges_workflows() -> 
     assert prep.tier(["src/archivey/internal/external/unar.py"]).name == "deep"
     workflow = prep.tier([".github/workflows/ci.yml"])
     assert (workflow.name, workflow.maintainer_merges) == ("deep", True)
+    # AGENTS.md quotes the merge line.
+    assert prep.tier_report(workflow)[:3] == [
+        "tier: deep",
+        "  deep path: .github/workflows/ci.yml",
+        "  merge: the maintainer merges this one (workflow or release)",
+    ]
     # A directory entry matches by prefix, a file entry only exactly.
     assert prep.tier(["src/archivey/paths.pyi"]).name == "standard"
 

@@ -70,23 +70,28 @@ does not restate them.
 
 ### How deep: the tier
 
-A pull request's changed paths set how deep the review goes, not its author or its size. Run
-`python3 scripts/review_prep.py tier` first (stdlib only; it compares against
-`origin/main`). It prints the tier, the paths that decided it, and whether
-`dev-docs/api-surface.txt` changed. The path lists live in that script.
+A pull request's changed paths set how deep the review goes, not its author or its
+size. Run `python3 scripts/review_prep.py tier` first: it is stdlib only, so it needs no
+project environment, and it compares against `origin/main`. It prints the tier, the paths
+that decided it, and whether `dev-docs/api-surface.txt` changed. The path lists, and why
+each path is on its list, live in that script.
 
-- **Light** — every changed path is prose, tests, benchmarks or agent instructions. Read
+- **Light** — every changed path is prose, tests, benchmarks or agent instructions, other
+  than the gates and contracts among them (the skip markers, the API surface, the threat
+  model, the review skills). Read
   the diff and the files it touches. Open `CONTRIBUTING.md`, the handbook and the domain
   checklist only for what a change reaches into. Finding discipline does not change: what
-  you find is still reported and labeled. The verdict is 🔄 only for a 🔴, so a light PR
-  ends in one round otherwise.
+  you find is still reported and labeled. The verdict is 🔄 only for a 🔴 (§4), so a
+  light PR ends in one round otherwise.
 - **Standard** — the review this skill and its reference docs describe, unchanged.
-- **Deep** — a path where a bug breaks the safety contract, or a workflow or release file.
+- **Deep** — a path where one bug breaks a safety guarantee for every format, or a
+  workflow or release file. Format parsers and codecs stay standard by design; the script
+  says why. This tier is not a commissioned deep review: `deep-reviews.md` does not apply.
   Everything in Standard, plus [`threat-model.md`](../../../dev-docs/threat-model.md) and
   [`security-review-guide.md`](reference/security-review-guide.md). For each deep path,
   check the guarantee it carries (writes stay inside the destination, resources stay
-  bounded, archive-supplied input never reaches a command line) and name what you checked
-  in the Snapshot. On a fix round, trace every fix outward (`fix-round.md`), not only the
+  bounded, archive-supplied input never reaches a command line or a terminal as anything
+  but inert text) and name what you checked in the Snapshot. On a fix round, trace every fix outward (`fix-round.md`), not only the
   ones that moved a contract. When the script says the maintainer merges, say so in
   block 1.
 
@@ -328,7 +333,8 @@ so use these meanings and no others:
   full (block 2, inline threads, IDs) — approving is not shorthand for dropping them.
 - **💬 Comment** — findings the implementor should act on, but nothing the maintainer must
   decide and nothing you need to re-review.
-- **🔄 Request Changes** — a 🔴 stands, or a fix needs a look once it lands.
+- **🔄 Request Changes** — a 🔴 stands, or a fix needs a look once it lands. On a light
+  PR (§1), only a 🔴.
 
 **"Only nits left" is not a reason to merge.** In this repo a 🟢 nit is *small*, not
 *optional*: it gets fixed before merge, on this PR. "Leave it for a follow-up" is not an

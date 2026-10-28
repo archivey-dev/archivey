@@ -9,7 +9,8 @@
 ## Risk
 
 <!-- What could break, and for whom, if this change is wrong.
-Tier: the line `uv run python scripts/review_prep.py tier` prints (light, standard or deep).
+Tier: the "tier:" line that `python3 scripts/review_prep.py tier` prints (light,
+standard or deep), and the paths behind it.
 Public API: "none", or the names added, changed or removed (the diff of
 dev-docs/api-surface.txt lists them). Removing or renaming a public name is the
 maintainer's call. -->
