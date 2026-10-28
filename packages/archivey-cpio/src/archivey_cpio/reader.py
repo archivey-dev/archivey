@@ -11,8 +11,8 @@ The variants differ only in the header and the padding:
 - **odc** (``-H odc``, POSIX.1 "portable"): 76 bytes of octal ASCII fields after
   ``070707``. No padding. afio writes odc too, but switches a member to its *large*
   header (``070727``, 116 bytes of mostly hexadecimal fields, as libarchive reads it)
-  for a member whose fields it wants wider than odc's (a large uid, a file over
-  8 GiB). That header has odc's rules otherwise, so the archive is still ``odc``.
+  as afio(1) says, for a file over 2 GB, a uid or gid over 65535, or an archive of
+  more than 64K hard-linked files. That header has odc's rules otherwise, so the archive is still ``odc``.
 - **newc** (``-H newc``, SVR4) and **crc** (``-H crc``): 110 bytes of hexadecimal ASCII
   fields after ``070701`` or ``070702``. Name and data are padded to 4 bytes. In crc,
   the header's ``check`` field is the 32-bit sum of the data bytes.
@@ -97,7 +97,10 @@ _BINARY_FIELDS = {
 _ODC_WIDTHS = (6, 6, 6, 6, 6, 6, 6, 11, 6, 11)  # after the magic: 70 bytes
 _NEWC_FIELDS = 13  # 8 hexadecimal digits each, after the magic: 104 bytes
 # afio's large header after the magic, as (offset, width, base, name), and its four
-# separator bytes: 110 bytes. flag is not used.
+# separator bytes: 110 bytes. The 4-byte flag at offset 84 is not read, as libarchive
+# does not read it: afio's -Z compresses each file and stores the compressed bytes
+# and size, which a reader hands back as they are. xsize is refused when non-zero,
+# since nothing says where those bytes go and the next header could not be found.
 _AFIO_LARGE_SIZE = 110
 _AFIO_LARGE_FIELDS = (
     (0, 8, 16, "dev"),
