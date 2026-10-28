@@ -1462,18 +1462,29 @@ class SevenZipReader(BaseArchiveReader):
         assert isinstance(raw, _MemberRaw)
         return raw.folder_prefix
 
+    @staticmethod
+    def _folder_verify_args(
+        member: ArchiveMember,
+    ) -> tuple[Mapping[HashAlgorithm, bytes] | None, int | None, ArchiveMember | None]:
+        """``(expected_hashes, expected_size, verify_member)`` for a member decoded
+        from a folder: all ``None`` when the header records neither a size nor a
+        digest."""
+        if member.size is None and not member.hashes:
+            return None, None, None
+        return member.hashes, member.size, member
+
     def _folder_member_parts(
         self, inner: BinaryIO, member: ArchiveMember
     ) -> MemberStreamParts:
-        verify = member.size is not None or bool(member.hashes)
+        hashes, expected_size, verify_member = self._folder_verify_args(member)
         return self._member_parts(
             inner,
             member.name,
             size=member.size,
             track_output=False,
-            expected_hashes=member.hashes if verify else None,
-            expected_size=member.size if verify else None,
-            verify_member=member if verify else None,
+            expected_hashes=hashes,
+            expected_size=expected_size,
+            verify_member=verify_member,
         )
 
     def _empty_member_parts(self, member: ArchiveMember) -> MemberStreamParts:
@@ -1495,7 +1506,7 @@ class SevenZipReader(BaseArchiveReader):
         """
         prefix = self._member_prefix(member)
         size = _member_stream_size(member)
-        verify = member.size is not None or bool(member.hashes)
+        hashes, expected_size, verify_member = self._folder_verify_args(member)
         return self._wrap_member_stream(
             member.name,
             lambda: self._watch_unverified(
@@ -1504,9 +1515,9 @@ class SevenZipReader(BaseArchiveReader):
             size=member.size,
             track_output=False,
             seekable=False,
-            expected_hashes=member.hashes if verify else None,
-            expected_size=member.size if verify else None,
-            verify_member=member if verify else None,
+            expected_hashes=hashes,
+            expected_size=expected_size,
+            verify_member=verify_member,
         )
 
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:

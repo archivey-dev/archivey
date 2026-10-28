@@ -24,6 +24,7 @@ from archivey.diagnostics import DiagnosticCode, DiagnosticPolicy
 from archivey.exceptions import ArchiveyUsageError, DiagnosticRaisedError
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.measurement import enable_measurement
 from archivey.internal.streams.archive_stream import MemberStreamParts
 from archivey.types import (
     ArchiveFormat,
@@ -511,6 +512,20 @@ def test_an_open_handle_reports_its_members_unverifiable_digest() -> None:
     with reader.open("a.txt") as f:
         assert f.diagnostics.counts == {DiagnosticCode.DIGEST_UNVERIFIABLE: 1}
         assert f.read() == b"x"
+
+
+def test_a_tracking_lazy_handle_takes_over_parts_under_measurement() -> None:
+    """``_wrap_member_stream`` counts the bytes of an opener that returns a stream,
+    but parts are passed through to the handle, which takes over their checks."""
+    with enable_measurement():
+        reader = _digest_reader(raising=False)
+        member = next(iter(reader.members()))
+        stream = reader._wrap_member_stream(
+            member.name, lambda: reader._open_member(member), size=member.size
+        )
+        with stream:
+            assert stream.read() == b"x"
+            assert stream.diagnostics.counts == {DiagnosticCode.DIGEST_UNVERIFIABLE: 1}
 
 
 def test_a_lazy_handle_that_refuses_its_member_closes_the_data() -> None:

@@ -612,7 +612,8 @@ class ArchiveStreamImpl(ArchiveStream):
         if verifier is not None:
             # A lazy member handle has no checks of its own (``_lazy_member_stream``).
             assert self._verifier is None, "adopting would discard a verifier"
-            self._verifier = verifier
+            if self._verifier is None:
+                self._verifier = verifier
         if parts.translate is not None:
             self._translate = compose_translators(parts.translate, self._translate)
         if parts.member_name != self._member_name:
