@@ -155,6 +155,11 @@ if TYPE_CHECKING:
 # header block covers it).
 _INNER_TAR_PROBE_BYTES = 512
 
+# The window a self-checking header needs: every check today reads one 512-byte block
+# (``ReadBackend.HEADER_CHECKS``). A shorter prefix budget turns the step off, and the
+# receipt says so.
+HEADER_CHECK_BYTES = 512
+
 # Upper bound on compressed input the inner-TAR probe reads from the source when the peeked
 # detection prefix is too short. bzip2 is block-transform (BWT) based: it emits no output
 # until a whole block is read, and a block holds up to 900 KB uncompressed (level 9), which
@@ -1274,16 +1279,26 @@ def _detect_format_body(
         # 5. Self-checking headers: a format with no magic whose first block proves
         # itself (a v7 TAR header, by its checksum). Before the content probes, and not
         # held back by the name as they are: the check is arithmetic over bytes already
-        # peeked, and text or binary data passes only when built to.
-        for check_fmt, check in registry.header_checks():
+        # peeked, and text or binary data passes only when built to. A hit is its own
+        # corroboration (DR-7): a checksum and every numeric field had to hold, so a
+        # later read failure is not stamped as probe-only. A window too short for the
+        # block is recorded, as the magic tiers record theirs.
+        header_checks = registry.header_checks()
+        if header_checks:
+            _record_tier_limit(
+                workspace,
+                "header_check",
+                enabled=budget.max_prefix_bytes > 0,
+                covered=budget.max_prefix_bytes >= HEADER_CHECK_BYTES,
+            )
+        for check_fmt, check in header_checks:
             if check(data):
-                corroborated = _extension_corroborates(ext_match, check_fmt)
                 return conclude(
                     FormatInfo(
                         check_fmt,
                         DetectionConfidence.PROBABLE,
                         "content_probe",
-                        corroborated=corroborated,
+                        corroborated=True,
                     ),
                     _ConflictEvidence.CONTENT_PROBE,
                 )

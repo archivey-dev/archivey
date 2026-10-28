@@ -104,11 +104,10 @@ A compressed tar carries only its compressor's magic. Detection first finds the
 compressed stream, then runs the **inner-TAR probe** (`_probe_inner_tar` in
 `internal/detection.py`): decompress 512 bytes, from at most 1 MiB of compressed input,
 and look for `ustar` at 257, or a first header that passes the header check below. A hit
-upgrades `GZ` to `TAR_GZ` and reports it as
-`PROBABLE`, because a structural check is weaker than an exact magic. If the codec is
-not installed or the probe's budget does not cover it, detection reports the bare
-compressor, and a `.tar.gz` extension over a bare `GZ` result is treated as the expected
-deferral rather than a mismatch.
+upgrades `GZ` to `TAR_GZ` and reports it as `PROBABLE`, because a structural check is
+weaker than an exact magic. If the codec is not installed or the probe's budget does not
+cover it, detection reports the bare compressor, and a `.tar.gz` extension over a bare
+`GZ` result is treated as the expected deferral rather than a mismatch.
 
 A **v7 tar**, written before POSIX added the magic (`tar --format=v7`, old bsdtar,
 star), has none. Detection finds it by its first header instead
@@ -117,14 +116,14 @@ must parse as the walker parses a header, so the stored checksum equals the bloc
 unsigned or signed sum and every numeric field is a number, and the name must be
 non-empty. A hit is `PROBABLE` / `content_probe`, from any source, named or not, and the
 inner-TAR probe accepts it too, so a gzipped v7 tar is `TAR_GZ`.
-[`topics/detection.md`](../topics/detection.md) §2.5 has why it runs on nameless
-sources when the content probes do not. Before this check, a v7 tar with no `.tar` name
-raised `FormatDetectionError`, and inside a compressor it opened as the bare
-compressor.
+[`topics/detection.md`](../topics/detection.md) §2.5 has why it runs on nameless sources
+when the content probes do not. Before this check, a v7 tar with no `.tar` name raised
+`FormatDetectionError`, and inside a compressor it opened as the bare compressor.
 
-The magic cannot tell one more thing. A **zero-filled file** named `.tar` opens as an empty archive by extension, while
-`detect_format()` on the same bytes refuses it, because an empty tar has no header to
-carry the magic ([`docs/formats.md`](../../docs/formats.md)).
+The magic cannot tell one more thing. A **zero-filled file** named `.tar` opens as an
+empty archive by extension, while `detect_format()` on the same bytes refuses it,
+because an empty tar has no header to carry the magic
+([`docs/formats.md`](../../docs/formats.md)).
 
 TAR takes no part in the prefixed-archive scan. `open_read` calls `reject_start_offset`,
 so a tar behind a stub is not found or opened.

@@ -92,9 +92,10 @@ extension is the last step, and it is used only when every content signal declin
 
 A near-magic or content-probe match on a single-file compressor is then offered to the
 **inner-TAR probe**, which decodes up to 512 bytes and looks for `ustar` at offset 257, or
-a first header that passes the TAR header check (§2.5). A hit reports the TAR combination (`TAR_GZ`, and so on) as `PROBABLE` / `content_probe`. It
-reads at most 1 MiB of compressed input and draws on the same decode allowance as the
-content probes (§4.1). A trailer hit is not a compressor, so it is not offered.
+a first header that passes the TAR header check (§2.5). A hit reports the TAR combination
+(`TAR_GZ`, and so on) as `PROBABLE` / `content_probe`. It reads at most 1 MiB of
+compressed input and draws on the same decode allowance as the content probes (§4.1). A
+trailer hit is not a compressor, so it is not offered.
 
 The tables that drive steps 1, 2, 4, 5 and 6 come from the backends and the codec
 descriptors as data: `MAGIC`, `TRAILER`, `EXTENSIONS`, `SFX_MAGIC`, `SFX_HIT_VALIDATOR`,
@@ -197,25 +198,30 @@ Some formats have no magic, but their first block checks itself. Today that is T
 `ustar`: a v7 tar (`tar --format=v7`), and the old bsdtar and star outputs that leave the
 magic out. The backend declares the check as data (`HEADER_CHECKS`, aggregated as
 `registry.header_checks()`), and TAR's is `tar_parser.starts_with_header`. Its first
-512 bytes must parse as the walker parses a header: the stored checksum equals the
-unsigned or signed sum of the block with its checksum field as spaces, every numeric field
-is octal or base-256, and the name is non-empty. A zero block is not a header.
+512 bytes must parse as the walker parses a header: the checksum field parses as a number
+equal to the unsigned or signed sum of the block, with the field itself counted as eight
+spaces, every numeric field is octal or base-256, and the name is non-empty. A zero block
+is not a header.
 
-A hit is `PROBABLE` / `content_probe`. It runs on every source, named or not, unlike the
+A hit is `PROBABLE` / `content_probe`, and it is its own corroboration (DR-7): a later
+read failure is not stamped `format_unconfirmed`, as a probe-only choice would be. With
+`max_prefix_bytes` under 512 the step cannot see a whole block, and `unavailable_tiers`
+records `header_check` (§4.1). It runs on every source, named or not, unlike the
 probes (§2.6):
 - **The check is not a decoder.** It is arithmetic over the window already peeked, so it
   reads and decodes nothing.
-- **Arbitrary bytes do not pass it.** The six octal digits must equal the sum of the
-  other 504 bytes, and the numeric fields must parse too.
+- **Arbitrary bytes do not pass it.** The checksum must equal the block's byte sum, and
+  the numeric fields must parse too.
   - A scan of 200 333 files on a development machine found 207 that pass. All 207 were
     real tars: 205 with `ustar`, and two v7 test files in Go's standard library.
   - The step comes after the trailer and ahead of the probes, so a v7 tar that a probe
     would also accept is named TAR.
 
 It is what `tarfile.is_tarfile` and Commons Compress's detector check, and GNU tar reads
-any input as a tar. The case for it came from a 2026-10-28 run of archivey over Apache Commons Compress's
-test files: 6 of their 86 `.tar` files have no magic. Two of those came from users' bug
-reports, one a pub.dev package. A `.tar` name had been the only way to open them.
+any input as a tar. The case for it came from a 2026-10-28 run of archivey over Apache
+Commons Compress's test files: 6 of their 86 `.tar` files have no magic. Two of those
+came from users' bug reports, one a pub.dev package. A `.tar` name had been the only way
+to open them.
 
 The inner-TAR probe accepts the same check, so a gzipped v7 tar is `TAR_GZ`.
 
@@ -431,7 +437,8 @@ unique bytes read, far and scanned bytes, decode input and output, and passes.
 `FormatInfo.unavailable_tiers` lists each step that did not run, as a `TierSkip` with one of
 three reasons:
 
-- `NOT_ENABLED_BY_POLICY`: the budget turned it off (`probe_completion` under `FAST`).
+- `NOT_ENABLED_BY_POLICY`: the budget turned it off (`probe_completion` under `FAST`,
+  or `header_check` with `max_prefix_bytes=0`).
   The search is still complete for what the policy asked.
 - `CAPABILITY_UNAVAILABLE`: the step could not run here. The inner-TAR probe records it
   if the codec's backend is absent or its decoder cannot be built within the probe's
@@ -589,7 +596,7 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | zstd skippable frames are walked inside the peek only (§2.1) |
 | Far magic runs before the probes, and a short source never pays for it (§2.3) |
 | The probe sample is the whole window, and small hits are re-checked whole (§2.6) |
-| Probe-only and extension-only failures are stamped; corroborated ones are not (§2.6, §2.7) |
+| Probe-only and extension-only failures are stamped; corroborated ones, and self-checking header hits, are not (§2.5, §2.6, §2.7) |
 | One decode allowance, shared by every decoding step (§4.1) |
 | The budget comes from the config, for every entry point and every internal detection (§4.1, §3.3) |
 | A receipt over budget always names a step cut short, for one pass and two (§4.1) |

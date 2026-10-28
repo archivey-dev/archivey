@@ -437,8 +437,9 @@ def starts_with_header(prefix: bytes) -> bool:
     must also be non-empty. A zero block is not a header: an empty TAR has no header to
     check.
 
-    The checksum is six octal digits that must equal the sum of the other 504 bytes, so
-    text and binary data pass only when built to. It is the test ``tarfile.is_tarfile``
+    The checksum field must parse as a number equal to the block's byte sum, with the
+    field itself counted as eight spaces, so text and binary data pass only when built
+    to. It is the test ``tarfile.is_tarfile``
     and Commons Compress make, and GNU tar's own reading of the first block.
     """
     if len(prefix) < BLOCKSIZE:

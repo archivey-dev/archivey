@@ -10,20 +10,25 @@ from __future__ import annotations
 import gzip
 import io
 import tarfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from archivey import (
     ArchiveFormat,
+    ArchiveyConfig,
     DetectionConfidence,
     FormatInfo,
     MemberType,
     detect_format,
     open_archive,
 )
-from archivey.exceptions import FormatDetectionError
+from archivey.detection_cost import BALANCED_BUDGET, TierSkip, TierSkipReason
+from archivey.exceptions import ArchiveyError, FormatDetectionError
 from archivey.internal.backends.tar_parser import starts_with_header
+from archivey.internal.backends.tar_reader import TarReadBackend
+from archivey.internal.registry import get_registry
 from tests.streams_util import NonSeekableBytesIO
 
 _FILES = {"hello.txt": b"hello, world\n", "dir/inner.txt": b"inner\n" * 100}
@@ -80,8 +85,40 @@ def test_v7_tar_is_detected_by_its_header(source: str, tmp_path: Path) -> None:
         path.write_bytes(data)
         info = detect_format(path)
     assert info == _PROBABLE_TAR
-    # A ``.tar`` name agrees with the header, as a matching name agrees with a probe.
-    assert info.corroborated is (source == "tar_path")
+    # The checksum is its own corroboration (DR-7), with or without a ``.tar`` name.
+    assert info.corroborated is True
+
+
+def test_truncated_v7_tar_is_not_format_unconfirmed() -> None:
+    """A failure after a header-check hit is damage, not a doubtful format."""
+    data = _v7_tar()[:600]
+    with (
+        pytest.raises(ArchiveyError) as caught,
+        open_archive(io.BytesIO(data)) as archive,
+    ):
+        for _member, stream in archive.stream_members():
+            if stream is not None:
+                stream.read()
+    assert caught.value.format_unconfirmed is False
+
+
+@pytest.mark.parametrize(
+    ("prefix", "reason"),
+    [
+        (300, TierSkipReason.BUDGET_EXHAUSTED),
+        (0, TierSkipReason.NOT_ENABLED_BY_POLICY),
+    ],
+)
+def test_short_prefix_budget_records_the_header_check(
+    prefix: int, reason: TierSkipReason, tmp_path: Path
+) -> None:
+    """A window too short for a header block says so; the name is then all that is left."""
+    path = tmp_path / "archive.tar"
+    path.write_bytes(_v7_tar())
+    budget = replace(BALANCED_BUDGET, max_prefix_bytes=prefix)
+    info = detect_format(path, config=ArchiveyConfig(detection_budget=budget))
+    assert (info.format, info.detected_by) == (ArchiveFormat.TAR, "extension")
+    assert TierSkip("header_check", reason) in info.unavailable_tiers
 
 
 @pytest.mark.parametrize("pipe", [False, True], ids=["bytesio", "pipe"])
@@ -126,21 +163,24 @@ def _first_block_changed(edit: dict[int, bytes], *, reseal: bool) -> bytes:
     return bytes(raw)
 
 
+# Ids name the case: the default id of a bytes value is its escaped bytes, which makes
+# ``PYTEST_CURRENT_TEST`` too long for a Windows environment variable.
+_NEAR_MISSES = [
+    (_first_block_changed({0: b"j"}, reseal=False), "one byte off the checksum"),
+    (_first_block_changed({0: bytes(100)}, reseal=True), "no name"),
+    (
+        _first_block_changed({124: b"12345678x\x00\x00\x00"}, reseal=True),
+        "bad size",
+    ),
+    (_first_block_changed({148: b"      \x00 "}, reseal=False), "no checksum"),
+    (_v7_tar()[:511], "shorter than a block"),
+    (bytes(1024), "zero blocks"),
+    (b"Lorem ipsum dolor sit amet. " * 200, "text"),
+]
+
+
 @pytest.mark.parametrize(
-    ("data", "why"),
-    [
-        (_first_block_changed({0: b"j"}, reseal=False), "one byte off the checksum"),
-        (_first_block_changed({0: bytes(100)}, reseal=True), "no name"),
-        (
-            _first_block_changed({124: b"12345678x\x00\x00\x00"}, reseal=True),
-            "bad size",
-        ),
-        (_first_block_changed({148: b"      \x00 "}, reseal=False), "no checksum"),
-        (_v7_tar()[:511], "shorter than a block"),
-        (bytes(1024), "zero blocks"),
-        (b"Lorem ipsum dolor sit amet. " * 200, "text"),
-    ],
-    ids=lambda v: v if isinstance(v, str) else None,
+    ("data", "why"), [pytest.param(d, w, id=w) for d, w in _NEAR_MISSES]
 )
 def test_near_misses_are_not_tar(data: bytes, why: str) -> None:
     assert not starts_with_header(data), why
@@ -164,3 +204,22 @@ def test_v7_directory_member_lists() -> None:
     with open_archive(io.BytesIO(bytes(raw))) as archive:
         (member,) = archive.members()
     assert (member.name, member.type) == ("d/", MemberType.DIRECTORY)
+
+
+def test_plugin_backends_contribute_header_checks() -> None:
+    """``header_checks`` aggregates plugin backends too, as the other signal tables do."""
+
+    def check(prefix: bytes) -> bool:
+        return False
+
+    class _PluginTar(TarReadBackend):
+        HEADER_CHECKS = ((ArchiveFormat.TAR, check),)
+
+    registry = get_registry()
+    restore = registry.save_plugin_state()
+    try:
+        registry.register_plugin_backend(_PluginTar)
+        assert (ArchiveFormat.TAR, check) in registry.header_checks()
+    finally:
+        restore()
+    assert (ArchiveFormat.TAR, check) not in registry.header_checks()

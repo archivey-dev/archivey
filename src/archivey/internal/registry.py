@@ -208,10 +208,10 @@ class BackendRegistry:
 
         ``check(prefix)`` answers "does the source open with my header?" for a format
         with no magic but a self-checking header (``ReadBackend.HEADER_CHECKS``; today
-        TAR, by its header checksum). Built-in backends only.
+        TAR, by its header checksum). Built-in backends first, then plugins.
         """
         checks: list[tuple[ArchiveFormat, Callable[[bytes], bool]]] = []
-        for cls in self._reader_classes:
+        for cls in (*self._reader_classes, *self._plugin_classes):
             checks.extend(cls.HEADER_CHECKS)
         return checks
 

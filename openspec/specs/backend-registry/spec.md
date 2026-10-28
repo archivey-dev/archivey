@@ -78,9 +78,9 @@ Multiple readers from the same backend class MUST be independent.
 
 The system SHALL keep format detection and backend selection separate.
 `detect_format()` is the authority for source format: it aggregates backend
-`MAGIC`, `TRAILER`, `EXTENSIONS`, and `CONTENT_PROBES`, performs special probes through
-the detection workspace, consumes no bytes, and raises `FormatDetectionError` when no
-format matches. The registry SHALL map the resolved `ArchiveFormat` to a
+`MAGIC`, `TRAILER`, `HEADER_CHECKS`, `EXTENSIONS`, and `CONTENT_PROBES`, performs
+special probes through the detection workspace, consumes no bytes, and raises
+`FormatDetectionError` when no format matches. The registry SHALL map the resolved `ArchiveFormat` to a
 registered available backend. If a detected format has no available backend,
 lookup SHALL raise `PackageNotInstalledError` with the install hint.
 
@@ -111,7 +111,8 @@ class BackendRegistry:
 Read backends SHALL declare all detection signals as data, and each signal SHALL
 name the `ArchiveFormat` it implies so multi-format backends can map each
 extension/magic/probe to the correct format without re-inspecting the source.
-Magic-less or weak-signature formats SHALL use `CONTENT_PROBES` plus extensions;
+Magic-less or weak-signature formats SHALL use `CONTENT_PROBES` plus extensions, or
+`HEADER_CHECKS` when the format's first block checks itself (a TAR header checksum);
 there is no weak-magic flag.
 
 ```python
@@ -125,6 +126,7 @@ class ReadBackend(ABC):
     EXTENSIONS: Mapping[str, ArchiveFormat] = {}
     MAGIC: tuple[MagicSignature, ...] = ()
     CONTENT_PROBES: tuple[tuple[ArchiveFormat, Callable[[bytes], bool]], ...] = ()
+    HEADER_CHECKS: tuple[tuple[ArchiveFormat, Callable[[bytes], bool]], ...] = ()
     SUPPORTS_STREAMING_NON_SEEKABLE: bool = False
     OPTIONAL_DEPENDENCY: str | None = None
 
