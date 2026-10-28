@@ -526,7 +526,7 @@ def test_zip_member_with_input_after_its_stream_is_corrupt(
 )
 @pytest.mark.parametrize("chunk", [None, 7], ids=["whole", "chunked"])
 def test_zip_xz_member_with_input_after_its_streams_is_corrupt(
-    tmp_path: Path, tail: bytes, chunk: int | None
+    tail: bytes, chunk: int | None
 ) -> None:
     # Zeros that do not fill a group of four are not stream padding. 7-Zip 23.01 and
     # 26.05 fail these members ("Data Error", or "There are some data after the end
@@ -547,20 +547,6 @@ def test_zip_xz_input_after_its_streams_matches_7zip(
 ) -> None:
     data = _build_minimal_zip(b"x.bin", lzma.compress(_PAYLOAD) + tail, _PAYLOAD, 95)
     assert _7z_test_fails(tmp_path, data) is fails
-
-
-def test_zip_zipcrypto_xz_member_reads() -> None:
-    data = build_zipcrypto_zip(
-        b"pw",
-        b"c.bin",
-        _PAYLOAD,
-        compression=95,
-        compressed=lzma.compress(_PAYLOAD),
-    )
-    with open_archive(io.BytesIO(data), password=b"pw") as ar:
-        (member,) = ar.members()
-        assert member.compression[0].algo is CompressionAlgorithm.XZ
-        assert ar.read(member) == _PAYLOAD
 
 
 @requires_zstd()

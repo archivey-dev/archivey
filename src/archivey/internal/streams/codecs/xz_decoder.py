@@ -340,12 +340,12 @@ def _skip_stream_padding_backwards(
         groups = -(-(compressed_end - stop_at) // 4)
         groups = min(groups, chunk_limit // 4, compressed_end // 4)
         if groups == 0:
-            raise CorruptionError("XZ file too small to contain a valid stream")
+            raise CorruptionError("XZ data too small to contain a valid stream")
         start = compressed_end - 4 * groups
         stream.seek(start)
         chunk = stream.read(4 * groups)
         if len(chunk) < 4 * groups:
-            raise CorruptionError("XZ file truncated during backward scan")
+            raise CorruptionError("XZ data truncated during backward scan")
         nonzero_end = len(chunk.rstrip(b"\x00"))
         if nonzero_end:
             return start + _round_up_4(nonzero_end)
@@ -715,10 +715,12 @@ class _XzState:
         """End the data before ``rest``: bytes past a stream that start no further one.
 
         Zeros are padding, as XZ's own stream padding is; the first non-zero byte
-        starts the trailing data. ``rest`` holds no complete stream padding (the
-        4-byte groups of zeros are stripped before a header is looked for), so any
-        byte of it is input after the end: zeros that do not fill a group of four
-        too, which xz-utils and 7-Zip refuse.
+        starts the trailing data. Any byte of ``rest`` is input after the end, a zero
+        too. From ``_process`` and ``flush``, ``rest`` holds no complete stream
+        padding, because the 4-byte groups of zeros are stripped before a header is
+        looked for: what is left is zeros that do not fill a group of four, which
+        xz-utils and 7-Zip refuse, or bytes that start no stream. From ``feed`` the
+        data is already past the end, where nothing is padding.
         """
         self._finished = True
         self._buf.clear()
@@ -735,7 +737,7 @@ class _XzState:
                 # magic, is a cut-short xz file; anything else was never one.
                 head = bytes(self._buf[:6])
                 if self._padding_before_stream or head != _XZ_STREAM_MAGIC[: len(head)]:
-                    raise CorruptionError("Not a valid XZ file: no streams found")
+                    raise CorruptionError("Not valid XZ data: no streams found")
                 self.truncated = True
                 return b"", []
             if len(self._buf) >= 6 and bytes(self._buf[:6]) == _XZ_STREAM_MAGIC:
@@ -802,7 +804,7 @@ class _XzState:
                 if header[:6] != _XZ_STREAM_MAGIC:
                     if self._streams_seen == 0:
                         raise CorruptionError(
-                            f"Not a valid XZ file: expected magic {_XZ_STREAM_MAGIC!r}, "
+                            f"Not valid XZ data: expected magic {_XZ_STREAM_MAGIC!r}, "
                             f"got {header[:6]!r}"
                         )
                     if near_stream_magic(header, _XZ_STREAM_MAGIC):
@@ -1058,7 +1060,7 @@ class XzDecoder(BaseDecoder):
     def flush(self) -> DecodeOut:
         data, units = self._engine.flush()
         if getattr(self._engine, "truncated", False):
-            self._pending_error = TruncatedError("XZ file is truncated")
+            self._pending_error = TruncatedError("XZ data is truncated")
         elif self._handoff is not None and self._engine.is_finished():
             # A guard, not a path DecompressorStream reaches today: feed() hands off as
             # soon as the resume finishes, and flush() runs only once inner is
@@ -1066,7 +1068,7 @@ class XzDecoder(BaseDecoder):
             # point was read from. Should a resume ever finish here with the hand-off
             # still owed (a seek table that outlived the file it was built from), fail
             # loudly rather than report finished and publish a size that stops short.
-            self._pending_error = TruncatedError("XZ file is truncated")
+            self._pending_error = TruncatedError("XZ data is truncated")
         return DecodeOut(data, self._points_for_units(units))
 
     def _hand_off_if_resume_done(self) -> None:

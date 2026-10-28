@@ -214,6 +214,7 @@ def open_member(self, member: ArchiveMember, locator: Locator) -> MemberData:
 - Zstandard and LZ4 frames;
 - Brotli;
 - raw LZMA and LZMA2, with the `properties` bytes the format stores;
+- XZ, for `.xz` data kept inside a member, as ZIP method 95 keeps it;
 - `STORED`, for data kept as is, so a format with a per-member method can pass every
   method through the same call.
 
@@ -230,6 +231,8 @@ raises `PackageNotInstalledError`, and a method not in the list above raises
 Where the compressed data ends depends on the method:
 
 - **Zstandard and LZ4** data may be several frames, and all of them are decoded.
+- **XZ** data may be several xz streams, with stream padding (groups of four zero bytes)
+  between and after them, and all of them are decoded.
 - **bzip2** data is one stream, and a second stream after it raises `CorruptionError`.
 - **LZMA and LZMA2** end at their end marker. Raw LZMA1, which may have none, then ends
   at `size`.

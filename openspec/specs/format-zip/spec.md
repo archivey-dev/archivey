@@ -38,9 +38,9 @@ The ZIP backend SHALL expose these properties for every opened ZIP archive:
 `reader.get()` and other name lookups SHALL use the central-directory-derived
 member map without extra archive I/O. Unencrypted ZIP member data SHALL decode
 through the shared `compressed-streams` codec layer (bounded local-header parse
-+ slice + method-id dispatch), including extended codecs when their backends are
-installed: Deflate64 (method 9, via `[recommended]`/`inflate64`), ZSTD (method 93), XZ
-(method 95, a complete `.xz` stream, with stdlib `lzma`), PPMD
++ slice + method-id dispatch), including XZ (method 95, `.xz` data, decoded in core
+with stdlib `lzma`), and extended codecs when their backends are
+installed: Deflate64 (method 9, via `[recommended]`/`inflate64`), ZSTD (method 93), PPMD
 (method 98, ZIP PPMd8 framing via `[recommended]`/`pyppmd`). A missing optional backend
 SHALL raise `PackageNotInstalledError`. An unknown/unsupported method id SHALL
 raise `UnsupportedFeatureError`. `format_availability(ZIP)` SHALL report FULL
