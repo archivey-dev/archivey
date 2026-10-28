@@ -92,6 +92,8 @@ def _zipfile_read_all(path: Path) -> int:
 
 
 def _zipfile_extract(path: Path, dest: Path) -> None:
+    # Writes the bytes only: zipfile restores neither mode nor mtime, which archivey
+    # and tarfile set on every member.
     with zipfile.ZipFile(path) as archive:
         archive.extractall(dest)
 
@@ -113,6 +115,7 @@ def _tarfile_read_all(path: Path) -> int:
 
 
 def _tarfile_extract(path: Path, dest: Path) -> None:
+    # Sets mode and mtime on every member (any filter does), as archivey does.
     with tarfile.open(path) as archive:
         archive.extractall(dest, filter="data")
 
@@ -270,23 +273,25 @@ def _median_pair(
     return statistics.median(times[0]), statistics.median(times[1])
 
 
-SMALL_MEMBERS = {"ci": 200, "realistic": 4000}
-
-
 def _small_member_archives(root: Path, count: int) -> dict[str, Path | None]:
-    """ZIP, TAR, tar.gz and 7z of ``count`` files of 20-600 random bytes, in 40
-    directories of 7 subdirectories each (fewer at ci scale). Built once per ``root``.
-    The 7z entry is ``None`` when py7zr, its writer, is missing."""
+    """ZIP (DEFLATE and stored), TAR, tar.gz and 7z of ``count`` files of 20-600
+    random bytes, in 40 directories of 7 subdirectories each (fewer at ci scale).
+    Built once per ``root``. The 7z entry is ``None`` when py7zr, its writer, is
+    missing."""
     base = root / f"small-{count}"
     tree = base / "tree"
     out: dict[str, Path | None] = {
         "zip": base / "small.zip",
+        "zip-stored": base / "small-stored.zip",
         "tar": base / "small.tar",
         "tar.gz": base / "small.tar.gz",
         "7z": base / "small.7z",
     }
     if not tree.exists():
         rng = random.Random(1)
+        # Staged and renamed: a short tree from an interrupted run would shrink the
+        # corpus silently. A cut-off archive below fails loudly on its next open
+        # instead, so those are written in place, as fixtures.py writes its own.
         staging = base / "tree.part"
         shutil.rmtree(staging, ignore_errors=True)
         for i in range(count):
@@ -294,10 +299,14 @@ def _small_member_archives(root: Path, count: int) -> dict[str, Path | None]:
             folder.mkdir(parents=True, exist_ok=True)
             (folder / f"f{i}.txt").write_bytes(rng.randbytes(rng.randint(20, 600)))
         staging.rename(tree)
-    if not (path := out["zip"]).exists():
-        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
-            for entry in sorted(tree.rglob("*")):
-                archive.write(entry, entry.relative_to(base).as_posix())
+    for key, method in (
+        ("zip", zipfile.ZIP_DEFLATED),
+        ("zip-stored", zipfile.ZIP_STORED),
+    ):
+        if not (path := out[key]).exists():
+            with zipfile.ZipFile(path, "w", method) as archive:
+                for entry in sorted(tree.rglob("*")):
+                    archive.write(entry, entry.relative_to(base).as_posix())
     for key, mode in (("tar", "w"), ("tar.gz", "w:gz")):
         if not (path := out[key]).exists():
             with tarfile.open(path, mode) as archive:
@@ -313,12 +322,13 @@ def _small_member_archives(root: Path, count: int) -> dict[str, Path | None]:
     return out
 
 
-def _cases(fx: FixtureSet) -> list[tuple[str, Path | None, list[str], list[str]]]:
-    """(label, path, operations, peers). A ``None`` path is reported as skipped."""
+def _cases(
+    fx: FixtureSet, small: dict[str, Path | None]
+) -> list[tuple[str, Path | None, list[str], list[str]]]:
+    """(label, path, operations, peers). A ``None`` path is reported as skipped.
+    ``small`` is ``_small_member_archives``' result for ``fx``."""
     full = ["list", "read_all", "extract"]
-    count = SMALL_MEMBERS[fx.scale.name]
-    small = _small_member_archives(fx.root, count)
-    tiny = f"{count:,} small".replace(",", " ")
+    tiny = f"{fx.scale.small_members:,} small".replace(",", " ")
     many = f"{fx.scale.list_members:,} members".replace(",", " ")
     nonsolid = f"{fx.scale.nonsolid_list_members:,} non-solid".replace(",", " ")
     seven, rar = ["py7zr", "libarchive-c"], ["rarfile", "libarchive-c"]
@@ -332,6 +342,7 @@ def _cases(fx: FixtureSet) -> list[tuple[str, Path | None, list[str], list[str]]
         (f"RAR {many}", fx.many_rar, ["list"], rar),
         (f"RAR {nonsolid}", fx.nonsolid_rar, ["list"], rar),
         (f"ZIP {tiny}", small["zip"], full, ["zipfile", "libarchive-c"]),
+        (f"ZIP stored {tiny}", small["zip-stored"], full, ["zipfile"]),
         (f"TAR {tiny}", small["tar"], full, ["tarfile", "libarchive-c"]),
         (f"tar.gz {tiny}", small["tar.gz"], full, ["tarfile", "libarchive-c"]),
         (f"7z {tiny}", small["7z"], full, seven),
@@ -344,11 +355,12 @@ def run(scale: str, rounds: int) -> None:
     Ratio is archivey / peer.
     """
     fx = materialize_fixtures(scale=scale)
+    small = _small_member_archives(fx.root, fx.scale.small_members)
     work = Path(tempfile.mkdtemp(prefix="archivey-peers-"))
     print("| Archive | Operation | Peer | archivey | peer | ratio |")
     print("| --- | --- | --- | ---: | ---: | ---: |", flush=True)
     try:
-        for label, path, ops, peers in _cases(fx):
+        for label, path, ops, peers in _cases(fx, small):
             for peer in peers:
                 for op in ops:
                     why = _peer_available(peer)
