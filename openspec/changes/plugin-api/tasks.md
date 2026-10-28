@@ -150,5 +150,9 @@ more indexed plugin, 2026-10-27).
       ISO port (group 2) made false in the spec: member data is read through source
       views, not `PyCdlibIO` under the handle lock ("Serialize shared pycdlib handle
       operations"), and two file records sharing one extent raise `CorruptionError`,
-      not `UnsupportedFeatureError` (the record matrix).
+      not `UnsupportedFeatureError` (the record matrix). A `diagnostics` delta too,
+      since a plugin emits archivey's codes: `UnknownMemberTypeContext.stored_type` is
+      the format's own spelling of the type, not only the TAR typeflag byte; and the
+      `zeros_to_eof` format list and `MEMBER_TYPE_UNKNOWN`'s STRICT-exemption rationale
+      read as examples, not as the set of emitters.
 - [ ] 4.3 `dev-docs/IDEAS.md` and `VISION.md`: the public backend API item points here.
