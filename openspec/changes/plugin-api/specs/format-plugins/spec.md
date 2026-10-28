@@ -1,11 +1,11 @@
 ## ADDED Requirements
 
-### Requirement: A package adds a format through archivey.plugins
+### Requirement: A package adds a format through archivey.formats
 
 The system SHALL let a package outside archivey add a read-only format by subclassing
-`archivey.plugins.FormatPlugin` and one of `archivey.plugins.IndexedReader` or
-`archivey.plugins.SequentialReader`, and calling
-`archivey.plugins.register_format()`. A plugin reader SHALL NOT subclass or see
+`archivey.formats.FormatHandler` and one of `archivey.formats.IndexedReader` or
+`archivey.formats.SequentialReader`, and calling
+`archivey.formats.register_format()`. A plugin reader SHALL NOT subclass or see
 `BaseArchiveReader`. An internal adapter SHALL present it as an ordinary
 `ArchiveReader`.
 

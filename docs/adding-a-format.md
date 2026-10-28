@@ -1,15 +1,25 @@
 # Adding a format
 
-archivey reads a fixed set of formats, and a program can add one more of its own with
-`archivey.plugins`. A format added this way works with `open_archive`, `detect_format`,
-`format=`, `format_availability`, the format lists, extraction and the `archivey` command,
-as the built-in formats do.
+`archivey.formats` is a small set of shared structures for reading a format. A format
+describes itself and hands archivey its members and their bytes, and archivey does the
+heavy lifting: name checks, limits, links, digests, extraction, and decoding the
+compression around or inside the archive. The built-in ISO 9660 reader is written this
+way, and more built-in formats are planned on it (CPIO, ar, SquashFS, and TAR). The same
+structures are public, so a program or a separate package (a *plugin*) can add a format
+of its own. A format added this way works with `open_archive`, `detect_format`,
+`format=`, `format_availability`, the format lists, extraction and the `archivey`
+command, as the built-in formats do.
+
+The other built-in readers (ZIP, 7z, RAR, TAR, the single-file compressors and
+directories) are written directly against archivey's internal reader classes. That route
+is for formats that do not fit this model, or that need special features or more speed,
+and it is not public.
 
 !!! warning "Provisional"
-    `archivey.plugins` can change in a minor release until a plugin outside archivey has
+    `archivey.formats` can change in a minor release until a plugin outside archivey has
     used it. Pin the archivey version your plugin is tested with.
 
-A plugin reads one of two kinds of format:
+A format reader reads one of two kinds of format:
 
 - **A format with an index**, where the reader can list every member first and then open
   any one of them, from a file or another source that can seek. ISO 9660, SquashFS, CAB
@@ -20,23 +30,24 @@ A plugin reads one of two kinds of format:
 
 A format read in one pass can also be read inside a compressor, such as a `.cpio.gz`,
 with no extra code; see [Inside a compression stream](#inside-a-compression-stream).
-[What is not supported yet](#what-is-not-supported-yet) lists what a plugin cannot do.
+[What is not supported yet](#what-is-not-supported-yet) lists what a format reader cannot
+do.
 
-## What a plugin is
+## What a format reader is
 
-A plugin is two classes:
+A format is two classes:
 
-- A **`FormatPlugin`** subclass. Its class attributes say what the format is called and
+- A **`FormatHandler`** subclass. Its class attributes say what the format is called and
   how to recognise it: an `ArchiveFormat`, file extensions, and magic bytes. Its `open()`
   method returns a reader.
 - An **`IndexedReader`** subclass. It lists the members with `iter_members()`, and returns
   the data of one member with `open_member()`.
 
-A format read in one pass uses a `SequentialFormatPlugin` and a `SequentialReader`
+A format read in one pass uses a `SequentialFormatHandler` and a `SequentialReader`
 instead, described in [Formats read in one pass](#formats-read-in-one-pass). The rest of
 this page applies to both kinds unless it says otherwise.
 
-The plugin hands archivey members and bytes. archivey does everything after that the
+The reader hands archivey members and bytes. archivey does everything after that the
 same way it does for a built-in format: it normalizes member names, checks them, applies
 the listing limits, resolves links, checks each member's size and checksum as it is read,
 and extracts safely.
@@ -67,14 +78,14 @@ from archivey import (
     PluginContainer,
     StreamFormat,
 )
-from archivey.plugins import (
-    FormatPlugin,
+from archivey.formats import (
+    FormatHandler,
     IndexedReader,
     Magic,
     MemberData,
     MemberRecord,
-    PluginContext,
-    PluginSource,
+    ReaderContext,
+    ReaderSource,
     register_format,
 )
 
@@ -90,7 +101,7 @@ Locator = tuple[int, int]
 
 
 class ToyReader(IndexedReader[Locator]):
-    def __init__(self, source: PluginSource, context: PluginContext) -> None:
+    def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
         self._source = source
         self._context = context
         # read_struct() and read_exact() raise TruncatedError when the archive ends
@@ -121,17 +132,17 @@ class ToyReader(IndexedReader[Locator]):
         return MemberData(self._source.view(offset, size))
 
 
-class ToyPlugin(FormatPlugin):
+class ToyHandler(FormatHandler):
     format = TOYA
     extensions = (".toya",)
     magic = (Magic(0, b"TOYARC1\n"),)
     uses_encoding = True
 
-    def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+    def open(self, source: ReaderSource, context: ReaderContext) -> ToyReader:
         return ToyReader(source, context)
 
 
-register_format(ToyPlugin)
+register_format(ToyHandler)
 ```
 
 After `register_format`, a TOYA file opens like any other archive:
@@ -169,7 +180,7 @@ Each record holds an `ArchiveMember` and a locator. The member carries the publi
 your format stores: at least `type`, `name` and, for a file, `size`. The name is decoded
 but not cleaned up. archivey normalizes it (`./a//b` becomes `a/b`) and reports
 `MEMBER_NAME_NORMALIZED` when that changes it, as for a built-in format.
-`PluginContext.decode_name()` decodes stored bytes the way the built-in formats do: valid
+`ReaderContext.decode_name()` decodes stored bytes the way the built-in formats do: valid
 UTF-8 wins, then the caller's `encoding=`, then UTF-8 with no byte lost.
 
 The locator is anything your reader needs to find the member's data again: an offset, a
@@ -192,12 +203,12 @@ other fields say how archivey can check those bytes, as described in
 
 There are four ways to build the stream. Pick the first one that fits your format.
 
-**Stored bytes.** `PluginSource.view(start, length)` is a stream over part of the archive
+**Stored bytes.** `ReaderSource.view(start, length)` is a stream over part of the archive
 with its own position, so two members open at the same time do not move each other. A
 format that stores members uncompressed returns a view, as TOYA does.
 
 **A compression method archivey decodes.** Hand the member's compressed bytes to
-`PluginContext.decompress()` and return what it gives:
+`ReaderContext.decompress()` and return what it gives:
 
 ```python
 def open_member(self, member: ArchiveMember, locator: Locator) -> MemberData:
@@ -348,9 +359,9 @@ A format of header, data, header, data has no index to list from: the only way t
 the members is to read the archive from the start. Such a format can be read from a pipe,
 and a plugin for it has two other classes:
 
-- A **`SequentialFormatPlugin`** subclass. It declares the format as a `FormatPlugin`
+- A **`SequentialFormatHandler`** subclass. It declares the format as a `FormatHandler`
   does, but implements `open_sequential(context)` instead of `open()`. There is no
-  `PluginSource`, because the archive may be a pipe.
+  `ReaderSource`, because the archive may be a pipe.
 - A **`SequentialReader`** subclass. Its `walk(stream)` is a generator that reads headers
   from a `ForwardStream` and yields one `MemberSpan` per member.
 
@@ -366,7 +377,7 @@ import struct
 from collections.abc import Iterator
 
 from archivey import ArchiveMember, CorruptionError, MemberType
-from archivey.plugins import (
+from archivey.formats import (
     ForwardStream,
     MemberDigest,
     MemberSpan,
@@ -435,7 +446,7 @@ What archivey does with the spans:
   the bytes, extraction creates the directory, and the listing reports
   `MEMBER_DIRECTORY_DATA_IGNORED`, as for a built-in format.
 
-`SequentialFormatPlugin` takes the same class attributes as `FormatPlugin`. The format's
+`SequentialFormatHandler` takes the same class attributes as `FormatHandler`. The format's
 `archive.info.cost` says the listing needs a scan, and `format_availability()` reports
 that it can be read from a source that cannot seek.
 
@@ -480,7 +491,7 @@ random access to them on a file. archivey decodes with its own codecs, under the
 caller's decoder limits and the decompression-ratio guard. The stream the walk called
 `decompress()` on refuses further reads. archivey cannot know the archive holds a
 compression stream before the walk reaches it, so have `archive_info()` return
-`PluginArchiveInfo(is_solid=True)`: the cost receipt then says members are read through
+`ReaderArchiveInfo(is_solid=True)`: the cost receipt then says members are read through
 one stream, and that listing needs decompression, from the moment the archive opens.
 The compressed stream is taken to run to the end of the archive: bytes after its end are
 reported with `ARCHIVE_TRAILING_DATA`, not refused.
@@ -491,7 +502,7 @@ archivey cannot check how your reader parses the archive, only what it hands bac
 These habits keep a crafted file from doing more than raising one of archivey's errors:
 `CorruptionError`, `TruncatedError` or `UnsupportedFeatureError`.
 
-- **Read with `PluginSource.read_struct()` and `read_exact()`** wherever the bytes must
+- **Read with `ReaderSource.read_struct()` and `read_exact()`** wherever the bytes must
   all be there, as the example does. They raise `TruncatedError` when the archive ends
   early. They and `read_at()` are the cheap way to parse: each is one read of the
   archive, with no stream built, and safe from any thread. Keep `view()` for a member's
@@ -499,7 +510,7 @@ These habits keep a crafted file from doing more than raising one of archivey's 
 - **Check every size and offset against what the format allows** before you allocate or
   read with it. Bound offsets by the format's own structures (a superblock's table
   offsets, an index's declared extent, the bytes a read returned), and also by
-  `PluginSource.size` when it is not `None`: it is `None` for a stream whose length
+  `ReaderSource.size` when it is not `None`: it is `None` for a stream whose length
   archivey cannot learn cheaply. Refuse a count or length larger than the format can
   hold, and bound a count the format leaves wide open by `config.listing_limits`.
 - **Walk trees with a loop and a set of what you have seen**, not recursion. A directory
@@ -525,7 +536,7 @@ ends too early, and `UnsupportedFeatureError` for a feature your reader does not
 
 An exception from a library you wrap can go through `translate_exception()`. It is asked
 about every exception raised while archivey calls the reader, and while a member stream
-it returned is read. Errors from `PluginContext.decompress()` are archivey's own already
+it returned is read. Errors from `ReaderContext.decompress()` are archivey's own already
 and never reach it. Return the archivey exception to raise in its place, or `None` to
 let it propagate as it is:
 
@@ -536,7 +547,7 @@ def translate_exception(self, exc: Exception) -> archivey.ArchiveyError | None:
     return None
 ```
 
-Define it on the `FormatPlugin` to cover `open()` too, where there is no reader yet. The
+Define it on the `FormatHandler` to cover `open()` too, where there is no reader yet. The
 plugin's `translate_exception()` is also asked about anything the reader's returns
 `None` for, so a translation that needs nothing from the open archive is written once,
 on the plugin.
@@ -545,7 +556,7 @@ on the plugin.
 
 Some damage is worth telling the caller about without refusing the archive: a date that
 is not a date, a header field that had to be skipped, bytes after the end of the
-archive. Report it with `PluginContext.report()`, using one of archivey's own diagnostic
+archive. Report it with `ReaderContext.report()`, using one of archivey's own diagnostic
 codes and the context type that code takes:
 
 ```python
@@ -571,21 +582,21 @@ raises from `report()`.
 
 A report made while listing a member should name it as callers will see it, and
 archivey normalizes names only after `iter_members()` yields them. So normalize the
-name first with `PluginContext.normalize_name()`, set `member.name` to the result, and
+name first with `ReaderContext.normalize_name()`, set `member.name` to the result, and
 yield the name you started from as `MemberRecord(member, locator, stored_name=...)`.
 archivey then reports the change from that name, as it would have.
 
 A symlink whose target cannot be read is reported with
-`PluginContext.link_target_unavailable()`, which also leaves `link_target` unset and
+`ReaderContext.link_target_unavailable()`, which also leaves `link_target` unset and
 tells extraction whether the archive holds a target the reader could not reach.
 
-`PluginContext.config` is the caller's `ArchiveyConfig`. A reader that parses a large
+`ReaderContext.config` is the caller's `ArchiveyConfig`. A reader that parses a large
 index itself can bound that work by `config.listing_limits`. archivey applies those
 limits to the members it is handed in any case.
 
 ## Archive details
 
-`archive_info()` returns a `PluginArchiveInfo` with what archivey cannot work out itself:
+`archive_info()` returns a `ReaderArchiveInfo` with what archivey cannot work out itself:
 whether members share one decode (`is_solid`), a format version, a comment, and extra
 values under keys named after your format. A key a built-in format already defines,
 such as `7z.volume_count`, is not yours to write. archivey fills in the rest of
@@ -620,7 +631,7 @@ A plugin that wraps a library names its modules in `requires` and what to instal
 `install_hint`:
 
 ```python
-class CabPlugin(FormatPlugin):
+class CabHandler(FormatHandler):
     requires = ("cabarchive",)
     install_hint = "pip install cabarchive"
 ```
@@ -629,7 +640,7 @@ When a module is missing, `format_availability()` reports the format as
 `FormatSupport.NONE` with the hint, and opening a file of that format raises
 `PackageNotInstalledError`, as for a built-in format whose extra is not installed.
 
-A library that needs a file name rather than a stream can use `PluginSource.path`, which is
+A library that needs a file name rather than a stream can use `ReaderSource.path`, which is
 the path the archive was opened from, or `None` when it was opened from a stream.
 
 ## Registration and trust

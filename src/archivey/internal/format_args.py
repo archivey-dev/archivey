@@ -78,7 +78,7 @@ def _archive_format_spellings() -> dict[str, ArchiveFormat]:
     )
 
 
-# Spellings of plugin formats (``archivey.plugins.register_format``), looked up after
+# Spellings of plugin formats (``archivey.formats.register_format``), looked up after
 # the built-in table, so a plugin never changes what a built-in spelling means.
 _plugin_spellings: dict[str, ArchiveFormat] = {}
 

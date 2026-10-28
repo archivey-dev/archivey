@@ -10,7 +10,7 @@ decoded block.
 
 The reader trusts nothing it reads: every size is checked against what the format
 allows, the directory walk is a loop that refuses a directory reached twice, and every
-compressed block goes through ``PluginContext.decompress``, so archivey's decoder limits
+compressed block goes through ``ReaderContext.decompress``, so archivey's decoder limits
 apply, or through a decoder capped at the block's size: ``lz4.block`` for LZ4, and
 :mod:`archivey_squashfs.lzo` for LZO.
 """
@@ -34,13 +34,13 @@ from archivey import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.plugins import (
+from archivey.formats import (
     IndexedReader,
     MemberData,
     MemberRecord,
-    PluginArchiveInfo,
-    PluginContext,
-    PluginSource,
+    ReaderArchiveInfo,
+    ReaderContext,
+    ReaderSource,
     block_stream,
 )
 from archivey_squashfs import lzo
@@ -126,7 +126,7 @@ class _Superblock(NamedTuple):
     export_table: int
 
 
-def _read_superblock(source: PluginSource) -> _Superblock:
+def _read_superblock(source: ReaderSource) -> _Superblock:
     raw = source.read_at(0, _SUPERBLOCK.size)
     if raw[:4] == _SWAPPED_MAGIC:
         raise UnsupportedFeatureError(
@@ -188,7 +188,7 @@ def _listing(inode: _Inode) -> tuple[int, int, int]:
 class SquashfsReader(IndexedReader[FileLocation | None]):
     """One open SquashFS image."""
 
-    def __init__(self, source: PluginSource, context: PluginContext) -> None:
+    def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
         self._source = source
         self._context = context
         self._sb = sb = _read_superblock(source)
@@ -255,14 +255,14 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         )
 
     def _read_exact(self, start: int, length: int, what: str) -> bytes:
-        """:meth:`PluginSource.read_exact`, naming the structure the image ends in."""
+        """:meth:`ReaderSource.read_exact`, naming the structure the image ends in."""
         try:
             return self._source.read_exact(start, length)
         except TruncatedError:
             raise TruncatedError(f"{what} at {start} runs past the image end") from None
 
     def _read_struct(self, pos: int, fmt: str, what: str) -> tuple[Any, ...]:
-        """:meth:`PluginSource.read_struct`, naming the structure the image ends in."""
+        """:meth:`ReaderSource.read_struct`, naming the structure the image ends in."""
         try:
             return self._source.read_struct(pos, fmt)
         except TruncatedError:
@@ -566,8 +566,8 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
 
         return block_stream(location.size, block_size, read_block)
 
-    def archive_info(self) -> PluginArchiveInfo:
-        return PluginArchiveInfo(
+    def archive_info(self) -> ReaderArchiveInfo:
+        return ReaderArchiveInfo(
             format_version="4.0",
             extra={
                 "squashfs.compressor": self._compressor,

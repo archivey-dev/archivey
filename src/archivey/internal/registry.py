@@ -141,7 +141,7 @@ class BackendRegistry:
         self._readers: dict[ArchiveFormat, type[ReadBackend]] = {}
         # Unique reader classes in registration order (a class may serve several formats).
         self._reader_classes: list[type[ReadBackend]] = []
-        # Plugin backends (``archivey.plugins.register_format``), kept apart so every
+        # Plugin backends (``archivey.formats.register_format``), kept apart so every
         # detection table lists them after the built-in backends and the stream codecs:
         # detection takes the first match in table order, so a built-in signal wins.
         self._plugin_classes: list[type[ReadBackend]] = []

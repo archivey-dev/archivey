@@ -1,4 +1,4 @@
-No task starts until the maintainer approves the 2026-10-25 revision of `design.md`. Each numbered group is one PR, except group 1, which lands in stages, in this order: **1a**, the indexed shape with tests and the user page; **#1052**, asked for while 1a was in review: `PluginContext.decompress`, seekable members over a plugin stream that reads forward only, and plugin-supplied digests (1.2d to 1.2f); the ISO port (group 2); then **1b**, the sequential shape: 1.2a, 1.2b, the rest of 1.2c, 1.3, 1.4 and 1.6. Only 1b waits for the ISO port. `ForwardStream.decompress` (1.2c) is the sequential shape's decoder, not `PluginContext.decompress`. No spec delta lands before group 4 (4.2).
+No task starts until the maintainer approves the 2026-10-25 revision of `design.md`. Each numbered group is one PR, except group 1, which lands in stages, in this order: **1a**, the indexed shape with tests and the user page; **#1052**, asked for while 1a was in review: `ReaderContext.decompress`, seekable members over a plugin stream that reads forward only, and plugin-supplied digests (1.2d to 1.2f); the ISO port (group 2); then **1b**, the sequential shape: 1.2a, 1.2b, the rest of 1.2c, 1.3, 1.4 and 1.6. Only 1b waits for the ISO port. `ForwardStream.decompress` (1.2c) is the sequential shape's decoder, not `ReaderContext.decompress`. No spec delta lands before group 4 (4.2).
 
 ## 1. Format identity, registry, detection and the adapter
 
@@ -6,8 +6,8 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
       `ArchiveFormat.container` as `ContainerFormat | PluginContainer`; keep a
       `PluginContainer` member in `__post_init__`; `display_name` drops `_UNCOMPRESSED`
       for a pair with no named constant.
-- [x] 1.2 `internal/plugin_adapter.py`: `PluginBackend(ReadBackend)` and
-      `PluginReaderAdapter(BaseArchiveReader)` (locator on `_raw`, name normalization,
+- [x] 1.2 `internal/format_adapter.py`: `PluginBackend(ReadBackend)` and
+      `IndexedReaderAdapter(BaseArchiveReader)` (locator on `_raw`, name normalization,
       size and digest verification, `ArchiveInfo` and `CostReceipt` built by the adapter,
       handle lock for plugins that keep their own handle).
 - [x] 1.2a Sequential shape in the adapter: the forward pass over `walk()`
@@ -19,10 +19,10 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
       waits for outer compression.*
 - [ ] 1.2c Decoded `MemberSpan.data` (drain on advance, re-walk for random access),
       `ForwardStream.decompress`, `checked` members counted as verified,
-      `PluginArchiveInfo.is_solid`. *1a landed `checked` and `is_solid`;
+      `ReaderArchiveInfo.is_solid`. *1a landed `checked` and `is_solid`;
       `ForwardStream.decompress` landed after outer compression; decoded data is
       left.*
-- [x] 1.2d `PluginContext.decompress(data, method, *, size, properties)`: a member's
+- [x] 1.2d `ReaderContext.decompress(data, method, *, size, properties)`: a member's
       compressed bytes through archivey's codec layer, with the caller's config and
       the member's sizes, for raw Deflate, Deflate64, bzip2, Zstandard, LZ4 frames,
       Brotli, raw LZMA and LZMA2 (maintainer, 2026-10-26).
@@ -41,14 +41,14 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
       for each single-file codec's pair and compound extensions (`.cpio.gz`); its walk
       reads the decoded stream through a buffer (streaming) or views of it (random
       access), costed as a compressed TAR is.*
-- [x] 1.3 `archivey/plugins.py`: `FormatPlugin`, `PluginReader`, `IndexedReader`,
+- [x] 1.3 `archivey/formats.py`: `FormatHandler`, `FormatReader`, `IndexedReader`,
       `SequentialReader`, `MemberRecord`, `MemberSpan`, `MemberData`, `MemberDigest`,
-      `Hasher`, `ForwardStream`, `PluginSource`, `PluginContext`, `PluginArchiveInfo`, `Magic`,
+      `Hasher`, `ForwardStream`, `ReaderSource`, `ReaderContext`, `ReaderArchiveInfo`, `Magic`,
       `register_format`. Registration refuses clashing container values, already
       registered formats, and extensions a built-in format claims. *1a landed all but
       `SequentialReader`, `MemberSpan` and `ForwardStream`, and also refuses a
       container value or name that is already a `format=` spelling. The sequential
-      stage added those three and `SequentialFormatPlugin`; a stage after outer
+      stage added those three and `SequentialFormatHandler`; a stage after outer
       compression added `ForwardStream.decompress`, each call a new layer of the walk
       (a codec over the rest of the walk's buffer when streaming, over a view of the
       parent layer for random access, kept by where it starts so a second walk
@@ -68,7 +68,7 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
       refused like a built-in's; a plugin magic never outranks a built-in one. A
       sequential test plugin read from a pipe, gzip-compressed, under
       `stream_members`, `extract_all` and a `CONCURRENT` reader. *1a landed the
-      indexed tests. The sequential test plugin (`tests/test_plugins_sequential.py`)
+      indexed tests. The sequential test plugin (`tests/test_format_api_sequential.py`)
       reads from a file, a non-seekable stream and an OS pipe, plain and inside gzip,
       bzip2 and xz.*
 - [x] 1.7 `FormatInfo.from_plugin` (maintainer, 2026-10-25).
@@ -87,10 +87,10 @@ The test of the sequential shape, as the ISO port is of the indexed one (maintai
 ## 2. ISO onto the interface
 
 - [x] 2.1 `IsoReader` implements `IndexedReader`; `IsoReadBackend` becomes a
-      `FormatPlugin` registered with `register_format`. *Registered instead with the
-      internal `register_builtin_plugin()`, so ISO keeps its built-in container, its
+      `FormatHandler` registered with `register_format`. *Registered instead with the
+      internal `register_builtin_format()`, so ISO keeps its built-in container, its
       place among the built-in backends and `from_plugin == False`.*
-- [x] 2.2 `self._emit_*` calls go through `PluginContext`; `_handle_guard` moves to the
+- [x] 2.2 `self._emit_*` calls go through `ReaderContext`; `_handle_guard` moves to the
       adapter; the raw-sector-image refusal moves from `core.py` into `open`. *The
       refusal stays in `core.py`: it runs before the availability check, so an image
       named `.bin` is refused the same with or without pycdlib.*
@@ -99,8 +99,8 @@ The test of the sequential shape, as the ISO port is of the indexed one (maintai
       *The suite passes; tests that reached into the old reader's internals were
       repointed, and the multi-extent gap test now reads the gap. The
       `--all-configs` check is not run yet.*
-- [x] 2.4 Gaps the port found, added to the interface: `FormatPlugin.translate_exception`
-      (errors in `open()`), `PluginContext.report`, `.link_target_unavailable`, `.config`
+- [x] 2.4 Gaps the port found, added to the interface: `FormatHandler.translate_exception`
+      (errors in `open()`), `ReaderContext.report`, `.link_target_unavailable`, `.config`
       and `.normalize_name` with `MemberRecord.stored_name`, and `MemberData.bounded`.
       ISO also reads member data through source views, joining the extents of a
       multi-extent file wherever they sit (maintainer, 2026-10-27).
@@ -146,7 +146,7 @@ more indexed plugin, 2026-10-27).
       a fragment past its table, a short data block, an oversized metadata block.
 - [x] 3b.3 A test that fails if the package imports `archivey.internal`; a CI job that
       installs the package and runs its tests.
-- [x] 3b.4 Gaps the package found, added to the interface: `PluginContext.decompress`
+- [x] 3b.4 Gaps the package found, added to the interface: `ReaderContext.decompress`
       takes a `StreamFormat` (SquashFS stores zlib, xz and LZMA Alone streams; bytes
       after such a stream are reported as for a file of that format), and a
       member stream whose reads may be short before the end is read whole: the adapter
@@ -186,8 +186,20 @@ more indexed plugin, 2026-10-27).
 - [ ] 5.1 A public `register_codec()`, the decoder twin of `register_format()`: a codec
       registered once is read by `open_stream`, as a single-file archive, inside TAR and
       sequential plugin pairs, by the inner-container probe and by
-      `PluginContext.decompress`. The pair, extension and codec tables become
+      `ReaderContext.decompress`. The pair, extension and codec tables become
       computed on demand instead of at import.
 - [ ] 5.2 LZO as a built-in codec (the lzop stream and raw LZO1X as a member method),
       python-lzo optional with the pure-Python decoder as the fallback, when SquashFS
       becomes built-in.
+
+## 6. Names
+
+- [x] 6.1 Rename for the framing that built-in formats use these structures too and
+      plugins reuse them (maintainer, 2026-10-28): `archivey.plugins` is
+      `archivey.formats`; `FormatPlugin` and `SequentialFormatPlugin` are
+      `FormatHandler` and `SequentialFormatHandler`; `PluginReader` is `FormatReader`;
+      `PluginArchiveInfo`, `PluginSource` and `PluginContext` are `ReaderArchiveInfo`,
+      `ReaderSource` and `ReaderContext`; `internal/plugin_adapter.py` is
+      `internal/format_adapter.py`; `register_format(plugin)` takes `handler`. `PluginContainer` keeps its name: only a format
+      from outside archivey defines a container. `brief.md`, `proposal.md` and
+      `design.md` keep the old names as written.

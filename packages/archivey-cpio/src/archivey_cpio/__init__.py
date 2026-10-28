@@ -2,10 +2,10 @@
 
 Register it once, then open CPIO archives like any other, from a pipe too::
 
-    from archivey.plugins import register_format
-    from archivey_cpio import CpioPlugin
+    from archivey.formats import register_format
+    from archivey_cpio import CpioHandler
 
-    register_format(CpioPlugin)
+    register_format(CpioHandler)
 """
 
 from __future__ import annotations
@@ -13,10 +13,10 @@ from __future__ import annotations
 import struct
 
 from archivey import ArchiveFormat, PluginContainer, StreamFormat
-from archivey.plugins import Magic, PluginContext, SequentialFormatPlugin
+from archivey.formats import Magic, ReaderContext, SequentialFormatHandler
 from archivey_cpio.reader import CpioReader, Sum32, Variant
 
-__all__ = ["CPIO", "CpioContainer", "CpioPlugin", "CpioReader", "Sum32", "Variant"]
+__all__ = ["CPIO", "CpioContainer", "CpioHandler", "CpioReader", "Sum32", "Variant"]
 
 
 class CpioContainer(PluginContainer):
@@ -40,7 +40,7 @@ def _binary_probe(prefix: bytes) -> bool:
     return False
 
 
-class CpioPlugin(SequentialFormatPlugin):
+class CpioHandler(SequentialFormatHandler):
     """CPIO archives in the binary, odc, newc and crc variants: ``.cpio``."""
 
     format = CPIO
@@ -55,5 +55,5 @@ class CpioPlugin(SequentialFormatPlugin):
     probe = staticmethod(_binary_probe)
     uses_encoding = True
 
-    def open_sequential(self, context: PluginContext) -> CpioReader:
+    def open_sequential(self, context: ReaderContext) -> CpioReader:
         return CpioReader(context)

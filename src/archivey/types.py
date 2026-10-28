@@ -102,7 +102,7 @@ class PluginContainer(StrEnum):
 
         CPIO = ArchiveFormat(CpioContainer.CPIO, StreamFormat.UNCOMPRESSED)
 
-    Provisional, with the rest of ``archivey.plugins``. Code that matches on
+    Provisional, with the rest of ``archivey.formats``. Code that matches on
     ``ArchiveFormat.container`` needs a default case once a plugin is registered.
     """
 
@@ -162,7 +162,7 @@ class ArchiveFormat:
         # as a container, but left as it is as a stream: the codec registry is keyed
         # on these pairs, and a codec registered from outside
         # (``tests/test_codec_descriptor.py`` does) brings its own stream enum. A
-        # plugin's container is kept as it is too (``archivey.plugins``).
+        # plugin's container is kept as it is too (``archivey.formats``).
         if not isinstance(self.container, (ContainerFormat, PluginContainer)):
             object.__setattr__(
                 self,

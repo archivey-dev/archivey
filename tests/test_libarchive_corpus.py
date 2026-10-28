@@ -85,9 +85,9 @@ from archivey import (
     detect_format,
     open_archive,
 )
-from archivey.internal.plugin_adapter import registration_scope
+from archivey.formats import register_format
+from archivey.internal.format_adapter import registration_scope
 from archivey.internal.registry import get_registry
-from archivey.plugins import register_format
 from archivey.types import ArchiveFormat, ContainerFormat, StreamFormat
 from tests.conftest import ARCHIVEY_TEST_CACHE, binary_refusal, requires
 from tests.sample_archives import publish_cached
@@ -455,9 +455,9 @@ def _uu_param(path: Path) -> pytest.ParameterSet:
 
 # The format plugins in packages/, by module and class.
 _PLUGINS = (
-    ("archivey_cpio", "CpioPlugin"),
-    ("archivey_ar", "ArPlugin"),
-    ("archivey_squashfs", "SquashfsPlugin"),
+    ("archivey_cpio", "CpioHandler"),
+    ("archivey_ar", "ArHandler"),
+    ("archivey_squashfs", "SquashfsHandler"),
 )
 
 _ROOT = _files_dir()

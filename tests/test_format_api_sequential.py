@@ -1,6 +1,6 @@
 """The plugin API's sequential shape: a format read in one forward pass.
 
-The test format, TOYS, is defined here with ``archivey.plugins`` and the root API only:
+The test format, TOYS, is defined here with ``archivey.formats`` and the root API only:
 each member is a header (magic, type, name, data length, CRC-32), then its data, padded
 to four bytes; a header of type ``E`` ends the archive. Symlinks store their target as
 their data, as CPIO's do. Each test registers it on a registry restored afterwards
@@ -42,19 +42,19 @@ from archivey import (
 )
 from archivey.cost import AccessCost, ListingCost, StreamCapability
 from archivey.diagnostics import DiagnosticCode
-from archivey.internal.plugin_adapter import registration_scope
-from archivey.internal.streams.streamtools import ReadAheadStream
-from archivey.plugins import (
+from archivey.formats import (
     ForwardStream,
     Magic,
     MemberDigest,
     MemberSpan,
-    PluginArchiveInfo,
-    PluginContext,
-    SequentialFormatPlugin,
+    ReaderArchiveInfo,
+    ReaderContext,
+    SequentialFormatHandler,
     SequentialReader,
     register_format,
 )
+from archivey.internal.format_adapter import registration_scope
+from archivey.internal.streams.streamtools import ReadAheadStream
 from tests.streams_util import NonSeekableBytesIO
 
 _MAGIC = b"TS"
@@ -100,7 +100,7 @@ def build_toys(
 class ToysReader(SequentialReader):
     link_target_in_data = True
 
-    def __init__(self, context: PluginContext) -> None:
+    def __init__(self, context: ReaderContext) -> None:
         self._context = context
 
     def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
@@ -127,20 +127,20 @@ class ToysReader(SequentialReader):
             stream.skip(_pad(length))
 
 
-class ToysPlugin(SequentialFormatPlugin):
+class ToysHandler(SequentialFormatHandler):
     format = TOYS
     extensions = (".toys",)
     magic = (Magic(0, _MAGIC),)
     uses_encoding = True
 
-    def open_sequential(self, context: PluginContext) -> ToysReader:
+    def open_sequential(self, context: ReaderContext) -> ToysReader:
         return ToysReader(context)
 
 
 @pytest.fixture
 def toys() -> Iterator[ArchiveFormat]:
     with registration_scope():
-        register_format(ToysPlugin)
+        register_format(ToysHandler)
         yield TOYS
 
 
@@ -343,10 +343,10 @@ def _variant(reader: type[ToysReader], container: ToysContainer) -> ArchiveForma
     """Register a TOYS reader that changes what it yields, as its own format."""
     fmt = ArchiveFormat(container, StreamFormat.UNCOMPRESSED)
 
-    class Variant(SequentialFormatPlugin):
+    class Variant(SequentialFormatHandler):
         format = fmt
 
-        def open_sequential(self, context: PluginContext) -> ToysReader:
+        def open_sequential(self, context: ReaderContext) -> ToysReader:
             return reader(context)
 
     register_format(Variant)
@@ -703,7 +703,7 @@ def test_bytes_after_the_compression_stream_are_reported(
 
 
 def test_a_sequential_magic_must_end_within_512_bytes() -> None:
-    class Late(ToysPlugin):
+    class Late(ToysHandler):
         format = ArchiveFormat(ToysContainer.CLOSING, StreamFormat.UNCOMPRESSED)
         extensions = (".late",)
         magic = (Magic(510, b"LATE"),)
@@ -716,7 +716,7 @@ def test_a_sequential_magic_must_end_within_512_bytes() -> None:
 
 
 def test_a_compressed_extension_another_format_claims_is_refused() -> None:
-    class Gzipped(ToysPlugin):
+    class Gzipped(ToysHandler):
         format = ArchiveFormat(ToysContainer.CLOSING, StreamFormat.UNCOMPRESSED)
         extensions = (".toys.gz",)
 
@@ -724,7 +724,7 @@ def test_a_compressed_extension_another_format_claims_is_refused() -> None:
         register_format(Gzipped)
         # TOYS would add ".toys.gz" for its gzip pair.
         with pytest.raises(ArchiveyUsageError, match=r"'\.toys\.gz' is already"):
-            register_format(ToysPlugin)
+            register_format(ToysHandler)
 
 
 # --- ForwardStream.decompress: compression that starts part-way (an RPM payload) ---
@@ -734,9 +734,9 @@ class _RpmishReader(ToysReader):
     """TOYS with one more header type: ``Z``, whose name is a ``StreamFormat`` value.
     Everything after it is that compression stream, holding more TOYS headers."""
 
-    def archive_info(self) -> PluginArchiveInfo:
+    def archive_info(self) -> ReaderArchiveInfo:
         # The walk decompresses part-way, so the archive says it is solid up front.
-        return PluginArchiveInfo(is_solid=True)
+        return ReaderArchiveInfo(is_solid=True)
 
     def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
         while True:

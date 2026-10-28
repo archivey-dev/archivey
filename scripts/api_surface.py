@@ -54,7 +54,7 @@ PUBLIC_MODULES = (
     "archivey.detection_cost",
     "archivey.diagnostics",
     "archivey.paths",
-    "archivey.plugins",
+    "archivey.formats",
     "archivey.terminal",
 )
 
@@ -76,7 +76,7 @@ _SKIP_NAMES = frozenset({"__version__"})
 #: Classes whose constructor only archivey calls: a plugin receives these objects,
 #: so their ``__init__`` is internal even though the class is public.
 _SKIP_INIT = frozenset(
-    {"archivey.plugins.PluginContext", "archivey.plugins.PluginSource"}
+    {"archivey.formats.ReaderContext", "archivey.formats.ReaderSource"}
 )
 
 

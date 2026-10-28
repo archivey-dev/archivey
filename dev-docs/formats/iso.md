@@ -283,7 +283,7 @@ tree is listed there.
 ### 2.3 Member data
 
 Reading a file is a view of the archive source over the file's extent
-(`PluginSource.view`), or one view per extent joined into one stream (`JoinedViews`) for
+(`ReaderSource.view`), or one view per extent joined into one stream (`JoinedViews`) for
 a multi-extent file. Nothing goes through `pycdlib`'s file object. A view cannot return
 more than the file's bytes, so the member promises `bounded=True`. There is no decoding
 apart from zisofs, no password and nothing to verify. Seeking is supported when
