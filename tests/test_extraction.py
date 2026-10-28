@@ -2140,6 +2140,9 @@ def test_resolve_or_raise_on_loop_keeps_a_missing_component(tmp_path: Path) -> N
         ("abs/f", False),
         ("file/x/f", True),
         ("loop/f", None),
+        ("out/.", True),
+        ("out/./", True),
+        ("d/./.", True),
     ],
 )
 def test_parent_resolves_within_root_matches_the_full_resolution(
@@ -2171,6 +2174,13 @@ def test_parent_resolves_within_root_matches_the_full_resolution(
         inside if inside is not None else (errno.ELOOP, str(root / "loop"))
     )
     assert outcome(lambda: parent_resolves_within_root(root, rel)) == expected
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX root")
+@pytest.mark.parametrize("rel", ["x", "tmp/x", "x/."])
+def test_parent_resolves_within_root_takes_the_filesystem_root(rel: str) -> None:
+    # "/" + "/" is no prefix of any resolved path, so the root needs its own spelling.
+    assert parent_resolves_within_root(Path("/"), rel)
 
 
 def _link_chain_past_path_max(root: Path) -> None:

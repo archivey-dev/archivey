@@ -180,7 +180,7 @@ def resolve_or_raise_on_loop(path: Path) -> Path:
 
 def parent_resolves_within_root(root: Path, rel: str) -> bool:
     """Whether ``(root / rel).parent`` resolves to ``root`` or a path inside it, for a
-    ``root`` that is already resolved. Raises ``OSError`` as
+    ``root`` that is already resolved and a relative ``rel``. Raises ``OSError`` as
     :func:`resolve_or_raise_on_loop` does.
 
     ``root`` is the result of an earlier resolution, so it holds no symlink and its
@@ -195,14 +195,19 @@ def parent_resolves_within_root(root: Path, rel: str) -> bool:
     if os.name == "nt":
         return _within(_resolve_with_pathlib((root / rel).parent), root)
     start = str(root)
+    # The parent as pathlib takes it: empty and "." parts dropped first, so the
+    # parent of "a/." is the root, not "a".
+    parts = [part for part in rel.split("/") if part not in ("", ".")]
     try:
-        resolved = _realpath_posix(rel.rpartition("/")[0], "", start=start)
+        resolved = _realpath_posix("/".join(parts[:-1]), "", start=start)
     except OSError as exc:
         # Named as the full resolution names it; built only here, as it costs Paths.
         raise OSError(exc.errno, exc.strerror, str((root / rel).parent)) from (
             exc.__cause__
         )
-    return resolved == start or start == "/" or resolved.startswith(start + "/")
+    # ``_realpath_posix`` strips the root's trailing "/" too, so "/" gives "".
+    prefix = start.rstrip("/")
+    return resolved == start or resolved.startswith(prefix + "/")
 
 
 # Links followed in one resolution before it counts as a loop: Linux's own limit
