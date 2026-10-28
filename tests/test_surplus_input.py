@@ -42,6 +42,7 @@ from tests.conftest import (
 )
 from tests.test_audit2_zip import _build_zip, _Entry, _raw_deflate
 from tests.test_audit_sevenzip import (
+    _DELTA,
     _LZMA,
     _PPMD,
     _codec_archive,
@@ -532,12 +533,81 @@ def test_7zip_written_archives_read_clean(tmp_path: Path, args: list[str]) -> No
     assert read == files
 
 
+# --- 7z Delta coders over LZMA1 ----------------------------------------------------------
+# The range-coder check decodes zeros after the stream, and each Delta coder turns
+# those into copies of earlier output, so the check predicts that output.
+
+_DELTA_CHAINS = {
+    "delta1": ("-m0=Delta:1",),
+    "delta4": ("-m0=Delta:4",),
+    "delta1-delta4": ("-m0=Delta:1", "-m1=Delta:4"),
+}
+
+
+def _7z_folder_streams(raw: bytes) -> tuple[bytes, list[tuple[bytes, bytes | None]]]:
+    """The packed stream and each coder's method and properties, from a 7z 7-Zip wrote
+    (-mhc=off) with one linear folder: coder 0 reads the pack, coder i+1 coder i."""
+    sig = sevenzip_parser.read_signature_and_next_header(io.BytesIO(raw))
+    streams = sevenzip_parser.parse_header_block(sig.header_data).streams
+    (folder,) = streams.folders
+    assert folder.bind_pairs == [(i + 1, i) for i in range(len(folder.coders) - 1)]
+    start = sevenzip_parser.SIGNATURE_HEADER_SIZE + streams.pack_pos
+    packed = raw[start : start + streams.pack_sizes[0]]
+    return packed, [(c.method, c.properties) for c in folder.coders]
+
+
+@pytest.fixture(params=sorted(_DELTA_CHAINS))
+def sz_delta_lzma1(
+    request: pytest.FixtureRequest, tmp_path: Path, payload: bytes
+) -> tuple[bytes, list[bytes]]:
+    deltas = _DELTA_CHAINS[request.param]
+    lzma_arg = f"-m{len(deltas)}=LZMA"
+    raw = _7zip(tmp_path, payload, "-t7z", "-mhc=off", *deltas, lzma_arg)
+    packed, coders = _7z_folder_streams(raw)
+    assert [method for method, _ in coders] == [_LZMA] + [_DELTA] * len(deltas)
+    return packed, [_coder(method, props=props) for method, props in coders]
+
+
 @requires_binary("7z")
-@pytest.mark.parametrize("dist", [1, 4])
 def test_7z_delta_over_lzma1_without_marker_reads(
-    tmp_path: Path, payload: bytes, dist: int
+    sz_delta_lzma1: tuple[bytes, list[bytes]], payload: bytes
 ) -> None:
-    # LZMA1 then Delta (7z a -m0=Delta:N -m1=LZMA). The range-coder check decodes
-    # zeros after the stream, and Delta turns those into copies of the last bytes.
-    blob = _7zip(tmp_path, payload, "-t7z", "-mhc=off", f"-m0=Delta:{dist}", "-m1=LZMA")
-    assert _outcome(blob) == _ok(payload)
+    packed, coders = sz_delta_lzma1
+    sizes = [len(payload)] * len(coders)
+    assert _outcome(_codec_archive(coders, sizes, packed, payload)) == _ok(payload)
+
+
+@requires_binary("7z")
+@pytest.mark.parametrize("tail", _LZMA1_TAILS)
+def test_7z_delta_over_lzma1_with_bytes_after_it_is_corrupt(
+    sz_delta_lzma1: tuple[bytes, list[bytes]], payload: bytes, tail: str
+) -> None:
+    packed, coders = sz_delta_lzma1
+    sizes = [len(payload)] * len(coders)
+    blob = _codec_archive(coders, sizes, packed + _TAILS[tail], payload)
+    _assert_surplus(_outcome(blob))
+
+
+@requires_binary("7z")
+def test_7z_delta_over_lzma1_with_one_zero_byte_after_it_reads(
+    sz_delta_lzma1: tuple[bytes, list[bytes]], payload: bytes
+) -> None:
+    packed, coders = sz_delta_lzma1
+    sizes = [len(payload)] * len(coders)
+    _one_zero_byte_reads(
+        lambda data: _outcome(_codec_archive(coders, sizes, data, payload)), packed
+    )
+
+
+@requires_binary("7z")
+def test_7z_delta_without_properties_over_lzma1_reads(
+    tmp_path: Path, payload: bytes
+) -> None:
+    # A Delta coder with no property byte has liblzma's default distance, 1. 7-Zip
+    # always writes the byte; another writer may not.
+    raw = _7zip(tmp_path, payload, "-t7z", "-mhc=off", "-m0=Delta:1", "-m1=LZMA")
+    packed, [(_, lzma_props), (_, delta_props)] = _7z_folder_streams(raw)
+    assert delta_props == b"\x00"
+    coders = [_coder(_LZMA, props=lzma_props), _coder(_DELTA)]
+    sizes = [len(payload)] * 2
+    assert _outcome(_codec_archive(coders, sizes, packed, payload)) == _ok(payload)
