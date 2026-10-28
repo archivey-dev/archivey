@@ -65,8 +65,9 @@ class ZlibDecoder(BaseDecoder):
         return ZlibDecoder(self._wbits, natives=self._natives)
 
     def close(self) -> None:
-        # An in-process ``zlib`` object holds no decoder process, so the attribute
-        # walk of ``BaseDecoder.close`` would find nothing; ZIP closes one per member.
+        # An in-process ``zlib`` object holds no decoder process and needs no ending,
+        # so the attribute walk of ``BaseDecoder.close`` would find nothing (its
+        # docstring allows the skip); ZIP closes one decoder per member.
         if self._natives.isolated:
             super().close()
 

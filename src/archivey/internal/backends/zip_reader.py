@@ -3400,8 +3400,9 @@ class ZipReader(BaseArchiveReader):
             input_size = source_byte_size(body)
             if input_size is not None:
                 changes["compressed_input_size"] = input_size
-        # What ``open_codec``'s own config pass would set (``_decoder_config``), so it
-        # finds nothing to change and makes no second copy.
+        # What ``open_codec``'s own config pass would set, by its rules
+        # (``registry._decoder_config``, which points back here), so it finds nothing to
+        # change and makes no second copy.
         if body_seekable != base.source_seekable:
             changes["source_seekable"] = body_seekable
         if base.seekable and not body_seekable:

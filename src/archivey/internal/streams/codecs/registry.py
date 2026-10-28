@@ -330,6 +330,9 @@ def _decoder_config(
     changes: dict[str, Any] = {}
     if collector is not None and config.collector is not collector:
         changes["collector"] = collector
+    # ``ZipReader._member_config`` fills ``source_seekable`` and clears ``seekable`` by
+    # these two rules before it gets here, so a ZIP member's config is copied once: a
+    # change to either rule belongs there too.
     source_seekable = isinstance(source, (str, os.PathLike)) or is_seekable(source)
     if config.seekable and not source_seekable:
         # Seek demand on a source that cannot seek cannot be met, and it would make

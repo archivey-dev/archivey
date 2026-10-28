@@ -174,9 +174,15 @@ def _sequential_read_pays(config: StreamConfig) -> bool:
 def _auto_without_child(config: StreamConfig, *, available: bool) -> str | None:
     """Why an ``AUTO`` open that wants rapidgzip cannot have it here (no child process
     can run it: :func:`rapidgzip_child_unavailable_reason`), or ``None``."""
-    if config.use_rapidgzip is not AcceleratorMode.AUTO:
-        return None
     if not _rapidgzip_wanted(config, available=available):
+        return None
+    return _wanted_auto_without_child(config)
+
+
+def _wanted_auto_without_child(config: StreamConfig) -> str | None:
+    """:func:`_auto_without_child` for an open :func:`_rapidgzip_wanted` already wants:
+    the one place its reasons live, for it and for :func:`_rapidgzip_enabled`."""
+    if config.use_rapidgzip is not AcceleratorMode.AUTO:
         return None
     return rapidgzip_child_unavailable_reason()
 
@@ -191,11 +197,7 @@ def _rapidgzip_enabled(config: StreamConfig, *, available: bool) -> bool:
     """
     if not _rapidgzip_wanted(config, available=available):
         return False
-    # ``_auto_without_child`` without asking ``_rapidgzip_wanted`` a second time.
-    return (
-        config.use_rapidgzip is not AcceleratorMode.AUTO
-        or rapidgzip_child_unavailable_reason() is None
-    )
+    return _wanted_auto_without_child(config) is None
 
 
 def _warn_if_auto_without_child(config: StreamConfig) -> None:

@@ -61,7 +61,8 @@ class StreamConfig:
     ``gzip_isize`` is that trailer's value, which AUTO's ratio gate for a sequential
     read uses as an estimate of the decoded size and nothing else. ``source_seekable``
     is set by :func:`open_codec_stream` when the source is a path or a stream that can
-    seek: a sequential read (no declared seek demand) can still go through an
+    seek (a reader may fill it first with the same value, as the ZIP reader does to
+    save a copy per member): a sequential read (no declared seek demand) can still go through an
     accelerator under AUTO, which needs a source it can seek.
     ``decoder_limits`` is the caller's :class:`~archivey.config.DecoderLimits`,
     carried down so a codec can refuse an archive-declared allocation before making
