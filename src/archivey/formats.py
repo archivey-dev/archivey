@@ -699,8 +699,8 @@ class SequentialFormatHandler(FormatHandler):
 _register_lock = threading.Lock()
 
 
-def register_format(plugin: type[FormatHandler]) -> None:
-    """Make archivey read the format ``plugin`` declares, in this process.
+def register_format(handler: type[FormatHandler]) -> None:
+    """Make archivey read the format ``handler`` declares, in this process.
 
     Register before other threads open archives: detection reads the registry
     without the registration lock.
@@ -719,7 +719,7 @@ def register_format(plugin: type[FormatHandler]) -> None:
     from archivey.internal.format_adapter import register_plugin
 
     with _register_lock:
-        register_plugin(plugin)
+        register_plugin(handler)
 
 
 def block_stream(

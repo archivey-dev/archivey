@@ -41,7 +41,7 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
       for each single-file codec's pair and compound extensions (`.cpio.gz`); its walk
       reads the decoded stream through a buffer (streaming) or views of it (random
       access), costed as a compressed TAR is.*
-- [x] 1.3 `archivey/plugins.py`: `FormatHandler`, `FormatReader`, `IndexedReader`,
+- [x] 1.3 `archivey/formats.py`: `FormatHandler`, `FormatReader`, `IndexedReader`,
       `SequentialReader`, `MemberRecord`, `MemberSpan`, `MemberData`, `MemberDigest`,
       `Hasher`, `ForwardStream`, `ReaderSource`, `ReaderContext`, `ReaderArchiveInfo`, `Magic`,
       `register_format`. Registration refuses clashing container values, already
@@ -200,6 +200,6 @@ more indexed plugin, 2026-10-27).
       `FormatHandler` and `SequentialFormatHandler`; `PluginReader` is `FormatReader`;
       `PluginArchiveInfo`, `PluginSource` and `PluginContext` are `ReaderArchiveInfo`,
       `ReaderSource` and `ReaderContext`; `internal/plugin_adapter.py` is
-      `internal/format_adapter.py`. `PluginContainer` keeps its name: only a format
+      `internal/format_adapter.py`; `register_format(plugin)` takes `handler`. `PluginContainer` keeps its name: only a format
       from outside archivey defines a container. `brief.md`, `proposal.md` and
       `design.md` keep the old names as written.

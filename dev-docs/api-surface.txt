@@ -984,7 +984,7 @@ method archivey.formats.SequentialReader.translate_exception(self, exc: Exceptio
 method archivey.formats.SequentialReader.walk(self, stream: ForwardStream) -> Iterator[MemberSpan]
 function archivey.formats.block_stream(size: int, block_size: int, read_block: Callable[[int], bytes | BinaryIO]) -> BinaryIO
 function archivey.formats.buffered_stream(stream: BinaryIO | io.RawIOBase) -> BinaryIO
-function archivey.formats.register_format(plugin: type[FormatHandler]) -> None
+function archivey.formats.register_format(handler: type[FormatHandler]) -> None
 module archivey.terminal
 function archivey.terminal.display_path(path: str | os.PathLike[str]) -> str
 function archivey.terminal.escape_control_chars(text: str) -> str
