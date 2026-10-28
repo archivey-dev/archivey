@@ -899,8 +899,8 @@ def test_listing_after_an_abandoned_pass_refuses_the_same_way_each_time(
 
 @pytest.mark.parametrize("extra", [-1, 0, 1, base_reader._DRAIN_BATCH])
 def test_listing_drains_across_batch_boundaries(extra: int) -> None:
-    """``members()`` pulls in batches of ``_DRAIN_BATCH`` and releases the walk lock
-    between them; every member is listed, in order, however the count falls."""
+    """``members()`` pulls in batches of ``_DRAIN_BATCH``; every member is listed, in
+    order, however the count falls."""
     names = [f"f{i}" for i in range(base_reader._DRAIN_BATCH + extra)]
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -908,3 +908,40 @@ def test_listing_drains_across_batch_boundaries(extra: int) -> None:
             zf.writestr(name, b"")
     with open_archive(io.BytesIO(buf.getvalue()), concurrent_operations=True) as reader:
         assert [m.name for m in reader.members()] == names
+
+
+def test_listing_lets_a_waiting_thread_in_between_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A thread that starts waiting for the walk lock during a listing's first batch
+    gets it at a batch boundary, not only once the listing ends: the drain yields after
+    each release."""
+    batches = 40
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for i in range(base_reader._DRAIN_BATCH * batches):
+            zf.writestr(f"f{i}", b"")
+    pulled = 0
+    got_in_at: list[int] = []
+    waiters: list[threading.Thread] = []
+    pull = base_reader.BaseArchiveReader._pull_members_locked
+
+    def counting(self: base_reader.BaseArchiveReader, count: int) -> object:
+        nonlocal pulled
+        pulled += 1
+        if pulled == 1:  # under the lock: the waiter blocks until a release
+
+            def wait_for_the_lock() -> None:
+                with self._walk_lock:
+                    got_in_at.append(pulled)
+
+            waiters.append(threading.Thread(target=wait_for_the_lock))
+            waiters[0].start()
+        return pull(self, count)
+
+    monkeypatch.setattr(base_reader.BaseArchiveReader, "_pull_members_locked", counting)
+    with open_archive(io.BytesIO(buf.getvalue()), concurrent_operations=True) as reader:
+        reader.members()
+        waiters[0].join()
+    assert pulled > batches  # the listing ran in batches
+    assert got_in_at[0] < batches // 2, got_in_at
