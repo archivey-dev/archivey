@@ -609,9 +609,10 @@ _RESERVED_NAMES = frozenset(
 )
 
 
-# Every reserved name starts with one of these, so a path whose upper-cased form has none
-# of them has no reserved segment (the prefilter in ``_reject_unsafe_segments``).
-_MAY_BE_RESERVED = re.compile("CON|PRN|AUX|NUL|COM|LPT")
+# The first three characters of every reserved name, so a path whose upper-cased form
+# holds none of them has no reserved segment (the prefilter in
+# ``_reject_unsafe_segments``). Built from ``_RESERVED_NAMES`` so the two cannot drift.
+_MAY_BE_RESERVED = re.compile("|".join(sorted({name[:3] for name in _RESERVED_NAMES})))
 
 
 def _is_reserved_segment(segment: str) -> bool:
@@ -627,8 +628,10 @@ _WINDOWS_INVALID_CHARS = frozenset('<>"|?*') | frozenset(map(chr, range(0x01, 0x
 
 
 # A character ``_sanitize_portable_name`` escapes: a surrogateescape byte or one of
-# ``_WINDOWS_INVALID_CHARS``.
-_NEEDS_ESCAPE = re.compile('[\udc80-\udcff<>"|?*\x01-\x1f]')
+# ``_WINDOWS_INVALID_CHARS``, from which the class is built.
+_NEEDS_ESCAPE = re.compile(
+    "[\udc80-\udcff" + "".join(map(re.escape, sorted(_WINDOWS_INVALID_CHARS))) + "]"
+)
 
 
 def _sanitize_portable_name(name: str) -> str:
@@ -679,9 +682,10 @@ def _sanitize_portable_name(name: str) -> str:
     return "".join(out)
 
 
-# A segment that ends in a dot or a space: the only kind ``_strip_trailing_dot_space``
-# changes or refuses.
-_TRAILING_DOT_SPACE = re.compile(r"[. ](?:[\\/]|$)")
+# The characters ``_strip_trailing_dot_space`` strips off the end of a segment, and a
+# segment that ends in one: the only kind it changes or refuses.
+_DOT_SPACE = ". "
+_TRAILING_DOT_SPACE = re.compile(f"[{re.escape(_DOT_SPACE)}](?:[\\\\/]|\\Z)")
 
 
 def _strip_trailing_dot_space(name: str) -> str:
@@ -706,7 +710,7 @@ def _strip_trailing_dot_space(name: str) -> str:
         # check_universal). Stripping them would wrongly collapse the segment to empty.
         if part in ("", ".", ".."):
             return part
-        stripped = part.rstrip(". ")
+        stripped = part.rstrip(_DOT_SPACE)
         if stripped == "":
             raise FilterRejectionError(
                 f"Path segment is entirely dots/spaces: {part!r}", member_name=name
