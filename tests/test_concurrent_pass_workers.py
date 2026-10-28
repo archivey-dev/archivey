@@ -28,6 +28,7 @@ from archivey import (
     open_archive,
 )
 from archivey.diagnostics import DiagnosticCode
+from archivey.internal import base_reader
 from archivey.internal.reader_state import LifecycleState, ReaderState
 from archivey.reader import ArchiveReader
 from archivey.types import MemberStreams
@@ -894,3 +895,16 @@ def test_listing_after_an_abandoned_pass_refuses_the_same_way_each_time(
                 reader.members()
             messages.append(str(refused.value))
     assert len(set(messages)) == 1, messages
+
+
+@pytest.mark.parametrize("extra", [-1, 0, 1, base_reader._DRAIN_BATCH])
+def test_listing_drains_across_batch_boundaries(extra: int) -> None:
+    """``members()`` pulls in batches of ``_DRAIN_BATCH`` and releases the walk lock
+    between them; every member is listed, in order, however the count falls."""
+    names = [f"f{i}" for i in range(base_reader._DRAIN_BATCH + extra)]
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name in names:
+            zf.writestr(name, b"")
+    with open_archive(io.BytesIO(buf.getvalue()), concurrent_operations=True) as reader:
+        assert [m.name for m in reader.members()] == names
