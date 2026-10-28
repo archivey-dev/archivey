@@ -8,10 +8,13 @@ Extraction copies each member (``ArchiveMember.replace``) and its result
 fetches the fields with one ``attrgetter`` and passes them by position instead. Every
 positional copy of a dataclass goes through here; do not add another.
 
-It covers dataclasses whose fields are all positional ``__init__`` parameters, with no
-``__post_init__`` (which would run again on the copy, as ``dataclasses.replace`` runs
-it). Any other class, and a name that is not a field, take ``dataclasses.replace`` and
-its errors, so a misspelled name is still a ``TypeError`` at runtime.
+It covers a class whose constructor takes exactly its fields, in field order, each as
+a positional parameter, which is what a call by position needs. A ``__post_init__``
+runs on the copy either way, as it does under ``dataclasses.replace``. A class whose
+constructor differs (an ``InitVar``, a keyword-only or ``init=False`` field, a
+dataclass with ``init=False``), and a name that is not a field, take
+``dataclasses.replace`` and its errors, so a misspelled name is still a ``TypeError``
+at runtime.
 
 ``changes`` is typed ``Any``, which is not a check: type checkers verify neither the
 keyword names nor the value types at a call site, as they do for
@@ -22,6 +25,7 @@ used.
 from __future__ import annotations
 
 import dataclasses
+import inspect
 from operator import attrgetter
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -31,7 +35,9 @@ if TYPE_CHECKING:
 _T = TypeVar("_T", bound="DataclassInstance")
 
 # Per class: its fields' getter and each field's position, or ``None`` when the class
-# needs ``dataclasses.replace``.
+# needs ``dataclasses.replace``. Unbounded, and it holds each class it has seen: the
+# classes copied are archivey's own few, and a caller's subclass of a public one
+# (``ArchiveMember``) adds one entry for the life of the process.
 _PLANS: dict[
     type[DataclassInstance], tuple[attrgetter[Any], dict[str, int]] | None
 ] = {}
@@ -40,14 +46,18 @@ _PLANS: dict[
 def _plan(
     cls: type[DataclassInstance],
 ) -> tuple[attrgetter[Any], dict[str, int]] | None:
-    fields = dataclasses.fields(cls)
-    if (
-        len(fields) < 2  # attrgetter of one name returns the value, not a tuple
-        or hasattr(cls, "__post_init__")
-        or not all(f.init and not f.kw_only for f in fields)
+    names = tuple(f.name for f in dataclasses.fields(cls))
+    if len(names) < 2:  # attrgetter of one name returns the value, not a tuple
+        return None
+    try:
+        parameters = tuple(inspect.signature(cls).parameters.values())
+    except (TypeError, ValueError):  # no signature to read: copy by name
+        return None
+    # The constructor takes exactly the fields, in order, each by position.
+    if tuple(p.name for p in parameters) != names or any(
+        p.kind is not p.POSITIONAL_OR_KEYWORD for p in parameters
     ):
         return None
-    names = tuple(f.name for f in fields)
     return attrgetter(*names), {name: i for i, name in enumerate(names)}
 
 
