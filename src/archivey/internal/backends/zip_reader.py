@@ -145,6 +145,7 @@ from archivey.internal.config import StreamConfig, stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.hashing import crc32_digest
+from archivey.internal.lazy_fields import UNBUILT
 from archivey.internal.logs import backends as logger
 from archivey.internal.naming import (
     emit_member_name_normalized,
@@ -1021,6 +1022,17 @@ class _ZipLocator:
     #: (``_apply_descriptor``) reaches an open only when it comes first: listing
     #: writes stay ahead of every open.
     data_start: int | None = None
+
+    def member_hashes(self) -> dict[HashAlgorithm, bytes]:
+        """The listed member's ``hashes``, which listing left unbuilt
+        (``archivey.internal.lazy_fields``): it does so only for a member whose CRC-32
+        is a digest (``_crc_is_digest``)."""
+        return {HashAlgorithm.CRC32: crc32_digest(self.crc)}
+
+    def member_extra(self) -> MemberExtra:
+        """The listed member's ``extra``, which listing left unbuilt only when it holds
+        nothing but the compression method."""
+        return MemberExtra({"zip.compress_type": self.method})
 
 
 #: Deflate's largest expansion: a 258-byte match costs at least two bits.
@@ -1959,6 +1971,9 @@ class ZipReader(BaseArchiveReader):
         compressed_size = walked.compressed_sizes[index]
         file_size = walked.file_sizes[index]
         loc = cast("_ZipLocator", member._raw)
+        # Build ``hashes`` from the directory's CRC first, as listing would have: the
+        # CRC below replaces it only when it is a digest.
+        member.hashes  # noqa: B018
         loc.crc = crc
         loc.compressed_size = compressed_size
         loc.file_size = file_size
@@ -2490,7 +2505,6 @@ class ZipReader(BaseArchiveReader):
         # below (design principle 1: say so instead of implying the bytes were checked;
         # DR-4: CorruptionError is for damage). AE-2 stores CRC 0 by design and relies
         # on the HMAC — never surface a fake crc32 for it.
-        hashes: dict[HashAlgorithm, bytes] = {}
         is_ae2 = aes_info is not None and aes_info.is_ae2
         crc = entry.crc
         # A central CRC-32 of 0 over a file is 0 for its data only once in 2**32;
@@ -2508,9 +2522,20 @@ class ZipReader(BaseArchiveReader):
         directory_data = member_type is MemberType.DIRECTORY and entry.file_size > 0
         directory_zero_crc = directory_data and entry.crc == 0
         directory_without_anchor = directory_zero_crc and aes_info is None
-        if _crc_is_digest(member_type, entry.file_size, entry.crc, aes_info):
-            hashes = {HashAlgorithm.CRC32: crc32_digest(crc)}
-        extra = MemberExtra({"zip.compress_type": method})
+        # The common ``hashes`` and ``extra`` are left for the first read to build from
+        # the locator (``_ZipLocator.member_hashes`` / ``member_extra``); a member with
+        # a rarer key gets its bag now.
+        has_digest = _crc_is_digest(member_type, entry.file_size, entry.crc, aes_info)
+        hashes: dict[HashAlgorithm, bytes] = UNBUILT if has_digest else {}
+        if (
+            special is None
+            and decoded_name.alternate_raw_name is None
+            and not is_reparse_point
+            and aes_info is None
+        ):
+            extra = UNBUILT
+        else:
+            extra = MemberExtra({"zip.compress_type": method})
         if special is not None:
             # Whatever the type decided above, the key records what the mode said, so
             # a reparse point that settles or re-types to FILE keeps it (DR-25).
@@ -2535,7 +2560,7 @@ class ZipReader(BaseArchiveReader):
             and written_by_archive_utility(entry)
         ):
             size, size_unknown = _wrapped_size(entry)
-            if size_unknown is not None and not hashes:
+            if size_unknown is not None and not has_digest:
                 # An unknown size is filled in only once a read's CRC-32 matches;
                 # with none to check, the stored size stays.
                 size, size_unknown = entry.file_size, None
@@ -2543,6 +2568,8 @@ class ZipReader(BaseArchiveReader):
                 entry.compressed_size_correction
             )
             if size_unknown is not None:
+                if extra is UNBUILT:
+                    extra = MemberExtra({"zip.compress_type": method})
                 extra[EXTRA_SIZE_MOD_2_32] = entry.file_size
         # Skip defaulted None/False kwargs on the listing hot path (perf review L2).
         member = ArchiveMember(

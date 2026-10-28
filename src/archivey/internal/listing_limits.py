@@ -6,6 +6,7 @@ from collections.abc import Mapping
 
 from archivey.config import ListingLimits
 from archivey.exceptions import ResourceLimitError
+from archivey.internal.lazy_fields import extra_is_unbuilt
 from archivey.types import ArchiveMember
 
 
@@ -96,9 +97,12 @@ def member_metadata_bytes(member: ArchiveMember) -> int:
     gname = member.gname
     if gname is not None:
         total += _str_retained_bytes(gname)
-    extra = member.extra
-    if extra:
-        total += _extra_bytes(extra)
+    # An unbuilt bag holds only its format's ``int`` key, which weighs nothing; reading
+    # it here would build it for every listed member.
+    if not extra_is_unbuilt(member):
+        extra = member.extra
+        if extra:
+            total += _extra_bytes(extra)
     return total
 
 

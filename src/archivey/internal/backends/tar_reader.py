@@ -106,6 +106,7 @@ from archivey.internal.base_reader import (
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
+from archivey.internal.lazy_fields import UNBUILT
 from archivey.internal.logs import (
     backends as backends_logger,
     integrity as integrity_logger,
@@ -1432,9 +1433,17 @@ class TarReader(BaseArchiveReader):
         )
 
         # The typeflag as stored: NUL or 0 for an old-style directory, so a caller can
-        # tell it from a DIRTYPE one.
-        extra = MemberExtra({"tar.type": entry.typeflag})
+        # tell it from a DIRTYPE one. A member with only that key leaves ``extra`` for
+        # the first read to build from the span (``TarSpan.member_extra``).
         special = special_file_type_from_tar_typeflag(entry.typeflag)
+        devices = (
+            entry.header.devmajor is not None and entry.header.devminor is not None
+        )
+        extra = (
+            MemberExtra({"tar.type": entry.typeflag})
+            if special is not None or entry.pax or devices
+            else UNBUILT
+        )
         if special is not None:
             if entry.size:
                 # The typeflag is structure in TAR, so a device or FIFO header has no
@@ -1453,7 +1462,7 @@ class TarReader(BaseArchiveReader):
             extra[EXTRA_SPECIAL_FILE_TYPE] = special
         if entry.pax:
             extra["tar.pax_headers"] = self._extra_pax_headers(entry)
-        if entry.header.devmajor is not None and entry.header.devminor is not None:
+        if devices:
             # Set for a ustar or GNU character or block device only: a FIFO or a v7
             # header holds no device number, and GNU tar reads none there.
             extra["tar.devmajor"] = entry.header.devmajor
@@ -1479,6 +1488,8 @@ class TarReader(BaseArchiveReader):
             uid=entry.uid,
             gid=entry.gid,
             compression=compression,
+            # A TAR member has no stored digest: ``TarSpan.member_hashes`` builds {}.
+            hashes=UNBUILT,
             extra=extra,
             # The span alone, so _open_member needs no name/id lookup table and the
             # parsed entry (header, names, PAX records) is not kept per member.

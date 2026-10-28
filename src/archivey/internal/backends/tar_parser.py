@@ -54,6 +54,7 @@ from archivey.exceptions import (
 from archivey.internal.streams.streamtools import read_within_reach
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.terminal import quoted
+from archivey.types import HashAlgorithm, MemberExtra
 
 BLOCKSIZE = 512
 
@@ -869,6 +870,16 @@ class TarSpan:
     stored_size: int
     size: int
     sparse: SparseMap | None
+
+    def member_hashes(self) -> dict[HashAlgorithm, bytes]:
+        """The listed member's ``hashes``, which listing leaves unbuilt
+        (``archivey.internal.lazy_fields``): TAR stores no digest."""
+        return {}
+
+    def member_extra(self) -> MemberExtra:
+        """The listed member's ``extra``, which listing leaves unbuilt only when it holds
+        nothing but the typeflag."""
+        return MemberExtra({"tar.type": self.typeflag})
 
 
 def _round_up(n: int) -> int:

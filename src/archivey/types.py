@@ -20,6 +20,7 @@ from typing import (
 
 from archivey.cost import CostReceipt, StreamCapability
 from archivey.exceptions import ArchiveyError
+from archivey.internal import lazy_fields
 from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.enum_args import coerce_enum
 
@@ -1269,6 +1270,12 @@ class ArchiveMember:
         copy._listing_pending = False
         copy._size_unread = False
         return copy
+
+
+# A reader may leave both unbuilt while listing; the first read builds them from the
+# member's locator (``archivey.internal.lazy_fields``).
+lazy_fields.install(ArchiveMember, "hashes", "member_hashes")
+lazy_fields.install(ArchiveMember, "extra", "member_extra")
 
 
 @dataclass(frozen=True)
