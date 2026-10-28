@@ -425,7 +425,9 @@ What archivey does with the spans:
   its target. archivey reads it while walking, up to 4096 bytes, as UTF-8. A longer one
   is reported with `SYMLINK_TARGET_UNAVAILABLE` and left unset.
 - **Other members' data.** The data of a member that is not a file, a directory or such
-  a symlink is skipped.
+  a symlink is skipped. A directory with data keeps it as its `size`: a read delivers
+  the bytes, extraction creates the directory, and the listing reports
+  `MEMBER_DIRECTORY_DATA_IGNORED`, as for a built-in format.
 
 `SequentialFormatPlugin` takes the same class attributes as `FormatPlugin`. The format's
 `archive.info.cost` says the listing needs a scan, and `format_availability()` reports
