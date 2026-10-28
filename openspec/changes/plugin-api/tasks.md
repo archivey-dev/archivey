@@ -63,6 +63,17 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
       compression.*
 - [x] 1.7 `FormatInfo.from_plugin` (maintainer, 2026-10-25).
 
+## 2b. TAR onto the sequential shape (after stages 3 and 4)
+
+The test of the sequential shape, as the ISO port is of the indexed one (maintainer,
+2026-10-28): it may stay internal for speed afterwards.
+
+- [ ] 2b.1 `ForwardStream.peek(n)`: TAR looks at the block after a link with a size, and
+      replays blocks at its end checks. On a pipe the peeked bytes are buffered and
+      served to the next read (maintainer, 2026-10-28).
+- [ ] 2b.2 Port `TarWalker` to `walk()` after outer compression (stage 3) and decoded
+      member data for sparse files (stage 4); benchmark against the built-in reader.
+
 ## 2. ISO onto the interface
 
 - [x] 2.1 `IsoReader` implements `IndexedReader`; `IsoReadBackend` becomes a
@@ -153,5 +164,9 @@ more indexed plugin, 2026-10-27).
       ISO port (group 2) made false in the spec: member data is read through source
       views, not `PyCdlibIO` under the handle lock ("Serialize shared pycdlib handle
       operations"), and two file records sharing one extent raise `CorruptionError`,
-      not `UnsupportedFeatureError` (the record matrix).
+      not `UnsupportedFeatureError` (the record matrix). A `diagnostics` delta too,
+      since a plugin emits archivey's codes: `UnknownMemberTypeContext.stored_type` is
+      the format's own spelling of the type, not only the TAR typeflag byte; and the
+      `zeros_to_eof` format list and `MEMBER_TYPE_UNKNOWN`'s STRICT-exemption rationale
+      read as examples, not as the set of emitters.
 - [ ] 4.3 `dev-docs/IDEAS.md` and `VISION.md`: the public backend API item points here.
