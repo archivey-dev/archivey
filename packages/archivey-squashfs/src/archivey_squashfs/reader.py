@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import io
 import struct
+import sys
 from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
@@ -63,6 +64,16 @@ _SYMLINK_MAX = 65535
 # follows the superblock. It is not read: zlib, xz, LZMA Alone and Zstandard streams
 # carry their own parameters, and the LZ4 and LZO options only name a compression
 # level or variant that the same decoder reads.
+# archivey does not use python-lz4 under PyPy, where its frame decoder crashes the
+# interpreter (dev-docs/known-issues.md). Only the block decoder is used here, but no one
+# has shown it safe there, so this package does the same and says why in place of the
+# install advice.
+_LZ4_UNUSED_REASON = (
+    "archivey-squashfs does not use lz4 under PyPy, where python-lz4 crashes the "
+    "interpreter"
+    if sys.implementation.name == "pypy"
+    else ""
+)
 _COMPRESSORS = {1: "gzip", 2: "lzma", 3: "lzo", 4: "xz", 5: "lz4", 6: "zstd"}
 _DECODED_AS: dict[str, CompressionAlgorithm | StreamFormat] = {
     "gzip": StreamFormat.ZLIB,
@@ -227,10 +238,15 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
             return through_archivey
         if compressor == "lz4":
             try:
+                if _LZ4_UNUSED_REASON:
+                    raise ImportError(_LZ4_UNUSED_REASON)
                 import lz4.block
             except ImportError:
                 requirement = MissingComponent(
-                    OptionalLibrary.LZ4, "pip install archivey-squashfs[lz4]", ("lz4",)
+                    OptionalLibrary.LZ4,
+                    "pip install lz4",
+                    ("lz4",),
+                    reason=_LZ4_UNUSED_REASON,
                 )
                 raise PackageNotInstalledError(
                     requirement.message("an LZ4-compressed SquashFS image"),

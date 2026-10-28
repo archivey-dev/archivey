@@ -9,17 +9,13 @@ from __future__ import annotations
 
 import ast
 import pickle
-from pathlib import Path
 
 import pytest
 
 from archivey import ArchiveFormat, OptionalLibrary, PackageNotInstalledError
 from archivey.internal.registry import format_availability, get_registry
 from archivey.types import MissingComponent
-
-_ROOT = Path(__file__).resolve().parents[1]
-# archivey itself and the plugin packages in this repository.
-_SRCS = (_ROOT / "src" / "archivey", *sorted(_ROOT.glob("packages/*/src")))
+from tests.source_trees import ROOT, SOURCE_TREES, source_files
 
 # ``spawn_for_stdout``'s refusal for a program that was found but could not start:
 # nothing is missing to name.
@@ -30,8 +26,7 @@ def test_every_raise_passes_missing() -> None:
     """A new raise site without ``missing=`` would give callers an empty tuple."""
     offenders = []
     sites = 0
-    for path in sorted(p for src in _SRCS for p in src.rglob("*.py")):
-        rel = path.relative_to(_ROOT).as_posix()
+    for rel, path in source_files():
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not (
@@ -51,6 +46,19 @@ def test_every_raise_passes_missing() -> None:
     assert not offenders, "PackageNotInstalledError without missing=: " + ", ".join(
         offenders
     )
+
+
+def test_the_scans_cover_every_package_with_code() -> None:
+    """A layout change that moved a plugin's code out of ``packages/*/src`` would drop
+    it from every source scan silently: the site-count floors pass on archivey alone."""
+    with_code = {
+        path.parent.relative_to(ROOT).parts[1]
+        for path in ROOT.glob("packages/*/**/*.py")
+        if "tests" not in path.relative_to(ROOT).parts
+    }
+    scanned = {tree.parent.name for tree in SOURCE_TREES[1:]}
+    assert with_code, "no plugin package found, so this guards nothing"
+    assert with_code == scanned
 
 
 def test_missing_survives_pickling() -> None:

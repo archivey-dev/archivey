@@ -75,6 +75,7 @@ from tests.corruption_util import (
     is_corruption_not_truncation,
     raises_corruption_not_truncation,
 )
+from tests.source_trees import source_files
 from tests.streams_util import (
     NonSeekableBytesIO,
     compress_lzma2_raw,
@@ -3134,9 +3135,9 @@ def test_conftest_names_the_same_unused_packages_as_deps() -> None:
 
 
 def _missing_component_calls() -> Iterator[tuple[str, ast.Call]]:
-    """Every ``MissingComponent(...)`` call with a positional name under ``src/``."""
-    src = Path(__file__).resolve().parent.parent / "src"
-    for path in sorted(src.rglob("*.py")):
+    """Every ``MissingComponent(...)`` call with a positional name, in archivey and in
+    the plugin packages of this repository."""
+    for rel, path in source_files():
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if (
@@ -3145,7 +3146,7 @@ def _missing_component_calls() -> Iterator[tuple[str, ast.Call]]:
                 and node.func.id == "MissingComponent"
                 and node.args
             ):
-                yield f"{path.relative_to(src)}:{node.lineno}", node
+                yield f"{rel}:{node.lineno}", node
 
 
 def test_every_requirement_on_an_unused_package_carries_its_reason() -> None:
@@ -3155,6 +3156,8 @@ def test_every_requirement_on_an_unused_package_carries_its_reason() -> None:
 
     Read from the source: the requirement is built when its module is imported, and on
     CPython both the argument and its default are ``""``, so a live object cannot tell.
+    A plugin package cannot call archivey's internal ``unused_reason``, so there any
+    ``reason=`` will do: it must say why itself.
     """
     # Member *names* (``"LZ4"``), which is what ``OptionalLibrary.LZ4`` unparses to
     # once its prefix is cut; the members' values are the package names.
@@ -3168,7 +3171,10 @@ def test_every_requirement_on_an_unused_package_carries_its_reason() -> None:
             continue
         seen.add(name)
         reason = next((k.value for k in node.keywords if k.arg == "reason"), None)
-        if reason is None or ast.unparse(reason) != f"deps.unused_reason({member})":
+        in_archivey = where.startswith("src/archivey/")
+        if reason is None or (
+            in_archivey and ast.unparse(reason) != f"deps.unused_reason({member})"
+        ):
             offenders.append(f"{where}: {name}")
     assert not offenders, "requirement without its unused reason:\n" + "\n".join(
         offenders
@@ -3191,45 +3197,72 @@ def test_archivey_names_its_own_packages_by_the_member() -> None:
     assert not offenders, "a package named by a string:\n" + "\n".join(offenders)
 
 
-# Modules archivey imports by name that are not optional packages of its own.
-_NOT_OPTIONAL_LIBRARIES = {"__pypy__": "PyPy's own module, for memory pressure"}
+# What archivey imports outside the standard library that is not an optional package
+# of its own, with why.
+_NOT_OPTIONAL_LIBRARIES = {
+    "__pypy__": "PyPy's own module, for memory pressure",
+    "_typeshed": "type-checking stubs, imported only under TYPE_CHECKING",
+    "tqdm": "the CLI's progress bar, a dependency of archivey-cli, not a decoder",
+}
 
 
-def test_every_optional_package_archivey_imports_is_an_optional_library() -> None:
-    """``OptionalLibrary`` lists every optional package archivey imports by name.
+def _optional_library_of(module: str) -> OptionalLibrary | None:
+    """The member whose package ``module`` is, or is part of."""
+    for library in OptionalLibrary:
+        if module == library or module.startswith(f"{library}."):
+            return library
+    return None
 
-    A package missing from it could not be turned off with
-    ``FormatPolicy(exclude_libraries=)``, and nothing else would say so. So every
-    module name passed as a string to ``importlib.import_module``, ``find_spec``,
-    ``_optional`` or ``LazyOptional`` must belong to a member's package, or be listed
-    above with its reason.
-    """
-    packages = {value.split(".")[0] for value in OptionalLibrary} | {
-        str(value) for value in OptionalLibrary
-    }
+
+def _imported_modules(path: Path) -> Iterator[tuple[int, str]]:
+    """Each module ``path`` imports, by statement or by name, outside the standard
+    library and archivey."""
     importers = {"import_module", "find_spec", "_optional", "LazyOptional"}
-    src = Path(__file__).resolve().parent.parent / "src" / "archivey"
-    found: set[str] = set()
-    offenders = []
-    for path in sorted(src.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not (isinstance(node, ast.Call) and node.args):
-                continue
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        modules: list[str] = []
+        if isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            modules = [node.module]
+        elif isinstance(node, ast.Call) and node.args:
             func = node.func
             name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
             first = node.args[0]
-            if name not in importers or not isinstance(first, ast.Constant):
-                continue
-            module = str(first.value)
-            found.add(module)
+            if name in importers and isinstance(first, ast.Constant):
+                modules = [str(first.value)]
+        for module in modules:
             top = module.split(".")[0]
-            known = module in packages or top in packages
-            if not known and module not in _NOT_OPTIONAL_LIBRARIES:
-                offenders.append(f"{path.relative_to(src)}:{node.lineno}: {module}")
-    assert len(found) > 5, "the scan found almost no imports, so it guards nothing"
+            if top not in sys.stdlib_module_names and top != "archivey":
+                yield node.lineno, module
+
+
+def test_every_optional_package_archivey_imports_is_an_optional_library() -> None:
+    """``OptionalLibrary`` lists exactly the optional packages archivey imports.
+
+    A package missing from it could not be turned off with
+    ``FormatPolicy(exclude_libraries=)``, and nothing else would say so. So every
+    module archivey imports outside the standard library, by an ``import`` statement or
+    by name through ``import_module``, ``find_spec``, ``_optional`` or
+    ``LazyOptional``, must belong to a member's package or be listed above with its
+    reason; and every member must be imported somewhere, so the list cannot keep a
+    package archivey no longer uses.
+    """
+    imported: set[OptionalLibrary] = set()
+    offenders = []
+    for rel, path in source_files():
+        if not rel.startswith("src/archivey/"):
+            continue
+        for line, module in _imported_modules(path):
+            library = _optional_library_of(module)
+            if library is not None:
+                imported.add(library)
+            elif module.split(".")[0] not in _NOT_OPTIONAL_LIBRARIES:
+                offenders.append(f"{rel}:{line}: {module}")
     assert not offenders, "imported but not an OptionalLibrary:\n" + "\n".join(
         offenders
+    )
+    assert imported == set(OptionalLibrary), (
+        f"never imported: {sorted(set(OptionalLibrary) - imported)}"
     )
 
 

@@ -602,5 +602,5 @@ def test_a_replacements_missing_requirement_is_reported_before_it_opens(
     with pytest.raises(PackageNotInstalledError, match="archivey_no_such_module") as e:
         open_archive(path, config=config)
     assert _opened == []
-    # The same records format_availability reports, so a caller acts on data.
+    # The plugin's missing requirement, as data a caller can act on.
     assert [m.name for m in e.value.missing] == ["archivey_no_such_module"]
