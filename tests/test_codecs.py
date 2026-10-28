@@ -61,7 +61,7 @@ from archivey.internal.streams.codecs.unix_compress_decoder import (
     LzwState,
 )
 from archivey.internal.streams.verify import VerifyingStream
-from archivey.types import HashAlgorithm, StreamFormat
+from archivey.types import HashAlgorithm, OptionalLibrary, StreamFormat
 from tests.conftest import (
     CPYTHON,
     UNUSED_UNDER_PYPY_NAMES,
@@ -2912,6 +2912,9 @@ def test_absent_codec_backend_hint_is_installable(
     with pytest.raises(PackageNotInstalledError) as ei:
         open_codec_stream(codec, io.BytesIO(b""))
     _assert_hint_is_installable(str(ei.value))
+    assert requirement is not None
+    assert ei.value.missing == (requirement,)
+    assert isinstance(requirement.name, OptionalLibrary)
 
 
 @pytest.fixture
@@ -3138,7 +3141,7 @@ def test_every_requirement_on_an_unused_package_carries_its_reason() -> None:
     Read from the source: the requirement is built when its module is imported, and on
     CPython both the argument and its default are ``""``, so a live object cannot tell.
     """
-    unused = set(codecs_module.deps._UNUSED_UNDER_PYPY)
+    unused = {lib.name for lib in codecs_module.deps._UNUSED_UNDER_PYPY}
     src = Path(__file__).resolve().parent.parent / "src"
     seen: set[str] = set()
     offenders = []
@@ -3150,15 +3153,23 @@ def test_every_requirement_on_an_unused_package_carries_its_reason() -> None:
                 and isinstance(node.func, ast.Name)
                 and node.func.id == "MissingComponent"
                 and node.args
-                and isinstance(node.args[0], ast.Constant)
-                and node.args[0].value in unused
             ):
                 continue
-            name = node.args[0].value
+            first = node.args[0]
+            where = f"{path.relative_to(src)}:{node.lineno}"
+            if isinstance(first, ast.Constant) and first.value in set(OptionalLibrary):
+                # The maintainer's rule (2026-10-28): archivey names its own packages
+                # by the OptionalLibrary member, not a string.
+                offenders.append(f"{where}: {first.value!r} instead of the member")
+                continue
+            member = ast.unparse(first)
+            name = member.removeprefix("OptionalLibrary.")
+            if name not in unused:
+                continue
             seen.add(name)
             reason = next((k.value for k in node.keywords if k.arg == "reason"), None)
-            if reason is None or ast.unparse(reason) != f"deps.unused_reason({name!r})":
-                offenders.append(f"{path.relative_to(src)}:{node.lineno}: {name}")
+            if reason is None or ast.unparse(reason) != f"deps.unused_reason({member})":
+                offenders.append(f"{where}: {name}")
     assert not offenders, "requirement without its unused reason:\n" + "\n".join(
         offenders
     )

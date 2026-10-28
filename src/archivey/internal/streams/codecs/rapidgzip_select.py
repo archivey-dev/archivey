@@ -51,7 +51,7 @@ from archivey.internal.streams.streamtools import (
     source_byte_size,
 )
 from archivey.internal.streams.streamtools.slice import SlicingStream
-from archivey.types import MissingComponent
+from archivey.types import MissingComponent, OptionalLibrary
 
 
 # The DEFLATE-family codecs are stdlib-backed, so they declare no ``requirement`` — rapidgzip
@@ -61,10 +61,10 @@ def _rapidgzip_requirement() -> MissingComponent:
     """rapidgzip as a missing component, with the reason archivey does not use it on this
     interpreter (``deps.unused_reason``) read when the error is raised, not at import."""
     return MissingComponent(
-        "rapidgzip",
+        OptionalLibrary.RAPIDGZIP,
         "pip install archivey[seekable]",
         ("random-access",),
-        reason=deps.unused_reason("rapidgzip"),
+        reason=deps.unused_reason(OptionalLibrary.RAPIDGZIP),
     )
 
 
@@ -216,8 +216,8 @@ def _rapidgzip_rewind_warning(
         accelerator="rapidgzip",
         suggest_install=not engaged
         and not deps.rapidgzip.available()
-        and not deps.unused_reason("rapidgzip"),
-        unused_reason=deps.unused_reason("rapidgzip"),
+        and not deps.unused_reason(OptionalLibrary.RAPIDGZIP),
+        unused_reason=deps.unused_reason(OptionalLibrary.RAPIDGZIP),
     )
 
 

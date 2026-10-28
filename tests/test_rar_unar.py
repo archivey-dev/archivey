@@ -546,8 +546,13 @@ def test_selected_unar_missing_does_not_fall_back_to_unrar(
     unar.clear_unar_cache()
     with open_archive(_CORPUS / "compressed.rar", config=_UNAR) as archive:
         member = next(m for m in archive.members() if m.is_file)
-        with pytest.raises(PackageNotInstalledError, match="unar 1.10 or later"):
+        with pytest.raises(
+            PackageNotInstalledError, match="unar 1.10 or later"
+        ) as exc_info:
             archive.read(member)
+    (component,) = exc_info.value.missing
+    assert component.name == "unar"
+    assert component.install_hint == exc_info.value.raw_message
 
 
 def test_config_accepts_the_name() -> None:

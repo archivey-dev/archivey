@@ -163,6 +163,7 @@ from archivey.types import (
     MissingComponent,
     OnError,
     OnErrorStr,
+    OptionalLibrary,
     OverwritePolicy,
     OverwritePolicyStr,
     TrailerSignature,
@@ -433,7 +434,7 @@ class ReadBackend(ABC):
     USES_ENCODING: bool = False
     # Name of the optional dependency this backend needs (e.g. "pycdlib"); the registry
     # derives availability centrally from whether it imports. ``None`` for core backends.
-    OPTIONAL_DEPENDENCY: str | None = None
+    OPTIONAL_DEPENDENCY: OptionalLibrary | None = None
     # More modules the backend imports, checked after ``OPTIONAL_DEPENDENCY`` the same
     # way. Only plugin backends set it (``FormatPlugin.requires``); ``INSTALL_HINT``
     # covers them all.

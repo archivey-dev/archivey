@@ -487,6 +487,7 @@ class BackendRegistry:
                     f"Format {fmt.display_name} is read by {plugin.__name__} "
                     f"(ArchiveyConfig.formats.replace), which is not available: "
                     f"missing {hints}",
+                    missing=availability.missing,
                     source_format=fmt,
                 )
             return replacement
@@ -504,6 +505,7 @@ class BackendRegistry:
             hints = "; ".join(f"{m.name} ({m.advice})" for m in availability.missing)
             raise PackageNotInstalledError(
                 f"Format {fmt.display_name} is not available: missing {hints}",
+                missing=availability.missing,
                 source_format=fmt,
             )
         return self._readers[fmt]
