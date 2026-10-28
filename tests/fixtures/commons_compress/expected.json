@@ -1,0 +1,4355 @@
+{
+ "_comment": "Pins for tests/test_commons_compress_corpus.py; rewrite with scripts/gen_commons_compress_expected.py.",
+ "commons_compress": "0c20ded",
+ "files": {
+  "7z-empty-mhc-off.7z": {
+   "cc": {
+    "members": 1,
+    "digest": "2b38c0dd2765c0c0"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 1,
+    "digest": "2b38c0dd2765c0c0"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "7z-hello-mhc-off-copy.7z": {
+   "cc": {
+    "members": 1,
+    "digest": "97c5bf513056f910"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 1,
+    "digest": "97c5bf513056f910"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "7z-hello-mhc-off-lzma2.7z": {
+   "cc": {
+    "members": 1,
+    "digest": "97c5bf513056f910"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 1,
+    "digest": "97c5bf513056f910"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "COMPRESS-114.tar": {
+   "cc": {
+    "members": 2,
+    "digest": "f000ae36f2277432"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 2,
+    "digest": "71ae1d516d172783"
+   }
+  },
+  "COMPRESS-117.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "729248c1e40878d7"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "729248c1e40878d7"
+   },
+   "pipe": {
+    "format": "raw_stream/br",
+    "members": 1,
+    "digest": "3b7fe60fb71c0bd0",
+    "failed": 1
+   }
+  },
+  "COMPRESS-131.bz2": {
+   "cc": {
+    "members": 1,
+    "digest": "32f536bf8598ee9a"
+   },
+   "path": {
+    "format": "raw_stream/bz2",
+    "members": 1,
+    "digest": "32f536bf8598ee9a"
+   }
+  },
+  "COMPRESS-178-fail.tar": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   }
+  },
+  "COMPRESS-189.zip": {
+   "cc": {
+    "members": 1,
+    "digest": "a7e1f7a51eaab6a4"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 1,
+    "digest": "a7e1f7a51eaab6a4"
+   }
+  },
+  "COMPRESS-197.tar": {
+   "cc": {
+    "members": 2,
+    "digest": "93472989e37deb5d"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 2,
+    "digest": "93472989e37deb5d"
+   }
+  },
+  "COMPRESS-208.zip": {
+   "cc": {
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   }
+  },
+  "COMPRESS-210_unix_time_zip_test.zip": {
+   "cc": {
+    "members": 15,
+    "digest": "cef1d6de28f46ff2"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 15,
+    "digest": "cef1d6de28f46ff2"
+   }
+  },
+  "COMPRESS-211_uid_gid_zip_test.zip": {
+   "cc": {
+    "members": 13,
+    "digest": "b7963354a5864268"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 13,
+    "digest": "b7963354a5864268"
+   }
+  },
+  "COMPRESS-214_unix_symlinks.zip": {
+   "cc": {
+    "members": 21,
+    "digest": "e14139df711baf09"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 21,
+    "digest": "e14139df711baf09"
+   }
+  },
+  "COMPRESS-219.zip": {
+   "cc": {
+    "members": 5,
+    "digest": "c2091ae2469a323f"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 5,
+    "digest": "c2091ae2469a323f"
+   }
+  },
+  "COMPRESS-227.zip": {
+   "cc": {
+    "members": 2,
+    "digest": "345092b6f0849513"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 2,
+    "digest": "7a5e27b7001035b4",
+    "failed": 1
+   },
+   "pipe": {
+    "error": "CorruptionError",
+    "members": 2,
+    "digest": "345092b6f0849513"
+   }
+  },
+  "COMPRESS-228.zip": {
+   "cc": {
+    "members": 23,
+    "digest": "55c4caca55d71333"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 23,
+    "digest": "55c4caca55d71333"
+   }
+  },
+  "COMPRESS-245.tar.gz": {
+   "cc": {
+    "members": 31,
+    "digest": "9f9ad2f5888d8911"
+   },
+   "path": {
+    "format": "tar/gz",
+    "members": 31,
+    "digest": "9f9ad2f5888d8911"
+   }
+  },
+  "COMPRESS-256.7z": {
+   "cc": {
+    "members": 446,
+    "digest": "fbd23b77b02a9ad9"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 446,
+    "digest": "fbd23b77b02a9ad9"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "COMPRESS-264.zip": {
+   "cc": {
+    "members": 1,
+    "digest": "062d381f3e58d420"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 1,
+    "digest": "062d381f3e58d420"
+   }
+  },
+  "COMPRESS-279-fail.tar": {
+   "cc": {
+    "error": "EOFException"
+   },
+   "path": {
+    "error": "TruncatedError",
+    "members": 4,
+    "digest": "9b68897e3c7ebb2a",
+    "failed": 1
+   }
+  },
+  "COMPRESS-320/BZip2-solid.7z": {
+   "cc": {
+    "members": 56,
+    "digest": "8131b0d12f67ac1f"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 56,
+    "digest": "8131b0d12f67ac1f"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "COMPRESS-320/BZip2.7z": {
+   "cc": {
+    "members": 56,
+    "digest": "8131b0d12f67ac1f"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 56,
+    "digest": "8131b0d12f67ac1f"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "COMPRESS-320/Copy-solid.7z": {
+   "cc": {
+    "members": 56,
+    "digest": "8131b0d12f67ac1f"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 56,
+    "digest": "8131b0d12f67ac1f"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "COMPRESS-320/Copy.7z": {
+   "cc": {
+    "members": 56,
+    "digest": "8131b0d12f67ac1f"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 56,
+    "digest": "8131b0d12f67ac1f"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "COMPRESS-320/Deflate-solid.7z": {
+   "cc": {
+    "members": 56,
+    "digest": "8131b0d12f67ac1f"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 56,
+    "digest": "8131b0d12f67ac1f"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "COMPRESS-320/Deflate.7z": {
+   "cc": {
+    "members": 56,
+    "digest": "8131b0d12f67ac1f"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 56,
+    "digest": "8131b0d12f67ac1f"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "COMPRESS-320/LZMA-solid.7z": {
+   "cc": {
+    "members": 56,
+    "digest": "8131b0d12f67ac1f"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 56,
+    "digest": "8131b0d12f67ac1f"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "COMPRESS-320/LZMA.7z": {
+   "cc": {
+    "members": 56,
+    "digest": "8131b0d12f67ac1f"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 56,
+    "digest": "8131b0d12f67ac1f"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "COMPRESS-320/LZMA2-solid.7z": {
+   "cc": {
+    "members": 56,
+    "digest": "8131b0d12f67ac1f"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 56,
+    "digest": "8131b0d12f67ac1f"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "COMPRESS-320/LZMA2.7z": {
+   "cc": {
+    "members": 56,
+    "digest": "8131b0d12f67ac1f"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 56,
+    "digest": "8131b0d12f67ac1f"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "COMPRESS-320/PPMd-solid.7z": {
+   "cc": {
+    "error": "ArchiveException",
+    "members": 10,
+    "digest": "b3d74ff4b2b87e9e"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 56,
+    "digest": "8131b0d12f67ac1f"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "COMPRESS-320/PPMd.7z": {
+   "cc": {
+    "error": "ArchiveException",
+    "members": 10,
+    "digest": "b3d74ff4b2b87e9e"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 56,
+    "digest": "8131b0d12f67ac1f"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "COMPRESS-320/recreate.sh": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "COMPRESS-324.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "f8cace97fba79070"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "f8cace97fba79070"
+   }
+  },
+  "COMPRESS-335.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "4b8697b1ffa4dcc8"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "4b8697b1ffa4dcc8"
+   },
+   "pipe": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "COMPRESS-348.7z": {
+   "cc": {
+    "members": 5,
+    "digest": "cda3ed9e7a6982b4"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 5,
+    "digest": "cda3ed9e7a6982b4"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "COMPRESS-351.zip": {
+   "cc": {
+    "error": "ZipException"
+   },
+   "path": {
+    "error": "TruncatedError",
+    "members": 1,
+    "digest": "6252cb248a4a1120",
+    "failed": 1
+   }
+  },
+  "COMPRESS-355.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "ed6cc228d1a55aed"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "ed6cc228d1a55aed"
+   }
+  },
+  "COMPRESS-356.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "ed6cc228d1a55aed"
+   },
+   "path": {
+    "error": "CorruptionError"
+   }
+  },
+  "COMPRESS-358.iwa": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "COMPRESS-358.uncompressed": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "COMPRESS-379.jar": {
+   "cc": {
+    "members": 2,
+    "digest": "0b675a51d28c4fc0"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 2,
+    "digest": "0b675a51d28c4fc0"
+   }
+  },
+  "COMPRESS-380/COMPRESS-380-dd.zip": {
+   "cc": {
+    "members": 5,
+    "digest": "d7fa5df305438114"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 5,
+    "digest": "d7fa5df305438114"
+   }
+  },
+  "COMPRESS-380/COMPRESS-380-input": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "COMPRESS-380/COMPRESS-380-readbeyondmemory.zip": {
+   "cc": {
+    "members": 1,
+    "digest": "20ec872e9d4e5281"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 1,
+    "digest": "20ec872e9d4e5281"
+   }
+  },
+  "COMPRESS-380/COMPRESS-380.zip": {
+   "cc": {
+    "members": 1,
+    "digest": "0b9cb049aa03215b"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 1,
+    "digest": "0b9cb049aa03215b"
+   }
+  },
+  "COMPRESS-382": {
+   "cc": {
+    "error": "EOFException"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "COMPRESS-386": {
+   "cc": {
+    "error": "OutOfMemoryError"
+   },
+   "path": {
+    "error": "UnsupportedFeatureError"
+   },
+   "pipe": {
+    "format": "raw_stream/Z",
+    "members": 1,
+    "digest": "3b7fe60fb71c0bd0",
+    "failed": 1
+   }
+  },
+  "COMPRESS-417.tar": {
+   "cc": {
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   }
+  },
+  "COMPRESS-459.cpio": {
+   "cc": {
+    "error": "MalformedInputException"
+   },
+   "path": {
+    "format": "cpio/uncompressed",
+    "members": 2,
+    "digest": "b158ce1136af6f13"
+   }
+  },
+  "COMPRESS-477/split_zip_created_by_winrar/file_to_compare_1": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "COMPRESS-477/split_zip_created_by_winrar/split_zip_created_by_winrar.z01": {
+   "cc": {
+    "error": "ZipException"
+   },
+   "path": {
+    "error": "UnsupportedFeatureError"
+   },
+   "pipe": {
+    "error": "TruncatedError",
+    "members": 139,
+    "digest": "34f11f304fc2256d",
+    "failed": 1
+   }
+  },
+  "COMPRESS-477/split_zip_created_by_winrar/split_zip_created_by_winrar.z02": {
+   "cc": null,
+   "path": {
+    "error": "UnsupportedFeatureError"
+   },
+   "pipe": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "COMPRESS-477/split_zip_created_by_winrar/split_zip_created_by_winrar.zip": {
+   "cc": null,
+   "path": {
+    "error": "UnsupportedFeatureError"
+   },
+   "pipe": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "COMPRESS-477/split_zip_created_by_winrar/zip_to_compare_created_by_winrar.zip": {
+   "cc": {
+    "members": 279,
+    "digest": "79870cc8cda995fd"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 279,
+    "digest": "79870cc8cda995fd"
+   }
+  },
+  "COMPRESS-477/split_zip_created_by_zip/file_to_compare_1": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "COMPRESS-477/split_zip_created_by_zip/file_to_compare_2": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "COMPRESS-477/split_zip_created_by_zip/split_zip_created_by_zip.z01": {
+   "cc": {
+    "error": "ZipException"
+   },
+   "path": {
+    "error": "UnsupportedFeatureError"
+   },
+   "pipe": {
+    "error": "TruncatedError",
+    "members": 142,
+    "digest": "56fbcf680f80675e",
+    "failed": 1
+   }
+  },
+  "COMPRESS-477/split_zip_created_by_zip/split_zip_created_by_zip.z02": {
+   "cc": null,
+   "path": {
+    "error": "UnsupportedFeatureError"
+   },
+   "pipe": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "COMPRESS-477/split_zip_created_by_zip/split_zip_created_by_zip.zip": {
+   "cc": null,
+   "path": {
+    "error": "UnsupportedFeatureError"
+   },
+   "pipe": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "COMPRESS-477/split_zip_created_by_zip/split_zip_created_by_zip_zip64.z01": {
+   "cc": {
+    "error": "ZipException"
+   },
+   "path": {
+    "error": "UnsupportedFeatureError"
+   },
+   "pipe": {
+    "error": "TruncatedError",
+    "members": 136,
+    "digest": "e18e4e087e8d2502",
+    "failed": 1
+   }
+  },
+  "COMPRESS-477/split_zip_created_by_zip/split_zip_created_by_zip_zip64.z02": {
+   "cc": null,
+   "path": {
+    "error": "UnsupportedFeatureError"
+   },
+   "pipe": {
+    "format": "raw_stream/br",
+    "members": 1,
+    "digest": "3b7fe60fb71c0bd0",
+    "failed": 1
+   }
+  },
+  "COMPRESS-477/split_zip_created_by_zip/split_zip_created_by_zip_zip64.zip": {
+   "cc": null,
+   "path": {
+    "error": "UnsupportedFeatureError"
+   },
+   "pipe": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "COMPRESS-477/split_zip_created_by_zip/zip_to_compare_created_by_zip.zip": {
+   "cc": {
+    "members": 272,
+    "digest": "2850dfb66f28e5e4"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 272,
+    "digest": "2850dfb66f28e5e4"
+   }
+  },
+  "COMPRESS-477/split_zip_created_by_zip/zip_to_compare_created_by_zip_zip64.zip": {
+   "cc": {
+    "members": 272,
+    "digest": "b01ea17063502a53"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 272,
+    "digest": "b01ea17063502a53"
+   }
+  },
+  "COMPRESS-479.zip": {
+   "cc": {
+    "members": 3,
+    "digest": "fa77811c15ed75b4"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 3,
+    "digest": "e1473d4f0828d285"
+   }
+  },
+  "COMPRESS-490/ArithmeticException.lz4": {
+   "cc": {
+    "error": "CompressorException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   },
+   "pipe": {
+    "format": "raw_stream/lz4",
+    "members": 1,
+    "digest": "3b7fe60fb71c0bd0",
+    "failed": 1
+   }
+  },
+  "COMPRESS-490/ArrayIndexOutOfBoundsException1.lz4": {
+   "cc": {
+    "error": "IOException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   },
+   "pipe": {
+    "format": "raw_stream/lz4",
+    "members": 1,
+    "digest": "3b7fe60fb71c0bd0",
+    "failed": 1
+   }
+  },
+  "COMPRESS-490/ArrayIndexOutOfBoundsException2.lz4": {
+   "cc": {
+    "error": "CompressorException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   },
+   "pipe": {
+    "format": "raw_stream/lz4",
+    "members": 1,
+    "digest": "3b7fe60fb71c0bd0",
+    "failed": 1
+   }
+  },
+  "COMPRESS-492.7z": {
+   "cc": {
+    "members": 0,
+    "digest": "4f53cda18c2baa0c"
+   },
+   "path": {
+    "error": "CorruptionError"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "COMPRESS-529-fail.tar": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "TruncatedError",
+    "members": 1,
+    "digest": "54db8f3d2e38aff9",
+    "failed": 1
+   }
+  },
+  "COMPRESS-530-fail.tar": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   }
+  },
+  "COMPRESS-542-1.7z": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "COMPRESS-542-2.7z": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "COMPRESS-542-endheadercorrupted.7z": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "COMPRESS-542-endheadercorrupted2.7z": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "COMPRESS-544_truncated_in_content-fail.tar": {
+   "cc": {
+    "error": "EOFException"
+   },
+   "path": {
+    "error": "TruncatedError",
+    "members": 3,
+    "digest": "9e1772a8cb0ac561",
+    "failed": 1
+   }
+  },
+  "COMPRESS-544_truncated_in_padding-fail.tar": {
+   "cc": {
+    "error": "EOFException"
+   },
+   "path": {
+    "error": "TruncatedError",
+    "members": 3,
+    "digest": "9e1772a8cb0ac561",
+    "failed": 1
+   }
+  },
+  "COMPRESS-546.zip": {
+   "cc": {
+    "error": "ZipException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   }
+  },
+  "COMPRESS-548.zip": {
+   "cc": {
+    "error": "ZipException"
+   },
+   "path": {
+    "error": "TruncatedError",
+    "members": 1,
+    "digest": "c56337a47406f2b5",
+    "failed": 1
+   }
+  },
+  "COMPRESS-553-fail.tar": {
+   "cc": null,
+   "path": {
+    "error": "CorruptionError",
+    "members": 1,
+    "digest": "9cc0a4b36f28fdf5"
+   },
+   "pipe": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "COMPRESS-554-fail.tar": {
+   "cc": null,
+   "path": {
+    "error": "CorruptionError"
+   },
+   "pipe": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "COMPRESS-569-fail.tar": {
+   "cc": null,
+   "path": {
+    "error": "CorruptionError"
+   },
+   "pipe": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "COMPRESS-592.7z": {
+   "cc": {
+    "members": 70001,
+    "digest": "c56502f89edb457f"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 70001,
+    "digest": "c56502f89edb457f"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "COMPRESS-612/test-times-bsd-folder.tar": {
+   "cc": {
+    "members": 2,
+    "digest": "47e80358384aed55"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 2,
+    "digest": "47e80358384aed55"
+   }
+  },
+  "COMPRESS-612/test-times-epax-folder.tar": {
+   "cc": {
+    "members": 2,
+    "digest": "bfe883b9afeb15b2"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 2,
+    "digest": "bfe883b9afeb15b2"
+   }
+  },
+  "COMPRESS-612/test-times-exustar-folder.tar": {
+   "cc": {
+    "members": 2,
+    "digest": "bfe883b9afeb15b2"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 2,
+    "digest": "bfe883b9afeb15b2"
+   }
+  },
+  "COMPRESS-612/test-times-gnu-incremental.tar": {
+   "cc": {
+    "members": 2,
+    "digest": "cb10cf298d3ee331"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 2,
+    "digest": "cb10cf298d3ee331"
+   }
+  },
+  "COMPRESS-612/test-times-gnu.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "4d2b571946954fbd"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "4d2b571946954fbd"
+   }
+  },
+  "COMPRESS-612/test-times-gnutar.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "2b2b6a75b3a2e862"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "2b2b6a75b3a2e862"
+   }
+  },
+  "COMPRESS-612/test-times-oldbsdtar.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "2b2b6a75b3a2e862"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "2b2b6a75b3a2e862"
+   },
+   "pipe": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "COMPRESS-612/test-times-oldgnu-incremental.tar": {
+   "cc": {
+    "members": 2,
+    "digest": "cb10cf298d3ee331"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 2,
+    "digest": "cb10cf298d3ee331"
+   }
+  },
+  "COMPRESS-612/test-times-oldgnu.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "4d2b571946954fbd"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "4d2b571946954fbd"
+   }
+  },
+  "COMPRESS-612/test-times-pax-folder.tar": {
+   "cc": {
+    "members": 2,
+    "digest": "bfe883b9afeb15b2"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 2,
+    "digest": "bfe883b9afeb15b2"
+   }
+  },
+  "COMPRESS-612/test-times-posix-linux.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "4d2b571946954fbd"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "4d2b571946954fbd"
+   }
+  },
+  "COMPRESS-612/test-times-posix.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "4d2b571946954fbd"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "4d2b571946954fbd"
+   }
+  },
+  "COMPRESS-612/test-times-star-folder.tar": {
+   "cc": {
+    "members": 2,
+    "digest": "bfe883b9afeb15b2"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 2,
+    "digest": "bfe883b9afeb15b2"
+   },
+   "pipe": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "COMPRESS-612/test-times-ustar.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "4d2b571946954fbd"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "4d2b571946954fbd"
+   }
+  },
+  "COMPRESS-612/test-times-v7.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "4d2b571946954fbd"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "4d2b571946954fbd"
+   },
+   "pipe": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "COMPRESS-612/test-times-xstar-folder.tar": {
+   "cc": {
+    "members": 2,
+    "digest": "bfe883b9afeb15b2"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 2,
+    "digest": "bfe883b9afeb15b2"
+   }
+  },
+  "COMPRESS-612/test-times-xstar-incremental.tar": {
+   "cc": {
+    "members": 2,
+    "digest": "992f307f31a82c9c"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 2,
+    "digest": "992f307f31a82c9c"
+   }
+  },
+  "COMPRESS-612/test-times-xstar.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "2b2b6a75b3a2e862"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "2b2b6a75b3a2e862"
+   }
+  },
+  "COMPRESS-612/test-times-xustar-folder.tar": {
+   "cc": {
+    "members": 2,
+    "digest": "bfe883b9afeb15b2"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 2,
+    "digest": "bfe883b9afeb15b2"
+   }
+  },
+  "COMPRESS-612/test-times-xustar-incremental.tar": {
+   "cc": {
+    "members": 2,
+    "digest": "992f307f31a82c9c"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 2,
+    "digest": "992f307f31a82c9c"
+   }
+  },
+  "COMPRESS-612/test-times-xustar.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "7b36bc965fb9f7dd"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "7b36bc965fb9f7dd"
+   }
+  },
+  "COMPRESS-621.zip": {
+   "cc": null,
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 1,
+    "digest": "8a00cb0f86c5fe62"
+   },
+   "pipe": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "COMPRESS-647/test.zip": {
+   "cc": {
+    "error": "ZipException"
+   },
+   "path": {
+    "error": "TruncatedError",
+    "members": 2,
+    "digest": "5588d6a0d7f767eb",
+    "failed": 1
+   }
+  },
+  "COMPRESS-657/README.md": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "COMPRESS-657/orjson-3.7.8.tar": {
+   "cc": {
+    "members": 481,
+    "digest": "597b8705cbe5776e"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 481,
+    "digest": "597b8705cbe5776e"
+   }
+  },
+  "COMPRESS-666/compress-666.tar.gz": {
+   "cc": {
+    "members": 8,
+    "digest": "67f9125c881bb062"
+   },
+   "path": {
+    "format": "tar/gz",
+    "members": 8,
+    "digest": "67f9125c881bb062"
+   }
+  },
+  "COMPRESS-681.7z": {
+   "cc": {
+    "members": 1,
+    "digest": "94d4c5607c932eb4"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 1,
+    "digest": "94d4c5607c932eb4"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "COMPRESS-692/compress-692.zip": {
+   "cc": {
+    "members": 6,
+    "digest": "9fe6f8b07870c4e8"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 6,
+    "digest": "9fe6f8b07870c4e8"
+   }
+  },
+  "META-INF/services/org.apache.commons.compress.archivers.ArchiveStreamProvider": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "META-INF/services/org.apache.commons.compress.compressors.CompressorStreamProvider": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "OSX_ArchiveWithNestedArchive.zip": {
+   "cc": {
+    "members": 2,
+    "digest": "15de824a66c2f447"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 2,
+    "digest": "15de824a66c2f447"
+   }
+  },
+  "SHRUNK.ZIP": {
+   "cc": {
+    "members": 2,
+    "digest": "491e83e7c9d7fbc1"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 2,
+    "digest": "27bb2929ea30f272",
+    "failed": 2
+   }
+  },
+  "android/ActivitySceneTransitionBasic/app/build/outputs/apk/debug/app-debug.apk": {
+   "cc": {
+    "members": 442,
+    "digest": "1a06b0e5d7e33e5f"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 442,
+    "digest": "1a06b0e5d7e33e5f"
+   }
+  },
+  "android/AlwaysOnKotlin/compose/build/outputs/apk/debug/compose-debug.apk": {
+   "cc": {
+    "members": 179,
+    "digest": "2c48c4302231b45e"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 179,
+    "digest": "2c48c4302231b45e"
+   }
+  },
+  "android/AlwaysOnKotlin/views/build/outputs/apk/debug/views-debug.apk": {
+   "cc": {
+    "members": 146,
+    "digest": "63591306789588c7"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 146,
+    "digest": "63591306789588c7"
+   }
+  },
+  "android/BasicTransition/Application/build/outputs/apk/debug/Application-debug.apk": {
+   "cc": {
+    "members": 448,
+    "digest": "8ae6c90053dd7d24"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 448,
+    "digest": "8ae6c90053dd7d24"
+   }
+  },
+  "android/Camera2Basic/Application/build/intermediates/instant-run-apk/debug/Application-debug.apk": {
+   "cc": {
+    "members": 28,
+    "digest": "1478c227dfc1ec85"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 28,
+    "digest": "1478c227dfc1ec85"
+   }
+  },
+  "android/Camera2Basic/Application/build/intermediates/resources/instant-run/debug/resources-debug.apk": {
+   "cc": {
+    "members": 199,
+    "digest": "7013c57bdba7077e"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 199,
+    "digest": "7013c57bdba7077e"
+   }
+  },
+  "android/Camera2Basic/Application/build/intermediates/split-apk/debug/dep/dependencies.apk": {
+   "cc": {
+    "members": 6,
+    "digest": "42efecea027e4fff"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 6,
+    "digest": "42efecea027e4fff"
+   }
+  },
+  "android/Camera2Basic/Application/build/intermediates/split-apk/debug/slices/slice_0.apk": {
+   "cc": {
+    "members": 5,
+    "digest": "9c236ba167647c69"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 5,
+    "digest": "9c236ba167647c69"
+   }
+  },
+  "android/Camera2Basic/Application/build/intermediates/split-apk/debug/slices/slice_1.apk": {
+   "cc": {
+    "members": 6,
+    "digest": "3131cbf437882ab3"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 6,
+    "digest": "3131cbf437882ab3"
+   }
+  },
+  "android/Camera2Basic/Application/build/intermediates/split-apk/debug/slices/slice_2.apk": {
+   "cc": {
+    "members": 5,
+    "digest": "03381c8ff63ee54f"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 5,
+    "digest": "03381c8ff63ee54f"
+   }
+  },
+  "android/Camera2Basic/Application/build/intermediates/split-apk/debug/slices/slice_3.apk": {
+   "cc": {
+    "members": 6,
+    "digest": "e5fc8955bc8cc340"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 6,
+    "digest": "e5fc8955bc8cc340"
+   }
+  },
+  "android/Camera2Basic/Application/build/intermediates/split-apk/debug/slices/slice_4.apk": {
+   "cc": {
+    "members": 6,
+    "digest": "b4a9092349180545"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 6,
+    "digest": "b4a9092349180545"
+   }
+  },
+  "android/Camera2Basic/Application/build/intermediates/split-apk/debug/slices/slice_5.apk": {
+   "cc": {
+    "members": 5,
+    "digest": "54ff99c5b8f19e0e"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 5,
+    "digest": "54ff99c5b8f19e0e"
+   }
+  },
+  "android/Camera2Basic/Application/build/intermediates/split-apk/debug/slices/slice_6.apk": {
+   "cc": {
+    "members": 6,
+    "digest": "0361f1218f797688"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 6,
+    "digest": "0361f1218f797688"
+   }
+  },
+  "android/Camera2Basic/Application/build/intermediates/split-apk/debug/slices/slice_7.apk": {
+   "cc": {
+    "members": 6,
+    "digest": "f3ff92bc17036a31"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 6,
+    "digest": "f3ff92bc17036a31"
+   }
+  },
+  "android/Camera2Basic/Application/build/intermediates/split-apk/debug/slices/slice_8.apk": {
+   "cc": {
+    "members": 5,
+    "digest": "ffa46eb3b9f207be"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 5,
+    "digest": "ffa46eb3b9f207be"
+   }
+  },
+  "android/Camera2Basic/Application/build/intermediates/split-apk/debug/slices/slice_9.apk": {
+   "cc": {
+    "members": 6,
+    "digest": "ab0641b6f5ed35dc"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 6,
+    "digest": "ab0641b6f5ed35dc"
+   }
+  },
+  "android/Camera2Basic/Application/build/outputs/apk/debug/Application-debug.apk": {
+   "cc": {
+    "members": 408,
+    "digest": "065c729aa433f87f"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 408,
+    "digest": "065c729aa433f87f"
+   }
+  },
+  "android/FragmentTransitionsRecyclerViewtoViewPager/app/build/outputs/apk/debug/app-debug.apk": {
+   "cc": {
+    "members": 467,
+    "digest": "ae181b5eae75e9f2"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 467,
+    "digest": "ae181b5eae75e9f2"
+   }
+  },
+  "android/InstantApps-CookieAPI/app/build/outputs/apk/framework/debug/app-framework-debug.apk": {
+   "cc": {
+    "members": 664,
+    "digest": "09d398aa30274cb2"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 664,
+    "digest": "09d398aa30274cb2"
+   }
+  },
+  "android/InstantApps-GoogleAnalyticsExample/app/build/outputs/apk/debug/app-debug.apk": {
+   "cc": {
+    "members": 467,
+    "digest": "2028d37fa8ac629c"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 467,
+    "digest": "2028d37fa8ac629c"
+   }
+  },
+  "android/InstantApps-InstallAPIsample/app/build/outputs/apk/debug/app-debug.apk": {
+   "cc": {
+    "members": 766,
+    "digest": "a074fcd1fa14aa80"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 766,
+    "digest": "a074fcd1fa14aa80"
+   }
+  },
+  "android/Interpolator/Application/build/outputs/apk/debug/Application-debug.apk": {
+   "cc": {
+    "members": 432,
+    "digest": "3993c03b2701fb01"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 432,
+    "digest": "3993c03b2701fb01"
+   }
+  },
+  "android/Motion/app/build/outputs/apk/debug/app-debug.apk": {
+   "cc": {
+    "members": 768,
+    "digest": "246e384fb7766308"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 768,
+    "digest": "246e384fb7766308"
+   }
+  },
+  "android/RevealEffectBasic/Application/build/outputs/apk/debug/Application-debug.apk": {
+   "cc": {
+    "members": 432,
+    "digest": "20aedd368b1227cf"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 432,
+    "digest": "20aedd368b1227cf"
+   }
+  },
+  "apache-maven-2.2.1.zip.001": {
+   "cc": {
+    "error": "ZipException"
+   },
+   "path": {
+    "error": "TruncatedError"
+   },
+   "pipe": {
+    "error": "TruncatedError",
+    "members": 16,
+    "digest": "8472a9388e20fce2",
+    "failed": 1
+   }
+  },
+  "archive_with_bytes_after_data.zip": {
+   "cc": {
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 2,
+    "digest": "129b66cf7da0701a",
+    "failed": 2
+   }
+  },
+  "archive_with_trailer.dump": {
+   "cc": {
+    "members": 4,
+    "digest": "4d79af5fb4b8942a"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "archive_with_trailer.tar": {
+   "cc": {
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   }
+  },
+  "archive_with_trailer.zip": {
+   "cc": {
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   }
+  },
+  "archives/FreeBSD.ar": {
+   "cc": {
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   },
+   "path": {
+    "format": "ar/uncompressed",
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   }
+  },
+  "archives/FreeBSD.zip": {
+   "cc": {
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   }
+  },
+  "archives/FreeBSD_.tar": {
+   "cc": {
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   }
+  },
+  "archives/FreeBSD_bin.cpio": {
+   "cc": {
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   },
+   "path": {
+    "format": "cpio/uncompressed",
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   }
+  },
+  "archives/FreeBSD_crc.cpio": {
+   "cc": {
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   },
+   "path": {
+    "format": "cpio/uncompressed",
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   }
+  },
+  "archives/FreeBSD_hpbin.cpio": {
+   "cc": {
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   },
+   "path": {
+    "format": "cpio/uncompressed",
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   }
+  },
+  "archives/FreeBSD_newc.cpio": {
+   "cc": {
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   },
+   "path": {
+    "format": "cpio/uncompressed",
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   }
+  },
+  "archives/FreeBSD_pax.tar": {
+   "cc": {
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   }
+  },
+  "archives/FreeBSD_ustar.tar": {
+   "cc": {
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   }
+  },
+  "archives/SunOS.ar": {
+   "cc": {
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   },
+   "path": {
+    "format": "ar/uncompressed",
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   }
+  },
+  "archives/SunOS.zip": {
+   "cc": {
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   }
+  },
+  "archives/SunOS_-c.cpio": {
+   "cc": {
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   },
+   "path": {
+    "format": "cpio/uncompressed",
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   }
+  },
+  "archives/SunOS_.cpio": {
+   "cc": {
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   },
+   "path": {
+    "format": "cpio/uncompressed",
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   }
+  },
+  "archives/SunOS_cAEf.tar": {
+   "cc": {
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   }
+  },
+  "archives/SunOS_cEf.tar": {
+   "cc": {
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   }
+  },
+  "archives/SunOS_cf.tar": {
+   "cc": {
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   }
+  },
+  "archives/SunOS_crc.cpio": {
+   "cc": {
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   },
+   "path": {
+    "format": "cpio/uncompressed",
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   }
+  },
+  "archives/SunOS_odc.cpio": {
+   "cc": {
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   },
+   "path": {
+    "format": "cpio/uncompressed",
+    "members": 10,
+    "digest": "1f6e4be56051006d"
+   }
+  },
+  "archives/files.txt": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "bla-multi.7z.001": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "bla-multi.7z.002": {
+   "cc": null,
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "pipe": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "bla-nonames.7z": {
+   "cc": {
+    "members": 2,
+    "digest": "b409e6ca80dd4620"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 2,
+    "digest": "2e607de74d0abd77"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "bla-stored-dd-contradicts-actualsize.zip": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 2,
+    "digest": "9f1b7b482840e59c",
+    "failed": 1
+   },
+   "pipe": {
+    "error": "UnsupportedFeatureError",
+    "members": 1,
+    "digest": "ae4538261cdf5e63",
+    "failed": 1
+   }
+  },
+  "bla-stored-dd-nosig.zip": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 2,
+    "digest": "9f1b7b482840e59c",
+    "failed": 1
+   },
+   "pipe": {
+    "error": "CorruptionError",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   }
+  },
+  "bla-stored-dd-sizes-differ.zip": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 2,
+    "digest": "9f1b7b482840e59c",
+    "failed": 1
+   },
+   "pipe": {
+    "error": "CorruptionError",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   }
+  },
+  "bla-stored-dd.zip": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 2,
+    "digest": "9f1b7b482840e59c",
+    "failed": 1
+   },
+   "pipe": {
+    "error": "CorruptionError",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   }
+  },
+  "bla-stored.zip": {
+   "cc": {
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   }
+  },
+  "bla.7z": {
+   "cc": {
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "bla.ar": {
+   "cc": {
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "path": {
+    "format": "ar/uncompressed",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   }
+  },
+  "bla.arj": {
+   "cc": {
+    "members": 2,
+    "digest": "8254257615b4c909"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "bla.cpio": {
+   "cc": {
+    "members": 2,
+    "digest": "8254257615b4c909"
+   },
+   "path": {
+    "format": "cpio/uncompressed",
+    "members": 2,
+    "digest": "8254257615b4c909"
+   }
+  },
+  "bla.deflate.7z": {
+   "cc": {
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "bla.deflate64.7z": {
+   "cc": {
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "bla.dump": {
+   "cc": {
+    "members": 4,
+    "digest": "4d79af5fb4b8942a"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "bla.dump.lz4": {
+   "cc": {
+    "members": 4,
+    "digest": "4d79af5fb4b8942a"
+   },
+   "path": {
+    "format": "raw_stream/lz4",
+    "members": 1,
+    "digest": "c4f0861d4a5401e8"
+   }
+  },
+  "bla.encrypted.7z": {
+   "cc": {
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "bla.jar": {
+   "cc": {
+    "members": 5,
+    "digest": "d7fa5df305438114"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 5,
+    "digest": "d7fa5df305438114"
+   }
+  },
+  "bla.lha": {
+   "cc": {
+    "members": 1,
+    "digest": "cee919627dee81ea"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "bla.noendheaderoffset.7z": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "bla.pack": {
+   "cc": {
+    "error": "CompressorException"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "bla.tar": {
+   "cc": {
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   }
+  },
+  "bla.tar.Z": {
+   "cc": {
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "path": {
+    "format": "tar/Z",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   }
+  },
+  "bla.tar.block_lz4": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "bla.tar.br": {
+   "cc": null,
+   "path": {
+    "format": "tar/br",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   }
+  },
+  "bla.tar.bz2": {
+   "cc": {
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "path": {
+    "format": "tar/bz2",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   }
+  },
+  "bla.tar.deflate": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "bla.tar.deflatez": {
+   "cc": {
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "path": {
+    "format": "tar/zz",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   }
+  },
+  "bla.tar.lz4": {
+   "cc": {
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "path": {
+    "format": "tar/lz4",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   }
+  },
+  "bla.tar.lzma": {
+   "cc": {
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "path": {
+    "format": "tar/lzma",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   }
+  },
+  "bla.tar.sz": {
+   "cc": {
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "bla.tar.xz": {
+   "cc": {
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "path": {
+    "format": "tar/xz",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   }
+  },
+  "bla.tgz": {
+   "cc": {
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "path": {
+    "format": "tar/gz",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   }
+  },
+  "bla.txt.bz2": {
+   "cc": {
+    "members": 1,
+    "digest": "4228d6d5ab262fad"
+   },
+   "path": {
+    "format": "raw_stream/bz2",
+    "members": 1,
+    "digest": "4228d6d5ab262fad"
+   }
+  },
+  "bla.unix.arj": {
+   "cc": {
+    "members": 2,
+    "digest": "8254257615b4c909"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "bla.xml.bz2": {
+   "cc": {
+    "members": 1,
+    "digest": "1a3448c2f2613318"
+   },
+   "path": {
+    "format": "raw_stream/bz2",
+    "members": 1,
+    "digest": "1a3448c2f2613318"
+   }
+  },
+  "bla.z.dump": {
+   "cc": {
+    "members": 4,
+    "digest": "4d79af5fb4b8942a"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "bla.zip": {
+   "cc": {
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 2,
+    "digest": "bef2ef13a04028e7"
+   }
+  },
+  "brotli.testdata.compressed": {
+   "cc": null,
+   "path": {
+    "format": "raw_stream/br",
+    "members": 1,
+    "digest": "446ecdaa42589a67"
+   }
+  },
+  "brotli.testdata.uncompressed": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "bzip2-zip.zip": {
+   "cc": {
+    "members": 1,
+    "digest": "0178cc3a05e6c565"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 1,
+    "digest": "0178cc3a05e6c565"
+   }
+  },
+  "dirWith1TxtFile.tar": {
+   "cc": {
+    "members": 2,
+    "digest": "a905fe91fc2e5e34"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 2,
+    "digest": "a905fe91fc2e5e34"
+   }
+  },
+  "directory.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "4933b17ce5d873ba"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "4933b17ce5d873ba"
+   }
+  },
+  "dump/max-segment-length.dump": {
+   "cc": {
+    "members": 2,
+    "digest": "67aabf997f4105f8"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "empty.txt.bz2": {
+   "cc": {
+    "members": 1,
+    "digest": "7d9e225fc38e6341"
+   },
+   "path": {
+    "format": "raw_stream/bz2",
+    "members": 1,
+    "digest": "7d9e225fc38e6341"
+   }
+  },
+  "emptyDir.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "20a5c88f9dbd3a39"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "20a5c88f9dbd3a39"
+   }
+  },
+  "imploding-4Kdict-2trees.zip": {
+   "cc": {
+    "members": 1,
+    "digest": "22e7aa39d0c8eb3e"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 1,
+    "digest": "d1b67e4d7e7d9bf9",
+    "failed": 1
+   }
+  },
+  "imploding-8Kdict-3trees.zip": {
+   "cc": {
+    "members": 1,
+    "digest": "e149c1c26e64f948"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 1,
+    "digest": "af2ff2ac51a772a1",
+    "failed": 1
+   }
+  },
+  "invalid-zip.zip": {
+   "cc": null,
+   "path": {
+    "error": "CorruptionError"
+   },
+   "pipe": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "lbzip2_32767.bz2": {
+   "cc": {
+    "members": 1,
+    "digest": "c5402078a47cd143"
+   },
+   "path": {
+    "format": "raw_stream/bz2",
+    "members": 1,
+    "digest": "c5402078a47cd143"
+   }
+  },
+  "longfile_bsd.ar": {
+   "cc": {
+    "members": 2,
+    "digest": "5414ae08b1216824"
+   },
+   "path": {
+    "format": "ar/uncompressed",
+    "members": 2,
+    "digest": "5414ae08b1216824"
+   }
+  },
+  "longfile_gnu.ar": {
+   "cc": {
+    "members": 2,
+    "digest": "5414ae08b1216824"
+   },
+   "path": {
+    "format": "ar/uncompressed",
+    "members": 2,
+    "digest": "5414ae08b1216824"
+   }
+  },
+  "longpath/cygwin_gnu.tar": {
+   "cc": {
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   }
+  },
+  "longpath/cygwin_oldgnu.tar": {
+   "cc": {
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   }
+  },
+  "longpath/cygwin_pax.tar": {
+   "cc": {
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   }
+  },
+  "longpath/cygwin_posix.tar": {
+   "cc": {
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   }
+  },
+  "longpath/cygwin_ustar.tar": {
+   "cc": {
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   }
+  },
+  "longpath/files.txt": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "longpath/hudson-E.tar": {
+   "cc": {
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   }
+  },
+  "longpath/hudson.tar": {
+   "cc": {
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   }
+  },
+  "longpath/minotaur-0.jar": {
+   "cc": {
+    "members": 21,
+    "digest": "855fd8d091ce2b3c"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 21,
+    "digest": "855fd8d091ce2b3c"
+   }
+  },
+  "longpath/minotaur-M.jar": {
+   "cc": {
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   }
+  },
+  "longpath/minotaur-c.zip": {
+   "cc": {
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   }
+  },
+  "longpath/minotaur-z.zip": {
+   "cc": {
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   }
+  },
+  "longpath/minotaur.ar": {
+   "cc": {
+    "members": 8,
+    "digest": "88885d11c1da8a61"
+   },
+   "path": {
+    "format": "ar/uncompressed",
+    "members": 8,
+    "digest": "88885d11c1da8a61"
+   }
+  },
+  "longpath/minotaur.cpio": {
+   "cc": {
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   },
+   "path": {
+    "format": "cpio/uncompressed",
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   }
+  },
+  "longpath/minotaur.jar": {
+   "cc": {
+    "members": 21,
+    "digest": "855fd8d091ce2b3c"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 21,
+    "digest": "855fd8d091ce2b3c"
+   }
+  },
+  "longpath/minotaur.zip": {
+   "cc": {
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   }
+  },
+  "longpath/minotaur_pax.tar": {
+   "cc": {
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   }
+  },
+  "longpath/minotaur_posix.tar": {
+   "cc": {
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   }
+  },
+  "longpath/minotaur_ustar.tar": {
+   "cc": {
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   }
+  },
+  "longpath/vmgump_gnu.tar": {
+   "cc": {
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   }
+  },
+  "longpath/vmgump_oldgnu.tar": {
+   "cc": {
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   }
+  },
+  "longpath/vmgump_pax.tar": {
+   "cc": {
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   }
+  },
+  "longpath/vmgump_posix.tar": {
+   "cc": {
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   }
+  },
+  "longpath/vmgump_ustar.tar": {
+   "cc": {
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   }
+  },
+  "longpath/winXP_antgnu.tar": {
+   "cc": {
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 19,
+    "digest": "68d89bc67f0036d0"
+   }
+  },
+  "longsymlink/files.txt": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "longsymlink/gnu.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "988e1179c24f002e"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "988e1179c24f002e"
+   }
+  },
+  "lorem-ipsum-deflate64.zip": {
+   "cc": {
+    "members": 1,
+    "digest": "788cbe9b419fb426"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 1,
+    "digest": "788cbe9b419fb426"
+   }
+  },
+  "lorem-ipsum-implode.zip": {
+   "cc": {
+    "members": 1,
+    "digest": "588d527bddcbb6c7"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 1,
+    "digest": "67a6c1a008efdabe",
+    "failed": 1
+   }
+  },
+  "lorem-ipsum.txt.bz2": {
+   "cc": {
+    "members": 1,
+    "digest": "b842b7522468e45b"
+   },
+   "path": {
+    "format": "raw_stream/bz2",
+    "members": 1,
+    "digest": "b842b7522468e45b"
+   }
+  },
+  "lorem-ipsum.txt.gz": {
+   "cc": {
+    "members": 1,
+    "digest": "b842b7522468e45b"
+   },
+   "path": {
+    "format": "raw_stream/gz",
+    "members": 1,
+    "digest": "b842b7522468e45b"
+   }
+  },
+  "lorem-ipsum.txt.sz": {
+   "cc": {
+    "members": 1,
+    "digest": "b842b7522468e45b"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "lzma-with-eos.7z": {
+   "cc": {
+    "members": 1,
+    "digest": "27e65e2fe4afc56d"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 1,
+    "digest": "27e65e2fe4afc56d"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "mixed.txt.sz": {
+   "cc": {
+    "members": 1,
+    "digest": "ef677f4cba8e40dd"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "mixed.zip": {
+   "cc": {
+    "members": 2,
+    "digest": "ff3f2559536b0b8a"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 2,
+    "digest": "ff3f2559536b0b8a"
+   }
+  },
+  "moby-imploded.zip": {
+   "cc": {
+    "members": 135,
+    "digest": "2f6fa27fb333ba59"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 135,
+    "digest": "552da8fcc93f4039",
+    "failed": 135
+   }
+  },
+  "moby.zip": {
+   "cc": {
+    "members": 1,
+    "digest": "d09bd1056e3489b0",
+    "failed": 1
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 1,
+    "digest": "d09bd1056e3489b0",
+    "failed": 1
+   }
+  },
+  "multiple.bz2": {
+   "cc": {
+    "members": 1,
+    "digest": "dd14ae41169fc324"
+   },
+   "path": {
+    "format": "raw_stream/bz2",
+    "members": 1,
+    "digest": "dd14ae41169fc324"
+   }
+  },
+  "multiple.gz": {
+   "cc": {
+    "members": 1,
+    "digest": "dd14ae41169fc324"
+   },
+   "path": {
+    "format": "raw_stream/gz",
+    "members": 1,
+    "digest": "dd14ae41169fc324"
+   }
+  },
+  "multiple.xz": {
+   "cc": {
+    "members": 1,
+    "digest": "dd14ae41169fc324"
+   },
+   "path": {
+    "format": "raw_stream/xz",
+    "members": 1,
+    "digest": "dd14ae41169fc324"
+   }
+  },
+  "oldgnu_extended_sparse.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "2b93137d9e8cb5dd"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "2b93137d9e8cb5dd"
+   }
+  },
+  "oldgnu_sparse.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "59ab8029e7d1d457"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "59ab8029e7d1d457"
+   }
+  },
+  "ordertest.zip": {
+   "cc": {
+    "members": 23,
+    "digest": "55c4caca55d71333"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 23,
+    "digest": "55c4caca55d71333"
+   }
+  },
+  "org/apache/commons/compress/COMPRESS-626/compress-626-pack200.jar": {
+   "cc": {
+    "members": 1,
+    "digest": "001fe168f93eed09"
+   },
+   "path": {
+    "format": "raw_stream/gz",
+    "members": 1,
+    "digest": "001fe168f93eed09"
+   }
+  },
+  "org/apache/commons/compress/COMPRESS-644/ARW05UP.ICO": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/COMPRESS-649/some-900kb-text.txt": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   },
+   "pipe": {
+    "format": "raw_stream/br",
+    "members": 1,
+    "digest": "3b7fe60fb71c0bd0",
+    "failed": 1
+   }
+  },
+  "org/apache/commons/compress/COMPRESS-651/my10m.tar.bz2": {
+   "cc": {
+    "members": 2,
+    "digest": "52bffa6c8a739069"
+   },
+   "path": {
+    "format": "tar/bz2",
+    "members": 2,
+    "digest": "52bffa6c8a739069"
+   }
+  },
+  "org/apache/commons/compress/COMPRESS-654/ruff-aarch64-apple-darwin.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "cdbd04c9a6f9d7e1"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "cdbd04c9a6f9d7e1"
+   }
+  },
+  "org/apache/commons/compress/COMPRESS-661/testARofText.ar": {
+   "cc": {
+    "members": 1,
+    "digest": "3730d007cf5bbe89"
+   },
+   "path": {
+    "format": "ar/uncompressed",
+    "members": 1,
+    "digest": "3730d007cf5bbe89"
+   }
+  },
+  "org/apache/commons/compress/COMPRESS-679/file.7z": {
+   "cc": {
+    "members": 5,
+    "digest": "286f6f3fae677172"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 5,
+    "digest": "286f6f3fae677172"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "org/apache/commons/compress/COMPRESS-687/test-issue.7z": {
+   "cc": {
+    "members": 9,
+    "digest": "0db3f8cef2ef9d25"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 9,
+    "digest": "0db3f8cef2ef9d25"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "org/apache/commons/compress/COMPRESS-699/icure_medical_device_dart_sdk-1.2.10.tar": {
+   "cc": {
+    "members": 211,
+    "digest": "9e602cef887104b9"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 211,
+    "digest": "9e602cef887104b9"
+   }
+  },
+  "org/apache/commons/compress/COMPRESS-700/flutter_awesome_buttons-0.1.0.tar": {
+   "cc": {
+    "members": 72,
+    "digest": "daa4093941d762fc"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 72,
+    "digest": "daa4093941d762fc"
+   },
+   "pipe": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/COMPRESS-705/grafana-9.2.9.tar": {
+   "cc": {
+    "members": 53,
+    "digest": "04193e8b9296dbe8"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 53,
+    "digest": "04193e8b9296dbe8"
+   }
+  },
+  "org/apache/commons/compress/COMPRESS-705/grafana-9.2.9.tgz": {
+   "cc": {
+    "members": 53,
+    "digest": "04193e8b9296dbe8"
+   },
+   "path": {
+    "format": "tar/gz",
+    "members": 53,
+    "digest": "04193e8b9296dbe8"
+   }
+  },
+  "org/apache/commons/compress/COMPRESS-707/COMPRESS-707-lenient.tar": {
+   "cc": null,
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "dee839f2be7d84c5"
+   },
+   "pipe": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/COMPRESS-715/compress715.zip": {
+   "cc": {
+    "members": 6,
+    "digest": "b4f7b7ba9d5cf56e"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 6,
+    "digest": "b4f7b7ba9d5cf56e"
+   }
+  },
+  "org/apache/commons/compress/ar/getNextArEntry.bin": {
+   "cc": {
+    "error": "EOFException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   }
+  },
+  "org/apache/commons/compress/ar/number_parsing/bad_group-fail.ar": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   }
+  },
+  "org/apache/commons/compress/ar/number_parsing/bad_length-fail.ar": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   }
+  },
+  "org/apache/commons/compress/ar/number_parsing/bad_long_namelen_bsd-fail.ar": {
+   "cc": {
+    "error": "CompressException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   }
+  },
+  "org/apache/commons/compress/ar/number_parsing/bad_long_namelen_gnu1-fail.ar": {
+   "cc": {
+    "error": "CompressException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   }
+  },
+  "org/apache/commons/compress/ar/number_parsing/bad_long_namelen_gnu2-fail.ar": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   }
+  },
+  "org/apache/commons/compress/ar/number_parsing/bad_long_namelen_gnu3-fail.ar": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   }
+  },
+  "org/apache/commons/compress/ar/number_parsing/bad_modified-fail.ar": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   }
+  },
+  "org/apache/commons/compress/ar/number_parsing/bad_table_length_gnu-fail.ar": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   }
+  },
+  "org/apache/commons/compress/ar/number_parsing/bad_user-fail.ar": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   }
+  },
+  "org/apache/commons/compress/arj/zero_sized_headers-fail.arj": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/bzip2/hbCreateDecodeTables.bin": {
+   "cc": {
+    "error": "CompressorException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   },
+   "pipe": {
+    "format": "raw_stream/bz2",
+    "members": 1,
+    "digest": "3b7fe60fb71c0bd0",
+    "failed": 1
+   }
+  },
+  "org/apache/commons/compress/cpio/bad_long_value.cpio": {
+   "cc": {
+    "error": "CompressException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   }
+  },
+  "org/apache/commons/compress/dump/directory_null_bytes-fail.dump": {
+   "cc": {
+    "error": "InvalidFormatException"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/dump/getNextEntry.bin": {
+   "cc": {
+    "error": "DumpArchiveException"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/dump/invalid_compression_type-fail.dump": {
+   "cc": {
+    "error": "UnsupportedCompressionAlgorithmException"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/dump/looping_inodes-fail.dump": {
+   "cc": {
+    "error": "DumpArchiveException",
+    "members": 1,
+    "digest": "a59bc27fb7ed09bf"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/dump/reclen_zero-fail.dump": {
+   "cc": {
+    "error": "DumpArchiveException"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/dump/resetBlockSize.bin": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/fuzz/crash-f2efd9eaeb86cda597d07b5e3c3d81363633c2da": {
+   "cc": {
+    "error": "EOFException"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 14,
+    "digest": "6eda279082f2f284",
+    "failed": 14
+   },
+   "pipe": {
+    "error": "CorruptionError",
+    "members": 5,
+    "digest": "bd405c1b75d8cca1",
+    "failed": 1
+   }
+  },
+  "org/apache/commons/compress/gzip/members-size-0.gz": {
+   "cc": {
+    "members": 1,
+    "digest": "7d9e225fc38e6341"
+   },
+   "path": {
+    "format": "raw_stream/gz",
+    "members": 1,
+    "digest": "7d9e225fc38e6341"
+   }
+  },
+  "org/apache/commons/compress/gzip/members.gz": {
+   "cc": {
+    "members": 1,
+    "digest": "11b17fa636d8e006"
+   },
+   "path": {
+    "format": "raw_stream/gz",
+    "members": 1,
+    "digest": "11b17fa636d8e006"
+   }
+  },
+  "org/apache/commons/compress/ico/commons-daemon/procrunr.ico": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/ico/commons-daemon/procruns.ico": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/ico/commons-daemon/procrunw.ico": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/ico/commons-imaging/Oregon Scientific DS6639 - DSC_0307 - small.ico": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/ico/commons-imaging/OutOfMemory_epine.ico": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/ico/readme.md": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/pack/bandint_oom.pack": {
+   "cc": {
+    "error": "CompressorException"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/pack/cpfloat_oom.pack": {
+   "cc": {
+    "error": "CompressorException"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/pack/cputf8_oom.pack": {
+   "cc": {
+    "error": "CompressorException"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/pack/favoured_oom.pack": {
+   "cc": {
+    "error": "CompressorException"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/pack/filebits_oom.pack": {
+   "cc": {
+    "error": "CompressorException"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/pack/flags_oom.pack": {
+   "cc": {
+    "error": "CompressorException"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/pack/references_oom.pack": {
+   "cc": {
+    "error": "CompressorException"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/pack/segment_header_oom.pack": {
+   "cc": {
+    "error": "CompressorException"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/pack/signatures_oom.pack": {
+   "cc": {
+    "error": "CompressorException"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/sevenz/assertFitsIntoNonNegativeInt.bin": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "org/apache/commons/compress/sevenz/numCyclesPower30.bin": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "EncryptionError"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "org/apache/commons/compress/sevenz/readSubStreamsInfo.bin": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "org/apache/commons/compress/sevenz/sanityCheckUnpackInfo.bin": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "org/apache/commons/compress/tar/getNextTarEntry.bin": {
+   "cc": {
+    "members": 1,
+    "digest": "db041ace8a25f697"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "db041ace8a25f697"
+   }
+  },
+  "org/apache/commons/compress/tar/paxHeaders.bin": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 0,
+    "digest": "4f53cda18c2baa0c"
+   }
+  },
+  "org/apache/commons/compress/zip/ZipFile-method.zip": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "CorruptionError",
+    "members": 1,
+    "digest": "6f02eb489dff748f",
+    "failed": 1
+   }
+  },
+  "org/apache/commons/compress/zip/createBoundedInputStream.bin": {
+   "cc": {
+    "members": 1,
+    "digest": "9136d13992fee955",
+    "failed": 1
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 1,
+    "digest": "133d91a56fca7b02",
+    "failed": 1
+   },
+   "pipe": {
+    "error": "UnsupportedFeatureError",
+    "members": 1,
+    "digest": "133d91a56fca7b02",
+    "failed": 1
+   }
+  },
+  "org/apache/commons/compress/zip/decompressNextSymbol.bin": {
+   "cc": {
+    "error": "ZipException"
+   },
+   "path": {
+    "error": "TruncatedError",
+    "members": 1,
+    "digest": "91d1bd6e23719ffe",
+    "failed": 1
+   }
+  },
+  "org/apache/commons/compress/zip/getNextZipEntry.bin": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "org/apache/commons/compress/zip/test-method-xz.zip": {
+   "cc": {
+    "members": 1,
+    "digest": "b31d74eed6c7274f"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 1,
+    "digest": "b31d74eed6c7274f"
+   }
+  },
+  "pack200/HelloWorld.pack": {
+   "cc": {
+    "error": "CompressorException"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "pack200/InterfaceOnly.pack": {
+   "cc": {
+    "error": "CompressorException"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "pack200/JustResources.pack": {
+   "cc": {
+    "error": "CompressorException"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "pack200/JustResources.pack.gz": {
+   "cc": {
+    "members": 1,
+    "digest": "7ae2b57badfb062b"
+   },
+   "path": {
+    "format": "raw_stream/gz",
+    "members": 1,
+    "digest": "7ae2b57badfb062b"
+   }
+  },
+  "pack200/LargeClass.pack.gz": {
+   "cc": {
+    "members": 1,
+    "digest": "46528873850e4be1"
+   },
+   "path": {
+    "format": "raw_stream/gz",
+    "members": 1,
+    "digest": "46528873850e4be1"
+   }
+  },
+  "pack200/annotations.jar": {
+   "cc": {
+    "members": 9,
+    "digest": "079f20b812eebb7a"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 9,
+    "digest": "079f20b812eebb7a"
+   }
+  },
+  "pack200/annotations.pack.gz": {
+   "cc": {
+    "members": 1,
+    "digest": "bc8f81a8936f2cac"
+   },
+   "path": {
+    "format": "raw_stream/gz",
+    "members": 1,
+    "digest": "bc8f81a8936f2cac"
+   }
+  },
+  "pack200/annotations2unpacked.jar": {
+   "cc": {
+    "members": 9,
+    "digest": "277aa28733fbb571"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 9,
+    "digest": "277aa28733fbb571"
+   }
+  },
+  "pack200/annotationsRI.jar": {
+   "cc": {
+    "members": 9,
+    "digest": "90b4f9389b1b3bc2"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 9,
+    "digest": "90b4f9389b1b3bc2"
+   }
+  },
+  "pack200/annotationsRI.pack.gz": {
+   "cc": {
+    "members": 1,
+    "digest": "9a6dacf66910fe35"
+   },
+   "path": {
+    "format": "raw_stream/gz",
+    "members": 1,
+    "digest": "9a6dacf66910fe35"
+   }
+  },
+  "pack200/annotationsUnpacked.jar": {
+   "cc": {
+    "members": 5,
+    "digest": "29d30ba6d21f1ee8"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 5,
+    "digest": "29d30ba6d21f1ee8"
+   }
+  },
+  "pack200/hw.jar": {
+   "cc": {
+    "members": 1,
+    "digest": "936d3868de341bd7"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 1,
+    "digest": "936d3868de341bd7"
+   }
+  },
+  "pack200/jars/ant.jar": {
+   "cc": {
+    "members": 563,
+    "digest": "e6f6a951825c680d"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 563,
+    "digest": "e6f6a951825c680d"
+   }
+  },
+  "pack200/jndi-e1.pack.gz": {
+   "cc": {
+    "members": 1,
+    "digest": "8f7deef4332c09be"
+   },
+   "path": {
+    "format": "raw_stream/gz",
+    "members": 1,
+    "digest": "8f7deef4332c09be"
+   }
+  },
+  "pack200/jndi.jar": {
+   "cc": {
+    "members": 196,
+    "digest": "dc226acbb737df99"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 196,
+    "digest": "dc226acbb737df99"
+   }
+  },
+  "pack200/jndiUnpacked.jar": {
+   "cc": {
+    "members": 196,
+    "digest": "4a85b2fd57cf7f20"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 196,
+    "digest": "4a85b2fd57cf7f20"
+   }
+  },
+  "pack200/jndiWithUnknownAttributes.jar": {
+   "cc": {
+    "members": 196,
+    "digest": "4369f475570edb92"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 196,
+    "digest": "4369f475570edb92"
+   }
+  },
+  "pack200/largeClassUnpacked.jar": {
+   "cc": {
+    "members": 9,
+    "digest": "114e60d2f8fef53b"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 9,
+    "digest": "114e60d2f8fef53b"
+   }
+  },
+  "pack200/p200WithUnknownAttributes.jar": {
+   "cc": {
+    "members": 32,
+    "digest": "0d0650bbae65aec5"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 32,
+    "digest": "0d0650bbae65aec5"
+   }
+  },
+  "pack200/p200WithUnknownAttributes2.jar": {
+   "cc": {
+    "members": 32,
+    "digest": "9025f7ae2fb9d811"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 32,
+    "digest": "9025f7ae2fb9d811"
+   }
+  },
+  "pack200/pack200-e1.pack.gz": {
+   "cc": {
+    "members": 1,
+    "digest": "0d1d80a4cb282abf"
+   },
+   "path": {
+    "format": "raw_stream/gz",
+    "members": 1,
+    "digest": "0d1d80a4cb282abf"
+   }
+  },
+  "pack200/pack200.pack.gz": {
+   "cc": {
+    "members": 1,
+    "digest": "68816814c2eb6591"
+   },
+   "path": {
+    "format": "raw_stream/gz",
+    "members": 1,
+    "digest": "68816814c2eb6591"
+   }
+  },
+  "pack200/simple-E0.pack.gz": {
+   "cc": {
+    "members": 2,
+    "digest": "465a8262414fa3e4"
+   },
+   "path": {
+    "format": "raw_stream/gz",
+    "members": 1,
+    "digest": "994b70d494dfd7b5"
+   }
+  },
+  "pack200/sql-e1.pack.gz": {
+   "cc": {
+    "members": 1,
+    "digest": "f52b5fb34919b010"
+   },
+   "path": {
+    "format": "raw_stream/gz",
+    "members": 1,
+    "digest": "f52b5fb34919b010"
+   }
+  },
+  "pack200/sql.pack.gz": {
+   "cc": {
+    "members": 1,
+    "digest": "261494aeda9b7cbe"
+   },
+   "path": {
+    "format": "raw_stream/gz",
+    "members": 1,
+    "digest": "261494aeda9b7cbe"
+   }
+  },
+  "pack200/sqlUnpacked.jar": {
+   "cc": {
+    "members": 94,
+    "digest": "04c363cd2b739e29"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 94,
+    "digest": "04c363cd2b739e29"
+   }
+  },
+  "pack200/sqlUnpackedNoDebug.jar": {
+   "cc": {
+    "members": 94,
+    "digest": "544e3ec3ebba7de5"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 94,
+    "digest": "544e3ec3ebba7de5"
+   }
+  },
+  "password-encrypted.zip": {
+   "cc": {
+    "members": 13,
+    "digest": "89367071dd6f04d1",
+    "failed": 10
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 13,
+    "digest": "89367071dd6f04d1",
+    "failed": 10
+   }
+  },
+  "pax_gnu_sparse.tar": {
+   "cc": {
+    "members": 3,
+    "digest": "79561d04bd64345e"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 3,
+    "digest": "79561d04bd64345e"
+   }
+  },
+  "posix00_sparse.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "59ab8029e7d1d457"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "59ab8029e7d1d457"
+   }
+  },
+  "posix01_sparse.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "59ab8029e7d1d457"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "59ab8029e7d1d457"
+   }
+  },
+  "posix10_sparse.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "59ab8029e7d1d457"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "59ab8029e7d1d457"
+   }
+  },
+  "preepoch-posix.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "c95933d98a151621"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "c95933d98a151621"
+   }
+  },
+  "preepoch-star.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "c95933d98a151621"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "c95933d98a151621"
+   }
+  },
+  "redline.cpio": {
+   "cc": {
+    "members": 1,
+    "digest": "7795efa62ecbef47"
+   },
+   "path": {
+    "format": "cpio/uncompressed",
+    "members": 1,
+    "digest": "7795efa62ecbef47"
+   }
+  },
+  "simple-aix-native-tar.tar": {
+   "cc": {
+    "members": 3,
+    "digest": "c57b6ff96c6f95ac"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 3,
+    "digest": "c57b6ff96c6f95ac"
+   }
+  },
+  "synthetic/long-name/bin-big-endian.cpio": {
+   "cc": {
+    "error": "EOFException",
+    "members": 1,
+    "digest": "72530e6708f30078"
+   },
+   "path": {
+    "error": "TruncatedError",
+    "members": 1,
+    "digest": "72530e6708f30078"
+   },
+   "pipe": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "synthetic/long-name/bin-little-endian.cpio": {
+   "cc": {
+    "error": "EOFException",
+    "members": 1,
+    "digest": "72530e6708f30078"
+   },
+   "path": {
+    "error": "TruncatedError",
+    "members": 1,
+    "digest": "72530e6708f30078"
+   },
+   "pipe": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "synthetic/long-name/bsd-fail.ar": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   }
+  },
+  "synthetic/long-name/bsd-short-max-value.ar": {
+   "cc": {
+    "members": 1,
+    "digest": "e9950aa76d629af8"
+   },
+   "path": {
+    "format": "ar/uncompressed",
+    "members": 1,
+    "digest": "e9950aa76d629af8"
+   }
+  },
+  "synthetic/long-name/crc-fail.cpio": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   }
+  },
+  "synthetic/long-name/crc.cpio": {
+   "cc": {
+    "error": "EOFException",
+    "members": 1,
+    "digest": "e9950aa76d629af8"
+   },
+   "path": {
+    "error": "TruncatedError",
+    "members": 1,
+    "digest": "e9950aa76d629af8"
+   }
+  },
+  "synthetic/long-name/gnu-fail.ar": {
+   "cc": {
+    "error": "EOFException"
+   },
+   "path": {
+    "error": "ResourceLimitError"
+   }
+  },
+  "synthetic/long-name/gnu-fail.tar": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "ResourceLimitError"
+   }
+  },
+  "synthetic/long-name/gnu-short-max-value.ar": {
+   "cc": {
+    "members": 1,
+    "digest": "e9950aa76d629af8"
+   },
+   "path": {
+    "format": "ar/uncompressed",
+    "members": 1,
+    "digest": "e9950aa76d629af8"
+   }
+  },
+  "synthetic/long-name/gnu.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "e9950aa76d629af8"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "e9950aa76d629af8"
+   }
+  },
+  "synthetic/long-name/long-name-reversed.dump": {
+   "cc": {
+    "members": 129,
+    "digest": "fdb641a069da12ad"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "synthetic/long-name/long-name.7z": {
+   "cc": {
+    "members": 1,
+    "digest": "e9950aa76d629af8"
+   },
+   "path": {
+    "error": "CorruptionError"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "synthetic/long-name/long-name.arj": {
+   "cc": {
+    "members": 1,
+    "digest": "8c71f1732cb1da79"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "synthetic/long-name/long-name.dump": {
+   "cc": {
+    "members": 129,
+    "digest": "fdb641a069da12ad"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "synthetic/long-name/long-name.zip": {
+   "cc": {
+    "members": 1,
+    "digest": "e9950aa76d629af8"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 1,
+    "digest": "e9950aa76d629af8"
+   }
+  },
+  "synthetic/long-name/newc-fail.cpio": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   }
+  },
+  "synthetic/long-name/newc.cpio": {
+   "cc": {
+    "error": "EOFException",
+    "members": 1,
+    "digest": "e9950aa76d629af8"
+   },
+   "path": {
+    "error": "TruncatedError",
+    "members": 1,
+    "digest": "e9950aa76d629af8"
+   }
+  },
+  "synthetic/long-name/odc-fail.cpio": {
+   "cc": {
+    "error": "ArchiveException"
+   },
+   "path": {
+    "error": "CorruptionError"
+   }
+  },
+  "synthetic/long-name/odc.cpio": {
+   "cc": {
+    "error": "EOFException",
+    "members": 1,
+    "digest": "e9950aa76d629af8"
+   },
+   "path": {
+    "error": "TruncatedError",
+    "members": 1,
+    "digest": "e9950aa76d629af8"
+   }
+  },
+  "synthetic/long-name/pax-fail.tar": {
+   "cc": {
+    "error": "MemoryLimitException"
+   },
+   "path": {
+    "error": "ResourceLimitError"
+   }
+  },
+  "synthetic/long-name/pax.tar": {
+   "cc": {
+    "members": 1,
+    "digest": "e9950aa76d629af8"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 1,
+    "digest": "e9950aa76d629af8"
+   }
+  },
+  "test with spaces.txt": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "test-amiga-l0-lh4.lha": {
+   "cc": {
+    "members": 1,
+    "digest": "788cbe9b419fb426"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "test-amiga-l2.lha": {
+   "cc": {
+    "members": 2,
+    "digest": "cfe55f95455c14b3"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "test-macos-l0-lh5-rle.lha": {
+   "cc": {
+    "members": 1,
+    "digest": "cee919627dee81ea"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "test-macos-l0-lh5.lha": {
+   "cc": {
+    "members": 1,
+    "digest": "788cbe9b419fb426"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "test-macos-l0-lh6.lha": {
+   "cc": {
+    "members": 1,
+    "digest": "788cbe9b419fb426"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   },
+   "pipe": {
+    "format": "raw_stream/br",
+    "members": 1,
+    "digest": "3b7fe60fb71c0bd0",
+    "failed": 1
+   }
+  },
+  "test-macos-l0-lh7.lha": {
+   "cc": {
+    "members": 1,
+    "digest": "788cbe9b419fb426"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "test-macos-l0.lha": {
+   "cc": {
+    "members": 5,
+    "digest": "9615cd32c7486091"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "test-macos-l1.lha": {
+   "cc": {
+    "members": 5,
+    "digest": "9615cd32c7486091"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "test-macos-l2.lha": {
+   "cc": {
+    "members": 5,
+    "digest": "9615cd32c7486091"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "test-msdos-l0-lz4.lzs": {
+   "cc": {
+    "members": 1,
+    "digest": "8ea4411bcc24d3f3"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "test-msdos-l0.lha": {
+   "cc": {
+    "members": 5,
+    "digest": "4b844071caec7d1d"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "test-msdos-l1.lha": {
+   "cc": {
+    "members": 5,
+    "digest": "4b844071caec7d1d"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "test-msdos-l2-attrib.lha": {
+   "cc": {
+    "members": 1,
+    "digest": "f8113f5bafd982df"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "test-msdos-l2.lha": {
+   "cc": {
+    "members": 5,
+    "digest": "4b844071caec7d1d"
+   },
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "test-winzip.zip": {
+   "cc": {
+    "members": 5,
+    "digest": "fa8f53b65435dc2b"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 5,
+    "digest": "fa8f53b65435dc2b"
+   }
+  },
+  "test.txt": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "test1.xml": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "test2.xml": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "test3.xml": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "test4.xml": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "testAIFF.aif": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "testCompress209.doc": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "testNumbersNew.numbers": {
+   "cc": {
+    "members": 53,
+    "digest": "e5803f7b46e5d951"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 53,
+    "digest": "e5803f7b46e5d951"
+   }
+  },
+  "times.7z": {
+   "cc": {
+    "members": 3,
+    "digest": "37d923974c2d5c3f"
+   },
+   "path": {
+    "format": "7z/uncompressed",
+    "members": 3,
+    "digest": "37d923974c2d5c3f"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
+   }
+  },
+  "utf16-text.txt": {
+   "cc": null,
+   "path": {
+    "error": "FormatDetectionError"
+   }
+  },
+  "utf8-7zip-test.zip": {
+   "cc": {
+    "members": 3,
+    "digest": "3724c7cd8a04b376"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 3,
+    "digest": "e1473d4f0828d285"
+   }
+  },
+  "utf8-winzip-test.zip": {
+   "cc": {
+    "members": 3,
+    "digest": "e1473d4f0828d285"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 3,
+    "digest": "e1473d4f0828d285"
+   }
+  },
+  "zip64support.tar.bz2": {
+   "cc": {
+    "members": 11,
+    "digest": "39025ec28688af7a"
+   },
+   "path": {
+    "format": "tar/bz2",
+    "members": 11,
+    "digest": "39025ec28688af7a"
+   }
+  },
+  "zipbomb.xlsx": {
+   "cc": {
+    "members": 19,
+    "digest": "8f3a0259271e9245"
+   },
+   "path": {
+    "format": "zip/uncompressed",
+    "members": 19,
+    "digest": "8f3a0259271e9245"
+   }
+  },
+  "zstd-tests.tar": {
+   "cc": {
+    "members": 3,
+    "digest": "12b38c3931a33544"
+   },
+   "path": {
+    "format": "tar/uncompressed",
+    "members": 3,
+    "digest": "12b38c3931a33544"
+   }
+  }
+ }
+}
