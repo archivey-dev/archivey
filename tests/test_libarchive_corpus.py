@@ -60,9 +60,6 @@ Triage (2026-07, rerun 2026-10-28 against libarchive 3.9.0dev with the plugins)
 **RAR**
 * **GAP** some RAR5 extra-field / crypt-only headers; multi-volume sets need
   sibling volumes (skipped like other split volumes).
-* **BUG** an end-of-archive header that stops before its flags field is refused;
-  unrar reads the missing flags as zero. Fixed by #1067; drop the entry when it
-  merges.
 
 **CPIO** (with archivey-cpio installed)
 * **POLICY** in a newc or crc link group the data comes with the last name: Archivey
@@ -268,17 +265,9 @@ _XFAIL: dict[str, tuple[bool, str]] = {
         "BUG: Delta+LZMA1 refused as input after the end; 7-Zip reads it (#1069)",
     ),
     # --- RAR ---
-    "test_read_format_rar5_redir_varint_2byte.rar": (
-        True,
-        "BUG: an end-of-archive header without its flags field is refused (#1067)",
-    ),
     "test_read_format_rar5_only_crypt_exfld.rar": (
         True,
         "GAP: RAR5 crypt-only extra field parsing",
-    ),
-    "test_read_format_rar5_unsupported_exfld.rar": (
-        True,
-        "GAP: RAR5 unsupported extra field parsing",
     ),
     "test_read_format_rar_unbound_staticdata.rar": (
         True,
