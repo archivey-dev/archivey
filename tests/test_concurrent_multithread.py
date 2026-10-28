@@ -835,11 +835,13 @@ def test_shared_listing_runs_its_callbacks_on_the_building_thread(
 
 
 def test_child_process_decode_reports_on_the_calling_thread() -> None:
-    """A stream decoded in a child process reports to ``on_diagnostic`` on the thread
-    that read it."""
+    """With decoding in a child process, a stream's report reaches ``on_diagnostic`` on
+    the thread that read it."""
     blob = gzip.compress(bytes(range(256)) * 40_000, compresslevel=1)
     callers: list[tuple[int, DiagnosticCode]] = []
     config = ArchiveyConfig(
+        # The child only decodes; the rewind report is raised in this process, so this
+        # checks that the child's thread and pipe never reach the caller's callback.
         process_isolation=ProcessIsolation.NATIVE_DECODERS,
         use_rapidgzip=AcceleratorMode.OFF,
         on_diagnostic=lambda d: callers.append((threading.get_ident(), d.code)),
@@ -883,4 +885,31 @@ def test_collected_stream_reports_on_the_thread_that_frees_it() -> None:
         gc.collect()
         assert callers == [
             (threading.get_ident(), DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED)
+        ]
+
+
+def test_stream_in_a_cycle_reports_on_the_collecting_thread() -> None:
+    """A stream caught in a reference cycle is freed by the garbage collector, and its
+    close reports on the thread where the collection runs."""
+    fixture = (
+        Path(__file__).parent / "fixtures" / "zipcrypto" / "check_byte_collision.zip"
+    )
+    callers: list[tuple[int, DiagnosticCode]] = []
+    config = ArchiveyConfig(
+        on_diagnostic=lambda d: callers.append((threading.get_ident(), d.code))
+    )
+    with open_archive(fixture, password="wrong896", config=config) as reader:
+        stream = reader.open("stored.txt")
+        stream.read(16)
+        cycle: list[object] = [stream]
+        cycle.append(cycle)
+        del stream, cycle  # unreachable now, but only the collector frees it
+        assert callers == []
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            collector = pool.submit(lambda: (gc.collect(), threading.get_ident())[1])
+            collector_ident = collector.result()
+        assert collector_ident != threading.get_ident()
+        assert callers == [
+            (collector_ident, DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED)
         ]

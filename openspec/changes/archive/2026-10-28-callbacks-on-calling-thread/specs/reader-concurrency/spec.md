@@ -31,6 +31,7 @@ functions: a backward seek in a `.gz` stream decoded in a child under
 #### Scenario: a stream the collector closes
 
 A member stream or `stream_members()` pass the caller drops without closing is
-closed when it is freed, on whichever thread drops the last reference. A diagnostic
-that close reports (`ENCRYPTED_MEMBER_UNVERIFIED` for a partly read ZipCrypto member)
-reaches `on_diagnostic` on that thread.
+closed when Python frees it, on whatever thread frees it: usually the one that drops the
+last reference, or for a reference cycle the one where the garbage collector runs. A
+diagnostic that close reports (`ENCRYPTED_MEMBER_UNVERIFIED` for a partly read ZipCrypto
+member) reaches `on_diagnostic` on that thread.
