@@ -62,9 +62,10 @@ class BrotliCodec(StreamCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
+        excluded = config.excluded_libraries
         natives = natives_for(config.process_isolation)
-        if not natives.package_available(deps.brotli):
-            raise self._missing("Brotli streams")
+        if self.excluded_by(excluded) or not natives.package_available(deps.brotli):
+            raise self._missing("Brotli streams", excluded=excluded)
         # Brotli has no random-access index; a backward seek re-decodes from the start (the
         # outer ArchiveStream warns — see rewind_warning).
         return BrotliDecompressorStream(

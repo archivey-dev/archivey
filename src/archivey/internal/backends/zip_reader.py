@@ -3603,6 +3603,7 @@ class ZipReader(BaseArchiveReader):
                     aes=aes,
                     password=password,
                     compress_size=loc.compressed_size,
+                    excluded=self._stream_config.excluded_libraries,
                 )
             except ArchiveyError as exc:
                 raw.close()

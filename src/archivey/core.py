@@ -819,7 +819,11 @@ def _open_resolved(
             archive_name=archive_name,
         )
 
-    backend_cls = registry.reader_for_format(resolved_format, replacement=replacement)
+    backend_cls = registry.reader_for_format(
+        resolved_format,
+        replacement=replacement,
+        excluded=config.formats.exclude_libraries,
+    )
 
     # The capability half above emits these too, so either refusal half reports them.
     _note_unused_arguments(

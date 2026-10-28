@@ -979,7 +979,9 @@ def test_inner_tar_skip_reason_precedence(
     from archivey.internal.streams import codecs
 
     if not backend_present:
-        monkeypatch.setattr(codecs, "is_codec_available", lambda codec: False)
+        monkeypatch.setattr(
+            codecs, "is_codec_available", lambda codec, excluded=frozenset(): False
+        )
     budget = replace(BALANCED_BUDGET, **budget_change)
     info = detect_format(
         io.BytesIO(gzip.compress(_small_tar_bytes())),

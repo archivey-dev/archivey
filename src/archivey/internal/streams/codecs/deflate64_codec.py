@@ -40,9 +40,10 @@ class Deflate64Codec(StreamCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
+        excluded = config.excluded_libraries
         natives = natives_for(config.process_isolation)
-        if not natives.package_available(deps.inflate64):
-            raise self._missing("Deflate64 streams")
+        if self.excluded_by(excluded) or not natives.package_available(deps.inflate64):
+            raise self._missing("Deflate64 streams", excluded=excluded)
         return Deflate64DecompressorStream(
             source,
             collector=config.collector,

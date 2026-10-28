@@ -65,8 +65,13 @@ class Lz4Codec(StreamCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        if deps.lz4_frame is None or deps.lz4_block is None:
-            raise self._missing("lz4 streams")
+        excluded = config.excluded_libraries
+        if (
+            self.excluded_by(excluded)
+            or deps.lz4_frame is None
+            or deps.lz4_block is None
+        ):
+            raise self._missing("lz4 streams", excluded=excluded)
         # A rewind re-decompresses from the start (the outer ArchiveStream warns on a
         # rewind — see rewind_warning).
         natives = natives_for(config.process_isolation)

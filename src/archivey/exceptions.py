@@ -349,14 +349,17 @@ class UnsupportedFeatureError(ArchiveyError):
 
 
 class PackageNotInstalledError(ArchiveyError):
-    """A required optional package or external tool is absent.
+    """A required optional package or external tool is absent, or the call's
+    ``FormatPolicy(exclude_libraries=)`` turns the package off.
 
     Raised both when a whole format needs it (opening an ISO without ``pycdlib``) and
     when one member does (a PPMd member without ``pyppmd``). The message names what to
-    install.
+    install, or for an excluded package says the policy turned it off.
 
     :attr:`missing` holds the same components as data, the ones
     :attr:`FormatAvailability.missing <archivey.FormatAvailability.missing>` reports.
+    A component whose ``name`` is in the caller's ``exclude_libraries`` was refused by
+    that policy, and has it as its ``reason``; any other one needs installing.
     """
 
     missing: tuple[MissingComponent, ...]

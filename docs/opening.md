@@ -175,3 +175,21 @@ A file in a format the policy turns off raises `UnsupportedFeatureError`, and th
 which entry would let it open. `format=` doesn't get around it. `detect_format` still reports
 what a file is, and `config.formats.allows(info.format)` tells you whether it would open. A plugin
 format that's turned off isn't detected at all, so its code doesn't run.
+
+`exclude_libraries=` turns off optional packages for the call, even when they're installed:
+
+```python
+from archivey import OptionalLibrary as L
+
+NO_PPMD = ArchiveyConfig(formats=FormatPolicy(exclude_libraries={L.PYPPMD, "inflate64"}))
+```
+
+archivey then reads as if those packages weren't there. A PPMd member raises
+`PackageNotInstalledError` when you open it, while the other members read; an ISO image with
+`pycdlib` excluded doesn't open; and an accelerator such as rapidgzip under `AUTO` falls back to
+the standard library. The error's `missing` names the package, and its `reason` says the policy
+turned it off. Each entry is an [`OptionalLibrary`][archivey.OptionalLibrary] member or its value,
+and any other name is refused, so a typo can't leave a package on. The setting only affects calls
+made with that config: other calls in the same program, on any thread, still use the package.
+`format_availability(fmt, config=...)` and `list_supported_formats(config=...)` answer with the
+excluded packages counted as missing.

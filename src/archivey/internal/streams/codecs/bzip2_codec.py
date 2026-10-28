@@ -49,6 +49,7 @@ from archivey.internal.streams.codecs.rapidgzip_child import (
 from archivey.internal.streams.codecs.rapidgzip_select import (
     _bound_rapidgzip_source,
     _open_rapidgzip,
+    _rapidgzip_present,
     _rapidgzip_requirement,
     _refuse_forward_only_accelerator,
     _require_rapidgzip_child,
@@ -99,7 +100,7 @@ def _bzip2_auto_without_child(config: StreamConfig) -> str | None:
     process can run it: :func:`rapidgzip_child_unavailable_reason`), or ``None``."""
     if config.use_indexed_bzip2 is not AcceleratorMode.AUTO:
         return None
-    if not _bzip2_wanted(config, available=deps.rapidgzip.available()):
+    if not _bzip2_wanted(config, available=_rapidgzip_present(config)):
         return None
     return rapidgzip_child_unavailable_reason()
 
@@ -113,7 +114,7 @@ def _bzip2_uses_accelerator(config: StreamConfig) -> bool:
     when a child cannot be started at open. This is a query: the warning for the first
     case is logged by :meth:`Bzip2Codec.open`.
     """
-    available = deps.rapidgzip.available()
+    available = _rapidgzip_present(config)
     if not available or not _bzip2_wanted(config, available=available):
         return False
     return _bzip2_auto_without_child(config) is None
@@ -819,7 +820,7 @@ class Bzip2Codec(StreamCodec):
         if _bzip2_uses_accelerator(config):
             return True
         if config.use_indexed_bzip2 is AcceleratorMode.ON:
-            requirement = _rapidgzip_requirement()
+            requirement = _rapidgzip_requirement(config.excluded_libraries)
             raise PackageNotInstalledError(
                 requirement.message("bzip2 random access"), missing=(requirement,)
             )

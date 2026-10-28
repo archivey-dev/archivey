@@ -209,9 +209,14 @@ class FormatAvailability:
     required_source: StreamCapability = StreamCapability.SEEKABLE
 
 def format_availability(
-    format: ArchiveFormat, *, check_programs: bool = True
+    format: ArchiveFormat,
+    *,
+    check_programs: bool = True,
+    config: ArchiveyConfig | None = None,
 ) -> FormatAvailability: ...
-def list_supported_formats() -> list[ArchiveFormat]: ...
+def list_supported_formats(
+    *, config: ArchiveyConfig | None = None
+) -> list[ArchiveFormat]: ...
 def list_known_formats() -> list[ArchiveFormat]: ...
 ```
 
@@ -236,16 +241,34 @@ Support SHALL be computed across the format backend and codecs/tools:
   `install_hint` is the refusal that probe gives a member read. `reason` is set when the
   package may be installed but archivey does not use it on the running interpreter, and
   `advice` is `reason` when set, otherwise `install_hint`; every report of a missing
-  component prints `advice`. `open_archive` and
-  `list_supported_formats()` do not run it: a missing tool never makes a format NONE,
-  so they need no answer about tools. The answer does not depend on `ArchiveyConfig`:
-  `format_availability()` takes no config. `check_programs=False` runs no program and
-  counts no tool, for a caller who wants no external program run.
+  component prints `advice`. `open_archive` and `list_supported_formats()` do not run
+  it: a missing tool never makes a format NONE, so they need no answer about tools.
+  `rar_decompressor` does not change the answer. `check_programs=False` runs no
+  program and counts no tool, for a caller who wants no external program run.
 - `cryptography`, which only encrypted members need, SHALL NOT lower support.
 - By-design unsupported features such as unknown 7z method IDs SHALL
   not lower support; members using them raise `UnsupportedFeatureError`.
 
-`list_supported_formats()` SHALL return FULL plus PARTIAL formats.
+Without `config` the answer SHALL NOT depend on `ArchiveyConfig`. With `config`, two of
+its fields change it, and no other:
+
+- `config.formats.exclude_libraries`: an excluded package counts as absent (see
+  `packaging-and-extras`, *An excluded optional library reads as not installed*).
+- `config.formats.replace`: for a replaced container the answer is for the
+  replacement's backend, not the built-in's. The replacement's `requires` count as a
+  registered plugin's do, so a missing one makes the format NONE, and the open raises
+  `PackageNotInstalledError` before the plugin's `open` runs. (A replacement whose
+  `requires` holds an excluded package is refused when the policy is built; see
+  `packaging-and-extras`.) The `cryptography` rule above is about the built-in readers,
+  where only encrypted members need it; a replacement that lists it in `requires`
+  reads nothing without it.
+
+The policy's `only`, `exclude` and `plugins` SHALL NOT change the answer;
+`config.formats.allows(fmt)` answers whether a format may open.
+
+`list_supported_formats()` SHALL return FULL plus PARTIAL formats; with `config`, the
+formats that are FULL or PARTIAL under that config. It SHALL NOT filter by
+`config.formats.allows()`.
 `list_known_formats()` SHALL return every known format including NONE.
 
 `format_availability()` SHALL answer only for an `ArchiveFormat`. Any other argument —
@@ -307,6 +330,22 @@ conservative answer.
 | `format_availability(ISO \| SEVEN_Z \| RAR \| FOLDER).required_source` | `SEEKABLE` |
 | ISO queried without `pycdlib` | `support=NONE` **and** `required_source=SEEKABLE` — the answer does not depend on installability |
 | `required_source <= reader.cost.stream_capability` for a format opened successfully from that source | `True` for every format/source pair the library accepts |
+
+#### Scenario: The supported list does not filter by the format policy
+
+- **WHEN** a caller asks `list_supported_formats(config=cfg)` with
+  `cfg.formats == FormatPolicy(only={ContainerFormat.ZIP})` and 7z readable
+- **THEN** the list holds `ArchiveFormat.SEVEN_Z`
+- **AND** `cfg.formats.allows(ArchiveFormat.SEVEN_Z)` is false
+
+#### Scenario: Availability answers for the replacement
+
+- **WHEN** a caller asks `format_availability(ArchiveFormat.ZIP, config=cfg)` with
+  `cfg.formats == FormatPolicy(replace={ContainerFormat.ZIP: P})`,
+  `P.requires == ("acme_zipcrypt",)` and `acme_zipcrypt` not installed
+- **THEN** the answer is NONE and its `missing` names `acme_zipcrypt`
+- **AND** opening a ZIP file with `cfg` raises `PackageNotInstalledError`, and `P.open`
+  is not called
 
 ### Requirement: A format argument outside its declared type is a usage error
 
@@ -404,3 +443,42 @@ a separate table, so a codec added later is named here without a second edit.
 | `open_stream(src, format="gzip")` | `StreamFormat.GZIP` — no `ArchiveFormat` spells it |
 | `open_archive(path, format="not-a-format")` | `ArchiveyUsageError` naming the accepted spellings |
 | Two formats sharing a normalized spelling | Test suite fails |
+
+### Requirement: The caller's format policy decides whether a detected format opens
+
+`ArchiveyConfig.formats` SHALL hold a `FormatPolicy`. After detection, or after an
+explicit `format=`, `open_archive` and `open_stream` SHALL refuse a format the policy
+does not allow, with `UnsupportedFeatureError` whose `source_format` is that format and
+whose message names the policy entry that would allow it. The policy SHALL NOT change
+which built-in format detection reports (see `format-detection` for plugin formats).
+
+#### Scenario: A compression missing from an allow-list is refused
+
+- **WHEN** a caller opens a gzip-compressed TAR with
+  `FormatPolicy(only={ContainerFormat.TAR})`
+- **THEN** the open raises `UnsupportedFeatureError` that names `StreamFormat.GZIP`
+- **AND** `detect_format` on the same file still reports `ArchiveFormat.TAR_GZ`
+
+### Requirement: A replacement plugin reads a built-in container
+
+A `FormatPolicy(replace={container: plugin})` SHALL open that built-in container with
+the plugin's reader. Detection SHALL stay the built-in's, `reader.format` SHALL be the
+built-in format, and `format_info.from_plugin` SHALL stay false.
+
+The replacement SHALL NOT be given a multi-volume set or an archive found behind an SFX
+stub; each SHALL raise `UnsupportedFeatureError` that names the replacement. A read-once
+source SHALL raise `StreamNotSeekableError`, as it does for any indexed plugin. A raw CD
+sector image detected as ISO SHALL be refused as the built-in reader refuses it. Each
+refusal SHALL come before the plugin's `open` runs.
+
+#### Scenario: A ZIP opens with the replacement
+
+- **WHEN** a caller opens a ZIP file with `FormatPolicy(replace={ContainerFormat.ZIP: P})`
+- **THEN** `P.open` reads it and `reader.format` is `ArchiveFormat.ZIP`
+
+#### Scenario: A replacement is not given a volume set
+
+- **WHEN** a caller opens the first part of a multi-volume ZIP set with
+  `FormatPolicy(replace={ContainerFormat.ZIP: P})`
+- **THEN** the open raises `UnsupportedFeatureError` that names `P`
+- **AND** `P.open` is not called

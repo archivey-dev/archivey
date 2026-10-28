@@ -23,7 +23,7 @@ from archivey.internal.arg_checks import (
     check_limit_fields,
 )
 from archivey.internal.enum_args import coerce_enum
-from archivey.types import ArchiveMember
+from archivey.types import ArchiveMember, OptionalLibrary
 
 
 class AcceleratorMode(Enum):
@@ -188,8 +188,9 @@ class RarDecompressor(Enum):
     :class:`~archivey.UnsupportedFeatureError` before anything runs. A stored, encrypted
     member in one part raises :class:`~archivey.PackageNotInstalledError` naming
     ``cryptography`` when that package is missing. A compressed RAR 1.5-4 comment is
-    ``None``. The ``format_availability()`` query takes no config and still runs the
-    ``unrar`` identification probe; pass it ``check_programs=False`` to avoid that."""
+    ``None``. The ``format_availability()`` query answers for ``AUTO`` whatever this
+    setting is, and still runs the ``unrar`` identification probe; pass it
+    ``check_programs=False`` to avoid that."""
 
 
 # Minimum known compressed input size (bytes) before ``use_rapidgzip`` AUTO selects
@@ -964,6 +965,15 @@ class ArchiveyConfig:
                         f"ArchiveyConfig({field_name}=ON) cannot be combined with "
                         "process_isolation=NONE: rapidgzip runs only in a child "
                         "process. Use AUTO or OFF, or another process_isolation."
+                    )
+        if OptionalLibrary.RAPIDGZIP in self.formats.exclude_libraries:
+            for field_name in ("use_rapidgzip", "use_indexed_bzip2"):
+                if getattr(self, field_name) is AcceleratorMode.ON:
+                    raise ArchiveyUsageError(
+                        f"ArchiveyConfig({field_name}=ON) cannot be combined with "
+                        "formats=FormatPolicy(exclude_libraries=) naming rapidgzip, "
+                        "which turns that accelerator off. Use AUTO or OFF, or drop "
+                        "the exclusion."
                     )
 
 

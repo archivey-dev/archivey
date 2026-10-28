@@ -19,6 +19,8 @@ from archivey.config import (
     ProcessIsolation,
 )
 from archivey.exceptions import ResourceLimitError
+from archivey.internal.excluded_libraries import NO_EXCLUSIONS
+from archivey.types import OptionalLibrary
 
 if TYPE_CHECKING:
     from archivey.internal.diagnostics_collector import DiagnosticCollector
@@ -98,6 +100,8 @@ class StreamConfig:
     :class:`~archivey.internal.resource_usage.ResourceUsageRecorder`: a codec passes it
     to :func:`check_decoder_memory`, which notes each declaration there. A detection
     probe builds its config without one, so a probe's sizes are never recorded.
+    ``excluded_libraries`` is the caller's ``FormatPolicy.exclude_libraries``: a codec
+    whose package it names opens as if the package were not installed.
     """
 
     streaming: bool = False
@@ -117,6 +121,7 @@ class StreamConfig:
     refuse_input_after_end: bool = False
     seek_index: PrebuiltIndex | None = field(default=None, compare=False)
     usage: ResourceUsageRecorder | None = field(default=None, compare=False)
+    excluded_libraries: frozenset[OptionalLibrary] = NO_EXCLUSIONS
 
 
 def stream_config_from_archivey(
@@ -137,6 +142,7 @@ def stream_config_from_archivey(
         use_indexed_bzip2=config.use_indexed_bzip2,
         decoder_limits=config.decoder_limits,
         process_isolation=config.process_isolation,
+        excluded_libraries=config.formats.exclude_libraries,
     )
 
 

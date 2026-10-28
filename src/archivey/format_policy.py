@@ -15,10 +15,18 @@ from typing import TYPE_CHECKING
 
 from archivey.exceptions import _UsageTypeError, _UsageValueError
 from archivey.internal.arg_checks import check_instance
-from archivey.types import ArchiveFormat, ContainerFormat, PluginContainer, StreamFormat
+from archivey.internal.enum_args import coerce_enum_collection
+from archivey.types import (
+    ArchiveFormat,
+    ContainerFormat,
+    OptionalLibrary,
+    PluginContainer,
+    StreamFormat,
+)
 
 if TYPE_CHECKING:
     from archivey.plugins import FormatPlugin
+    from archivey.types import OptionalLibraryStr
 
 __all__ = ["FormatPolicy"]
 
@@ -64,6 +72,74 @@ def _coerce_entries(values: object, *, param: str) -> frozenset[_FormatEntry]:
             )
         entries.add(value)
     return frozenset(entries)
+
+
+# Standard library modules a caller may try to exclude. Core formats need them, so
+# they are refused by name rather than as unknown spellings.
+_STDLIB_CODECS = frozenset({"zlib", "bz2", "lzma"})
+
+
+def _coerce_libraries(values: object) -> frozenset[OptionalLibrary]:
+    """``exclude_libraries=`` as a frozenset of members, refusing any other name."""
+    param = "exclude_libraries="
+    if isinstance(values, OptionalLibrary):
+        # A StrEnum member is a str, so the shared helper would call it a bare string.
+        raise _UsageTypeError(
+            f"{_CALL} takes a set of OptionalLibrary for {param}, but got the single "
+            f"member OptionalLibrary.{values.name}. Pass a set, e.g. "
+            f"{{OptionalLibrary.{values.name}}}."
+        )
+    if isinstance(values, Iterable) and not isinstance(values, (str, bytes)):
+        stdlib = sorted(
+            v for v in values if isinstance(v, str) and v.lower() in _STDLIB_CODECS
+        )
+        if stdlib:
+            raise _UsageValueError(
+                f"{_CALL} got {', '.join(map(repr, stdlib))} in {param}: the "
+                "standard library codecs cannot be turned off, since core formats "
+                "decode with them. Refuse the containers and compressions that "
+                "carry them with only= or exclude= instead."
+            )
+    return coerce_enum_collection(values, OptionalLibrary, call=_CALL, param=param)
+
+
+def _check_named_plugins(
+    replace: Mapping[ContainerFormat, type[FormatPlugin]],
+    only: frozenset[_FormatEntry] | None,
+    excluded: frozenset[OptionalLibrary],
+) -> None:
+    """Refuse a policy that names a plugin needing a package it excludes.
+
+    The caller named that plugin, in ``replace=`` or by its container in ``only=``,
+    so a policy that cannot use it is a mistake in the policy. A plugin registered
+    after the policy is built is not checked here; its open refuses instead.
+    """
+    if not excluded:
+        return
+    named: list[tuple[str, type[FormatPlugin]]] = [
+        (f"replace= reads {_entry_name(container)} with", plugin)
+        for container, plugin in replace.items()
+    ]
+    listed = {e for e in only or () if isinstance(e, PluginContainer)}
+    if listed:
+        # Imported here: the plugin adapter imports the config, which builds a default
+        # policy as it loads.
+        from archivey.internal.plugin_adapter import registered_plugins
+
+        named.extend(
+            (f"only= lists {_entry_name(plugin.format.container)}, read by", plugin)
+            for plugin in registered_plugins()
+            if plugin.format.container in listed
+        )
+    for where, plugin in named:
+        clash = sorted(name for name in plugin.requires if name in excluded)
+        if clash:
+            raise _UsageValueError(
+                f"{_CALL} {where} {plugin.__name__}, which requires "
+                f"{', '.join(clash)}, but exclude_libraries= turns "
+                f"{'it' if len(clash) == 1 else 'them'} off. Drop the plugin or the "
+                "exclusion."
+            )
 
 
 class _Replacements(Mapping[ContainerFormat, "type[FormatPlugin]"]):
@@ -170,6 +246,26 @@ class FormatPolicy:
     format's own ``ArchiveyConfig`` options reach the plugin through
     ``PluginContext.config``."""
 
+    exclude_libraries: frozenset[OptionalLibrary]
+    """Optional packages that read as not installed in this call.
+
+    Each entry is an :class:`~archivey.OptionalLibrary` member or its value, such as
+    ``"pyppmd"``; any other name is refused when the policy is built. An excluded
+    package decodes nothing in the call, and one that archivey imports on first use
+    (``brotli``, ``pyppmd``, ``inflate64``, ``rapidgzip``) is not imported for it. What
+    happens is what happens when the package is missing: an accelerator under ``AUTO``
+    falls back to the standard library, a member that needs it raises
+    :class:`~archivey.PackageNotInstalledError` when opened, and a format that needs
+    it refuses at open. The error's ``missing`` names the package with this setting as
+    its ``reason``. :func:`~archivey.format_availability` answers for it when passed
+    the config. Other calls in the process, on any thread, are unaffected.
+
+    archivey uses one zstd module per process, ``compression.zstd`` where it imports
+    and ``backports.zstd`` otherwise; excluding that module turns zstd off, and
+    excluding the other changes nothing. ``zlib``, ``bz2`` and ``lzma`` cannot be
+    excluded. A policy that names a plugin (in ``replace=``, or by its container in
+    ``only=``) whose ``requires`` lists an excluded package is refused."""
+
     # A hand-written __init__, as DiagnosticPolicy has: the parameters take any
     # iterable, and the fields always hold frozensets.
     def __init__(
@@ -179,6 +275,7 @@ class FormatPolicy:
         exclude: Iterable[ContainerFormat | PluginContainer | StreamFormat] = (),
         plugins: bool = True,
         replace: Mapping[ContainerFormat, type[FormatPlugin]] | None = None,
+        exclude_libraries: Iterable[OptionalLibrary | OptionalLibraryStr] = (),
     ) -> None:
         only_parsed = None if only is None else _coerce_entries(only, param="only=")
         exclude_parsed = _coerce_entries(exclude, param="exclude=")
@@ -212,7 +309,10 @@ class FormatPolicy:
                     f"{_CALL} replaces {_entry_name(container)} but only= or exclude= "
                     "turns it off. Allow the container, or drop the replacement."
                 )
+        libraries = _coerce_libraries(exclude_libraries)
+        _check_named_plugins(replace_parsed, only_parsed, libraries)
         object.__setattr__(self, "replace", replace_parsed)
+        object.__setattr__(self, "exclude_libraries", libraries)
         object.__setattr__(self, "only", only_parsed)
         object.__setattr__(self, "exclude", exclude_parsed)
         object.__setattr__(self, "plugins", plugins)

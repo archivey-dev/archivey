@@ -26,6 +26,7 @@ from archivey.internal.config import (
     AcceleratorMode,
     StreamConfig,
 )
+from archivey.internal.excluded_libraries import NO_EXCLUSIONS, as_reported
 from archivey.internal.streams.archive_stream import RewindWarning
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.base import (
@@ -57,14 +58,29 @@ from archivey.types import MissingComponent, OptionalLibrary
 # The DEFLATE-family codecs are stdlib-backed, so they declare no ``requirement`` — rapidgzip
 # is an *accelerator* they only demand when random access was explicitly requested. It still
 # needs one install hint, shared with the rewind diagnostic that suggests the same package.
-def _rapidgzip_requirement() -> MissingComponent:
+def _rapidgzip_requirement(
+    excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
+) -> MissingComponent:
     """rapidgzip as a missing component, with the reason archivey does not use it on this
-    interpreter (``deps.unused_reason``) read when the error is raised, not at import."""
-    return MissingComponent(
-        OptionalLibrary.RAPIDGZIP,
-        "pip install archivey[seekable]",
-        ("random-access",),
-        reason=deps.unused_reason(OptionalLibrary.RAPIDGZIP),
+    interpreter (``deps.unused_reason``) read when the error is raised, not at import,
+    or the policy's reason when ``excluded`` turns it off."""
+    return as_reported(
+        MissingComponent(
+            OptionalLibrary.RAPIDGZIP,
+            "pip install archivey[seekable]",
+            ("random-access",),
+            reason=deps.unused_reason(OptionalLibrary.RAPIDGZIP),
+        ),
+        excluded,
+    )
+
+
+def _rapidgzip_present(config: StreamConfig) -> bool:
+    """Whether rapidgzip is installed and ``config``'s excluded libraries leave it on.
+    Never imports it: the child process does."""
+    return (
+        OptionalLibrary.RAPIDGZIP not in config.excluded_libraries
+        and deps.rapidgzip.available()
     )
 
 
@@ -188,7 +204,7 @@ def _rapidgzip_enabled(config: StreamConfig, *, available: bool) -> bool:
 def _warn_if_auto_without_child(config: StreamConfig) -> None:
     """At a DEFLATE-family open: warn (once per process) if ``AUTO`` wanted rapidgzip
     and reads with the stdlib because no child process can run here."""
-    why = _auto_without_child(config, available=deps.rapidgzip.available())
+    why = _auto_without_child(config, available=_rapidgzip_present(config))
     if why is not None:
         _warn_child_fallback(why)
 
@@ -280,7 +296,7 @@ def _wrap_accelerated_length(stream: BinaryIO, config: StreamConfig) -> BinaryIO
 
 def _deflate_family_uses_accelerator(config: StreamConfig) -> bool:
     """Whether gzip/zlib/deflate will open through rapidgzip for this config."""
-    return deps.rapidgzip.available() and _rapidgzip_enabled(config, available=True)
+    return _rapidgzip_present(config) and _rapidgzip_enabled(config, available=True)
 
 
 def _bound_rapidgzip_source(
