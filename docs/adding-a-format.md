@@ -9,12 +9,17 @@ as the built-in formats do.
     `archivey.plugins` can change in a minor release until a plugin outside archivey has
     used it. Pin the archivey version your plugin is tested with.
 
-This first version reads one kind of format: a format with an index, where the reader can
-list every member first and then open any one of them, from a file or another source that
-can seek. ISO 9660, SquashFS, CAB and WIM are this kind. Formats read as one pass from
-start to end, such as CPIO or AR, and formats inside an outer compressor, such as a
-`.cpio.gz`, come in a later version. [What is not supported yet](#what-is-not-supported-yet)
-has the full list.
+A plugin reads one of two kinds of format:
+
+- **A format with an index**, where the reader can list every member first and then open
+  any one of them, from a file or another source that can seek. ISO 9660, SquashFS, CAB
+  and WIM are this kind.
+- **A format read in one pass**, a header and then the member's data, again and again to
+  the end. It can be read from a pipe. CPIO and AR are this kind. See
+  [Formats read in one pass](#formats-read-in-one-pass).
+
+Formats inside an outer compressor, such as a `.cpio.gz`, come in a later version.
+[What is not supported yet](#what-is-not-supported-yet) has the full list.
 
 ## What a plugin is
 
@@ -25,6 +30,10 @@ A plugin is two classes:
   method returns a reader.
 - An **`IndexedReader`** subclass. It lists the members with `iter_members()`, and returns
   the data of one member with `open_member()`.
+
+A format read in one pass uses a `SequentialFormatPlugin` and a `SequentialReader`
+instead, described in [Formats read in one pass](#formats-read-in-one-pass). The rest of
+this page applies to both kinds unless it says otherwise.
 
 The plugin hands archivey members and bytes. archivey does everything after that the
 same way it does for a built-in format: it normalizes member names, checks them, applies
@@ -325,6 +334,103 @@ Whichever way a checksum archivey has no name for gets checked, keep the stored 
 `member.extra` under a key named after your format, such as `"toya.sha1"`, so callers can
 see it.
 
+## Formats read in one pass
+
+A format of header, data, header, data has no index to list from: the only way to find
+the members is to read the archive from the start. Such a format can be read from a pipe,
+and a plugin for it has two other classes:
+
+- A **`SequentialFormatPlugin`** subclass. It declares the format as a `FormatPlugin`
+  does, but implements `open_sequential(context)` instead of `open()`. There is no
+  `PluginSource`, because the archive may be a pipe.
+- A **`SequentialReader`** subclass. Its `walk(stream)` is a generator that reads headers
+  from a `ForwardStream` and yields one `MemberSpan` per member.
+
+The reader parses headers and archivey owns the data. A `MemberSpan` holds the member
+and `data_length`, the number of bytes after the header that are the member's data,
+stored as they are. archivey hands those bytes to the caller as the member's stream.
+Before it resumes the walk, it skips whatever the caller did not read, so when `walk()`
+continues after its `yield`, the stream is at the end of the member's data. The walk then
+reads any padding and the next header:
+
+```python
+import struct
+from collections.abc import Iterator
+
+from archivey import ArchiveMember, CorruptionError, MemberType
+from archivey.plugins import (
+    ForwardStream,
+    MemberDigest,
+    MemberSpan,
+    SequentialReader,
+)
+
+HEADER = struct.Struct("<2scHII")  # magic, type, name length, data length, CRC-32
+
+
+class ToysReader(SequentialReader):
+    link_target_in_data = True  # a symlink's data is its target
+
+    def __init__(self, context):
+        self._context = context
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        while True:
+            at = stream.offset
+            magic, code, name_len, length, crc = stream.read_struct(HEADER)
+            if magic != b"TS":
+                raise CorruptionError(f"no header at offset {at}")
+            if code == b"E":  # the end-of-archive header
+                return
+            raw = stream.read_exact(name_len)
+            kind = {b"F": MemberType.FILE, b"L": MemberType.SYMLINK}[code]
+            member = ArchiveMember(
+                type=kind, name=self._context.decode_name(raw), raw_name=raw
+            )
+            digest = MemberDigest("crc32", crc.to_bytes(4, "big"))
+            yield MemberSpan(member, length, (digest,))
+            stream.skip(-length % 4)  # padding to four bytes
+```
+
+A real reader also refuses an unknown type code with `CorruptionError` rather than a
+`KeyError`.
+
+`ForwardStream` reads forward only. `read(n)` returns fewer bytes only at the end of the
+archive; `read_exact(n)`, `read_struct(fmt)` and `skip(n)` raise `TruncatedError` there
+instead. `offset` is how far the archive has been read, for messages. A walk never reads
+a member's data itself.
+
+archivey takes the first step of the walk when it opens the archive, so a file that is
+not your format fails to open, as a built-in one does. The end of the archive is
+`walk()`'s to check: an end marker, a trailer, or bytes after it. Raise
+`CorruptionError` or `TruncatedError` when they are wrong, and archivey keeps the members
+the walk yielded before it.
+
+What archivey does with the spans:
+
+- **Pipes and passes.** Opened with `streaming=True`, the walk is the reader's one
+  forward pass, so `stream_members()`, iteration and `extract_all()` each read the
+  archive once, from a pipe too. The listing limits count members as they arrive.
+- **Random access on a file.** Opened from a file or a seekable stream without
+  `streaming=True`, archivey walks the archive once to list it and records where each
+  member's data starts. `open()` and `read()` then read a member directly, in any order.
+- **Sizes.** A `FILE`'s `size` is its `data_length`. Leave `size` unset and archivey
+  fills it in; a different one raises `ValueError`, since the data is stored as it is.
+- **Checksums.** `MemberSpan.digests` are checked as `MemberData.digests` are (see
+  [What archivey checks](#what-archivey-checks)). A `HashAlgorithm` digest, such as the
+  CRC-32 above, is also listed in `ArchiveMember.hashes`.
+- **Link targets stored as data.** With `link_target_in_data = True`, a symlink's data is
+  its target. archivey reads it while walking, up to 4096 bytes, as UTF-8. A longer one
+  is reported with `SYMLINK_TARGET_UNAVAILABLE` and left unset.
+- **Other members' data.** The data of a member that is not a file, a directory or such
+  a symlink is skipped. A directory with data keeps it as its `size`: a read delivers
+  the bytes, extraction creates the directory, and the listing reports
+  `MEMBER_DIRECTORY_DATA_IGNORED`, as for a built-in format.
+
+`SequentialFormatPlugin` takes the same class attributes as `FormatPlugin`. The format's
+`archive.info.cost` says the listing needs a scan, and `format_availability()` reports
+that it can be read from a source that cannot seek.
+
 ## Reading untrusted bytes
 
 archivey cannot check how your reader parses the archive, only what it hands back.
@@ -487,8 +593,9 @@ can refuse plugin formats by checking `FormatInfo.from_plugin`.
 
 ## What is not supported yet
 
-- Formats read in one pass from start to end, and reading a plugin format from a pipe.
 - A plugin format inside an outer compressor, such as `.cpio.gz`.
+- In a format read in one pass, member data that a library decodes, or that is
+  compressed per member: `MemberSpan` describes bytes stored as they are.
 - Self-extracting archives, multi-volume sets and passwords.
 - New diagnostic codes. A plugin reports with archivey's existing codes.
 - Writing archives.

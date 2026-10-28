@@ -1,10 +1,11 @@
 """The adapter between ``archivey.plugins`` and the internal reader machinery.
 
-A plugin reader does not subclass :class:`BaseArchiveReader`. :class:`PluginReaderAdapter`
-is the one subclass that serves every plugin: it implements the four abstract methods
-by calling the plugin's :class:`~archivey.plugins.IndexedReader`, so the walk, the
-passes, link handling and extraction stay internal (the ``plugin-api`` OpenSpec change,
-design §1).
+A plugin reader does not subclass :class:`BaseArchiveReader`. Two subclasses serve every
+plugin: :class:`PluginReaderAdapter` implements the four abstract methods by calling an
+:class:`~archivey.plugins.IndexedReader`, and :class:`SequentialReaderAdapter` by
+walking a :class:`~archivey.plugins.SequentialReader`, so the walk, the passes, link
+handling and extraction stay internal (the ``plugin-api`` OpenSpec change, design §1
+and §2a).
 
 :func:`register_plugin` builds one :class:`ReadBackend` subclass per plugin and
 registers it after the built-in backends, so a built-in signal always wins (§4).
@@ -18,7 +19,7 @@ import logging
 import lzma
 import threading
 from collections.abc import Callable, Generator, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import replace
 from typing import Any, BinaryIO, ClassVar, NoReturn, cast
 
@@ -33,10 +34,12 @@ from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
     CorruptionError,
+    TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal import format_args
 from archivey.internal.base_reader import (
+    MAX_LINK_TARGET_BYTES,
     BaseArchiveReader,
     ReadBackend,
     reject_start_offset,
@@ -63,21 +66,33 @@ from archivey.internal.streams.respawn import RespawnStream
 from archivey.internal.streams.streamtools import (
     FullCountStream,
     LockedStream,
+    ReadAheadStream,
+    ReadOnlyIOStream,
     SharedSource,
     SlicingStream,
+    check_read_size,
+    ensure_bufferedio,
     is_seekable,
     source_byte_size,
 )
+from archivey.internal.streams.streamtools.binaryio import read_blocking
 from archivey.internal.streams.verify import CustomDigests, hasher_factory
 from archivey.plugins import (
     FormatPlugin,
+    ForwardStream,
     Hasher,
     IndexedReader,
     MemberData,
     MemberDigest,
+    MemberSpan,
+    PluginArchiveInfo,
     PluginContext,
+    PluginReader,
     PluginSource,
+    SequentialFormatPlugin,
+    SequentialReader,
 )
+from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
@@ -88,6 +103,7 @@ from archivey.types import (
     HashAlgorithm,
     MagicSignature,
     MemberStreams,
+    MemberType,
     PluginContainer,
     StreamFormat,
 )
@@ -124,8 +140,11 @@ def _reads_full(stream: object) -> bool:
     return _type_reads_full(type(stream))
 
 
-class PluginReaderAdapter(BaseArchiveReader):
-    """Serves one plugin reader through the internal reader contract."""
+class _PluginAdapter(BaseArchiveReader):
+    """What the adapters of both reader shapes share: the context, errors, digests,
+    archive info and close."""
+
+    _reader: PluginReader
 
     def __init__(
         self,
@@ -161,10 +180,8 @@ class PluginReaderAdapter(BaseArchiveReader):
         # need none, but archivey cannot tell which kind of reader it was given.
         if MemberStreams.CONCURRENT in member_streams:
             self._handle_lock = threading.Lock()
-        self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
-        plugin_source = PluginSource(
-            self._shared.view, self._shared.size, source.path, self._shared.read_at
-        )
+        # Views over a seekable source, when the reader shape uses them.
+        self._shared: SharedSource | None = None
         # The member decoder config, as ZIP builds its own: the compressed bytes a
         # plugin hands ``decompress`` are the codec's whole input, so a byte after the
         # codec's end of stream is damage.
@@ -188,19 +205,21 @@ class PluginReaderAdapter(BaseArchiveReader):
             report=self._report,
             link_target_unavailable=self._link_target_unavailable,
         )
-        with self._translated_errors(), self._handle_guard():
-            reader = plugin.open(plugin_source, context)
+        self._reader = self._open_reader(context)
+        self._reader_open = True
+
+    def _open_reader(self, context: PluginContext) -> PluginReader:
+        """Call the plugin's ``open``, and check what it returned."""
+        raise NotImplementedError
+
+    def _wrong_reader(self, reader: object, method: str, noun: str) -> NoReturn:
         # Each check that the plugin kept to the interface sits outside the error
         # boundary, so a plugin's broad ``translate_exception`` cannot report a plugin
         # bug as a fault in the archive.
-        if not isinstance(reader, IndexedReader):
-            raise TypeError(
-                f"{type(plugin).__name__}.open() returned "
-                f"{type(reader).__name__}, not an IndexedReader"
-            )
-        self._reader = reader
-        self._reader_open = True
-        self._MEMBER_LIST_UPFRONT = reader.member_list_upfront
+        raise TypeError(
+            f"{type(self._plugin).__name__}.{method}() returned "
+            f"{type(reader).__name__}, not {noun}"
+        )
 
     def _decompress(
         self,
@@ -332,13 +351,157 @@ class PluginReaderAdapter(BaseArchiveReader):
             else self._plugin.translate_exception(exc)
         )
 
+    def _member_digests(
+        self, member: ArchiveMember, digests: tuple[MemberDigest, ...], method: str
+    ) -> tuple[dict[HashAlgorithm, bytes], CustomDigests]:
+        """The digests to check: the member's listed ``hashes`` and ``digests``, which
+        the plugin's ``method`` returned with the member's data.
+
+        A digest archivey computes itself joins the listed ones, and is published on
+        ``member.hashes`` as a built-in format publishes a CRC-32 it reads from a local
+        header. When the listing already holds that name with another value, the
+        archive stores two values for one checksum (an index and a local header that
+        disagree): both are checked, so a read that reaches the end raises for
+        whichever does not match, instead of one silently replacing the other. Any
+        other digest is computed with the plugin's hasher.
+        """
+        expected = dict(member.hashes)
+        listed = {str(key).lower(): (key, value) for key, value in expected.items()}
+        custom: dict[str, tuple[bytes, Callable[[], Hasher]]] = {}
+        published: dict[HashAlgorithm, bytes] = {}
+        seen: set[str] = set()
+        for digest in digests:
+            key = digest.name.lower()
+            if key in seen:
+                self._refuse_digest(
+                    digest, method, "which another digest of the member uses"
+                )
+            seen.add(key)
+            algorithm = _ALGORITHMS.get(key)
+            if algorithm is not None:
+                # Every HashAlgorithm has a hasher of archivey's own (CRC-32, BLAKE2sp).
+                built_in = hasher_factory(algorithm)
+                assert built_in is not None
+                factory = built_in
+            elif digest.new is not None:
+                factory = digest.new
+            else:
+                self._refuse_digest(
+                    digest, method, "which archivey does not compute, with no hasher"
+                )
+            if key in listed:
+                listed_key, prior = listed[key]
+                if hasher_factory(key) is None:
+                    # A listed name archivey has no hasher of its own for: the
+                    # listed value is checked with the plugin's hasher too. One
+                    # archivey can hash (hashlib's ``sha1``) keeps archivey's.
+                    del expected[listed_key]
+                    custom[key] = (prior, factory)
+                if prior != digest.expected:
+                    custom[f"{key} from {method}()"] = (digest.expected, factory)
+            elif algorithm is not None:
+                expected[algorithm] = published[algorithm] = digest.expected
+            else:
+                custom[key] = (digest.expected, factory)
+        if published:
+            member.hashes = {**member.hashes, **published}
+        return expected, custom
+
+    def _refuse_digest(
+        self, digest: MemberDigest, method: str, reason: str
+    ) -> NoReturn:
+        raise ValueError(
+            f"{type(self._reader).__name__}.{method}() returned a digest "
+            f"named {digest.name!r}, {reason}"
+        )
+
+    def _get_archive_info(self) -> ArchiveInfo:
+        with self._translated_errors(), self._handle_guard():
+            info = self._reader.archive_info()
+        cost = self._cost(info)
+        # A plugin's keys are its own, namespaced by its format (``"cpio.variant"``),
+        # so they are not in the inventory of built-in keys and are copied in as data.
+        extra = ArchiveInfoExtra()
+        extra.update(info.extra)
+        return ArchiveInfo(
+            format=self._format,
+            format_version=info.format_version,
+            is_solid=info.is_solid,
+            member_count=None,
+            comment=info.comment,
+            is_encrypted=False,
+            is_multivolume=False,
+            cost=cost,
+            extra=extra,
+        )
+
+    def _cost(self, info: PluginArchiveInfo) -> CostReceipt:
+        raise NotImplementedError
+
+    def _report_listed(self, member: ArchiveMember, presented: str, index: int) -> None:
+        """The reports archivey makes on every member a plugin lists, whatever its
+        shape: a name normalization, and a directory that declares data."""
+        emit_member_name_normalized(
+            self._diagnostics_collector,
+            member=member,
+            presented_name=presented,
+            archive_name=self._archive_name,
+            member_id=index,
+        )
+        if member.type is MemberType.DIRECTORY and member.size:
+            # No format gives a directory content: the bytes are delivered by a read and
+            # dropped by extraction, as for a built-in format (data model, DR-3).
+            self._emit_directory_data_ignored(member, index)
+
+    def _close_archive(self) -> None:
+        try:
+            with self._translated_errors(), self._handle_guard():
+                self._reader.close()
+        finally:
+            if self._shared is not None:
+                self._shared.close()
+
+
+class PluginReaderAdapter(_PluginAdapter):
+    """Serves an :class:`~archivey.plugins.IndexedReader` through the internal reader
+    contract."""
+
+    def _open_reader(self, context: PluginContext) -> IndexedReader[Any]:
+        source = self._source
+        assert source is not None
+        self._shared = shared = SharedSource(
+            source, wrap_handle=self._seek_handle_wrapper()
+        )
+        plugin_source = PluginSource(
+            shared.view, shared.size, source.path, shared.read_at
+        )
+        with self._translated_errors(), self._handle_guard():
+            reader = self._plugin.open(plugin_source, context)
+        if not isinstance(reader, IndexedReader):
+            self._wrong_reader(reader, "open", "an IndexedReader")
+        self._indexed = reader
+        self._MEMBER_LIST_UPFRONT = reader.member_list_upfront
+        return reader
+
+    def _cost(self, info: PluginArchiveInfo) -> CostReceipt:
+        return CostReceipt(
+            listing_cost=(
+                ListingCost.INDEXED
+                if self._indexed.member_list_upfront
+                else ListingCost.REQUIRES_SCANNING
+            ),
+            access_cost=AccessCost.SOLID if info.is_solid else AccessCost.DIRECT,
+            stream_capability=StreamCapability.SEEKABLE,
+            solid_block_count=None,
+        )
+
     def _iter_members(self) -> Iterator[ArchiveMember]:
         # One boundary and one guard for the whole walk: both are reusable, and
         # building them per member is a measurable part of listing a large archive.
         boundary = self._translated_errors()
         guard = self._handle_guard()
         with boundary, guard:
-            records = iter(self._reader.iter_members())
+            records = iter(self._indexed.iter_members())
         index = 0
         while True:
             self._walk_index = index
@@ -361,13 +524,7 @@ class PluginReaderAdapter(BaseArchiveReader):
                 presented, member.type, backslash_is_separator=False
             )
             member._raw = record.locator
-            emit_member_name_normalized(
-                self._diagnostics_collector,
-                member=member,
-                presented_name=presented,
-                archive_name=self._archive_name,
-                member_id=index,
-            )
+            self._report_listed(member, presented, index)
             index += 1
             yield member
 
@@ -375,7 +532,7 @@ class PluginReaderAdapter(BaseArchiveReader):
         """Call the plugin's ``open_member``: its data, and its stream as archivey reads
         it, full-count and under the handle lock."""
         with self._translated_errors(member.name), self._handle_guard():
-            data = self._reader.open_member(member, member._raw)
+            data = self._indexed.open_member(member, member._raw)
         if not isinstance(data, MemberData):
             raise TypeError(
                 f"{type(self._reader).__name__}.open_member() returned "
@@ -396,7 +553,7 @@ class PluginReaderAdapter(BaseArchiveReader):
         # digest name, a hasher factory that fails) leaves archivey owing it a close.
         try:
             expected, custom_digests = (
-                self._member_digests(member, data)
+                self._member_digests(member, data.digests, "open_member")
                 if data.digests
                 else (member.hashes, None)
             )
@@ -435,100 +592,321 @@ class PluginReaderAdapter(BaseArchiveReader):
             stream.close()
             raise
 
-    def _member_digests(
-        self, member: ArchiveMember, data: MemberData
-    ) -> tuple[dict[HashAlgorithm, bytes], CustomDigests]:
-        """The digests to check: the member's listed ``hashes`` and ``data.digests``.
 
-        A digest archivey computes itself joins the listed ones, and is published on
-        ``member.hashes`` as a built-in format publishes a CRC-32 it reads from a local
-        header. When the listing already holds that name with another value, the
-        archive stores two values for one checksum (an index and a local header that
-        disagree): both are checked, so a read that reaches the end raises for
-        whichever does not match, instead of one silently replacing the other. Any
-        other digest is computed with the plugin's hasher.
-        """
-        expected = dict(member.hashes)
-        listed = {str(key).lower(): (key, value) for key, value in expected.items()}
-        custom: dict[str, tuple[bytes, Callable[[], Hasher]]] = {}
-        published: dict[HashAlgorithm, bytes] = {}
-        seen: set[str] = set()
-        for digest in data.digests:
-            key = digest.name.lower()
-            if key in seen:
-                self._refuse_digest(digest, "which another digest of the member uses")
-            seen.add(key)
-            algorithm = _ALGORITHMS.get(key)
-            if algorithm is not None:
-                # Every HashAlgorithm has a hasher of archivey's own (CRC-32, BLAKE2sp).
-                built_in = hasher_factory(algorithm)
-                assert built_in is not None
-                factory = built_in
-            elif digest.new is not None:
-                factory = digest.new
-            else:
-                self._refuse_digest(
-                    digest, "which archivey does not compute, with no hasher"
-                )
-            if key in listed:
-                listed_key, prior = listed[key]
-                if hasher_factory(key) is None:
-                    # A listed name archivey has no hasher of its own for: the
-                    # listed value is checked with the plugin's hasher too. One
-                    # archivey can hash (hashlib's ``sha1``) keeps archivey's.
-                    del expected[listed_key]
-                    custom[key] = (prior, factory)
-                if prior != digest.expected:
-                    custom[f"{key} from open_member()"] = (digest.expected, factory)
-            elif algorithm is not None:
-                expected[algorithm] = published[algorithm] = digest.expected
-            else:
-                custom[key] = (digest.expected, factory)
-        if published:
-            member.hashes = {**member.hashes, **published}
-        return expected, custom
+class _Span:
+    """Where a sequential member's data is, on its ``_raw``: ``length`` bytes from
+    ``offset`` of the archive, with the digests its header stored."""
 
-    def _refuse_digest(self, digest: MemberDigest, reason: str) -> NoReturn:
-        raise ValueError(
-            f"{type(self._reader).__name__}.open_member() returned a digest "
-            f"named {digest.name!r}, {reason}"
-        )
+    __slots__ = ("custom", "expected", "length", "offset")
 
-    def _get_archive_info(self) -> ArchiveInfo:
-        with self._translated_errors(), self._handle_guard():
-            info = self._reader.archive_info()
-        cost = CostReceipt(
-            listing_cost=(
-                ListingCost.INDEXED
-                if self._reader.member_list_upfront
-                else ListingCost.REQUIRES_SCANNING
-            ),
-            access_cost=AccessCost.SOLID if info.is_solid else AccessCost.DIRECT,
-            stream_capability=StreamCapability.SEEKABLE,
-            solid_block_count=None,
-        )
-        # A plugin's keys are its own, namespaced by its format (``"cpio.variant"``),
-        # so they are not in the inventory of built-in keys and are copied in as data.
-        extra = ArchiveInfoExtra()
-        extra.update(info.extra)
-        return ArchiveInfo(
-            format=self._format,
-            format_version=info.format_version,
-            is_solid=info.is_solid,
-            member_count=None,
-            comment=info.comment,
-            is_encrypted=False,
-            is_multivolume=False,
-            cost=cost,
-            extra=extra,
-        )
+    def __init__(
+        self,
+        offset: int,
+        length: int,
+        expected: Mapping[HashAlgorithm, bytes] | None,
+        custom: CustomDigests | None,
+    ) -> None:
+        self.offset = offset
+        self.length = length
+        self.expected = expected
+        self.custom = custom
 
-    def _close_archive(self) -> None:
+
+# A forward skip up to this many bytes reads them through the walk's buffer; a longer
+# one seeks, when the stream can.
+_SKIP_BY_READING = 64 * 1024
+# The walk's read buffer: headers are small reads.
+_WALK_BUFFER = 64 * 1024
+
+
+class _SpanWindow(ReadOnlyIOStream):
+    """A streaming pass's member data: the next bytes of the walk's own stream, good
+    while the walk is at them. A short read is the end; the member wrapper raises
+    ``TruncatedError`` against the listed size."""
+
+    def __init__(self, forward: ForwardStream, span: _Span) -> None:
+        super().__init__()
+        self._forward = forward
+        self._span = span
+        self._done = 0
+
+    def tell(self) -> int:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        return self._done
+
+    def read(self, n: int | None = -1, /) -> bytes:
+        if self.closed:
+            raise ValueError("read from a closed member stream")
+        n = check_read_size(n)
+        span = self._span
+        if self._forward.offset != span.offset + self._done:
+            raise ArchiveyUsageError(
+                "member data is no longer readable: the pass has moved on"
+            )
+        left = span.length - self._done
+        data = self._forward.read(left if n < 0 else min(n, left))
+        self._done += len(data)
+        return data
+
+
+class SequentialReaderAdapter(_PluginAdapter):
+    """Serves a :class:`~archivey.plugins.SequentialReader`: its walk is the member
+    walk, and member data is a window of the walk's stream (a streaming pass) or a
+    view of the source at the offset the walk recorded (random access)."""
+
+    _MEMBER_LIST_UPFRONT = False
+
+    def _open_reader(self, context: PluginContext) -> SequentialReader:
+        plugin = self._plugin
+        assert isinstance(plugin, SequentialFormatPlugin)
+        source = self._source
+        assert source is not None
+        # Streaming: the buffer the walk reads through, made here, so closed here.
+        self._owned_stream: BinaryIO | None = None
+        # Random access: the current walk's own buffered view (``_new_walk``).
+        self._walk_view: BinaryIO | None = None
+        self._forward: ForwardStream | None = None
+        if self._streaming:
+            # The walk and the member windows read one stream, as a TAR pass does.
+            self._handle_lock = self._handle_lock or threading.Lock()
+            # On a pipe, the buffer fills from what has arrived, so a short archive
+            # whose writer keeps the pipe open opens at once (TAR's rule).
+            raw = source if source.seekable() else cast(BinaryIO, source.arrived_view())
+            self._owned_stream = cast(
+                BinaryIO, ensure_bufferedio(self._track_source_seeks(raw))
+            )
+        else:
+            self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
         try:
             with self._translated_errors(), self._handle_guard():
-                self._reader.close()
+                reader = plugin.open_sequential(context)
+            if not isinstance(reader, SequentialReader):
+                self._wrong_reader(reader, "open_sequential", "a SequentialReader")
+            self._reader = self._sequential = reader
+            self._reader_open = True
+            # The first step of the walk is taken now, so a file that is not one of
+            # the format's archives fails to open (DR-15b), as a TAR does.
+            forward, walk = self._new_walk()
+            with self._translated_errors(), self._handle_guard():
+                first = next(walk, None)
+            self._open_walk: (
+                tuple[ForwardStream, Iterator[MemberSpan], MemberSpan | None] | None
+            ) = (forward, walk, first)
+        except BaseException:
+            # The reader is closed as _close_archive closes it: reader, then streams.
+            # A failing close() must not replace the error being raised.
+            try:
+                if self._reader_open:
+                    self._reader_open = False
+                    with suppress(Exception), self._handle_guard():
+                        self._sequential.close()
+            finally:
+                self._release_streams()
+                if self._shared is not None:
+                    self._shared.close()
+            raise
+        return reader
+
+    def _new_walk(self) -> tuple[ForwardStream, Iterator[MemberSpan]]:
+        """A walk from the start of the archive, over a stream of its own."""
+        if self._streaming:
+            stream = self._owned_stream
+            assert stream is not None
+            # Read forward only: the source may not start at offset 0 of its handle.
+            seekable = False
+        else:
+            assert self._shared is not None
+            # Only one walk runs at a time: a walk started over replaces the last
+            # one's view.
+            self._close_walk_view()
+            stream = self._walk_view = ReadAheadStream(
+                self._shared.view(0, None), _WALK_BUFFER, rewind_oversize=True
+            )
+            seekable = True
+        size = self._shared.size if self._shared is not None else None
+
+        def skip(offset: int, n: int) -> None:
+            end = offset + n
+            if seekable and n > _SKIP_BY_READING and (size is None or end <= size):
+                stream.seek(end)
+                return
+            left = n
+            while left:
+                chunk = read_blocking(stream, min(left, _SKIP_BY_READING))
+                if not chunk:
+                    raise TruncatedError(
+                        f"the archive ends at offset {end - left}, inside the {n} "
+                        f"bytes from offset {offset}"
+                    )
+                left -= len(chunk)
+
+        forward = ForwardStream(functools.partial(read_blocking, stream), skip)
+        with self._translated_errors(), self._handle_guard():
+            walk = iter(self._sequential.walk(forward))
+        return forward, walk
+
+    def _iter_members(self) -> Iterator[ArchiveMember]:
+        boundary = self._translated_errors()
+        guard = self._handle_guard()
+        if self._open_walk is not None:
+            forward, walk, span = self._open_walk
+            self._open_walk = None
+        else:
+            forward, walk = self._new_walk()
+            self._walk_index = 0
+            with boundary, guard:
+                span = next(walk, None)
+        self._forward = forward
+        index = 0
+        while span is not None:
+            self._walk_index = index
+            member = self._take_span(span, forward, index)
+            yield member
+            index += 1
+            self._walk_index = index
+            record = member._raw
+            assert isinstance(record, _Span)
+            with boundary, guard:
+                left = record.offset + record.length - forward.offset
+                # A read through the member's window or the link target's stops at
+                # the data's end, so the walk is never past it.
+                assert left >= 0, (record.offset, record.length, forward.offset)
+                if left:
+                    forward.skip(left)
+                span = next(walk, None)
+
+    def _take_span(
+        self, span: object, forward: ForwardStream, index: int
+    ) -> ArchiveMember:
+        """The member a span describes, checked, named and placed."""
+        name = type(self._reader).__name__
+        if not isinstance(span, MemberSpan):
+            raise TypeError(
+                f"{name}.walk() yielded {type(span).__name__}, not a MemberSpan"
+            )
+        member = span.member
+        if not isinstance(member, ArchiveMember):
+            raise TypeError(
+                f"{name}.walk() yielded {type(member).__name__}, not an ArchiveMember"
+            )
+        length = span.data_length
+        if not isinstance(length, int) or length < 0:
+            raise ValueError(
+                f"{name}.walk() yielded {member.name!r} with data_length {length!r}, "
+                "not a whole number of bytes"
+            )
+        # A directory's data is its declared size too: it stays a DIRECTORY, a read
+        # delivers the bytes and the listing reports them (_report_listed).
+        sized = member.type is MemberType.FILE or (
+            member.type is MemberType.DIRECTORY and length
+        )
+        if sized:
+            if member.size is None:
+                member.size = length
+            elif member.size != length:
+                raise ValueError(
+                    f"{name}.walk() yielded {member.name!r} with size {member.size} "
+                    f"and data_length {length}: a member's data is stored as it is"
+                )
+        presented = span.stored_name if span.stored_name is not None else member.name
+        member.name = normalize_member_name(
+            presented, member.type, backslash_is_separator=False
+        )
+        expected: dict[HashAlgorithm, bytes] | None = None
+        custom: CustomDigests | None = None
+        if span.digests:
+            expected, custom = self._member_digests(member, span.digests, "walk")
+        record = _Span(forward.offset, length, expected, custom or None)
+        member._raw = record
+        self._report_listed(member, presented, index)
+        if (
+            member.type is MemberType.SYMLINK
+            and self._sequential.link_target_in_data
+            and member.link_target is None
+        ):
+            if length > MAX_LINK_TARGET_BYTES:
+                self._emit_link_target_too_long(member, member_id=index)
+            else:
+                with self._translated_errors(member.name), self._handle_guard():
+                    target = forward.read_exact(length)
+                member.link_target = target.decode("utf-8", errors="surrogateescape")
+        return member
+
+    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+        record = member._raw
+        assert isinstance(record, _Span), "a sequential member is missing its span"
+        stream: BinaryIO
+        if self._streaming:
+            forward = self._forward
+            if forward is None or forward.offset != record.offset:
+                raise ArchiveyUsageError(
+                    f"the data of {quoted(member.name)} is no longer readable: the "
+                    "pass has moved on"
+                )
+            stream = _SpanWindow(forward, record)
+            assert self._handle_lock is not None
+            stream = LockedStream(stream, self._handle_lock)
+        else:
+            assert self._shared is not None
+            stream = self._shared.view(record.offset, record.length)
+        expected = record.expected if record.expected is not None else member.hashes
+        return self._wrap_member_stream(
+            stream,
+            member.name,
+            size=member.size,
+            expected_size=member.size,
+            expected_hashes=expected or None,
+            verify_member=member,
+            # A window and a view both stop at the data's end.
+            bounded=True,
+            custom_digests=record.custom,
+        )
+
+    def _cost(self, info: PluginArchiveInfo) -> CostReceipt:
+        assert self._source is not None
+        return CostReceipt(
+            listing_cost=ListingCost.REQUIRES_SCANNING,
+            access_cost=AccessCost.SOLID if info.is_solid else AccessCost.DIRECT,
+            stream_capability=(
+                StreamCapability.SEEKABLE
+                if self._source.seekable()
+                else StreamCapability.FORWARD_ONLY
+            ),
+            solid_block_count=None,
+        )
+
+    def _close_walk_view(self) -> None:
+        if self._walk_view is not None:
+            view, self._walk_view = self._walk_view, None
+            view.close()
+
+    def _release_streams(self) -> None:
+        """Close the streams this adapter made. Safe to call more than once."""
+        try:
+            self._close_walk_view()
         finally:
-            self._shared.close()
+            if self._owned_stream is not None:
+                owned, self._owned_stream = self._owned_stream, None
+                owned.close()
+
+    def _close_archive(self) -> None:
+        # A walk taken at open and never listed is still suspended in the plugin's
+        # walk(): finish it first, so its own cleanup runs before close() and over an
+        # open stream, not later in the collector.
+        try:
+            if self._open_walk is not None:
+                close = getattr(self._open_walk[1], "close", None)
+                self._open_walk = None
+                if close is not None:
+                    with self._translated_errors(), self._handle_guard():
+                        close()
+        finally:
+            try:
+                super()._close_archive()
+            finally:
+                with self._handle_guard():
+                    self._release_streams()
 
 
 # The ``MemberDigest`` names archivey computes itself, with its own hasher.
@@ -567,9 +945,14 @@ class _PluginBackend(ReadBackend):
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
         start_offset: int = 0,
-    ) -> PluginReaderAdapter:
+    ) -> _PluginAdapter:
         reject_start_offset(start_offset, format, archive_name)
-        return PluginReaderAdapter(
+        adapter = (
+            SequentialReaderAdapter
+            if issubclass(self.PLUGIN, SequentialFormatPlugin)
+            else PluginReaderAdapter
+        )
+        return adapter(
             self.PLUGIN(),
             source,
             format,
@@ -705,6 +1088,8 @@ def _backend_class(
         "CONTENT_PROBES": (((fmt, _prefix_probe(probe)),) if probe is not None else ()),
         "USES_ENCODING": bool(plugin.uses_encoding),
         "NON_SEEKABLE_REASON": "its reader needs random access to the archive",
+        # A sequential format reads a pipe in a streaming pass.
+        "SUPPORTS_STREAMING_NON_SEEKABLE": issubclass(plugin, SequentialFormatPlugin),
         "INSTALL_HINT": plugin.install_hint,
         "REQUIRED_MODULES": tuple(plugin.requires),
         **overrides,

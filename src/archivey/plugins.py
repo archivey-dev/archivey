@@ -6,18 +6,20 @@ this repository has used it. Pin the archivey version a plugin is tested with.
 A plugin is two classes. A :class:`FormatPlugin` subclass declares the format: its
 :class:`~archivey.ArchiveFormat`, file extensions, magic bytes, and an ``open()`` that
 returns a reader. The reader subclasses :class:`IndexedReader` (a format with an index:
-list the members first, then open any one of them). The plugin hands archivey members
-and bytes; archivey does everything after that the same way it does for a built-in
-format: name normalization and the name checks, listing limits, link resolution, safe
-extraction and its limits, and the size and digest checks on member data.
+list the members first, then open any one of them) or :class:`SequentialReader` (a
+format of header, data, header, data, read in one forward pass, from a pipe too). The
+plugin hands archivey members and bytes; archivey does everything after that the same
+way it does for a built-in format: name normalization and the name checks, listing
+limits, link resolution, safe extraction and its limits, and the size and digest checks
+on member data.
 
 A program registers a plugin with :func:`register_format`. Nothing is loaded
 automatically. Plugin code runs in the caller's process as trusted code: archivey's
 limits cover what the plugin hands over, not the plugin's own parser.
 
-What the first version leaves out: formats read as one forward pass (a pipe), outer
-compression around a plugin format, self-extracting stubs, multi-volume sets,
-passwords, and new diagnostic codes.
+What the first version leaves out: outer compression around a plugin format, member
+data a library decodes in a sequential format, self-extracting stubs, multi-volume
+sets, passwords, and new diagnostic codes.
 """
 
 from __future__ import annotations
@@ -47,17 +49,21 @@ from archivey.types import (
 
 __all__ = [
     "FormatPlugin",
+    "ForwardStream",
     "Hasher",
     "IndexedReader",
     "Magic",
     "MemberData",
     "MemberDigest",
     "MemberRecord",
+    "MemberSpan",
     "PluginArchiveInfo",
     "PluginContainer",
     "PluginContext",
     "PluginReader",
     "PluginSource",
+    "SequentialFormatPlugin",
+    "SequentialReader",
     "block_stream",
     "buffered_stream",
     "register_format",
@@ -170,6 +176,33 @@ class MemberData(NamedTuple):
     its extra bytes go unreported, where they would raise ``CorruptionError``."""
 
 
+class MemberSpan(NamedTuple):
+    """One member, as :meth:`SequentialReader.walk` yields it: the member, and how
+    many of the stream's next bytes are its data."""
+
+    member: ArchiveMember
+    """The member, with its public fields filled in. ``name`` is decoded; archivey
+    normalizes it and reports the change, as for a built-in format. A ``FILE`` listed
+    with no ``size`` gets ``data_length``."""
+
+    data_length: int = 0
+    """How many bytes after the header, from where the stream is when the span is
+    yielded, are the member's data, stored as they are. archivey reads them or skips
+    them; the walk resumes after them. For a ``FILE``, a ``size`` other than this
+    raises ``ValueError``. A symlink's target, when
+    :attr:`SequentialReader.link_target_in_data` says it is the data, is read from
+    these bytes."""
+
+    digests: tuple[MemberDigest, ...] = ()
+    """Checksums the header stores for the member's data, checked as
+    :attr:`MemberData.digests` are. One with a ``HashAlgorithm`` name is also listed
+    in ``ArchiveMember.hashes``."""
+
+    stored_name: str | None = None
+    """As :attr:`MemberRecord.stored_name`: the decoded name, when the reader
+    normalized ``member.name`` itself to report on the member before yielding it."""
+
+
 class PluginArchiveInfo(NamedTuple):
     """What the reader knows about the archive that archivey cannot work out."""
 
@@ -243,6 +276,64 @@ class PluginSource:
         if isinstance(fmt, struct.Struct):
             return fmt.unpack(self.read_exact(offset, fmt.size))
         return struct.unpack(fmt, self.read_exact(offset, struct.calcsize(fmt)))
+
+
+class ForwardStream:
+    """The archive's bytes for a sequential reader, read forward from the start.
+
+    archivey builds it, over a pipe as well as a file. :meth:`SequentialReader.walk`
+    reads headers from it. A member's data is not the walk's to read: archivey reads
+    or skips it before the walk resumes.
+    """
+
+    def __init__(
+        self,
+        read: Callable[[int], bytes],
+        skip: Callable[[int, int], None],
+    ) -> None:
+        self._read_fn = read
+        self._skip_fn = skip
+        self._offset = 0
+
+    @property
+    def offset(self) -> int:
+        """How many bytes of the archive have been read or skipped so far: the offset
+        of the next byte."""
+        return self._offset
+
+    def read(self, n: int) -> bytes:
+        """Up to ``n`` bytes; fewer only at the end of the archive."""
+        if n < 0:
+            raise ValueError(f"ForwardStream.read() takes a size of 0 or more, got {n}")
+        data = self._read_fn(n)
+        self._offset += len(data)
+        return data
+
+    def read_exact(self, n: int) -> bytes:
+        """``n`` bytes, or ``TruncatedError`` when the archive ends first."""
+        start = self._offset
+        data = self.read(n)
+        if len(data) < n:
+            raise TruncatedError(
+                f"the archive ends {len(data)} bytes into the {n} bytes at offset "
+                f"{start}"
+            )
+        return data
+
+    def read_struct(self, fmt: str | struct.Struct) -> tuple[Any, ...]:
+        """``struct.unpack(fmt, ...)`` of the next bytes, read with
+        :meth:`read_exact`."""
+        if isinstance(fmt, struct.Struct):
+            return fmt.unpack(self.read_exact(fmt.size))
+        return struct.unpack(fmt, self.read_exact(struct.calcsize(fmt)))
+
+    def skip(self, n: int) -> None:
+        """Move past ``n`` bytes (padding, say) without returning them.
+        ``TruncatedError`` when the archive ends first."""
+        if n < 0:
+            raise ValueError(f"ForwardStream.skip() takes a size of 0 or more, got {n}")
+        self._skip_fn(self._offset, n)
+        self._offset += n
 
 
 class PluginContext:
@@ -396,7 +487,8 @@ class PluginContext:
 
 
 class PluginReader(ABC):
-    """One open archive. Subclass :class:`IndexedReader`, not this class."""
+    """One open archive. Subclass :class:`IndexedReader` or :class:`SequentialReader`,
+    not this class."""
 
     def archive_info(self) -> PluginArchiveInfo:
         """Archive-level details. The default says nothing beyond the defaults."""
@@ -439,6 +531,39 @@ class IndexedReader(PluginReader, Generic[LocatorT]):
     def open_member(self, member: ArchiveMember, locator: LocatorT) -> MemberData:
         """Open the data of a ``FILE`` member. ``locator`` is the one its
         :class:`MemberRecord` carried."""
+
+
+class SequentialReader(PluginReader):
+    """A format of header, data, header, data: read in one forward pass, so from a
+    pipe as well as a file.
+
+    The reader parses headers and archivey owns the data. :meth:`walk` reads a header
+    from the stream and yields a :class:`MemberSpan` saying that the next
+    ``data_length`` bytes are the member's data. archivey hands those bytes to the
+    caller as the member's stream and, before it resumes the walk, skips whatever the
+    caller left unread. The walk then reads any padding and the next header. On a
+    seekable source archivey records where each member's data starts, so
+    ``open_archive(path).open(name)`` reads it directly, with no walk.
+
+    archivey calls the methods of one reader from one thread at a time.
+    """
+
+    link_target_in_data: ClassVar[bool] = False
+    """``True`` when a symlink's target is its data (CPIO). archivey reads it while
+    walking, up to 4096 bytes, and decodes it as UTF-8, with
+    ``surrogateescape`` for other bytes. A longer one is reported and left unset."""
+
+    @abstractmethod
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        """Yield every member once, and return at the end of the archive. Each span's
+        data starts where the stream is when it is yielded, so the stream only moves
+        forward; members usually come in archive order, but a format may need another
+        (a hard link listed before the member it names must wait for it, since a link
+        names an earlier member). Check what the format puts at its end (a trailer, an
+        end marker) here, and raise ``CorruptionError`` or ``TruncatedError`` for
+        damage: archivey keeps the members yielded before it. On a seekable source
+        archivey may walk again from the start, with a new stream; the members and
+        their order must be the same."""
 
 
 class FormatPlugin(ABC):
@@ -487,6 +612,27 @@ class FormatPlugin(ABC):
     def open(self, source: PluginSource, context: PluginContext) -> PluginReader:
         """Open the archive. Raise ``CorruptionError`` or ``TruncatedError`` when its
         structure is damaged, as a built-in reader does."""
+
+
+class SequentialFormatPlugin(FormatPlugin):
+    """A format read in one forward pass. Subclass this instead of
+    :class:`FormatPlugin`, and implement :meth:`open_sequential` instead of
+    :meth:`~FormatPlugin.open`: there is no seekable source to hand over, since the
+    archive may be a pipe. Its bytes reach :meth:`SequentialReader.walk`."""
+
+    @abstractmethod
+    def open_sequential(self, context: PluginContext) -> SequentialReader:
+        """Make the reader. Nothing is read yet: a format whose start does not parse
+        raises from the first step of :meth:`SequentialReader.walk`, which archivey
+        takes when it opens the archive."""
+
+    def open(self, source: PluginSource, context: PluginContext) -> PluginReader:
+        """Not called for a sequential format: archivey calls
+        :meth:`open_sequential`."""
+        raise TypeError(
+            f"{type(self).__name__} is a SequentialFormatPlugin: archivey calls "
+            "open_sequential(), not open()"
+        )
 
 
 _register_lock = threading.Lock()
