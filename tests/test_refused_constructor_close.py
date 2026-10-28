@@ -1,4 +1,4 @@
-"""A stream whose constructor refused its input must still close cleanly.
+"""A stream whose constructor refused its input, or never ran, must still close cleanly.
 
 ``IOBase.__del__`` calls ``close()`` on every instance not marked closed, including
 one whose initialising method raised: ``__init__``, or ``_setup`` for an
