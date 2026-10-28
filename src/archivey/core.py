@@ -546,11 +546,6 @@ def _note_unused_arguments(
     cannot use the argument is the plugin.
     """
     fmt_name = resolved_format.display_name
-    by = (
-        f", but {replacement.__name__} reads it (ArchiveyConfig.formats.replace) and"
-        if replacement is not None
-        else None
-    )
     # `password=` and `encoding=` are *resources offered for use if needed*, not
     # assertions about this archive, so a backend that cannot use one is a diagnostic
     # rather than a refusal (``archive-reading`` §"assertion vs resource"). `format=` is
@@ -560,48 +555,53 @@ def _note_unused_arguments(
         # because a provider callable offers a password only if asked, and a format
         # with no encryption never asks. A caller (the CLI, a batch job) can then pass
         # one provider everywhere without a warning on every TAR or gzip.
+        if replacement is not None:
+            message = (
+                f"password= was supplied for {fmt_name}, but {replacement.__name__} "
+                "reads it (ArchiveyConfig.formats.replace) and takes no password; it "
+                "will not be used."
+            )
+            reason = "replacement reader takes no password"
+        else:
+            message = (
+                f"password= was supplied for {fmt_name}, which carries no encryption "
+                "a password could unlock; it will not be used."
+            )
+            reason = "format carries no encryption"
         collector.emit(
             code=DiagnosticCode.PASSWORD_ARGUMENT_UNUSED,
-            message=(
-                f"password= was supplied for {fmt_name}{by} takes no password; it "
-                "will not be used."
-                if by is not None
-                else f"password= was supplied for {fmt_name}, which carries no "
-                "encryption a password could unlock; it will not be used."
-            ),
+            message=message,
             context=UnusedArgumentContext(
                 archive_name=archive_name,
                 argument="password",
                 format=fmt_name,
-                reason=(
-                    "replacement reader takes no password"
-                    if by is not None
-                    else "format carries no encryption"
-                ),
+                reason=reason,
             ),
         )
 
     if encoding is not None and not backend_cls.USES_ENCODING:
         # Only the caller's explicit encoding: an open that passed none asked for nothing.
+        if replacement is not None:
+            message = (
+                f"encoding={encoding!r} was supplied for {fmt_name}, but "
+                f"{replacement.__name__} reads it (ArchiveyConfig.formats.replace) and "
+                "does not apply one; the value will not be applied."
+            )
+            reason = "replacement reader does not apply a caller-supplied encoding"
+        else:
+            message = (
+                f"encoding={encoding!r} was supplied for {fmt_name}, which decodes "
+                "member names without it; the value will not be applied."
+            )
+            reason = "backend decodes member names without a caller-supplied encoding"
         collector.emit(
             code=DiagnosticCode.ENCODING_ARGUMENT_UNUSED,
-            message=(
-                f"encoding={encoding!r} was supplied for {fmt_name}{by} does not "
-                "apply one; the value will not be applied."
-                if by is not None
-                else f"encoding={encoding!r} was supplied for {fmt_name}, which "
-                "decodes member names without it; the value will not be applied."
-            ),
+            message=message,
             context=UnusedArgumentContext(
                 archive_name=archive_name,
                 argument="encoding",
                 format=fmt_name,
-                reason=(
-                    "replacement reader does not apply a caller-supplied encoding"
-                    if by is not None
-                    else "backend decodes member names without a caller-supplied "
-                    "encoding"
-                ),
+                reason=reason,
             ),
         )
 
