@@ -216,6 +216,18 @@ class FormatPolicy:
         object.__setattr__(self, "exclude", exclude_parsed)
         object.__setattr__(self, "plugins", plugins)
 
+    def _replacement_for(self, fmt: ArchiveFormat) -> type[FormatPlugin] | None:
+        """The plugin :attr:`replace` names to read ``fmt``, else ``None``.
+
+        The one place that answers it: the open's refusals for a replacement and the
+        reader it opens with both follow this answer.
+        """
+        container = fmt.container
+        if not isinstance(container, ContainerFormat):
+            return None
+        plugin = self.replace.get(container)
+        return plugin if plugin is not None and plugin.format == fmt else None
+
     def allows(self, fmt: ArchiveFormat) -> bool:
         """Whether ``fmt`` may open under this policy."""
         return self._refusal(fmt) is None

@@ -498,18 +498,6 @@ def _refuse_format_off_by_policy(
         )
 
 
-def _replacement_plugin(
-    config: ArchiveyConfig, fmt: ArchiveFormat
-) -> type[FormatPlugin] | None:
-    """The plugin ``config.formats.replace`` names to read ``fmt``, else ``None``."""
-    plugin = (
-        config.formats.replace.get(fmt.container)
-        if isinstance(fmt.container, ContainerFormat)
-        else None
-    )
-    return plugin if plugin is not None and plugin.format == fmt else None
-
-
 def _refuse_for_replacement(
     plugin: type[FormatPlugin],
     what: str,
@@ -545,13 +533,24 @@ def _note_unused_arguments(
     passwords: _PasswordCandidates,
     encoding: str | None,
     collector: DiagnosticCollector,
+    replacement: type[FormatPlugin] | None,
 ) -> None:
     """Emit the ``password=`` / ``encoding=`` hygiene diagnostics for ``backend_cls``.
 
     Reads only class attributes, so it runs for a backend whose optional package is
     missing too. Both access-mode refusals call it first, so a refused open reports the
     same hygiene whichever half refuses it.
+
+    For a ``replacement`` reader the text names the reader, not the format: ZIP, 7z
+    and RAR carry encryption and the built-in reader applies ``encoding=``, so what
+    cannot use the argument is the plugin.
     """
+    fmt_name = resolved_format.display_name
+    by = (
+        f", but {replacement.__name__} reads it (ArchiveyConfig.formats.replace) and"
+        if replacement is not None
+        else None
+    )
     # `password=` and `encoding=` are *resources offered for use if needed*, not
     # assertions about this archive, so a backend that cannot use one is a diagnostic
     # rather than a refusal (``archive-reading`` §"assertion vs resource"). `format=` is
@@ -564,14 +563,21 @@ def _note_unused_arguments(
         collector.emit(
             code=DiagnosticCode.PASSWORD_ARGUMENT_UNUSED,
             message=(
-                f"password= was supplied for {resolved_format.display_name}, which "
-                f"carries no encryption a password could unlock; it will not be used."
+                f"password= was supplied for {fmt_name}{by} takes no password; it "
+                "will not be used."
+                if by is not None
+                else f"password= was supplied for {fmt_name}, which carries no "
+                "encryption a password could unlock; it will not be used."
             ),
             context=UnusedArgumentContext(
                 archive_name=archive_name,
                 argument="password",
-                format=resolved_format.display_name,
-                reason="format carries no encryption",
+                format=fmt_name,
+                reason=(
+                    "replacement reader takes no password"
+                    if by is not None
+                    else "format carries no encryption"
+                ),
             ),
         )
 
@@ -580,15 +586,22 @@ def _note_unused_arguments(
         collector.emit(
             code=DiagnosticCode.ENCODING_ARGUMENT_UNUSED,
             message=(
-                f"encoding={encoding!r} was supplied for "
-                f"{resolved_format.display_name}, which decodes member names without "
-                f"it; the value will not be applied."
+                f"encoding={encoding!r} was supplied for {fmt_name}{by} does not "
+                "apply one; the value will not be applied."
+                if by is not None
+                else f"encoding={encoding!r} was supplied for {fmt_name}, which "
+                "decodes member names without it; the value will not be applied."
             ),
             context=UnusedArgumentContext(
                 archive_name=archive_name,
                 argument="encoding",
-                format=resolved_format.display_name,
-                reason="backend decodes member names without a caller-supplied encoding",
+                format=fmt_name,
+                reason=(
+                    "replacement reader does not apply a caller-supplied encoding"
+                    if by is not None
+                    else "backend decodes member names without a caller-supplied "
+                    "encoding"
+                ),
             ),
         )
 
@@ -712,7 +725,7 @@ def _open_resolved(
     # would be said about the file, so the caller is not told to install a package or
     # buffer a pipe for a format it does not want to open.
     _refuse_format_off_by_policy(config, resolved_format, archive_name)
-    replacement = _replacement_plugin(config, resolved_format)
+    replacement = config.formats._replacement_for(resolved_format)
     if replacement is not None:
         # A replacement gets what any indexed plugin gets: the archive from its start,
         # in one file. What the built-in reader does around that is not offered.
@@ -742,12 +755,9 @@ def _open_resolved(
     # A raw CD sector image is claimed as ISO only so it can be refused by name. Ahead
     # of the availability check, so the answer does not depend on pycdlib; a
     # non-seekable source is left to the read-once refusal below, which is also ahead
-    # of it.
-    if (
-        resolved_format == ArchiveFormat.ISO
-        and replacement is None
-        and archive_source.seekable()
-    ):
+    # of it. A replacement reader is refused it too: the bytes are not an ISO 9660
+    # image, whichever reader would open them.
+    if resolved_format == ArchiveFormat.ISO and archive_source.seekable():
         refuse_raw_sector_image(archive_source, resolved_format, archive_name)
 
     # Detection claims a recognised-only format (DMG) so this refusal can name it and
@@ -799,6 +809,7 @@ def _open_resolved(
             passwords=passwords,
             encoding=encoding,
             collector=collector,
+            replacement=replacement,
         )
         raise StreamNotSeekableError(
             f"Format {resolved_format.display_name} cannot be read from a non-seekable source "
@@ -808,7 +819,7 @@ def _open_resolved(
             archive_name=archive_name,
         )
 
-    backend_cls = registry.reader_for_format(resolved_format, config.formats)
+    backend_cls = registry.reader_for_format(resolved_format, replacement=replacement)
 
     # The capability half above emits these too, so either refusal half reports them.
     _note_unused_arguments(
@@ -818,6 +829,7 @@ def _open_resolved(
         passwords=passwords,
         encoding=encoding,
         collector=collector,
+        replacement=replacement,
     )
 
     # The mode half of the access-mode refusal; the capability half is above. This one
