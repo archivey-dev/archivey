@@ -9,6 +9,7 @@ import os
 import random
 import threading
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from archivey import (
     MemberType,
     ResourceLimitError,
     TruncatedError,
+    UnsupportedFeatureError,
     detect_format,
     open_archive,
 )
@@ -350,6 +352,94 @@ def test_hostile_headers(tmp_path: Path) -> None:
     long_name[94:102] = b"%08X" % (MAX_NAME_BYTES + 1)
     with pytest.raises(CorruptionError, match=f"a name of {MAX_NAME_BYTES + 1} bytes"):
         opened(bytes(long_name))
+
+
+def _odc_member(name: bytes, data: bytes, *, ino: int, uid: int = 0) -> bytes:
+    stored = name + b"\0"
+    fields = (0, ino, _FILE, uid, 0, 1, 0, 0o1234567, len(stored), len(data))
+    widths = (6, 6, 6, 6, 6, 6, 6, 11, 6, 11)
+    header = b"070707" + b"".join(
+        b"%0*o" % (w, v) for w, v in zip(widths, fields, strict=True)
+    )
+    return header + stored + data
+
+
+def _afio_large_member(
+    name: bytes, data: bytes, *, ino: int, uid: int, xsize: int = 0
+) -> bytes:
+    """A member under afio's large header, its fields laid out as libarchive reads
+    them: dev, ino, 'm', mode (octal), uid, gid, nlink, rdev, mtime, 'n', namesize,
+    flag, xsize, 's', filesize, ':'."""
+    stored = name + b"\0"
+    header = b"070727%08X%016Xm%06o%08X%08X%08X%08X%016Xn%04X%04X%04Xs%016X:" % (
+        0x63,
+        ino,
+        _FILE,
+        uid,
+        0,
+        1,
+        0,
+        0x4B694A10,
+        len(stored),
+        0,
+        xsize,
+        len(data),
+    )
+    assert len(header) == 116
+    return header + stored + data
+
+
+def _odc_trailer() -> bytes:
+    return _odc_member(TRAILER, b"", ino=0)
+
+
+def test_afio_large_headers(tmp_path: Path) -> None:
+    """afio writes odc, but gives a member whose fields need it its large header
+    (libarchive's test_read_format_cpio_afio has one such member, for a uid of
+    65536): both kinds read in one archive, which stays odc."""
+    data = (
+        _odc_member(b"file1", b"0123456789abcdef\n", ino=1)
+        + _afio_large_member(b"file2", b"0123456789abcdef\n", ino=2, uid=65536)
+        + _odc_trailer()
+    )
+    data += bytes(-len(data) % 5120)  # afio's block size
+    for source in (_archive(tmp_path, data), _Pipe(data)):
+        with open_archive(source, streaming=True) as reader:
+            got = [
+                (m.name, m.uid, m.size, s.read()) for m, s in reader.stream_members()
+            ]
+            assert reader.info.format_version == "odc"
+        assert got == [
+            ("file1", 0, 17, b"0123456789abcdef\n"),
+            ("file2", 65536, 17, b"0123456789abcdef\n"),
+        ]
+    with open_archive(_archive(tmp_path, data)) as reader:
+        (_, second) = reader.members()
+    assert second.modified == datetime.fromtimestamp(0x4B694A10, UTC)
+    # An archive whose first member has the large header is found by its magic.
+    first_large = _afio_large_member(b"big", b"x", ino=1, uid=1 << 20) + _odc_trailer()
+    assert detect_format(io.BytesIO(first_large)).format == CPIO
+    with open_archive(io.BytesIO(first_large)) as reader:
+        assert [(m.name, m.uid) for m in reader.members()] == [("big", 1 << 20)]
+
+
+def test_afio_large_header_damage(tmp_path: Path) -> None:
+    def opened(data: bytes) -> None:
+        with open_archive(_archive(tmp_path, data), format="cpio") as reader:
+            reader.members()
+
+    good = _afio_large_member(b"a", b"x", ino=1, uid=1) + _odc_trailer()
+    no_m = bytearray(good)
+    no_m[30:31] = b"x"
+    with pytest.raises(CorruptionError, match="no 'm' separator"):
+        opened(bytes(no_m))
+    bad_digit = bytearray(good)
+    bad_digit[37:38] = b"g"  # in the uid field
+    with pytest.raises(CorruptionError, match="the uid field"):
+        opened(bytes(bad_digit))
+    extra = _afio_large_member(b"a", b"x", ino=1, uid=1, xsize=4) + _odc_trailer()
+    with pytest.raises(UnsupportedFeatureError, match="4 bytes of extra data"):
+        opened(extra)
 
 
 def _imports(path: Path) -> Iterator[str]:

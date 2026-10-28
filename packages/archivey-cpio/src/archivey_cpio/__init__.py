@@ -45,7 +45,13 @@ class CpioPlugin(SequentialFormatPlugin):
 
     format = CPIO
     extensions = (".cpio",)
-    magic = (Magic(0, b"070707"), Magic(0, b"070701"), Magic(0, b"070702"))
+    magic = (
+        Magic(0, b"070707"),
+        Magic(0, b"070701"),
+        Magic(0, b"070702"),
+        # afio's large header, on an archive whose first member needs it.
+        Magic(0, b"070727"),
+    )
     probe = staticmethod(_binary_probe)
     uses_encoding = True
 
