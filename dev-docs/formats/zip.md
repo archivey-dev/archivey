@@ -820,8 +820,8 @@ XZ member (method 95) reads the same way, for the same reason: the xz format (sp
 defines its data as one or more streams with stream padding (groups of four zero bytes)
 between and after them, and 7-Zip 23.01 and 26.05 read such a member in full. Zero bytes that
 do not fill a group of four, or any other byte after the last stream, are input after the
-end; 7-Zip fails those members too. An LZMA member with bit 1 clear, and a PPMd member, end at their declared size, and their
-input must end there too: right after it for LZMA (or one zero byte later, which 7-Zip's
+end; 7-Zip fails those members too. An LZMA member with bit 1 clear, and a PPMd member,
+end at their declared size, and their input must end there too: right after it for LZMA (or one zero byte later, which 7-Zip's
 encoder sometimes writes), after the end mark PPMd8 must carry. So a declared size short
 of the stream's data is `CorruptionError`, not `TruncatedError`: the input is too long,
 not short. The 7z handbook (§ coders, *Input after the stream*) has how each codec finds
