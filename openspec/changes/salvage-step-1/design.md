@@ -66,13 +66,18 @@ When a header after MAIN fails its CRC (today: `_RarHeaderCrcError`, recorded in
    `ADD_SIZE` or the FILE header's packed size, including the high 32 bits when the
    flags say so). If a field does not parse, or the position is not after the damaged
    header, stop.
-2. **Confirm it**: read one header at that position. It must be inside the volume,
-   pass its own CRC, and be a type that can follow MAIN (RAR5: FILE, SERVICE, ENDARC;
-   RAR 1.5-4: FILE, NEWSUB, ENDARC and the old sub-block types the walk already accepts).
-   Its own fields must parse, as for any header. If it does not pass, stop where the
-   walk stops today.
-3. **Go on** from that header with the ordinary walk. The damaged header is **not
-   listed** (decision 1). Its span (`damaged_at`, `resumed_at`) is recorded.
+2. **Confirm it with two headers.** The header at that position must be inside the
+   volume, pass its own CRC, have parsing fields, and be a type that can follow MAIN
+   (RAR5: FILE, SERVICE, ENDARC; RAR 1.5-4: FILE, NEWSUB, ENDARC and the old sub-block
+   types the walk already accepts). Then **the header after it** must pass the same
+   checks, or be the clean end of the volume (the volume's last bytes, or nothing but
+   zeros after an intact end block). When the resumed header is itself the end block,
+   its CRC and the zeros-or-nothing after it are the two checks. If either check fails,
+   stop where the walk stops today; the tentatively parsed header is dropped. The walk
+   reads the second header anyway, so the check costs one held-back header, not a read.
+3. **Go on** from the first confirmed header with the ordinary walk. The damaged header
+   is **not listed** (decision 1). It is kept as an *unlisted entry* (below), and its
+   span (`damaged_at`, `resumed_at`) is recorded.
 
 Each later damaged header gets the same rule. The walk reads each header once, so the
 cost grows with the number of headers and the walk makes no extra reads on an intact
@@ -103,26 +108,33 @@ rest.
 The confirmation is the only place this design is stricter than `unrar`. It is the
 "could the lenient behaviour hide bytes or weaken a check" factor in "When consistency
 and the official tool disagree", and it is how DR-2's "reopen if" is met: the walk
-trusts the damaged header's sizes only after the next header's CRC has vouched for
+trusts the damaged header's sizes only after the headers after them have vouched for
 them. When the confirmation fails, `unrar` also fails in practice: it parses garbage and
 reports "Unexpected end of archive" (the third row above). So the listing matches
 `unrar` wherever `unrar` gets a correct result.
 
-The confirmation is one CRC on one header, read at one position. A false
-confirmation needs a damaged size field that points at bytes which happen to pass a
-CRC: 2⁻³² for RAR5, 2⁻¹⁶ for RAR 1.5-4. The type check and the field checks lower that
-further. A search would test a CRC at every byte offset. On a 1 GB RAR5 archive that
-expects about 0.25 false headers, which is why a search is not in this step.
+A false confirmation needs a damaged size field that points at bytes which pass a CRC,
+and whose own sizes then point at a second header that passes one too. With one header
+the odds would be 2⁻³² for RAR5 and 2⁻¹⁶ for RAR 1.5-4. The second number is too weak
+for a backup corpus: a false resume lists a member made of meaningless bytes, which is a
+wrong answer (DR-1). With two headers the odds are about 2⁻⁶⁴ for RAR5 and 2⁻³² for RAR
+1.5-4, before the type and field checks, which lower them further. Both versions get
+the same two-header rule, so there is one rule to explain (DR-14a). A crafted archive
+can still pass both checks, since CRCs are not a secret. That gives a crafted member
+in the listing, which a crafted archive can have anyway.
+
+A search would test a CRC at every byte offset. On a 1 GB RAR5 archive that expects
+about 0.25 false single-header matches, which is why a search is not in this step.
 
 ### Decisions
 
-**Decision 1 — the member whose header is damaged. Recommendation: skip it.** The walk
-uses the damaged header's sizes, which the next header has confirmed, and nothing else
-from it. The member is not listed. The diagnostic says where it was and how many bytes
-were skipped.
+**Decision 1 — the member whose header is damaged. Recommendation: skip it.** The
+listing uses the damaged header's sizes, which the next headers have confirmed, and
+nothing else from it. The member is not listed. The diagnostic says where it was and
+how many bytes were skipped.
 
 - *Why not list it, as `unrar` does:* its fields have no check. The name, the type,
-  the mode, the times and the encryption flags can all be wrong, and the third row
+  the mode, the times and the encryption flags can all be wrong, and the second row
   above shows `unrar x` writing a wrong path. The data CRC does not help. It covers the
   data, not the header, and a header with a wrong name and intact data passes it. DR-1
   ranks a wrong value below a reported absence, and `formats/rar.md` §6 already refuses
@@ -142,11 +154,13 @@ were skipped.
 - `ARCHIVE_INTEGRITY_CODES` holds anomalies that the default would otherwise let pass
   without an error (DR-3: trailing data, a damaged end block). This damage never passes
   without an error, because the pass still raises. Putting the code in would only make
-  `STRICT` stop earlier, at the first damaged header, and raise `DiagnosticRaisedError`
-  in place of `CorruptionError`. `formats/rar.md` already avoids that substitution
+  `STRICT` refuse the archive at open, with `DiagnosticRaisedError` in place of the
+  `CorruptionError` and none of the members (the diagnostic is emitted during the walk,
+  which runs at open; §The diagnostic). `formats/rar.md` already avoids that substitution
   when a cut and a lesser diagnostic meet.
-- A caller who wants to stop at the first damage can use
-  `DiagnosticPolicy(raise_on={"archive_damage_skipped"})`.
+- A caller who wants to refuse such an archive outright can use
+  `DiagnosticPolicy(raise_on={"archive_damage_skipped"})`, and gets that same
+  open-time refusal.
 
 **Settled by rules, stated so they can be overruled:**
 
@@ -157,26 +171,51 @@ were skipped.
   defaults, and nothing here trusts bytes that no checksum has checked.
 - *No search:* DR-2's "reopen if" and the false-header numbers above.
 
-### The solid pass
+### The tools still see the skipped header
 
-A solid `stream_members()` pass runs one `unrar p` over the archive and splits the
-output by the offsets of the listed members (`RarReader`'s solid pass and its `plan`
-hook). `unrar p` also prints the skipped member's bytes, because it trusts the damaged
-header, and their length is not known. If the pass went on splitting, every later
-member would get the wrong bytes. A later member's CRC would catch them, but only after
-the wrong bytes were returned.
+Archivey's own listing drops the damaged header, but the programs that decode RAR data
+do not. `unrar` and `lsar` both list it. Measured on the same fixtures with `lsar`
+1.10.1 (the Ubuntu build): it lists all six members, prints `suXdir/file2.txt` for the
+name-byte case, gives no warning at all, and stops after three for the size-vint case.
+Several places address a member in those programs by its place among *their* entries,
+which is computed from archivey's table:
 
-So the `plan` hook answers `None` ("serve it as `open()` does") for every payload
-member after the first skipped header in that solid stream. Those members are read one
-at a time by name, each `unrar` run decoding the solid stream from the start: the
-cost that random `open()` on a solid RAR already has (`reader.cost.access_cost`). It is
-paid only on a damaged solid archive. The same holds for the `unar` all-entries pass.
+| Where | How it addresses a member |
+| --- | --- |
+| Solid `stream_members()` pass | One `unrar p` (or one all-entries `unar` run); the output is split by the unpacked sizes of the payload members in order |
+| `unrar` include mask | The mask can select other members; the target's bytes come after skipping the unpacked sizes of the selected members before it |
+| Glob refusal and dictionary check | Count the bytes and dictionaries of the members the mask selects before the target |
+| `unar -i` | The entry's index in `lsar`'s list, one entry per FILE header in archive order |
 
-**Duplicate names.** When two members share a name, the reader asks `unrar` for one of
-them by its position among the members with that name. A skipped header with the same
-name, as `unrar` reads it, moves those positions by one. A positional read of a
-duplicate name after a skipped header is therefore refused with the skip named in the
-error, not guessed. This shape is rare and almost only crafted (DR-5a).
+So the parse keeps each skipped header as an **unlisted entry**: the fields as the
+damaged header holds them (name, type, unpacked size, flags), parsed the way the walk
+parses any header. It is never a member and is never returned, but every computation in
+the table counts it as the tools do. This works because the tools read the same damaged
+bytes. Measured: on `basic_solid__.rar` with a damaged name byte in the third FILE
+header, `unrar p` writes the same 41 bytes, with the same MD5, as for the intact
+archive. The output layout follows the damaged header's sizes, because `unrar` uses
+them.
+
+Two rules keep this from becoming a guess:
+
+- **Every listed member is still checked by its own digest**, which comes from its own
+  intact header. If the unlisted entry's unpacked size was the damaged field, the next
+  member in the pipe fails its CRC and raises `CorruptionError`, as any damaged member
+  does. Its bytes are never served as verified.
+- **A field that does not parse is not guessed.** When a computation needs a field of
+  the unlisted entry that did not parse (a name for the mask match, a type to know
+  whether `unrar p` prints bytes for it, an unpacked size), every read whose addressing
+  depends on it raises `CorruptionError` naming the skip, before anything is spawned.
+  For the solid pass that is every payload member after the entry in that solid stream.
+  For a named read it is a target whose mask could select the entry. For `unar -i` it
+  is every entry after it when its type does not parse, since only FILE headers take an
+  index.
+
+The solid pass therefore stays one process. A damaged solid archive costs no more than
+an intact one, and the "Stream solid RAR archives through one unrar pipe" requirement
+holds unchanged. Serving the members after a skip one by one instead would make a
+pass cost one full decode of the solid stream per member, a cost the archive chooses
+(DR-9a).
 
 **File copies and links.** A RAR5 file copy or hard link whose source was the skipped
 member has no source in the listing. It takes the existing path for a source that is
@@ -192,11 +231,25 @@ class DamageSkippedContext(_JsonSafeContext):
     kind: Literal["damage_skipped"] = "damage_skipped"
     archive_name: str | None = None
     format: str = ""
-    volume: int | None = None   # 0-based volume index; None for a single file
-    damaged_at: int = 0         # offset of the damaged header in its volume
-    resumed_at: int = 0         # offset of the header the walk went on from
-    what: str = ""              # "member_header" | "service_header" | "header"
+    volume_index: int | None = None  # 0-based position in the set, not the RAR volume number; None for a single file
+    damaged_at: int = 0              # offset of the damaged header in its volume
+    resumed_at: int = 0              # offset of the header the walk went on from
+    what: str = ""                   # "member_header" | "service_header" | "header"
 ```
+
+`volume_index` follows the parser's name and meaning (`rar_parser.py`, "the 0-based
+position in that set, not a RAR format volume number"). The message names the volume
+the way the other RAR messages do.
+
+**Where it is emitted.** During the walk, which runs at open, as the damaged-service-
+header diagnostics are (`rar_reader.py`, reader construction). That is the only point
+where every skip is known before any member is handed out. The consequence: a policy
+that raises on the code makes `open_archive()` raise `DiagnosticRaisedError`, with no
+members listed. That is the honest result, since the member table is complete by then
+and nothing can cut it short. It is also why Decision 2 keeps the code out of
+`STRICT`: putting it in would turn "every member, then the error" into "no members". It
+is emitted before the end-block and trailing-data diagnostics, which come after the
+listing and are not reached when the listing ends in `CorruptionError`.
 
 `what` comes from the damaged header's type byte, which has no check, so it is a hint
 and the docs say so. The code is generic, not RAR-specific: the TAR and ZIP steps
@@ -233,12 +286,26 @@ The decoder sees the same sequence of calls whatever the caller does:
 
 With both fixed, the call boundaries depend only on the compressed bytes. The prefix
 before an error is then the same for `read(1)`, `read(64 KiB)`, `read(1 MiB)` and
-`read()`, from a file and from a pipe. On the repro above, every read size should get
-what 64 KiB reads get today (7 143 424 bytes; a test pins the number). `gzip -dc` gets
-7 176 192. The gap is at most one call's output, and it is the same gap for every
-caller.
+`read()`, from a file and from a pipe. On the repro above (measured 2026-10-10 on the
+sweep host's zlib), every read size should get what 64 KiB reads get today, 7 143 424
+bytes; `gzip -dc` gets 7 176 192. The gap is at most one call's output, and it is the
+same gap for every caller. The tests assert **equality** across read sizes, sources and
+codecs, and at most a floor ("at least what 64 KiB reads got"), never the exact count:
+how much a failing inflate call hands back first is the zlib build's business (stock
+zlib and zlib-ng differ), and CI runs three platforms.
 
-A seek that restarts the decoder at an index point counts the slices from that point.
+`read()` (and `readall`) is the one read that gets no prefix: a whole-stream read
+includes the end-of-stream verdict and raises without returning what it decoded
+(`compressed-streams`, "Content faults raise from read, never from close"). That is the
+contract that makes `read(); close()` unable to accept bad content silently, so it
+stays. A caller who wants a damaged stream's good bytes reads in bounded chunks, and
+the docs say so where they describe the prefix.
+
+Slices are counted from where the current decoder started: the start of the stream, a
+seek point it restarted from, or the start of a concatenated member (a multi-member
+`.gz`) when the codec starts a new decoder there. Each of those is a property of the
+bytes, so the sequence of calls stays the same for every reader. A seek that restarts
+the decoder at an index point counts the slices from that point.
 The prefix after such a seek can differ from a linear read's prefix. That is DR-4a's
 best-effort index trust, and it is not a new difference.
 
@@ -275,7 +342,10 @@ change result or error type"). Its decode is chunked differently, so this is mea
 not assumed (`tasks.md`). If it differs, the choice is between handing the read back
 to the in-process decoder at the error (it re-decodes from the last seek point, on the
 error path only) and a DR-5a note. That choice goes to the maintainer with the
-numbers.
+numbers. Until then this change's spec delta promises nothing about the accelerator: the
+implementation PR writes the outcome into the requirement that owns accelerator parity
+("An accelerator preserves the error contract of the path it replaces"), as a rule, an
+exception or a DR-5a note.
 
 ### Scope of the guarantee
 

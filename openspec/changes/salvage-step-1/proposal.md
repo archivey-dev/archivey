@@ -26,15 +26,17 @@ salvage. This change is their design.
 
 - **RAR walk:** when a header after MAIN fails its CRC, the walk computes the next
   header's position from the damaged header's size fields, as `unrar` does. It goes on
-  only if the header there passes its own CRC and is a type that may follow MAIN.
-  Otherwise it stops, as today. archivey does not list the member whose header is
+  only if the header there and the one after it pass their own CRCs and are types that
+  may follow MAIN. Otherwise it stops, as today. archivey does not list the member whose header is
   damaged. Each skipped header emits the new `ARCHIVE_DAMAGE_SKIPPED`. The pass still ends
   in `CorruptionError`, now after every member the walk reached, as for a missing middle
   volume. Encrypted headers stop at the damage, as `unrar` does.
-- **RAR solid pass:** a solid pass that reaches a skipped header stops splitting the
-  single `unrar p` output. The members after the skipped header are read one at a time,
-  as `open()` reads them. The output holds the skipped member's bytes, and their length
-  is not known.
+- **What `unrar` and `unar` still see:** both programs still read the skipped header as
+  an entry. The reader keeps it as an *unlisted entry*, never returned, and counts it
+  wherever it addresses a member in those programs by position: the split of a solid
+  pass's single output, include-mask selection, and the `unar -i` index. A solid pass
+  stays one process. When a field that addressing needs does not parse, the reads that
+  depend on it raise `CorruptionError` instead of guessing.
 - **Decoder feeding:** `DecompressorStream` feeds its decoder in fixed slices of 64 KiB
   of compressed input. The slices are aligned to the decoder's start, and each call asks
   for at most 64 KiB of output, whatever the caller's `n`. The bytes returned before a
@@ -73,8 +75,9 @@ None.
 - `src/archivey/internal/backends/rar_parser.py`: both header walks (RAR 1.5-4 and
   RAR5). `RarArchive.damaged` keeps the first damage and gains a list of the skipped
   spans.
-- `src/archivey/internal/backends/rar_reader.py`: the diagnostic, and the solid-pass
-  `plan` hook (members after a skip answer `None`). The `unar` pass also.
+- `src/archivey/internal/backends/rar_reader.py` and `rar_unar.py`: the diagnostic,
+  and the unlisted entries in the solid-pass split, the mask selection and the `unar`
+  index.
 - `src/archivey/internal/streams/decompressor_stream.py`: `_read_decompressed_chunk`
   and `_compressed_feed_size`. This is not near the `ArchiveStream` construction work
   of the "per-member overhead" PRs (1073 to 1076).

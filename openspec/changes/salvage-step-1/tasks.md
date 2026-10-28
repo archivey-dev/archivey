@@ -15,18 +15,24 @@ each is labelled `needs-minor`.
       fixtures (header end byte, name byte, size vint, two damaged headers), and pin
       `unrar lb` / `unrar t` on each in a test that skips without `unrar` (DR-24).
 - [ ] 1.2 `rar_parser.py`: in both walks, on a damaged header after MAIN, compute the
-      next position from the damaged sizes, confirm the header there (CRC, type, fields)
-      and resume; record each span on `RarArchive` with a cap; keep `damaged` as the
-      first. Encrypted headers do not resume.
+      next position from the damaged sizes, confirm the header there and the one after
+      it (CRC, type, fields) and resume; keep the skipped header as an unlisted entry;
+      record each span on `RarArchive` with a cap; keep `damaged` as the first.
+      Encrypted headers do not resume.
 - [ ] 1.3 `ARCHIVE_DAMAGE_SKIPPED`, `DamageSkippedContext`, `DiagnosticCodeStr`, the
       diagnostics catalogue row and the API surface listing.
-- [ ] 1.4 `rar_reader.py`: emit the diagnostic per span. In the solid pass (`unrar`
-      and `unar`), `plan` answers `None` for each payload member after the first skip.
-      Refuse a positional duplicate-name read after a skip.
+- [ ] 1.4 `rar_reader.py`, `rar_unar.py`: emit the diagnostic per span during the walk.
+      Count unlisted entries in the solid-pass split (`unrar` and `unar`), the include
+      mask selection, the glob refusal, the dictionary check and `unar_entry_index`.
+      Refuse, before spawning, a read whose addressing needs an unlisted entry's field
+      that did not parse.
 - [ ] 1.5 Tests: the `format-rar` damaged-header matrix in both access modes,
       `members_report()`, `extract_all()` (writes every reached member, then raises),
       `archivey test` and `archivey list` output, a file copy or hard link whose source
-      was skipped, a two-volume set.
+      was skipped, a two-volume set, `rar_decompressor="unar"` after a skip (with an
+      `unar` that archivey accepts), a duplicate name across a skip, and a crafted RAR
+      1.5-4 whose damaged size lands on a header that passes CRC16 while the next does
+      not (the two-header check).
 - [ ] 1.6 `formats/rar.md` §1: replace "unrar searches past the damage" with what the
       source and the measurements show, and add the resume rule and its reasons.
       `docs/errors-and-diagnostics.md`: the new code.

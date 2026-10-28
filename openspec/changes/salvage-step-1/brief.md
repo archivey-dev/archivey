@@ -14,10 +14,13 @@ error depend on the size of the caller's reads.
 - **RAR, past a damaged header.** When a header after MAIN fails its CRC, the walk
   takes the next header's position from the damaged header's own size fields, as
   `unrar` does. Archivey adds one check that `unrar` does not make: the header found
-  there must pass its own CRC. If it passes, the walk goes on, and every later member is
-  listed and readable. If it fails, the walk stops there, as today. The pass still ends
-  with `CorruptionError`, after all the members, as for a missing middle volume. A new
-  diagnostic, `ARCHIVE_DAMAGE_SKIPPED`, reports each skipped header.
+  there, and the one after it, must each pass their own CRC. If they pass, the walk goes
+  on, and every later member is listed and readable. If not, the walk stops there, as
+  today. The skipped header is kept internally so that `unrar` and `unar`, which still
+  see it, are addressed correctly, and a damaged solid archive is still read in one
+  pass. The pass still ends with `CorruptionError`, after all the members, as for a
+  missing middle volume. A new diagnostic, `ARCHIVE_DAMAGE_SKIPPED`, reports each
+  skipped header.
 - **The prefix before a decode error.** The decoder is fed in fixed 64 KiB steps
   whatever the caller's read size, so the same damaged stream gives the same good bytes
   however it is read.
@@ -40,7 +43,9 @@ The corrected rule needs no search, so it costs nothing on an intact archive.
    data CRC still passed. DR-1 ranks a wrong name below a missing member.
 2. **The new code under `STRICT`: leave it out of `ARCHIVE_INTEGRITY_CODES`
    (recommended), so `STRICT` lists the same members and raises the same
-   `CorruptionError`; or put it in, so `STRICT` stops at the first damaged header?**
+   `CorruptionError`; or put it in, so `STRICT` refuses such an archive at open, with
+   no members listed?** (The diagnostic is emitted during the walk, which runs at
+   open.)
 3. **The decode prefix: fixed 64 KiB steps (recommended), or the exact prefix?** The
    exact prefix is longer by up to one step's output. It needs a copy of the decoder
    state on every call, and only zlib can do that, so it works for DEFLATE and not for
