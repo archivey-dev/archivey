@@ -3215,8 +3215,7 @@ def _optional_library_of(module: str) -> OptionalLibrary | None:
 
 
 def _imported_modules(path: Path) -> Iterator[tuple[int, str]]:
-    """Each module ``path`` imports, by statement or by name, outside the standard
-    library and archivey."""
+    """Each module ``path`` imports, by statement or by name, outside archivey."""
     importers = {"import_module", "find_spec", "_optional", "LazyOptional"}
     for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
         modules: list[str] = []
@@ -3231,8 +3230,7 @@ def _imported_modules(path: Path) -> Iterator[tuple[int, str]]:
             if name in importers and isinstance(first, ast.Constant):
                 modules = [str(first.value)]
         for module in modules:
-            top = module.split(".")[0]
-            if top not in sys.stdlib_module_names and top != "archivey":
+            if module.split(".")[0] != "archivey":
                 yield node.lineno, module
 
 
@@ -3254,9 +3252,14 @@ def test_every_optional_package_archivey_imports_is_an_optional_library() -> Non
             continue
         for line, module in _imported_modules(path):
             library = _optional_library_of(module)
+            top = module.split(".")[0]
+            # A member first: ``compression.zstd`` is in the standard library on 3.14.
             if library is not None:
                 imported.add(library)
-            elif module.split(".")[0] not in _NOT_OPTIONAL_LIBRARIES:
+            elif (
+                top not in sys.stdlib_module_names
+                and top not in _NOT_OPTIONAL_LIBRARIES
+            ):
                 offenders.append(f"{rel}:{line}: {module}")
     assert not offenders, "imported but not an OptionalLibrary:\n" + "\n".join(
         offenders
