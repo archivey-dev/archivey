@@ -19,8 +19,8 @@ limits cover what the plugin hands over, not the plugin's own parser.
 
 A sequential format is also read inside each single-file compression stream archivey
 decodes (``.cpio.gz``). What the first version leaves out: an indexed format inside a
-compression stream, member data a library decodes in a sequential format, self-extracting stubs, multi-volume
-sets, passwords, and new diagnostic codes.
+compression stream, member data a library decodes in a sequential format,
+self-extracting stubs, multi-volume sets, passwords, and new diagnostic codes.
 """
 
 from __future__ import annotations

@@ -71,8 +71,9 @@ def test_accelerator_modes_honored_via_config(
 
     # open_codec_stream is stubbed where the shared outer-codec helper imports it, so we
     # can assert the config it received, but the stub must still yield a real
-    # uncompressed tar: tar_reader wraps it in BufferedReader, and on Python 3.14 (esp. macOS) a bare MagicMock's readinto()
-    # recurses through __index__ until pytest-timeout kills the test.
+    # uncompressed tar: tar_reader wraps it in BufferedReader, and on Python 3.14 (esp.
+    # macOS) a bare MagicMock's readinto() recurses through __index__ until
+    # pytest-timeout kills the test.
     uncompressed = io.BytesIO()
     with tarfile.open(fileobj=uncompressed, mode="w") as t:
         info = tarfile.TarInfo("a.txt")

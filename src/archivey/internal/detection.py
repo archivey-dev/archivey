@@ -149,15 +149,15 @@ if TYPE_CHECKING:
 # sequential plugin's magic within them, so a plugin cannot make the probe decode more.
 INNER_CONTAINER_PROBE_BYTES = 512
 
-# Upper bound on compressed input the inner-container probe reads from the source when the peeked
-# detection prefix is too short. bzip2 is block-transform (BWT) based: it emits no output
+# Upper bound on compressed input the inner-container probe reads from the source when
+# the peeked detection prefix is too short. bzip2 is block-transform (BWT) based: it emits no output
 # until a whole block is read, and a block holds up to 900 KB uncompressed (level 9), which
 # for incompressible leading data compresses to just over 900 KB. 1 MiB covers a full
 # worst-case first block with margin; a stream-oriented codec (gzip/xz/zstd/…) reaches the
 # header region from the ordinary prefix and never triggers this larger read. The legacy LZ4
 # stream is block-based too, with blocks of up to 8 MiB: one whose first block compresses
 # to more than this bound is left un-upgraded, by choice (handbook ``zstd-lz4.md`` §2.1).
-_INNER_TAR_MAX_PROBE_BYTES = 1 << 20
+_INNER_CONTAINER_MAX_PROBE_BYTES = 1 << 20
 
 # Leading signatures of non-archive formats that stop the content probes, the same way a
 # structurally confirmed executable does (``ExecutableCue.STRONG``). A content probe is
@@ -388,9 +388,10 @@ def _probe_inner_container(
     TAR's ``ustar`` at offset 257 first, then the magic of each registered sequential
     plugin, which registration keeps within those 512 bytes. So a tarball, or a plugin's
     sequential archive, wrapped in the compressor is found the same way, and a plugin
-    cannot make the probe decode more. The decoder reads from a bounded, non-consuming view of
-    the source (:class:`_BoundedPeekReader` over ``peek_more``), so it pulls exactly as much
-    compressed input as it needs to reach the TAR header region and no more.
+    cannot make the probe decode more. The decoder reads from a bounded, non-consuming
+    view of the source (:class:`_BoundedPeekReader` over ``peek_more``), so it pulls
+    exactly as much compressed input as it needs to decode those 512 bytes and no
+    more.
 
     Accelerators are forced ``OFF`` on both paths: a declared seek demand must not flip
     AUTO rapidgzip / IndexedBzip2File on for a short detection peek. Decoder limits are
@@ -406,15 +407,18 @@ def _probe_inner_container(
 
     With a workspace, the compressed input is bounded by what is left of the budget's
     ``max_decode_input`` (and the workspace's read ceiling) as well as by
-    :data:`_INNER_TAR_MAX_PROBE_BYTES`, and the decode is charged whether it succeeds or
-    fails. A probe that reaches its bound without finding a TAR header records
-    ``inner_tar`` as ``BUDGET_EXHAUSTED``: the answer is "not found within budget".
+    :data:`_INNER_CONTAINER_MAX_PROBE_BYTES`, and the decode is charged whether it
+    succeeds or fails. A probe that reaches its bound without finding an inner magic
+    records ``inner_tar`` as ``BUDGET_EXHAUSTED``: the answer is "not found within
+    budget".
 
     Returns ``None`` (deferring the determination to open time) when the codec backend is
     absent, the source is not decodable as this codec, or the decoded output carries no
-    inner-container magic. The tier keeps its name, ``inner_tar``. An absent backend, or a decoder the probe cannot build within its reservation
-    (``UnsupportedFeatureError``, ``ResourceLimitError``, ``MemoryError``), records
-    ``inner_tar`` as ``CAPABILITY_UNAVAILABLE``: the answer is "can't tell", not "none".
+    inner-container magic. An absent backend, or a decoder the probe cannot build within
+    its reservation (``UnsupportedFeatureError``, ``ResourceLimitError``,
+    ``MemoryError``), records ``inner_tar`` as ``CAPABILITY_UNAVAILABLE``: the answer is
+    "can't tell", not "none". The tier keeps its name, ``inner_tar``, which the detection
+    receipt reports.
     Only one reason is recorded, in this order: a budget that turns the tier off
     (``NOT_ENABLED_BY_POLICY``), an absent backend (``CAPABILITY_UNAVAILABLE``), a budget
     that cannot cover the probe (``BUDGET_EXHAUSTED``).
@@ -450,7 +454,7 @@ def _probe_inner_container(
         if workspace is not None:
             workspace.record_skip("inner_tar", TierSkipReason.CAPABILITY_UNAVAILABLE)
         return None
-    limit = _INNER_TAR_MAX_PROBE_BYTES
+    limit = _INNER_CONTAINER_MAX_PROBE_BYTES
     if workspace is not None:
         # Cut short: output against the budget's face value, since this is the only
         # tier that charges output and a pass that reaches it returns a format, so no
@@ -506,7 +510,8 @@ def _probe_inner_container(
         # allocation refused. "Can't tell", and the receipt says so.
         unavailable = True
     except (ArchiveyError, OSError, ValueError):
-        # Not decodable as this codec, or truncated before a full block -> not an inner tar.
+        # Not decodable as this codec, or truncated before a full block: no inner
+        # container.
         pass
     found = next(
         (

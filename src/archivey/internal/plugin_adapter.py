@@ -1087,10 +1087,15 @@ def _check_plugin(plugin: type[FormatPlugin]) -> ArchiveFormat:
             f"{plugin.__name__}.format must use a PluginContainer member as its "
             f"container, got {fmt.container!r}"
         )
+    sequential = issubclass(plugin, SequentialFormatPlugin)
     if fmt.stream != StreamFormat.UNCOMPRESSED:
         raise ArchiveyUsageError(
-            f"{plugin.__name__}.format must have an UNCOMPRESSED stream: archivey "
-            "adds the compressed forms of a sequential format itself"
+            f"{plugin.__name__}.format must have an UNCOMPRESSED stream: "
+            + (
+                "archivey adds the compressed forms of a sequential format itself"
+                if sequential
+                else "an indexed format inside a compression stream is not supported"
+            )
         )
     registry = get_registry()
     if registry.registered_reader(fmt) is not None:
@@ -1108,7 +1113,6 @@ def _check_plugin(plugin: type[FormatPlugin]) -> ArchiveFormat:
                 f"{plugin.__name__}: container value {value!r} is already used by "
                 f"{other.display_name}"
             )
-    sequential = issubclass(plugin, SequentialFormatPlugin)
     for each in (fmt, *(_compressed_formats(fmt) if sequential else ())):
         clash = plugin_spelling_clash(each)
         if clash is not None:
