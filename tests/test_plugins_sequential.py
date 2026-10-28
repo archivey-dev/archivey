@@ -16,6 +16,7 @@ import threading
 import zlib
 from collections.abc import Iterator
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -58,6 +59,7 @@ class ToysContainer(PluginContainer):
     TOYS = "toys"
     BAD_SIZE = "toys-bad-size"
     SUM16 = "toys-sum16"
+    CLOSING = "toys-closing"
 
 
 TOYS = ArchiveFormat(ToysContainer.TOYS, StreamFormat.UNCOMPRESSED)
@@ -360,6 +362,92 @@ def test_a_size_other_than_the_data_length_is_a_plugin_bug(
         pytest.raises(ValueError, match="data_length"),
     ):
         reader.members()
+
+
+def test_a_size_given_to_an_empty_file_is_a_plugin_bug(
+    toys: ArchiveFormat, tmp_path: Path
+) -> None:
+    """The size check covers a data length of 0 too: a FILE sized past its data would
+    otherwise blame a sound archive as cut short."""
+    fmt = _variant(_BadSizeReader, ToysContainer.BAD_SIZE)
+    path = _write(tmp_path, build_toys([("empty", MemberType.FILE, b"")]))
+    with (
+        open_archive(path, format=fmt) as reader,
+        pytest.raises(ValueError, match="data_length 0"),
+    ):
+        reader.members()
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_a_directory_with_data_is_reported(
+    toys: ArchiveFormat, tmp_path: Path, pipe: bool
+) -> None:
+    data = build_toys(
+        [("d", MemberType.DIRECTORY, b"junk"), ("f", MemberType.FILE, b"ok")]
+    )
+    source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data)
+    with open_archive(source, streaming=pipe) as reader:
+        seen = [
+            (m.name, m.type, m.size, s.read() if s is not None else None)
+            for m, s in reader.stream_members()
+        ]
+        counts = reader.diagnostics.counts
+    assert seen == [
+        ("d/", MemberType.DIRECTORY, 4, b"junk"),
+        ("f", MemberType.FILE, 2, b"ok"),
+    ]
+    assert counts[archivey.DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED] == 1
+
+
+class _ClosingReader(ToysReader):
+    """Records its close() and when the walk's cleanup ran, against it."""
+
+    events: ClassVar[list[str]] = []
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        try:
+            yield from super().walk(stream)
+        finally:
+            self.events.append("walk done")
+
+    def close(self) -> None:
+        self.events.append("close")
+
+
+def test_a_failed_open_closes_the_reader(toys: ArchiveFormat, tmp_path: Path) -> None:
+    fmt = _variant(_ClosingReader, ToysContainer.CLOSING)
+    _ClosingReader.events = []
+    with pytest.raises(CorruptionError, match="no TOYS header"):
+        open_archive(_write(tmp_path, b"XX" + bytes(30)), format=fmt)
+    assert _ClosingReader.events == ["walk done", "close"]
+
+
+def test_an_unlisted_walk_ends_before_close(
+    toys: ArchiveFormat, tmp_path: Path
+) -> None:
+    """A walk taken at open and never listed runs its cleanup before close()."""
+    fmt = _variant(_ClosingReader, ToysContainer.CLOSING)
+    _ClosingReader.events = []
+    with open_archive(_write(tmp_path, build_toys(_ENTRIES)), format=fmt):
+        pass
+    assert _ClosingReader.events == ["walk done", "close"]
+
+
+def test_a_listing_stopped_by_a_limit_walks_again(
+    toys: ArchiveFormat, tmp_path: Path
+) -> None:
+    """A second listing starts a new walk from the start, and stops the same way."""
+    config = archivey.ArchiveyConfig(
+        listing_limits=archivey.ListingLimits(max_members=3)
+    )
+    path = _write(tmp_path, build_toys(_ENTRIES))
+    messages = []
+    with open_archive(path, config=config) as reader:
+        for _ in range(2):
+            with pytest.raises(archivey.ResourceLimitError) as raised:
+                reader.members()
+            messages.append(str(raised.value))
+    assert messages[0] == messages[1]
 
 
 class _Sum16:
