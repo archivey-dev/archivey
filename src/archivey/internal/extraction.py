@@ -624,11 +624,13 @@ class _RunState:
         default_factory=dict
     )
 
-    # ``dest`` as a string ending in a separator, for ``_physical_path``.
+    # The string a ``dest / name`` join puts before ``name``, for ``_physical_path`` and
+    # ``_callers_parent``: built by pathlib's own join, so it agrees with pathlib's
+    # spelling (``""`` for ``Path(".")``, ``"/"`` for the root, ``"C:"`` for a drive).
     dest_prefix: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self.dest_prefix = os.path.join(os.fspath(self.dest), "")
+        self.dest_prefix = os.fspath(self.dest / "_")[:-1]
 
 
 @dataclass
@@ -2336,7 +2338,8 @@ class ExtractionCoordinator:
     def _parent(self, path: Path) -> Path:
         """``path.parent``, the same object again for the same ``path``.
 
-        Writing a member asks for its parent three times (``_callers_parent``,
+        Writing a member asks for its parent up to three times (``_callers_parent``,
+        which a member at the top of the destination answers without it,
         ``_make_room`` and the temp file next to it). Each new parent object builds
         its parts, its string and its comparison key again: a few microseconds a
         member that one cached object pays once. ``Path`` is immutable, so the cache
@@ -2357,11 +2360,14 @@ class ExtractionCoordinator:
         wrote is not the caller's: ``_makedirs`` fails the member with an error that
         names it."""
         dest = self._state.dest
-        if os.path.dirname(os.fspath(path)) == os.fspath(dest):
+        spelled = os.fspath(path)
+        if spelled == self._state.dest_prefix + os.path.basename(spelled):
             # A member at the top of the destination, compared as strings: a
             # ``Path`` comparison of a new parent costs a few times more.
             return None
         parent = self._parent(path)
+        # ``parent == dest`` still catches what the string test cannot: a destination
+        # equal under ``Path`` rules but spelled differently (case on Windows).
         if (
             parent in self._state.created_dirs
             or parent == dest
