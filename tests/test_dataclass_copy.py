@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 
 import pytest
 
@@ -44,6 +44,25 @@ class _PostInit:
         self.seen.append(self.a)
 
 
+def test_copy_with_copies_a_post_init_class_by_position() -> None:
+    # Its constructor still takes exactly its fields; ``__post_init__`` runs on the copy
+    # either way, as it does under ``dataclasses.replace``.
+    assert dataclass_copy._plan(_PostInit) is not None
+    obj = _PostInit(1, 2)
+    fast = copy_with(obj, a=3)
+    slow = dataclasses.replace(obj, a=3)
+    assert (fast.a, fast.b) == (slow.a, slow.b) == (3, 2)
+    assert fast.seen is slow.seen is obj.seen
+    assert obj.seen == [1, 3, 3]
+
+
+@dataclass(frozen=True)
+class _InitVarNoPostInit:
+    a: int
+    iv: InitVar[int] = 0
+    b: int = 5
+
+
 @dataclass
 class _KeywordOnly:
     a: int
@@ -57,19 +76,32 @@ class _NotInInit:
     c: int = field(default=7, init=False)
 
 
+@dataclass(init=False)
+class _NoInit:
+    a: int
+    b: int
+
+    def __init__(self, b: int, a: int) -> None:
+        self.a = a
+        self.b = b
+
+
 @pytest.mark.parametrize(
     ("obj", "changes"),
     [
-        (_PostInit(1, 2), {"a": 3}),
+        (_InitVarNoPostInit(1, 99, 7), {"a": 2}),
         (_KeywordOnly(1, b=2), {"b": 3}),
         (_NotInInit(1, 2), {"a": 3}),
+        (_NoInit(b=2, a=1), {"a": 3}),
     ],
-    ids=["post-init", "keyword-only", "not-in-init"],
+    ids=["initvar", "keyword-only", "not-in-init", "own-init"],
 )
 def test_copy_with_falls_back_where_position_cannot_carry_it(
     obj: object, changes: dict[str, int]
 ) -> None:
-    assert dataclass_copy._plan(type(obj)) is None
+    # Each constructor takes something other than exactly the fields in order, so a
+    # positional call would put a value in the wrong place.
+    assert dataclass_copy._plan(type(obj)) is None  # type: ignore[arg-type]
     assert copy_with(obj, **changes) == dataclasses.replace(obj, **changes)  # type: ignore[type-var]
 
 
