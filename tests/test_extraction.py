@@ -2356,28 +2356,43 @@ def test_link_onto_a_name_of_the_same_file_leaves_no_temp(
     assert os.path.samefile(dest / "f", dest / "h")
 
 
+@pytest.mark.parametrize("windows", [False, True])
 def test_a_temp_that_cannot_be_removed_does_not_fail_the_member(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, windows: bool
 ) -> None:
-    # The swap removes the temp name after ``os.replace``. When that unlink fails (on
-    # Windows, a scanner holding the file open), the member is already in place, so the
-    # failure must not turn a completed write into FAILED.
-    src = tmp_path / "a.tar"
-    src.write_bytes(_tar_bytes([("file", "f", b"AAA")]))
-    dest = tmp_path / "out"
+    # The swap removes the temp name after ``os.replace``: always on Windows, and on
+    # POSIX for a hard link placed through a temp. When that unlink fails (on Windows,
+    # a scanner holding the file open), the member is already in place, so the failure
+    # must not turn a completed write into FAILED. A file this write created leaves no
+    # temp name on POSIX, so no unlink is tried for it there.
     real_unlink = os.unlink
+    refused: list[str] = []
 
     def unlink(path, *args, **kwargs):
         if os.path.basename(path).startswith(".archivey-tmp-"):
+            refused.append(os.fspath(path))
             raise PermissionError(errno.EACCES, "held open", str(path))
         return real_unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "unlink", unlink)
-    with open_archive(src) as r:
-        report = r.extract_all(dest)
+    monkeypatch.setattr(extraction_module, "_WINDOWS", windows)
 
+    src = tmp_path / "file.tar"
+    src.write_bytes(_tar_bytes([("file", "f", b"AAA")]))
+    with open_archive(src) as r:
+        report = r.extract_all(tmp_path / "file")
     assert [res.status for res in report.results] == [ExtractionStatus.EXTRACTED]
-    assert (dest / "f").read_bytes() == b"AAA"
+    assert (tmp_path / "file" / "f").read_bytes() == b"AAA"
+    assert len(refused) == (1 if windows else 0)
+
+    refused.clear()
+    src = tmp_path / "link.tar"
+    src.write_bytes(_tar_bytes([("file", "f", b"AAA"), ("hard", "h", "f")]))
+    with open_archive(src) as r:
+        report = r.extract_all(tmp_path / "link")
+    assert [res.status for res in report.results] == [ExtractionStatus.EXTRACTED] * 2
+    assert (tmp_path / "link" / "h").read_bytes() == b"AAA"
+    assert refused
 
 
 def test_tar_hardlink_orphan_recovered_seekable(tmp_path: Path) -> None:

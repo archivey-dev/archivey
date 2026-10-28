@@ -95,7 +95,7 @@ if TYPE_CHECKING:
 _CHUNK = 1024 * 1024  # 1 MiB copy chunk
 
 # Prefix of the temp files atomic FILE writes stage in the destination directory
-# (mkstemp appends a random suffix), and of the staging directory of a pass that stages
+# (``_new_temp_file`` appends the run's token and a count), and of the staging directory of a pass that stages
 # its members (``_write_staged``: a ZIP from a pipe). Python-level failures remove
 # them; a removal the filesystem refuses (logged) or a hard kill (SIGKILL, power loss)
 # can leave one: leftover ``.archivey-tmp-*`` files and directories in an extraction
@@ -103,7 +103,8 @@ _CHUNK = 1024 * 1024  # 1 MiB copy chunk
 # there (a staging directory holds a running pipe extraction's only copy of its
 # data). Documented in docs/extracting.md; keep the value and that doc in sync.
 _TMP_PREFIX = ".archivey-tmp-"
-# Names ``_new_temp_file`` tries before it gives up, as ``tempfile.TMP_MAX``.
+# Names ``_new_temp_file`` tries before it gives up. A bound, not a count it is expected
+# to reach: the names carry this run's own random token, so a taken one is rare.
 _TEMP_ATTEMPTS = 10000
 
 # A module attribute, not ``os.name`` at each use, so a test can take the Windows path
@@ -3934,8 +3935,8 @@ class ExtractionCoordinator:
         file carrying the content gets the link's (policy-capped) mode, not the source's.
 
         Under TRUSTED, a member with no stored mode gets the mode an ordinary file
-        creation would, ``0o666`` less the umask, rather than ``mkstemp``'s private
-        ``0o600``. Nothing chmods it afterwards, so the temp's creation mode is the file's
+        creation would, ``0o666`` less the umask, rather than the private ``0o600`` of
+        ``_new_temp_file``. Nothing chmods it afterwards, so the temp's creation mode is the file's
         final mode. STRICT and STANDARD give a mode-less member their own default instead
         (see ``_effective_mode``), so this arm is TRUSTED's alone.
 
@@ -4144,7 +4145,7 @@ class ExtractionCoordinator:
                         member_name=member.name,
                     )
                 # No usable path took a link: fall back to a copy.
-                # Created private when a mode follows (as mkstemp would), at the ordinary
+                # Created private when a mode follows (as ``_new_temp_file`` does), at the ordinary
                 # creation mode when none does, the same as a FILE write.
                 create_mode = (
                     0o600 if self._effective_mode(member) is not None else 0o666
@@ -4233,19 +4234,21 @@ class ExtractionCoordinator:
                 if not self._taken_after_check(dest, atomic=True):
                     raise
                 raise self._already_exists(dest, member) from exc
-            if fresh and os.name != "nt":
+            if fresh and not _WINDOWS:
                 return
             with contextlib.suppress(OSError):
                 os.unlink(long_path(tmp))
 
     def _new_temp_file(self, parent: Path) -> tuple[int, Path]:
         """Create a new ``.archivey-tmp-*`` file in ``parent`` at mode 0o600 and return
-        its open fd and its path, as ``tempfile.mkstemp`` does, with the same flags
+        its open fd and its path, the return of ``tempfile.mkstemp``, with its flags
         (``_open_new_file``).
 
         The names are this run's random token and a counter, rather than ``mkstemp``'s
-        random draw per file, which cost a few microseconds a member. ``O_EXCL`` fails
-        on a name that is taken, and the next number is tried.
+        random draw per file, which cost a few microseconds a member. So within a run
+        the names are predictable. That is safe: the destination is trusted at rest
+        (see the threat model), and ``O_EXCL`` / ``O_NOFOLLOW`` refuse a name or a
+        symlink planted underneath. On a name that is taken, the next number is tried.
         """
         state = self._state
         for _ in range(_TEMP_ATTEMPTS):
@@ -4263,7 +4266,7 @@ class ExtractionCoordinator:
     def _temp_sibling(parent: Path) -> Path:
         """A free ``.archivey-tmp-*`` name in ``parent`` for an atomic swap.
 
-        Unlike ``_write_file_atomic`` this cannot use ``mkstemp``: ``os.link`` needs a
+        Unlike ``_new_temp_file`` this does not create the file: ``os.link`` needs a
         name that does *not* exist. The destination is trusted at rest (see the threat
         model), and ``os.link`` / ``os.replace`` fail loudly on a name that appeared
         underneath us, so a uuid4 name is enough."""
