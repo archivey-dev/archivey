@@ -97,7 +97,10 @@ _BINARY_FIELDS = {
 _ODC_WIDTHS = (6, 6, 6, 6, 6, 6, 6, 11, 6, 11)  # after the magic: 70 bytes
 _NEWC_FIELDS = 13  # 8 hexadecimal digits each, after the magic: 104 bytes
 # afio's large header after the magic, as (offset, width, base, name), and its four
-# separator bytes: 110 bytes. flag is not used.
+# separator bytes: 110 bytes. The 4-byte flag at offset 84 is not read, as libarchive
+# does not read it: afio's -Z compresses each file and stores the compressed bytes
+# and size, which a reader hands back as they are. xsize is refused when non-zero,
+# since nothing says where those bytes go and the next header could not be found.
 _AFIO_LARGE_SIZE = 110
 _AFIO_LARGE_FIELDS = (
     (0, 8, 16, "dev"),
