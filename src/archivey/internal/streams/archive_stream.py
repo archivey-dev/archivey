@@ -1,4 +1,5 @@
-"""``ArchiveStream`` — wraps a member/codec stream and translates raw exceptions.
+"""``ArchiveStreamImpl``, archivey's ``ArchiveStream``: wraps a member/codec stream and
+translates raw exceptions.
 
 This is the carrier for the exception-translation contract (see ``error-handling`` and
 CONTRIBUTING). Any exception raised while opening or reading the wrapped stream is routed
@@ -40,7 +41,6 @@ from archivey.internal.streams.decompressor_stream import (
 )
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
-    ReadOnlyIOStream,
     check_read_size,
     check_seek_args,
     is_closed_file_error,
@@ -57,6 +57,7 @@ from archivey.internal.streams.verify import (
     build_member_verifier,
     note_raised_seek,
 )
+from archivey.reader import ArchiveStream
 from archivey.terminal import quoted
 from archivey.types import HashAlgorithm, Verification
 
@@ -121,7 +122,7 @@ def closed_source_error(member_name: str | None = None) -> ArchiveyUsageError:
     """The error for a read that found the source under it closed.
 
     It is a usage error, not damage: the archive bytes are fine. Raised from both error
-    boundaries, inside a member stream (``ArchiveStream._raise_translated``) and in the
+    boundaries, inside a member stream (``ArchiveStreamImpl._raise_translated``) and in the
     reader's own work (``BaseArchiveReader._raise_translated``), so the two give the
     same answer. ``member_name`` is the member being read, or ``None`` when no member
     is involved (listing, or a bare stream from ``open_stream``); that wording names no
@@ -158,23 +159,24 @@ def as_closed_source_error(
 
 
 class _Opened:
-    """An ``ArchiveStream`` opener that is a stream already open.
+    """An ``ArchiveStreamImpl`` opener that is a stream already open.
 
     Pass ``_Opened(stream)`` as ``open_fn`` with ``lazy=False``: the handle starts open
     on ``stream``, as it would by calling ``lambda: stream``, without the call or the
-    diagnostic scope the call is made in (it emits nothing). An ``ArchiveStream`` is
+    diagnostic scope the call is made in (it emits nothing). An ``ArchiveStreamImpl`` is
     still opened by the call, which collapses it into the handle. Calling it returns
     ``stream``, so it is still an opener wherever one is expected.
 
     With ``settle_seekable``, the handle ignores its ``seekable`` argument and asks
-    ``is_seekable(stream)`` on first use (``ArchiveStream._seek_allowed``) instead. Not
-    for an ``ArchiveStream``, whose own declared seekability the collapse would drop.
+    ``is_seekable(stream)`` on first use (``ArchiveStreamImpl._seek_allowed``) instead. Not
+    for an ``ArchiveStreamImpl``, whose own declared seekability the collapse would drop.
+    Only that subclass collapses: the collapse takes over its private state.
     """
 
     __slots__ = ("settle_seekable", "stream")
 
     def __init__(self, stream: BinaryIO, *, settle_seekable: bool = False) -> None:
-        assert not (settle_seekable and isinstance(stream, ArchiveStream))
+        assert not (settle_seekable and isinstance(stream, ArchiveStreamImpl))
         self.stream = stream
         self.settle_seekable = settle_seekable
 
@@ -182,8 +184,9 @@ class _Opened:
         return self.stream
 
 
-class ArchiveStream(ReadOnlyIOStream):
-    """Public member/codec stream handle (exception translation + optional verify).
+class ArchiveStreamImpl(ArchiveStream):
+    """Archivey's own :class:`~archivey.ArchiveStream`: the one every reader and
+    :func:`~archivey.open_stream` hands out.
 
     Responsibilities (one class, several optional knobs):
 
@@ -191,8 +194,8 @@ class ArchiveStream(ReadOnlyIOStream):
        context (``translate`` / ``stamp``).
     2. **Lazy open** — ``open_fn`` may run on first read; ``seekable`` is answered from
        the hint until then.
-    3. **Collapse nested ``ArchiveStream``s** — ``stream_members`` / codec opens often
-       return another ``ArchiveStream``; ``_collapse_nested`` flattens to one wrapper
+    3. **Collapse nested streams** — ``stream_members`` / codec opens often return
+       another ``ArchiveStreamImpl``; ``_collapse_nested`` flattens to one wrapper
        while composing translators and adopting fused verification.
     4. **Fused verify** — optional ``MemberVerifier`` (digests / ``expected_size``) runs
        in ``read`` / ``close``. Distinct from bare ``size=`` (fsspec attribute only —
@@ -200,8 +203,6 @@ class ArchiveStream(ReadOnlyIOStream):
     5. **Lease** — ``on_close`` releases reader live-stream state, in ``close()``'s
        ``finally``. A stream the caller never closes is closed by ``IOBase.__del__``
        when it is collected, so the lease is released then.
-
-    Prefer constructing via backends / ``open_codec_stream`` rather than by hand.
     """
 
     # Per-stream state that starts the same on every stream, as class defaults: an
@@ -219,6 +220,13 @@ class ArchiveStream(ReadOnlyIOStream):
     _verdict_rewound = False
     _uninterrupted = True
     _ended_from_start = False
+    # ``close()`` reads these three as well: ``IOBase.__del__`` closes an instance whose
+    # ``__init__`` raised before assigning them, or never ran, as when a deprecated
+    # ``ArchiveStream(...)`` call has the wrong arguments. ``False`` because ``None``
+    # would ask the inner whether it can seek.
+    _seekable_hint: bool | None = False
+    _verifier: MemberVerifier | None = None
+    _on_close: CloseHook | None = None
 
     def __init__(
         self,
@@ -255,9 +263,11 @@ class ArchiveStream(ReadOnlyIOStream):
         if type(open_fn) is _Opened:
             assert not lazy, "_Opened is the opener of an eager handle"
             settle_seekable = open_fn.settle_seekable
-        if type(open_fn) is _Opened and not isinstance(open_fn.stream, ArchiveStream):
+        if type(open_fn) is _Opened and not isinstance(
+            open_fn.stream, ArchiveStreamImpl
+        ):
             # A stream already open: the handle starts open on it, as an eager open of
-            # ``lambda: stream`` would, without the call. An ``ArchiveStream`` is
+            # ``lambda: stream`` would, without the call. An ``ArchiveStreamImpl`` is
             # opened the usual way, which collapses it (``_ensure_open``).
             self._inner = open_fn.stream
             self._open_fn: Callable[[], BinaryIO] | None = None
@@ -273,7 +283,7 @@ class ArchiveStream(ReadOnlyIOStream):
         self._open_lock = threading.Lock()
         # ``None``: whatever ``is_seekable(inner)`` answers, asked on first use. Only on
         # a handle built by ``_Opened(..., settle_seekable=True)``.
-        self._seekable_hint: bool | None = None if settle_seekable else seekable
+        self._seekable_hint = None if settle_seekable else seekable
         self._rewind_warning = rewind_warning
         self._size = size
         self._diagnostics_collector = collector
@@ -282,7 +292,7 @@ class ArchiveStream(ReadOnlyIOStream):
         # before the verifier build below, which can raise (a digest diagnostic under
         # a RAISE policy): ``IOBase.__del__`` still calls ``close()`` on an instance
         # whose ``__init__`` raised.
-        self._verifier: MemberVerifier | None = verifier
+        self._verifier = verifier
         # ``_verdict``: the content verdict this stream raised, if any. Every later
         # read and seek raises it again (see ``_fail``). ``_verdict_tb``: its traceback
         # as first raised, where the damage was found. ``_verdict_rewound``: whether
@@ -374,22 +384,13 @@ class ArchiveStream(ReadOnlyIOStream):
             self._ensure_open()
 
     @property
-    def name(self) -> str:  # pyrefly: ignore[bad-override]  # ty: ignore[invalid-property-type-override]  # base is Never; a member stream has a name
-        """The member's name inside its archive, or raise ``AttributeError``.
-
-        A member stream carries the name its archive gives it, as ``zipfile``'s
-        ``ZipExtFile`` does, so ``open_archive(reader.open(member))`` can match the
-        member's extension during detection (``.tar.br`` and other formats found only by
-        name). It is a member name, not a filesystem path. A stream with no member
-        (``open_stream``) has no name and raises, as ``io.BytesIO`` does.
-        """
+    def name(self) -> str:
         if self._member_name is None:
             raise AttributeError("name")
         return self._member_name
 
     @property
     def diagnostics(self) -> DiagnosticSummary:
-        """Diagnostic snapshot for events this stream's own calls emitted, or empty."""
         scope = self._diagnostics_scope
         if scope is None:
             return DiagnosticSummary.empty()
@@ -397,9 +398,7 @@ class ArchiveStream(ReadOnlyIOStream):
 
     @property
     def size(self) -> int | None:
-        """Total decompressed byte length when cheaply known, else ``None``.
-
-        The fsspec-style ``size`` convention (see ``source_byte_size``): the creator may
+        """The fsspec-style ``size`` convention (see ``source_byte_size``): the creator may
         supply it up front (a member stream knows ``member.size`` from the archive
         metadata), else an opened inner decompressor with a cheap ``try_get_size()``
         (a size it already knows, or a scan that reads only the index/trailer) is
@@ -462,11 +461,11 @@ class ArchiveStream(ReadOnlyIOStream):
             self._open_fn = None  # claim: only one caller proceeds to open_fn
         try:
             opened: BinaryIO = open_fn()
-            # Lazy ``stream_members`` open_fn often returns another ``ArchiveStream``
+            # Lazy ``stream_members`` open_fn often returns another ``ArchiveStreamImpl``
             # (from ``_open_member`` → ``_wrap_member_stream``, or a codec stream under
             # that). Collapse here so the public handle is a single wrapper — but adopt
             # the nested translator/stamp/rewind_warning so codec errors stay typed.
-            while isinstance(opened, ArchiveStream):
+            while isinstance(opened, ArchiveStreamImpl):
                 opened = self._collapse_nested(opened)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             # _open_fn stays None (claimed above) so a retry raises rather than
@@ -497,8 +496,8 @@ class ArchiveStream(ReadOnlyIOStream):
                 self._open_error_tb = raised.__traceback__
             raise
 
-    def _collapse_nested(self, nested: ArchiveStream) -> BinaryIO:
-        """Reduce a nested ``ArchiveStream`` to a bytes stream for this handle.
+    def _collapse_nested(self, nested: ArchiveStreamImpl) -> BinaryIO:
+        """Reduce a nested ``ArchiveStreamImpl`` to a bytes stream for this handle.
 
         If ``nested`` is still lazy, its opener is taken and invoked (this handle is
         opening *now*, so deferral transfers rather than being forced early). If it is
@@ -552,17 +551,18 @@ class ArchiveStream(ReadOnlyIOStream):
         assert nested._on_close is None, "collapse would discard a nested lease hook"
         nested._on_close = None  # keeps the clear under ``python -O``
         # Mark closed without touching stolen opener/inner.
-        super(ArchiveStream, nested).close()
+        super(ArchiveStreamImpl, nested).close()
 
         if inner is not None:
             return inner
         if open_fn is not None:
             opened = open_fn()
-            while isinstance(opened, ArchiveStream):
+            while isinstance(opened, ArchiveStreamImpl):
                 opened = self._collapse_nested(opened)
             return opened
         raise ArchiveyUsageError(
-            "Cannot collapse nested ArchiveStream: it has no opener and no inner stream."
+            "Cannot collapse nested ArchiveStreamImpl: it has no opener and no inner "
+            "stream."
         )
 
     def _fail_unless_closed(self, e: Exception) -> NoReturn:
@@ -645,15 +645,6 @@ class ArchiveStream(ReadOnlyIOStream):
         raise_translated(e, self._translate, self._stamp, self._member_name)
 
     def read(self, n: int | None = -1, /) -> bytes:
-        """Read up to ``n`` bytes of the member; ``-1`` or ``None`` reads to EOF.
-
-        A fused verifier with a declared size caps each read at the bytes left while it
-        is still checking, until it concludes or abandons. Otherwise ``n`` goes to the
-        backend as given, so what a very large ``n`` costs is the backend's: a TAR
-        member's reader allocates a buffer of ``n`` bytes, and ``read(2**62)`` raises
-        ``MemoryError`` there, as ``open(path, "rb").read(2**62)`` does on a plain file.
-        The stream is still usable afterwards.
-        """
         scope = self._diagnostics_scope
         if scope is None:
             return self._read(n)
@@ -714,14 +705,6 @@ class ArchiveStream(ReadOnlyIOStream):
         return data
 
     def read_ahead(self, need: int, n: int, /) -> bytes:
-        """At least ``need`` bytes, or fewer only at the end, and at most ``n``.
-
-        For a reader's own buffer over a codec stream (the TAR walk on a source that
-        cannot seek): the inner's ``read_ahead`` gives what the feed that completes
-        ``need`` decoded, so the buffer does not wait for bytes nobody asked for yet.
-        Errors are those of ``read(need)``. A stream that checks its bytes (a fused
-        verifier) or has a verdict to repeat answers with ``read(n)``.
-        """
         scope = self._diagnostics_scope
         if scope is None:
             return self._read_ahead(need, n)
@@ -851,19 +834,6 @@ class ArchiveStream(ReadOnlyIOStream):
 
     @property
     def verified(self) -> Verification:
-        """How much of this stream's data has been checked so far, as a ``Verification``.
-
-        ``KEY`` once the stream has opened its member and nothing doubts its password,
-        ``STRUCTURE`` once a read has reached the end with the length checks passing,
-        and ``CONTENT`` once a checksum stored with the data has matched every byte. It
-        never goes down: a seek back to the start runs the checks again, and what they
-        proved stays proved. A read that raises leaves it where it was. A stream from
-        ``stream_members()`` opens its member at its first read, and is ``NONE`` until
-        then.
-
-        Compare it with ``verifiable``: a TAR member has no checksum, so ``STRUCTURE``
-        is the most it can reach. Reading this property reads nothing from the archive.
-        """
         # No high-water mark is kept: every input to ``_level_now`` moves one way. The
         # stream's end flag and the verifier's and the HMAC stage's match flags are
         # only ever set, ``_inner`` is never cleared, and a password watch's doubt
@@ -872,18 +842,6 @@ class ArchiveStream(ReadOnlyIOStream):
 
     @property
     def verifiable(self) -> Verification:
-        """The most ``verified`` can reach by a read from the start to the end.
-
-        ``CONTENT`` when the member carries a checksum archivey can compute,
-        ``STRUCTURE`` when it carries none, and ``NONE`` for an encrypted member with no
-        checksum whose password passed only a weak check. It rises when another
-        member's checksum confirms that password. A stream from ``stream_members()``
-        learns what its member carries when it opens, at its first read. Until then it
-        answers from what it knows without opening (the member's stored digest), and
-        the answer can settle lower when it opens: a password watch that only appears
-        then takes a member with no checksum from ``STRUCTURE`` to ``NONE``. Once open,
-        it never falls. Reading this property reads nothing from the archive.
-        """
         proofs = self._verification_proofs()
         if proofs.content_possible:
             ceiling = Verification.CONTENT
@@ -909,7 +867,7 @@ class ArchiveStream(ReadOnlyIOStream):
         return Verification.KEY
 
     def nearest_resume_offset(self, target: int) -> int | None:
-        """Delegate the cost question inward; ``ArchiveStream``s nest over each other."""
+        # Asked of the inner: streams nest over each other.
         return ask_resume_offset(self._inner, target)
 
     def _maybe_warn_rewind(self, before: int, after: int) -> None:
@@ -1122,7 +1080,7 @@ class ArchiveStream(ReadOnlyIOStream):
                 raise teardown_exc
 
     def __repr__(self) -> str:
-        return f"<ArchiveStream inner={self._inner!r}>"
+        return f"<{type(self).__name__} inner={self._inner!r}>"
 
 
 def raise_translated(

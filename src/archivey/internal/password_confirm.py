@@ -472,7 +472,7 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         """Keep the position true to where a seek that raised left the stream.
 
         A refused seek (a negative position) moves nothing, and the digest is intact.
-        A seek can also raise after it moved (``ArchiveStream._note_raised_seek``), and
+        A seek can also raise after it moved (``ArchiveStreamImpl._note_raised_seek``), and
         then it counts as a seek. When the position cannot be read, the stream may
         have moved and no later read can be placed, so the digest counts as forfeited
         even where seeks do not forfeit it.

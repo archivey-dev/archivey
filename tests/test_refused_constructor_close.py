@@ -32,7 +32,7 @@ from archivey.exceptions import (
 from archivey.internal.backends import zip_aes
 from archivey.internal.backends.zip_aes import WinZipAesDecryptStream
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.streams.archive_stream import ArchiveStream, _Opened
+from archivey.internal.streams.archive_stream import ArchiveStreamImpl, _Opened
 from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     SeekPoint,
@@ -184,13 +184,13 @@ def test_archive_stream_refused_by_verifier_diagnostic_closes_cleanly() -> None:
 
     collector = DiagnosticCollector(policy=DiagnosticPolicy.STRICT)
     with pytest.raises(DiagnosticRaisedError) as caught:
-        ArchiveStream(
+        ArchiveStreamImpl(
             open_fn,
             translate=lambda _e: None,
             collector=collector,
             expected_hashes={"no-such-digest": b"\x00"},  # type: ignore[dict-item]
         )
-    _assert_closes_cleanly(_refused(ArchiveStream, caught))
+    _assert_closes_cleanly(_refused(ArchiveStreamImpl, caught))
     assert opened == []  # refused before the member was opened
 
 
@@ -200,14 +200,14 @@ def test_archive_stream_built_open_refused_by_verifier_closes_its_inner() -> Non
     inner = io.BytesIO(b"payload")
     collector = DiagnosticCollector(policy=DiagnosticPolicy.STRICT)
     with pytest.raises(DiagnosticRaisedError) as caught:
-        ArchiveStream(
+        ArchiveStreamImpl(
             _Opened(inner),
             translate=lambda _e: None,
             collector=collector,
             expected_hashes={"no-such-digest": b"\x00"},  # type: ignore[dict-item]
         )
     assert not inner.closed
-    _assert_closes_cleanly(_refused(ArchiveStream, caught))
+    _assert_closes_cleanly(_refused(ArchiveStreamImpl, caught))
     assert inner.closed
 
 
@@ -238,10 +238,11 @@ def test_winzip_aes_stream_refusals_close_cleanly(
 # ``__init__`` that raised on its first line. A class that survives it needs no entry. Every
 # other ``IOBase`` subclass in ``src/`` is listed below, either because a test above covers
 # its refusals or with the reason its ``__init__`` cannot raise before it assigns what
-# ``close()`` reads. A new stream class fails here until someone makes that call.
+# ``close()`` reads. A listed class skips the ``__new__``-alone check, so its tests above
+# must reach every raise in its ``__init__``. A new stream class fails here until someone
+# makes that call.
 _REFUSALS_TESTED_ABOVE = {
     "archivey.internal.volumes.ConcatenatedFile",
-    "archivey.ArchiveStream",  # its __module__ is pinned to the public package
     "archivey.internal.streams.decompressor_stream.DecompressorStream",
     "archivey.internal.streams.verify.VerifyingStream",
     "archivey.internal.backends.zip_aes.WinZipAesDecryptStream",
