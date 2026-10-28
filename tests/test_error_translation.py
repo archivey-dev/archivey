@@ -30,6 +30,7 @@ from archivey.cost import (
 )
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError, CorruptionError
 from archivey.internal.base_reader import BaseArchiveReader
+from archivey.internal.streams.archive_stream import MemberStreamParts
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
@@ -60,8 +61,8 @@ class _TranslatingReader(BaseArchiveReader):
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield ArchiveMember(type=MemberType.FILE, name="member.bin", size=1)
 
-    def _open_member(self, member: ArchiveMember) -> BinaryIO:
-        return self._wrap_member_stream(_RaisingStream(), member.name)
+    def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
+        return self._member_parts(_RaisingStream(), member.name)
 
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, _RawDecodeError):
@@ -267,7 +268,7 @@ def test_reader_boundary_translates_closed_source_before_backend_translator() ->
     """
 
     class _ClosedOnOpen(_TranslatingReader):
-        def _open_member(self, member: ArchiveMember) -> BinaryIO:
+        def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
             with self._translated_errors(member.name):
                 raise ValueError("I/O operation on closed file.")
 

@@ -1002,7 +1002,7 @@ def test_stream_members_do_not_nest_archive_streams(tmp_path: Path) -> None:
     """``stream_members`` must hand out a single ArchiveStream, not wrap-over-wrap.
 
     Regression for the lazy-open double wrap (``_lazy_member_stream`` over
-    ``_wrap_member_stream``): after first read, the public handle's inner must not
+    ``_open_member``): after first read, the public handle's inner must not
     itself be an ``ArchiveStream``.
     """
     from archivey.internal.streams.archive_stream import ArchiveStreamImpl
@@ -1022,6 +1022,59 @@ def test_stream_members_do_not_nest_archive_streams(tmp_path: Path) -> None:
             break
         else:
             pytest.fail("expected a file member")
+
+
+def _three_file_archives(tmp_path: Path) -> list[Path]:
+    """A deflated ZIP and a TAR, each holding three small files."""
+    files = {f"d/f{i}.txt": f"payload {i}".encode() for i in range(3)}
+    zip_path = tmp_path / "three.zip"
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for name, data in files.items():
+            zf.writestr(name, data)
+    tar_path = tmp_path / "three.tar"
+    with tarfile.open(tar_path, "w") as tf:
+        for name, data in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return [zip_path, tar_path]
+
+
+@pytest.mark.parametrize("operation", ["stream_members", "extract_all"])
+def test_each_member_read_builds_one_archive_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    """A member is served by one ``ArchiveStreamImpl``, built once.
+
+    The lazy handle a pass hands out takes over what ``_open_member`` opened
+    (``MemberStreamParts``), rather than building a second handle around it and
+    collapsing that on the first read.
+    """
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
+
+    built: list[ArchiveStreamImpl] = []
+    original_init = ArchiveStreamImpl.__init__
+
+    def counting_init(self: ArchiveStreamImpl, *args: object, **kwargs: object) -> None:
+        built.append(self)
+        original_init(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    for path in _three_file_archives(tmp_path):
+        with open_archive(path) as ar:
+            ar.members()
+            monkeypatch.setattr(ArchiveStreamImpl, "__init__", counting_init)
+            if operation == "stream_members":
+                read = [
+                    stream.read()
+                    for member, stream in ar.stream_members()
+                    if member.is_file and stream is not None
+                ]
+                assert len(read) == 3
+            else:
+                ar.extract_all(tmp_path / f"out-{path.suffix[1:]}")
+            monkeypatch.undo()
+        assert len(built) == 3, path.name
+        built.clear()
 
 
 def test_zip_member_fuses_verify_no_verifying_stream_layer(tmp_path: Path) -> None:
@@ -1098,7 +1151,7 @@ def test_a_reader_does_not_ask_a_member_whether_it_can_seek_until_a_caller_does(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """With ``seekable_members=True``, opening and reading a member does not ask the
-    backend's stream whether it can seek (``_wrap_member_stream`` settles it on first
+    backend's stream whether it can seek (``_member_parts`` leaves it to settle on first
     use); ``seekable()`` and ``seek()`` then answer as before."""
     from archivey.internal import base_reader
 
