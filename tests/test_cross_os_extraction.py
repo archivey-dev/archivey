@@ -1531,25 +1531,30 @@ _OTHER_WRITER = b"other writer"
 
 def _another_writer_takes(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
     """Simulate another writer (a second extraction into the same folder) creating
-    ``name`` as a file between the existence check and the landing. Windows refuses the
-    rename of a FILE or HARDLINK with access denied; ``os.symlink`` and ``os.makedirs``
-    refuse a taken name on every OS. Under ERROR a FILE or HARDLINK lands with
-    ``os.link`` (POSIX) or ``os.rename`` (Windows), which the real call refuses once
-    the name is taken."""
+    ``name`` as a file between the existence check and the landing, and the landing
+    refused with access denied, as Windows refuses it (seen with two extractions into
+    one folder) and POSIX does in a sticky directory. ``os.symlink`` and
+    ``os.makedirs`` refuse a taken name on every OS. Under ERROR a FILE or HARDLINK
+    lands with ``os.rename`` on Windows, whose refusal is the clash; on POSIX with
+    ``os.link``, whose access-denied refusal hands the landing to ``os.replace``, whose
+    refusal is the clash. A plain taken-name refusal (``FileExistsError``) is
+    ``_another_writer_takes_before_the_landing``'s case."""
     real_replace = os.replace
     real_makedirs = os.makedirs
     real_link = os.link
     real_rename = os.rename
 
     def link(src: str, dst: str, **kwargs: bool) -> None:
-        # Forwarded only when given: Windows refuses an explicit follow_symlinks.
         if os.path.basename(str(dst)) == name:
             take(dst)
+            raise PermissionError(errno.EACCES, "Access is denied", str(dst))
+        # Forwarded only when given: Windows refuses an explicit follow_symlinks.
         real_link(src, dst, **kwargs)
 
     def rename(src: str, dst: str) -> None:
         if os.path.basename(str(dst)) == name:
             take(dst)
+            raise PermissionError(errno.EACCES, "Access is denied", str(dst))
         real_rename(src, dst)
 
     def take(dst: str) -> None:

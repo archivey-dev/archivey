@@ -4244,18 +4244,23 @@ class ExtractionCoordinator:
     def _swap_into_place(
         self, tmp: Path, dest: Path, member: ArchiveMember, *, fresh: bool = False
     ) -> None:
-        """Move the staged temp ``tmp`` onto ``dest`` with ``os.replace``, the last step
-        of every atomic write (``_write_file_atomic``, ``_place_link``).
+        """Move the staged temp ``tmp`` onto ``dest``, the last step of every atomic
+        write (``_write_file_atomic``, ``_land_staged``, ``_place_link``). How depends on
+        the policy: under ERROR, a ``dest`` the existence check found free lands with
+        ``_land_on_free_name``, which refuses a name taken since. Every other landing
+        uses ``os.replace``: the other policies, a copy this run parked, and the
+        ``_land_on_free_name`` fallback on a filesystem without hard links.
 
-        POSIX ``rename(2)`` does nothing, and reports success, when ``tmp`` and ``dest``
-        are already names of the same file. That happens when ``_place_link`` links a
-        file onto another of its own names (a hard link listed twice, or one REPLACE
-        routes onto a link to the same file). ``dest`` then already names the right
-        file, so only the temp name is left, and it is removed here. After a real
-        rename the temp name is gone and the unlink finds nothing. The unlink covers
-        Windows either way. ``fresh`` says ``tmp`` is a file this write created, which
-        no other name can share, so on POSIX the rename always takes the temp name and
-        the unlink is skipped.
+        On the ``os.replace`` routes, POSIX ``rename(2)`` does nothing, and reports
+        success, when ``tmp`` and ``dest`` are already names of the same file. That
+        happens when ``_place_link`` links a file onto another of its own names (a hard
+        link listed twice, or one REPLACE routes onto a link to the same file). ``dest``
+        then already names the right file, so only the temp name is left, and it is
+        removed here. After a real rename the temp name is gone and the unlink finds
+        nothing. The unlink covers Windows either way. ``fresh`` says ``tmp`` is a file
+        this write created, which no other name can share, so on POSIX the rename always
+        takes the temp name and the unlink is skipped. (``_land_on_free_name`` removes
+        its temp name itself and does not consult ``fresh``.)
 
         Any error from the unlink is ignored: ``os.replace`` has already put the member
         in place, and a temp name left behind is a stray the docs call safe to delete,
@@ -4264,11 +4269,12 @@ class ExtractionCoordinator:
         ``dest``'s file, and in the same-file case the temp is one of them, so an unlink
         after the block would fail.
 
-        A rename refused onto an entry that appeared after the existence check is, under
-        ERROR, the clash that check reports, and raises its error
-        (``_taken_after_check``). Windows refuses it with access denied (seen with two
-        extractions into one folder); POSIX refuses it in a sticky directory when someone
-        else owns the entry, and otherwise replaces it."""
+        Under ERROR, an ``os.replace`` refused onto an entry that appeared after the
+        existence check is the clash that check reports, and raises its error
+        (``_taken_after_check``). This route reaches it on POSIX after the hard-link
+        landing failed for another reason, in a sticky directory where someone else owns
+        the entry; elsewhere POSIX ``os.replace`` replaces the entry, which is why ERROR
+        lands with ``_land_on_free_name`` first."""
         with self._readonly_cleared(dest):
             if (
                 self._overwrite is OverwritePolicy.ERROR
@@ -4296,8 +4302,9 @@ class ExtractionCoordinator:
         and raises the ERROR clash, rather than being replaced as ``os.replace`` would
         on POSIX. Windows ``os.rename`` refuses a taken name. POSIX has no rename that
         refuses one in the standard library, so the temp is hard-linked to ``dest``
-        (``link`` refuses a taken name; ``follow_symlinks=False`` links a staged
-        symlink itself) and its temp name removed: about 2 µs more than a rename,
+        (``link`` refuses a taken name; every ``tmp`` here is a regular file this run
+        created, so there is nothing to follow) and its temp name removed: about 2 µs
+        more than a rename,
         against hundreds per member. Where the filesystem has no hard links (FAT, some
         network and FUSE mounts) the link fails with another error, and ``False``
         hands the landing back to ``os.replace``, which does not see such a race.
@@ -4310,10 +4317,10 @@ class ExtractionCoordinator:
             if _WINDOWS:
                 os.rename(long_path(tmp), long_path(dest))
                 return True
-            os.link(long_path(tmp), long_path(dest), follow_symlinks=False)
+            os.link(long_path(tmp), long_path(dest))
         except FileExistsError as exc:
             raise self._already_exists(dest, member) from exc
-        except (OSError, NotImplementedError) as exc:
+        except OSError as exc:
             if not _WINDOWS:
                 return False
             # Access denied on an entry another writer just made (see
