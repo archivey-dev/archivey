@@ -21,7 +21,7 @@ import logging
 import lzma
 import threading
 from collections.abc import Callable, Generator, Iterator, Mapping
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import replace
 from typing import Any, BinaryIO, ClassVar, NoReturn, cast
 
@@ -615,6 +615,24 @@ class IndexedReaderAdapter(_PluginAdapter):
             raise
 
 
+class _Walk:
+    """One walk of the archive: the layer it reads now (the archive's, or the last
+    stream it decompressed), and, in random access, the buffered views it opened, one
+    per layer. The listing walk is one; a walk started to reach a member's decoded
+    data again (``_DataWalks``) is another, with views of its own."""
+
+    __slots__ = ("layer", "views")
+
+    def __init__(self) -> None:
+        self.layer: _Layer | None = None
+        self.views: list[BinaryIO] = []
+
+    def close(self) -> None:
+        views, self.views = self.views, []
+        for view in reversed(views):
+            view.close()
+
+
 class _Layer:
     """One stream a walk reads: the archive's bytes, or the decoded bytes of a
     compression stream the walk started with ``ForwardStream.decompress``.
@@ -634,9 +652,10 @@ class _Layer:
 
 class _Span:
     """Where a sequential member's data is, on its ``_raw``: ``length`` bytes from
-    ``offset`` of its layer's stream, with the digests its header stored."""
+    ``offset`` of its layer's stream, with the digests its header stored; or, for a
+    member the reader decodes itself (``MemberSpan.data``), that stream (``decoded``)."""
 
-    __slots__ = ("custom", "expected", "layer", "length", "offset")
+    __slots__ = ("custom", "decoded", "expected", "layer", "length", "offset")
 
     def __init__(
         self,
@@ -645,12 +664,94 @@ class _Span:
         length: int,
         expected: Mapping[HashAlgorithm, bytes] | None,
         custom: CustomDigests | None,
+        decoded: _Decoded | None = None,
     ) -> None:
         self.layer = layer
         self.offset = offset
         self.length = length
         self.expected = expected
         self.custom = custom
+        self.decoded = decoded
+
+
+def _full_count(data: BinaryIO | io.RawIOBase) -> BinaryIO:
+    """``data`` as archivey reads a reader's stream: full-count."""
+    stream = cast(BinaryIO, data)
+    return stream if _reads_full(stream) else FullCountStream(stream)
+
+
+def _read_up_to(decoded: _Decoded, n: int) -> bytes:
+    """Up to ``n`` bytes of ``decoded``, fewer only at its end."""
+    chunks: list[bytes] = []
+    left = n
+    while left and (chunk := decoded.read(left)):
+        chunks.append(chunk)
+        left -= len(chunk)
+    return b"".join(chunks)
+
+
+class _Decoded:
+    """A member's decoded data as the reader handed it over (``MemberSpan.data``):
+    good until the walk that yielded it moves on, when :meth:`finish` reads what is
+    left of it and closes it. ``index`` is the member's place in the walk, where a
+    walk started over finds it again; ``size`` (the listed one) and ``name`` are the
+    member's, for the drain."""
+
+    __slots__ = ("checked", "consumed", "done", "index", "name", "size", "stream")
+
+    def __init__(
+        self,
+        stream: BinaryIO,
+        checked: bool,
+        index: int,
+        size: int | None,
+        name: str,
+    ) -> None:
+        self.stream = stream
+        self.checked = checked
+        self.index = index
+        self.size = size
+        self.name = name
+        # Bytes read so far, by the caller or the drain.
+        self.consumed = 0
+        self.done = False
+
+    def read(self, n: int) -> bytes:
+        if self.done:
+            raise ArchiveyUsageError(
+                "member data is no longer readable: the pass has moved on"
+            )
+        data = self.stream.read(n)
+        self.consumed += len(data)
+        return data
+
+    def finish(self) -> None:
+        """Read what the caller left, so the reader's library is past it, and close
+        the stream. A listed ``size`` caps the read at one byte past it: data longer
+        than that raises ``CorruptionError``."""
+        if self.done:
+            return
+        size = self.size
+        try:
+            while True:
+                want = _SKIP_BY_READING
+                if size is not None:
+                    want = min(want, size + 1 - self.consumed)
+                    if want <= 0:
+                        break
+                if not self.read(want):
+                    break
+            if size is not None and self.consumed > size:
+                raise CorruptionError(
+                    f"the decoded data of {quoted(self.name)} is longer than its listed "
+                    f"size of {size} bytes"
+                )
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        self.done = True
+        self.stream.close()
 
 
 # A forward skip up to this many bytes reads them through the walk's buffer; a longer
@@ -716,6 +817,93 @@ class _SpanWindow(ReadOnlyIOStream):
         return data
 
 
+class _DecodedWindow(ReadOnlyIOStream):
+    """A member's decoded data read through the walk that yielded it: good while the
+    walk is at it, as :class:`_SpanWindow` is. Closing it leaves the data to the
+    walk, which drains and closes it when it moves on."""
+
+    def __init__(self, decoded: _Decoded) -> None:
+        super().__init__()
+        self._decoded = decoded
+        self._done = 0
+
+    def tell(self) -> int:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        return self._done
+
+    def read(self, n: int | None = -1, /) -> bytes:
+        if self.closed:
+            raise ValueError("read from a closed member stream")
+        n = check_read_size(n)
+        if n >= 0:
+            data = self._decoded.read(n)
+            self._done += len(data)
+            return data
+        chunks = []
+        while chunk := self._decoded.read(_SKIP_BY_READING):
+            chunks.append(chunk)
+        data = b"".join(chunks)
+        self._done += len(data)
+        return data
+
+
+class _DataWalk:
+    """A walk started over to reach a member's decoded data again (random access):
+    its views, the reader's walk, the next member's index and the data it handed out
+    last, which the next step drains."""
+
+    __slots__ = ("current", "next_index", "spans", "walk")
+
+    def __init__(self, walk: _Walk, spans: Iterator[MemberSpan]) -> None:
+        self.walk = walk
+        self.spans = spans
+        self.next_index = 0
+        self.current: _Decoded | None = None
+
+    def close(self) -> None:
+        try:
+            if self.current is not None:
+                self.current.close()
+        finally:
+            try:
+                close = getattr(self.spans, "close", None)
+                if close is not None:
+                    close()
+            finally:
+                self.walk.close()
+
+
+class _DataWalkStream(ReadOnlyIOStream):
+    """A member's decoded data reached by a walk of its own. Closing it hands the
+    walk back to the adapter, so a member opened next, further on, carries on from
+    here instead of walking from the start again."""
+
+    def __init__(
+        self, adapter: SequentialReaderAdapter, walk: _DataWalk, decoded: _Decoded
+    ) -> None:
+        # Assigned before the base __init__: close() reads them.
+        self._adapter: SequentialReaderAdapter | None = adapter
+        self._walk = walk
+        self._window = _DecodedWindow(decoded)
+        super().__init__()
+
+    def tell(self) -> int:
+        return self._window.tell()
+
+    def read(self, n: int | None = -1, /) -> bytes:
+        if self.closed:
+            raise ValueError("read from a closed member stream")
+        return self._window.read(n)
+
+    def close(self) -> None:
+        adapter, self._adapter = self._adapter, None
+        if adapter is not None:
+            self._window.close()
+            adapter._return_data_walk(self._walk)
+        super().close()
+
+
 class SequentialReaderAdapter(_PluginAdapter):
     """Serves a :class:`~archivey.formats.SequentialReader`: its walk is the member
     walk, and member data is a window of the walk's stream (a streaming pass) or a
@@ -730,14 +918,17 @@ class SequentialReaderAdapter(_PluginAdapter):
         assert source is not None
         # Streaming: the buffer the walk reads through, made here, so closed here.
         self._owned_stream: BinaryIO | None = None
-        # Random access: the current walk's own buffered views (``_new_walk``), one
-        # per layer it reads.
-        self._walk_views: list[BinaryIO] = []
-        # The layer the walk reads now: the archive's, or the last stream it
-        # decompressed (``_decompress_layer``).
-        self._layer: _Layer | None = None
+        # The listing walk: the layer it reads now and its own views (``_new_walk``).
+        self._listing_walk = _Walk()
         # The layer of the member a streaming pass yielded last.
         self._forward: ForwardStream | None = None
+        # The decoded data (``MemberSpan.data``) of the member the listing walk
+        # yielded last, until the walk moves on.
+        self._listing_decoded: _Decoded | None = None
+        # Random access: an idle walk started over to reach decoded data, kept so a
+        # member opened next, further on, carries on from it (``_decoded_by_walk``).
+        self._data_walk_lock = threading.Lock()
+        self._idle_data_walk: _DataWalk | None = None
         # Streams ``ForwardStream.decompress`` opened, closed with the reader. Random
         # access keeps each layer's codec and views by where it starts, so a walk
         # started over reads through the ones it opened before.
@@ -823,28 +1014,38 @@ class SequentialReaderAdapter(_PluginAdapter):
         else:
             self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
 
-    def _new_walk(self) -> Iterator[MemberSpan]:
-        """A walk from the start of the archive, over a stream of its own."""
+    def _new_walk(self, walk: _Walk | None = None) -> Iterator[MemberSpan]:
+        """A walk from the start of the archive, over a stream of its own: the listing
+        walk, or ``walk`` (random access only)."""
+        if walk is None:
+            # Only one listing walk runs at a time: one started over replaces the last
+            # one's views, and its member's decoded data.
+            decoded, self._listing_decoded = self._listing_decoded, None
+            try:
+                if decoded is not None:
+                    decoded.close()
+            finally:
+                self._listing_walk.close()
+            walk = self._listing_walk = _Walk()
         if self._streaming:
             stream = self._owned_stream
             assert stream is not None
             layer = _Layer(stream, None)
             # Read forward only: the source may not start at offset 0 of its handle.
-            self._layer = self._layer_forward(layer, seekable=False)
+            walk.layer = self._layer_forward(walk, layer, seekable=False)
         else:
             assert self._shared is not None
-            # Only one walk runs at a time: a walk started over replaces the last
-            # one's views.
-            self._close_walk_view()
-            self._layer = self._random_access_layer(
-                self._shared, compressed=self._compressed
+            walk.layer = self._random_access_layer(
+                walk, self._shared, compressed=self._compressed
             )
-        forward = self._layer.forward
+        forward = walk.layer.forward
         with self._translated_errors(), self._handle_guard():
             return iter(self._sequential.walk(forward))
 
-    def _random_access_layer(self, shared: SharedSource, *, compressed: bool) -> _Layer:
-        """A layer over ``shared`` with a walk view of its own."""
+    def _random_access_layer(
+        self, walk: _Walk, shared: SharedSource, *, compressed: bool
+    ) -> _Layer:
+        """A layer over ``shared`` with a view of its own for ``walk``."""
         # A plain file: a read larger than the buffer rewinds the prefetched tail and
         # returns the file's own bytes. A codec keeps the join, since rewinding it
         # would decode the tail again; and a skip reads through it, which is what a
@@ -852,10 +1053,10 @@ class SequentialReaderAdapter(_PluginAdapter):
         view = ReadAheadStream(
             shared.view(0, None), _WALK_BUFFER, rewind_oversize=not compressed
         )
-        self._walk_views.append(view)
-        return self._layer_forward(_Layer(view, shared), seekable=not compressed)
+        walk.views.append(view)
+        return self._layer_forward(walk, _Layer(view, shared), seekable=not compressed)
 
-    def _layer_forward(self, layer: _Layer, *, seekable: bool) -> _Layer:
+    def _layer_forward(self, walk: _Walk, layer: _Layer, *, seekable: bool) -> _Layer:
         """Give ``layer`` the walk's ``ForwardStream`` over its stream."""
         stream = layer.stream
         size = layer.shared.size if layer.shared is not None else None
@@ -878,16 +1079,16 @@ class SequentialReaderAdapter(_PluginAdapter):
         layer.forward = ForwardStream(
             functools.partial(read_blocking, stream),
             skip,
-            functools.partial(self._decompress_layer, layer),
+            functools.partial(self._decompress_layer, walk, layer),
         )
         return layer
 
     def _decompress_layer(
-        self, parent: _Layer, offset: int, stream_format: StreamFormat
+        self, walk: _Walk, parent: _Layer, offset: int, stream_format: StreamFormat
     ) -> ForwardStream:
         """``ForwardStream.decompress``: a layer over the decoded bytes of the
         compression stream that starts at ``offset`` of ``parent``, which becomes the
-        layer the walk reads."""
+        layer ``walk`` reads."""
         codec = (
             None
             if stream_format is StreamFormat.UNCOMPRESSED
@@ -927,7 +1128,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                 decoded, _WALK_BUFFER, fill_arrived=not self._source.seekable()
             )
             self._layer_streams.append(buffered)
-            layer = self._layer_forward(_Layer(buffered, None), seekable=False)
+            layer = self._layer_forward(walk, _Layer(buffered, None), seekable=False)
         else:
             assert parent.shared is not None
             # The parent's source is held for the reader's life (``self._shared``, or
@@ -948,8 +1149,8 @@ class SequentialReaderAdapter(_PluginAdapter):
                 )
                 self._layer_streams.append(decoded)
                 shared = self._layer_sources[key] = SharedSource(decoded)
-            layer = self._random_access_layer(shared, compressed=True)
-        self._layer = layer
+            layer = self._random_access_layer(walk, shared, compressed=True)
+        walk.layer = layer
         return layer.forward
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
@@ -968,15 +1169,32 @@ class SequentialReaderAdapter(_PluginAdapter):
             self._walk_index = index
             # The layer the walk read this span's header from: a decompress() in the
             # step that yielded it moved the walk onto a new one.
-            layer = self._layer
+            layer = self._listing_walk.layer
             assert layer is not None
             forward = self._forward = layer.forward
             member = self._take_span(span, layer, index)
-            yield member
-            index += 1
-            self._walk_index = index
             record = member._raw
             assert isinstance(record, _Span)
+            decoded = self._listing_decoded = record.decoded
+            try:
+                yield member
+            except BaseException:
+                # The walk is abandoned here (the generator closed): the data the
+                # reader handed over is not read on.
+                if decoded is not None:
+                    self._listing_decoded = None
+                    with suppress(Exception), guard:
+                        decoded.close()
+                raise
+            index += 1
+            self._walk_index = index
+            if decoded is not None:
+                self._listing_decoded = None
+                with self._translated_errors(member.name), guard:
+                    decoded.finish()
+                with boundary, guard:
+                    span = next(walk, None)
+                continue
             with boundary, guard:
                 left = record.offset + record.length - forward.offset
                 # A read through the member's window or the link target's stops at
@@ -988,6 +1206,19 @@ class SequentialReaderAdapter(_PluginAdapter):
 
     def _take_span(self, span: object, layer: _Layer, index: int) -> ArchiveMember:
         """The member a span describes, checked, named and placed."""
+        data = span.data if isinstance(span, MemberSpan) else None
+        try:
+            return self._take_span_checked(span, layer, index)
+        except BaseException:
+            # Archivey owns the decoded data once yielded: a refused span closes it.
+            if data is not None:
+                with suppress(Exception), self._handle_guard():
+                    data.close()
+            raise
+
+    def _take_span_checked(
+        self, span: object, layer: _Layer, index: int
+    ) -> ArchiveMember:
         name = type(self._reader).__name__
         if not isinstance(span, MemberSpan):
             raise TypeError(
@@ -1004,10 +1235,19 @@ class SequentialReaderAdapter(_PluginAdapter):
                 f"{name}.walk() yielded {member.name!r} with data_length {length!r}, "
                 "not a whole number of bytes"
             )
+        data = span.data
+        if data is not None and length:
+            raise ValueError(
+                f"{name}.walk() yielded {member.name!r} with both data and "
+                f"data_length {length}: decoded data has no stored bytes to skip"
+            )
         # A directory's data is its declared size too: it stays a DIRECTORY, a read
-        # delivers the bytes and the listing reports them (_report_listed).
-        sized = member.type is MemberType.FILE or (
-            member.type is MemberType.DIRECTORY and length
+        # delivers the bytes and the listing reports them (_report_listed). Decoded
+        # data has no stored length to check the size against: its size is the one
+        # listed, enforced when read.
+        sized = data is None and (
+            member.type is MemberType.FILE
+            or (member.type is MemberType.DIRECTORY and length)
         )
         if sized:
             if member.size is None:
@@ -1025,8 +1265,12 @@ class SequentialReaderAdapter(_PluginAdapter):
         custom: CustomDigests | None = None
         if span.digests:
             expected, custom = self._member_digests(member, span.digests, "walk")
+        decoded: _Decoded | None = None
+        if data is not None:
+            stream = _full_count(data)
+            decoded = _Decoded(stream, span.checked, index, member.size, member.name)
         forward = layer.forward
-        record = _Span(layer, forward.offset, length, expected, custom or None)
+        record = _Span(layer, forward.offset, length, expected, custom or None, decoded)
         member._raw = record
         self._report_listed(member, presented, index)
         if (
@@ -1034,7 +1278,16 @@ class SequentialReaderAdapter(_PluginAdapter):
             and self._sequential.link_target_in_data
             and member.link_target is None
         ):
-            if length > MAX_LINK_TARGET_BYTES:
+            if decoded is not None:
+                with self._translated_errors(member.name), self._handle_guard():
+                    target = _read_up_to(decoded, MAX_LINK_TARGET_BYTES + 1)
+                if len(target) > MAX_LINK_TARGET_BYTES:
+                    self._emit_link_target_too_long(member, member_id=index)
+                else:
+                    member.link_target = target.decode(
+                        "utf-8", errors="surrogateescape"
+                    )
+            elif length > MAX_LINK_TARGET_BYTES:
                 self._emit_link_target_too_long(member, member_id=index)
             else:
                 with self._translated_errors(member.name), self._handle_guard():
@@ -1051,6 +1304,17 @@ class SequentialReaderAdapter(_PluginAdapter):
     def _open_member_in_walk(self, member: ArchiveMember) -> MemberStreamParts:
         record = member._raw
         assert isinstance(record, _Span), "a sequential member is missing its span"
+        decoded = record.decoded
+        if decoded is not None:
+            with self._walk_lock:
+                window = (
+                    _DecodedWindow(decoded) if self._decoded_in_place(decoded) else None
+                )
+                stream = self._walk_handoff_locked(
+                    window,
+                    functools.partial(self._decoded_by_walk, decoded),
+                )
+            return self._decoded_parts(member, record, decoded, stream)
         shared = record.layer.shared
         assert shared is not None
 
@@ -1066,8 +1330,8 @@ class SequentialReaderAdapter(_PluginAdapter):
             # The walk is at the data's start only while it is on the member's
             # layer: a decompress() in the step after it moved the walk on.
             in_place = (
-                self._layer is not None
-                and forward is self._layer.forward
+                self._listing_walk.layer is not None
+                and forward is self._listing_walk.layer.forward
                 and forward.offset == record.offset
             )
             stream = self._walk_handoff_locked(
@@ -1079,6 +1343,19 @@ class SequentialReaderAdapter(_PluginAdapter):
         record = member._raw
         assert isinstance(record, _Span), "a sequential member is missing its span"
         stream: BinaryIO
+        decoded = record.decoded
+        if decoded is not None:
+            if not self._streaming:
+                stream = self._decoded_by_walk(decoded, 0)
+            elif self._decoded_in_place(decoded):
+                assert self._handle_lock is not None
+                stream = LockedStream(_DecodedWindow(decoded), self._handle_lock)
+            else:
+                raise ArchiveyUsageError(
+                    f"the data of {quoted(member.name)} is no longer readable: the "
+                    "pass has moved on"
+                )
+            return self._decoded_parts(member, record, decoded, stream)
         if self._streaming:
             forward = self._forward
             if forward is not record.layer.forward or forward.offset != record.offset:
@@ -1094,6 +1371,145 @@ class SequentialReaderAdapter(_PluginAdapter):
             assert shared is not None
             stream = shared.view(record.offset, record.length)
         return self._span_parts(member, record, stream)
+
+    def _decoded_in_place(self, decoded: _Decoded) -> bool:
+        """Whether the listing walk is at the start of ``decoded``: it is the data of
+        the member the walk yielded last, and nothing has read it yet."""
+        return (
+            decoded is self._listing_decoded
+            and not decoded.done
+            and decoded.consumed == 0
+        )
+
+    def _decoded_by_walk(self, decoded: _Decoded, start: int) -> BinaryIO:
+        """``decoded``'s data from ``start``, reached by a walk of its own (random
+        access): the idle one, when it is not past the member yet, or one from the
+        start of the archive. The members before it are read past, as the listing
+        walk does: their decoded data drained, their stored data skipped."""
+        with self._data_walk_lock:
+            data_walk, self._idle_data_walk = self._idle_data_walk, None
+        if data_walk is not None and data_walk.next_index > decoded.index:
+            self._close_data_walk(data_walk)
+            data_walk = None
+        try:
+            if data_walk is not None:
+                current, data_walk.current = data_walk.current, None
+                try:
+                    if current is not None:
+                        with (
+                            self._translated_errors(current.name),
+                            self._handle_guard(),
+                        ):
+                            current.finish()
+                except ArchiveyError:
+                    # Reported to whoever read that member; this one starts over.
+                    self._close_data_walk(data_walk)
+                    data_walk = None
+            if data_walk is None:
+                walk = _Walk()
+                data_walk = _DataWalk(walk, self._new_walk(walk))
+            target = self._walk_to_decoded(data_walk, decoded)
+            data_walk.current = target
+            data_walk.next_index = decoded.index + 1
+            if start:
+                # Data that ends before ``start`` is short: the reader of the
+                # handed-off stream finds it so (TruncatedError).
+                with self._translated_errors(decoded.name), self._handle_guard():
+                    _read_up_to(target, start)
+            return _DataWalkStream(self, data_walk, target)
+        except BaseException:
+            if data_walk is not None:
+                self._close_data_walk(data_walk)
+            raise
+
+    def _walk_to_decoded(self, data_walk: _DataWalk, decoded: _Decoded) -> _Decoded:
+        """Step ``data_walk`` to the member ``decoded`` describes and return its data
+        as this walk's reader hands it over."""
+        walk = data_walk.walk
+        boundary = self._translated_errors(decoded.name)
+        guard = self._handle_guard()
+        index = data_walk.next_index
+        while True:
+            with boundary, guard:
+                span = next(data_walk.spans, None)
+            if not isinstance(span, MemberSpan):
+                if span is not None:
+                    raise TypeError(
+                        f"{type(self._reader).__name__}.walk() yielded "
+                        f"{type(span).__name__}, not a MemberSpan"
+                    )
+                raise CorruptionError(
+                    f"walking the archive again ended before {quoted(decoded.name)}"
+                )
+            data = span.data
+            if index == decoded.index:
+                if data is None:
+                    raise CorruptionError(
+                        f"walking the archive again found no decoded data for "
+                        f"{quoted(decoded.name)}"
+                    )
+                stream = _full_count(data)
+                return _Decoded(
+                    stream,
+                    span.checked,
+                    index,
+                    decoded.size,
+                    decoded.name,
+                )
+            with boundary, guard:
+                if data is not None:
+                    stream = _full_count(data)
+                    _Decoded(
+                        stream,
+                        span.checked,
+                        index,
+                        span.member.size,
+                        decoded.name,
+                    ).finish()
+                elif span.data_length:
+                    layer = walk.layer
+                    assert layer is not None
+                    layer.forward.skip(span.data_length)
+            index += 1
+
+    def _return_data_walk(self, data_walk: _DataWalk) -> None:
+        """Keep ``data_walk``, whose stream closed, for the next open, unless one is
+        kept already."""
+        with self._data_walk_lock:
+            if self._idle_data_walk is None and self._reader_open:
+                self._idle_data_walk = data_walk
+                return
+        self._close_data_walk(data_walk)
+
+    def _close_data_walk(self, data_walk: _DataWalk, *, guard: bool = True) -> None:
+        """Close ``data_walk``; ``guard=False`` when the caller holds the handle lock
+        (the reader's close)."""
+        with suppress(Exception), self._handle_guard() if guard else nullcontext():
+            data_walk.close()
+
+    def _decoded_parts(
+        self,
+        member: ArchiveMember,
+        record: _Span,
+        decoded: _Decoded,
+        stream: BinaryIO,
+    ) -> MemberStreamParts:
+        """``member``'s parts over ``stream``, its decoded data."""
+        expected = record.expected if record.expected is not None else member.hashes
+        return self._member_parts(
+            stream,
+            member.name,
+            size=member.size,
+            # A listed size is enforced, so a short stream raises TruncatedError and
+            # a long one CorruptionError. A member listed with no size is read to the
+            # end of its stream, and only its digests are checked.
+            expected_size=member.size,
+            expected_hashes=expected or None,
+            verify_member=member,
+            fill_size=member.size is None,
+            checks_content=decoded.checked,
+            custom_digests=record.custom,
+        )
 
     def _span_parts(
         self, member: ArchiveMember, record: _Span, stream: BinaryIO
@@ -1142,15 +1558,18 @@ class SequentialReaderAdapter(_PluginAdapter):
             solid_block_count=None,
         )
 
-    def _close_walk_view(self) -> None:
-        views, self._walk_views = self._walk_views, []
-        for view in reversed(views):
-            view.close()
-
     def _release_streams(self) -> None:
         """Close the streams this adapter made. Safe to call more than once."""
         try:
-            self._close_walk_view()
+            with self._data_walk_lock:
+                idle, self._idle_data_walk = self._idle_data_walk, None
+            if idle is not None:
+                self._close_data_walk(idle, guard=False)
+            decoded, self._listing_decoded = self._listing_decoded, None
+            if decoded is not None:
+                with suppress(Exception):
+                    decoded.close()
+            self._listing_walk.close()
         finally:
             try:
                 if self._owned_stream is not None:

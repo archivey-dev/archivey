@@ -21,11 +21,12 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
       `BaseArchiveReader` (`_pass_reads_through_walk`, `WalkHandoffStream`) and the
       sequential adapter uses it: `stream_members()` and `extract_all()` decode a
       compressed archive once.*
-- [ ] 1.2c Decoded `MemberSpan.data` (drain on advance, re-walk for random access),
+- [x] 1.2c Decoded `MemberSpan.data` (drain on advance, re-walk for random access),
       `ForwardStream.decompress`, `checked` members counted as verified,
       `ReaderArchiveInfo.is_solid`. *1a landed `checked` and `is_solid`;
-      `ForwardStream.decompress` landed after outer compression; decoded data is
-      left.*
+      `ForwardStream.decompress` landed after outer compression; decoded data
+      landed last: the drain stops one byte past the listed size, and opens in
+      archive order share one walk.*
 - [x] 1.2d `ReaderContext.decompress(data, method, *, size, properties)`: a member's
       compressed bytes through archivey's codec layer, with the caller's config and
       the member's sizes, for raw Deflate, Deflate64, bzip2, Zstandard, LZ4 frames,

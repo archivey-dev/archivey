@@ -526,6 +526,11 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         # A sequential plugin's member data in a streaming pass: stored bytes read
         # forward from the walk's stream, like TAR's slice; no codec above it.
         format_adapter._SpanWindow,
+        # A sequential plugin's decoded member data (``MemberSpan.data``), read
+        # forward through the walk that yielded it or through a walk of its own; the
+        # plugin decodes, so no archivey codec above it keeps a table.
+        format_adapter._DecodedWindow,
+        format_adapter._DataWalkStream,
         # The compressed input of a stream a streaming walk decompresses part-way
         # (``ForwardStream.decompress``): the walk's buffer read forward, below the
         # codec, which keeps no table over it.
