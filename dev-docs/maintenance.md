@@ -19,7 +19,7 @@ those use the AI plan's quota.
 | --- | --- | --- | --- |
 | `review-loop.yml` | each time the `review` label is added | **yes**, one Opus session per round: up to 5 rounds an agent can ask for, 8 if a person keeps adding the label ([Review loop](review-loop.md)) | the review itself failed to post; re-add the label once |
 | `claude.yml` | an `@claude` mention by a person on an issue or PR | **yes**, one session per mention | nothing, unless you asked for something |
-| `ci.yml` | each PR push (except documentation-only PRs) with a reduced set of jobs, and every job on each merge-queue group and a dispatched run; not on pushes to `main`, since the queue already tested each commit there (dispatch it on `main` to check `main` itself); its `CI gate` job is the queue's required check; in the queue it also calls `atheris-fuzz.yml`'s short fuzz; PyPy's core-only suite runs only on dispatched runs | no | see [CI is red](#ci-is-red-on-main-or-on-a-pr); it also holds a release until a dispatched run is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
+| `ci.yml` | each PR push (except documentation-only PRs) with a reduced set of jobs, and every job on each merge-queue group, daily on `main` (the README badge) and on a dispatched run; not on pushes to `main`, since the queue already tested each commit there; its `CI gate` job is the queue's required check; in the queue it also calls `atheris-fuzz.yml`'s short fuzz; PyPy's core-only suite runs only on the daily and dispatched runs | no | see [CI is red](#ci-is-red-on-main-or-on-a-pr); it also holds a release until a dispatched run is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
 | `docs-checks.yml` | each PR, each merge-queue group and each push to `main` | no | a docs build or OpenSpec gate broke |
 | `pr-gate.yml` | each PR | no | never red: it reports `CI gate` as passed so any PR can join the merge queue, where the real `CI gate` in `ci.yml` runs |
 | `docs-deploy.yml` | each push to `main` | no | the Pages deploy failed; the site keeps the previous version |
@@ -47,8 +47,8 @@ whoever asks. Then read the diff yourself.
      job once. If it fails again on another PR in the same week, record it in the internal
      tracker and let it wait for a batch. Do not skip or quarantine the test to get green.
    - **A dependency changed** (a new release of a library, a runner image, a Python
-     build). Check whether `main` fails the same way: `ci.yml` does not run on pushes to
-     `main`, so dispatch it there (`gh workflow run ci.yml --ref main`). If it does, see
+     build). Check whether `main` fails the same way: read the latest daily `ci.yml` run on
+     `main`, or dispatch one (`gh workflow run ci.yml --ref main`). If it does, see
      [A dependency broke](#a-dependency-broke-or-stopped-shipping-wheels).
    - **The `3.15` prerelease leg or `3.15t`** (allowed to fail). Read it, but it blocks
      nothing; see [A new CPython](#a-new-cpython-release).

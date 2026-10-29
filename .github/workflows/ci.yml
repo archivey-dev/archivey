@@ -3,8 +3,10 @@ name: CI
 # Run on PRs (covers every branch that has one) and in the merge queue. There is no
 # `push` trigger: every commit on main arrives through the queue, whose run tested that
 # same commit, so a run after the merge only repeated it (about 23 jobs per merge on the
-# shared runners; dropped 2026-10-29). To get a verdict on main itself, say after a
-# dependency release, dispatch this workflow on main.
+# shared runners; dropped 2026-10-29). Instead a daily scheduled run tests main with
+# every job, PyPy's core-only suite included, so a dependency release or a runner image
+# change shows up within a day; the README badge shows that run. To get a verdict
+# sooner, dispatch this workflow on main.
 # `workflow_dispatch` is also the manual escape hatch: with only event triggers, a run
 # that never gets created cannot be retried, and there is nothing to click. That is
 # not hypothetical — during the 2026-08-06 Actions incident five consecutive events
@@ -43,10 +45,13 @@ on:
   # The merge queue. Path filters do not apply to merge_group, so every queued group runs
   # the whole workflow, and the `CI gate` job below is the check the ruleset requires.
   merge_group:
+  # Daily full run on main (the default branch; GitHub runs schedules there only).
+  schedule:
+    - cron: "7 3 * * *"
   workflow_dispatch:
 
-# A pull request push runs a reduced set of jobs; the merge queue and a dispatched run
-# get all of them. Every job below runs on pull requests unless it says
+# A pull request push runs a reduced set of jobs; the merge queue, the daily run and a
+# dispatched run get all of them. Every job below runs on pull requests unless it says
 # otherwise. On a pull request: lint, the `test` legs (Linux 3.11 and 3.14 [all], Linux
 # 3.11 core-only, Windows 3.14 [all]), free-threaded 3.13t, the structural benchmark and
 # the three plugin jobs. Only past it: the `test-queue` legs (the other Pythons, 3.14
@@ -446,8 +451,8 @@ jobs:
           pytest tests/test_property_safety.py -q -n auto
           ${{ matrix.coverage && '--cov-report=term-missing' || '--no-cov' }}
 
-  # The test legs that run only past a pull request: in the merge queue and on a
-  # dispatched run (see the note at the top). Same steps as `test`.
+  # The test legs that run only past a pull request: in the merge queue, the daily run
+  # and a dispatched run (see the note at the top). Same steps as `test`.
   test-queue:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
     if: github.event_name != 'pull_request'
@@ -689,8 +694,8 @@ jobs:
       - name: Assert zero-dependency core
         if: ${{ !cancelled() }}
         run: uv run --python ${{ matrix.python }} --no-sync python tests/check_zero_dep_core.py
-      # Core-only on PyPy runs only on a dispatched run (a release gate, scripts/release.py),
-      # not in the merge queue: it is about five of this job's fifteen
+      # Core-only on PyPy runs on the daily run and on a dispatched run (a release gate,
+      # scripts/release.py), not in the merge queue: it is about five of this job's fifteen
       # minutes, and the CPython core-only legs already cover the fallback paths.
       - name: Run full suite (core-only)
         if: ${{ !cancelled() && github.event_name != 'merge_group' }}

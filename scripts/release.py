@@ -78,8 +78,8 @@ RELEASE_GATE_WORKFLOWS = (
     # the nightly budgets, about ten times longer.
     "atheris-fuzz.yml",
     "rapidgzip-resume-stress.yml",
-    # Pull requests run a reduced set of jobs, the merge queue skips PyPy's core-only
-    # suite, and nothing runs on pushes to main; a dispatched run includes everything.
+    # Pull requests run a reduced set of jobs and the merge queue skips PyPy's core-only
+    # suite; a dispatched run includes everything, as the daily run on main does.
     "ci.yml",
 )
 
