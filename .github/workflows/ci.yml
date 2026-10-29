@@ -21,8 +21,9 @@ on:
     # globs with `!`, then the two doc paths that tests read, re-included (later
     # patterns win): docs/api.md (test_public_api) and review/problem-catalogue/
     # (test_review_problem_catalogue). Add a path there when a test starts reading
-    # another doc file. atheris-fuzz.yml carries the same list;
-    # tests/test_ci_doc_paths.py checks that the two match and the re-includes come last.
+    # another doc file. tests/test_ci_doc_paths.py checks that the re-includes come
+    # after every `!` entry, and that atheris-fuzz.yml (called in the merge queue) has
+    # no pull_request trigger of its own.
     # Two cases skip this workflow although code changed, both from GitHub's filter: a
     # rename is seen under its new name only, so moving code into docs/ alone skips it;
     # and a diff over 3,000 files whose matches fall past the first 3,000 skips it too.
@@ -60,12 +61,15 @@ on:
 # of the queue. The split exists because the organization's runners are shared (20 jobs
 # at once, 5 of them macOS): full runs on every push kept the queue's runs waiting for a
 # runner until they timed out (2026-10-29). Dispatch this workflow on a branch to run
-# everything before queueing.
+# everything before queueing. Pull request runs read the Actions caches saved on main,
+# which only the daily run saves now, so after a `uv.lock` change they may install cold
+# until the next daily run (or a dispatch on main).
 #
 # Cancel an in-progress run when a newer commit arrives for the same PR/branch, so
-# rapid pushes don't pile up redundant full-matrix runs.
+# rapid pushes don't pile up redundant full-matrix runs. Outside pull requests the event
+# is in the group too, so a dispatch on main never cancels the daily run the badge shows.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || format('{0}-{1}', github.ref, github.event_name) }}
   cancel-in-progress: true
 
 jobs:
@@ -487,6 +491,8 @@ jobs:
           - { os: macos-latest, python-version: "3.11", install: all }
           - { os: macos-latest, python-version: "3.14", install: all }
           - { os: windows-latest, python-version: "3.11", install: all }
+    # These rows have no `coverage` key: it evaluates to null, so the steps pass
+    # --no-cov. actionlint reports the key as undefined here; that is expected.
     steps: *test-steps
 
   # Each distribution's packaged unar against archivey's unar RAR5 check, and the unar
@@ -585,7 +591,7 @@ jobs:
     name: free-threaded-concurrency / py${{ matrix.python }} / core + GIL-safe extras
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # As in the test job: a row without `prerelease` (3.13t, a required check) can fail.
+    # As in the `test-queue` job: a row without `prerelease` (3.13t) can fail the run.
     continue-on-error: ${{ matrix.prerelease == true }}
     strategy:
       fail-fast: false
