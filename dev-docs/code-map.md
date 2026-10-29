@@ -156,6 +156,7 @@ often they turn out to be the right place:
 | How should we work this change? | `dev-docs/pair-workflow.md` |
 | How would the maintainer settle this design question? | `dev-docs/design-rules.md` |
 | Why is a review round running, or not running, on this PR? | `dev-docs/review-loop.md` |
+| Did a change to the review skill, prompt or model make reviews better or worse? | [`review-eval/README.md`](review-eval/README.md): rerun the bugs the loop missed |
 | What is true *here* for a format / topic? | `dev-docs/formats/<format>.md` / `dev-docs/topics/<topic>.md` when present; else code-map + threat model + ADRs/investigations — create the handbook page in the PR that needs it ([`formats/README.md`](formats/README.md)) |
 | What is the authoritative agent/CI contract? | `openspec/specs/<capability>/spec.md` — capability map in `openspec/project.md` (not the primary human reading surface) |
 | Why was this chosen? (legacy / repo-wide) | `dev-docs/decisions/` (ADR log, `index.md` first); new answers prefer handbook pages |
