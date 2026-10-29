@@ -86,6 +86,9 @@ else
   printf '\n\033[1m=== openspec validate\033[0m\nSKIPPED — `openspec` CLI not on PATH (scripts/setup-dev-env.sh installs it)\n'
 fi
 
+# --- CI job: No tracker URLs (docs-checks.yml) ------------------------------------
+run "tracker URLs" python3 scripts/check_tracker_urls.py
+
 # --- CI job: docs ------------------------------------------------------------------
 # Needs the `docs` group (mkdocs, markdown) rather than the everyday env, so this leg
 # syncs on demand instead of using --no-sync.
