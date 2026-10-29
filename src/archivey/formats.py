@@ -730,19 +730,23 @@ class FormatHandler(ABC):
     format: ClassVar[ArchiveFormat]
     """The format, with ``StreamFormat.UNCOMPRESSED``. A plugin builds it from a
     :class:`~archivey.PluginContainer` member; a built-in format keeps its
-    :class:`~archivey.ContainerFormat` member."""
+    :class:`~archivey.ContainerFormat` member. A handler that replaces a built-in reader
+    through ``FormatPolicy(replace=)`` uses the built-in format, such as
+    ``ArchiveFormat.ZIP``, and is not registered."""
 
     extensions: ClassVar[tuple[str, ...]] = ()
     """File extensions with the dot (``".cpio"``). An extension a built-in format
-    uses is refused at registration."""
+    uses is refused at registration. A replacement plugin declares none: the
+    built-in detection finds its files."""
 
     magic: ClassVar[tuple[Magic, ...]] = ()
-    """Exact signatures. One counts only when no built-in signature matched."""
+    """Exact signatures. One counts only when no built-in signature matched. A
+    replacement plugin declares none."""
 
     probe: ClassVar[Callable[[bytes], bool] | None] = None
     """A content check for a format with no exact signature. It gets only the bytes
     detection already read from the start of the source, and runs after every
-    built-in probe."""
+    built-in probe. A replacement plugin declares none."""
 
     uses_encoding: ClassVar[bool] = False
     """Whether the reader applies ``encoding=`` (through
@@ -855,3 +859,20 @@ def buffered_stream(stream: BinaryIO | io.RawIOBase) -> BinaryIO:
     Closing the result closes ``stream``.
     """
     return cast(BinaryIO, ensure_bufferedio(stream, owns=True))
+
+
+def _bind_policy_hint() -> None:
+    """Bind ``FormatHandler`` where :class:`~archivey.FormatPolicy` is defined.
+
+    ``FormatPolicy.replace`` is annotated with it, but that module cannot import this
+    one (this module imports the config, which imports the policy), so it names it only
+    under ``TYPE_CHECKING``. Binding it here lets ``typing.get_type_hints`` resolve the
+    policy's hints once the plugin API has loaded.
+    """
+    from archivey import format_policy
+
+    format_policy.FormatHandler = FormatHandler
+
+
+_bind_policy_hint()
+del _bind_policy_hint
