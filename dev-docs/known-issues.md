@@ -224,109 +224,21 @@ pins that the caller's stream is freed. In-process, Python objects measured with
 from an `io.BytesIO`. Native memory measured by RSS over 3 000 opens: 2 to 5 kB per open, noisy,
 for every source.
 
-## Intermittent `pyppmd` native aborts on PPMd streams (open upstream)
+## `pyppmd` crashes on damaged or crafted PPMd data (open upstream)
 
-**Symptom.** pyppmd 1.3.x corrupts the heap (SIGSEGV or SIGABRT on Linux,
-`STATUS_HEAP_CORRUPTION` 0xC0000374 on Windows) when a decode asks for more output than the
-stream holds: `max_length=-1`, a sized request about 64 KiB or more past the true
-remaining output, or a `decode` after `eof`. A sized over-request leaves the worker
-waiting for input once it runs past what the range coder's tail lookahead can satisfy,
-and freeing the decoder in that state is the crash (bare pyppmd, decoder freed without a
-quiesce: +64 and +4096 over, 0/20; +65536 over, 13/20). Valgrind pins the first bad write as a
-use-after-free of pyppmd's own output buffer at `ThreadDecoder.c:134`. Random input (a
-wrong 7z AES key, a hostile archive) reaches a second route: a model that ended early and
-is fed more input segfaults in `Ppmd7_DecodeSymbol`, on 1.2.0 as well. PPMd8 behaves the
-same way.
+**Symptom.** pyppmd 1.3.x has a known issue that can crash the process on damaged or crafted
+PPMd data, fixed in an upcoming pyppmd release.
 
-**Affected versions.** The overshoot crash is a regression from 1.3.0's `ThreadDecoder.c`
-rewrite (upstream PR #126): 1.1.1 and 1.2.0 do not crash on it but return wrong bytes on
-chunked decodes, which is why `[recommended]` requires `pyppmd>=1.3.1`. The random-input
-crash affects 1.2.0 and 1.3.x.
+**What archivey does.** Every PPMd member decodes in a child process unless
+`process_isolation` is `NONE` (`ppmd_child.py`, ADR 0022), and a crash becomes
+`CorruptionError` for that member. `PpmdDecoder` (`streams/codecs/ppmd_decoder.py`) also
+holds a member up to `DecoderLimits.max_ppmd_held_input` and hands it to pyppmd whole.
+Tests: `tests/test_ppmd_crash_isolation.py` and `tests/test_ppmd_raw_streams.py`; the
+non-blocking PPMd native stress workflow watches for regressions.
 
-**What archivey does.** `PpmdDecoder` (`streams/codecs/ppmd_decoder.py`) bounds every request by
-the exact remaining `unpack_size` and never passes `-1`; refuses unsized PPMd7 at
-construction; decodes unsized PPMd8 in bounded 64 KiB requests; injects at most one capped
-NUL at the end; stops at a spent payload; and hands pyppmd the whole member in one
-`decode`, so a short return is the end. Two exceptions are fed in pieces: members over
-`DecoderLimits.max_ppmd_held_input` (16 MiB by default), and a ZIP member read from
-a stream that cannot seek, whose sizes follow its data, so its input runs on into the rest
-of the archive. Fed in pieces, pyppmd 1.3.1 resumes a worker that waited for input with
-the output budget and count of the call that started it, so a call can return short at a
-false `eof` with input unread, which reads as a spent payload; a valid member raised
-`TruncatedError` some KiB short. `PpmdDecoder._native_decode` now asks 1 byte of each call
-that brings new input after the first, which stops a resumed worker after one symbol, and
-the rest of a new worker; a request of 1 byte needs no split. Every PPMd member decodes in
-a child process unless `process_isolation` is `NONE` (`ppmd_child.py`), because the
-quiesce NUL can crash pyppmd on small members too; a crash becomes `CorruptionError`
-(`ResourceLimitError` for SIGKILL or a refused `mem_size`, `ReadError` for other deaths).
-A child is reused only after a member that ended cleanly. Pinned by
-`tests/test_ppmd_crash_isolation.py` and `tests/test_ppmd_raw_streams.py`; the
-non-blocking PPMd native stress workflow watches for regressions, weekly and on pull
-requests that touch the PPMd path.
-
-**What remains.** No crash is confirmed on the in-process path; the defect is upstream,
-so the path rests on archivey's call discipline, not on a fixed decoder. A header that
-overstates `unpack_size` measured clean: crafted 7z (PPMd7) and ZIP (PPMd8, with and
-without an end mark) members overstated by 64 KiB, 1 MiB and 15 MiB, read through
-`open_archive` with `read()` and with 64 KiB reads, across text, zero-run, mixed and
-random payloads, gave 0 crashes in 860 fresh children and 0 valgrind errors on 12 such
-shapes. On those members the worker blocked on input a few hundred to a few thousand
-symbols past the true end, and the spent-payload stop and quiesce then held. Two
-candidates remain:
-
-1. The teardown NUL on a member that ended early. When a sized decode returns short at
-   `eof` with all input fed, `_quiesce_worker` still sends `decode(b"\0", 1)`, up to
-   `_PPMD_QUIESCE_MAX_CALLS` times, because pyppmd reports the same flags whether its
-   worker waits for input (the NUL is needed, K.5) or its model has ended (the NUL is a
-   decode after the end, the K.4 route). archivey sends it on 183 of 200 hostile 7z
-   members; in isolation it measured 0 crashes in 100 children
-   (`--mode spent-quiesce-nul`, K.4).
-2. A sized pack declared complete but corrupt can fill toward `unpack_size` through
-   empty drains (the exit-after-green entry below, item 2).
-
-The same NULs sent after a `decode` that raised `ValueError` do crash pyppmd (59 of 100
-children for PPMd8, 5 of 100 for PPMd7, `--mode nul-after-error`), but archivey never
-makes that call: after the error pyppmd reports `eof`, and `_quiesce_worker` returns
-without decoding (0 calls after 370 errors, K.4).
-
-**Upstream.** Not filed. The ready-to-file report, its reproduction scripts and the
-verification checklist for a fixed release are
-[`ppmd-native-investigation-results.md`](investigations/ppmd-native-investigation-results.md)
-§J.
-
-**Evidence.** Same file: root cause §D, archivey's options §I, CI fingerprints, version
-matrix, crash-shape rates and the stress workflow §K.
-
-## `pyppmd` exit-after-green abort (`test_ppmd_raw_streams` teardown)
-
-**Symptom.** `tests/test_ppmd_raw_streams.py`, run in its own pytest process, can pass
-every test and then die in interpreter teardown or GC with SIGSEGV or
-`corrupted size vs. prev_size`. Same pyppmd 1.3.x defect as above, reached at teardown:
-`Ppmd7T_Free` wakes a worker still blocked on input, and it writes into the freed output
-block.
-
-**What archivey does.** `PpmdDecoder._quiesce_worker`, called from `close()` and
-`__del__`, drives a parked worker to `finished` with bounded `decode(b"\0", 1)` before the
-decoder is freed. `scripts/ppmd_uaf_valgrind.py` reports 0 memcheck errors on archivey's
-scenarios with it. Adversarial unfinished-decoder tests run in subprocess children.
-
-**What remains.**
-
-1. The teardown race. Quiescing removes the use-after-free on the shapes valgrind
-   reproduces, but it is defence in depth, not proven elimination: the race is timing and
-   platform dependent (hotter on 3.12+, free-threaded builds and Windows). Required CI
-   keeps `--allow-exit-after-green` for this module until the valgrind gate runs green on
-   those platforms.
-2. A sized pack declared complete but internally corrupt can still fill toward
-   `unpack_size` through empty drains; the container CRC is the backstop.
-3. `pack_size` must measure the same bytes `feed()` counts (the invariant in the
-   `PpmdDecoder` docstring); the 7z pipeline satisfies it by construction.
-
-**Upstream.** Part of the same unfiled report (§J above).
-
-**Evidence.** [`ppmd-exit-after-green-exploration.md`](investigations/ppmd-exit-after-green-exploration.md);
-[`ppmd-native-investigation-results.md`](investigations/ppmd-native-investigation-results.md)
-§D, §I and §K.5.
+**What remains.** Required CI keeps `--allow-exit-after-green` for
+`tests/test_ppmd_raw_streams.py`. Revisit the child-process rule once the fixed pyppmd is
+released.
 
 ## PyPy: rapidgzip, python-lz4, pyppmd and inflate64 misbehave (open)
 

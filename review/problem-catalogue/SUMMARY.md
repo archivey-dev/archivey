@@ -42,7 +42,7 @@ Two things the extraction produced that were not asked for and are worth keeping
 | Format quirk | 31 | What the formats specify and cannot express: late-bound sizes, indexes at the end or absent, solid compression, names with no declared encoding, duplicate and superseded names, zeros as a valid archive |
 | Security / hostile input | 27 | Traversal and link escape, bombs and their false positives, listing-time exhaustion, name deception on the terminal and in display order, formats with no password verifier, argument injection into an external tool |
 | API and usage pattern | 30 | Where a uniform interface over unlike formats leaks: cost that varies by orders of magnitude, capabilities that are traps on some formats, verdicts delivered where nobody can act on them, partial failure |
-| Upstream library defect | 22 | Silent truncation, infinite loops, process aborts, use-after-free in a codec's worker thread, one broad exception type for unrelated conditions, a finalizer that can never run |
+| Upstream library defect | 22 | Silent truncation, infinite loops, process aborts, one broad exception type for unrelated conditions, a finalizer that can never run |
 | Performance & memory | 12 | Solid re-decode, rewinds without an index, verification fused into the delivering read, bounded memory versus boundary-crossing cost, guards that measure the wrong quantity |
 | Packaging & dependency | 11 | Optional native wheels, a codec's provider moving into the standard library, an external tool that may be a different program of the same name, a test corpus needing trialware |
 | Platform & filesystem | 7 | A stream that lies about seekability, path resolution that raises, links that cannot be made, metadata with no portable form |

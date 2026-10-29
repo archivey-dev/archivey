@@ -133,7 +133,7 @@ long member never depends on a reused child.
 decoder, `retire_decoder_children` (`decompressor_stream.py`) walks down the member's
 wrappers (`_inner`, and a solid slice's `_stream`) and tells each decoder. Only PPMd acts
 on it (`spoil_child`): its child is ended at close instead of being given back, because a
-wrong output is the visible sign of pyppmd's known corruption. A PPMd child is also ended
+wrong output can be a sign of pyppmd's known issue. A PPMd child is also ended
 after any member that did not decode cleanly to its end (`PpmdDecoder._ended_cleanly`).
 
 **Releasing early.** CPython gives a child back when the last reference to its proxy
@@ -199,14 +199,12 @@ accelerator off. gzip.md §2.3 has the cases.
 
 ### 2.4 PPMd
 
-pyppmd segfaults when it is asked to decode after a corrupt stream has ended early, and
-from Python that state looks like a valid stream that waits for input (ADR 0022,
+pyppmd has a known issue that can crash it on damaged or crafted data (ADR 0022,
 `ppmd_child.py`). Two measures work together:
 
 - **Where it runs:** every PPMd member in a child, unless the setting is `NONE`.
 - **How it is fed:** a member up to `DecoderLimits.max_ppmd_held_input` compressed bytes is
-  held in the parent and handed to pyppmd whole, so pyppmd is asked little after a short
-  end. A larger member, or a ZIP member from a non-seekable stream with its sizes after
+  held in the parent and handed to pyppmd whole. A larger member, or a ZIP member from a non-seekable stream with its sizes after
   its data, is fed in pieces. This holds under every setting. Under `NONE` it is the only
   protection.
 
@@ -349,8 +347,7 @@ uv run --no-sync python scripts/bench_rapidgzip_child.py     # the rapidgzip chi
 uv run --no-sync python scripts/bench_bzip2_child.py         # the same for bzip2
 ```
 
-Whether the children are still needed: `scripts/accelerator_crash_search.py` (rapidgzip)
-and `scripts/pyppmd_crash_repro.py` (pyppmd).
+Whether the rapidgzip child is still needed: `scripts/accelerator_crash_search.py`.
 
 ## 8. References
 
@@ -366,12 +363,11 @@ and `scripts/pyppmd_crash_repro.py` (pyppmd).
   [`formats/bzip2.md`](../formats/bzip2.md) §2.3 · [`formats/7z.md`](../formats/7z.md) ·
   [`formats/zip.md`](../formats/zip.md)
 - Registers: [`known-issues.md`](../known-issues.md) §"rapidgzip accelerator: upstream
-  defects", §"Intermittent `pyppmd` native aborts on PPMd streams", §"PyPy: rapidgzip,
+  defects", §"`pyppmd` crashes on damaged or crafted PPMd data", §"PyPy: rapidgzip,
   python-lz4, pyppmd and inflate64 misbehave" · [`threat-model.md`](../threat-model.md)
 - Investigations:
   [`process-isolation-overhead.md`](../investigations/process-isolation-overhead.md) ·
-  [`rapidgzip-worker-deaths.md`](../investigations/rapidgzip-worker-deaths.md) ·
-  [`ppmd-native-investigation-results.md`](../investigations/ppmd-native-investigation-results.md)
+  [`rapidgzip-worker-deaths.md`](../investigations/rapidgzip-worker-deaths.md)
 - User docs: [`docs/security.md`](../../docs/security.md#decoders-in-a-child-process) ·
   `docs/recipes.md`
 - Code: `config.py` (`ProcessIsolation`, `AcceleratorMode`) ·

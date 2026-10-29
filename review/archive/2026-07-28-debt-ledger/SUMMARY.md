@@ -52,7 +52,7 @@ needed an ambient `7z` CLI no workflow installed, making that coverage unpinned.
 | **T5/T6** | Fault-injection leftovers; no stateful concurrency stress | tests.md | **F1** | **KEEP** |
 | **DD5** | `seekable-gzip-and-block-writing` (0/24) | in-flight | **F1** | **KEEP** — post-0.2.0 |
 | **S1/S4/…** | Error boundary; ReaderState; module seams; `VerifyingStream` parked | structural.md | — | **fine** |
-| **N1** | `pyppmd` teardown UAF / exit-after-green residual | `known-issues.md`; #188/#189 | **F1** | **KEEP** — mitigated in-tree; upstream unfixed; CI soft-pass until hot-race clear |
+| **N1** | `pyppmd` teardown / exit-after-green residual | `known-issues.md`; #188/#189 | **F1** | **KEEP** — mitigated in-tree; upstream unfixed; CI soft-pass until hot-race clear |
 
 ## The remaining pre-0.2.0 pay list
 
@@ -74,7 +74,7 @@ release work, not debt.
 | Stdlib gzip recoverable truncation + ADR 0014 | #183 / #186 → archived |
 | **DD4** rapidgzip backstop (ADR-0014-safe) + any-seekable / Bug-3 | #194 / #196 → investigation archived |
 | **D3 / Q5** CHANGELOG + release checklist | #193 |
-| `pyppmd` quiesce-on-close + valgrind UAF gate (mitigation) | #188/#189 |
+| `pyppmd` quiesce-on-close + valgrind gate (mitigation) | #188/#189 |
 | **D2** `SECURITY.md` + threat-model / checklist links | #198 |
 | **D7** sync + archive `gzip-truncation-backstop-any-seekable` | #198 |
 | **T2** seek-interleaving XZ / lzip / `.Z` | #199 |
