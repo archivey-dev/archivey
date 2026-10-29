@@ -981,6 +981,74 @@ def test_rar4_member_after_encrypted_data_in_its_solid_stream_is_refused() -> No
     assert policy.member_refusal(compressed[1]) is None
 
 
+def _solid_rar4_with_encrypted_member(index: int) -> rar_parser.RarArchive:
+    """``basic_solid__rar4.rar`` with its ``index``-th compressed member marked encrypted.
+
+    ``rar`` 7 cannot write RAR4 and 6.23 will not mix plain and encrypted members in a
+    solid RAR4 archive, so the mark is set after parsing (as above).
+    """
+    with open(_RAR / "basic_solid__rar4.rar", "rb") as f:
+        archive = rar_parser.parse_rar_archive(f)
+    compressed = [m for m in archive.members if not rar_unar.uses_no_dictionary(m)]
+    compressed[index].is_encrypted = True
+    return archive
+
+
+def test_rar4_solid_pass_refuses_only_what_the_encrypted_member_blocks() -> None:
+    """The pass refuses the encrypted member and the members its solid stream carries
+    into, as ``open()`` does, and keeps the ones before it in its run."""
+    archive = _solid_rar4_with_encrypted_member(1)
+    policy = rar_unar.UnarRarPolicy(archive)
+    payload = [m for m in archive.members if m.is_payload_file()]
+    for info in payload:
+        assert policy.solid_pass_refusal(info) == policy.member_refusal(info)
+    refused = [m.filename for m in payload if policy.solid_pass_refusal(m) is not None]
+    served = [m.filename for m in payload if policy.solid_pass_refusal(m) is None]
+    assert refused and served
+    # The run leaves the encrypted data out, so an empty run is not a wrong password.
+    assert not policy.solid_pass_needs_password()
+
+
+@requires_binary("unar")
+def test_rar4_solid_pass_serves_the_members_before_an_encrypted_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``stream_members()`` gives each member what ``open()`` gives it: data before
+    the encrypted member, ``UnsupportedFeatureError`` from it on in its solid stream."""
+    real_parse = rar_reader.parse_rar_archive
+
+    def parse(*args: object, **kwargs: object) -> rar_parser.RarArchive:
+        archive = real_parse(*args, **kwargs)  # type: ignore[arg-type]
+        compressed = [m for m in archive.members if not rar_unar.uses_no_dictionary(m)]
+        compressed[2].is_encrypted = True
+        return archive
+
+    monkeypatch.setattr(rar_reader, "parse_rar_archive", parse)
+    path = _RAR / "basic_solid__rar4.rar"
+
+    def outcome(read: object) -> object:
+        try:
+            return read()  # type: ignore[operator]
+        except UnsupportedFeatureError as exc:
+            return type(exc)
+
+    with open_archive(path, password="password", config=_UNAR) as archive:
+        alone = {
+            m.name: outcome(lambda m=m: archive.read(m))
+            for m in archive.members()
+            if m.is_file
+        }
+    with open_archive(path, password="password", config=_UNAR) as archive:
+        passed = {
+            m.name: outcome(stream.read)
+            for m, stream in archive.stream_members()
+            if stream is not None and m.is_file
+        }
+    assert passed == alone
+    assert UnsupportedFeatureError in passed.values()
+    assert any(isinstance(v, bytes) and v for v in passed.values())
+
+
 @requires_binary("unar")
 def test_solid_pass_refuses_readable_members_past_the_cap(
     monkeypatch: pytest.MonkeyPatch,

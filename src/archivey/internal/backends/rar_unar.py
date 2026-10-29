@@ -333,11 +333,14 @@ def _rar4_encrypted(archive: RarArchive, info: RarMemberInfo) -> bool:
 
 
 def _archive_refusal(archive: RarArchive) -> str | None:
-    """Why no solid pass over this archive can use ``unar``, or ``None``."""
-    if archive.version != 5 and (
-        archive.has_header_encryption
-        or any(_needs_password(archive, info) for info in archive.members)
-    ):
+    """Why no solid pass over this archive can use ``unar``, or ``None``.
+
+    An encrypted member of a RAR 2.x-4.x archive refuses only itself and the members
+    its solid stream carries into (``member_refusal``): the pass leaves them out of its
+    run and serves the rest. Encrypted headers hide every member, so they refuse the
+    whole pass.
+    """
+    if archive.version != 5 and archive.has_header_encryption:
         return REFUSE_RAR4_ENCRYPTED
     # Measured on the Homebrew bottle (XADMaster 1.10.8) with ``tinyvol_hp``: no data,
     # exit 0. Debian's 1.10.1 reads the same set; the version is not told apart.
@@ -449,6 +452,18 @@ class UnarRarPolicy:
                 if id(info) in self._pass_offsets
             )
         return any(unar_emitted_size(info) > 0 for info in self._archive.members)
+
+    def solid_pass_needs_password(self) -> bool:
+        """Whether the solid pass's run holds encrypted data.
+
+        A RAR 2.x-4.x archive with encrypted members can still have a run that holds
+        none: the pass leaves them out (``member_refusal``).
+        """
+        return any(
+            _needs_password(self._archive, info)
+            for info in self._archive.members
+            if self._pass_indexes is None or id(info) in self._pass_offsets
+        )
 
     def solid_pass_offset(self, info: RarMemberInfo) -> int:
         """Where this readable payload member starts in the solid pass's run."""
