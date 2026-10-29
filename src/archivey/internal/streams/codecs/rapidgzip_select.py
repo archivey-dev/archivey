@@ -308,9 +308,10 @@ def _bound_rapidgzip_source(
     """Clip a stream source to the known compressed length before rapidgzip.
 
     rapidgzip over-reads past EOS looking for a concatenated member (raw
-    deflate) or prints trailing-garbage to stderr (bzip2). A 7z AES stage
-    decrypts a padded block, so the next coder's ``pack_size`` (AES
-    unpack_size) is the bound that drops those pad bytes. Only
+    deflate); for bzip2, input past the coder's data would meet the end check
+    under ``refuse_input_after_end``. A 7z AES stage decrypts a padded block,
+    so the next coder's ``pack_size`` (AES unpack_size) is the bound that drops
+    those pad bytes. Only
     ``pack_size`` is pad-free; the two fallbacks assume a non-AES source
     (an AES stream's ``.size`` is the padded plaintext length). Paths stay
     paths: rapidgzip opens its own fd.

@@ -714,9 +714,10 @@ def test_encrypted_deflate_family_seeks_with_accelerator(
     engage rapidgzip's bundled indexed bzip2 (no verifiability gate).
     Seed 1 is load-bearing: AES unpack_size is not a multiple of 16, so the
     AES stage has a pad after the coder's data (urandom is often aligned).
-    The reader cuts the coder's source at that size before the codec sees
-    it; the codec's own clip is pinned by
-    ``test_bzip2_accelerator_stops_at_the_declared_pack_size``.
+    The pad is what makes this leg exercise the reader's cut: the reader cuts
+    the coder's source at that size before the codec sees it, and without the
+    cut only the codec's clip would keep the pad from the end check. That clip
+    is pinned by ``test_bzip2_accelerator_stops_at_the_declared_pack_size``.
     """
     payload = random.Random(1).randbytes(1_600_000)
     archive = _encrypted_codec_archive(tmp_path, method=method, payload=payload)

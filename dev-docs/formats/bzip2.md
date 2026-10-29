@@ -207,7 +207,8 @@ follow a coder's data. The 7z reader already cuts each coder's source at its pac
 (measured: an AES and BZip2 folder hands the codec a source that ends at the AES unpack
 size), so the clip changes nothing there; it guards a source that is not cut. Without it,
 the end check under `refuse_input_after_end` finds the pad and raises `DataAfterEndError`
-(`test_bzip2_accelerator_stops_at_the_declared_pack_size`).
+(`test_bzip2_accelerator_stops_at_the_declared_pack_size`). The standard library engine
+has no such clip, so on a source that is not cut it does raise there: see §5.
 
 **Errors through the accelerator.** Its messages carry no exception type archivey can
 match on, so `Bzip2Codec._translate_accelerator` matches the text. "Calculated CRC",
@@ -289,6 +290,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A backward seek re-decodes from the start | **format** | Install `[seekable]` and pass `seekable_members=True` |
 | A cold backward seek with the accelerator still re-decodes up to a block, and may log it | **format** | Blocks are the unit of random access |
 | A cut or damaged stream right after the data costs a second decode of the file with the accelerator | **archivey** | The accelerator stops before it, and the standard library takes over at the end from the start of the file (§2.3) |
+| With `pack_size` declared on a source that is not cut there, the accelerator reads through input after the end that the standard library refuses under `refuse_input_after_end` | **archivey** | Only the accelerator's input is clipped (§2.3). No reader produces that source: the 7z reader cuts each coder's input at its packed size |
 | A stream after zero bytes is not read: the first stream's payload, then `ARCHIVE_TRAILING_DATA` | **archivey** | Zeros are padding only at the end of the file (§6), as `bzip2` and 7-Zip read it |
 | Reading a large level-1 `.bz2` with the accelerator spends 5 to 10% of the time checking for skipped streams | **archivey** | The check copies the decoder's whole index per batch of blocks (§2.3) |
 | Trailing junk after the last stream is a warning | **archivey** | The rule every codec shares ([`single-file.md`](single-file.md) §6); `DiagnosticPolicy.STRICT` raises |
@@ -316,9 +318,6 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 
 - **An upstream report for the garbage-reads-as-empty behaviour.** The workaround is in
   place; no report has been drafted. Tracked internally.
-- **Standard error output from the accelerator** on trailing bytes. Removing it needs an
-  upstream option or clipping a standalone file to its last end marker, which is only found
-  by decoding. Tracked internally.
 
 ## 8. Verify
 
