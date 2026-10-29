@@ -30,7 +30,7 @@ from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.diagnostics import DiagnosticCode, MemberTimestampContext
 from archivey.exceptions import ArchiveyUsageError, ResourceLimitError
 from archivey.terminal import quoted
-from tests.conftest import requires, requires_binary
+from tests.conftest import requires, requires_binary, run_7z
 from tests.memory_util import traced_peak
 
 _RAR_FIXTURES = Path(__file__).parent / "fixtures" / "rar"
@@ -214,8 +214,8 @@ def _7z_filetime_overflow(tmp_path: Path) -> Path:
     member.write_bytes(b"hi\n")
     os.utime(member, (1_000_000_000, 1_000_000_000))
     out = tmp_path / "filetime.7z"
-    subprocess.run(
-        ["7z", "a", "-mx0", "-mhc=off", "-bd", "-bso0", str(out), "a.txt"],
+    run_7z(
+        ["a", "-mx0", "-mhc=off", "-bd", "-bso0", str(out), "a.txt"],
         cwd=src,
         check=True,
     )
