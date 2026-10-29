@@ -430,3 +430,27 @@ def test_a_seek_to_the_end_refuses_input_after_a_container_streams_end(
             outcome.append(type(exc))
         outcomes.append(outcome)
     assert outcomes == [[DataAfterEndError], [DataAfterEndError]]
+
+
+def test_bzip2_accelerator_stops_at_the_declared_pack_size() -> None:
+    """The accelerator reads a bzip2 source only up to ``CodecParams.pack_size``.
+
+    A 7z AES stage decrypts whole blocks, so up to 15 bytes of pad can follow the
+    coder's data. The 7z reader cuts the coder's source at its packed size before
+    the codec sees it; ``_bound_rapidgzip_source`` is the codec's own guard for a
+    source that is not cut. Without it, the end check under
+    ``refuse_input_after_end`` finds the pad and raises ``DataAfterEndError``.
+    """
+    payload = random.Random(1).randbytes(300_000)
+    packed = bz2.compress(payload)
+    config = StreamConfig(
+        seekable=True,
+        use_indexed_bzip2=AcceleratorMode.ON,
+        refuse_input_after_end=True,
+    )
+    params = CodecParams(pack_size=len(packed), unpack_size=len(payload))
+    source = io.BytesIO(packed + bytes(range(1, 14)))
+    with open_codec_stream(Codec.BZIP2, source, params=params, config=config) as s:
+        assert s.read() == payload
+        s.seek(1000)
+        assert s.read() == payload[1000:]

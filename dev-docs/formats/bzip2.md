@@ -171,7 +171,8 @@ broke even near 0.6 MiB compressed with 4 cores and near 2 MiB with one
   has 900 kB blocks, so the same file has a ninth of the blocks. Found by the accelerator
   fuzz targets.
 - **Bytes after the last stream must be reported the same way.** The decoder skips them
-  and prints a warning to standard error, which archivey cannot catch. At the end of data,
+  and writes a warning to its process's standard error, a temporary file archivey reads
+  only to classify a crash, so the warning cannot become a diagnostic. At the end of data,
   `_Bzip2EmptyStreamCheck` asks the decoder for its compressed position
   (`tell_compressed()`, in bits, rounded up to a byte, measured with `parallelization=0`).
   That position is the end of the last stream that produced data, so empty streams after
@@ -200,11 +201,13 @@ broke even near 0.6 MiB compressed with 4 cores and near 2 MiB with one
   before it exits and then skips finalization (`os._exit`); this process reaps the child
   when the stream is closed or collected.
 
-The input is also clipped to the known compressed length (`_bound_rapidgzip_source`).
-Otherwise a 7z AES stage's padding after the end marker reaches the decoder, which prints
-"Trailing garbage after EOF ignored!" to the decoder process's standard error. That stream
-is a temporary file archivey reads only to classify a crash, so the warning never reaches
-the caller's standard error.
+The input is also clipped to the coder's packed size (`_bound_rapidgzip_source`), as for
+the DEFLATE family. A 7z AES stage decrypts whole blocks, so up to 15 bytes of pad can
+follow a coder's data. The 7z reader already cuts each coder's source at its packed size
+(measured: an AES and BZip2 folder hands the codec a source that ends at the AES unpack
+size), so the clip changes nothing there; it guards a source that is not cut. Without it,
+the end check under `refuse_input_after_end` finds the pad and raises `DataAfterEndError`
+(`test_bzip2_accelerator_stops_at_the_declared_pack_size`).
 
 **Errors through the accelerator.** Its messages carry no exception type archivey can
 match on, so `Bzip2Codec._translate_accelerator` matches the text. "Calculated CRC",
@@ -253,7 +256,7 @@ accelerator `OFF` and `ON`.
 | A stream and empty streams (`bzip2 -c /dev/null`) concatenated, the empty ones before, between or after | Reads, with no diagnostic, with the accelerator off and on. `bzip2 -t` accepts it |
 | The same, with zero bytes after the last stream | Reads, with no diagnostic, with the accelerator off and on |
 | Zero bytes, then an empty stream | The data ends at the zeros: `ARCHIVE_TRAILING_DATA` at the empty stream, with the accelerator off and on. `bzip2 -t` warns "trailing garbage after EOF ignored" and exits 0: it stops at the first zero byte |
-| A stream followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA` at the same offset with the accelerator off and on. With it on, the decoder process also writes "[Warning] Trailing garbage after EOF ignored!" to its own standard error, a temporary file, so the caller sees nothing (measured on main c2cd70e). `bzip2 -t` warns and exits 0 |
+| A stream followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA` at the same offset with the accelerator off and on. With it on, the decoder process also writes "[Warning] Trailing garbage after EOF ignored!" to its own standard error, a temporary file, so the caller sees nothing. `bzip2 -t` warns and exits 0 |
 | A stream cut at any of 20 points | `TruncatedError` after the same bytes with the accelerator off and on. Never a short read with no error |
 
 ## 4. Threat surface
@@ -300,7 +303,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Serve the caller's source from this process (PR #462 trapped it in-process) | `rapidgzip` terminates the process when a Python source raises; the child's source never raises | Letting the exception cross the native boundary |
 | A 1 MiB size threshold for `AUTO` | The child costs a process start; the standard library is slow enough that the child pays for itself from about 1 MiB | No threshold (the in-process decoder cost no start); reusing the 16 MiB DEFLATE gate |
 | Let the inner-TAR probe read up to 1 MiB of compressed input, for every codec (PR #32) | bzip2's first output comes only after a whole block; one bound for all codecs needs no per-codec branch | Probing only the detection prefix, which called a `.tar.bz2` with a large first block plain `BZ2` |
-| Find the accelerator's end from its compressed position and scan the source | Its warning goes to standard error, and the offset must match the standard library engine's | Clipping the source to the end, which is found only by decoding |
+| Find the accelerator's end from its compressed position and scan the source | Its warning goes to its process's standard error, a temporary file that cannot become a diagnostic, and the offset must match the standard library engine's | Clipping the source to the end, which is found only by decoding |
 | Zero bytes end the data unless they run to the end of the file; what follows them, a valid stream too, is `ARCHIVE_TRAILING_DATA`, in every accelerator mode (maintainer ruling, 2026-10-10) | Match the official tool (DR-6): `bzip2` 1.0.8 stops there, every other reader measured stops there too (§3), and no known writer puts zeros between streams. Nothing hides: what follows is reported, and strict refuses it (DR-3). Zeros at the end stay silent: that is tape and block padding. It also removes a second decode of the file from the start on the accelerated path, which stops at the zeros | Reading on past the zeros, which the standard library engine did and the accelerator matched by handing the end to it (PR #634). The `xz` precedent is weak: the xz format defines padding between streams, bzip2 defines none |
 | A stream header right after the data, with no zero before it, hands the end to the standard library | An accelerator changes speed, not behaviour; the 2026-10-03 ruling below applies that to cut and damaged files. The decoder leaves a cut or damaged stream there alone, where the standard library raises | Reporting a damaged stream after the data as trailing data with the accelerator only |
 | Check the stream layout from the index before a read returns (`_Bzip2Layout`) | Bytes from after a skipped region must not reach the caller; the index already says where each stream's first block is | Checking at the end of data only, after the wrong bytes were delivered |

@@ -372,7 +372,7 @@ codecs' own tools disagree; archivey treats every codec with an end marker the s
 | --- | --- | --- |
 | gzip, zlib, bzip2, xz, lzip, LZMA Alone, zstd, LZ4, Brotli | The whole payload, then `ARCHIVE_TRAILING_DATA` at the junk's offset; `DiagnosticRaisedError` under `STRICT`. xz and lzip keep `size` and seeks | — |
 | gzip | as above | `gzip -t`: "trailing garbage ignored", exit 2 |
-| bzip2 | as above; the accelerator also prints a warning to standard error | `bzip2 -t`: "trailing garbage after EOF ignored", exit 0 |
+| bzip2 | as above; the accelerator's own warning goes to its process's temporary standard error file, not the caller's | `bzip2 -t`: "trailing garbage after EOF ignored", exit 0 |
 | xz | as above | `xz -t`: "Unexpected end of input", exit 1 |
 | lzip | as above | `plzip -t`: exit 0; the lzip manual allows trailing data |
 | zstd | as above | `zstd -t`: "unsupported format", exit 1 |
