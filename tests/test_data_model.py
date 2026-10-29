@@ -271,7 +271,20 @@ def test_modified_utc_normalizes_mixed_timestamps() -> None:
     assert ArchiveMember(type=MemberType.FILE, name="none").modified_utc() is None
 
 
-@pytest.mark.parametrize("field", ["modified", "accessed", "created", "ctime"])
+# Every public timestamp field: ``types.py`` uses postponed annotations, so a field's
+# type is its annotation text. A new one with no ``*_utc()`` helper fails below.
+_TIMESTAMP_FIELDS = [
+    f.name for f in dataclasses.fields(ArchiveMember) if f.type == "datetime | None"
+]
+
+
+def test_the_timestamp_fields_are_found() -> None:
+    """The derivation finds the fields it must (an annotation spelled differently
+    would leave the inventory below empty and passing)."""
+    assert {"modified", "accessed", "created", "ctime"} <= set(_TIMESTAMP_FIELDS)
+
+
+@pytest.mark.parametrize("field", _TIMESTAMP_FIELDS)
 def test_every_timestamp_has_a_utc_helper(field: str) -> None:
     """Each timestamp converts as ``modified_utc`` does, and reads only its own field."""
     from datetime import datetime, timedelta, timezone

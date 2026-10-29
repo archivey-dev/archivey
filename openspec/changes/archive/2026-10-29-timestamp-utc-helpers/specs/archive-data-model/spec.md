@@ -109,8 +109,7 @@ point-in-time snapshots.
 | Streaming later learns `size` / `link_target` | Same yielded object is updated in place |
 | Caller needs a renamed member | Uses `member.replace(name=...)`; original unchanged |
 | `ArchiveMember` used as set item/dict key | Fails because the type is unhashable |
-| Naive and aware `modified` values pass through `modified_utc()` | Returned values are aware UTC; original `modified` fields unchanged |
-| Naive and aware `accessed` / `created` / `ctime` pass through `accessed_utc()` / `created_utc()` / `ctime_utc()` | Converted as `modified_utc()` converts `modified`; each reads only its own field |
+| Naive and aware `modified` / `accessed` / `created` / `ctime` through their `*_utc()` helpers | Returned values are aware UTC; the stored fields are unchanged; each helper reads only its own field |
 | ZIP CRC32 and RAR5 Blake2sp hashes | Stored under `HashAlgorithm.CRC32` / `BLAKE2SP` with `bytes` values |
 | Extraction report holds a member later completed in place | Report's result tuple is immutable; member object reflects late field update |
 | `type == MemberType.ANTI` | `is_anti` true; `is_file` false |
