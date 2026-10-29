@@ -20,7 +20,7 @@ import threading
 import zlib
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import ClassVar
+from typing import BinaryIO, ClassVar
 
 import pytest
 
@@ -28,6 +28,7 @@ import archivey
 from archivey import (
     ArchiveFormat,
     ArchiveMember,
+    ArchiveReader,
     ArchiveyError,
     ArchiveyUsageError,
     CorruptionError,
@@ -69,6 +70,7 @@ class ToysContainer(PluginContainer):
     TOYS = "toys"
     BAD_SIZE = "toys-bad-size"
     SUM16 = "toys-sum16"
+    NO_DIGEST = "toys-no-digest"
     CLOSING = "toys-closing"
     RPMISH = "toys-rpmish"
     DECODED = "toys-decoded"
@@ -302,6 +304,88 @@ def test_a_cut_member_keeps_the_members_before_it(
                 if stream is not None:
                     stream.read()
     assert names == ["docs/", "docs/a.txt", "link", "b.bin"]
+
+
+class _NoDigestReader(ToysReader):
+    """TOYS with no digests: a member's data is read with no verifier above it."""
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        for span in super().walk(stream):
+            yield MemberSpan(span.member, span.data_length)
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_a_cut_member_with_no_digest_raises_at_the_cut(
+    toys: ArchiveFormat, tmp_path: Path, pipe: bool
+) -> None:
+    """With no digest there is no verifier to compare the bytes read with the size:
+    the member's data window (``_SpanWindow``) raises at the cut itself. A sized read returns the bytes
+    before the cut and the next read raises (ADR 0014); a read with no size raises.
+
+    Fails when the window returns a short read as a clean end."""
+    fmt = _variant(_NoDigestReader, ToysContainer.NO_DIGEST)
+    data = build_toys(_ENTRIES)
+    cut = data[: data.index(b"b.bin") + 5 + 1000]
+
+    def first_bin(reader: ArchiveReader) -> tuple[Iterator[object], BinaryIO]:
+        it = iter(reader.stream_members())
+        for member, stream in it:
+            if member.name == "b.bin":
+                assert stream is not None
+                return it, stream
+        raise AssertionError("b.bin not reached")
+
+    def source() -> BinaryIO | Path:
+        return NonSeekableBytesIO(cut) if pipe else _write(tmp_path, cut)
+
+    with open_archive(source(), format=fmt, streaming=pipe) as reader:
+        _it, stream = first_bin(reader)
+        assert stream.read(4096) == _DATA["b.bin"][:1000]
+        with pytest.raises(TruncatedError, match="truncated inside a member's data"):
+            stream.read(4096)
+    with open_archive(source(), format=fmt, streaming=pipe) as reader:
+        _it, stream = first_bin(reader)
+        with pytest.raises(TruncatedError, match="truncated inside a member's data"):
+            stream.read()
+
+
+def test_a_cut_member_read_after_the_walk_left_it_raises_at_the_cut(
+    toys: ArchiveFormat, tmp_path: Path
+) -> None:
+    """The view a pass's stream falls back to once the walk has moved on (the
+    handoff's ``reopen``) raises at a cut itself, as the window does: with no digest
+    there is no verifier above it.
+
+    Fails when the fallback is a plain view, which returns a short read as a clean
+    end."""
+    fmt = _variant(_NoDigestReader, ToysContainer.NO_DIGEST)
+    data = build_toys(_ENTRIES)
+    path = _write(tmp_path, data[: data.index(b"b.bin") + 5 + 1000])
+
+    def detached_bin(reader: ArchiveReader) -> tuple[Iterator[object], BinaryIO]:
+        # The pass is kept: closing it would close the stream it handed out.
+        it = iter(reader.stream_members())
+        for member, stream in it:
+            if member.name == "b.bin":
+                assert stream is not None
+                # A first read opens the stream through the walk. The listing then
+                # walks on past b.bin, which detaches the stream from the walk; the
+                # walk stops at the cut.
+                assert stream.read(10) == _DATA["b.bin"][:10]
+                with pytest.raises(TruncatedError):
+                    reader.members()
+                return it, stream
+        raise AssertionError("b.bin not reached")
+
+    with open_archive(path, format=fmt, concurrent_operations=True) as reader:
+        _it, stream = detached_bin(reader)
+        assert stream.read(4096) == _DATA["b.bin"][10:1000]
+        with pytest.raises(TruncatedError, match="truncated inside a member's data"):
+            stream.read(4096)
+    with open_archive(path, format=fmt, concurrent_operations=True) as reader:
+        _it, stream = detached_bin(reader)
+        with pytest.raises(TruncatedError, match="truncated inside a member's data"):
+            stream.read()
 
 
 def test_a_missing_end_header_is_truncation(

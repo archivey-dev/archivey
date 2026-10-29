@@ -3161,7 +3161,9 @@ def test_extended_header_over_the_metadata_cap_is_refused_unread(
     )
 
 
-def test_plain_tar_member_past_the_walk_buffer_is_read_straight_from_the_source() -> None:
+def test_plain_tar_member_past_the_walk_buffer_is_read_straight_from_the_source() -> (
+    None
+):
     """A plain-tar member larger than the walk buffer is read in large source reads,
     each byte once.
 

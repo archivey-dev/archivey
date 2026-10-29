@@ -515,6 +515,8 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         # a view from where it stopped once the walk moves on. Forward-only, stored
         # bytes.
         walk_handoff.WalkHandoffStream,
+        # A random-access member's data view: the view's offsets, forwarded.
+        walk_handoff.MemberDataView,
         # A sequential format's member data (TAR's too) in a streaming pass: stored
         # bytes read forward from the walk's stream (for .tar.gz, the decompressed
         # stream); no codec above it keeps a table, and a pass's member streams are
@@ -669,7 +671,7 @@ def test_delegating_stream_close_inventory() -> None:
     """
     _import_all_archivey_modules()
 
-    from archivey.internal import password_confirm
+    from archivey.internal import password_confirm, walk_handoff
     from archivey.internal.backends import (
         rar_copy_sources,
         rar_reader,
@@ -703,6 +705,7 @@ def test_delegating_stream_close_inventory() -> None:
         rar_copy_sources._TeeBlock,
         sparse.SparseStream,
         readahead.ReadAheadStream,
+        walk_handoff.MemberDataView,
     }
     subclass_closes_inner = {
         cli.ProcessOutputStream,
