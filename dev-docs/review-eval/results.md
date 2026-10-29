@@ -37,8 +37,8 @@ comment asking for a round-1 review with the repository's `code-review-skill`
 and no look at `main` or later history. Its checkout could see `main`, so the
 isolation rests on the prompt. It read the same diffs and posted findings in the
 skill's shape, but missed four of five; on #545 it cut raw DEFLATE streams at
-random, saw them end with no error, and took that as allowed by the spec. The model behind it is
-not shown (one header said "Cursor Grok").
+random, saw them end with no error, and took that as allowed by the spec. The
+model behind it is not shown (one header said "Cursor Grok").
 
 ## 2026-10-29: baseline
 
