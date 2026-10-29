@@ -3399,6 +3399,9 @@ class BaseArchiveReader(ArchiveReader):
                     try:
                         yield member
                     except BaseException:
+                        # Not a finally calling resume(): on a reader closed meanwhile
+                        # it raises, which would replace the caller's own exception.
+                        # The success path unsuspends inside resume().
                         self._state.set_suspended(token, False)
                         raise
                     # close() may have closed the reader while the pass was suspended.
@@ -3901,6 +3904,9 @@ class BaseArchiveReader(ArchiveReader):
                     try:
                         yield m, stream
                     except BaseException:
+                        # Not a finally calling resume(): on a reader closed meanwhile
+                        # it raises, which would replace the caller's own exception.
+                        # The success path unsuspends inside resume().
                         self._state.set_suspended(token, False)
                         raise
                     # close() may have closed the reader while the pass was suspended.

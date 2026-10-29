@@ -54,7 +54,7 @@ import gc
 import threading
 import weakref
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 from archivey.exceptions import ArchiveyUsageError
 from archivey.types import MemberStreams
@@ -67,6 +67,7 @@ if TYPE_CHECKING:
 
 
 T = TypeVar("T")
+_P = ParamSpec("_P")
 
 # A dropped pass or member stream releases what it held here only when it is freed.
 # CPython usually frees it at once, when its last reference goes (the end of a ``for``
@@ -92,7 +93,9 @@ def _overlap_refused(message: str) -> ArchiveyUsageError:
     return exc
 
 
-def _retry_after_collecting(attempt: Callable[..., T], *args: object) -> T:
+def _retry_after_collecting(
+    attempt: Callable[_P, T], *args: _P.args, **kwargs: _P.kwargs
+) -> T:
     """``attempt(*args)``; refused for an overlap, ``attempt`` again after a collection
     has run the cleanup of passes and streams already dropped.
 
@@ -103,12 +106,12 @@ def _retry_after_collecting(attempt: Callable[..., T], *args: object) -> T:
     and raises.
     """
     try:
-        return attempt(*args)
+        return attempt(*args, **kwargs)
     except ArchiveyUsageError as exc:
         if not getattr(exc, _OVERLAP_MARK, False):
             raise
     gc.collect()
-    return attempt(*args)
+    return attempt(*args, **kwargs)
 
 
 # Passes that may run beside workers and beside one another on a CONCURRENT reader.
@@ -161,7 +164,8 @@ class OperationToken:
     # loop body, so a call from that thread is not re-entry from a callback and
     # ``_same_thread_token_locked`` skips the token. While the generator is executing a
     # step (where a diagnostic callback fires) the flag is False and the token counts.
-    # Set with :meth:`ReaderState.set_suspended`. A suspended pass also does not block
+    # Set with :meth:`ReaderState.set_suspended`, and cleared by :meth:`ReaderState.resume`
+    # when a pass comes back from its yield. A suspended pass also does not block
     # ``close()``: the reader closes and the pass is wound down (see ``pass_closer``).
     suspended: bool = field(default=False, repr=False)
     # Winds down the backend side of a ``stream_members()`` pass: closes the format's
@@ -382,7 +386,8 @@ class ReaderState:
 
     def resume(self, token: OperationToken, op: str) -> None:
         """A pass is running again after its yield, and the reader must still be open:
-        ``set_suspended(token, False)`` and ``require_open(op)`` under one lock."""
+        ``set_suspended(token, False)`` and ``require_open(op)`` under one lock, since
+        a pass runs this once per member."""
         with self._lock:
             token.suspended = False
             self._require_admissible_locked(op)
