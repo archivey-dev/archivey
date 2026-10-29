@@ -1138,13 +1138,15 @@ def _unrar_same(left: str, right: str) -> bool:
     return all(_unrar_fold(a) == _unrar_fold(b) for a, b in zip(left, right))
 
 
-def _unrar_match(pattern: str, string: str) -> bool:
+def _unrar_match(pattern: str, string: str, *, dot_rule: bool) -> bool:
     """unrar's ``match()`` for a pattern with ``?`` as its only wildcard.
 
-    ``?`` takes exactly one character. A ``.`` in the pattern may also stand for
-    nothing where the string ends or has a ``\\``, so the mask ``a.`` selects the
-    member ``a``. With no ``*`` there is nothing to backtrack over, so this is a
-    single walk.
+    ``?`` takes exactly one character. Under ``dot_rule`` a ``.`` in the pattern may
+    also stand for nothing where the string ends or has a ``\\`` or a ``.``, so the
+    mask ``a.`` selects the member ``a``. unrar up to 7.30 beta 1 has that rule;
+    7.30 beta 2 rewrote ``match()`` without it, and its banner cannot tell the two
+    apart (:func:`unrar_dot_rule` asks the binary). With no ``*`` there is nothing
+    to backtrack over, so this is a single walk.
     """
     p = s = 0
     while True:
@@ -1161,7 +1163,7 @@ def _unrar_match(pattern: str, string: str) -> bool:
                 "unrar mask still contains '*'; build it with _unrar_mask_for"
             )
         elif p_char != s_char:
-            if p_char == "." and s_char in ("\0", "\\", "."):
+            if dot_rule and p_char == "." and s_char in ("\0", "\\", "."):
                 continue
             return False
         s += 1
@@ -1171,7 +1173,7 @@ def _unrar_is_wild(text: str) -> bool:
     return "*" in text or "?" in text
 
 
-def _unrar_cmp_name(wild: str, name: str) -> bool:
+def _unrar_cmp_name(wild: str, name: str, *, dot_rule: bool) -> bool:
     """``CmpName(wild, name, MATCH_WILDSUBPATH)``."""
     name_pos = _unrar_name_pos(name)
     wild_pos = _unrar_name_pos(wild)
@@ -1182,17 +1184,22 @@ def _unrar_cmp_name(wild: str, name: str) -> bool:
     ):
         return True
     if _unrar_is_wild(wild[:wild_pos]):
-        return _unrar_match(wild, name)
+        return _unrar_match(wild, name, dot_rule=dot_rule)
     if _unrar_is_wild(wild):
         if wild_pos > 0 and not _unrar_same(name[:wild_pos], wild[:wild_pos]):
             return False
     elif wild_pos != name_pos or not _unrar_same(name[:wild_pos], wild[:wild_pos]):
         return False
-    return _unrar_match(wild[wild_pos:], name[name_pos:])
+    return _unrar_match(wild[wild_pos:], name[name_pos:], dot_rule=dot_rule)
 
 
-def unrar_mask_selects(mask_view: str, name_view: str) -> bool:
+def unrar_mask_selects(
+    mask_view: str, name_view: str, *, dot_rule: bool = True
+) -> bool:
     """True when ``unrar p -n<mask_view>`` emits a file member named ``name_view``.
+
+    ``dot_rule`` is whether this unrar lets a ``.`` in the mask match nothing
+    (:func:`_unrar_match`, :func:`unrar_dot_rule`).
 
     ``CommandData::CheckArgs`` for a file: both strings go through ``ConvertPath``
     and are compared with ``CmpName``. A mask ending in a separator selects
@@ -1216,7 +1223,17 @@ def unrar_mask_selects(mask_view: str, name_view: str) -> bool:
         return False
     if sys.platform == "win32":
         mask, name = _as_utf16_units(mask), _as_utf16_units(name)
-    return _unrar_cmp_name(mask, name)
+    return _unrar_cmp_name(mask, name, dot_rule=dot_rule)
+
+
+def unrar_dot_rule_can_matter(mask_view: str) -> bool:
+    """False when ``unrar_mask_selects`` gives the same answer under both dot rules.
+
+    The rule only fires on a ``.`` that ``unrar`` still compares, so a mask with
+    none left after ``ConvertPath`` (``./`` and ``../`` are dropped) is the same
+    either way.
+    """
+    return "." in mask_view[_unrar_convert_path_offset(mask_view) :]
 
 
 def _as_utf16_units(text: str) -> str:
@@ -1255,7 +1272,7 @@ def unrar_selection_keys(view: str) -> tuple[str, ...]:
     """Keys under which a member must be indexed so an exact mask can find it.
 
     An exact mask (no ``?``) selects a name only when, after ``ConvertPath``, it
-    equals the name up to trailing dots, or equals the part of the name before
+    equals the name up to trailing dots (exactly, without the dot rule), or equals the part of the name before
     one of its separators. The keys are those strings, folded on Windows. The
     index is a filter: :func:`unrar_mask_selects` still decides.
     """
@@ -1284,6 +1301,83 @@ def unrar_mask_keys(mask_view: str) -> tuple[str, ...] | None:
         return None
     folded = _unrar_fold_all(mask)
     return (folded, folded.rstrip("."))
+
+
+# A nonsolid RAR5 archive of two stored members, ``ab`` (``A``) and ``ab.``
+# (``D``), Unix host, no CRC tricks. ``unrar p -n./ab.`` writes ``AD`` where a
+# ``.`` in the mask may match nothing (unrar up to 7.30 beta 1) and ``D`` where it
+# may not (7.30 beta 2's rewritten ``match()``). Built from
+# ``tests/fixtures/rar/hostile_argv__.rar`` by ``tests/test_rar_unrar_names.py``
+# (``test_dot_rule_probe_archive_is_the_one_the_tests_build``).
+_DOT_RULE_PROBE_ARCHIVE = bytes.fromhex(
+    "526172211a070100f3e182eb0b0105070006010180808000397798021d02030b"
+    "010401b483028b9ed9d300010261620a0313a8b7576afeb6621541d41d60021e"
+    "02030b010401b48302046ab3a300010361622e0a0313a8b7576afeb66215441d"
+    "77565103050400"
+)
+_DOT_RULE_PROBE_MASK = "ab."
+_DOT_RULE_ANSWERS = {b"AD": True, b"D": False}
+
+# Keyed by absolute path, with the stat identity the answer was measured on: a
+# replaced binary is asked again. ``None`` is a binary that ran and gave neither
+# answer (or timed out); like a timed-out banner probe, it is not asked again
+# while unchanged. A probe that could not run or write its archive answers
+# ``None`` without being stored.
+_cached_dot_rule: dict[str, tuple[tuple[int, int, int, int], bool | None]] = {}
+
+
+def unrar_dot_rule() -> bool | None:
+    """Whether the unrar in use lets a ``.`` in a mask match nothing, or ``None``.
+
+    unrar's ``match()`` let the mask ``a.`` select the member ``a`` (and ``a.\\``
+    match ``a\\``) up to 7.30 beta 1. 7.30 beta 2 rewrote it without that rule,
+    and both print the banner ``UNRAR 7.30``, so the answer comes from the binary
+    itself: one ``unrar p`` on an embedded two-member archive. ``None`` when that
+    run gives neither known answer; a caller that needs the rule refuses then.
+
+    Only asked when the two rules would select different members for a read, so
+    most processes never run it. Raises what :func:`find_rarlab_unrar` raises.
+    """
+    unrar = find_rarlab_unrar()
+    identity = _stat_identity(unrar)
+    cached = _cached_dot_rule.get(unrar)
+    if cached is not None and cached[0] == identity:
+        return cached[1]
+    try:
+        temp_dir = Path(tempfile.mkdtemp(prefix="archivey-unrar-probe-"))
+    except OSError:
+        return None
+    try:
+        archive = temp_dir / "probe.rar"
+        archive.write_bytes(_DOT_RULE_PROBE_ARCHIVE)
+        try:
+            completed = subprocess.run(
+                [
+                    unrar,
+                    "p",
+                    "-inul",
+                    _RAR_DISABLE_CONFIG,
+                    _password_arg(None),
+                    _member_include_switch(_DOT_RULE_PROBE_MASK),
+                    "--",
+                    str(archive),
+                ],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                env=_unrar_env(),
+                timeout=_PROBE_TIMEOUT_SECONDS,
+                check=False,
+            )
+            answer = _DOT_RULE_ANSWERS.get(completed.stdout)
+        except subprocess.TimeoutExpired:
+            answer = None
+    except (OSError, subprocess.SubprocessError):
+        # Could not write the archive or start the binary: transient, not stored.
+        return None
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+    _cached_dot_rule[unrar] = (identity, answer)
+    return answer
 
 
 def decompress_rar3_blob(

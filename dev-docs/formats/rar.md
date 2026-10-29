@@ -973,9 +973,16 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
   character on Linux; `ConvertFileHeader` turns a Windows-host RAR5 `\` into `_` on
   Unix), how the path is cleaned (`ConvertPath` drops leading `./`, `../` and anything
   up to the last `/../`), and how the mask is compared (`CmpName` with
-  `MATCH_WILDSUBPATH`, including the rule that a trailing `.` in the mask may stand for
-  nothing). `unrar_member_view` gives the name `unrar` reads, `unrar_mask_view` the
-  mask, and `unrar_mask_selects` the comparison.
+  `MATCH_WILDSUBPATH`, including the rule that a `.` in the mask may stand for nothing
+  at the end of the name or before a `\` or `.`). `unrar_member_view` gives the name
+  `unrar` reads, `unrar_mask_view` the mask, and `unrar_mask_selects` the comparison.
+- **That dot rule depends on the binary, so archivey asks it.** unrar 7.30 beta 2
+  rewrote `match()` without it: `-n./ab.` no longer selects `ab`. Its banner still
+  reads `UNRAR 7.30`, like beta 1, which has the rule. When a read's selection differs
+  between the two rules, `unrar_dot_rule` runs `unrar p -n./ab.` once on an embedded
+  two-member archive (`ab`, `ab.`) and caches the answer per binary; a binary that gives
+  neither answer gets that read refused. A read whose selection is the same either way,
+  almost every one, never runs the probe.
 - **Every read sizes a skip past the members its mask selects before the target**, not
   only a glob read: two members with the same name, two names `unrar` reads alike, and
   a mask that names a directory holding earlier members all emit more than the target.

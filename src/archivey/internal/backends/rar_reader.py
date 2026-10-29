@@ -116,6 +116,8 @@ from archivey.internal.backends.rar_unrar import (
     open_unrar_p,
     plan_unrar_mask,
     rarlab_unrar_missing,
+    unrar_dot_rule,
+    unrar_dot_rule_can_matter,
     unrar_mask_keys,
     unrar_mask_selects,
     unrar_member_view,
@@ -3888,20 +3890,37 @@ class RarReader(BaseArchiveReader):
             for key in keys:
                 found.update(names.by_key.get(key, ()))
             candidates = sorted(found)
-        prefix = 0
-        others = False
-        selects_target = False
-        cost = self._dictionary_costs[id(target)]
+        considered: list[int] = []
         for position in candidates:
-            view = names.views[position]
-            if view is None:
+            if names.views[position] is None:
                 continue
             raw = self._members[position]._raw
             assert isinstance(raw, RarMemberInfo)
             if raw.is_file_version_history() and not version_control:
                 continue
-            if not unrar_mask_selects(mask_view, view):
-                continue
+            considered.append(position)
+        # unrar 7.30 beta 2 dropped the rule that lets a "." in the mask match
+        # nothing. Ask the binary which one it has only when the answer matters;
+        # a mask with no "." left to compare selects the same members either way.
+        old_rule = self._unrar_selected(mask_view, considered, dot_rule=True)
+        new_rule = old_rule
+        if unrar_dot_rule_can_matter(mask_view):
+            new_rule = self._unrar_selected(mask_view, considered, dot_rule=False)
+        selected = old_rule
+        if old_rule != new_rule:
+            dot_rule = unrar_dot_rule()
+            if dot_rule is None:
+                raise self._unrar_name_refused(
+                    target,
+                    "the members unrar selects with this mask depend on how it "
+                    "matches a '.', and this unrar did not answer the probe for it",
+                )
+            selected = old_rule if dot_rule else new_rule
+        prefix = 0
+        others = False
+        selects_target = False
+        cost = self._dictionary_costs[id(target)]
+        for position in selected:
             if position == target_position:
                 selects_target = True
                 continue
@@ -3929,6 +3948,17 @@ class RarReader(BaseArchiveReader):
                 )
             others = True
         return prefix, others, cost
+
+    def _unrar_selected(
+        self, mask_view: str, candidates: list[int], *, dot_rule: bool
+    ) -> list[int]:
+        """The positions among ``candidates`` that the mask selects under ``dot_rule``."""
+        views = self._unrar_names().views
+        return [
+            position
+            for position in candidates
+            if unrar_mask_selects(mask_view, views[position] or "", dot_rule=dot_rule)
+        ]
 
     def _unrar_name_refused(
         self, member: ArchiveMember, reason: str
