@@ -30,6 +30,7 @@ from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.diagnostics import DiagnosticCode, MemberTimestampContext
 from archivey.exceptions import ArchiveyUsageError, ResourceLimitError
 from archivey.terminal import quoted
+from tests.atheris_fuzz.crc_fixup import fixup_sevenzip_header_crcs
 from tests.conftest import requires, requires_binary, run_7z
 from tests.memory_util import traced_peak
 
@@ -212,7 +213,8 @@ def _7z_filetime_overflow(tmp_path: Path) -> Path:
     src.mkdir()
     member = src / "a.txt"
     member.write_bytes(b"hi\n")
-    os.utime(member, (1_000_000_000, 1_000_000_000))
+    # A distinct atime, so only the mtime can hold the eight bytes patched below.
+    os.utime(member, (1_500_000_000, 1_000_000_000))
     out = tmp_path / "filetime.7z"
     run_7z(
         ["a", "-mx0", "-mhc=off", "-bd", "-bso0", str(out), "a.txt"],
@@ -220,6 +222,8 @@ def _7z_filetime_overflow(tmp_path: Path) -> Path:
         check=True,
     )
     data = bytearray(out.read_bytes())
+    # NextHeaderOffset and NextHeaderSize, counted from the end of the 32-byte
+    # signature header.
     next_offset, next_size = struct.unpack_from("<QQ", data, 12)
     start = 32 + next_offset
     header = data[start : start + next_size]
@@ -227,9 +231,7 @@ def _7z_filetime_overflow(tmp_path: Path) -> Path:
     assert header.count(filetime) == 1
     at = start + header.find(filetime)
     data[at : at + 8] = b"\xff" * 8
-    struct.pack_into("<I", data, 28, zlib.crc32(data[start : start + next_size]))
-    struct.pack_into("<I", data, 8, zlib.crc32(data[12:32]))
-    out.write_bytes(bytes(data))
+    out.write_bytes(fixup_sevenzip_header_crcs(bytes(data), broken=False))
     return out
 
 
