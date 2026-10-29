@@ -54,7 +54,7 @@ import gc
 import threading
 import weakref
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 from archivey.exceptions import ArchiveyUsageError
 from archivey.types import MemberStreams
@@ -67,6 +67,7 @@ if TYPE_CHECKING:
 
 
 T = TypeVar("T")
+_P = ParamSpec("_P")
 
 # A dropped pass or member stream releases what it held here only when it is freed.
 # CPython usually frees it at once, when its last reference goes (the end of a ``for``
@@ -92,9 +93,11 @@ def _overlap_refused(message: str) -> ArchiveyUsageError:
     return exc
 
 
-def _retry_after_collecting(attempt: Callable[[], T]) -> T:
-    """``attempt()``; refused for an overlap, ``attempt`` again after a collection has
-    run the cleanup of passes and streams already dropped.
+def _retry_after_collecting(
+    attempt: Callable[_P, T], *args: _P.args, **kwargs: _P.kwargs
+) -> T:
+    """``attempt(*args)``; refused for an overlap, ``attempt`` again after a collection
+    has run the cleanup of passes and streams already dropped.
 
     This runs on every interpreter, so whether a call is refused depends only on
     whether the earlier pass or stream is still reachable, never on when a collection
@@ -103,12 +106,12 @@ def _retry_after_collecting(attempt: Callable[[], T]) -> T:
     and raises.
     """
     try:
-        return attempt()
+        return attempt(*args, **kwargs)
     except ArchiveyUsageError as exc:
         if not getattr(exc, _OVERLAP_MARK, False):
             raise
     gc.collect()
-    return attempt()
+    return attempt(*args, **kwargs)
 
 
 # Passes that may run beside workers and beside one another on a CONCURRENT reader.
@@ -161,7 +164,8 @@ class OperationToken:
     # loop body, so a call from that thread is not re-entry from a callback and
     # ``_same_thread_token_locked`` skips the token. While the generator is executing a
     # step (where a diagnostic callback fires) the flag is False and the token counts.
-    # Set with :meth:`ReaderState.set_suspended`. A suspended pass also does not block
+    # Set with :meth:`ReaderState.set_suspended`, and cleared by :meth:`ReaderState.resume`
+    # when a pass comes back from its yield. A suspended pass also does not block
     # ``close()``: the reader closes and the pass is wound down (see ``pass_closer``).
     suspended: bool = field(default=False, repr=False)
     # Winds down the backend side of a ``stream_members()`` pass: closes the format's
@@ -328,7 +332,7 @@ class ReaderState:
         return self._root
 
     def acquire_pass(self, name: str) -> OperationToken:
-        return _retry_after_collecting(lambda: self._acquire_pass_once(name))
+        return _retry_after_collecting(self._acquire_pass_once, name)
 
     def _acquire_pass_once(self, name: str) -> OperationToken:
         """Acquire a data-pass token: root when free, else a child under an internal owner."""
@@ -379,6 +383,14 @@ class ReaderState:
         """Mark a generator-held pass as suspended at a yield, or running again."""
         with self._lock:
             token.suspended = suspended
+
+    def resume(self, token: OperationToken, op: str) -> None:
+        """A pass is running again after its yield, and the reader must still be open:
+        ``set_suspended(token, False)`` and ``require_open(op)`` under one lock, since
+        a pass runs this once per member."""
+        with self._lock:
+            token.suspended = False
+            self._require_admissible_locked(op)
 
     def set_pass_closer(
         self, token: OperationToken, closer: Callable[[], None] | None
@@ -455,7 +467,7 @@ class ReaderState:
             self._children.discard(child)
 
     def acquire_worker(self, name: str) -> OperationToken:
-        return _retry_after_collecting(lambda: self._acquire_worker_once(name))
+        return _retry_after_collecting(self._acquire_worker_once, name)
 
     def _acquire_worker_once(self, name: str) -> OperationToken:
         """Short-lived token for random ``open()`` / ``read()`` (D7).
@@ -635,7 +647,7 @@ class ReaderState:
         already, comes here. Both share the gate check (``_admit_live_stream_locked``).
         """
         ref = weakref.ref(stream)
-        _retry_after_collecting(lambda: self._acquire_live_stream_once(stream, ref))
+        _retry_after_collecting(self._acquire_live_stream_once, stream, ref)
 
     def _acquire_live_stream_once(
         self, stream: ArchiveStreamImpl, ref: weakref.ref[ArchiveStreamImpl]
