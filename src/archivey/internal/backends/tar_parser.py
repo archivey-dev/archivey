@@ -50,7 +50,6 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.streams.decompressor_stream import _COMPRESSED_READ_SIZE_MAX
 from archivey.terminal import quoted
 
 if TYPE_CHECKING:
@@ -91,13 +90,6 @@ MAX_PAX_ID = 2**32 - 1
 # an uncompressed one buffered reads are cheap, and a smaller step over-reads less at
 # the end of a short archive.
 READ_STEP = 64 * 1024
-# The read step for member data a consumer reads through the walk (``_ForwardSlice``)
-# from a stream of unknown length: still a bound on the allocation a declared size can
-# cause, at 1 MiB. It matches the piece the member verifier's sized drain reads
-# (``verify._SIZED_DRAIN_CHUNK``, which is this constant too), so one such piece is one
-# read here; at 64 KiB it was sixteen reads and a join. A caller's larger read is still
-# split.
-DATA_READ_STEP = _COMPRESSED_READ_SIZE_MAX
 
 POSIX_MAGIC = b"ustar\x00"
 GNU_MAGIC = b"ustar  \x00"

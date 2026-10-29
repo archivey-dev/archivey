@@ -1144,7 +1144,28 @@ class SequentialReaderAdapter(_PluginAdapter):
             setattr(error, _CUT_AT, at)
             return error
 
+        # Where the last skip landed by seeking a stream of unknown size, until the
+        # walk reads there. A seek past the end succeeds, so a skip over data the
+        # archive cuts short is caught when that read finds nothing: the byte before
+        # it must exist (``tarfile`` makes the same check).
+        landed: int | None = None
+
+        def read(n: int) -> bytes:
+            nonlocal landed
+            data = read_blocking(stream, n)
+            if landed is not None and n:
+                at, landed = landed, None
+                if not data and at:
+                    stream.seek(at - 1)
+                    if not read_blocking(stream, 1):
+                        raise TruncatedError(
+                            f"{self._archive_what} is truncated: the data it skipped "
+                            f"runs to offset {at}, past its end"
+                        )
+            return data
+
         def skip(offset: int, n: int) -> None:
+            nonlocal landed
             end = offset + n
             if seekable:
                 # A seek inside the walk's buffer moves its offset; one past it is a
@@ -1152,6 +1173,8 @@ class SequentialReaderAdapter(_PluginAdapter):
                 if size is not None and end > size:
                     raise cut(size, offset, n)
                 stream.seek(end)
+                if size is None:
+                    landed = end
                 return
             left = n
             while left:
@@ -1161,7 +1184,9 @@ class SequentialReaderAdapter(_PluginAdapter):
                 left -= len(chunk)
 
         layer.forward = ForwardStream(
-            functools.partial(read_blocking, stream),
+            read
+            if seekable and size is None
+            else functools.partial(read_blocking, stream),
             skip,
             functools.partial(self._decompress_layer, walk, layer),
         )

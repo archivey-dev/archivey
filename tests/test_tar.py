@@ -46,10 +46,10 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.internal.backends import tar_reader as tar_reader_module
-from archivey.internal.backends.tar_parser import DATA_READ_STEP
 from archivey.internal.format_adapter import _WALK_BUFFER
 from archivey.internal.streams.archive_stream import MemberStreamParts
 from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
+from archivey.internal.walk_handoff import MEMBER_READ_STEP
 from tests.conftest import CPYTHON, requires_zstd, zstd_backend
 from tests.corruption_util import (
     is_corruption_not_truncation,
@@ -1498,6 +1498,19 @@ def test_a_cut_plain_tar_member_raises_on_read_without_a_listing(
                 pass
         with pytest.raises(TruncatedError, match="inside a member's data"):
             ar.read("a")
+
+
+@pytest.mark.parametrize("source", sorted(_CUT_SOURCES))
+def test_listing_a_plain_tar_cut_inside_member_data_raises(source: str) -> None:
+    # The walk seeks past the member's data; with no source size the seek succeeds,
+    # so the empty read where the next header should start is checked against the
+    # byte before it, and is not taken for a missing end-of-archive marker.
+    cut, _payload = _cut_plain_tar()
+    with (
+        open_archive(_CUT_SOURCES[source](cut), format=ArchiveFormat.TAR) as ar,
+        pytest.raises(TruncatedError, match="truncated"),
+    ):
+        ar.members()
 
 
 @pytest.mark.parametrize("source", sorted(_CUT_SOURCES))
@@ -3167,12 +3180,12 @@ def test_plain_tar_member_past_the_walk_buffer_is_read_straight_from_the_source(
     """A plain-tar member larger than the walk buffer is read in large source reads,
     each byte once.
 
-    The verifier drains in ``DATA_READ_STEP`` pieces, and a read larger than the walk
+    The verifier drains in ``MEMBER_READ_STEP`` pieces, and a read larger than the walk
     buffer rewinds the prefetched tail and asks the source for the whole piece.
     Turning ``rewind_oversize`` off splits each piece into the buffered tail and a
-    shorter source read, so no request of ``DATA_READ_STEP`` is recorded.
+    shorter source read, so no request of ``MEMBER_READ_STEP`` is recorded.
     """
-    payload = b"m" * (_WALK_BUFFER + DATA_READ_STEP + 100)
+    payload = b"m" * (_WALK_BUFFER + MEMBER_READ_STEP + 100)
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as tar:
         info = tarfile.TarInfo("big.bin")
@@ -3189,17 +3202,17 @@ def test_plain_tar_member_past_the_walk_buffer_is_read_straight_from_the_source(
         )
 
     assert got == payload
-    assert DATA_READ_STEP in source.requested
+    assert MEMBER_READ_STEP in source.requested
     assert sum(source.requested) <= len(buf.getvalue()) + 2 * _WALK_BUFFER
 
 
 @pytest.mark.parametrize("streaming", [False, True])
 def test_member_data_read_with_no_known_length_is_stepped(streaming: bool) -> None:
     """A member's data read through the walk from a source of unknown length asks for
-    at most ``DATA_READ_STEP`` at a time, whatever size its header declares.
+    at most ``MEMBER_READ_STEP`` at a time, whatever size its header declares.
 
     The member declares 3 GiB over 100 KB of data. Handing the declared size to one
-    read (``_ForwardSlice`` passing ``step=want``) fails this with a 3 GiB request.
+    read (``read_stepped`` not stepping) fails this with a 3 GiB request.
     """
     info = tarfile.TarInfo("big")
     info.size = 3 << 30
@@ -3212,7 +3225,7 @@ def test_member_data_read_with_no_known_length_is_stepped(streaming: bool) -> No
         for _, stream in reader.stream_members():
             if stream is not None:
                 stream.read()
-    assert max(source.requested) <= max(DATA_READ_STEP, io.DEFAULT_BUFFER_SIZE)
+    assert max(source.requested) <= max(MEMBER_READ_STEP, io.DEFAULT_BUFFER_SIZE)
 
 
 def test_a_member_larger_than_the_read_step_still_reads_whole(tmp_path: Path) -> None:

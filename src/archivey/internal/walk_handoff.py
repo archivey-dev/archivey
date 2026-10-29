@@ -14,6 +14,7 @@ from collections.abc import Callable
 from typing import BinaryIO
 
 from archivey.exceptions import TruncatedError
+from archivey.internal.streams.decompressor_stream import _COMPRESSED_READ_SIZE_MAX
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     ReadOnlyIOStream,
@@ -27,8 +28,10 @@ from archivey.internal.streams.streamtools.binaryio import (
 
 # The most a member data read asks of the stream under it at once. The size a read
 # wants comes from a header, which may claim far more than the archive holds, and a
-# read of ``n`` bytes from a file or a buffered stream allocates ``n`` up front.
-MEMBER_READ_STEP = 1 << 20
+# read of ``n`` bytes from a file or a buffered stream allocates ``n`` up front. It
+# matches the piece the member verifier's sized drain reads (``verify._SIZED_DRAIN_CHUNK``),
+# so one such piece is one read here.
+MEMBER_READ_STEP = _COMPRESSED_READ_SIZE_MAX
 
 
 def read_stepped(read: Callable[[int], bytes], want: int) -> bytes:
