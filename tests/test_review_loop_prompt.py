@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -56,11 +57,11 @@ def test_an_opus_pass_at_the_cap_is_the_last_round() -> None:
 def test_the_output_is_one_multiline_value_and_two_plain_ones() -> None:
     out = subprocess.run(
         [sys.executable, str(SCRIPT)],
-        env=ENV,
+        # The whole environment: Python on Windows does not start without SYSTEMROOT.
+        env=os.environ | ENV,
         capture_output=True,
-        text=True,
         check=True,
-    ).stdout
+    ).stdout.decode("utf-8")
     head, _, rest = out.partition("\n")
     assert head.startswith("prompt<<EOF_")
     delimiter = head.removeprefix("prompt<<")

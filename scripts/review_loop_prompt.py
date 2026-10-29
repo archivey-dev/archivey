@@ -66,8 +66,13 @@ def main() -> int:
     text, rnd, final = render(dict(os.environ))
     # A delimiter the prompt cannot contain, as GitHub's multiline output syntax needs.
     delimiter = f"EOF_{secrets.token_hex(16)}"
-    sys.stdout.write(f"prompt<<{delimiter}\n{text}\n{delimiter}\n")
-    sys.stdout.write(f"round={rnd}\nfinal={str(final).lower()}\n")
+    out = (
+        f"prompt<<{delimiter}\n{text}\n{delimiter}\n"
+        f"round={rnd}\nfinal={str(final).lower()}\n"
+    )
+    # UTF-8 and `\n` whatever the platform: the prompt has emoji, and GITHUB_OUTPUT
+    # wants the delimiter alone on its line.
+    sys.stdout.buffer.write(out.encode("utf-8"))
     return 0
 
 
