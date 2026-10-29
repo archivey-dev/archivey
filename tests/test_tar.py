@@ -12,6 +12,7 @@ import os
 import random
 import tarfile
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -1498,6 +1499,30 @@ def test_a_cut_plain_tar_member_raises_on_read_without_a_listing(
                 pass
         with pytest.raises(TruncatedError, match="inside a member's data"):
             ar.read("a")
+
+
+def test_a_whole_gzip_of_a_cut_tar_names_the_cut_in_every_pass(tmp_path: Path) -> None:
+    """A complete gzip stream holding a tar cut inside a member's data: the walk skips
+    the member by the decoder's own seek, and still names where the data ends, the
+    same offset a read of the member reports."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        for i in range(3):
+            data = random.Random(i).randbytes(200_000)
+            info = tarfile.TarInfo(f"f{i}")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    path = tmp_path / "cut.tar.gz"
+    path.write_bytes(gzip.compress(buf.getvalue()[:300_000]))
+    expected = "truncated inside a member's data at offset 300000"
+    with open_archive(path) as ar, pytest.raises(TruncatedError, match=expected) as end:
+        ar.members()
+    assert end.value.member_name == "f1"
+    with open_archive(path) as ar, pytest.raises(TruncatedError, match=expected):
+        for _member, stream in ar.stream_members():
+            assert stream is not None
+            with suppress(TruncatedError):
+                stream.read()
 
 
 @pytest.mark.parametrize("source", sorted(_CUT_SOURCES))

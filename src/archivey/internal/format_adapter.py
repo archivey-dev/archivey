@@ -811,7 +811,8 @@ class _Decoded:
         self.stream.close()
 
 
-# A forward skip over a stream that cannot seek reads this many bytes at a time.
+# A forward skip over a stream that cannot seek reads this many bytes at a time; over a
+# codec, a longer one is the decoder's own seek.
 _SKIP_BY_READING = 64 * 1024
 # The walk's read buffer: headers are small reads. Fixed rather than io's default,
 # which Python 3.14 raised from 8 KiB to 128 KiB, and small: a larger read-ahead reads
@@ -1123,8 +1124,7 @@ class SequentialReaderAdapter(_PluginAdapter):
         """A layer over ``shared`` with a view of its own for ``walk``."""
         # A plain file: a read larger than the buffer rewinds the prefetched tail and
         # returns the file's own bytes. A codec keeps the join, since rewinding it
-        # would decode the tail again; and a skip reads through it, which is what a
-        # seek of the decoder would do, and finds where the data ends.
+        # would decode the tail again; a skip there is the decoder's (_layer_forward).
         view = ReadAheadStream(
             shared.view(0, None), _WALK_BUFFER, rewind_oversize=not compressed
         )
@@ -1138,6 +1138,9 @@ class SequentialReaderAdapter(_PluginAdapter):
         skip_buffered = (
             stream.skip_buffered if isinstance(stream, ReadAheadStream) else None
         )
+        # A random-access layer over a codec: its seek forward decodes and discards
+        # inside the decoder, cheaper than reading the bytes out to drop them.
+        decoder_seeks = layer.shared is not None and not seekable
 
         def cut(at: int, offset: int, n: int) -> TruncatedError:
             error = TruncatedError(
@@ -1182,6 +1185,13 @@ class SequentialReaderAdapter(_PluginAdapter):
                 if size is None:
                     landed = end
                 return
+            if decoder_seeks and n > _SKIP_BY_READING:
+                # The last byte read back says the data is all there; where the
+                # decoded bytes end, when it is not, is known once the read found it.
+                stream.seek(end - 1)
+                if stream.read(1):
+                    return
+                raise cut(stream.seek(0, io.SEEK_END), offset, n)
             left = n
             while left:
                 chunk = read_blocking(stream, min(left, _SKIP_BY_READING))
@@ -1567,7 +1577,7 @@ class SequentialReaderAdapter(_PluginAdapter):
     @functools.cached_property
     def _archive_what(self) -> str:
         # Built once: it is read on every member open, and the format never changes.
-        return f"{self._format.display_name} archive"
+        return f"{self._plugin.format.display_name} archive"
 
     def _span_view(self, record: _Span, start: int) -> BinaryIO:
         """``record``'s data from ``start`` for a pass the walk has left: a view that
