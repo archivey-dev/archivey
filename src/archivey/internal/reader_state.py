@@ -92,9 +92,9 @@ def _overlap_refused(message: str) -> ArchiveyUsageError:
     return exc
 
 
-def _retry_after_collecting(attempt: Callable[[], T]) -> T:
-    """``attempt()``; refused for an overlap, ``attempt`` again after a collection has
-    run the cleanup of passes and streams already dropped.
+def _retry_after_collecting(attempt: Callable[..., T], *args: object) -> T:
+    """``attempt(*args)``; refused for an overlap, ``attempt`` again after a collection
+    has run the cleanup of passes and streams already dropped.
 
     This runs on every interpreter, so whether a call is refused depends only on
     whether the earlier pass or stream is still reachable, never on when a collection
@@ -103,12 +103,12 @@ def _retry_after_collecting(attempt: Callable[[], T]) -> T:
     and raises.
     """
     try:
-        return attempt()
+        return attempt(*args)
     except ArchiveyUsageError as exc:
         if not getattr(exc, _OVERLAP_MARK, False):
             raise
     gc.collect()
-    return attempt()
+    return attempt(*args)
 
 
 # Passes that may run beside workers and beside one another on a CONCURRENT reader.
@@ -328,7 +328,7 @@ class ReaderState:
         return self._root
 
     def acquire_pass(self, name: str) -> OperationToken:
-        return _retry_after_collecting(lambda: self._acquire_pass_once(name))
+        return _retry_after_collecting(self._acquire_pass_once, name)
 
     def _acquire_pass_once(self, name: str) -> OperationToken:
         """Acquire a data-pass token: root when free, else a child under an internal owner."""
@@ -379,6 +379,13 @@ class ReaderState:
         """Mark a generator-held pass as suspended at a yield, or running again."""
         with self._lock:
             token.suspended = suspended
+
+    def resume(self, token: OperationToken, op: str) -> None:
+        """A pass is running again after its yield, and the reader must still be open:
+        ``set_suspended(token, False)`` and ``require_open(op)`` under one lock."""
+        with self._lock:
+            token.suspended = False
+            self._require_admissible_locked(op)
 
     def set_pass_closer(
         self, token: OperationToken, closer: Callable[[], None] | None
@@ -455,7 +462,7 @@ class ReaderState:
             self._children.discard(child)
 
     def acquire_worker(self, name: str) -> OperationToken:
-        return _retry_after_collecting(lambda: self._acquire_worker_once(name))
+        return _retry_after_collecting(self._acquire_worker_once, name)
 
     def _acquire_worker_once(self, name: str) -> OperationToken:
         """Short-lived token for random ``open()`` / ``read()`` (D7).
@@ -635,7 +642,7 @@ class ReaderState:
         already, comes here. Both share the gate check (``_admit_live_stream_locked``).
         """
         ref = weakref.ref(stream)
-        _retry_after_collecting(lambda: self._acquire_live_stream_once(stream, ref))
+        _retry_after_collecting(self._acquire_live_stream_once, stream, ref)
 
     def _acquire_live_stream_once(
         self, stream: ArchiveStreamImpl, ref: weakref.ref[ArchiveStreamImpl]

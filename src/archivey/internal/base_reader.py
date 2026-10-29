@@ -3398,10 +3398,11 @@ class BaseArchiveReader(ArchiveReader):
                     self._state.set_suspended(token, True)
                     try:
                         yield member
-                    finally:
+                    except BaseException:
                         self._state.set_suspended(token, False)
+                        raise
                     # close() may have closed the reader while the pass was suspended.
-                    self._state.require_open("Iterating the reader")
+                    self._state.resume(token, "Iterating the reader")
             finally:
                 self._state.release_pass(token)
             return
@@ -3899,10 +3900,11 @@ class BaseArchiveReader(ArchiveReader):
                     self._state.set_suspended(token, True)
                     try:
                         yield m, stream
-                    finally:
+                    except BaseException:
                         self._state.set_suspended(token, False)
+                        raise
                     # close() may have closed the reader while the pass was suspended.
-                    self._state.require_open("stream_members()")
+                    self._state.resume(token, "stream_members()")
                 elif stream is not None:
                     stream.close()
             # Only a pass that reached the end has offered every member. A caller
