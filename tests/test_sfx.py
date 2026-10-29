@@ -1710,8 +1710,9 @@ def test_the_last_step_scan_leaves_a_known_extension_alone(tmp_path: Path) -> No
 
 
 def test_the_last_step_scan_finds_an_archive_on_a_non_seekable_source() -> None:
-    """A forward-only source is scanned over the bytes detection already holds: an
-    archive starting inside them is found as on a seekable source."""
+    """A forward-only source that ends inside the bytes detection reads first has a
+    known length, so the scan covers all of it, as on a seekable source. (A stream
+    still arriving is scanned only over what it delivered: the held-open pipe test.)"""
     lead = _LEADING_BYTES["random"]
     source = io.BufferedReader(NonSeekableBytesIO(lead + _zip_bytes()))
     info = detect_format(source)
@@ -1747,15 +1748,16 @@ def test_the_last_step_scan_does_not_wait_on_a_held_open_pipe() -> None:
 
 def test_the_last_step_scan_stops_at_the_fast_window(tmp_path: Path) -> None:
     """Under ``FAST`` the window is 256 KiB: an archive past it is not found, one
-    inside it is, and the scan reads no further than the window."""
+    inside it is, and the scan reads no further than the window: the source is three
+    windows long, so a scan past the window would fetch bytes beyond the bound."""
     fast = ArchiveyConfig(detection_budget=FAST_BUDGET)
     window = FAST_BUDGET.max_scan_bytes
     rng = random.Random(11)
-    far = rng.randbytes(window + 4096) + _zip_bytes()
+    far = rng.randbytes(3 * window) + _zip_bytes()
     src = InstrumentedBytesIO(far)
     with pytest.raises(FormatDetectionError):
         detect_format(src, config=fast)
-    assert src.unique_bytes <= 2 * window + trailer_allowance()
+    assert src.unique_bytes <= window + trailer_allowance()
     near = tmp_path / "near.bin"
     near.write_bytes(rng.randbytes(8192) + _zip_bytes())
     info = detect_format(near, config=fast)

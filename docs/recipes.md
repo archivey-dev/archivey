@@ -488,7 +488,9 @@ file that only happens to decode as one of them also counts as an archive, which
 of refusing.
 
 Even so, the check finds only what archivey recognizes. A ZIP, 7z or RAR behind leading bytes is
-found only within the first 2 MiB; `unzip` finds a ZIP from its end, however far in it starts.
+found only within the first 2 MiB (from a pipe read directly, only within the bytes detection has
+already read; this recipe copies the member to a file first); `unzip` finds a ZIP from its end,
+however far in it starts.
 
 A compressed file such as `notes.txt.gz` or `data.zz` counts as an archive here, since it can expand
 as much as one. So do Office documents, JAR files and wheels, which are ZIP archives.

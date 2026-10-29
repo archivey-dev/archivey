@@ -1245,6 +1245,9 @@ file; with `format=`, a `.bz2` opens at once. Close the sending side when the fi
   and `unzip` find it: when no other step matched, the same 2 MiB scan runs without an executable
   cue, for ZIP, 7z and RAR, each with its structural check. It is the last content step, so a file
   archivey recognizes pays nothing for it; a file it does not recognize pays a read of up to 2 MiB.
+  On a source that cannot seek and whose length is not known yet, such as a pipe, the scan covers
+  only the bytes detection has already read, and `sfx_scan` is listed in `unavailable_tiers` as
+  `CAPABILITY_UNAVAILABLE`.
   A file whose name has a known extension skips it and gets the extension's guess; the ZIP, 7z and
   RAR readers find an archive behind leading bytes themselves.
 - **Ties go to the earlier step, then to registration order.** Detection stops at the first step

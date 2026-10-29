@@ -109,6 +109,7 @@ The numbers behind the current gate, measured on a `/usr` tree:
   are mostly small scripts — median 2 959 bytes, one file in 734 large enough to reach the
   window at all — so the whole tree cost **10.3 MiB** more, not the 2 MiB per script the
   bound alone suggests.
+
 **The uncued scan is gated by order, not by a cue.** It runs only on a source that every
 other step declined and whose name names no format, so files that are archives, and files
 whose name says what they are, pay nothing. An unrecognised extension-less file pays the

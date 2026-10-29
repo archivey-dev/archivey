@@ -953,10 +953,13 @@ def _scan_for_sfx_payload(
     clamped = workspace.take_clamped_view_read()
     # A capped scan skipped candidates it never judged, so it is cut short even when it
     # answers: a held short hit is only the fallback the skipped ones could have beaten.
-    if selector.capped:
-        workspace.record_skip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
+    # One reason per tier: a window cut to the bytes a stream has delivered names that
+    # cut, ahead of the candidate cap, since more budget would not help it (as the
+    # inner-TAR probe records an absent backend ahead of an exhausted budget).
     if clamped or (result is None and cut_short):
         workspace.record_skip("sfx_scan", cut_reason)
+    elif selector.capped:
+        workspace.record_skip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
     return result
 
 
