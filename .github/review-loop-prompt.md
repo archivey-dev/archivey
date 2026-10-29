@@ -64,7 +64,8 @@ whether another round is asked for, so match it to what you actually wrote:
 - "findings" for 🔄 Request Changes — a 🔴 stands, or a fix wants a look once
   it lands. That is what asks for the next round.
 
-Do not write "findings" to keep a round in hand: rounds are not yours to
-bank, and one spent re-reading wording you already described is the case the
-budget exists to stop. Equally, do not write "approved" or "conditional" with
-a 🔴 open.
+Pick "findings" only when you need to see the fixes, not to be safe: if what
+is left is small and you have said exactly what to change (a wording fix, a
+renamed test), a whole round spent checking that it was done is the waste the
+round cap is there to stop. The other way round, never write "approved" or
+"conditional" while a 🔴 is still open.
