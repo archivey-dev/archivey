@@ -5,6 +5,31 @@ One section per run worth keeping, newest first. `skill` is the tree hash of
 Score: `yes` = 1, `partial` = 0.5. The reviews themselves are kept outside the
 repository.
 
+## 2026-10-29: Sonnet with the project installed, and at xhigh effort
+
+Two separate changes to the Sonnet review, two runs each: `--install` (the PR's own
+dependencies installed with `uv sync --frozen --group dev --extra all` before the
+review) at the default effort, and `--effort xhigh` without the install. Skill
+`1f096043d315`, judge `claude-sonnet-5-5`.
+
+| Case | PR | Installed, run 1 | Installed, run 2 | xhigh, run 1 | xhigh, run 2 |
+|---|---|---|---|---|---|
+| zstd-seek-point-in-frame | #934 | no | no | no | no |
+| decoder-death-reraise-cycle | #904 | yes | partial | yes | no |
+| rapidgzip-cut-raw-deflate | #545 | no | no | no | no |
+| rapidgzip-cut-gzip-member-then-complete | #613 | partial | partial | no | yes |
+| pax-sparse-version-by-records | #738 | yes | yes | yes | yes |
+| **Score** | | **2.5 of 5** | **2 of 5** | **2 of 5** | **2 of 5** |
+| Cost (USD) | | 4.59 | 4.50 | 22.69 | 20.43 |
+| Minutes, slowest case | | 8 | 7 | 33 | 24 |
+
+Neither moves the score. The four default-effort Sonnet runs without the install
+(3.5 and 1.5, in the sections below) and these average about the same. With the
+install the rapidgzip reviews did run rapidgzip, and found other real gaps in the
+same checks (a cut `.gz` whose payload holds a further `.gz` reads short and
+clean), but not the bugs scored here. xhigh costs about four and a half times as
+much and takes three times as long for no gain.
+
 ## 2026-10-29: a second Sonnet reviewer running a claims pass
 
 A test of two Sonnet reviews per PR: the normal round 1 review plus a second
