@@ -4207,7 +4207,7 @@ class ExtractionCoordinator:
                 # Applied before the swap, so the final name never appears with the
                 # source's metadata instead of this member's.
                 self._apply_metadata(tmp, member)
-            self._swap_into_place(tmp, new_path, member)
+            self._swap_into_place(tmp, new_path, member, stamped=copied)
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(long_path(tmp))
@@ -4243,7 +4243,13 @@ class ExtractionCoordinator:
         return self._occupied(dest) if atomic else os.path.lexists(long_path(dest))
 
     def _swap_into_place(
-        self, tmp: Path, dest: Path, member: ArchiveMember, *, fresh: bool = False
+        self,
+        tmp: Path,
+        dest: Path,
+        member: ArchiveMember,
+        *,
+        fresh: bool = False,
+        stamped: bool = True,
     ) -> None:
         """Move the staged temp ``tmp`` onto ``dest`` with ``os.replace``, the last step
         of every atomic write (``_write_file_atomic``, ``_place_link``).
@@ -4257,6 +4263,10 @@ class ExtractionCoordinator:
         Windows either way. ``fresh`` says ``tmp`` is a file this write created, which
         no other name can share, so on POSIX the rename always takes the temp name and
         the unlink is skipped.
+
+        ``stamped`` says ``tmp`` carries this member's metadata (``_apply_metadata``).
+        On Windows its birth time is then set again on ``dest`` after the rename, which
+        file-system tunnelling can overwrite with the time of the name's previous file.
 
         Any error from the unlink is ignored: ``os.replace`` has already put the member
         in place, and a temp name left behind is a stray the docs call safe to delete,
@@ -4277,6 +4287,11 @@ class ExtractionCoordinator:
                 if not self._taken_after_check(dest, atomic=True):
                     raise
                 raise self._already_exists(dest, member) from exc
+            if _WINDOWS and stamped and member.created is not None:
+                # NTFS tunnelling gives a name removed or replaced in the last 15 s
+                # its old creation time back at the rename, over the one set on
+                # ``tmp``: set it again on the final name.
+                set_birth_time(os.fspath(long_path(dest)), member.created)
             if fresh and not _WINDOWS:
                 return
             with contextlib.suppress(OSError):

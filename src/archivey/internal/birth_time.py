@@ -14,10 +14,20 @@ import ctypes
 import os
 import sys
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
-# 100 ns intervals from 1601-01-01 (the FILETIME epoch) to 1970-01-01.
-_FILETIME_UNIX_EPOCH = 116_444_736_000_000_000
+_FILETIME_EPOCH = datetime(1601, 1, 1, tzinfo=UTC)
+_UNIX_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_MICROSECOND = timedelta(microseconds=1)
+
+
+def _microseconds_since(epoch: datetime, when: datetime) -> int:
+    """Whole microseconds from ``epoch`` to ``when``, exactly: a ``timestamp()`` float
+    times 10**7 or 10**9 is past the integers a float holds exactly. A naive ``when``
+    is local time, as ``datetime.timestamp()`` reads it."""
+    if when.tzinfo is None:
+        when = when.astimezone()
+    return (when - epoch) // _MICROSECOND
 
 
 def _windows_setter() -> Callable[[str | int, datetime], bool] | None:
@@ -25,10 +35,9 @@ def _windows_setter() -> Callable[[str | int, datetime], bool] | None:
     # skips the Windows-only names below.
     if sys.platform != "win32":
         return None
-    import msvcrt
     from ctypes import wintypes
 
-    # pyrefly: ignore[missing-attribute]
+    # pyrefly: ignore[missing-attribute]  # Windows-only; pyrefly ignores the guard
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
     class FILETIME(ctypes.Structure):
@@ -67,16 +76,15 @@ def _windows_setter() -> Callable[[str | int, datetime], bool] | None:
     flags = 0x02000000 | 0x00200000
 
     def set_windows(target: str | int, when: datetime) -> bool:
-        ticks = round(when.timestamp() * 10_000_000) + _FILETIME_UNIX_EPOCH
+        ticks = _microseconds_since(_FILETIME_EPOCH, when) * 10
         if not 0 <= ticks < 1 << 63:
             return False
         stamp = FILETIME(ticks & 0xFFFFFFFF, ticks >> 32)
         if isinstance(target, int):
-            # The descriptor was opened for writing, which grants the handle
-            # FILE_WRITE_ATTRIBUTES; the handle stays the descriptor's.
-            # pyrefly: ignore[missing-attribute]
-            handle = msvcrt.get_osfhandle(target)
-            return bool(set_file_time(handle, ctypes.byref(stamp), None, None))
+            # Extraction hands a descriptor only for a folder where os.chown takes
+            # one, which never happens on Windows; and a descriptor opened read-only
+            # gives a handle SetFileTime refuses. So a descriptor is not set.
+            return False
         handle = create_file(
             target, file_write_attributes, share_all, None, open_existing, flags, None
         )
@@ -131,7 +139,7 @@ def _macos_setter() -> Callable[[str | int, datetime], bool] | None:
 
     def set_macos(target: str | int, when: datetime) -> bool:
         attrs = AttrList(attr_bit_map_count, 0, attr_cmn_crtime, 0, 0, 0, 0)
-        ns = round(when.timestamp() * 1_000_000_000)
+        ns = _microseconds_since(_UNIX_EPOCH, when) * 1000
         stamp = TimeSpec(*divmod(ns, 1_000_000_000))
         size = ctypes.sizeof(stamp)
         if isinstance(target, int):
@@ -171,8 +179,8 @@ def can_set_birth_time() -> bool:
 
 
 def set_birth_time(target: str | int, when: datetime) -> bool:
-    """Set the birth time of the file at ``target`` (a path or a descriptor open for
-    writing) to ``when``, without following a symlink; return whether it was set.
+    """Set the birth time of the file at ``target`` (a path, or on macOS a descriptor)
+    to ``when``, without following a symlink; return whether it was set.
 
     A naive ``when`` is local time, as ``os.utime`` takes ``datetime.timestamp()``.
     Never raises for a refused or out-of-range time: it returns ``False``.
