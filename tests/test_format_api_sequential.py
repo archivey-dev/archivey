@@ -1598,3 +1598,89 @@ def test_decoded_pass_member_survives_the_walk_moving_on(
             assert len(reader.members()) == 6
             assert head + stream.read() == _DECODED_DATA["b.bin"]
             break
+
+
+def test_decoded_seekable_members(decoded: _DecodedFixture, tmp_path: Path) -> None:
+    """With seekable_members=True, decoded data seeks: back by walking again."""
+    fmt, reader_type = decoded
+    path = _write(tmp_path, build_decoded(_DECODED_ENTRIES))
+    with (
+        open_archive(path, format=fmt, seekable_members=True) as reader,
+        reader.open("c.bin") as stream,
+    ):
+        assert stream.seekable()
+        expected = _DECODED_DATA["c.bin"]
+        stream.seek(1000)
+        assert stream.read(10) == expected[1000:1010]
+        stream.seek(5)
+        assert stream.read(10) == expected[5:15]
+        stream.seek(0)
+        assert stream.read() == expected
+    assert reader_type.walks >= 3
+
+
+def test_decoded_rewalk_must_repeat_itself(
+    decoded: _DecodedFixture, tmp_path: Path
+) -> None:
+    fmt, reader_type = decoded
+    original = reader_type.walk
+
+    def walk(self: _DecodedReader, stream: ForwardStream) -> Iterator[MemberSpan]:
+        again = type(self).walks > 0
+        for span in original(self, stream):
+            # A second walk names the fourth member differently, as a library that
+            # orders its entries another way would.
+            if again and span.member.name == "b.bin":
+                span.member.name = "c.bin"
+            yield span
+
+    reader_type.walk = walk  # type: ignore[method-assign]
+    path = _write(tmp_path, build_decoded(_DECODED_ENTRIES))
+    with open_archive(path, format=fmt) as reader:
+        reader.members()
+        with pytest.raises(ValueError, match="same members in the same order"):
+            reader.read("b.bin")
+
+
+def test_decoded_reads_take_the_handle_lock(
+    decoded: _DecodedFixture, tmp_path: Path
+) -> None:
+    """Under concurrent_operations, the plugin's decoded streams are read one call
+    at a time, as every other call into the plugin is."""
+    fmt, _ = decoded
+    inside = 0
+    overlaps = 0
+    guard = threading.Lock()
+    original = _ZlibMemberStream.readinto
+
+    def readinto(self: _ZlibMemberStream, buffer: memoryview) -> int:
+        nonlocal inside, overlaps
+        with guard:
+            inside += 1
+            if inside > 1:
+                overlaps += 1
+        try:
+            return original(self, buffer)
+        finally:
+            with guard:
+                inside -= 1
+
+    path = _write(tmp_path, build_decoded(_DECODED_ENTRIES))
+    results: dict[str, bytes] = {}
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(_ZlibMemberStream, "readinto", readinto)
+        with open_archive(path, format=fmt, concurrent_operations=True) as reader:
+
+            def read(name: str) -> None:
+                results[name] = reader.read(name)
+
+            threads = [
+                threading.Thread(target=read, args=(name,))
+                for name in ("c.bin", "b.bin", "docs/a.txt") * 3
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+    assert results == {n: _DECODED_DATA[n] for n in ("c.bin", "b.bin", "docs/a.txt")}
+    assert overlaps == 0

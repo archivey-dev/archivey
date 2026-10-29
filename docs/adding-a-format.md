@@ -534,8 +534,15 @@ def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
   archive is decoded once. `open()` or `read()` of a member afterwards walks the archive
   again from the start to that member, draining the members before it. Opening members
   in archive order carries on from the last one, so reading them all in order decodes
-  the archive once more, not once per member. Have `archive_info()` return
+  the archive once more, not once per member. With `seekable_members=True`, a seek
+  back walks again too. Have `archive_info()` return
   `ReaderArchiveInfo(is_solid=True)` so the cost receipt says so.
+- **Walking again.** Because of that, `walk()` is called again while an earlier walk
+  is still open, and with `concurrent_operations=True` from several threads (archivey
+  holds one lock across each call into the reader and each read of its streams). Keep
+  a walk's state in the generator, not on the reader. A second walk must yield the
+  same members in the same order: archivey finds a member again by its place, and
+  raises `ValueError` if another member is there.
 - **Link targets.** With `link_target_in_data = True`, a symlink's target is read from
   its decoded data.
 

@@ -186,9 +186,11 @@ class _PluginAdapter(BaseArchiveReader):
         # takes one lock (``_handle_guard``). The exception is ``translate_exception``,
         # which ``base_reader`` runs outside the lock. The views of ``ReaderSource``
         # need none, but archivey cannot tell which kind of reader it was given. A
-        # random-access pass's member data read through the walk takes ``_walk_lock``
-        # instead (``_open_member_in_walk``): it reads archivey's own walk stream, not
-        # the plugin, and the walk is the only other reader of that stream.
+        # random-access pass's stored member data read through the walk takes
+        # ``_walk_lock`` instead (``_open_member_in_walk``): it reads archivey's own
+        # walk stream, not the plugin, and the walk is the only other reader of that
+        # stream. Decoded member data (``MemberSpan.data``) is the plugin's stream, so
+        # it takes this lock too.
         if MemberStreams.CONCURRENT in member_streams:
             self._handle_lock = threading.Lock()
         # Views over a seekable source, when the reader shape uses them.
@@ -1307,8 +1309,13 @@ class SequentialReaderAdapter(_PluginAdapter):
         decoded = record.decoded
         if decoded is not None:
             with self._walk_lock:
+                # The window reads the plugin's stream, so under CONCURRENT it takes
+                # the handle lock as every call into the plugin does (walk steps take
+                # it inside _walk_lock, in the same order).
                 window = (
-                    _DecodedWindow(decoded) if self._decoded_in_place(decoded) else None
+                    self._plugin_locked(_DecodedWindow(decoded))
+                    if self._decoded_in_place(decoded)
+                    else None
                 )
                 stream = self._walk_handoff_locked(
                     window,
@@ -1321,7 +1328,8 @@ class SequentialReaderAdapter(_PluginAdapter):
         def reopen(start: int) -> BinaryIO:
             return shared.view(record.offset + start, record.length - start)
 
-        # _walk_lock, not _handle_guard: the window reads the walk's own stream, which
+        # Stored data: _walk_lock, not _handle_guard: the window reads the walk's own
+        # stream (not the plugin's, as decoded data above does), which
         # only the walk also reads, and every walk step runs under _walk_lock; the
         # walk detaches this stream before it moves (_before_pull_locked). The views
         # it falls back to are serialized by the SharedSource.
@@ -1345,8 +1353,21 @@ class SequentialReaderAdapter(_PluginAdapter):
         stream: BinaryIO
         decoded = record.decoded
         if decoded is not None:
+            rewind: RewindWarning | None = None
             if not self._streaming:
                 stream = self._decoded_by_walk(decoded, 0)
+                if self._seek_declared():
+                    # The caller asked for seekable members: a forward seek reads
+                    # through, and a backward one walks again to the member.
+                    stream = RespawnStream(
+                        lambda: self._decoded_by_walk(decoded, 0),
+                        stream,
+                        size=member.size,
+                        what=f"{self._format.display_name} member data",
+                    )
+                    rewind = RewindWarning(
+                        codec_name=self._format.display_name, suggest_install=False
+                    )
             elif self._decoded_in_place(decoded):
                 assert self._handle_lock is not None
                 stream = LockedStream(_DecodedWindow(decoded), self._handle_lock)
@@ -1355,7 +1376,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                     f"the data of {quoted(member.name)} is no longer readable: the "
                     "pass has moved on"
                 )
-            return self._decoded_parts(member, record, decoded, stream)
+            return self._decoded_parts(member, record, decoded, stream, rewind)
         if self._streaming:
             forward = self._forward
             if forward is not record.layer.forward or forward.offset != record.offset:
@@ -1416,7 +1437,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                 # handed-off stream finds it so (TruncatedError).
                 with self._translated_errors(decoded.name), self._handle_guard():
                     _read_up_to(target, start)
-            return _DataWalkStream(self, data_walk, target)
+            return self._plugin_locked(_DataWalkStream(self, data_walk, target))
         except BaseException:
             if data_walk is not None:
                 self._close_data_walk(data_walk)
@@ -1443,6 +1464,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                 )
             data = span.data
             if index == decoded.index:
+                self._check_rewalked(span, decoded)
                 if data is None:
                     raise CorruptionError(
                         f"walking the archive again found no decoded data for "
@@ -1472,14 +1494,39 @@ class SequentialReaderAdapter(_PluginAdapter):
                     layer.forward.skip(span.data_length)
             index += 1
 
+    def _check_rewalked(self, span: MemberSpan, decoded: _Decoded) -> None:
+        """Refuse a walk started over that does not yield, at the member's place, the
+        member the listing walk did: ``walk()`` must repeat itself."""
+        member = span.member
+        presented = span.stored_name if span.stored_name is not None else member.name
+        found = (
+            normalize_member_name(presented, member.type, backslash_is_separator=False)
+            if isinstance(member, ArchiveMember) and isinstance(presented, str)
+            else None
+        )
+        if found != decoded.name:
+            raise ValueError(
+                f"{type(self._reader).__name__}.walk() yielded {found!r} as member "
+                f"{decoded.index} when walked again, not {decoded.name!r}: a walk must "
+                "yield the same members in the same order each time"
+            )
+
+    def _plugin_locked(self, stream: BinaryIO) -> BinaryIO:
+        """``stream``, which reads the plugin's, under the handle lock when one is
+        set (CONCURRENT)."""
+        if self._handle_lock is None:
+            return stream
+        return LockedStream(stream, self._handle_lock)
+
     def _return_data_walk(self, data_walk: _DataWalk) -> None:
         """Keep ``data_walk``, whose stream closed, for the next open, unless one is
-        kept already."""
+        kept already. Called from that stream's close, which holds the handle lock
+        when one is set (``_plugin_locked``)."""
         with self._data_walk_lock:
             if self._idle_data_walk is None and self._reader_open:
                 self._idle_data_walk = data_walk
                 return
-        self._close_data_walk(data_walk)
+        self._close_data_walk(data_walk, guard=False)
 
     def _close_data_walk(self, data_walk: _DataWalk, *, guard: bool = True) -> None:
         """Close ``data_walk``; ``guard=False`` when the caller holds the handle lock
@@ -1493,6 +1540,7 @@ class SequentialReaderAdapter(_PluginAdapter):
         record: _Span,
         decoded: _Decoded,
         stream: BinaryIO,
+        rewind: RewindWarning | None = None,
     ) -> MemberStreamParts:
         """``member``'s parts over ``stream``, its decoded data."""
         expected = record.expected if record.expected is not None else member.hashes
@@ -1509,6 +1557,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             fill_size=member.size is None,
             checks_content=decoded.checked,
             custom_digests=record.custom,
+            rewind_warning=rewind,
         )
 
     def _span_parts(

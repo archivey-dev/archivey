@@ -636,7 +636,9 @@ class SequentialReader(FormatReader):
         end marker) here, and raise ``CorruptionError`` or ``TruncatedError`` for
         damage: archivey keeps the members yielded before it. On a seekable source
         archivey may walk again from the start, with a new stream; the members and
-        their order must be the same."""
+        their order must be the same. A walk may start while an earlier one is still
+        open (to reach decoded ``MemberSpan.data`` again, possibly from several
+        threads), so keep a walk's state in the generator, not on the reader."""
 
 
 class FormatHandler(ABC):
