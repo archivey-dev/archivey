@@ -86,6 +86,11 @@ MAX_PAX_ID = 2**32 - 1
 # area a forward-only walk reads through. A declared size is attacker-chosen, so it is
 # never one read.
 READ_STEP = 64 * 1024
+# A member data read through the walk (_ForwardSlice) asks for at most this much at a
+# time from a stream of unknown length. The member wrapper above reads in pieces no
+# larger, so this bounds the allocation as READ_STEP does for headers, without
+# splitting each of those pieces into sixteen reads and a join.
+DATA_READ_STEP = 1024 * 1024
 
 POSIX_MAGIC = b"ustar\x00"
 GNU_MAGIC = b"ustar  \x00"
@@ -1058,15 +1063,13 @@ class TarWalker:
                     f"{self._stream_pos}"
                 )
 
-    def _read(self, size: int) -> bytes:
+    def _read(self, size: int, step: int = READ_STEP) -> bytes:
         end = self._end
         # ``end`` is a fact, so clamping cannot hide bytes the file really holds.
         # Without it a declared size is read in steps: one joined copy per member
         # larger than the step.
         remaining = None if end is None else max(0, end - self._stream_pos)
-        data = read_within_reach(
-            self._stream, size, remaining=remaining, step=READ_STEP
-        )
+        data = read_within_reach(self._stream, size, remaining=remaining, step=step)
         self._stream_pos += len(data)
         return data
 
@@ -1666,13 +1669,13 @@ class _ForwardSlice(ReadOnlyIOStream):
         left = self._length - self._done
         whole = size is None or size < 0
         want = left if whole else min(size, left)
-        data = walker._read(want)
+        data = walker._read(want, DATA_READ_STEP)
         self._done += len(data)
         if whole and data and len(data) < want:
             # A read with no size asks for the whole member, so the error at the cut
             # belongs in this call and the bytes before it are not returned. The next
             # read raises a decoder's deferred error, or gets no bytes.
-            self._done += len(walker._read(want - len(data)))
+            self._done += len(walker._read(want - len(data), DATA_READ_STEP))
             data = b""
         if data and len(data) < want:
             # A short read is the end (ADR 0014). The bytes go to the caller now, and
