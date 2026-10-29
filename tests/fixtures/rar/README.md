@@ -24,6 +24,8 @@ Multi-volume fixtures:
 | `tinyvol_rnn.rar` / `tinyvol_rnn.r00` | RAR4 `-ma4 -vn` classic `.rar` + `.r00` naming |
 | `tinyvol_cut.part1.rar` … `tinyvol_cut.part3.rar` | RAR5 `-m0 -v1500b`, members `a.txt` … `d.txt`; the fourth volume was deleted, so `d.txt` runs into a missing volume |
 | `tinyvol_cut_solid.part01.rar` … `tinyvol_cut_solid.part04.rar` | RAR5 `-s -m3 -v900b`, same members; the last volume was deleted |
+| `stdin_vol.part1.rar` … `stdin_vol.part3.rar` | RAR5 `-m0 -v900b -sistdin.txt`, 2000 bytes piped in (`_build_stdin_volumes`); parts 1 and 2 have the "unpacked size unknown" flag and a placeholder size, part 3 the real one |
+| `stdin_vol_m3.part1.rar` … `stdin_vol_m3.part3.rar` | Same with `-m3` and 4000 bytes |
 
 File-version (`-ver`) fixtures:
 

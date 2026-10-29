@@ -1269,6 +1269,135 @@ def test_multi_volume_roundtrip() -> None:
         assert archive.cost.notes == ()
 
 
+def _stdin_payload(stem: str) -> bytes:
+    """The bytes ``scripts/gen_rar_fixtures.py`` piped to ``rar -si`` for ``stem``."""
+    seed, size = {
+        "stdin_vol": (b"stdin-vol", 2000),
+        "stdin_vol_m3": (b"stdin-vol-m3", 4000),
+    }[stem]
+    lines = (
+        hashlib.sha256(seed + i.to_bytes(4, "big")).hexdigest().encode() + b"\n"
+        for i in range(size // 65 + 1)
+    )
+    return b"".join(lines)[:size]
+
+
+@pytest.mark.parametrize(
+    "stem",
+    [
+        "stdin_vol",
+        pytest.param("stdin_vol_m3", marks=requires_unrar_cli()),
+    ],
+)
+def test_volumes_written_from_stdin_take_the_size_from_the_last_part(
+    stem: str, tmp_path: Path
+) -> None:
+    """``rar a -v -si`` marks every part but the last "size unknown" and leaves a
+    placeholder in the size field; the last part has the real size. The placeholder
+    was listed as the size, so reads failed as truncated and extraction as a ratio
+    bomb."""
+    payload = _stdin_payload(stem)
+    with open_archive(_fixture(f"{stem}.part1.rar")) as archive:
+        [member] = archive.members()
+        assert member.size == len(payload)
+        assert archive.read(member) == payload
+    with open_archive(_fixture(f"{stem}.part1.rar")) as archive:
+        assert [s.read() for _, s in archive.stream_members() if s] == [payload]
+    with open_archive(_fixture(f"{stem}.part1.rar")) as archive:
+        archive.extract_all(tmp_path)
+    assert (tmp_path / "stdin.txt").read_bytes() == payload
+
+
+def _flag_size_unknown(data: bytes, *, placeholder: bool = False) -> bytes:
+    """``data`` with the "size unknown" file flag (``0x08``) set on every RAR5 FILE
+    header, and each header CRC redone. ``placeholder`` also writes 127 over the first
+    member's size, a two-byte vint (rar pads it), so the header keeps its length."""
+    out = bytearray(data)
+    pos = 8  # past the RAR5 signature
+    while pos < len(out):
+        size, body_at = load_vint(out, pos + 4)
+        block_type, q = load_vint(out, body_at)
+        flags, q = load_vint(out, q)
+        if flags & 0x0001:  # extra area
+            _, q = load_vint(out, q)
+        data_size = 0
+        if flags & 0x0002:  # data area
+            data_size, q = load_vint(out, q)
+        if block_type == 2:  # FILE; its one-byte file flags are at q
+            out[q] |= 0x08
+            if placeholder:
+                assert out[q + 2] == 0x00  # a padded two-byte size vint
+                out[q + 1 : q + 3] = b"\xff\x00"
+                placeholder = False
+            crc = zlib.crc32(out[pos + 4 : body_at + size]) & 0xFFFFFFFF
+            out[pos : pos + 4] = crc.to_bytes(4, "little")
+        if block_type == 5:  # end of archive
+            break
+        pos = body_at + size + data_size
+    return bytes(out)
+
+
+def test_stored_member_of_unknown_size_takes_its_packed_size() -> None:
+    """With the "size unknown" flag and no later part, a stored member's size is its
+    packed size, which is what ``unrar`` reads; the size field is ignored."""
+    data = _flag_size_unknown(
+        _fixture("basic_nonsolid__.rar").read_bytes(), placeholder=True
+    )
+    with open_archive(io.BytesIO(data)) as archive:
+        member = archive.members()[0]
+        assert member.name == "file1.txt"
+        assert member.size == 13
+        assert archive.read(member) == b"Hello, world!"
+
+
+def test_stored_last_part_of_unknown_size_is_not_sized_alone(tmp_path: Path) -> None:
+    """The flag on every part, the last one included: the member's packed size is the
+    sum of its parts, not the last part's share."""
+    for part in (1, 2, 3):
+        name = f"stdin_vol.part{part}.rar"
+        data = _fixture(name).read_bytes()
+        (tmp_path / name).write_bytes(_flag_size_unknown(data) if part == 3 else data)
+    payload = _stdin_payload("stdin_vol")
+    with open_archive(tmp_path / "stdin_vol.part1.rar") as archive:
+        [member] = archive.members()
+        assert member.size == len(payload)
+        assert archive.read(member) == payload
+
+
+@requires("cryptography")
+def test_encrypted_stored_member_of_unknown_size_keeps_its_declared_size() -> None:
+    """Ciphertext is padded to the AES block, so the packed size is not the member's
+    size; the declared one is kept."""
+    data = _flag_size_unknown(_fixture("encryption_stored_sizes__.rar").read_bytes())
+    with open_archive(io.BytesIO(data), password="password") as archive:
+        [member] = [m for m in archive.members() if m.name == "size_7.bin"]
+        assert member.size == 7
+        assert len(archive.read(member)) == 7
+
+
+def test_stored_member_whose_encryption_is_unknown_keeps_its_declared_size() -> None:
+    """A header walk that stopped with extra area unread may have missed the record
+    that says the member is ciphertext, whose packed size is padded: not settled."""
+    from archivey.internal.backends.rar_parser import _settle_unknown_stored_size
+
+    with open_archive(_fixture("basic_nonsolid__.rar")) as archive:
+        raw = archive.members()[0]._raw
+    assert isinstance(raw, RarMemberInfo) and raw.is_stored
+    unknown = dataclasses.replace(
+        raw,
+        size_unknown=True,
+        file_size=127,
+        header_walk_stop_reason="truncated extra area",
+    )
+    assert unknown.encryption_unknown and not unknown.is_encrypted
+    _settle_unknown_stored_size(unknown)
+    assert unknown.file_size == 127
+    assert unknown.size_unknown
+    settled = dataclasses.replace(unknown, header_walk_stop_reason=None)
+    _settle_unknown_stored_size(settled)
+    assert settled.file_size == settled.compress_size
+
+
 def test_multi_volume_rnn_roundtrip() -> None:
     """Classic RAR4 volumes: ``name.rar`` + ``name.r00`` (``-vn`` naming)."""
     first = _fixture("tinyvol_rnn.rar")

@@ -735,7 +735,13 @@ middle or at its end, SHALL list the members of the volumes present and then rai
 `TruncatedError` (the requirement below). A later volume is one whose RAR5 MAIN or RAR
 3.0+ end block records a volume number above 0, or whose first member continues an
 earlier volume; a RAR 1.5 / 2.x volume records neither, so one whose first member starts
-on its boundary reads as volume 1, as in `unrar`.
+on its boundary reads as volume 1, as in `unrar`. A RAR5 part whose file flags say its
+unpacked size is unknown (`0x0008`; `rar a -v -si` sets it on every part of a member read
+from stdin but the last) SHALL NOT give the member's `size` when another source does:
+the size comes from a later part that knows it, and a plaintext stored member that no
+part sizes SHALL take its whole packed size in place of the declared value, as `unrar`
+reads such a member to the end of its packed data. A member no part sizes that is
+compressed or encrypted (no known writer leaves one) keeps the declared value.
 
 #### Scenario: volume matrix
 
@@ -749,6 +755,7 @@ on its boundary reads as volume 1, as in `unrar`.
 | Open explicit ordered stream volumes | Metadata parses in order; data reads materialize volumes for `unrar` if needed |
 | Out-of-order volume | Error instead of partial or garbled output |
 | Missing volume (first, middle or last) | Members of the volumes present listed, then `TruncatedError` |
+| `rar a -v -si` set, stored or compressed | One member whose `size` is the last part's; reads, streams and extracts whole |
 
 ### Requirement: A set with volumes missing SHALL list what it has, then raise
 

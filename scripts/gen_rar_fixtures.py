@@ -232,10 +232,10 @@ def _build_xtime(rar_bin: Path, out: Path, *, extra: Sequence[str] = ()) -> None
     print(f"wrote {_shown(out)}")
 
 
-def _run(cmd: Sequence[str], *, cwd: Path) -> None:
+def _run(cmd: Sequence[str], *, cwd: Path, input: bytes | None = None) -> None:
     env = os.environ.copy()
     env["TZ"] = "UTC"
-    subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, env=env)
+    subprocess.run(cmd, cwd=cwd, input=input, check=True, capture_output=True, env=env)
 
 
 def _write_tree(root: Path, files: Iterable[_File]) -> list[str]:
@@ -787,6 +787,30 @@ def _build_missing_last_volume(rar5_bin: Path, out_dir: Path) -> None:
             print(f"wrote {_shown(volume)}")
 
 
+# ``rar a -v -si``: one member read from stdin, split across volumes. Every part but
+# the last has the "unpacked size unknown" file flag and no real size; the last part
+# carries it. (stem, extra switches, payload)
+_STDIN_SETS: tuple[tuple[str, tuple[str, ...], bytes], ...] = (
+    ("stdin_vol", ("-m0", "-v900b"), _hex_lines(b"stdin-vol", 2000)),
+    ("stdin_vol_m3", ("-m3", "-v900b"), _hex_lines(b"stdin-vol-m3", 4000)),
+)
+
+
+def _build_stdin_volumes(rar5_bin: Path, out_dir: Path) -> None:
+    """Volume sets whose one member ``rar`` read from stdin (``-si``)."""
+    for stem, extra, payload in _STDIN_SETS:
+        for stale in out_dir.glob(f"{stem}.part*.rar"):
+            stale.unlink()
+        cmd = [str(rar5_bin), "a", "-idq", *extra, "-sistdin.txt"]
+        with tempfile.TemporaryDirectory() as td:
+            _run([*cmd, str(out_dir / f"{stem}.rar")], cwd=Path(td), input=payload)
+        volumes = sorted(out_dir.glob(f"{stem}.part*.rar"))
+        if len(volumes) < 2:
+            raise RuntimeError(f"expected {stem} to span at least two volumes")
+        for volume in volumes:
+            print(f"wrote {_shown(volume)}")
+
+
 def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1072,6 +1096,7 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         print(f"wrote {_shown(part2)}")
 
     _build_missing_last_volume(rar5_bin, out_dir)
+    _build_stdin_volumes(rar5_bin, out_dir)
 
     # --- RAR4 (needs -ma4) ---
     # Classic extension volumes (name.rar + name.r00…): RAR4-only via -vn.
