@@ -188,7 +188,9 @@ What is ISO-specific in turning a record into a member:
   listing quadratic. A record with Rock Ridge entries but no `NM` (RRIP allows it, and an
   area cut before its `NM` leaves one) lists under its ISO 9660 identifier, `;1` and an
   empty extension's dot removed (`_nm_name`); pycdlib's `name()` alone would return the
-  identifier with its version.
+  identifier with its version. An `NM` that spells an empty name does the same, with
+  `member_header_record_skipped` (`record="NM"`), as Linux's isofs falls back: joined
+  into a path, the empty component listed the directory's children one level up.
   A directory with no such file under it, or a multi-byte legacy name whose trail bytes
   are ASCII (Shift-JIS), stays escaped. A relative link target that falls through is
   followed from the symlink's directory (`_decode_link_target`), and each component that

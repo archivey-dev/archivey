@@ -2372,6 +2372,32 @@ def test_a_report_made_while_listing_names_the_member_as_listed() -> None:
         assert "ddd/" in diagnostic.message
 
 
+def test_an_empty_rock_ridge_name_falls_back_to_the_iso9660_name() -> None:
+    """An ``NM`` entry that spells nothing would join into a path as an empty
+    component, listing the directory's children one level up and the directory as a
+    second copy of its parent. The ISO 9660 name stands in, as Linux's isofs does."""
+    from archivey import DiagnosticCode
+
+    def populate(iso: Any) -> None:
+        iso.add_directory("/TOP", rr_name="top")
+        iso.add_directory("/TOP/DDDD", rr_name="dddd")
+        iso.add_fp(io.BytesIO(b"in"), 2, "/TOP/DDDD/IN.;1", rr_name="in")
+
+    data = _build_rr_iso(populate)
+    nm = b"NM\x09\x01\x00dddd"
+    assert data.count(nm) == 1
+    # The empty NM, then a 4-byte SUSP entry of no known type that pads the area back
+    # to its old length, so nothing else moves.
+    data = data.replace(nm, b"NM\x05\x01\x00" + b"XX\x04\x01")
+    with open_archive(io.BytesIO(data)) as ar:
+        by_name = {m.name: m for m in ar.members()}
+        assert sorted(by_name) == ["top/", "top/DDDD/", "top/DDDD/in"]
+        assert ar.read("top/DDDD/in") == b"in"
+        [diagnostic] = by_name["top/DDDD/"].diagnostics
+        assert diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        assert diagnostic.context.record == "NM"
+
+
 def test_a_directory_record_without_entries_is_named_as_listed() -> None:
     """The report for a record with no Rock Ridge entries names a directory with its
     ``/``, in the message as in the context."""

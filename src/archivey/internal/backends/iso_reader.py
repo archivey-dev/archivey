@@ -897,7 +897,20 @@ def _nm_name(record: DirectoryRecord) -> bytes | None:
     rr = record.rock_ridge
     if rr is None or not any(e.nm_records for e in _rr_entry_groups(rr)):
         return None
-    return bytes(rr.name())
+    # An ``NM`` that spells nothing names nothing: joined into a path, an empty
+    # component would list the record's children one directory up. The ISO 9660
+    # identifier stands in, as the Linux kernel's isofs falls back to it.
+    return bytes(rr.name()) or None
+
+
+def _nm_name_is_empty(record: DirectoryRecord) -> bool:
+    """Whether a record's Rock Ridge ``NM`` entries are present and spell no name."""
+    rr = record.rock_ridge
+    return (
+        rr is not None
+        and any(e.nm_records for e in _rr_entry_groups(rr))
+        and not rr.name()
+    )
 
 
 def _rr_entry_groups(rr: RockRidge) -> tuple[RockRidgeEntries, ...]:
@@ -2111,6 +2124,22 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
                     member_id=index,
                     record="rock_ridge",
                     reason="no Rock Ridge entries in the System Use area",
+                ),
+                member=member,
+            )
+        if self._namespace == "rock_ridge" and _nm_name_is_empty(record):
+            self._context.report(
+                DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+                (
+                    f"The Rock Ridge NM entry of {quoted(member.name)} spells an "
+                    "empty name; the member is listed under its ISO 9660 name."
+                ),
+                MemberHeaderRecordContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=index,
+                    record="NM",
+                    reason="empty alternate name",
                 ),
                 member=member,
             )
