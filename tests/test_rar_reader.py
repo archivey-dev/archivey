@@ -1174,6 +1174,42 @@ def test_blake2sp_unrar_oracle_crosscheck() -> None:
     assert proc.stdout == native == b"stored payload"
 
 
+@requires_unrar_cli()
+def test_unknown_redirect_in_a_solid_run_is_other_and_carries_no_bytes(
+    tmp_path: Path,
+) -> None:
+    """A redirect type no RAR writes: ``unrar`` lists it as a file, warns, creates
+    nothing and emits nothing for it in ``unrar p``. Counting it as payload shifted
+    the solid demux, and the member after it read short."""
+    fixture = _fixture("redirect_unknown_solid__.rar")
+    expected = {
+        name: subprocess.run(
+            ["unrar", "p", "-inul", str(fixture), name],
+            check=True,
+            capture_output=True,
+        ).stdout
+        for name in ("a.txt", "b.txt")
+    }
+    assert all(len(data) == 300 for data in expected.values())
+    with open_archive(fixture) as archive:
+        by_name = {m.name: m for m in archive.members()}
+        link = by_name["link"]
+        assert link.type is MemberType.OTHER
+        assert link.size is None
+        assert link.link_target is None
+        [diagnostic] = link.diagnostics
+        assert diagnostic.code is DiagnosticCode.MEMBER_TYPE_UNKNOWN
+        assert diagnostic.context.stored_type == "6"
+        assert {n: archive.read(n) for n in expected} == expected
+    with open_archive(fixture) as archive:
+        streamed = {m.name: s.read() for m, s in archive.stream_members() if s}
+        assert streamed == expected
+    with open_archive(fixture) as archive:
+        archive.extract_all(tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt", "b.txt"]
+    assert (tmp_path / "b.txt").read_bytes() == expected["b.txt"]
+
+
 def test_multi_volume_roundtrip() -> None:
     part1 = _fixture("tinyvol.part1.rar")
     assert (_FIXTURES / "tinyvol.part2.rar").is_file()

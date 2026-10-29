@@ -172,10 +172,11 @@ class DiagnosticCode(StrEnum):
     Utility writes a member over 4 GiB without ZIP64. archivey corrects them, or
     lists ``size`` as ``None`` until a read can tell."""
     MEMBER_TYPE_UNKNOWN = "member_type_unknown"
-    """A member's stored type is one archivey does not know: a TAR typeflag, or the
-    file-type bits of another format's mode (a format plugin may report it). One that
-    declares data is listed as a ``FILE``, as GNU tar extracts it; one that declares
-    none stays ``OTHER``."""
+    """A member's stored type is one archivey does not know: a TAR typeflag, a RAR5
+    redirect type, or the file-type bits of another format's mode (a format plugin may
+    report it). One that declares data is listed as a ``FILE``, as GNU tar extracts it;
+    one that declares none stays ``OTHER``, and a RAR5 redirect is always ``OTHER``,
+    as ``unrar`` writes nothing for it."""
     # No per-member extraction outcome has a code here. Extraction returns a structured
     # per-item report, so ``ExtractionResult`` is the sole carrier of those facts — see
     # the placement clause in ``openspec/specs/diagnostics``.
@@ -835,8 +836,9 @@ class UnknownMemberTypeContext(_JsonSafeContext):
     readable and extracted (design rule DR-25); one that declares none stays ``OTHER``.
     ``stored_type`` is the format's own spelling of the type: for TAR the typeflag byte
     as a one-character string (the byte as Latin-1), the same byte as
-    ``extra["tar.type"]``; a plugin chooses its own (CPIO's is the mode's file-type
-    bits in octal, ``"0o130000"``). ``size`` is the member's
+    ``extra["tar.type"]``; for a RAR5 redirect the type number in decimal (``"6"``);
+    a plugin chooses its own (CPIO's is the mode's file-type bits in octal,
+    ``"0o130000"``). ``size`` is the member's
     ``size``, ``None`` for an ``OTHER`` member. Advisory: the bytes are delivered and
     nothing is hidden, so it is not in :data:`ARCHIVE_INTEGRITY_CODES`.
     """

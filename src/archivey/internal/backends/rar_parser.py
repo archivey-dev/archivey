@@ -285,6 +285,9 @@ _RAR5_XREDIR_WINDOWS_SYMLINK = 2
 _RAR5_XREDIR_WINDOWS_JUNCTION = 3
 _RAR5_XREDIR_HARD_LINK = 4
 _RAR5_XREDIR_FILE_COPY = 5
+_RAR5_KNOWN_REDIRECTS = frozenset(
+    range(_RAR5_XREDIR_UNIX_SYMLINK, _RAR5_XREDIR_FILE_COPY + 1)
+)
 
 _RAR5_ENDARC_NEXT_VOLUME = 0x01
 
@@ -497,7 +500,27 @@ class RarMemberInfo:
 
     def is_payload_file(self) -> bool:
         """True if ``unrar p`` emits this member's bytes (regular file, not dir/link/redir)."""
-        return not (self.is_directory or self.is_symlink or self.is_hardlink_or_copy)
+        return not (
+            self.is_directory
+            or self.is_symlink
+            or self.is_hardlink_or_copy
+            or self.has_unknown_redirect()
+        )
+
+    def has_unknown_redirect(self) -> bool:
+        """True for a RAR5 redirect of a type this parser does not know (not 1 to 5).
+
+        ``unrar`` 7.00 lists such a member as a file, warns "Unknown extra field",
+        creates nothing for it and emits no bytes for it in ``unrar p``, so a solid
+        pass must not count it either. A directory with one stays a directory, as
+        ``unrar``'s directory branch runs first.
+        """
+        redir = self.file_redir
+        return (
+            redir is not None
+            and redir[0] not in _RAR5_KNOWN_REDIRECTS
+            and not self.is_directory
+        )
 
     def is_file_copy(self) -> bool:
         """True for a RAR5 ``FILE_COPY`` redirect (``rar -oi``, "file reference").

@@ -130,6 +130,12 @@ _SYMLINKS: tuple[_File, ...] = (
     _File("subdir_link_with_slash", link_target="subdir/"),
 )
 
+_UNKNOWN_REDIRECT: tuple[_File, ...] = (
+    _File("a.txt", _hex_lines(b"unknown-redirect-a", 300)),
+    _File("link", link_target="a.txt"),
+    _File("b.txt", _hex_lines(b"unknown-redirect-b", 300)),
+)
+
 _HARDLINKS: tuple[_File, ...] = (
     _File("file1.txt", b"Hello 1!"),
     _File("subdir/file2.txt", b"Hello 2!"),
@@ -652,6 +658,66 @@ def _strip_file_crc32(archive: Path, member: str) -> None:
     raise ValueError(f"no RAR5 FILE header with a CRC32 for {member!r} in {archive}")
 
 
+def _set_redirect_type(archive: Path, member: str, redirect_type: int) -> None:
+    """Rewrite ``member``'s RAR5 redirect record to ``redirect_type``.
+
+    The type is the record's first field after its size and record type, a one-byte
+    vint for every value written here, so the header keeps its length and only its
+    CRC is recomputed.
+    """
+    assert redirect_type < 0x80
+    data = bytearray(archive.read_bytes())
+    pos = 8  # the RAR5 signature
+    while pos < len(data):
+        size, body_at = _read_vint(data, pos + 4)
+        end = body_at + size
+        block_type, q = _read_vint(data, body_at)
+        flags, q = _read_vint(data, q)
+        extra_size = 0
+        if flags & 0x0001:  # extra area
+            extra_size, q = _read_vint(data, q)
+        data_size = 0
+        if flags & 0x0002:  # data area
+            data_size, q = _read_vint(data, q)
+        if block_type == 2:
+            file_flags, q = _read_vint(data, q)
+            _, q = _read_vint(data, q)  # unpacked size
+            _, q = _read_vint(data, q)  # attributes
+            q += 4 * bool(file_flags & 0x0002) + 4 * bool(file_flags & 0x0004)
+            _, q = _read_vint(data, q)  # compression info
+            _, q = _read_vint(data, q)  # host OS
+            name_len, q = _read_vint(data, q)
+            if data[q : q + name_len] == member.encode():
+                x = end - extra_size
+                while x < end:
+                    record_size, record_at = _read_vint(data, x)
+                    record_type, type_end = _read_vint(data, record_at)
+                    if record_type == 5:  # FHEXTRA_REDIR
+                        data[type_end] = redirect_type
+                        crc = binascii.crc32(data[pos + 4 : end]) & 0xFFFFFFFF
+                        data[pos : pos + 4] = crc.to_bytes(4, "little")
+                        archive.write_bytes(bytes(data))
+                        return
+                    x = record_at + record_size
+        if block_type == 5:  # end of archive
+            break
+        pos = end + data_size
+    raise ValueError(f"no RAR5 redirect record for {member!r} in {archive}")
+
+
+def _build_unknown_redirect(rar5_bin: Path, out_dir: Path) -> None:
+    """A solid run with a redirect of type 6, which no RAR version writes, between
+    two compressed files. ``unrar`` 7.00 lists it as a file, warns "Unknown extra
+    field" and emits nothing for it; ``-ds`` keeps the files in this order."""
+    out = out_dir / "redirect_unknown_solid__.rar"
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        names = _write_tree(root, _UNKNOWN_REDIRECT)
+        _rar_a(rar5_bin, out, names, cwd=root, extra=("-s", "-ds", "-m3"))
+    _set_redirect_type(out, "link", 6)
+    print(f"wrote {_shown(out)}")
+
+
 def _build_unar_drop(rar5_bin: Path, out_dir: Path) -> None:
     """Members unar 1.10.1 drops; in a solid run, other bytes then sit in their place."""
     builds: list[tuple[str, tuple[_File, ...], tuple[str, ...], str | None]] = [
@@ -868,6 +934,7 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         extra=("-m0", "-ppassword"),
     )
     _build_unar_drop(rar5_bin, out_dir)
+    _build_unknown_redirect(rar5_bin, out_dir)
     _build_file_version(
         rar5_bin,
         out_dir / "file_version__.rar",

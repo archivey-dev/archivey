@@ -592,7 +592,11 @@ it as an independent file, as `unrar` does. A copy with no such source SHALL rai
 layer. The target of a Windows symlink or junction SHALL be normalized as a ZIP or 7z
 reparse buffer's is: `\` becomes `/`, a leading `\??\` or `/??/` is dropped, and
 `UNC\` after it becomes `//`. A Unix symlink's target SHALL be kept as stored.
-Redirect members MUST NOT appear in the solid `unrar p` demux size map.
+Redirect members MUST NOT appear in the solid `unrar p` demux size map. A redirect of a
+type other than 1 to 5, which no RAR version writes, SHALL be `MemberType.OTHER` with no
+`size` and no `link_target`, carry no data, and be reported once at listing with
+`MEMBER_TYPE_UNKNOWN`, as `unrar` 7.00 lists it, warns "Unknown extra field", creates
+nothing for it and emits nothing for it in `unrar p`; on a directory it stays a directory.
 
 #### Scenario: redirect matrix
 
@@ -602,6 +606,7 @@ Redirect members MUST NOT appear in the solid `unrar p` demux size map.
 | RAR5 `FILE_COPY` | `type=FILE`, `extra["is_file_copy"]`; `open()`, `stream_members()` and extraction give the source's bytes; extracted as an independent file |
 | RAR5 Unix/Windows symlink `open()` | Link following resolves target; symlink itself has no `unrar p` payload |
 | Solid stream past a redirect member | Demux does not advance the pipe for that member |
+| Solid RAR5 with a redirect of type 6 between two files | `OTHER`, no `size`, `MEMBER_TYPE_UNKNOWN`; both files read whole in both access modes; extraction writes the two files only |
 
 ### Requirement: Resolve RAR link targets when possible at list time
 

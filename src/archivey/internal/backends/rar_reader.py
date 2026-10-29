@@ -51,6 +51,7 @@ from archivey.diagnostics import (
     DiagnosticCode,
     DigestContext,
     MemberHeaderRecordContext,
+    UnknownMemberTypeContext,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -720,7 +721,7 @@ def _rar_member_extra_and_link(
         # Whatever type ``_member_type`` gives the entry (a file copy is a FILE even
         # though it carries a redirect), the key records what the mode said (DR-25).
         extra[EXTRA_SPECIAL_FILE_TYPE] = special
-    if info.file_redir is not None:
+    if info.file_redir is not None and not info.has_unknown_redirect():
         link_target = _rar5_redirect_target(info.file_redir)
         if info.is_file_copy():
             extra[EXTRA_IS_FILE_COPY] = True
@@ -2804,7 +2805,8 @@ class RarReader(BaseArchiveReader):
             type=member_type,
             name=name,
             raw_name=raw_name,
-            size=info.file_size,
+            # An unknown redirect's size is its target's length, not data it holds.
+            size=None if info.has_unknown_redirect() else info.file_size,
             compressed_size=info.compress_size,
             modified=info.mtime,
             accessed=info.atime,
@@ -2858,6 +2860,8 @@ class RarReader(BaseArchiveReader):
             self._emit_directory_data_ignored(member, index)
         if EXTRA_SPECIAL_FILE_TYPE in member.extra and member.type is MemberType.FILE:
             self._emit_special_file_has_data(member, index)
+        if info.has_unknown_redirect():
+            self._emit_unknown_redirect(info, member, index)
         if info.rar3_utf8_over_encoding:
             assert self._encoding is not None
             self._emit_name_encoding_inferred(
@@ -3050,6 +3054,9 @@ class RarReader(BaseArchiveReader):
         if info.is_file_copy():
             # Extracted as an independent file, as ``unrar`` does, not as a link.
             return MemberType.FILE
+        if info.has_unknown_redirect():
+            # ``unrar`` creates nothing for it and its pipe carries no bytes for it.
+            return MemberType.OTHER
         if info.is_hardlink_or_copy:
             return MemberType.HARDLINK
         if info.is_symlink:
@@ -3356,6 +3363,31 @@ class RarReader(BaseArchiveReader):
         if not expected:
             return None
         return expected, transforms
+
+    def _emit_unknown_redirect(
+        self, info: RarMemberInfo, member: ArchiveMember, member_id: int
+    ) -> None:
+        """Report ``MEMBER_TYPE_UNKNOWN`` for a RAR5 redirect of a type this reader
+        does not know. ``unrar`` warns too ("Unknown extra field") and skips it."""
+        assert info.file_redir is not None
+        stored_type = str(info.file_redir[0])
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_TYPE_UNKNOWN,
+            message=(
+                f"RAR member {quoted(member.name)} is a redirect of the unknown type "
+                f"{stored_type}: it holds no data, so it is listed as OTHER and not "
+                "extracted, as unrar skips it."
+            ),
+            context=UnknownMemberTypeContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=member_id,
+                stored_type=stored_type,
+                size=member.size,
+            ),
+            member=member,
+            attach_to_member=True,
+        )
 
     def _emit_header_record_diagnostics(
         self,

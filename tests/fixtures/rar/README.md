@@ -141,6 +141,15 @@ RAR 7.00; another `rar` build may compress them so `unar` reads them, so rerun
 | `unar_stale_solid__.rar` | RAR5 `-s -m3`; `a.txt` … `e.txt`. One `unar` run drops `c.txt`, writes stale bytes of `d.txt`'s length and drops `e.txt` |
 | `unar_stale_nocrc_solid__.rar` | Same, with `c.txt`'s CRC32 removed from its FILE header (header CRC recomputed), so it has no digest |
 
+A redirect type no RAR version writes. Built by `_build_unknown_redirect` with RAR 7.00:
+`rar` stores `link` as a Unix symlink (type 1), then `_set_redirect_type` rewrites the
+type to 6 and recomputes the header CRC. `unrar` 7.00 lists `link` as a file, warns
+"Unknown extra field", creates nothing for it and emits nothing for it in `unrar p`.
+
+| Files | Notes |
+| --- | --- |
+| `redirect_unknown_solid__.rar` | RAR5 `-s -ds -m3`; `a.txt` and `b.txt` (300 bytes each) with `link`, a redirect of type 6 to `a.txt`, between them |
+
 ## Legacy (not regenerated)
 
 | File | Provenance |
