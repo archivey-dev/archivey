@@ -788,6 +788,11 @@ that mask select the wrong members, or none:
   way.
 - **A name `unrar` reads as empty** raises `UnsupportedFeatureError`, and so does a name `unrar`
   reads but that cannot be handed back to it as a mask.
+- **A name ending in `.`, or with a `.` before a `\`:** `unrar` up to 7.30 beta 1 lets the mask
+  `notes.` also select a member named `notes`, and 7.30 beta 2 does not. When that changes which
+  members come before the one you asked for, archivey asks the `unrar` on `PATH` once, with a
+  small test archive, which way it matches. If it gives no usable answer, the read raises
+  `UnsupportedFeatureError`.
 - **An unpaired surrogate in a RAR 1.5-4 name:** archivey selects the member with `?` in place of
   each such unit, and when that pattern also matches an earlier member, the read raises
   `UnsupportedFeatureError` unless you set `rar_allow_glob_member_concatenation`.

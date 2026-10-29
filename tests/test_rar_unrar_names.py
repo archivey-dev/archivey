@@ -716,3 +716,20 @@ def test_reader_asks_for_the_dot_rule_only_when_it_changes_the_read(
     # The read of ab plans no skip; the read of ab. skips ab only under the rule,
     # and an unknown answer plans nothing.
     assert prefixes == {True: [0, len(_payload(0))], False: [0, 0], None: [0]}[answer]
+
+
+@requires_binary("unrar", "unar")
+def test_auto_reads_with_unar_when_the_dot_rule_probe_has_no_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The binary on PATH is the trouble, not the archive, so ``AUTO`` falls back."""
+    monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
+    monkeypatch.setattr(
+        "archivey.internal.backends.rar_reader.unrar_dot_rule", lambda: None
+    )
+    path = _build_rar5(tmp_path, [(b"ab", 1), (b"ab.", 1)])
+    with open_archive(path) as reader:
+        assert [reader.read(member) for member in reader.members()] == [
+            _payload(0),
+            _payload(1),
+        ]

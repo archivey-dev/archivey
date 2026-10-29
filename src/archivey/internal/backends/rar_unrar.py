@@ -1142,8 +1142,8 @@ def _unrar_match(pattern: str, string: str, *, dot_rule: bool) -> bool:
     """unrar's ``match()`` for a pattern with ``?`` as its only wildcard.
 
     ``?`` takes exactly one character. Under ``dot_rule`` a ``.`` in the pattern may
-    also stand for nothing where the string ends or has a ``\\`` or a ``.``, so the
-    mask ``a.`` selects the member ``a``. unrar up to 7.30 beta 1 has that rule;
+    also stand for nothing where the string ends or has a ``\\``, so the mask ``a.``
+    selects the member ``a`` and ``a.\\b`` selects ``a\\b``. unrar up to 7.30 beta 1 has that rule;
     7.30 beta 2 rewrote ``match()`` without it, and its banner cannot tell the two
     apart (:func:`unrar_dot_rule` asks the binary). With no ``*`` there is nothing
     to backtrack over, so this is a single walk.
@@ -1163,6 +1163,8 @@ def _unrar_match(pattern: str, string: str, *, dot_rule: bool) -> bool:
                 "unrar mask still contains '*'; build it with _unrar_mask_for"
             )
         elif p_char != s_char:
+            # ``"."`` mirrors unrar's own test; it cannot fire, because a ``.``
+            # against a ``.`` is equal and never reaches this branch.
             if dot_rule and p_char == "." and s_char in ("\0", "\\", "."):
                 continue
             return False
@@ -1193,9 +1195,7 @@ def _unrar_cmp_name(wild: str, name: str, *, dot_rule: bool) -> bool:
     return _unrar_match(wild[wild_pos:], name[name_pos:], dot_rule=dot_rule)
 
 
-def unrar_mask_selects(
-    mask_view: str, name_view: str, *, dot_rule: bool = True
-) -> bool:
+def unrar_mask_selects(mask_view: str, name_view: str, *, dot_rule: bool) -> bool:
     """True when ``unrar p -n<mask_view>`` emits a file member named ``name_view``.
 
     ``dot_rule`` is whether this unrar lets a ``.`` in the mask match nothing
@@ -1233,6 +1233,8 @@ def unrar_dot_rule_can_matter(mask_view: str) -> bool:
     none left after ``ConvertPath`` (``./`` and ``../`` are dropped) is the same
     either way.
     """
+    if sys.platform == "win32":
+        mask_view = mask_view.replace("/", "\\")  # as in :func:`unrar_mask_selects`
     return "." in mask_view[_unrar_convert_path_offset(mask_view) :]
 
 
