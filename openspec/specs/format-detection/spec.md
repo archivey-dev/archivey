@@ -128,7 +128,8 @@ The system SHALL execute format detection with this algorithm:
 8. **Leading-bytes scan** — the scan of step 3's requirement, run with no executable cue:
    only when steps 1-7 matched nothing, the leading bytes raise no executable cue and carry
    no known non-archive signature, and the name has no known extension (the ZIP, 7z and
-   RAR readers find a prefixed archive themselves under a name that names them). Every needle SHALL need its format's hit validator. Match → `PROBABLE` /
+   RAR readers find a prefixed archive themselves under a name that names them). Every
+   needle SHALL need its format's hit validator. Match → `PROBABLE` /
    `detected_by="sfx_scan"` with `payload_offset`. Last, so a source an earlier step
    identifies pays nothing for the window.
 9. **Extension** — `Path` with a known extension → `GUESS` / `detected_by="extension"`.

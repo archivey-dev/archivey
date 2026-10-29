@@ -38,9 +38,9 @@ today OLE compound files), and the error then names that evidence. A non-archive
 also stops the SFX scan.
 
 The steps run strongest-signal-first: near magic → SFX scan → **far magic** → trailer
-magic → self-checking header → content probes → leading-bytes scan → extension. The signals ahead of the
-probes are there for the same reason — a probe is the weakest evidence archivey has, and
-one asked to judge arbitrary bytes will sometimes say yes:
+magic → self-checking header → content probes → leading-bytes scan → extension. The
+signals ahead of the probes are there for the same reason — a probe is the weakest
+evidence archivey has, and one asked to judge arbitrary bytes will sometimes say yes:
 
 - A **self-extracting** archive has no archive magic at offset 0 at all: a prefix
   (executable stub or ``#!`` launcher) comes first. When the leading bytes look
@@ -50,8 +50,9 @@ one asked to judge arbitrary bytes will sometimes say yes:
   every file before the cheaper steps — not a false-positive defence; a format-owned
   validator rejects a decoy. With no cue the same scan runs last, as the
   **leading-bytes scan**, so only a source every other step declined pays for it: an
-  archive behind an image, zeros or text, as 7-Zip, unrar and unzip find one. See ``executable_cue`` and ``format-detection``'s "Executable-looking
-  prefixes must not silently become a wrong stream format".
+  archive behind an image, zeros or text, as 7-Zip, unrar and unzip find one. See
+  ``executable_cue`` and ``format-detection``'s "Executable-looking prefixes must not
+  silently become a wrong stream format".
 - **Far magic** is exact magic whose end offset lies outside the default window (today
   ISO 9660's ``CD001`` at 32 769), so it needs an extended peek taken on demand. It runs
   before the probes because a bootable or hybrid ISO reserves its first 32 KiB for
