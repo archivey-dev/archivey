@@ -325,40 +325,26 @@ jobs:
       # the cache holds the *installed binary* so the common case makes no
       # request at all, and the installer retries when it does.
       #
-      # The key carries a rotating window as well as the installer's hash,
-      # because rarlab's URL is unversioned "current": without it, whichever
-      # build happened to fill the cache would be the build CI tests from then
-      # on. Eviction does not solve that — GHA drops caches *not accessed* for
-      # 7 days, and an entry restored by every run is never idle, so on a busy
-      # branch it would never expire at all. Rotating the key bounds how old the
-      # tested binary can be, which is the point: CI is here to test archivey
-      # against what Windows users actually download.
-      - name: Compute unrar cache window (Windows)
-        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Windows'
-        id: unrar-window
-        shell: bash
-        run: |
-          # Refresh cadence, in days. Lower tracks rarlab's current build more
-          # closely; higher means fewer downloads, so fewer chances to land on a
-          # rarlab outage. The binary is never older than this many days.
-          days=7
-          echo "window=$(( $(date -u +%s) / 86400 / days ))" >> "$GITHUB_OUTPUT"
+      # The installer pins a WinRAR release by version and digest, so the key is
+      # the installer's hash alone: editing the pin refreshes the cache, and
+      # nothing else should.
       - name: Cache RARLAB unrar (Windows)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Windows'
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/rarlab-unrar
           # Do NOT add restore-keys here. A prefix fallback would restore the
-          # previous window's binary on the very run that is meant to refresh
-          # it, the installer would find a valid UnRAR.exe and accept it, and
-          # the rotation above would buy nothing.
-          key: rarlab-unrar-${{ hashFiles('scripts/install-rarlab-unrar.ps1') }}-${{ runner.os }}-${{ runner.arch }}-w${{ steps.unrar-window.outputs.window }}
+          # previous pin's binary on the run that moves the pin, the installer
+          # would find a valid UnRAR.exe and accept it, and CI would go on
+          # testing the old version.
+          key: rarlab-unrar-${{ hashFiles('scripts/install-rarlab-unrar.ps1') }}-${{ runner.os }}-${{ runner.arch }}
           save-always: true
       - name: Install unrar (Windows)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Windows'
         shell: pwsh
         run: |
-          # Official x64 UnRAR (not chocolatey's x86 package + ShimGen shim — shims
+          # Official x64 UnRAR, unpacked from a pinned WinRAR installer (not
+          # chocolatey's x86 package + ShimGen shim — shims
           # have broken solid ``unrar p`` pipes on this matrix). The script no-ops
           # when the cache already restored UnRAR.exe.
           $dest = Join-Path $env:RUNNER_TEMP 'rarlab-unrar'
