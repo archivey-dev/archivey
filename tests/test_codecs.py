@@ -2238,9 +2238,9 @@ def test_verify_sized_readall_propagates_memoryerror_not_truncation() -> None:
 
 def test_archive_stream_passthrough_full_count() -> None:
     """Unverified ArchiveStream.read(n) is n-or-terminal over a full-count inner."""
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
-    stream = ArchiveStream(
+    stream = ArchiveStreamImpl(
         lambda: io.BytesIO(CONTENT),
         translate=lambda _exc: None,
     )
@@ -2257,7 +2257,7 @@ def test_archive_stream_passthrough_read_stops_on_short_inner() -> None:
     deferred truncation into the same call and drop the recoverable prefix. An inner
     that shorts mid-stream is fixed by the ``ArchiveSource`` in front.
     """
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
     class ShortOnce(io.BytesIO):
         """Returns at most 3 bytes per read, but empty only at true EOF."""
@@ -2267,7 +2267,7 @@ def test_archive_stream_passthrough_read_stops_on_short_inner() -> None:
                 return super().read(n)
             return super().read(min(3, n)) if n else b""
 
-    stream = ArchiveStream(
+    stream = ArchiveStreamImpl(
         lambda: ShortOnce(CONTENT),
         translate=lambda _exc: None,
     )
@@ -2851,10 +2851,10 @@ def test_unix_compress_truncated_close_quiet_and_size_unknown() -> None:
 
 def test_verify_fused_archive_stream_slurp_raises() -> None:
     """Fused MemberVerifier on ArchiveStream: read() raises on bad CRC (not close)."""
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
     bad = crc32_digest(zlib.crc32(CONTENT) ^ 0xFFFF)
-    stream = ArchiveStream(
+    stream = ArchiveStreamImpl(
         lambda: io.BytesIO(CONTENT),
         translate=lambda _exc: None,
         expected_hashes={HashAlgorithm.CRC32: bad},
@@ -3062,14 +3062,14 @@ def test_an_unused_package_reports_its_reason_on_every_channel(
 def _rapidgzip_rewind_messages(config: StreamConfig) -> list[str]:
     """The rewind report for a seek back to 0 in gzip and bzip2, the two sites that
     name rapidgzip."""
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
     warnings = [
         codecs_module.rapidgzip_select._rapidgzip_rewind_warning("gzip", config),
         stream_codec(Codec.BZIP2).rewind_warning(config),
     ]
     return [
-        ArchiveStream._rewind_message(w, 5_000_000, 0, 5_000_000)
+        ArchiveStreamImpl._rewind_message(w, 5_000_000, 0, 5_000_000)
         for w in warnings
         if w is not None
     ]
@@ -3529,7 +3529,7 @@ def test_open_codec_raw_raises_what_open_codec_stream_raises(
     codec's translator itself. Every outcome, an open failure, a read failure or the
     bytes, must match ``open_codec_stream``'s.
     """
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
     from archivey.internal.streams.codecs import open_codec_raw
 
     kwargs = {} if params is None else {"params": params}
@@ -3540,7 +3540,7 @@ def test_open_codec_raw_raises_what_open_codec_stream_raises(
 
     def via_raw() -> bytes:
         opened = open_codec_raw(codec, io.BytesIO(data), **kwargs)
-        with ArchiveStream(
+        with ArchiveStreamImpl(
             lambda: opened.stream,
             translate=opened.translate,
             rewind_warning=opened.rewind_warning,

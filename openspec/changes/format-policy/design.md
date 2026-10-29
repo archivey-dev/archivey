@@ -106,7 +106,7 @@ class FormatPolicy:
     exclude: frozenset[FormatEntry] = frozenset()
     exclude_libraries: frozenset[OptionalLibrary] = frozenset()  # §5a
     plugins: bool = True
-    replace: Mapping[ContainerFormat, type[FormatPlugin]] = {}  # stored read-only
+    replace: Mapping[ContainerFormat, type[FormatHandler]] = {}  # stored read-only
 
     def allows(self, fmt: ArchiveFormat) -> bool: ...
 ```
@@ -203,7 +203,7 @@ before opening. `FormatInfo` gets no new field (DR-13).
 ## 5. Replacing a built-in reader
 
 ```python
-class StrongZipPlugin(FormatPlugin):
+class StrongZipPlugin(FormatHandler):
     format = ArchiveFormat.ZIP   # a built-in format, not a PluginContainer
     # no extensions, magic or probe: detection stays the built-in's
     def open(self, source, context): ...
@@ -233,7 +233,7 @@ class StrongZipPlugin(FormatPlugin):
   - a raw CD sector image detected as ISO, with the same `UnsupportedFeatureError`
     the built-in reader gives: the bytes are not an ISO 9660 image.
   The format-specific options (`zip_unflagged_fallback_encoding`, `rar_decompressor`,
-  ...) reach the plugin through `PluginContext.config`. Honouring them is the plugin's
+  ...) reach the plugin through `ReaderContext.config`. Honouring them is the plugin's
   job, and the plugin guide says so.
 - **Which containers.** ZIP, 7z, RAR and ISO, which an indexed plugin can read. TAR and
   `RAW_STREAM` wait for the sequential shape (`plugin-api` task 1b). `DIRECTORY` and

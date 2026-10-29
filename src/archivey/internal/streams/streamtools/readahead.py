@@ -139,6 +139,20 @@ class ReadAheadStream(DelegatingStream):
         self._offset = take
         return held + data[:take]
 
+    def read_arrived(self, n: int, /) -> bytes:
+        """Between 1 and ``n`` bytes, or ``b""`` only at the end: the buffered bytes
+        when there are any, else one fill. With ``fill_arrived`` that fill is what the
+        decoder's next feed gives, so a consumer that reads until ``b""`` (a decoder
+        fed from this buffer) never waits for bytes a held-open pipe has not sent."""
+        if n <= 0:
+            raise ValueError("n must be positive")
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        buffered = len(self._buffer) - self._offset
+        if buffered or self._held is not None or self._read_ahead is None:
+            return self.read(min(n, buffered) if buffered else n)
+        return self._read_ahead(1, n)
+
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         offset, whence = check_seek_args(offset, whence)
         if self._buffer and whence != io.SEEK_END:

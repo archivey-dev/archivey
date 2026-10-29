@@ -275,3 +275,23 @@ def test_a_fresh_corruption_error_from_the_pass_propagates_at_once(
         assert excinfo.value is not reader._walk_error
     assert str(excinfo.value).startswith("wrapped: ")
     assert _files_on_disk(dest) == {}
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random-access", "streaming"])
+def test_a_tar_prefix_over_a_listing_limit_writes_the_members_before_it(
+    tmp_path: Path, streaming: bool
+) -> None:
+    # TAR's listing is a scan of the data, so each member is weighed as the pass
+    # registers it: the member before the one over the limit is written, then the
+    # limit raises, in both access modes (DR-5).
+    contents, _, _ = _listing(_tar_with_hardlink())
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=1))
+    dest = tmp_path / "out"
+    with (
+        open_archive(
+            io.BytesIO(_tar_with_hardlink()), config=config, streaming=streaming
+        ) as reader,
+        pytest.raises(ResourceLimitError),
+    ):
+        reader.extract_all(dest)
+    assert _files_on_disk(dest) == {"a.txt": contents["a.txt"]}

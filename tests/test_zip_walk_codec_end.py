@@ -109,6 +109,7 @@ _METHODS = {
     "lzma": pytest.param(_Method(14, 2, _lzma), id="lzma"),
     "ppmd": pytest.param(_Method(98, 0, _ppmd), id="ppmd", marks=requires("pyppmd")),
     "zstd": pytest.param(_Method(93, 0, _zstd), id="zstd", marks=requires_zstd()),
+    "xz": pytest.param(_Method(95, 0, lzma.compress), id="xz"),
 }
 
 

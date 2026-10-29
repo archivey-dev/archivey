@@ -2,15 +2,15 @@
 
 Reads SquashFS 4.0 images (`.squashfs`, `.sqfs`, snap packages) with
 [archivey](https://github.com/archivey-dev/archivey), as a format plugin. It is written
-against `archivey.plugins` only, as a check that a format can be added from outside
+against `archivey.formats` only, as a check that a format can be added from outside
 archivey. It is not published.
 
 ```python
 import archivey
-from archivey.plugins import register_format
-from archivey_squashfs import SquashfsPlugin
+from archivey.formats import register_format
+from archivey_squashfs import SquashfsHandler
 
-register_format(SquashfsPlugin)
+register_format(SquashfsHandler)
 
 with archivey.open_archive("rootfs.sqfs") as archive:
     archive.extract_all("rootfs/")

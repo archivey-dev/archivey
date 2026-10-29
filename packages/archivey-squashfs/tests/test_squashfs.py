@@ -11,7 +11,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from archivey_squashfs import SQUASHFS, SquashfsPlugin, lzo
+from archivey_squashfs import SQUASHFS, SquashfsHandler, lzo
 from archivey_squashfs.reader import SquashfsReader
 
 import archivey
@@ -25,7 +25,7 @@ from archivey import (
     detect_format,
     open_archive,
 )
-from archivey.plugins import register_format
+from archivey.formats import register_format
 
 DATA = Path(__file__).parent / "data"
 PACKAGE = Path(__file__).parents[1] / "src" / "archivey_squashfs"
@@ -76,7 +76,7 @@ IMAGES = [
 
 @pytest.fixture(scope="session", autouse=True)
 def _registered() -> None:
-    register_format(SquashfsPlugin)
+    register_format(SquashfsHandler)
 
 
 def _image(tmp_path: Path, data: bytes, name: str = "t.sqfs") -> Path:
@@ -355,11 +355,11 @@ def test_the_package_uses_only_public_archivey() -> None:
     """The point of the package: a format added from outside, through the plugin API."""
     used = {name for path in PACKAGE.rglob("*.py") for name in _imports(path)}
     archivey_modules = {name for name in used if name.split(".")[0] == "archivey"}
-    assert archivey_modules == {"archivey", "archivey.plugins"}
+    assert archivey_modules == {"archivey", "archivey.formats"}
 
 
 def test_the_reader_is_an_indexed_reader() -> None:
-    assert issubclass(SquashfsReader, archivey.plugins.IndexedReader)
+    assert issubclass(SquashfsReader, archivey.formats.IndexedReader)
 
 
 def test_lz4_under_pypy_gives_the_reason_not_install_advice(

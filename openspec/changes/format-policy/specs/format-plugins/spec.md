@@ -4,7 +4,7 @@
 
 ### Requirement: A replacement plugin declares a built-in format and no detection
 
-A `FormatPlugin` named in `FormatPolicy(replace=)` SHALL NOT be registered. Its `format`
+A `FormatHandler` named in `FormatPolicy(replace=)` SHALL NOT be registered. Its `format`
 SHALL be the built-in `ArchiveFormat(key, StreamFormat.UNCOMPRESSED)` of the container
 it replaces, the key SHALL be `ZIP`, `SEVEN_Z`, `RAR` or `ISO`, the plugin SHALL be an
 indexed one, and it SHALL declare no `extensions`, `magic` or `probe`. Building the
@@ -20,4 +20,4 @@ fails before any open.
 | `P.format` is a plugin format, or another built-in format | `ArchiveyUsageError` |
 | `P` declares `extensions`, `magic` or `probe` | `ArchiveyUsageError` |
 | `P` is a sequential plugin | `ArchiveyUsageError` |
-| The value is not a `FormatPlugin` subclass | `ArchiveyUsageError` |
+| The value is not a `FormatHandler` subclass | `ArchiveyUsageError` |

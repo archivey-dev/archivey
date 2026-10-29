@@ -1,11 +1,11 @@
 ## ADDED Requirements
 
-### Requirement: A package adds a format through archivey.plugins
+### Requirement: A package adds a format through archivey.formats
 
 The system SHALL let a package outside archivey add a read-only format by subclassing
-`archivey.plugins.FormatPlugin` and one of `archivey.plugins.IndexedReader` or
-`archivey.plugins.SequentialReader`, and calling
-`archivey.plugins.register_format()`. A plugin reader SHALL NOT subclass or see
+`archivey.formats.FormatHandler` and one of `archivey.formats.IndexedReader` or
+`archivey.formats.SequentialReader`, and calling
+`archivey.formats.register_format()`. A plugin reader SHALL NOT subclass or see
 `BaseArchiveReader`. An internal adapter SHALL present it as an ordinary
 `ArchiveReader`.
 
@@ -75,10 +75,33 @@ without an `open_member` from the plugin.
 | `x.cpio.gz` from a file; `open(member)` on the third member | Its data |
 | A caller reads half of a member's stream and advances | The next member's header and data are read correctly |
 
+### Requirement: Sequential plugins may hand over decoded member data
+
+A `SequentialReader` whose library decodes each member SHALL be able to yield the
+member's decoded bytes as `MemberSpan.data`, with `data_length` 0. The adapter SHALL read
+the member through that stream with the checks stored data gets, drain what the caller
+leaves (at most one byte past a listed size) before the walk moves on, and serve random
+access by walking again from the start to the member, carrying on from the last such
+walk when members are opened in archive order. A walk started again SHALL yield the same
+members in the same order.
+
+#### Scenario: decoded member data
+
+| Case | Expected |
+| --- | --- |
+| A pipe; `stream_members()`, each member read part-way | Every member's start, in one walk |
+| A file; `open()` on members in archive order | Their data, through one walk after the listing |
+| A file; `open()` on a member before the last one opened | Its data, through a walk from the start |
+| Decoded data longer than the listed size | `CorruptionError` |
+| Decoded data shorter than the listed size | `TruncatedError` when read |
+| A second walk yields another member at the opened member's place | `ValueError` (a plugin bug) |
+
 ### Requirement: Sequential plugin formats are detected inside compression streams
 
-Detection SHALL check registered sequential plugins' magic inside a gzip, bzip2, xz or
-zstd stream after TAR, within the prefix and budget the inner-TAR probe uses today.
+Detection SHALL check registered sequential plugins' magic inside any single-file
+compression stream archivey decodes (gzip, bzip2, xz, zstd and the rest, the set a
+compressed TAR has) after TAR, within the prefix and budget the inner-TAR probe uses
+today.
 
 #### Scenario: compressed plugin format
 

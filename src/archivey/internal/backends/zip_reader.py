@@ -142,6 +142,7 @@ from archivey.internal.backends.zipcrypto import (
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import StreamConfig, stream_config_from_archivey
+from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.hashing import crc32_digest
@@ -171,8 +172,9 @@ from archivey.internal.password_confirm import (
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import (
-    ArchiveStream,
+    ArchiveStreamImpl,
     ExceptionTranslator,
+    MemberStreamParts,
     RewindWarning,
 )
 from archivey.internal.streams.codecs import (
@@ -275,6 +277,7 @@ _ZIP_COMPRESSION_ALGOS: dict[int, CompressionAlgorithm] = {
     12: CompressionAlgorithm.BZIP2,
     14: CompressionAlgorithm.LZMA,
     93: CompressionAlgorithm.ZSTD,
+    95: CompressionAlgorithm.XZ,
     98: CompressionAlgorithm.PPMD,
 }
 
@@ -295,6 +298,7 @@ _ZIP_METHOD_CODECS: dict[int, Codec] = {
     12: Codec.BZIP2,
     14: Codec.LZMA,  # after peeling the ZIP LZMA header (see _open_codec_member)
     93: Codec.ZSTD,
+    95: Codec.XZ,
     98: Codec.PPMD,  # after peeling the ZIP PPMd8 header
 }
 
@@ -2056,7 +2060,7 @@ class ZipReader(BaseArchiveReader):
 
     def _iter_with_data(
         self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
-    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
         """Read the whole directory before the first member's data, then go forward.
 
         The directory is read once and member data in file order after it, so the
@@ -3129,7 +3133,7 @@ class ZipReader(BaseArchiveReader):
                     source_format=ArchiveFormat.ZIP,
                 )
         if local_method == loc.method:
-            return replace(loc, data_start=header.data_start)
+            return copy_with(loc, data_start=header.data_start)
         if _WINZIP_AES_METHOD in (local_method, loc.method):
             raise CorruptionError(
                 f"ZIP member {quoted(member.name)}: its local header names compression "
@@ -3140,7 +3144,7 @@ class ZipReader(BaseArchiveReader):
                 source_format=ArchiveFormat.ZIP,
             )
         self._report_local_method(loc, member, local_method)
-        return replace(loc, method=local_method, data_start=header.data_start)
+        return copy_with(loc, method=local_method, data_start=header.data_start)
 
     def _front_cut_message(self, header_offset: int) -> str:
         """The refusal for a local header the directory puts before byte 0.
@@ -3303,7 +3307,7 @@ class ZipReader(BaseArchiveReader):
         codec: Codec,
         sequential_body: bool = False,
         keyed_settings: bool = False,
-    ) -> ArchiveStream:
+    ) -> ArchiveStreamImpl:
         """Decode a member body through the shared codec layer.
 
         ``body`` is the member's data as the codec sees it: the raw payload of an
@@ -3393,16 +3397,24 @@ class ZipReader(BaseArchiveReader):
         # where the opener would read the same value from the same object. A codec
         # header read (LZMA, PPMd) moves it, and the opener then measures the view
         # it puts over the rest.
-        if not is_seekable(body) or body.tell() == 0:
+        body_seekable = is_seekable(body)
+        if not body_seekable or body.tell() == 0:
             input_size = source_byte_size(body)
             if input_size is not None:
                 changes["compressed_input_size"] = input_size
+        # What ``open_codec``'s own config pass would set, by its rules
+        # (``registry._decoder_config``, which points back here), so it finds nothing to
+        # change and makes no second copy.
+        if body_seekable != base.source_seekable:
+            changes["source_seekable"] = body_seekable
+        if base.seekable and not body_seekable:
+            changes["seekable"] = False
         if sequential_body:
             changes["use_rapidgzip"] = _sequential_accelerator(base.use_rapidgzip)
             changes["use_indexed_bzip2"] = _sequential_accelerator(
                 base.use_indexed_bzip2
             )
-        return replace(base, **changes)
+        return copy_with(base, **changes)
 
     def _member_codec_params(
         self,
@@ -3447,7 +3459,7 @@ class ZipReader(BaseArchiveReader):
             return CodecParams(single_stream=True)
         return CodecParams()
 
-    def _verified_member_stream(
+    def _verified_member_parts(
         self,
         decoded: BinaryIO,
         member: ArchiveMember,
@@ -3455,11 +3467,11 @@ class ZipReader(BaseArchiveReader):
         translate: ExceptionTranslator | None = None,
         rewind_warning: RewindWarning | None = None,
         seekable: bool | None = None,
-    ) -> ArchiveStream:
-        """The public member stream, with the stored CRC and size fused in.
+    ) -> MemberStreamParts:
+        """The member's parts, with the stored CRC and size fused in.
 
         ``translate``, ``rewind_warning`` and ``seekable`` go to
-        :meth:`_wrap_member_stream`, for a ``decoded`` that is a bare codec stream
+        :meth:`_member_parts`, for a ``decoded`` that is a bare codec stream
         rather than an ``ArchiveStream`` (:meth:`_open_codec_member`).
         """
         hashes = member.hashes
@@ -3475,7 +3487,7 @@ class ZipReader(BaseArchiveReader):
             # it stores, and filled in once the CRC-32 matches, on the listed member
             # (a ``replace()`` copy stands for it but is never filled).
             fill = None if unknown is None else self._own_member(member)
-            return self._wrap_member_stream(
+            return self._member_parts(
                 decoded,
                 member.name,
                 size=size,
@@ -3492,7 +3504,7 @@ class ZipReader(BaseArchiveReader):
         # no CRC-32, ``_to_member`` keeps the stored size); only a caller's own
         # copy rebuilt with ``replace(size=None, hashes={})`` gets here, and is then
         # not verified.
-        return self._wrap_member_stream(
+        return self._member_parts(
             decoded,
             member.name,
             size=size,
@@ -3503,7 +3515,7 @@ class ZipReader(BaseArchiveReader):
 
     def _open_codec_member(
         self, loc: _ZipLocator, member: ArchiveMember
-    ) -> ArchiveStream:
+    ) -> MemberStreamParts:
         """Decode an unencrypted ZIP member through the shared codec layer.
 
         The codec opens bare (``open_codec_raw``), and the member stream carries its
@@ -3530,7 +3542,7 @@ class ZipReader(BaseArchiveReader):
         # demand, would have answered: seekable only with that demand set and a
         # decoder that can seek, and with a rewind warning only under that demand.
         seek_demand = self._stream_config.seekable
-        return self._verified_member_stream(
+        return self._verified_member_parts(
             opened.stream,
             member,
             translate=opened.translate,
@@ -3616,7 +3628,7 @@ class ZipReader(BaseArchiveReader):
 
     def _open_encrypted_member(
         self, loc: _ZipLocator, member: ArchiveMember
-    ) -> ArchiveStream:
+    ) -> MemberStreamParts:
         """Open a ZipCrypto or WinZip AES member: decrypt stage, then the codec layer.
 
         Both schemes share one password ladder (``password_confirm``). Their cheap key
@@ -3669,7 +3681,7 @@ class ZipReader(BaseArchiveReader):
                 is_aes=False,
             )
 
-        def decode_body(body: BinaryIO) -> ArchiveStream:
+        def decode_body(body: BinaryIO) -> ArchiveStreamImpl:
             return self._decode_body(
                 loc,
                 member,
@@ -3703,7 +3715,7 @@ class ZipReader(BaseArchiveReader):
             # bounded confirm too.
             winner = self._open_stored_confirmed(loc, member, cipher.crc_anchor)
             decoded = decode_body(cipher.stage(winner))
-            return self._verified_member_stream(decoded, member)
+            return self._verified_member_parts(decoded, member)
         return self._open_encrypted_confirmed(
             loc, member, cipher, decode_body, payload_complete=payload_complete
         )
@@ -3713,10 +3725,10 @@ class ZipReader(BaseArchiveReader):
         loc: _ZipLocator,
         member: ArchiveMember,
         cipher: _ZipCipher,
-        decode_body: Callable[[BinaryIO], ArchiveStream],
+        decode_body: Callable[[BinaryIO], ArchiveStreamImpl],
         *,
         payload_complete: Callable[[], bool],
-    ) -> ArchiveStream:
+    ) -> MemberStreamParts:
         """Open with the one possible password, accepted on its cheap key check."""
         stage = cipher.stage
         if cipher.is_aes:
@@ -3733,7 +3745,7 @@ class ZipReader(BaseArchiveReader):
             decoded = self._watch_unverified(
                 decoded, loc, member, cipher, check="weak_open_check"
             )
-            return self._verified_member_stream(decoded, member)
+            return self._verified_member_parts(decoded, member)
 
         size = member.size
         hashes = member.hashes
@@ -3785,17 +3797,17 @@ class ZipReader(BaseArchiveReader):
         stream = self._watch_unverified(
             stream, loc, member, cipher, check="weak_open_check"
         )
-        return self._wrap_member_stream(stream, member.name, size=size)
+        return self._member_parts(stream, member.name, size=size)
 
     def _open_encrypted_confirmed(
         self,
         loc: _ZipLocator,
         member: ArchiveMember,
         cipher: _ZipCipher,
-        decode_body: Callable[[BinaryIO], ArchiveStream],
+        decode_body: Callable[[BinaryIO], ArchiveStreamImpl],
         *,
         payload_complete: Callable[[], bool],
-    ) -> ArchiveStream:
+    ) -> MemberStreamParts:
         """Pick among several possible passwords with a bounded confirm per candidate."""
         # The central directory's size, which the plan trusts;
         # the fused verifier on the caller's stream checks it at EOF.
@@ -3855,7 +3867,7 @@ class ZipReader(BaseArchiveReader):
             # check all raise from the stage, before anything below can mistake them
             # for a wrong key's garbage.
             body = stage(password)
-            probe: ArchiveStream | None = None
+            probe: ArchiveStreamImpl | None = None
             ended_early: TruncatedError | None = None
             try:
                 try:
@@ -3925,7 +3937,7 @@ class ZipReader(BaseArchiveReader):
             stream = self._watch_unverified(
                 decoded, loc, member, cipher, check="confirm_budget_exhausted"
             )
-        return self._verified_member_stream(stream, member)
+        return self._verified_member_parts(stream, member)
 
     def _reraise_member_error(self, exc: Exception, member_name: str) -> NoReturn:
         """Translate a raw member-read error, stamp it with member context, and raise.
@@ -4198,9 +4210,9 @@ class ZipReader(BaseArchiveReader):
     ) -> Callable[[], AbstractContextManager[ReadableStream]]:
         """How ``_ensure_link_target`` opens a link's data: the member itself here; the
         bytes the pass kept in a forward walk."""
-        return lambda: self._open_member(member)
+        return lambda: self._open_member_handle(member)
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+    def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         # The member carries its own locator (`_raw`), so data access needs no name/id
         # map, and a duplicate member name can't resolve to the wrong entry.
         loc = member._raw

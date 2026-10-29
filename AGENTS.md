@@ -225,7 +225,9 @@ rulings on the handbook page, and general ones in `dev-docs/design-rules.md`.
   tricky one, you can ask me to take a look before merging").
   Tricky ones go to the maintainer: a behaviour trade-off, a design reversal, removing
   or renaming a public name or an `archivey` verb or option (`design-rules.md`
-  DR-12a), a very large diff, or anything an open decision touches.
+  DR-12a), a very large diff, anything an open decision touches, or a change to a
+  workflow or a release file (`scripts/review_prep.py tier` says "the maintainer
+  merges this one").
 - `main` refuses a merge while any review thread is open, so every thread needs its
   reply and its resolution first (`address-review-findings` §7).
 - The PR body is the record of a piece of work. Do not commit working plans to the repo.

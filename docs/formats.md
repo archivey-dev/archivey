@@ -256,7 +256,7 @@ in a real folder named `__MACOSX`.
 
 ## ZIP
 
-- **Needs:** nothing for stored, Deflate, BZip2 and LZMA members, or for ZipCrypto. `[recommended]`
+- **Needs:** nothing for stored, Deflate, BZip2, LZMA and XZ members, or for ZipCrypto. `[recommended]`
   adds Deflate64 and PPMd (`inflate64`, `pyppmd`, the packages the 7z reader uses too), WinZip AES
   (`cryptography`), and Zstandard before Python 3.14 (`backports.zstd`). A missing package raises
   `PackageNotInstalledError` when you read such a member.
@@ -349,14 +349,17 @@ sending side when the ZIP is done.
   succeeds, once the pass reaches the directory.
 - **Both headers declare less than the data decodes to:** the member is refused with
   `CorruptionError`.
-- **Bytes after a member's compressed stream:** a member's compressed data must hold one stream of
-  its codec and nothing else, as 7-Zip checks. Junk, zero bytes, or a second DEFLATE, BZip2 or
-  Zstandard stream raise `CorruptionError` once the data before them has been read, for every
-  method, whatever the declared size and CRC cover. So does an LZMA member without an end marker,
-  or a PPMd member, whose declared size stops short of its data. One zero byte after LZMA data
-  without an end marker reads, because 7-Zip's encoder sometimes writes it. Under ZipCrypto these
-  read as the password-or-damage `EncryptionError` instead, caused by that `CorruptionError`,
-  because the bytes are encrypted. With rapidgzip, one crafted shape may read instead: a long
+- **Bytes after a member's compressed stream:** a member's compressed data must hold its codec's
+  data and nothing else, as 7-Zip checks. For most methods that is one stream. For Zstandard and
+  XZ it is what their own formats define as the data, as in a `.zst` or `.xz` file: one or more
+  Zstandard frames, or one or more xz streams with stream padding (groups of four zero bytes)
+  between and after them. Junk, other zero bytes, or a second DEFLATE or BZip2 stream raise
+  `CorruptionError` once the data before them has been read, for every method, whatever the
+  declared size and CRC cover. So does an LZMA member without an end marker, or a PPMd member,
+  whose declared size stops short of its data. One zero byte after LZMA data without an end
+  marker reads, because 7-Zip's encoder sometimes writes it. Under ZipCrypto these read as the
+  password-or-damage `EncryptionError` instead, caused by that `CorruptionError`, because the
+  bytes are encrypted. With rapidgzip, one crafted shape may read instead: a long
   second DEFLATE stream, with a size and CRC that cover both streams. See
   [Where the guarantees stop](security.md#where-the-guarantees-stop).
 - `ListingLimits.max_members` is checked at open against the entry count the end record declares,
@@ -484,6 +487,10 @@ sending side when the ZIP is done.
 - **Needs:** nothing for a plain `.tar`. A compressed TAR needs what its compressor needs
   ([Single-file compressors](#single-file-compressors)).
 - **Listing:** archivey parses the headers itself, the same way on every Python version.
+- **Old tars with no magic:** a v7 tar (`tar --format=v7`, old bsdtar or star) has no `ustar`
+  signature. archivey recognises it by its first header's checksum, from a file, a pipe or a
+  `BytesIO`, with or without a `.tar` name, and inside a compressor (a gzipped one is `TAR_GZ`).
+  It is reported as `PROBABLE`, not `CERTAIN`.
 - **Reading members:** a plain TAR from a file reads each member straight from its place. A
   compressed TAR is solid: reaching a member means decompressing everything before it, so a
   single `stream_members()` pass is the fast way to read it.
@@ -785,15 +792,23 @@ that mask select the wrong members, or none:
   way.
 - **A name `unrar` reads as empty** raises `UnsupportedFeatureError`, and so does a name `unrar`
   reads but that cannot be handed back to it as a mask.
+- **A name ending in `.`, or with a `.` before a `\`:** `unrar` up to 7.30 beta 1 lets the mask
+  `notes.` also select a member named `notes`, and 7.30 beta 2 does not. When that changes which
+  members come before the one you asked for, archivey asks the `unrar` on `PATH` once, with a
+  small test archive, which way it matches. If it gives no usable answer, the read raises
+  `UnsupportedFeatureError`.
+- **A non-ASCII name in an older RAR (1.5-4) archive on a system with no UTF-8 locale:** `unrar`
+  reads such a name through the locale, so archivey cannot tell which bytes `unrar` sends before
+  any later member, and a read of a later member raises `UnsupportedFeatureError`.
 - **An unpaired surrogate in a RAR 1.5-4 name:** archivey selects the member with `?` in place of
   each such unit, and when that pattern also matches an earlier member, the read raises
   `UnsupportedFeatureError` unless you set `rar_allow_glob_member_concatenation`.
 
 `unar` selects members by position, so none of these apply to it. Under the default `"auto"`,
-archivey reads such a member with `unar` when one it accepts is installed, except a name that
-cannot be handed back as a mask. It does not use `unar` when the read needs a password (`unar`
-takes it on its command line), when the archive is a stream or has data before the RAR (`unar`
-would need its own copy of it), or when `unar` is known to misread the archive.
+archivey reads such a member with `unar` when one it accepts is installed. It does not use `unar`
+when the read needs a password (`unar` takes it on its command line), when the archive is a stream
+or has data before the RAR (`unar` would need its own copy of it), or when `unar` is known to
+misread the archive.
 `rar_decompressor="unar"` reads every member by position.
 
 ### Damage and endings
@@ -1177,9 +1192,10 @@ file; with `format=`, a `.bz2` opens at once. Close the sending side when the fi
   exact magic in the first 4 KiB, then an SFX scan behind an executable stub, then exact magic
   further in (ISO 9660's `CD001` at 32 769, on one extended peek that a source too small for it
   never pays for), then the 512-byte `koly` block at the end of a seekable source
-  ([Disk images](#disk-images)), then content probes for the formats with no magic (next item),
-  then the extension. A bzip2 or xz header that is the first block of a disk image loses to its
-  `koly` block. A step that matches nothing falls through to the next; nothing is rejected for
+  ([Disk images](#disk-images)), then a TAR header with no magic
+  ([TAR](#tar-and-compressed-tar)), then content probes for the formats with no magic (next
+  item), then the extension. A bzip2 or xz header that is the first block of a disk image loses
+  to its `koly` block. A step that matches nothing falls through to the next; nothing is rejected for
   failing an earlier one. When only the extension matched and the decode then fails, the error has
   `format_unconfirmed=True`, and archivey reports `EXTENSION_FORMAT_UNCONFIRMED`.
 - **Content probes run only for a matching name by default.** LZMA Alone, zlib and Brotli have no
