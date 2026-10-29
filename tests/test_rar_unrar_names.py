@@ -612,11 +612,17 @@ def test_the_dot_rule_decides_whether_a_trailing_dot_matches_nothing() -> None:
 
 
 @requires_binary("unrar")
-def test_dot_rule_probe_answers_for_the_installed_unrar() -> None:
-    """Every unrar CI pins predates 7.30 beta 2, so all of them have the rule."""
+def test_dot_rule_probe_answers_for_the_installed_unrar(tmp_path: Path) -> None:
+    """The probe's answer is the selection this unrar makes for ``ab.``.
+
+    Every pinned CI unrar has the rule; 7.30 beta 2 does not.
+    """
     rar_unrar._cached_dot_rule.clear()
-    assert unrar_dot_rule() is True
+    answer = unrar_dot_rule()
+    assert answer is not None
     assert find_rarlab_unrar() in rar_unrar._cached_dot_rule
+    archive = _build_rar5(tmp_path, [(b"ab", 1), (b"ab.", 1)])
+    assert _unrar_selects(archive, "ab.", 2) == ([0, 1] if answer else [1])
 
 
 @pytest.mark.parametrize(
@@ -692,6 +698,7 @@ def test_reader_asks_for_the_dot_rule_only_when_it_changes_the_read(
         return result
 
     monkeypatch.setattr(RarReader, "_unrar_selection", spy)
+    real = unrar_dot_rule()
     with open_archive(path, config=_UNRAR_ONLY) as reader:
         first, second = reader.members()
         assert reader.read(first) == _payload(0)
@@ -699,11 +706,10 @@ def test_reader_asks_for_the_dot_rule_only_when_it_changes_the_read(
         if answer is None:
             with pytest.raises(UnsupportedFeatureError, match="probe"):
                 reader.read(second)
-        elif answer:
-            # The installed unrar has the rule, so this read is real.
+        elif answer == real:
             assert reader.read(second) == _payload(1)
         else:
-            # Only the planned skip can be checked: this unrar would send ab too.
+            # A wrong answer plans the wrong skip for what this unrar sends.
             with pytest.raises(ArchiveyError):
                 reader.read(second)
     assert asked == [answer]
