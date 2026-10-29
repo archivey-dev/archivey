@@ -182,8 +182,9 @@ class MemberData(NamedTuple):
 
 
 class MemberSpan(NamedTuple):
-    """One member, as :meth:`SequentialReader.walk` yields it: the member, and how
-    many of the stream's next bytes are its data."""
+    """One member, as :meth:`SequentialReader.walk` yields it: the member, and either
+    how many of the stream's next bytes are its data (``data_length``), or a stream
+    of its decoded data (``data``)."""
 
     member: ArchiveMember
     """The member, with its public fields filled in. ``name`` is decoded; archivey
@@ -206,6 +207,26 @@ class MemberSpan(NamedTuple):
     stored_name: str | None = None
     """As :attr:`MemberRecord.stored_name`: the decoded name, when the reader
     normalized ``member.name`` itself to report on the member before yielding it."""
+
+    data: BinaryIO | io.RawIOBase | None = None
+    """The member's decoded bytes, for a format whose library decodes each member
+    (LHA, ARJ, a libarchive wrapper), which has no stored bytes to describe with
+    ``data_length``; that stays 0. The stream need only be good until the walk moves
+    on: archivey reads what the caller leaves of it, up to ``member.size``, before it
+    asks the walk for the next member, so the library is past it, and then closes it.
+    Data longer than a listed ``size`` raises ``CorruptionError``, and shorter
+    ``TruncatedError`` when read; a ``FILE`` with no ``size`` is read to the end of the
+    stream. A short read is taken as for :attr:`MemberData.stream`.
+
+    A member read out of order, or again, walks the archive again from the start to
+    it, reading the members before it, as a solid archive does. Declare
+    ``ReaderArchiveInfo(is_solid=True)`` from :meth:`FormatReader.archive_info` so the
+    cost receipt says so."""
+
+    checked: bool = False
+    """As :attr:`MemberData.checked`: ``data`` checks its bytes itself and raises when
+    they do not match once read to the end. Only with ``data``: archivey refuses it on
+    a span of stored bytes."""
 
 
 class ReaderArchiveInfo(NamedTuple):
@@ -616,7 +637,9 @@ class SequentialReader(FormatReader):
         end marker) here, and raise ``CorruptionError`` or ``TruncatedError`` for
         damage: archivey keeps the members yielded before it. On a seekable source
         archivey may walk again from the start, with a new stream; the members and
-        their order must be the same."""
+        their order must be the same. A walk may start while an earlier one is still
+        open (to reach decoded ``MemberSpan.data`` again, possibly from several
+        threads), so keep a walk's state in the generator, not on the reader."""
 
 
 class FormatHandler(ABC):

@@ -940,6 +940,8 @@ field archivey.formats.MemberRecord.locator: LocatorT
 field archivey.formats.MemberRecord.member: ArchiveMember
 field archivey.formats.MemberRecord.stored_name: str | None
 class archivey.formats.MemberSpan(tuple)
+field archivey.formats.MemberSpan.checked: bool
+field archivey.formats.MemberSpan.data: BinaryIO | io.RawIOBase | None
 field archivey.formats.MemberSpan.data_length: int
 field archivey.formats.MemberSpan.digests: tuple[MemberDigest, ...]
 field archivey.formats.MemberSpan.member: ArchiveMember
