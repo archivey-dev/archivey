@@ -991,7 +991,8 @@ def _solid_rar4_with_encrypted_member(index: int) -> rar_parser.RarArchive:
         archive = rar_parser.parse_rar_archive(f)
     compressed = [m for m in archive.members if not rar_unar.uses_no_dictionary(m)]
     # The marked member needs members before it and after it in one solid stream.
-    assert len(compressed) > index + 1 and all(m.file_solid for m in compressed[1:])
+    assert 0 < index < len(compressed) - 1
+    assert all(m.file_solid for m in compressed[1:])
     compressed[index].is_encrypted = True
     return archive
 
