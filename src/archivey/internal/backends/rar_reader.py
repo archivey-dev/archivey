@@ -4422,9 +4422,9 @@ class RarReader(BaseArchiveReader):
         self, member: ArchiveMember, raw: RarMemberInfo
     ) -> Callable[[str | None, bool], BinaryIO]:
         """:meth:`_unrar_spawner`, with the refusals about naming the member raised as
-        :class:`_UnrarCannotAddress`: a name ``unrar`` cannot be given, an include mask
-        that also matches earlier members (``rar_allow_glob_member_concatenation``), a
-        mask that does not select the member, an earlier name ``unrar`` reads
+        :class:`_UnrarCannotAddress`: a name ``unrar`` cannot be given, a name whose
+        mask also selects earlier members with data, glob or not
+        (``rar_allow_glob_member_concatenation``), a mask that does not select the member, an earlier name ``unrar`` reads
         differently on this host, or a selection that depends on a dot rule the binary
         did not report.
         """

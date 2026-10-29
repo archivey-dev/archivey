@@ -1093,7 +1093,7 @@ when `auto` reads it with `unar`, the read SHALL return the target's own bytes a
 | A name `unrar` reads as empty (`\xc0\x80x`) | `UnsupportedFeatureError` |
 | Earlier 8-bit RAR 1.5-4 name and no UTF-8 locale for `unrar` | A later member's read raises `UnsupportedFeatureError` |
 
-### Requirement: Refuse a glob member name whose mask also matches earlier members
+### Requirement: Refuse a member name whose mask also selects earlier members
 
 A RAR member's stored name may contain `*` or `?`. Because `unrar` is addressed by an
 include mask, such a name can match other members, and `unrar` decompresses every match

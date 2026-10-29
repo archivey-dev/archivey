@@ -743,7 +743,7 @@ class ArchiveyConfig:
     decode is also unbounded and not reported (:class:`ExtractionLimits` does not cover
     ``open()`` or ``read()``); on a solid archive those bytes are already inside
     ``AccessCost.SOLID``. Set ``True`` to read it anyway. A name that selects no earlier
-    member is unaffected either way.
+    member with data is unaffected either way.
     Under ``rar_decompressor=AUTO``, an installed ``unar`` reads such a member by index
     instead of the refusal (see :class:`RarDecompressor`), so this flag matters only
     when ``unrar`` must read it.

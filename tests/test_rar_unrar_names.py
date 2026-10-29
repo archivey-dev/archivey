@@ -25,7 +25,7 @@ import pytest
 
 from archivey import ArchiveyConfig, open_archive
 from archivey.exceptions import ArchiveyError, UnsupportedFeatureError
-from archivey.internal.backends import rar_unrar
+from archivey.internal.backends import rar_reader, rar_unrar
 from archivey.internal.backends.rar_reader import RarReader
 from archivey.internal.backends.rar_unrar import (
     _member_include_switch,
@@ -297,32 +297,6 @@ def test_every_rar5_member_reads_its_own_bytes_or_is_refused(
     assert refused == expected, outcomes
 
 
-@requires_binary("unrar")
-@pytest.mark.parametrize("solid", [False, True], ids=["nonsolid", "solid"])
-def test_duplicate_names_read_by_position(tmp_path: Path, solid: bool) -> None:
-    """Three members with one name: each read returns its own bytes."""
-    source = _fixture("hostile_argv__.rar")
-    blocks = _rar5_parse(source.read_bytes())
-    files = [block for block in blocks if block["type"] == 2]
-    for block in files:
-        block["name"] = b"same.txt"
-        if solid and block is not files[0]:
-            block["cinfo"] |= 0x40
-    if solid:
-        main = next(block for block in blocks if block["type"] == 1)
-        main["body"] = bytes([main["body"][0] | 0x04]) + main["body"][1:]
-    path = tmp_path / "dup.rar"
-    path.write_bytes(_rar5_build(blocks))
-    with open_archive(source, config=_UNRAR_SHARED) as reader:
-        expected = [reader.read(member) for member in reader.members()]
-    with open_archive(path, config=_UNRAR_SHARED) as reader:
-        members = reader.members()
-        assert [member.name for member in members] == ["same.txt"] * 3
-        assert [reader.read(member) for member in reversed(members)] == list(
-            reversed(expected)
-        )
-
-
 def _duplicate_names(tmp_path: Path, *, solid: bool) -> Path:
     blocks = _rar5_parse(_fixture("hostile_argv__.rar").read_bytes())
     files = [block for block in blocks if block["type"] == 2]
@@ -336,6 +310,21 @@ def _duplicate_names(tmp_path: Path, *, solid: bool) -> Path:
     path = tmp_path / "dup.rar"
     path.write_bytes(_rar5_build(blocks))
     return path
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize("solid", [False, True], ids=["nonsolid", "solid"])
+def test_duplicate_names_read_by_position(tmp_path: Path, solid: bool) -> None:
+    """Three members with one name: each read returns its own bytes."""
+    path = _duplicate_names(tmp_path, solid=solid)
+    with open_archive(_fixture("hostile_argv__.rar"), config=_UNRAR_ONLY) as reader:
+        expected = [reader.read(member) for member in reader.members()]
+    with open_archive(path, config=_UNRAR_SHARED) as reader:
+        members = reader.members()
+        assert [member.name for member in members] == ["same.txt"] * 3
+        assert [reader.read(member) for member in reversed(members)] == list(
+            reversed(expected)
+        )
 
 
 @requires_binary("unrar")
@@ -360,22 +349,60 @@ def test_a_name_that_selects_earlier_members_is_refused_by_default(
         assert refused.match(match)
 
 
+@requires_binary("unrar")
+def test_a_name_that_selects_only_empty_earlier_members_reads(tmp_path: Path) -> None:
+    """The refusal counts the bytes unrar would decode first: earlier members with the
+    same name and no data cost nothing, so the last one reads with no flag."""
+    with open_archive(_fixture("hostile_argv__.rar"), config=_UNRAR_ONLY) as reader:
+        expected = reader.read(reader.members()[2])
+    blocks = _rar5_parse(_fixture("hostile_argv__.rar").read_bytes())
+    files = [block for block in blocks if block["type"] == 2]
+    for block in files:
+        block["name"] = b"same.txt"
+    for block in files[:2]:
+        block["data"] = b""
+        block["unpacked"] = 0
+        block["crc"] = struct.pack("<I", 0)
+        block["cinfo"] &= ~(7 << 7)  # stored
+    path = tmp_path / "empty-dup.rar"
+    path.write_bytes(_rar5_build(blocks))
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
+        members = reader.members()
+        assert [m.size for m in members] == [0, 0, len(expected)]
+        assert reader.read(members[2]) == expected
+
+
 @requires_binary("unrar", "unar")
 def test_auto_reads_a_name_that_selects_earlier_members_with_unar(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """unar names entries by index, so under AUTO a shared name needs no flag."""
+    """unar names entries by index, so under AUTO a shared name needs no flag: the
+    refused members go to unar, with no password on its command line, and the first,
+    which selects nothing before it, still goes to unrar."""
     with open_archive(_fixture("hostile_argv__.rar"), config=_UNRAR_ONLY) as reader:
         expected = [reader.read(member) for member in reader.members()]
+    unar_indexes: list[list[int]] = []
+    unar_passwords: list[object] = []
+    original = rar_reader.open_unar_stdout
+
+    def spy(path: Path, indexes: list[int], **kwargs: object) -> Any:
+        unar_indexes.append(list(indexes))
+        unar_passwords.append(kwargs.get("password"))
+        return original(path, indexes, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_reader, "open_unar_stdout", spy)
     with open_archive(_duplicate_names(tmp_path, solid=False)) as reader:
         assert [reader.read(member) for member in reader.members()] == expected
+    assert unar_indexes, "no read went to unar"
+    assert {i for indexes in unar_indexes for i in indexes} == {1, 2}
+    assert unar_passwords == [None] * len(unar_indexes)
 
 
 @requires_binary("unrar")
 def test_invalid_utf8_name_reads_through_the_prefix_unrar_sees(tmp_path: Path) -> None:
     """``ab\\xffcd.txt`` is ``ab`` to unrar; earlier members named ``ab`` are skipped."""
     source = _fixture("hostile_argv__.rar")
-    with open_archive(source, config=_UNRAR_SHARED) as reader:
+    with open_archive(source, config=_UNRAR_ONLY) as reader:
         expected = [reader.read(member) for member in reader.members()]
     blocks = _rar5_parse(source.read_bytes())
     files = [block for block in blocks if block["type"] == 2]
