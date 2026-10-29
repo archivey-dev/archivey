@@ -783,7 +783,6 @@ class _ConflictEvidence(Enum):
 
     MAGIC = "magic bytes indicate"
     SFX_SCAN = "archive magic behind an executable stub indicates"
-    LEADING_BYTES = "archive magic behind leading bytes indicates"
     CONTENT_PROBE = "content inspection indicates"
 
 
@@ -836,6 +835,7 @@ def _scan_for_sfx_payload(
     validators: dict[ArchiveFormat, HitValidator],
     capped_formats: frozenset[ArchiveFormat],
     restrict_to_validated: bool,
+    cut_reason: TierSkipReason = TierSkipReason.BUDGET_EXHAUSTED,
 ) -> FormatInfo | None:
     """Search the SFX window for an appended archive, as ``(format, payload_offset)``.
 
@@ -877,6 +877,10 @@ def _scan_for_sfx_payload(
     ``validators``, so 7z/RAR join automatically when they register theirs. Do not
     key this off :attr:`ExecutableCue.WEAK` alone: an unconfirmed ``MZ`` / ELF stub
     is the live 7z/RAR SFX path and keeps the full needle set.
+
+    ``cut_reason`` is what a window shorter than ``SFX_MAX`` is recorded as: the budget
+    by default, ``CAPABILITY_UNAVAILABLE`` when the caller cut the window to the bytes a
+    forward-only source already holds.
     """
     # A zero ``max_scan_bytes`` turns the tier off, as a zero field does for the others.
     if _record_tier_limit(workspace, "sfx_scan", enabled=scan_limit > 0):
@@ -949,8 +953,10 @@ def _scan_for_sfx_payload(
     clamped = workspace.take_clamped_view_read()
     # A capped scan skipped candidates it never judged, so it is cut short even when it
     # answers: a held short hit is only the fallback the skipped ones could have beaten.
-    if clamped or selector.capped or (result is None and cut_short):
+    if selector.capped:
         workspace.record_skip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
+    if clamped or (result is None and cut_short):
+        workspace.record_skip("sfx_scan", cut_reason)
     return result
 
 
@@ -1469,26 +1475,51 @@ def _detect_format_body(
         # 7. An archive behind leading bytes that look like nothing: the SFX scan's
         # window and validators without its executable cue, as 7-Zip, unrar and unzip
         # find one. Last, so only a source every other step declined pays for the
-        # window. An executable cue already ran the scan, and a known non-archive
-        # signature is not a prefix. A name that names a format keeps its guess: the
-        # ZIP, 7z and RAR readers find a prefixed archive themselves, and the ZIP
+        # window. An executable cue already ran the scan. A known non-archive
+        # signature is not a prefix, and a name that names a format keeps its guess:
+        # the ZIP, 7z and RAR readers find a prefixed archive themselves, and the ZIP
         # reader from the end, where the first local header the scan meets may belong
-        # to a later member (a ZIP missing its first bytes).
-        if cue is ExecutableCue.NONE and non_archive is None and ext_fmt is None:
+        # to a later member (a ZIP missing its first bytes). An unnamed ZIP missing its
+        # first bytes is knowingly left to that: the scan opens it at a later member's
+        # header, and the reader's missing-bytes message counts from there.
+        leading_scan_window = 0
+        if cue is ExecutableCue.NONE and (
+            non_archive is not None or ext_fmt is not None
+        ):
+            workspace.record_skip("sfx_scan", TierSkipReason.NOT_ENABLED_BY_POLICY)
+        elif cue is ExecutableCue.NONE:
+            scan_limit = min(SFX_MAX, budget.max_scan_bytes)
+            allowance = validator_allowance(budget)
+            cut_reason = TierSkipReason.BUDGET_EXHAUSTED
+            held = workspace.buffered_length
+            if (
+                workspace.forward_only
+                and workspace.remaining_known() is None
+                and held < scan_limit + allowance
+            ):
+                # A forward-only source is scanned over the bytes detection already
+                # holds and never waits for more: an unrecognised stream whose writer
+                # keeps it open fails as fast as it did before this step.
+                scan_limit, allowance = held, 0
+                cut_reason = TierSkipReason.CAPABILITY_UNAVAILABLE
             sfx_info = _scan_for_sfx_payload(
                 registry.sfx_magic_entries(),
                 peek_more,
                 workspace,
-                scan_limit=min(SFX_MAX, budget.max_scan_bytes),
-                peek_allowance=validator_allowance(budget),
+                scan_limit=scan_limit,
+                peek_allowance=allowance,
                 validators=registry.sfx_hit_validators(),
                 capped_formats=registry.sfx_parser_scanned_formats(),
                 # With no cue, a bare needle is too weak: every needle needs its
                 # format's validator.
                 restrict_to_validated=True,
+                cut_reason=cut_reason,
             )
             if sfx_info is not None:
-                return conclude(sfx_info, _ConflictEvidence.LEADING_BYTES)
+                # No name, so no extension to conflict with: the evidence is unused.
+                return conclude(sfx_info, _ConflictEvidence.SFX_SCAN)
+            if cut_reason is TierSkipReason.BUDGET_EXHAUSTED:
+                leading_scan_window = scan_limit
 
         # 8. Extension-only guess.
         if ext_fmt is not None:
@@ -1525,6 +1556,11 @@ def _detect_format_body(
                 "only recognised by its extension: give the file one (.lzma, .zz, "
                 ".br), pass format=, use open_stream(), or set "
                 "ArchiveyConfig(always_probe_content=True)."
+            )
+        if leading_scan_window:
+            message += (
+                f" No ZIP, 7z or RAR archive starts in the first {leading_scan_window} "
+                "bytes behind other data either; for one further in, pass format=."
             )
         if off_formats:
             # Added to the advice above, not in its place: the file may be one of the

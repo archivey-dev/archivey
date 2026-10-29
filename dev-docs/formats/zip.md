@@ -156,15 +156,16 @@ claim.
 
 Two things are ZIP-specific rather than general in the shared detector:
 
-- Prefixed ZIPs are found only when the leading bytes look like an executable or script
-  (`MZ`, ELF, or `#!` at offset 0). That gate is what keeps the forward search from reading
-  up to 2 MiB of every file a caller opens. A hit is reported as `ZIP` with a
+- Prefixed ZIPs are found early when the leading bytes look like an executable or script
+  (`MZ`, ELF, or `#!` at offset 0). Behind any other leading bytes they are found by the
+  same scan run last, on a source every other step declined and whose name names no
+  format. That ordering is what keeps the forward search from reading up to 2 MiB of every
+  file a caller opens. A cued hit is reported as `ZIP` with a
   `payload_offset`, ahead of the content probes (the tier that reports headerless stream
   codecs), so a stub with a ZIP behind it comes back as a ZIP rather than as a guess at the
   stub's own bytes. `THOROUGH` does not lift the gate today — `THOROUGH_BUDGET` raises probe
-  links, index bytes and the completion window but keeps the same 2 MiB window, and the gate
-  itself is unconditional (`detection.py:609`); a gate-free exhaustive scan is designed and
-  not shipped. The cue set, the scan window, the budget tiers and why a hit is
+  links, index bytes and the completion window but keeps the same 2 MiB window; a scan
+  past that window is designed and not shipped. The cue set, the scan window, the budget tiers and why a hit is
   validated are shared with 7z and RAR —
   [`topics/prefixed-archives.md`](../topics/prefixed-archives.md). What is ZIP's alone: the
   local-header search and its validator above, the offset conventions in §3, and the fact
@@ -172,7 +173,8 @@ Two things are ZIP-specific rather than general in the shared detector:
 - A **tail probe** — locating the EOCD directly instead of scanning forward — is designed and
   not shipped, and ZIP is the only format it can serve. Until it lands, a prefixed ZIP behind
   bytes that look like neither an executable nor a script (a JPEG polyglot, a plain
-  concatenation) is not detected, though `open_archive(..., format=ZIP)` reads it. The probe
+  concatenation) is detected only when it starts within the 2 MiB window and the name has
+  no known extension, though `open_archive(..., format=ZIP)` reads it anywhere. The probe
   cannot be gated the same way: a ZIP an executable cue would reach is already found. So it
   means one tail read on every source — free on a hit, since the backend reads the EOCD
   anyway, and pure waste on a miss, which is most files. Calling `open_archive` rather than

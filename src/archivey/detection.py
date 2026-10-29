@@ -67,8 +67,10 @@ class FormatInfo:
     self-extractor's executable stub."""
 
     payload_offset: int = 0
-    """Where the archive starts in the source. Nonzero only for a self-extracting
-    archive, so ``payload_offset > 0`` is the test for one."""
+    """Where the archive starts in the source: nonzero when other bytes come first, such
+    as a self-extractor's executable stub, a ``#!`` launcher, or an image or text the
+    archive was appended to. So ``payload_offset > 0`` says the archive is behind a
+    prefix, not that the file is a self-extracting archive."""
 
     diagnostics: DiagnosticSummary = field(default_factory=DiagnosticSummary.empty)
     """What detection reported on its way to the answer."""
