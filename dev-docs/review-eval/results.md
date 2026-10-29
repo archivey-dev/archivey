@@ -5,6 +5,36 @@ One section per run worth keeping, newest first. `skill` is the tree hash of
 Score: `yes` = 1, `partial` = 0.5. The reviews themselves are kept outside the
 repository.
 
+## 2026-10-29: a second Sonnet reviewer running a claims pass
+
+A test of two Sonnet reviews per PR: the normal round 1 review plus a second
+reviewer that lists the PR's promises and tries to break each one on the inputs
+its tests skip. The second reviewer's instructions listed eight attention points
+drawn from about 540 🟡 and 🔴 code findings in the review threads of the last 279
+merged PRs and the `src/` sweep, leaving out the five cases here and their fixes.
+Those instructions did not land in the skill; they are kept outside the repository
+with the reviews. Skill `1f096043d315`, judge `claude-sonnet-5-5`.
+
+| Case | PR | Claims, run 1 | Claims, run 2 | Both reviewers, run 1 | Both reviewers, run 2 |
+|---|---|---|---|---|---|
+| zstd-seek-point-in-frame | #934 | no | no | partial | no |
+| decoder-death-reraise-cycle | #904 | no | no | yes | yes |
+| rapidgzip-cut-raw-deflate | #545 | no | no | no | no |
+| rapidgzip-cut-gzip-member-then-complete | #613 | partial | partial | yes | partial |
+| pax-sparse-version-by-records | #738 | yes | no | yes | no |
+| **Score** | | **1.5 of 5** | **0.5 of 5** | **3.5 of 5** | **1.5 of 5** |
+| Cost (USD) | | 4.89 | 4.95 | 9.83 | 10.19 |
+
+"Both reviewers" pairs each claims run with the Sonnet review of the same number in
+the section below. The pair scores exactly what the normal review scored alone in
+both runs: the claims pass caught nothing the normal review missed.
+
+The claims reviews show one reason. For the three rapidgzip and zstd cases they
+marked the central promise `traced`, not `held`, because `rapidgzip` was not
+installed. The replay runs the reviewer with the machine's Python and no project
+environment, and the review loop's workflow installs none either, so neither can
+run the optional accelerators the PR is about.
+
 ## 2026-10-29: Opus, Sonnet and Cursor on the tiered skill
 
 Same day, after #1081 (tiers) and #1103 merged: skill `1f096043d315`, judge
