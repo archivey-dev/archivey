@@ -4,19 +4,26 @@
 # the outcome label on. `.github/workflows/review-loop.yml` runs it after every round,
 # the Opus pass's included; it is a file of its own so the two closes cannot drift.
 #
-# Reads ROUND, FINAL, HEAD_SHA, PR and GITHUB_REPOSITORY, and TIER and OPUS_PASS when
+# Reads ROUND, FINAL, HEAD_SHA, PR and GITHUB_REPOSITORY, and TIER and PASS when
 # set; writes `opus_pass_next` to GITHUB_OUTPUT. The files under /tmp are the gate
 # step's (`markers.txt`) and the reviewer's (`loop-verdict.json`), which this script
 # consumes so the next review in the same job cannot be closed with it.
 #
-# For the Opus pass (OPUS_PASS=true), ROUND is the gate's round and MAX_ROUNDS the
-# agent cap: the pass is the round after, worked out here rather than taken from a
-# step that may not have run, so a pass that never started still gets its comment.
+# PASS is empty for an ordinary round, `opus` for the Opus pass run as the label's own
+# round, and `opus-after` for the pass that follows an approving round in the same run.
+# For that one, ROUND is the gate's round and MAX_ROUNDS the agent cap: the pass is the
+# round after, worked out here rather than taken from a step that may not have run, so
+# a pass that never started still gets its comment.
 set -euo pipefail
-if [ "${OPUS_PASS:-false}" = true ]; then
-  ROUND=$((ROUND + 1))
-  if [ "$ROUND" -ge "$MAX_ROUNDS" ]; then FINAL=true; else FINAL=false; fi
-fi
+opus_pass=false
+case "${PASS:-}" in
+  opus) opus_pass=true ;;
+  opus-after)
+    opus_pass=true
+    ROUND=$((ROUND + 1))
+    if [ "$ROUND" -ge "$MAX_ROUNDS" ]; then FINAL=true; else FINAL=false; fi
+    ;;
+esac
 # A missing file is a review that did not finish, which does not count. A file
 # that is there but is not a JSON object still counts — the findings were
 # posted — and the gate treats its verdict as `findings`.
@@ -42,7 +49,7 @@ jq -n \
   --arg live_head_sha "$live" \
   --arg repository "$GITHUB_REPOSITORY" \
   --arg tier "${TIER:-}" \
-  --argjson opus_pass "${OPUS_PASS:-false}" \
+  --argjson opus_pass "$opus_pass" \
   --rawfile markers /tmp/markers.txt \
   --argjson verdict "$verdict" \
   '{round: $round, final: $final, head_sha: $head_sha,

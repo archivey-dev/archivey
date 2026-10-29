@@ -95,8 +95,11 @@ the bugs the loop had missed at about an eighth of the cost.
 
 **Once Sonnet approves, Opus reads the pull request once.** Sonnet's rounds clear the
 straightforward findings first. When a round on a `standard` or `deep` pull request
-ends `clean` or `approved`, the same workflow run starts one Opus round, the Opus pass,
-which reads the change as a first look, skips the findings already on the pull
+ends `clean` or `approved`, the same workflow run starts one Opus round, the Opus pass.
+When it ends `conditional`, the implementer fixes the findings, pushes and adds the
+label as usual, and that round is the Opus pass instead of a Sonnet round, so Opus
+reads the fixed code and nobody re-reads the fixes first (davitf, 2026-10-29). The pass
+reads the change as a first look, skips the findings already on the pull
 request, and looks hardest at what they missed and at severities rated too low. On a
 `deep` pull request it also asks Cursor for a full review (an `@cursoragent`
 comment). A `light` pull request gets neither. The reason is the 2026-10-21 comparison
@@ -105,12 +108,10 @@ issues as Opus, but missed an important one in a single format's code and rated 
 important ones as nits, and the verdict rests on severity.
 
 The Opus pass is a counted round: its closing comment's marker carries `pass=opus`,
-which is how later rounds know it ran, and it never runs twice. Until it has run, a
-first `conditional` verdict on a standard or deep pull request asks for one more round
-instead of stopping, so the fixes land before Opus reads. A second `conditional` in a
-row starts the pass, and so does a `conditional` with no agent round left: the review
-skill's round budget makes late rounds conditional on nits alone, and the pass must
-not be skipped for it. The pass runs whether or not the agent cap is spent (an
+which is how later rounds know it ran, and it never runs twice. A conditional
+approval's marker carries `next=opus`, which is how the next label's round knows it is
+the pass. With no agent round left for that, a conditional approval starts the pass in
+the same run instead, so it is never skipped. The pass runs whether or not the agent cap is spent (an
 approving round 5 is followed by the pass as round 6), but never past the ceiling.
 While it is still to come, the approving round puts no outcome label on; the pass's
 own close does. Its findings, and Cursor's, then go through the ordinary rounds. The
@@ -157,9 +158,9 @@ evidence for it.
   result: `approved` is a plain "✅ Approve", and `conditional` covers "✅ Approve,
   conditional on the listed fixes" and "💬 Comment". The findings are still posted in
   full and still fixed, but the closing comment does not ask for another round. One
-  exception: before its Opus pass, a standard or deep pull request's first
-  `conditional` does ask for one (§How it works). `findings` (🔄 Request Changes) asks
-  for one.
+  exception: before its Opus pass, a standard or deep pull request's `conditional`
+  asks for the pass as the next round (§How it works). `findings` (🔄 Request Changes)
+  asks for one.
   `decision` stops until the maintainer answers. `VERDICT_STOPS` in
   [`scripts/review_loop_gate.py`](../scripts/review_loop_gate.py) holds the mapping.
 - **The verdict advises; it does not refuse.** After a verdict that needs no other
@@ -234,8 +235,10 @@ the three `risk:` labels.
   `review_loop_close.sh`, the prompt template and its renderer, and the review skill all
   come from the pull request's checkout. So a pull request can edit the rules its own
   review runs under, and `claude-code-action` does not refuse it as it does an edited
-  workflow file. Reading them all from the base would close this, at the cost of a
-  first run after each change that uses the old copy; it is not done yet.
+  workflow file. Instead, those files are on `review_prep.py`'s maintainer list: a pull
+  request touching them is deep and the maintainer merges it, and since the tier is read
+  from the base branch, the pull request cannot take itself off the list (davitf,
+  2026-10-29).
 - **Whether Cursor answers the workflow's comment is untested.** The Opus pass asks
   Cursor with a comment from `github-actions[bot]`; if Cursor only answers people, the
   Opus pass still runs and Cursor has to be asked by hand.

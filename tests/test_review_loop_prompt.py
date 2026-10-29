@@ -36,21 +36,28 @@ def test_an_ordinary_round_fills_every_placeholder() -> None:
     assert not text.startswith("<!--")
 
 
-def test_the_opus_pass_is_the_round_after_the_gate_s() -> None:
-    text, rnd, final = prompt.render(ENV | {"PASS": "opus", "TIER": "standard"})
+def test_the_opus_pass_after_an_approval_is_the_round_after_the_gate_s() -> None:
+    text, rnd, final = prompt.render(ENV | {"PASS": "opus-after", "TIER": "standard"})
     assert rnd == 3
     assert final is False
     assert "This round is the Opus pass." in text
     assert "Cursor" not in text
 
 
+def test_the_opus_pass_after_the_fixes_is_the_gate_s_own_round() -> None:
+    text, rnd, _ = prompt.render(ENV | {"PASS": "opus", "TIER": "standard"})
+    assert rnd == 2
+    assert "This round is the Opus pass." in text
+
+
 def test_on_a_deep_pull_request_the_pass_leaves_cursor_alone() -> None:
-    text, _, _ = prompt.render(ENV | {"PASS": "opus", "TIER": "deep"})
-    assert "leave its comments alone" in text
+    for pass_ in ("opus", "opus-after"):
+        text, _, _ = prompt.render(ENV | {"PASS": pass_, "TIER": "deep"})
+        assert "leave its comments alone" in text
 
 
 def test_an_opus_pass_at_the_cap_is_the_last_round() -> None:
-    _, rnd, final = prompt.render(ENV | {"ROUND": "4", "PASS": "opus"})
+    _, rnd, final = prompt.render(ENV | {"ROUND": "4", "PASS": "opus-after"})
     assert (rnd, final) == (5, True)
 
 
@@ -70,14 +77,15 @@ def test_the_output_is_one_multiline_value_and_two_plain_ones() -> None:
     assert tail == "round=2\nfinal=false\n"
 
 
-def test_a_standard_or_deep_round_is_told_conditional_asks_for_a_round() -> None:
+def test_a_standard_or_deep_round_is_told_what_follows_an_approval() -> None:
+    told = "an approval is followed by that pass"
     for tier in ("standard", "deep"):
         text, _, _ = prompt.render(ENV | {"TIER": tier})
-        assert 'a first "conditional" asks for one more round' in text
+        assert told in text
     for tier in ("light", ""):
         text, _, _ = prompt.render(ENV | {"TIER": tier})
-        assert "asks for one more round" not in text
+        assert told not in text
     # The pass itself is past that rule.
     text, _, _ = prompt.render(ENV | {"TIER": "standard", "PASS": "opus"})
-    assert "asks for one more round" not in text
+    assert told not in text
     assert "Number your findings on from the highest" in text

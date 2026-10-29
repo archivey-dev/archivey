@@ -470,44 +470,37 @@ def test_a_light_pull_request_gets_no_opus_pass(tier: str | None) -> None:
 
 
 @pytest.mark.parametrize("tier", sorted(gate.OPUS_PASS_TIERS))
-def test_a_conditional_approval_asks_for_a_round_before_the_pass(tier: str) -> None:
-    """The Opus pass reads finished code, so the fixes get one more round first."""
+def test_after_a_conditional_approval_the_next_round_is_the_pass(tier: str) -> None:
+    """The fixes land first, and Opus reads them: no other round re-reads them."""
     answer = finish(verdict_file(verdict="conditional"), tier=tier)
     assert not answer.opus_pass_next
     assert not answer.stop
-    assert "one more round" in answer.comment
-    assert "add the `review` label again" in answer.comment
+    assert "round 3 is a full review by Opus" in answer.comment
+    assert ("Cursor" in answer.comment) is (tier == "deep")
     assert answer.label == "approved-with-fixes"
-    # Once the Opus pass has run, a conditional approval ends the re-reading as usual.
+    first = answer.comment.splitlines()[0]
+    assert first.endswith(f"verdict=conditional {gate.OPUS_NEXT_FIELD} -->")
+    # The next label's round is the pass.
+    markers = rounds("findings") + [first]
+    assert gate.read_history(markers).opus_pending
+    assert decide(markers=markers).opus_pass
+    assert not decide(markers=rounds("findings", "conditional")).opus_pass
+    # Once the pass has run, nothing is pending, and a conditional ends as usual.
+    done = [*markers, opus_pass_marker(3)]
+    assert not gate.read_history(done).opus_pending
+    assert not decide(markers=done).opus_pass
     after = finish(
-        verdict_file(verdict="conditional"),
-        tier=tier,
-        markers=rounds("approved") + [opus_pass_marker(2)],
+        verdict_file(verdict="conditional"), tier=tier, round=4, markers=done
     )
     assert after.stop
     assert "No further round is needed" in after.comment
+    assert gate.OPUS_NEXT_FIELD not in after.comment.splitlines()[0]
 
 
-def test_a_second_conditional_in_a_row_starts_the_pass() -> None:
-    """The skill's budget makes late rounds conditional on nits; the pass still runs."""
-    answer = finish(
-        verdict_file(verdict="conditional"),
-        tier="standard",
-        round=3,
-        markers=rounds("findings", "conditional"),
-    )
-    assert answer.opus_pass_next
-    assert "approves once its findings are fixed, so the Opus pass starts" in (
-        answer.comment
-    )
-    # A conditional after findings is a first one again.
-    first = finish(
-        verdict_file(verdict="conditional"),
-        tier="standard",
-        round=3,
-        markers=rounds("conditional", "findings"),
-    )
-    assert not first.opus_pass_next and not first.stop
+def test_a_light_conditional_approval_ends_as_usual() -> None:
+    answer = finish(verdict_file(verdict="conditional"), tier="light")
+    assert answer.stop
+    assert gate.OPUS_NEXT_FIELD not in answer.comment.splitlines()[0]
 
 
 @pytest.mark.parametrize(
@@ -604,7 +597,15 @@ def _run(stdin: str, *args: str) -> dict:
 
 def test_decide_mode_writes_the_keys_the_workflow_reads() -> None:
     payload = _run(json.dumps({"labels": ["review"], "markers": []}))
-    for key in ["run", "round", "final", "person", "max_rounds", "comment"]:
+    for key in [
+        "run",
+        "round",
+        "final",
+        "person",
+        "max_rounds",
+        "comment",
+        "opus_pass",
+    ]:
         assert key in payload, key
     assert payload["run"] is True
 
@@ -808,19 +809,29 @@ def test_a_refused_round_posts_only_a_comment_it_has(
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the step runs on ubuntu-latest")
 @pytest.mark.parametrize(
-    ("tier", "opus_pass", "verdict", "starts"),
+    ("tier", "pass_", "verdict", "starts"),
     [
-        ("deep", "false", "clean", True),
-        ("standard", "false", "clean", True),
-        ("light", "false", "clean", False),
-        ("deep", "true", "clean", False),
+        ("deep", "", "clean", True),
+        ("standard", "", "clean", True),
+        ("light", "", "clean", False),
+        # The pass after an approving round, in the same run.
+        ("deep", "opus-after", "clean", False),
         # A pass that never wrote a verdict, or never started, still says so.
-        ("deep", "true", None, False),
+        ("deep", "opus-after", None, False),
+        # The pass as the label's own round, after a conditional approval's fixes.
+        ("standard", "opus", "clean", False),
     ],
-    ids=["deep", "standard", "light", "the-pass-itself", "the-pass-died"],
+    ids=[
+        "deep",
+        "standard",
+        "light",
+        "the-pass-after",
+        "the-pass-died",
+        "the-pass-as-its-round",
+    ],
 )
 def test_the_close_script_says_when_the_opus_pass_starts(
-    tmp_path: Path, tier: str, opus_pass: str, verdict: str | None, starts: bool
+    tmp_path: Path, tier: str, pass_: str, verdict: str | None, starts: bool
 ) -> None:
     """The workflow's Opus-pass steps read `opus_pass_next` from the close's outputs."""
     bash, jq = shutil.which("bash"), shutil.which("jq")
@@ -851,20 +862,20 @@ def test_the_close_script_says_when_the_opus_pass_starts(
         "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
         "GITHUB_OUTPUT": str(tmp_path / "output.txt"),
         "TIER": tier,
-        "OPUS_PASS": opus_pass,
+        "PASS": pass_,
     }
-    if opus_pass == "true":
-        # The pass's close gets no FINAL: the step that wrote one may not have run.
+    if pass_ == "opus-after":
+        # That close gets no FINAL: the step that wrote one may not have run.
         del env["FINAL"]
     subprocess.run([bash, "-c", script], cwd=ROOT, env=env, check=True)
     output = (tmp_path / "output.txt").read_text(encoding="utf-8")
     assert output == f"opus_pass_next={str(starts).lower()}\n"
     first = (work / "comment.md").read_text(encoding="utf-8").splitlines()[0]
-    assert f" n={3 if opus_pass == 'true' else 2} " in first, first
+    assert f" n={3 if pass_ == 'opus-after' else 2} " in first, first
     if verdict is None:
         assert first.startswith(gate.ATTEMPT_MARKER)
     else:
-        assert ("pass=opus" in first) is (opus_pass == "true")
+        assert ("pass=opus" in first) is bool(pass_)
     # The close consumes the verdict file, so the Opus pass that may follow in the
     # same job can never be closed with this round's verdict.
     assert not (work / "loop-verdict.json").exists()
@@ -894,12 +905,20 @@ def test_the_opus_steps_survive_a_failed_side_step() -> None:
     assert "steps.tier.outputs.tier == 'deep'" in _step("Ask Cursor for a full review")
     close = _step("Close the Opus pass")
     assert "if: always() && steps.close.outputs.opus_pass_next == 'true'" in close
-    assert 'OPUS_PASS: "true"' in close
+    assert "PASS: opus-after" in close
     # Its round comes from the gate, not from a prompt step that may have been skipped.
     assert "ROUND: ${{ steps.gate.outputs.round }}" in close
     assert "MAX_ROUNDS: ${{ steps.gate.outputs.max_rounds }}" in close
     assert "opus_prompt" not in close
-    assert 'OPUS_PASS: "false"' in _step("Close the round")
+    # The label's round is the pass when the gate says so, with the model to match.
+    gate_says = "steps.gate.outputs.opus_pass == 'true'"
+    assert f"PASS: ${{{{ {gate_says} && 'opus' || '' }}}}" in _step("Close the round")
+    assert f"PASS: ${{{{ {gate_says} && 'opus' || '' }}}}" in _step("Write the prompt")
+    assert (
+        f"--model ${{{{ {gate_says} && 'claude-opus-5' || 'claude-sonnet-5-5' }}}}"
+        in _step("Claude review")
+    )
+    assert gate_says in _step("Ask Cursor for a full review")
     # Each review has a timeout of its own, inside the job's.
     for name in ("Claude review", "Claude Opus pass"):
         assert "timeout-minutes:" in _step(name)

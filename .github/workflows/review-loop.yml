@@ -132,6 +132,7 @@ jobs:
             echo "round=$(jq -r .round /tmp/gate.json)"
             echo "final=$(jq -r .final /tmp/gate.json)"
             echo "max_rounds=$(jq -r .max_rounds /tmp/gate.json)"
+            echo "opus_pass=$(jq -r '.opus_pass // false' /tmp/gate.json)"
             echo "head_sha=$REVIEWED_SHA"
           } >> "$GITHUB_OUTPUT"
           jq -r '"Gate: run=\(.run) round=\(.round) — \(.reason)"' /tmp/gate.json \
@@ -214,7 +215,8 @@ jobs:
         env:
           ROUND: ${{ steps.gate.outputs.round }}
           MAX_ROUNDS: ${{ steps.gate.outputs.max_rounds }}
-          PASS: ""
+          # The round after a conditional approval's fixes is the Opus pass itself.
+          PASS: ${{ steps.gate.outputs.opus_pass == 'true' && 'opus' || '' }}
           TIER: ${{ steps.tier.outputs.tier }}
         run: python3 scripts/review_loop_prompt.py >> "$GITHUB_OUTPUT"
 
@@ -236,9 +238,10 @@ jobs:
           # Sonnet, not Opus: on the review-eval set (dev-docs/review-eval/results.md)
           # it caught as many of the bugs the loop missed, at about an eighth of the
           # cost. Raising its effort did not help either. Opus reads a standard or
-          # deep pull request once, in the Opus pass below.
+          # deep pull request once, in the Opus pass: this round when the gate says
+          # so (after a conditional approval's fixes), else the steps below.
           claude_args: |
-            --model claude-sonnet-5-5
+            --model ${{ steps.gate.outputs.opus_pass == 'true' && 'claude-opus-5' || 'claude-sonnet-5-5' }}
             --allowedTools Read,Grep,Glob,WebFetch,Bash
           prompt: ${{ steps.prompt.outputs.prompt }}
 
@@ -252,20 +255,23 @@ jobs:
           FINAL: ${{ steps.gate.outputs.final }}
           HEAD_SHA: ${{ steps.gate.outputs.head_sha }}
           TIER: ${{ steps.tier.outputs.tier }}
-          OPUS_PASS: "false"
+          PASS: ${{ steps.gate.outputs.opus_pass == 'true' && 'opus' || '' }}
         run: bash scripts/review_loop_close.sh
 
       # The Opus pass: a standard or deep pull request whose rounds have approved it
-      # gets one full review by Opus, as the next round, and a deep one gets one by
-      # Cursor too. The gate decides when (`OPUS_PASS_STARTS`), and it runs once per
-      # pull request. In this same run, because a label the workflow's own token adds
-      # starts no workflow. The steps run whatever happened before them (`!cancelled()`),
-      # so a failed side step cannot drop a pass the round's comment has announced, and
-      # the Cursor request is best-effort.
+      # gets one full review by Opus, and a deep one gets one by Cursor too. The gate
+      # decides when (`OPUS_PASS_STARTS`), and it runs once per pull request. After a
+      # conditional approval it is the next label's round, above; after a plain one it
+      # runs here, as the next round in this same run, because a label the workflow's
+      # own token adds starts no workflow. The steps run whatever happened before them
+      # (`!cancelled()`), so a failed side step cannot drop a pass the round's comment
+      # has announced, and the Cursor request is best-effort.
       - name: Ask Cursor for a full review
         continue-on-error: true
         if: >-
-          steps.close.outputs.opus_pass_next == 'true' &&
+          !cancelled() &&
+          (steps.close.outputs.opus_pass_next == 'true' ||
+           steps.gate.outputs.opus_pass == 'true') &&
           steps.tier.outputs.tier == 'deep'
         run: |
           gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "@cursoragent please do a full code review of this pull request with this repository's \`code-review-skill\`: the whole diff against its base, as a first look. Post the findings as review comments; do not push.
@@ -279,7 +285,7 @@ jobs:
         env:
           ROUND: ${{ steps.gate.outputs.round }}
           MAX_ROUNDS: ${{ steps.gate.outputs.max_rounds }}
-          PASS: opus
+          PASS: opus-after
           TIER: ${{ steps.tier.outputs.tier }}
         run: python3 scripts/review_loop_prompt.py >> "$GITHUB_OUTPUT"
 
@@ -306,5 +312,5 @@ jobs:
           MAX_ROUNDS: ${{ steps.gate.outputs.max_rounds }}
           HEAD_SHA: ${{ steps.gate.outputs.head_sha }}
           TIER: ${{ steps.tier.outputs.tier }}
-          OPUS_PASS: "true"
+          PASS: opus-after
         run: bash scripts/review_loop_close.sh

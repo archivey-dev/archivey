@@ -372,7 +372,8 @@ to see the result" verdicts — a plain approval, the conditional approval above
 💬 Comment — to one that asks for none, whatever rounds the cap has left
 ([`dev-docs/review-loop.md`](../../../dev-docs/review-loop.md) §Stopping it). The one
 exception is a standard or deep pull request whose Opus pass has not run yet: there a
-first conditional approval asks for one more round, and the round's prompt says so. So the
+conditional approval is followed by that pass as the next round, once the fixes are
+pushed. That round is Opus's, not yours, and the round's prompt says so. So the
 verdict line is a decision about spending another review, and writing 🔄 to keep a round
 in hand spends one on wording you have already described.
 
