@@ -1210,6 +1210,54 @@ def test_unknown_redirect_in_a_solid_run_is_other_and_carries_no_bytes(
     assert (tmp_path / "b.txt").read_bytes() == expected["b.txt"]
 
 
+def test_unknown_redirect_under_the_directory_flag_is_still_other() -> None:
+    """``unrar`` 7.00 lists such a member as a directory but creates nothing for it and
+    emits nothing for it, so it stays out of the demux and is not extracted."""
+    with open_archive(_fixture("redirect_unknown_solid__.rar")) as archive:
+        raw = archive.members()[1]._raw
+    assert isinstance(raw, RarMemberInfo)
+    flagged = dataclasses.replace(raw, is_directory=True)
+    assert flagged.has_unknown_redirect()
+    assert not flagged.is_payload_file()
+    assert rar_reader.RarReader._member_type(flagged) is MemberType.OTHER
+
+
+def _with_redirect_type(data: bytes, target: bytes, redirect_type: int) -> bytes:
+    """``data`` with the redirect record naming ``target`` set to ``redirect_type`` (a
+    one-byte vint, like the type it replaces), and its block's header CRC redone."""
+    marker = bytes([6, 0, len(target)]) + target  # type 6, flags 0, the target
+    at = data.index(marker)
+    out = bytearray(data)
+    out[at] = redirect_type
+    pos = 8  # past the RAR5 signature
+    while True:
+        size, body_at = load_vint(out, pos + 4)
+        if body_at <= at < body_at + size:
+            crc = zlib.crc32(out[pos + 4 : body_at + size]) & 0xFFFFFFFF
+            out[pos : pos + 4] = crc.to_bytes(4, "little")
+            return bytes(out)
+        _, q = load_vint(out, body_at)
+        flags, q = load_vint(out, q)
+        if flags & 0x0001:
+            _, q = load_vint(out, q)
+        data_size = load_vint(out, q)[0] if flags & 0x0002 else 0
+        pos = body_at + size + data_size
+
+
+def test_redirect_record_of_type_zero_is_no_redirect() -> None:
+    """Type 0 is ``unrar``'s ``FSREDIR_NONE``: ``unrar`` lists the member as a plain
+    file, with no "Unknown extra field" warning, and extracts it as one."""
+    data = _with_redirect_type(
+        _fixture("redirect_unknown_solid__.rar").read_bytes(), b"a.txt", 0
+    )
+    with open_archive(io.BytesIO(data)) as archive:
+        link = archive.members()[1]
+        assert link.name == "link"
+        assert link.type is MemberType.FILE
+        assert link.link_target is None
+        assert link.diagnostics == ()
+
+
 def test_multi_volume_roundtrip() -> None:
     part1 = _fixture("tinyvol.part1.rar")
     assert (_FIXTURES / "tinyvol.part2.rar").is_file()

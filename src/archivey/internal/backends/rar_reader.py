@@ -604,10 +604,13 @@ def _unrar_dictionary_costs(archive: RarArchive) -> list[_DictionaryCost]:
 def _member_stream_size(member: ArchiveMember) -> int:
     """Unpacked size for a RAR payload member.
 
-    RAR headers always store ``file_size`` as ``int``. ``ArchiveMember.size`` is
-    optional because other formats have streaming entries; folding ``None`` into
-    ``0`` here would treat "unknown length" as "empty". A RAR member without a
-    declared size is a programming error.
+    RAR headers always store ``file_size`` as ``int``, and every payload member
+    (``RarMemberInfo.is_payload_file()``) lists it as ``size``. A non-payload member
+    may not: an unknown RAR5 redirect is ``OTHER`` with no ``size``, so callers filter
+    on ``is_payload_file()`` before summing. ``ArchiveMember.size`` is optional because
+    other formats have streaming entries; folding ``None`` into ``0`` here would treat
+    "unknown length" as "empty". A payload member without a declared size is a
+    programming error.
     """
     size = member.size
     if size is None:
@@ -2805,7 +2808,9 @@ class RarReader(BaseArchiveReader):
             type=member_type,
             name=name,
             raw_name=raw_name,
-            # An unknown redirect's size is its target's length, not data it holds.
+            # An unknown redirect's size field is its target's length. A symlink keeps
+            # that as its size, as every format lists a link; an unknown redirect is
+            # not a link and holds no data, so it has no size (DR-25's OTHER).
             size=None if info.has_unknown_redirect() else info.file_size,
             compressed_size=info.compress_size,
             modified=info.mtime,
@@ -3049,14 +3054,15 @@ class RarReader(BaseArchiveReader):
 
     @staticmethod
     def _member_type(info: RarMemberInfo) -> MemberType:
+        if info.has_unknown_redirect():
+            # ``unrar`` creates nothing for it, under the directory flag too, and its
+            # pipe carries no bytes for it.
+            return MemberType.OTHER
         if info.is_directory:
             return MemberType.DIRECTORY
         if info.is_file_copy():
             # Extracted as an independent file, as ``unrar`` does, not as a link.
             return MemberType.FILE
-        if info.has_unknown_redirect():
-            # ``unrar`` creates nothing for it and its pipe carries no bytes for it.
-            return MemberType.OTHER
         if info.is_hardlink_or_copy:
             return MemberType.HARDLINK
         if info.is_symlink:

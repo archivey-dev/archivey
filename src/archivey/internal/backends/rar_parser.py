@@ -285,8 +285,17 @@ _RAR5_XREDIR_WINDOWS_SYMLINK = 2
 _RAR5_XREDIR_WINDOWS_JUNCTION = 3
 _RAR5_XREDIR_HARD_LINK = 4
 _RAR5_XREDIR_FILE_COPY = 5
+# ``unrar``'s ``FSREDIR_NONE``: a record of this type names no redirect, and ``unrar``
+# treats the member as a plain file.
+_RAR5_XREDIR_NONE = 0
 _RAR5_KNOWN_REDIRECTS = frozenset(
-    range(_RAR5_XREDIR_UNIX_SYMLINK, _RAR5_XREDIR_FILE_COPY + 1)
+    {
+        _RAR5_XREDIR_UNIX_SYMLINK,
+        _RAR5_XREDIR_WINDOWS_SYMLINK,
+        _RAR5_XREDIR_WINDOWS_JUNCTION,
+        _RAR5_XREDIR_HARD_LINK,
+        _RAR5_XREDIR_FILE_COPY,
+    }
 )
 
 _RAR5_ENDARC_NEXT_VOLUME = 0x01
@@ -508,19 +517,17 @@ class RarMemberInfo:
         )
 
     def has_unknown_redirect(self) -> bool:
-        """True for a RAR5 redirect of a type this parser does not know (not 1 to 5).
+        """True for a RAR5 redirect of a type this parser does not know (not 1 to 5;
+        a type-0 record is no redirect and is not kept, see ``_RAR5_XREDIR_NONE``).
 
-        ``unrar`` 7.00 lists such a member as a file, warns "Unknown extra field",
-        creates nothing for it and emits no bytes for it in ``unrar p``, so a solid
-        pass must not count it either. A directory with one stays a directory, as
-        ``unrar``'s directory branch runs first.
+        ``unrar`` 7.00 lists such a member as a file, or as a directory under the
+        directory flag, warns "Unknown extra field", creates nothing for it either
+        way and emits no bytes for it in ``unrar p``, so a solid pass must not count
+        it either (measured on ``redirect_unknown_solid__.rar`` and on a copy with
+        the directory flag set).
         """
         redir = self.file_redir
-        return (
-            redir is not None
-            and redir[0] not in _RAR5_KNOWN_REDIRECTS
-            and not self.is_directory
-        )
+        return redir is not None and redir[0] not in _RAR5_KNOWN_REDIRECTS
 
     def is_file_copy(self) -> bool:
         """True for a RAR5 ``FILE_COPY`` redirect (``rar -oi``, "file reference").
@@ -4011,11 +4018,12 @@ def _parse_rar5_file_block(
                     redir_type, xpos = load_vint(xdata, xpos)
                     redir_flags, xpos = load_vint(xdata, xpos)
                     redir_name, xpos = _load_vstr(xdata, xpos)
-                    file_redir = (
-                        redir_type,
-                        redir_flags,
-                        redir_name.decode("utf8", "surrogateescape"),
-                    )
+                    if redir_type != _RAR5_XREDIR_NONE:
+                        file_redir = (
+                            redir_type,
+                            redir_flags,
+                            redir_name.decode("utf8", "surrogateescape"),
+                        )
                 elif xtype == _RAR5_XFILE_VERSION:
                     _vflags, xpos = load_vint(xdata, xpos)
                     file_version, xpos = load_vint(xdata, xpos)
@@ -4066,7 +4074,12 @@ def _parse_rar5_file_block(
         elif rtype in (_RAR5_XREDIR_HARD_LINK, _RAR5_XREDIR_FILE_COPY):
             is_hardlink_or_copy = True
 
-    if is_directory and not is_symlink:
+    # An unknown redirect is not a directory even under the directory flag: ``unrar``
+    # creates nothing for it (``RarMemberInfo.has_unknown_redirect``).
+    unknown_redirect = (
+        file_redir is not None and file_redir[0] not in _RAR5_KNOWN_REDIRECTS
+    )
+    if is_directory and not is_symlink and not unknown_redirect:
         filename = filename + "/"
 
     return RarMemberInfo(

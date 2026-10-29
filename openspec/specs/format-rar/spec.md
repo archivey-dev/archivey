@@ -593,10 +593,13 @@ layer. The target of a Windows symlink or junction SHALL be normalized as a ZIP 
 reparse buffer's is: `\` becomes `/`, a leading `\??\` or `/??/` is dropped, and
 `UNC\` after it becomes `//`. A Unix symlink's target SHALL be kept as stored.
 Redirect members MUST NOT appear in the solid `unrar p` demux size map. A redirect of a
-type other than 1 to 5, which no RAR version writes, SHALL be `MemberType.OTHER` with no
+type other than 0 to 5, which no RAR version writes, SHALL be `MemberType.OTHER` with no
 `size` and no `link_target`, carry no data, and be reported once at listing with
 `MEMBER_TYPE_UNKNOWN`, as `unrar` 7.00 lists it, warns "Unknown extra field", creates
-nothing for it and emits nothing for it in `unrar p`; on a directory it stays a directory.
+nothing for it and emits nothing for it in `unrar p`; the directory flag does not change
+this, as `unrar` creates no directory for it either. A redirect record of type 0
+(`unrar`'s `FSREDIR_NONE`) SHALL be read as no redirect: the member is what it would be
+without the record.
 
 #### Scenario: redirect matrix
 

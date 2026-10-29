@@ -608,65 +608,22 @@ def _read_vint(data: bytes | bytearray, pos: int) -> tuple[int, int]:
             return value, pos
 
 
-def _strip_file_crc32(archive: Path, member: str) -> None:
-    """Drop ``member``'s CRC32 from its RAR5 FILE header, leaving it no digest.
+@dataclass(frozen=True)
+class _FileHeader:
+    """Where the fields of one RAR5 FILE header sit in the archive's bytes."""
 
-    RAR5 makes the CRC32 optional (file flag ``0x0004``); ``rar`` always writes one.
-    The header is rewritten without it and its header CRC recomputed.
-    """
-    data = bytearray(archive.read_bytes())
-    pos = 8  # the RAR5 signature
-    while pos < len(data):
-        size, body_at = _read_vint(data, pos + 4)
-        end = body_at + size
-        block_type, q = _read_vint(data, body_at)
-        flags, q = _read_vint(data, q)
-        if flags & 0x0001:  # extra area
-            _, q = _read_vint(data, q)
-        data_size = 0
-        if flags & 0x0002:  # data area
-            data_size, q = _read_vint(data, q)
-        if block_type == 2:
-            flags_at = q
-            file_flags, q = _read_vint(data, q)
-            flags_end = q
-            _, q = _read_vint(data, q)  # unpacked size
-            _, q = _read_vint(data, q)  # attributes
-            if file_flags & 0x0002:  # mtime
-                q += 4
-            crc_at = q
-            if file_flags & 0x0004:
-                q += 4
-            _, q = _read_vint(data, q)  # compression info
-            _, q = _read_vint(data, q)  # host OS
-            name_len, q = _read_vint(data, q)
-            if file_flags & 0x0004 and data[q : q + name_len] == member.encode():
-                body = (
-                    data[body_at:flags_at]
-                    + _vint(file_flags & ~0x0004)
-                    + data[flags_end:crc_at]
-                    + data[crc_at + 4 : end]
-                )
-                head = _vint(len(body)) + body
-                crc = binascii.crc32(head) & 0xFFFFFFFF
-                data[pos:end] = crc.to_bytes(4, "little") + head
-                archive.write_bytes(bytes(data))
-                return
-        if block_type == 5:  # end of archive
-            break
-        pos = end + data_size
-    raise ValueError(f"no RAR5 FILE header with a CRC32 for {member!r} in {archive}")
+    block_at: int  # the header CRC32
+    body_at: int  # the header body, after its size vint; the CRC covers from pos + 4
+    end: int  # the end of the header (its data area follows)
+    extra_at: int  # the extra area, ``end`` when there is none
+    flags_at: int  # the file flags vint
+    flags_end: int
+    file_flags: int
+    crc_at: int  # where the CRC32 is, or would be
 
 
-def _set_redirect_type(archive: Path, member: str, redirect_type: int) -> None:
-    """Rewrite ``member``'s RAR5 redirect record to ``redirect_type``.
-
-    The type is the record's first field after its size and record type, a one-byte
-    vint for every value written here, so the header keeps its length and only its
-    CRC is recomputed.
-    """
-    assert redirect_type < 0x80
-    data = bytearray(archive.read_bytes())
+def _find_file_header(data: bytes | bytearray, member: str) -> _FileHeader:
+    """The RAR5 FILE header named ``member``, walking the blocks from the signature."""
     pos = 8  # the RAR5 signature
     while pos < len(data):
         size, body_at = _read_vint(data, pos + 4)
@@ -680,28 +637,77 @@ def _set_redirect_type(archive: Path, member: str, redirect_type: int) -> None:
         if flags & 0x0002:  # data area
             data_size, q = _read_vint(data, q)
         if block_type == 2:
+            flags_at = q
             file_flags, q = _read_vint(data, q)
+            flags_end = q
             _, q = _read_vint(data, q)  # unpacked size
             _, q = _read_vint(data, q)  # attributes
-            q += 4 * bool(file_flags & 0x0002) + 4 * bool(file_flags & 0x0004)
+            if file_flags & 0x0002:  # mtime
+                q += 4
+            crc_at = q
+            if file_flags & 0x0004:  # CRC32
+                q += 4
             _, q = _read_vint(data, q)  # compression info
             _, q = _read_vint(data, q)  # host OS
             name_len, q = _read_vint(data, q)
             if data[q : q + name_len] == member.encode():
-                x = end - extra_size
-                while x < end:
-                    record_size, record_at = _read_vint(data, x)
-                    record_type, type_end = _read_vint(data, record_at)
-                    if record_type == 5:  # FHEXTRA_REDIR
-                        data[type_end] = redirect_type
-                        crc = binascii.crc32(data[pos + 4 : end]) & 0xFFFFFFFF
-                        data[pos : pos + 4] = crc.to_bytes(4, "little")
-                        archive.write_bytes(bytes(data))
-                        return
-                    x = record_at + record_size
+                return _FileHeader(
+                    pos, body_at, end, end - extra_size, flags_at, flags_end,
+                    file_flags, crc_at,
+                )  # fmt: skip
         if block_type == 5:  # end of archive
             break
         pos = end + data_size
+    raise ValueError(f"no RAR5 FILE header for {member!r}")
+
+
+def _recompute_header_crc(data: bytearray, header: _FileHeader) -> None:
+    crc = binascii.crc32(data[header.block_at + 4 : header.end]) & 0xFFFFFFFF
+    data[header.block_at : header.block_at + 4] = crc.to_bytes(4, "little")
+
+
+def _strip_file_crc32(archive: Path, member: str) -> None:
+    """Drop ``member``'s CRC32 from its RAR5 FILE header, leaving it no digest.
+
+    RAR5 makes the CRC32 optional (file flag ``0x0004``); ``rar`` always writes one.
+    The header is rewritten without it and its header CRC recomputed.
+    """
+    data = bytearray(archive.read_bytes())
+    h = _find_file_header(data, member)
+    if not h.file_flags & 0x0004:
+        raise ValueError(f"{member!r} in {archive} has no CRC32")
+    body = (
+        data[h.body_at : h.flags_at]
+        + _vint(h.file_flags & ~0x0004)
+        + data[h.flags_end : h.crc_at]
+        + data[h.crc_at + 4 : h.end]
+    )
+    head = _vint(len(body)) + body
+    crc = binascii.crc32(head) & 0xFFFFFFFF
+    data[h.block_at : h.end] = crc.to_bytes(4, "little") + head
+    archive.write_bytes(bytes(data))
+
+
+def _set_redirect_type(archive: Path, member: str, redirect_type: int) -> None:
+    """Rewrite ``member``'s RAR5 redirect record to ``redirect_type``.
+
+    The type is the record's first field after its size and record type, a one-byte
+    vint for every value written here, so the header keeps its length and only its
+    CRC is recomputed.
+    """
+    assert redirect_type < 0x80
+    data = bytearray(archive.read_bytes())
+    h = _find_file_header(data, member)
+    x = h.extra_at
+    while x < h.end:
+        record_size, record_at = _read_vint(data, x)
+        record_type, type_end = _read_vint(data, record_at)
+        if record_type == 5:  # FHEXTRA_REDIR
+            data[type_end] = redirect_type
+            _recompute_header_crc(data, h)
+            archive.write_bytes(bytes(data))
+            return
+        x = record_at + record_size
     raise ValueError(f"no RAR5 redirect record for {member!r} in {archive}")
 
 
