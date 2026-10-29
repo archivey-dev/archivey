@@ -309,6 +309,12 @@ _COMPRESSED = (
 # py7zr's default folder is solid LZMA2. COPY so the seek contract sees a stored 7z
 # member, not only the compressed-solid path `basic` already covers.
 _SEVENZIP_STORED = (F("stored.bin", b"I am a 7z COPY member.\n" * 250),)
+# PPMd is the one 7z method no other entry writes, so without this the fuzz seeds and
+# the sweep never reach the PPMd decoder. Text, which is what PPMd is for.
+_SEVENZIP_PPMD = (
+    F("ppmd.txt", b"".join(b"line %d of a PPMd member\n" % i for i in range(400))),
+    F("second.txt", b"a second member in the same folder\n" * 20),
+)
 
 # Extra `rar a` flags keyed by entry id. Do not add flags for existing ids: that
 # would change committed RAR fixtures without a regeneration.
@@ -318,6 +324,7 @@ _RAR_ADD_FLAGS: dict[str, tuple[str, ...]] = {
 }
 
 _7Z_COPY_ENTRY_IDS = frozenset({"sevenzip-stored"})
+_7Z_PPMD_ENTRY_IDS = frozenset({"sevenzip-ppmd"})
 
 # Adversarial names/links: listing stays faithful; safe extraction must reject each
 # member marked unsafe (and only those). The backslash name is rejected because the
@@ -382,6 +389,7 @@ CORPUS: tuple[CorpusEntry, ...] = (
     CorpusEntry("large", _LARGE, ("zip", "tar.gz", "tar.zst", "7z", "rar")),
     CorpusEntry("compressed", _COMPRESSED, ("rar",)),
     CorpusEntry("sevenzip-stored", _SEVENZIP_STORED, ("7z",)),
+    CorpusEntry("sevenzip-ppmd", _SEVENZIP_PPMD, ("7z",)),
     CorpusEntry("adversarial", _ADVERSARIAL_COMMON, ("zip",)),
     CorpusEntry("adversarial-tar", _ADVERSARIAL_TAR, ("tar", "tar.gz")),
     # Encrypted ZIPs are built with the 7z CLI (stdlib zipfile cannot write encryption).
@@ -651,6 +659,10 @@ def _7z_build(entry: CorpusEntry, path: Path) -> None:
             from py7zr.properties import FILTER_COPY
 
             filters = [{"id": FILTER_COPY}]
+        elif entry.id in _7Z_PPMD_ENTRY_IDS:
+            from py7zr.properties import FILTER_PPMD
+
+            filters = [{"id": FILTER_PPMD}]
         with py7zr.SevenZipFile(
             path,
             "w",
