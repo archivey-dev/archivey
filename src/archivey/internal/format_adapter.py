@@ -817,9 +817,10 @@ class _SpanWindow(ReadOnlyIOStream):
     does, so a read that ends before the span keeps the full-count rule (ADR 0014),
     as :class:`MemberDataView` does for a view: a sized read returns the bytes before
     the cut and the next read raises ``TruncatedError``, and a read with no size
-    raises. The span is the member's whole data, so no read goes past it: the member
-    needs no size check of its own (``_span_parts``). ``what`` names the archive in
-    the error."""
+    raises. For a member the walk sizes the span is its whole data, so no read goes
+    past it and the member needs no size check of its own; a directory that lists a
+    size it does not store is checked above the window (``_span_parts``). ``what``
+    names the archive in the error."""
 
     def __init__(self, forward: ForwardStream, span: _Span, what: str) -> None:
         super().__init__()
