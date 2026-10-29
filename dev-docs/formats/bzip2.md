@@ -202,7 +202,9 @@ broke even near 0.6 MiB compressed with 4 cores and near 2 MiB with one
 
 The input is also clipped to the known compressed length (`_bound_rapidgzip_source`).
 Otherwise a 7z AES stage's padding after the end marker reaches the decoder, which prints
-"Trailing garbage after EOF ignored!" to standard error, outside archivey's diagnostics.
+"Trailing garbage after EOF ignored!" to the decoder process's standard error. That stream
+is a temporary file archivey reads only to classify a crash, so the warning never reaches
+the caller's standard error.
 
 **Errors through the accelerator.** Its messages carry no exception type archivey can
 match on, so `Bzip2Codec._translate_accelerator` matches the text. "Calculated CRC",
@@ -251,7 +253,7 @@ accelerator `OFF` and `ON`.
 | A stream and empty streams (`bzip2 -c /dev/null`) concatenated, the empty ones before, between or after | Reads, with no diagnostic, with the accelerator off and on. `bzip2 -t` accepts it |
 | The same, with zero bytes after the last stream | Reads, with no diagnostic, with the accelerator off and on |
 | Zero bytes, then an empty stream | The data ends at the zeros: `ARCHIVE_TRAILING_DATA` at the empty stream, with the accelerator off and on. `bzip2 -t` warns "trailing garbage after EOF ignored" and exits 0: it stops at the first zero byte |
-| A stream followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA` at the same offset with the accelerator off and on. With it on, "[Warning] Trailing garbage after EOF ignored!" is also printed to standard error. `bzip2 -t` warns and exits 0 |
+| A stream followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA` at the same offset with the accelerator off and on. With it on, the decoder process also writes "[Warning] Trailing garbage after EOF ignored!" to its own standard error, a temporary file, so the caller sees nothing (measured on main c2cd70e). `bzip2 -t` warns and exits 0 |
 | A stream cut at any of 20 points | `TruncatedError` after the same bytes with the accelerator off and on. Never a short read with no error |
 
 ## 4. Threat surface
@@ -281,7 +283,6 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Each accelerated bzip2 open of a caller's own stream (a file object or `io.BytesIO`) leaks about 1.7 kB of Python objects; every accelerated open, from a path too, leaks a few kB of native memory | **library** | rapidgzip keeps the file object it reads from; archivey frees the caller's stream behind it, so its size does not matter (`known-issues.md` Bug 5) |
 | `member.size` is `None` for a `.bz2` | **format** | No size field (§1) |
 | Opening a small `.bz2` decodes up to 900 kB | **format** | Open-time validation needs the first block (§1, §2.2) |
-| "[Warning] Trailing garbage after EOF ignored!" on standard error | **library** | The accelerator prints it for bytes after the last stream in a standalone file; archivey cannot route it into diagnostics. Tracked internally |
 | A backward seek re-decodes from the start | **format** | Install `[seekable]` and pass `seekable_members=True` |
 | A cold backward seek with the accelerator still re-decodes up to a block, and may log it | **format** | Blocks are the unit of random access |
 | A cut or damaged stream right after the data costs a second decode of the file with the accelerator | **archivey** | The accelerator stops before it, and the standard library takes over at the end from the start of the file (§2.3) |
