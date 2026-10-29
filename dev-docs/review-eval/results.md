@@ -5,33 +5,40 @@ One section per run worth keeping, newest first. `skill` is the tree hash of
 Score: `yes` = 1, `partial` = 0.5. The reviews themselves are kept outside the
 repository.
 
-## 2026-10-29: Opus and Sonnet on the tiered skill
+## 2026-10-29: Opus, Sonnet and Cursor on the tiered skill
 
 Same day, after #1081 (tiers) and #1103 merged: skill `1f096043d315`, judge
-`claude-sonnet-5-5`, tools Read, Grep, Glob and Bash. One run per case per model,
-both models at once.
+`claude-sonnet-5-5`, tools Read, Grep, Glob and Bash. Two runs per case for Opus
+and Sonnet, one for Cursor.
 
-| Case | PR | Opus 5 | Sonnet 5.5 |
-|---|---|---|---|
-| zstd-seek-point-in-frame | #934 | no | partial |
-| decoder-death-reraise-cycle | #904 | yes | yes |
-| rapidgzip-cut-raw-deflate | #545 | no | no |
-| rapidgzip-cut-gzip-member-then-complete | #613 | no | yes |
-| pax-sparse-version-by-records | #738 | no | yes |
-| **Score** | | **1 of 5** | **3.5 of 5** |
-| Cost (USD) | | 38.33 | 4.94 |
-| Minutes, slowest case | | 24 | 7 |
+| Case | PR | Opus 5, run 1 | Opus 5, run 2 | Sonnet 5.5, run 1 | Sonnet 5.5, run 2 | Cursor |
+|---|---|---|---|---|---|---|
+| zstd-seek-point-in-frame | #934 | no | no | partial | no | no |
+| decoder-death-reraise-cycle | #904 | yes | yes | yes | yes | no |
+| rapidgzip-cut-raw-deflate | #545 | no | partial | no | no | no |
+| rapidgzip-cut-gzip-member-then-complete | #613 | no | no | yes | partial | no |
+| pax-sparse-version-by-records | #738 | no | yes | yes | no | yes |
+| **Score** | | **1 of 5** | **2.5 of 5** | **3.5 of 5** | **1.5 of 5** | **1 of 5** |
+| Cost (USD) | | 38.33 | 40.57 | 4.94 | 5.24 | not shown |
+| Minutes, slowest case | | 24 | 22 | 7 | 9 | about 40 |
 
 Every Opus review chose the standard tier (deep for #904), the same depth as the
-baseline's untiered skill, so the tiers do not explain the drop from 3 to 1: it is
-mostly run-to-run variance. The zstd case is the clearest: the baseline Opus run
-found it with a measured repro, this one did not mention it. One run per case is
-not enough to rank two models; Sonnet's lead here needs a second run before it
-means anything.
+baseline's untiered skill, so the tiers do not explain the drop from 3 to 1 in run
+1. The two runs show how noisy one review is: each model's score moved by two
+cases between runs, and four of the five cases flipped for at least one model.
+Averaged over the two runs Opus scores 1.75 and Sonnet 2.5, a gap smaller than the
+noise, while Sonnet costs about an eighth as much and writes reviews about a third
+the length (10 to 19 KB against 26 to 40 KB). Only #904 is caught every time;
+#545 has never been caught outright.
 
-Sonnet's reviews are about a third the length (10 to 16 KB against 26 to 40 KB)
-and its catches on #613 and #738 name the exact input the fix found, the cut first
-member and `GNU.sparse.major=1` with `GNU.sparse.size`.
+Cursor ran through `@cursoragent` on mirror pull requests: the base branch at the
+case's `base`, the head a `[skip ci]` empty commit on the case's `head`, and a
+comment asking for a round-1 review with the repository's `code-review-skill`
+and no look at `main` or later history. Its checkout could see `main`, so the
+isolation rests on the prompt. It read the same diffs and posted findings in the
+skill's shape, but missed four of five; on #545 it cut raw DEFLATE streams at
+random, saw them end with no error, and took that as allowed by the spec. The model behind it is
+not shown (one header said "Cursor Grok").
 
 ## 2026-10-29: baseline
 
