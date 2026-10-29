@@ -1179,9 +1179,8 @@ archivey in a worker they can kill. Public:
 Under the default `process_isolation` the stdlib `zlib`, `bz2` and `lzma`, zstd, lz4,
 brotli and inflate64 run in-process (`NATIVE_DECODERS` isolates them too; under `NONE`
 pyppmd decodes in-process as well and rapidgzip is not used). A crash nobody has found yet
-would abort the process. pyppmd runs in a child by default because the single-byte decode
-that frees a waiting worker at teardown is a decode after the end on a stream that has
-ended ([`known-issues.md`](known-issues.md) §Intermittent `pyppmd` native aborts). Both rapidgzip decoders run in a child process;
+would abort the process. pyppmd runs in a child by default because of a known pyppmd issue
+([`known-issues.md`](known-issues.md) §`pyppmd` crashes on damaged or crafted PPMd data). Both rapidgzip decoders run in a child process;
 `scripts/accelerator_crash_search.py` tells whether they still need to. `MemoryError` is not translated, so
 running out of memory is never mistaken for a damaged archive; the limits above exist to
 keep a hostile archive from getting that far. Public:
