@@ -3153,8 +3153,11 @@ def test_unrar_marks_follow_archiveys_rule(
 def test_missing_unrar_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("PATH", str(tmp_path))
     _clear_unrar_cache(monkeypatch)
-    with pytest.raises(PackageNotInstalledError, match="RARLAB"):
+    with pytest.raises(PackageNotInstalledError, match="RARLAB") as exc_info:
         rar_unrar.find_rarlab_unrar()
+    # The same component format_availability(RAR) names.
+    assert exc_info.value.missing == rar_unrar.rarlab_unrar_missing()
+    assert [m.name for m in exc_info.value.missing] == ["unrar"]
 
 
 def test_missing_unrar_rechecks_which_and_does_not_probe(

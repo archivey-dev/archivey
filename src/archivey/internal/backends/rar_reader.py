@@ -4285,6 +4285,7 @@ class RarReader(BaseArchiveReader):
                 f"{raw_message_of(exc)} Or install {CRYPTO_REQUIREMENT.name} "
                 f"({CRYPTO_REQUIREMENT.install_hint}): archivey then decrypts this "
                 "stored member itself.",
+                missing=(*exc.missing, CRYPTO_REQUIREMENT),
                 archive_name=self._archive_name,
                 member_name=member.name,
                 source_format=ArchiveFormat.RAR,
@@ -4305,6 +4306,7 @@ class RarReader(BaseArchiveReader):
         if not _crypto_available():
             raise PackageNotInstalledError(
                 CRYPTO_REQUIREMENT.message("decrypting a stored RAR member"),
+                missing=(CRYPTO_REQUIREMENT,),
                 archive_name=self._archive_name,
                 member_name=member.name,
                 source_format=ArchiveFormat.RAR,
