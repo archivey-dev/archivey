@@ -269,3 +269,30 @@ def test_modified_utc_normalizes_mixed_timestamps() -> None:
     # The stored field is untouched: provenance stays checkable.
     assert naive.modified is not None and naive.modified.tzinfo is None
     assert ArchiveMember(type=MemberType.FILE, name="none").modified_utc() is None
+
+
+@pytest.mark.parametrize("field", ["modified", "accessed", "created", "ctime"])
+def test_every_timestamp_has_a_utc_helper(field: str) -> None:
+    """Each timestamp converts as ``modified_utc`` does, and reads only its own field."""
+    from datetime import datetime, timedelta, timezone
+
+    helper = f"{field}_utc"
+    minus3 = timezone(timedelta(hours=-3))
+    naive = ArchiveMember(
+        type=MemberType.FILE, name="naive", **{field: datetime(2020, 6, 1, 14, 0)}
+    )
+    assert getattr(naive, helper)(tz_for_naive=minus3) == datetime(
+        2020, 6, 1, 17, 0, tzinfo=UTC
+    )
+    assert getattr(naive, helper)().tzinfo == UTC
+    aware = ArchiveMember(
+        type=MemberType.FILE,
+        name="aware",
+        **{field: datetime(2020, 6, 1, 14, 0, tzinfo=timezone(timedelta(hours=2)))},
+    )
+    assert getattr(aware, helper)(tz_for_naive=minus3) == datetime(
+        2020, 6, 1, 12, 0, tzinfo=UTC
+    )
+    assert getattr(naive, field).tzinfo is None
+    others = {"modified", "accessed", "created", "ctime"} - {field}
+    assert all(getattr(naive, f"{other}_utc")() is None for other in others)

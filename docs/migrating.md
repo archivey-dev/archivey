@@ -120,7 +120,8 @@ archivey uses it, so `modified` is in UTC there. A ZIP without it, or a RAR 4 ar
 local time with no zone, and `modified` has no zone either. TAR, 7z and RAR 5 archives record UTC:
 tarfile gives a number of seconds, and py7zr, rarfile and archivey give a UTC `datetime`. py7zr's
 `creationtime` holds this modification time. `member.modified_utc()` gives UTC for every format, and
-treats a time with no zone as your local time unless you pass another zone.
+treats a time with no zone as your local time unless you pass another zone. `accessed_utc()`,
+`created_utc()` and `ctime_utc()` do the same for the other three times.
 
 RAR, 7z and ZIP archives have a slot for a creation time, and what goes in it depends on where the
 archive was made. Tools on Windows store when the file was created, and tools on Linux and macOS
