@@ -33,6 +33,7 @@ from archivey.internal.backends.tar_parser import (
     parse_header_block,
     validate_sparse_map,
 )
+from tests.tar_build import forward
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("ARCHIVEY_FUZZ") != "1",
@@ -206,13 +207,13 @@ def _mutations(seed: bytes, label: str) -> Iterable[bytes]:
 
 
 def _walk(data: bytes, *, seekable: bool) -> None:
-    stream = io.BytesIO(data)
-    walker = TarWalker(stream, seekable=seekable)
+    stream = forward(io.BytesIO(data), seekable=seekable)
+    walker = TarWalker(stream)
     while isinstance(entry := walker.next_entry(_BUDGET), TarEntry):
         if entry.sparse is not None:
             validate_sparse_map(entry.sparse, entry.size, entry.stored_size, "m")
         if not seekable:
-            walker.open_data(entry.span()).read()
+            stream.read(entry.stored_size)
 
 
 def test_tar_walker_fuzz_harness() -> None:

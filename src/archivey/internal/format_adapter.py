@@ -67,7 +67,10 @@ from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.detection import INNER_CONTAINER_PROBE_BYTES
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.format_args import add_plugin_spellings, plugin_spelling_clash
-from archivey.internal.logs import detection as detection_logger
+from archivey.internal.logs import (
+    backends as backends_logger,
+    detection as detection_logger,
+)
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
@@ -217,6 +220,8 @@ class _PluginAdapter(BaseArchiveReader):
             decompress=self._decompress,
             report=self._report,
             link_target_unavailable=self._link_target_unavailable,
+            stream_format=format.stream,
+            metadata_bytes_left=self._metadata_bytes_left,
         )
         self._reader = self._open_reader(context)
         self._reader_open = True
@@ -313,9 +318,10 @@ class _PluginAdapter(BaseArchiveReader):
         message: str,
         details: DiagnosticContext,
         member: ArchiveMember | None,
+        fatal: bool,
     ) -> None:
         """``ReaderContext.report``: one diagnostic, with the archive and member filled
-        in."""
+        in; with ``fatal``, raised as ``CorruptionError`` whatever the policy."""
         if code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE:
             raise ArchiveyUsageError(
                 "report SYMLINK_TARGET_UNAVAILABLE with "
@@ -336,7 +342,23 @@ class _PluginAdapter(BaseArchiveReader):
             context=replace(details, **fill) if fill else details,  # type: ignore[type-var]
             member=member,
             attach_to_member=member is not None,
+            # What a format's reader reports, built in or plugin, as a backend's own.
+            logger=backends_logger,
+            escalate_as=CorruptionError if fatal else None,
+            escalate_kwargs=(
+                {"source_format": self._format, "archive_name": self._archive_name}
+                if fatal
+                else None
+            ),
         )
+
+    def _metadata_bytes_left(self) -> int | None:
+        """``ReaderContext.metadata_bytes_left``: the listing's running total, as the
+        tracker counts it, against the cap."""
+        cap = self._config.listing_limits.max_metadata_bytes
+        if cap is None:
+            return None
+        return max(cap - self._listing_tracker.metadata_bytes, 0)
 
     def _link_target_unavailable(
         self,
@@ -657,7 +679,15 @@ class _Span:
     ``offset`` of its layer's stream, with the digests its header stored; or, for a
     member the reader decodes itself (``MemberSpan.data``), that stream (``decoded``)."""
 
-    __slots__ = ("custom", "decoded", "expected", "layer", "length", "offset")
+    __slots__ = (
+        "custom",
+        "decode",
+        "decoded",
+        "expected",
+        "layer",
+        "length",
+        "offset",
+    )
 
     def __init__(
         self,
@@ -667,10 +697,12 @@ class _Span:
         expected: Mapping[HashAlgorithm, bytes] | None,
         custom: CustomDigests | None,
         decoded: _Decoded | None = None,
+        decode: Callable[[BinaryIO], BinaryIO | io.RawIOBase] | None = None,
     ) -> None:
         self.layer = layer
         self.offset = offset
         self.length = length
+        self.decode = decode
         self.expected = expected
         self.custom = custom
         self.decoded = decoded
@@ -781,8 +813,12 @@ class _Decoded:
 # A forward skip up to this many bytes reads them through the walk's buffer; a longer
 # one seeks, when the stream can.
 _SKIP_BY_READING = 64 * 1024
-# The walk's read buffer: headers are small reads.
-_WALK_BUFFER = 64 * 1024
+# The walk's read buffer: headers are small reads. Fixed rather than io's default,
+# which Python 3.14 raised from 8 KiB to 128 KiB, and small: a larger read-ahead reads
+# and decodes further past what the listing needs, so listing costs and source reads
+# would differ by Python version, and on a compressed archive a damaged tail would be
+# reached, and fail the read, before the walk needs it.
+_WALK_BUFFER = 8 * 1024
 
 
 class _ForwardInput(ReadOnlyIOStream):
@@ -1199,6 +1235,9 @@ class SequentialReaderAdapter(_PluginAdapter):
             assert layer is not None
             forward = self._forward = layer.forward
             member = self._take_span(span, layer, index)
+            if span.retained_bytes:
+                # The reader keeps them for the member (MemberSpan.retained_bytes).
+                self._listing_tracker.account_retained_bytes(span.retained_bytes)
             record = member._raw
             assert isinstance(record, _Span)
             decoded = self._listing_decoded = record.decoded
@@ -1275,13 +1314,29 @@ class SequentialReaderAdapter(_PluginAdapter):
                 f"{name}.walk() yielded {member.name!r} with checked=True and no "
                 "data: stored bytes are checked against the span's digests"
             )
+        decode = span.decode
+        if decode is not None and (data is not None or not callable(decode)):
+            raise ValueError(
+                f"{name}.walk() yielded {member.name!r} with decode={decode!r}: decode "
+                "is a callable, for stored bytes (data_length), not with data"
+            )
+        retained = span.retained_bytes
+        if not isinstance(retained, int) or retained < 0:
+            raise ValueError(
+                f"{name}.walk() yielded {member.name!r} with retained_bytes "
+                f"{retained!r}, not a whole number of bytes"
+            )
         # A directory's data is its declared size too: it stays a DIRECTORY, a read
         # delivers the bytes and the listing reports them (_report_listed). Decoded
         # data has no stored length to check the size against: its size is the one
-        # listed, enforced when read.
-        sized = data is None and (
-            member.type is MemberType.FILE
-            or (member.type is MemberType.DIRECTORY and length)
+        # listed, enforced when read. Nor do stored bytes that decode first.
+        sized = (
+            data is None
+            and decode is None
+            and (
+                member.type is MemberType.FILE
+                or (member.type is MemberType.DIRECTORY and length)
+            )
         )
         if sized:
             if member.size is None:
@@ -1301,7 +1356,9 @@ class SequentialReaderAdapter(_PluginAdapter):
             stream = self._decoded_stream(data)
             decoded = _Decoded(stream, span.checked, index, member.size, member.name)
         forward = layer.forward
-        record = _Span(layer, forward.offset, length, expected, custom or None, decoded)
+        record = _Span(
+            layer, forward.offset, length, expected, custom or None, decoded, decode
+        )
         member._raw = record
         self._report_listed(member, presented, index)
         if (
@@ -1611,8 +1668,18 @@ class SequentialReaderAdapter(_PluginAdapter):
     def _span_parts(
         self, member: ArchiveMember, record: _Span, stream: BinaryIO
     ) -> MemberStreamParts:
-        """``member``'s parts over ``stream``, its data window or view."""
+        """``member``'s parts over ``stream``, its data window or view, decoded first
+        when the reader said how (``MemberSpan.decode``)."""
         expected = record.expected if record.expected is not None else member.hashes
+        decode = record.decode
+        if decode is not None:
+            # Through the reader's error boundary: a refusal here (a map that does
+            # not fit the size) is the reader's verdict on the archive.
+            try:
+                stream = _full_count(decode(stream))
+            except BaseException:
+                stream.close()
+                raise
         return self._member_parts(
             stream,
             member.name,
@@ -1620,8 +1687,9 @@ class SequentialReaderAdapter(_PluginAdapter):
             expected_size=member.size,
             expected_hashes=expected or None,
             verify_member=member,
-            # A window and a view both stop at the data's end.
-            bounded=True,
+            # A window and a view both stop at the data's end; what a decode makes of
+            # them is the reader's, checked for bytes past the size.
+            bounded=decode is None,
             custom_digests=record.custom,
         )
 

@@ -8,13 +8,13 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-
-from archivey import ArchiveFormat, StreamFormat, open_archive
-from archivey.formats import register_format
 from archivey.internal.backends.tar_sequential import (
     TAR_SEQUENTIAL,
     TarSequentialHandler,
 )
+
+from archivey import ArchiveFormat, StreamFormat, open_archive
+from archivey.formats import register_format
 from archivey.internal.format_adapter import registration_scope
 from tests.sample_archives import CORPUS, CorpusEntry, corpus_archive_path
 

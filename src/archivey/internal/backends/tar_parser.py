@@ -33,7 +33,6 @@ otherwise.
 
 from __future__ import annotations
 
-import errno
 import re
 import struct
 import zlib
@@ -42,7 +41,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
-from typing import BinaryIO, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 from archivey.exceptions import (
     ArchiveyError,
@@ -52,9 +51,10 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.streams.decompressor_stream import _COMPRESSED_READ_SIZE_MAX
-from archivey.internal.streams.streamtools import read_within_reach
-from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.terminal import quoted
+
+if TYPE_CHECKING:
+    from archivey.formats import ForwardStream
 
 BLOCKSIZE = 512
 
@@ -986,46 +986,29 @@ class _Charger:
 class TarWalker:
     """Walks the headers of one TAR byte stream, one member per :meth:`next_entry`.
 
-    ``seekable`` walks skip a member's data with a seek; forward-only walks read
-    through it in steps, so the cost is the bytes the archive holds, not the size a
-    header declares. Both read the declared span of a link header whose first block
-    is zero (:meth:`_place_link_data`), once and bounded the same way. The walker
-    owns the stream position between calls: a caller that reads member data on a
-    seekable stream may move it freely (each call seeks back), and on a forward-only
-    stream reads through :meth:`open_data`, whose reads the walker counts.
+    The stream is read forward only (a :class:`~archivey.formats.ForwardStream`): the
+    walker reads headers and skips what lies between them, and between two calls the
+    caller may read or skip a member's data, which the walker's next call skips the
+    rest of. A skip on a seekable source seeks; on a pipe or a codec stream it reads
+    through, so the cost is the bytes the archive holds, not the size a header
+    declares. Either way an archive that ends inside the skipped bytes raises
+    ``TruncatedError``. The span a link header declares is looked at with
+    :meth:`~archivey.formats.ForwardStream.peek` (:meth:`_place_link_data`).
     """
 
-    def __init__(
-        self, stream: BinaryIO, *, seekable: bool, end: int | None = None
-    ) -> None:
+    def __init__(self, stream: ForwardStream) -> None:
         self._stream = stream
-        self._seekable = seekable
-        # Byte length of the archive when it is a fact (a plain file). A read is then
-        # clamped to what the file holds, so one member is one read. Unknown (a
-        # compressed stream, a test buffer) keeps the stepped read.
-        self._end = end
         self._pos = 0  # where the next header starts, once the current data is skipped
-        self._stream_pos = 0  # forward-only: bytes consumed from the stream so far
         self._global: dict[bytes, PaxValue] = {}
         self._global_view: Mapping[bytes, PaxValue] = _ReadOnly({})
         self._global_binary = False
-        # The end of the last member's data area, while it is still to be checked
-        # (see _check_data_present).
-        self._unchecked_data_end: int | None = None
         self.end: TarEnd | None = None
-        # Forward-only: a block read ahead and not yet used, with its offset: the block
-        # after a link header with a size, which such a walk cannot read twice. A
-        # seekable walk reads it again: a caller may move that stream between calls,
-        # and the header loop reads an extended header's records from where the
-        # stream stands after its block.
-        self._held_block: tuple[int, bytes] | None = None
         # A link's skipped span that began with a zero block and held only zeros, as
         # (start, end), until the next header after it is read (_end_at_zero_span).
         self._zero_span: tuple[int, int] | None = None
         # What follows the zero block the walk ended on, when that block starts a
-        # link's zero span the walk had already read past. Served by stream_after_end
-        # in place of a seek back, which on a compressed source decodes the stream
-        # again from its start.
+        # link's zero span the walk had already read past: served by stream_after_end
+        # ahead of the stream.
         self._replay: _ReplayStream | None = None
         # The first error next_entry raised: the walk is over, and later calls
         # raise it again.
@@ -1034,63 +1017,38 @@ class TarWalker:
     # The stream ---------------------------------------------------------------
 
     def _seek(self, offset: int) -> None:
+        """Move forward to ``offset``, skipping what the caller left of a member's
+        data and its padding."""
         if offset > MAX_OFFSET:
             raise CorruptionError(
                 f"TAR archive asks for offset {offset}, past any file's size"
             )
-        if self._seekable:
-            try:
-                self._stream.seek(offset)
-            except (OverflowError, ValueError) as exc:
-                raise CorruptionError(
-                    f"TAR archive asks for offset {offset}, which the source cannot "
-                    "seek to"
-                ) from exc
-            except OSError as exc:
-                if exc.errno in _SEEK_RANGE_ERRNOS:
-                    raise TruncatedError(
-                        f"TAR archive is truncated: it ends before offset {offset}"
-                    ) from exc
-                raise
-            self._stream_pos = offset
-            return
-        self._discard(offset - self._stream_pos)
-
-    def _discard(self, count: int) -> None:
-        assert count >= 0, "a forward-only walk never goes back"
-        while count:
-            want = min(count, READ_STEP)
-            got = len(self._stream.read(want))
-            self._stream_pos += got
-            count -= got
-            if got < want:
-                raise TruncatedError(
-                    f"TAR archive is truncated: a member's data runs to offset "
-                    f"{self._stream_pos + count}, but the archive ends at "
-                    f"{self._stream_pos}"
-                )
+        here = self._stream.offset
+        assert offset >= here, "a TAR walk only moves forward"
+        if offset > here:
+            self._stream.skip(offset - here)
 
     def _read(self, size: int, step: int = READ_STEP) -> bytes:
-        end = self._end
-        # ``end`` is a fact, so clamping cannot hide bytes the file really holds.
-        # Without it a declared size is read in steps: one joined copy per member
-        # larger than the step.
-        remaining = None if end is None else max(0, end - self._stream_pos)
-        data = read_within_reach(self._stream, size, remaining=remaining, step=step)
-        self._stream_pos += len(data)
-        return data
+        """Up to ``size`` bytes, fewer only at the end of the archive. A declared size
+        is read in steps, so what it allocates is bound by the bytes the archive
+        holds."""
+        read = self._stream.read
+        if size <= step:
+            return read(size)
+        chunks: list[bytes] = []
+        left = size
+        while left:
+            want = min(left, step)
+            chunk = read(want)
+            chunks.append(chunk)
+            left -= len(chunk)
+            if len(chunk) < want:
+                break
+        return b"".join(chunks)
 
     def _read_block(self, offset: int) -> bytes:
-        held = self._held_block
-        if held is not None:
-            self._held_block = None
-            # Held only at _pos, the next header's offset, which is what the header
-            # loop asks for next; any other offset would be a read back on a
-            # forward-only stream.
-            assert held[0] == offset, (held[0], offset)
-            return held[1]
         self._seek(offset)
-        return self._read(BLOCKSIZE)
+        return self._stream.read(BLOCKSIZE)
 
     def _read_zeros(self, count: int) -> tuple[bool, int]:
         """Read up to ``count`` bytes from the current position, stopping after the
@@ -1106,40 +1064,18 @@ class TarWalker:
                 break
         return True, read
 
-    def _check_data_present(self, end: int) -> None:
-        """On a seekable stream, raise unless the byte before ``end`` exists.
-
-        A seek past the end succeeds, so a member whose data area the archive cuts
-        short would otherwise read as a clean end. ``tarfile`` makes the same check.
-        """
-        if not self._seekable:
-            return
-        self._seek(end - 1)
-        if not self._read(1):
-            raise TruncatedError(
-                f"TAR archive is truncated: a member's data runs to offset {end}, "
-                "past the end of the archive"
-            )
-
     @property
     def position(self) -> int:
         """Where the next header starts (the end of the last member's data area)."""
         return self._pos
 
-    def open_data(self, span: TarSpan) -> _ForwardSlice:
-        """A forward-only stream over ``span``'s data area (``stored_size`` bytes),
-        read through the walk's own stream. It is good while the walk stays at the
-        data, that is until the next :meth:`next_entry`; its ``in_place()`` tells
-        whether it still is."""
-        return _ForwardSlice(self, span.data_offset, span.stored_size)
-
-    def stream_after_end(self) -> BinaryIO:
-        """The stream, positioned right after the zero block the walk ended on, for
-        the caller's check of the rest of the end-of-archive marker and what follows
-        it."""
+    def stream_after_end(self) -> TailReader:
+        """What follows the zero block the walk ended on, for the caller's check of
+        the rest of the end-of-archive marker and what comes after it. Read it in
+        sized steps."""
         assert self.end is not None and self.end.kind is TarEndKind.ZERO_BLOCK
         if self._replay is not None:
-            return cast(BinaryIO, self._replay)
+            return self._replay
         self._seek(self.end.offset + BLOCKSIZE)
         return self._stream
 
@@ -1168,8 +1104,6 @@ class TarWalker:
         charge = _Charger(budget)
         start = self._pos
         offset = start
-        unchecked = self._unchecked_data_end
-        self._unchecked_data_end = None
         zero_span = self._zero_span
         self._zero_span = None
         own: dict[bytes, PaxValue] = {}
@@ -1185,11 +1119,6 @@ class TarWalker:
         while True:
             block = self._read_block(offset)
             if len(block) < BLOCKSIZE:
-                if not block and offset == unchecked:
-                    # Only an empty read leaves it open whether the last member's data
-                    # area is whole. Checked only here, so a walk over a stream that a
-                    # member read has moved on never seeks back.
-                    self._check_data_present(offset)
                 if extended_at is not None:
                     raise TruncatedError(
                         "TAR archive is truncated after the extended header at "
@@ -1278,9 +1207,7 @@ class TarWalker:
             except _RejectedHeader as exc:
                 return self._reject(offset, exc.reason)
             self._pos = entry.data_end
-            if entry.stored_size:
-                self._unchecked_data_end = entry.data_end
-            elif entry.size and entry.typeflag in LINK_TYPES:
+            if not entry.stored_size and entry.size and entry.typeflag in LINK_TYPES:
                 self._place_link_data(entry)
             return entry
 
@@ -1312,31 +1239,27 @@ class TarWalker:
         ``link_data`` is :attr:`LinkData.ENDS_ARCHIVE`.
         """
         start = entry.data_offset
-        block = self._read_block(start)
+        # Looked at, not read: when it is a member header the walk reads it next.
+        self._seek(start)
+        block = self._stream.peek(BLOCKSIZE)
         if len(block) < BLOCKSIZE or isinstance(
             parse_header_block(block, start), HeaderBlock
         ):
-            if not self._seekable:
-                self._held_block = (start, block)
             return
         end = start + _round_up(entry.size)
         entry.link_data = LinkData.SKIPPED
         self._pos = end
-        self._unchecked_data_end = end
         if block.count(0) != BLOCKSIZE:
             return
+        self._stream.skip(BLOCKSIZE)
         rest = end - start - BLOCKSIZE
         all_zero, read = self._read_zeros(rest)
         if not all_zero:
             return
         if read == rest:
-            # Read whole, so the span needs no presence check: on a compressed source
-            # that check is a seek back.
-            self._unchecked_data_end = None
             self._zero_span = (start, end)
             return
         entry.link_data = LinkData.ENDS_ARCHIVE
-        self._unchecked_data_end = None
         self.end = TarEnd(TarEndKind.ZERO_BLOCK, start)
         self._replay = self._replay_from(read, b"", start + BLOCKSIZE + read)
 
@@ -1358,10 +1281,9 @@ class TarWalker:
 
     def _replay_from(self, zeros: int, head: bytes, resume: int) -> _ReplayStream:
         """``zeros`` zero bytes and ``head``, the bytes the walk read up to
-        ``resume``, then the stream from ``resume``. The stream is moved there only
-        when the replay reaches it, with a forward seek: a seekable stream may have
-        been moved since."""
-        return _ReplayStream(zeros, head, self._stream, lambda: self._seek(resume))
+        ``resume``, where the stream is, then the stream."""
+        assert self._stream.offset == resume, (self._stream.offset, resume)
+        return _ReplayStream(zeros, head, self._stream)
 
     def _reject(self, offset: int, reason: str) -> TarEnd:
         self.end = TarEnd(TarEndKind.REJECTED, offset, reason=reason)
@@ -1586,9 +1508,11 @@ class TarWalker:
         return SparseMap.from_pairs(pairs), data_offset
 
 
-# What a filesystem answers to a seek past the offsets it supports (ext4 for a
-# base-256 size of 2**62): the archive is shorter than that offset, as GNU tar reports.
-_SEEK_RANGE_ERRNOS = frozenset((errno.EINVAL, errno.EOVERFLOW))
+class TailReader(Protocol):
+    """What :meth:`TarWalker.stream_after_end` returns: read in sized steps, a short
+    read only at the end."""
+
+    def read(self, n: int, /) -> bytes: ...
 
 
 class _ReplayStream:
@@ -1596,20 +1520,12 @@ class _ReplayStream:
     view of bytes it had read past, as stream_after_end serves them. The zeros are
     made as they are read, so a long span costs no memory."""
 
-    def __init__(
-        self,
-        zeros: int,
-        head: bytes,
-        stream: BinaryIO,
-        position: Callable[[], None],
-    ) -> None:
+    def __init__(self, zeros: int, head: bytes, stream: TailReader) -> None:
         self._zeros = zeros
         self._head = head
         self._stream = stream
-        # Puts the stream where the replayed bytes end, once, before its first read.
-        self._position: Callable[[], None] | None = position
 
-    def read(self, size: int = -1, /) -> bytes:
+    def read(self, size: int, /) -> bytes:
         if size < 0:
             raise ValueError("a replayed TAR tail is read in sized steps")
         # Filled across the parts, so a short read means the end, as on the stream.
@@ -1621,9 +1537,6 @@ class _ReplayStream:
             out += self._head[:take]
             self._head = self._head[take:]
         if len(out) < size:
-            if self._position is not None:
-                self._position()
-                self._position = None
             out += self._stream.read(size - len(out))
         return out
 
@@ -1644,58 +1557,3 @@ class _ReadOnly(dict[bytes, PaxValue]):
     the walker never writes to one once it is made."""
 
     __slots__ = ()
-
-
-class _ForwardSlice(ReadOnlyIOStream):
-    """Forward-only reads of one member's data area, counted by its walker."""
-
-    def __init__(self, walker: TarWalker, start: int, length: int) -> None:
-        super().__init__()
-        self._walker = walker
-        self._start = start
-        self._length = length
-        self._done = 0
-
-    def tell(self) -> int:
-        if self.closed:
-            raise ValueError("I/O operation on closed file.")
-        return self._done
-
-    def in_place(self) -> bool:
-        """Whether the walk is still where this stream reads next."""
-        return self._walker._stream_pos == self._start + self._done
-
-    def read(self, size: int = -1, /) -> bytes:
-        if self.closed:
-            raise ValueError("read from a closed TAR member stream")
-        walker = self._walker
-        if not self.in_place():
-            raise ValueError(
-                "TAR member data is no longer readable: the walk has moved on"
-            )
-        left = self._length - self._done
-        whole = size is None or size < 0
-        want = left if whole else min(size, left)
-        data = walker._read(want, DATA_READ_STEP)
-        self._done += len(data)
-        if whole and data and len(data) < want:
-            # A read with no size asks for the whole member, so the error at the cut
-            # belongs in this call and the bytes before it are not returned. The next
-            # read raises a decoder's deferred error, or gets no bytes.
-            self._done += len(walker._read(want - len(data), DATA_READ_STEP))
-            data = b""
-        if data and len(data) < want:
-            # A short read is the end (ADR 0014). The bytes go to the caller now, and
-            # the next read, which gets none, raises.
-            return data
-        if len(data) < want:
-            error = TruncatedError(
-                "TAR archive is truncated inside a member's data at offset "
-                f"{walker._stream_pos}"
-            )
-            # The archive ends inside this member, so the walk ends here too, and
-            # its next call raises this same error rather than a second report of
-            # the same cut.
-            walker._failed = error
-            raise error
-        return data

@@ -48,16 +48,18 @@ from tests.tar_build import (
     block as _block,
     data as _data,
     field as _field,
+    forward as _forward,
     octal as _octal,
     pax as _pax,
     pax_record as _rec,
+    walker as _walker,
 )
 
 
 def _walk(
     data: bytes, *, seekable: bool = True, budget=None
 ) -> tuple[list[TarEntry], TarEnd]:
-    walker = TarWalker(io.BytesIO(data), seekable=seekable)
+    walker = _walker(data, seekable=seekable)
     entries = []
     while isinstance(entry := walker.next_entry(budget), TarEntry):
         entries.append(entry)
@@ -549,7 +551,7 @@ def test_walk_ends(seekable: bool) -> None:
 @pytest.mark.parametrize("seekable", [True, False])
 def test_walk_truncated_inside_member_data(seekable: bool) -> None:
     data = _block(b"a", size=2000) + b"x" * 1500
-    walker = TarWalker(io.BytesIO(data), seekable=seekable)
+    walker = _walker(data, seekable=seekable)
     assert isinstance(walker.next_entry(), TarEntry)
     with pytest.raises(TruncatedError):
         walker.next_entry()
@@ -628,7 +630,7 @@ def test_walk_refuses_an_offset_past_any_file() -> None:
         h[124:136] = b"\x80" + (2**63 - 600).to_bytes(11, "big")
 
     data = _block(b"a", patch=huge) + _END
-    walker = TarWalker(io.BytesIO(data), seekable=True)
+    walker = _walker(data, seekable=True)
     assert isinstance(walker.next_entry(), TarEntry)
     with pytest.raises(CorruptionError):
         walker.next_entry()
@@ -1280,7 +1282,7 @@ def test_the_walk_stays_failed_after_an_error(seekable: bool) -> None:
     records = {"GNU.sparse.major": "1", "GNU.sparse.minor": "0"}
     bad = _data(b"x\n")
     data = _block(b"a") + _pax(records) + _block(b"s", size=len(bad)) + bad + _END
-    walker = TarWalker(io.BytesIO(data), seekable=seekable)
+    walker = _walker(data, seekable=seekable)
     assert isinstance(walker.next_entry(), TarEntry)
     for _ in range(2):
         with pytest.raises(CorruptionError):
@@ -1294,16 +1296,15 @@ def test_bad_pax_size_is_damage() -> None:
 
 def test_forward_only_data_stream() -> None:
     data = _tarfile_bytes(lambda t: (_add(t, "a", b"hello"), _add(t, "b", b"world")))
-    walker = TarWalker(io.BytesIO(data), seekable=False)
+    stream = _forward(io.BytesIO(data), seekable=False)
+    walker = TarWalker(stream)
     a = walker.next_entry()
     assert isinstance(a, TarEntry)
-    stream = walker.open_data(a.span())
     assert stream.read(2) == b"he"
-    b = walker.next_entry()  # reads through the rest of "a"
+    b = walker.next_entry()  # skips the rest of "a" and its padding
     assert isinstance(b, TarEntry)
-    with pytest.raises(ValueError):
-        stream.read()
-    assert walker.open_data(b.span()).read() == b"world"
+    assert stream.offset == b.data_offset
+    assert stream.read(b.stored_size) == b"world"
 
 
 def test_numeric_field_split_matches_the_field_table() -> None:

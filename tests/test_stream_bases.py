@@ -418,9 +418,6 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         rar_reader,
         sevenzip_pipeline,
         sevenzip_reader,
-        tar_parser,
-        tar_reader,
-        tar_sequential,
         zip_aes,
         zip_forward_reader,
         zip_local_walk,
@@ -514,27 +511,20 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         detection._BoundedPeekReader,
         # Under a solid RAR pass's SolidBlockReader, which only reads forward.
         rar_copy_sources._TeeBlock,
-        # A member's stored bytes, read forward from the walk's stream (for .tar.gz,
-        # the decompressed stream) in one pass. TAR stores member data as is, so no
-        # codec above it has a table, and a pass's member streams are forward-only.
-        tar_parser._ForwardSlice,
-        # A random-access pass's member data: the slice above (or a sequential
-        # format's span window), or a view from where it stopped once the walk moves
-        # on. Forward-only, stored bytes.
+        # A random-access pass's member data: a sequential format's span window, or
+        # a view from where it stopped once the walk moves on. Forward-only, stored
+        # bytes.
         walk_handoff.WalkHandoffStream,
-        # A random-access member's data view: the view's offsets, forwarded.
-        tar_reader._MemberDataView,
-        # A sequential plugin's member data in a streaming pass: stored bytes read
-        # forward from the walk's stream, like TAR's slice; no codec above it.
+        # A sequential format's member data (TAR's too) in a streaming pass: stored
+        # bytes read forward from the walk's stream (for .tar.gz, the decompressed
+        # stream); no codec above it keeps a table, and a pass's member streams are
+        # forward-only.
         format_adapter._SpanWindow,
         # A sequential plugin's decoded member data (``MemberSpan.data``), read
         # forward through the walk that yielded it or through a walk of its own; the
         # plugin decodes, so no archivey codec above it keeps a table.
         format_adapter._DecodedWindow,
         format_adapter._DataWalkStream,
-        # The TAR port's sparse member: its stored chunks read forward from the walk's
-        # stream, below the SparseStream that expands them; stored bytes, no table.
-        tar_sequential._StoredChunks,
         # The compressed input of a stream a streaming walk decompresses part-way
         # (``ForwardStream.decompress``): the walk's buffer read forward, below the
         # codec, which keeps no table over it.
@@ -684,7 +674,6 @@ def test_delegating_stream_close_inventory() -> None:
         rar_copy_sources,
         rar_reader,
         sevenzip_pipeline,
-        tar_reader,
         zip_reader,
     )
     from archivey.internal.external import cli, unar
@@ -714,7 +703,6 @@ def test_delegating_stream_close_inventory() -> None:
         rar_copy_sources._TeeBlock,
         sparse.SparseStream,
         readahead.ReadAheadStream,
-        tar_reader._MemberDataView,
     }
     subclass_closes_inner = {
         cli.ProcessOutputStream,
