@@ -160,16 +160,16 @@ Two things are ZIP-specific rather than general in the shared detector:
   (`MZ`, ELF, or `#!` at offset 0). Behind any other leading bytes they are found by the
   same scan run last, on a source every other step declined and whose name names no
   format. That ordering is what keeps the forward search from reading up to 2 MiB of every
-  file a caller opens. A cued hit is reported as `ZIP` with a
-  `payload_offset`, ahead of the content probes (the tier that reports headerless stream
-  codecs), so a stub with a ZIP behind it comes back as a ZIP rather than as a guess at the
-  stub's own bytes. `THOROUGH` does not lift the gate today — `THOROUGH_BUDGET` raises probe
-  links, index bytes and the completion window but keeps the same 2 MiB window; a scan
-  past that window is designed and not shipped. The cue set, the scan window, the budget tiers and why a hit is
-  validated are shared with 7z and RAR —
-  [`topics/prefixed-archives.md`](../topics/prefixed-archives.md). What is ZIP's alone: the
-  local-header search and its validator above, the offset conventions in §3, and the fact
-  that ZIP is the only format that can locate itself from the end.
+  file a caller opens. A cued hit is reported as `ZIP` with a `payload_offset`, ahead of
+  the content probes (the tier that reports headerless stream codecs), so a stub with a
+  ZIP behind it comes back as a ZIP rather than as a guess at the stub's own bytes.
+  `THOROUGH` does not lift the gate today — `THOROUGH_BUDGET` raises probe links, index
+  bytes and the completion window but keeps the same 2 MiB window; a scan past that window
+  is designed and not shipped. The cue set, the scan window, the budget tiers and why a
+  hit is validated are shared with 7z and RAR —
+  [`topics/prefixed-archives.md`](../topics/prefixed-archives.md). What is ZIP's alone:
+  the local-header search and its validator above, the offset conventions in §3, and the
+  fact that ZIP is the only format that can locate itself from the end.
 - A **tail probe** — locating the EOCD directly instead of scanning forward — is designed and
   not shipped, and ZIP is the only format it can serve. Until it lands, a prefixed ZIP behind
   bytes that look like neither an executable nor a script (a JPEG polyglot, a plain
