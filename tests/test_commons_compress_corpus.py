@@ -200,18 +200,6 @@ _TRIAGE: dict[str, str] = {
 _PIPE_TRIAGE: dict[str, str] = {
     **dict.fromkeys(
         (
-            "COMPRESS-335.tar",
-            "COMPRESS-612/test-times-oldbsdtar.tar",
-            "COMPRESS-612/test-times-star-folder.tar",
-            "COMPRESS-612/test-times-v7.tar",
-            "org/apache/commons/compress/COMPRESS-700/flutter_awesome_buttons-0.1.0.tar",
-            "org/apache/commons/compress/COMPRESS-707/COMPRESS-707-lenient.tar",
-        ),
-        "NO MAGIC: a tar with no ustar magic, found only by its .tar name",
-    ),
-    **dict.fromkeys(
-        (
-            "COMPRESS-553-fail.tar",
             "COMPRESS-554-fail.tar",
             "COMPRESS-569-fail.tar",
             "invalid-zip.zip",
@@ -227,7 +215,6 @@ _PIPE_TRIAGE: dict[str, str] = {
     ),
     **dict.fromkeys(
         (
-            "COMPRESS-117.tar",
             "org/apache/commons/compress/COMPRESS-649/some-900kb-text.txt",
             "COMPRESS-477/split_zip_created_by_zip/split_zip_created_by_zip_zip64.z02",
             "test-macos-l0-lh6.lha",

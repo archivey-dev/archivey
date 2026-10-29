@@ -64,12 +64,6 @@
     "format": "tar/uncompressed",
     "members": 1,
     "digest": "729248c1e40878d7"
-   },
-   "pipe": {
-    "format": "raw_stream/br",
-    "members": 1,
-    "digest": "3b7fe60fb71c0bd0",
-    "failed": 1
    }
   },
   "COMPRESS-131.bz2": {
@@ -439,9 +433,6 @@
     "format": "tar/uncompressed",
     "members": 1,
     "digest": "4b8697b1ffa4dcc8"
-   },
-   "pipe": {
-    "error": "FormatDetectionError"
    }
   },
   "COMPRESS-348.7z": {
@@ -919,9 +910,6 @@
     "error": "CorruptionError",
     "members": 1,
     "digest": "9cc0a4b36f28fdf5"
-   },
-   "pipe": {
-    "error": "FormatDetectionError"
    }
   },
   "COMPRESS-554-fail.tar": {
@@ -1031,9 +1019,6 @@
     "format": "tar/uncompressed",
     "members": 1,
     "digest": "2b2b6a75b3a2e862"
-   },
-   "pipe": {
-    "error": "FormatDetectionError"
    }
   },
   "COMPRESS-612/test-times-oldgnu-incremental.tar": {
@@ -1100,9 +1085,6 @@
     "format": "tar/uncompressed",
     "members": 2,
     "digest": "bfe883b9afeb15b2"
-   },
-   "pipe": {
-    "error": "FormatDetectionError"
    }
   },
   "COMPRESS-612/test-times-ustar.tar": {
@@ -1125,9 +1107,6 @@
     "format": "tar/uncompressed",
     "members": 1,
     "digest": "4d2b571946954fbd"
-   },
-   "pipe": {
-    "error": "FormatDetectionError"
    }
   },
   "COMPRESS-612/test-times-xstar-folder.tar": {
@@ -2990,9 +2969,6 @@
     "format": "tar/uncompressed",
     "members": 72,
     "digest": "daa4093941d762fc"
-   },
-   "pipe": {
-    "error": "FormatDetectionError"
    }
   },
   "org/apache/commons/compress/COMPRESS-705/grafana-9.2.9.tar": {
@@ -3023,9 +2999,6 @@
     "format": "tar/uncompressed",
     "members": 1,
     "digest": "dee839f2be7d84c5"
-   },
-   "pipe": {
-    "error": "FormatDetectionError"
    }
   },
   "org/apache/commons/compress/COMPRESS-715/compress715.zip": {
