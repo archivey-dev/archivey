@@ -51,6 +51,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.internal.streams.decompressor_stream import _COMPRESSED_READ_SIZE_MAX
 from archivey.internal.streams.streamtools import read_within_reach
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.terminal import quoted
@@ -82,10 +83,21 @@ PAX_NUMBER_DIGITS = 20
 # range 0..4294967295") and keeps the header's.
 MAX_PAX_ID = 2**32 - 1
 
-# The read step for data whose size a header declares: an extended header, or the data
-# area a forward-only walk reads through. A declared size is attacker-chosen, so it is
-# never one read.
+# The read step for what the walk reads and a header sizes: an extended header, the
+# data area a forward-only walk skips (``_discard``), and a link's declared data span
+# it scans for zeros (``_read_zeros``). A declared size is attacker-chosen, so it is
+# never one read. The skip stays at this step: on a compressed source it is bound by
+# the decoder (1 MiB measured no faster listing a compressed tar of 1 MiB members), on
+# an uncompressed one buffered reads are cheap, and a smaller step over-reads less at
+# the end of a short archive.
 READ_STEP = 64 * 1024
+# The read step for member data a consumer reads through the walk (``_ForwardSlice``)
+# from a stream of unknown length: still a bound on the allocation a declared size can
+# cause, at 1 MiB. It matches the piece the member verifier's sized drain reads
+# (``verify._SIZED_DRAIN_CHUNK``, which is this constant too), so one such piece is one
+# read here; at 64 KiB it was sixteen reads and a join. A caller's larger read is still
+# split.
+DATA_READ_STEP = _COMPRESSED_READ_SIZE_MAX
 
 POSIX_MAGIC = b"ustar\x00"
 GNU_MAGIC = b"ustar  \x00"
@@ -1058,15 +1070,13 @@ class TarWalker:
                     f"{self._stream_pos}"
                 )
 
-    def _read(self, size: int) -> bytes:
+    def _read(self, size: int, step: int = READ_STEP) -> bytes:
         end = self._end
         # ``end`` is a fact, so clamping cannot hide bytes the file really holds.
         # Without it a declared size is read in steps: one joined copy per member
         # larger than the step.
         remaining = None if end is None else max(0, end - self._stream_pos)
-        data = read_within_reach(
-            self._stream, size, remaining=remaining, step=READ_STEP
-        )
+        data = read_within_reach(self._stream, size, remaining=remaining, step=step)
         self._stream_pos += len(data)
         return data
 
@@ -1666,13 +1676,13 @@ class _ForwardSlice(ReadOnlyIOStream):
         left = self._length - self._done
         whole = size is None or size < 0
         want = left if whole else min(size, left)
-        data = walker._read(want)
+        data = walker._read(want, DATA_READ_STEP)
         self._done += len(data)
         if whole and data and len(data) < want:
             # A read with no size asks for the whole member, so the error at the cut
             # belongs in this call and the bytes before it are not returned. The next
             # read raises a decoder's deferred error, or gets no bytes.
-            self._done += len(walker._read(want - len(data)))
+            self._done += len(walker._read(want - len(data), DATA_READ_STEP))
             data = b""
         if data and len(data) < want:
             # A short read is the end (ADR 0014). The bytes go to the caller now, and
