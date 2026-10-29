@@ -20,6 +20,9 @@ from tests.sample_archives import CORPUS, corpus_archive_path
 
 # Small corpus entry ids that build quickly and cover common layouts.
 # ``sevenzip-ppmd`` is 7z only: the format filter keeps it out of the other targets.
+# PPMd decodes in a child process (process_isolation), so the seed covers the 7z
+# header, solid demux and child protocol, not the native decoder: Atheris gets no
+# coverage from inside pyppmd, and a pyppmd crash comes back as an ArchiveyError.
 _SEED_ENTRY_IDS = frozenset(
     {"basic", "encoding", "large", "adversarial", "adversarial-tar", "sevenzip-ppmd"}
 )

@@ -486,7 +486,7 @@ _SEEK_ARCHIVES: tuple[_SeekSpec, ...] = (
     # Mixed 7z is archive-wide encryption: the corpus-plain file is encrypted too.
     _SeekSpec("basic", "7z"),
     _SeekSpec("sevenzip-stored", "7z", packing="stored"),
-    _SeekSpec("sevenzip-ppmd", "7z", packing="compressed"),
+    _SeekSpec("sevenzip-ppmd", "7z"),
     _SeekSpec("encrypted", "7z"),
     _SeekSpec("encrypted-mixed", "7z"),
     _SeekSpec("encrypted-header", "7z"),

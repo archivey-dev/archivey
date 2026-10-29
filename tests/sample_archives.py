@@ -821,7 +821,8 @@ def skip_unless_runnable(entry: CorpusEntry, key: str) -> None:
             f"format {key!r} not readable here: {availability.missing or 'no backend'}"
         )
     for package in READER_PACKAGES.get(key, ()):
-        if importlib.util.find_spec(package) is None:
+        # has_package, not find_spec: find_spec finds a package archivey refuses under PyPy.
+        if not has_package(package):
             pytest.skip(f"reader needs package {package!r}")
     for package in entry.requires_packages:
         if not has_package(package):
@@ -862,6 +863,8 @@ def skip_unless_runnable(entry: CorpusEntry, key: str) -> None:
 
 
 def _cache_key(entry: CorpusEntry, key: str) -> str:
+    # A field declared repr=False is deliberately out of the key; a field that can
+    # change the produced bytes must stay in the repr.
     blob = f"v{GENERATOR_VERSION}|{key}|{entry!r}".encode()
     return hashlib.sha256(blob).hexdigest()[:24]
 
