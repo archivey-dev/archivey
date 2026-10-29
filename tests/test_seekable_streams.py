@@ -866,6 +866,29 @@ def test_lzip_multi_member_seek_after_forward_read_serves_the_right_bytes() -> N
             assert stream.read(length) == content[start : start + length]
 
 
+@pytest.mark.parametrize(
+    "parts",
+    [
+        [b"data", b"", b""],
+        [b"da", b"", b"ta", b""],
+        [b"", b"", b"data"],
+    ],
+)
+def test_lzip_empty_members_reread_after_a_seek(parts: list[bytes]) -> None:
+    """Empty members share an output offset with the next one; a re-read is clean.
+
+    A member with no output records no seek point, so the second read's points cannot
+    collide with the first read's at a lower compressed offset.
+    """
+    compressed = make_multi_member_lzip(parts)
+    with LzipDecompressorStream(io.BytesIO(compressed)) as stream:
+        assert stream.read() == b"data"
+        stream.seek(0)
+        assert stream.read() == b"data"
+        stream.seek(1)
+        assert stream.read() == b"ata"
+
+
 # --- lzip seeking via the trailer scan -------------------------------------------------
 
 
