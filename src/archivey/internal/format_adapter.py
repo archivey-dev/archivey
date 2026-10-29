@@ -1412,7 +1412,9 @@ class SequentialReaderAdapter(_PluginAdapter):
         assert shared is not None
 
         def reopen(start: int) -> BinaryIO:
-            return shared.view(record.offset + start, record.length - start)
+            return self._stored_view(
+                shared, record.offset + start, record.length - start
+            )
 
         # Stored data: _walk_lock, not _handle_guard: the window reads the walk's own
         # stream (not the plugin's, as decoded data above does), which
@@ -1479,8 +1481,18 @@ class SequentialReaderAdapter(_PluginAdapter):
         else:
             shared = record.layer.shared
             assert shared is not None
-            stream = shared.view(record.offset, record.length)
+            stream = self._stored_view(shared, record.offset, record.length)
         return self._span_parts(member, record, stream)
+
+    def _stored_view(self, shared: SharedSource, offset: int, length: int) -> BinaryIO:
+        """A random-access view of stored member data. Over decoded bytes it is
+        buffered: small reads (line iteration) copy from memory, not one decoder call
+        each, and the decoder is asked once per read, so a cut stream delivers its
+        prefix before the error."""
+        view = shared.view(offset, length)
+        if shared is self._shared and not self._compressed:
+            return view
+        return ReadAheadStream(view, _WALK_BUFFER)
 
     def _decoded_in_place(self, decoded: _Decoded) -> bool:
         """Whether the listing walk is at the start of ``decoded``: it is the data of

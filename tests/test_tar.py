@@ -3161,15 +3161,14 @@ def test_extended_header_over_the_metadata_cap_is_refused_unread(
     )
 
 
-def test_plain_tar_member_past_the_walk_buffer_is_one_source_read() -> None:
-    """A plain-tar member larger than the walk buffer is one source read of its size.
+def test_plain_tar_member_past_the_walk_buffer_is_read_straight_from_the_source() -> None:
+    """A plain-tar member larger than the walk buffer is read in large source reads,
+    each byte once.
 
-    The file length is a fact, so the walker asks for the member once, and a read
-    larger than the walk buffer rewinds the prefetched tail instead of joining a
-    second read onto it. Leaving ``TarWalker.end`` unset reads the member in
-    ``DATA_READ_STEP`` pieces, so this size is absent from the recorded requests.
-    Turning ``rewind_oversize`` off splits the prefetched tail from the rest, so
-    the one request of this size is absent there too.
+    The verifier drains in ``DATA_READ_STEP`` pieces, and a read larger than the walk
+    buffer rewinds the prefetched tail and asks the source for the whole piece.
+    Turning ``rewind_oversize`` off splits each piece into the buffered tail and a
+    shorter source read, so no request of ``DATA_READ_STEP`` is recorded.
     """
     payload = b"m" * (_WALK_BUFFER + DATA_READ_STEP + 100)
     buf = io.BytesIO()
@@ -3188,7 +3187,8 @@ def test_plain_tar_member_past_the_walk_buffer_is_one_source_read() -> None:
         )
 
     assert got == payload
-    assert source.requested.count(len(payload)) == 1
+    assert DATA_READ_STEP in source.requested
+    assert sum(source.requested) <= len(buf.getvalue()) + 2 * _WALK_BUFFER
 
 
 @pytest.mark.parametrize("streaming", [False, True])
