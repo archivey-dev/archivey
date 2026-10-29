@@ -19,22 +19,39 @@ import pytest
 from archivey import (
     DEFAULT_ARCHIVEY_CONFIG,
     ArchiveFormat,
+    ArchiveMember,
     ArchiveyConfig,
     ArchiveyUsageError,
     ContainerFormat,
+    DiagnosticCode,
     FormatDetectionError,
     FormatPolicy,
+    MemberType,
+    PackageNotInstalledError,
     StreamFormat,
+    StreamNotSeekableError,
     UnsupportedFeatureError,
     detect_format,
     open_archive,
     open_stream,
 )
 from archivey.detection_cost import TierSkipReason
-from archivey.formats import Magic
+from archivey.formats import (
+    FormatHandler,
+    IndexedReader,
+    Magic,
+    MemberData,
+    MemberRecord,
+    ReaderContext,
+    ReaderSource,
+    SequentialFormatHandler,
+    SequentialReader,
+)
 from archivey.internal.detection import probe_config
 from archivey.internal.format_adapter import registration_scope
 from tests.test_format_api import _ENTRIES, _MAGIC, _plugin_with, build_toya
+from tests.test_iso_raw_sectors import _image as _raw_sector_image
+from tests.test_sfx import _pe_stub
 
 C = ContainerFormat
 S = StreamFormat
@@ -366,3 +383,222 @@ def test_a_builtin_answer_does_not_depend_on_the_policy(clean_registry: None) ->
     for kwargs in ({}, {"plugins": False}, {"only": {C.TAR}}):
         info = detect_format(io.BytesIO(data), config=_config(**kwargs))
         assert info.format == ArchiveFormat.ZIP
+
+
+# --- replacement plugins ------------------------------------------------------------
+
+
+class _StdlibZipReader(IndexedReader[str]):
+    """Reads a ZIP with the standard library: a stand-in for a plugin that supports
+    something the built-in reader refuses."""
+
+    def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
+        self._zip = zipfile.ZipFile(source.view(0))
+
+    def iter_members(self) -> Iterator[MemberRecord[str]]:
+        for info in self._zip.infolist():
+            member = ArchiveMember(
+                type=MemberType.FILE,
+                name=info.filename,
+                raw_name=info.filename.encode(),
+                size=info.file_size,
+            )
+            yield MemberRecord(member, locator=info.filename)
+
+    def open_member(self, member: ArchiveMember, locator: str) -> MemberData:
+        return MemberData(self._zip.open(locator))
+
+    def close(self) -> None:
+        self._zip.close()
+
+
+_opened: list[str] = []
+
+
+class StdlibZipPlugin(FormatHandler):
+    format = ArchiveFormat.ZIP
+
+    def open(self, source: ReaderSource, context: ReaderContext) -> _StdlibZipReader:
+        _opened.append(type(self).__name__)
+        return _StdlibZipReader(source, context)
+
+
+_REPLACE_ZIP = ArchiveyConfig(formats=FormatPolicy(replace={C.ZIP: StdlibZipPlugin}))
+
+
+@pytest.fixture(autouse=True)
+def _reset_opened() -> None:
+    _opened.clear()
+
+
+def test_a_replacement_reads_the_builtin_container(tmp_path: Path) -> None:
+    path = tmp_path / "a.zip"
+    path.write_bytes(_zip_bytes())
+    with open_archive(path, config=_REPLACE_ZIP) as reader:
+        assert reader.format == ArchiveFormat.ZIP
+        assert reader.format_info is not None
+        assert not reader.format_info.from_plugin
+        assert [m.name for m in reader.members()] == ["a.txt"]
+        with reader.open("a.txt") as stream:
+            assert stream.read() == b"alpha"
+    assert _opened == ["StdlibZipPlugin"]
+    # Detection is the built-in's, with or without the replacement.
+    plain = detect_format(path)
+    replaced = detect_format(path, config=_REPLACE_ZIP)
+    assert (replaced.format, replaced.detected_by) == (plain.format, plain.detected_by)
+    # Without it, the built-in reader opens the file.
+    with open_archive(path) as reader:
+        assert [m.name for m in reader.members()] == ["a.txt"]
+    assert _opened == ["StdlibZipPlugin"]
+
+
+def test_a_replacement_is_hashable_and_compares_by_value() -> None:
+    again = FormatPolicy(replace={C.ZIP: StdlibZipPlugin})
+    assert again == _REPLACE_ZIP.formats
+    assert hash(again) == hash(_REPLACE_ZIP.formats)
+    assert hash(_REPLACE_ZIP)
+    assert dict(again.replace) == {C.ZIP: StdlibZipPlugin}
+
+
+def _replacement(**attrs: object) -> type[FormatHandler]:
+    return type("Variant", (StdlibZipPlugin,), attrs)
+
+
+class _SequentialZip(SequentialFormatHandler):
+    format = ArchiveFormat.ZIP
+
+    def open_sequential(self, context: ReaderContext) -> SequentialReader:
+        raise NotImplementedError
+
+
+@pytest.mark.parametrize(
+    ("replace", "match"),
+    [
+        ({C.TAR: StdlibZipPlugin}, "cannot replace ContainerFormat.TAR"),
+        ({C.DIRECTORY: StdlibZipPlugin}, "cannot replace ContainerFormat.DIRECTORY"),
+        ({"zip": StdlibZipPlugin}, "ContainerFormat keys"),
+        ({C.ZIP: object}, "FormatHandler subclass"),
+        ({C.ZIP: _SequentialZip}, "SequentialFormatHandler"),
+        ({C.SEVEN_Z: StdlibZipPlugin}, "must be ArchiveFormat"),
+        ({C.ZIP: _replacement(magic=(Magic(0, b"PK"),))}, "declares extensions"),
+        ({C.ZIP: _replacement(extensions=(".zap",))}, "declares extensions"),
+        ({C.ZIP: _replacement(probe=lambda prefix: True)}, "declares extensions"),
+        ([C.ZIP], "mapping"),
+    ],
+)
+def test_replacement_refusals(replace: object, match: str) -> None:
+    with pytest.raises(ArchiveyUsageError, match=match):
+        FormatPolicy(replace=replace)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{"exclude": {C.ZIP}}, {"only": {C.TAR}}], ids=["exclude", "only"]
+)
+def test_a_replaced_container_must_be_allowed(kwargs: dict[str, object]) -> None:
+    with pytest.raises(ArchiveyUsageError, match="turns it off"):
+        FormatPolicy(replace={C.ZIP: StdlibZipPlugin}, **kwargs)  # type: ignore[arg-type]
+
+
+def test_plugins_false_does_not_turn_a_replacement_off(tmp_path: Path) -> None:
+    # A replacement is not a plugin format: the call that names it runs it.
+    path = tmp_path / "a.zip"
+    path.write_bytes(_zip_bytes())
+    config = ArchiveyConfig(
+        formats=FormatPolicy(plugins=False, replace={C.ZIP: StdlibZipPlugin})
+    )
+    with open_archive(path, config=config) as reader:
+        assert [m.name for m in reader.members()] == ["a.txt"]
+    assert _opened == ["StdlibZipPlugin"]
+
+
+def test_unused_arguments_name_the_replacement_not_the_format(tmp_path: Path) -> None:
+    path = tmp_path / "a.zip"
+    path.write_bytes(_zip_bytes())
+    with open_archive(
+        path, password="secret", encoding="cp437", config=_REPLACE_ZIP
+    ) as reader:
+        found = {
+            d.code: d
+            for d in reader.diagnostics.retained
+            if d.code
+            in (
+                DiagnosticCode.PASSWORD_ARGUMENT_UNUSED,
+                DiagnosticCode.ENCODING_ARGUMENT_UNUSED,
+            )
+        }
+    assert set(found) == {
+        DiagnosticCode.PASSWORD_ARGUMENT_UNUSED,
+        DiagnosticCode.ENCODING_ARGUMENT_UNUSED,
+    }
+    for record in found.values():
+        assert "StdlibZipPlugin reads it" in record.message
+        assert "carries no encryption" not in record.message
+        assert "decodes member names without it" not in record.message
+        assert "replacement reader" in record.context.reason  # type: ignore[union-attr]
+
+
+class _RecordingIsoPlugin(FormatHandler):
+    format = ArchiveFormat.ISO
+
+    def open(self, source: ReaderSource, context: ReaderContext) -> _StdlibZipReader:
+        _opened.append(type(self).__name__)
+        raise AssertionError("the plugin was given a raw sector image")
+
+
+def test_a_replacement_is_not_given_a_raw_sector_image(tmp_path: Path) -> None:
+    path = tmp_path / "disc.bin"
+    path.write_bytes(_raw_sector_image(mode=1))
+    config = ArchiveyConfig(formats=FormatPolicy(replace={C.ISO: _RecordingIsoPlugin}))
+    with pytest.raises(UnsupportedFeatureError, match="raw CD sector image"):
+        open_archive(path, config=config)
+    assert _opened == []
+
+
+def test_a_replacement_is_not_given_a_volume_set(tmp_path: Path) -> None:
+    data = _zip_bytes()
+    (tmp_path / "a.zip.001").write_bytes(data[:40])
+    (tmp_path / "a.zip.002").write_bytes(data[40:])
+    with open_archive(tmp_path / "a.zip.001") as reader:
+        assert [m.name for m in reader.members()] == ["a.txt"]
+    with pytest.raises(UnsupportedFeatureError, match="multi-volume set"):
+        open_archive(tmp_path / "a.zip.001", config=_REPLACE_ZIP)
+    assert _opened == []
+
+
+def test_a_replacement_is_not_given_an_archive_behind_a_stub(tmp_path: Path) -> None:
+    path = tmp_path / "a.exe"
+    path.write_bytes(_pe_stub() + _zip_bytes())
+    assert detect_format(path).payload_offset > 0
+    with pytest.raises(UnsupportedFeatureError, match="self-extracting stub"):
+        open_archive(path, config=_REPLACE_ZIP)
+    assert _opened == []
+
+
+def test_a_replacement_is_not_given_a_pipe() -> None:
+    class Pipe(io.RawIOBase):
+        def __init__(self, data: bytes) -> None:
+            self._buf = io.BytesIO(data)
+
+        def readable(self) -> bool:
+            return True
+
+        def readinto(self, b: bytearray) -> int:  # type: ignore[override]
+            return self._buf.readinto(b)
+
+    with pytest.raises(StreamNotSeekableError):
+        open_archive(
+            io.BufferedReader(Pipe(_zip_bytes())), streaming=True, config=_REPLACE_ZIP
+        )
+    assert _opened == []
+
+
+def test_a_replacements_missing_requirement_is_reported_before_it_opens(
+    tmp_path: Path,
+) -> None:
+    plugin = _replacement(requires=("archivey_no_such_module",), install_hint="hint")
+    path = tmp_path / "a.zip"
+    path.write_bytes(_zip_bytes())
+    config = ArchiveyConfig(formats=FormatPolicy(replace={C.ZIP: plugin}))
+    with pytest.raises(PackageNotInstalledError, match="archivey_no_such_module"):
+        open_archive(path, config=config)
+    assert _opened == []

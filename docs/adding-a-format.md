@@ -693,6 +693,40 @@ When a module is missing, `format_availability()` reports the format as
 A library that needs a file name rather than a stream can use `ReaderSource.path`, which is
 the path the archive was opened from, or `None` when it was opened from a stream.
 
+## Replacing a built-in reader
+
+A plugin can also read a format archivey already reads, in place of the built-in
+reader, for the calls that ask for it. It is not registered. The caller names it in the
+config of each call:
+
+```python
+from archivey import ArchiveyConfig, ContainerFormat, FormatPolicy, open_archive
+
+MY_ZIP = ArchiveyConfig(formats=FormatPolicy(replace={ContainerFormat.ZIP: MyZipPlugin}))
+
+with open_archive("a.zip", config=MY_ZIP) as reader:
+    ...
+```
+
+The replacement is an indexed plugin whose `format` is the built-in one, here
+`ArchiveFormat.ZIP`, and it declares no `extensions`, `magic` or `probe`: the file is
+found by the built-in detection, which does not change. `reader.format` is the built-in
+format and `format_info.from_plugin` is false. ZIP, 7z, RAR and ISO can be replaced.
+`FormatPolicy` checks the plugin when it is built, so a plugin that does not fit fails
+there, before any open.
+
+The replacement gets what any indexed plugin gets: a source that can seek, from the
+start of the archive. archivey refuses, before `open()` runs, a multi-volume set and an
+archive behind a self-extracting stub with `UnsupportedFeatureError`, a source that
+cannot seek with `StreamNotSeekableError`, and a raw CD sector image detected as ISO as
+the built-in reader refuses it, since its bytes are not an ISO 9660 image. The format's own config options, such as
+`zip_unflagged_fallback_encoding` or `rar_decompressor`, reach the plugin through
+`ReaderContext.config`; honouring them is the plugin's job. `password=` does not reach a
+replacement, as it reaches no plugin, so a replaced ZIP, 7z or RAR cannot read an encrypted
+member; `encoding=` reaches it when the plugin sets `uses_encoding`. A missing module in
+`requires` raises `PackageNotInstalledError` naming the plugin, without falling back to
+the built-in reader.
+
 ## Registration and trust
 
 `register_format()` is the only way to add a format: nothing is loaded automatically
@@ -704,7 +738,10 @@ the plugin hands over: listing limits, member names, extraction limits, and the 
 checksum checks on member data. They cannot cover the plugin's own parser, which could use
 unbounded memory or crash on a crafted file; [Reading untrusted bytes](#reading-untrusted-bytes)
 lists what a plugin's author can do about that. A program that reads untrusted archives
-can refuse plugin formats by checking `FormatInfo.from_plugin`.
+can turn plugin formats off for a call with `ArchiveyConfig(formats=FormatPolicy(plugins=False))`;
+a plugin format turned off is not detected either, so its code does not run. A
+[replacement](#replacing-a-built-in-reader) is not a plugin format, so `plugins=False` does not
+turn it off: a replacement runs only in a call whose config names it in `replace=`.
 
 ## What is not supported yet
 
