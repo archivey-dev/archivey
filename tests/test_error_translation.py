@@ -146,7 +146,7 @@ def test_archive_stream_close_failure_still_closes_wrapper() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_a_failed_lazy_open_raises_the_same_error_again() -> None:
+def test_a_failed_lazy_open_raises_that_error_again() -> None:
     """A retry after a failed lazy open does not call the opener again (a half-open
     backend must not be re-entered). It raises the error the first open raised. It
     used to raise a usage error that blamed a concurrent caller."""
@@ -176,7 +176,7 @@ def test_a_failed_lazy_open_raises_the_same_error_again() -> None:
         stream.read()
 
 
-def test_a_member_whose_lazy_open_failed_raises_the_same_error_again() -> None:
+def test_a_member_whose_lazy_open_failed_raises_that_error_again() -> None:
     """The same through ``stream_members()``: an unsupported ZIP method raises
     ``UnsupportedFeatureError`` on every read, not a usage error on the second."""
     from archivey.exceptions import UnsupportedFeatureError

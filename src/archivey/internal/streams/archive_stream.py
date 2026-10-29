@@ -1219,15 +1219,20 @@ class ArchiveStreamImpl(ArchiveStream):
                     on_close()
                 except Exception as e:  # noqa: BLE001 - combine with close failure below
                     teardown_exc = e
-            if close_exc is not None and teardown_exc is not None:
-                raise ExceptionGroup(
-                    "member-stream close and archive teardown both failed",
-                    [close_exc, teardown_exc],
-                )
-            if close_exc is not None:
-                raise close_exc
-            if teardown_exc is not None:
-                raise teardown_exc
+            # The errors are dropped as the raise leaves: its traceback holds this
+            # frame, which holds the stream (kept_errors).
+            try:
+                if close_exc is not None and teardown_exc is not None:
+                    raise ExceptionGroup(
+                        "member-stream close and archive teardown both failed",
+                        [close_exc, teardown_exc],
+                    )
+                if close_exc is not None:
+                    raise close_exc
+                if teardown_exc is not None:
+                    raise teardown_exc
+            finally:
+                del close_exc, teardown_exc
 
     def __repr__(self) -> str:
         return f"<{type(self).__name__} inner={self._inner!r}>"

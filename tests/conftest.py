@@ -64,11 +64,14 @@ for _blocked in UNUSED_UNDER_PYPY - {"pyppmd", "inflate64"}:
 
 def assert_raised_again(again: BaseException, first: BaseException) -> None:
     """``again`` is ``first`` raised again by a stream that kept it: a fresh copy of the
-    same type and arguments, caused by the first raise (``kept_errors``)."""
+    same type, arguments and stamped attributes, caused by the first raise
+    (``kept_errors``)."""
     from archivey.internal.streams.kept_errors import EarlierRaise
 
+    assert again is not first
     assert type(again) is type(first)
     assert again.args == first.args
+    assert again.__dict__ == first.__dict__
     assert isinstance(again.__cause__, EarlierRaise)
 
 

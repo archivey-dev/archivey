@@ -2,7 +2,8 @@
 
 A stream that failed keeps its error, and every later read raises it again: a
 decoder's recorded death (``DecoderChild``), a decompressor's deferred end error
-(``DecompressorStream``), a member stream's content verdict and its failed lazy open
+(``DecompressorStream``), the Adler-32 verdict of the zlib accelerator path
+(``zlib_codec``), a member stream's content verdict and its failed lazy open
 (``ArchiveStreamImpl``). The kept instance must never be the one raised. A raise
 attaches a traceback, whose frames hold the stream, and the stream holds the
 instance: a cycle that only the garbage collector breaks, and until it runs, every
@@ -31,14 +32,22 @@ class EarlierRaise(Exception):
 
 def unraised(exc: _E) -> _E:
     """A copy of ``exc`` that has never been raised, or ``exc`` itself when its type
-    cannot be rebuilt from its arguments (the cycle is then kept).
+    cannot be rebuilt from its arguments.
 
     The copy is shallow: a mutable attribute (``__notes__``, say) is shared with
-    ``exc``. It has no traceback, cause or context.
+    ``exc``. It has no traceback, cause or context. Every archivey error copies
+    (``ArchiveyError.__reduce__``); the fallback is for a third-party type whose
+    ``__init__`` takes other arguments than its ``args``. It forfeits the guarantee:
+    raising ``exc`` again ties it to the raising frames, and sets its cause and
+    context. Its traceback and those links are cleared here, so a retry's traceback
+    does not grow with every raise.
     """
     try:
         return copy.copy(exc)
-    except Exception:  # noqa: BLE001 - a type that copy cannot rebuild: keep the cycle
+    except Exception:  # noqa: BLE001 - a type copy cannot rebuild: raise it, unlinked
+        exc.__traceback__ = None
+        exc.__cause__ = None
+        exc.__context__ = None
         return exc
 
 

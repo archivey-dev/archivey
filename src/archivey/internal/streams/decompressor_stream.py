@@ -1528,10 +1528,9 @@ class DecompressorStream(ReadOnlyIOStream):
         # the recorded error's traceback keeps this frame, and its locals, alive. Gate
         # _size *before* raising so a caller that catches TruncatedError cannot then
         # read a clean prefix-as-complete size.
-        err = self._end_error()
-        if err is not None:
+        if self._end_error() is not None:
             chunks.clear()
-            self._raise_deferred(err)
+            self._raise_deferred()
         data = b"".join(chunks)
         if self._size is None or self._pos <= self._size:
             self._pos += len(data)
@@ -1599,21 +1598,25 @@ class DecompressorStream(ReadOnlyIOStream):
         data = bytes(self._buffer[:n])
         del self._buffer[:n]
         self._pos += len(data)
-        if not data:
-            err = self._end_error()
-            if err is not None:
-                self._raise_deferred(err)
+        if not data and self._end_error() is not None:
+            self._raise_deferred()
         return data
 
-    def _raise_deferred(self, err: BaseException) -> NoReturn:
+    def _raise_deferred(self) -> NoReturn:
         """Raise the decoder's deferred end-of-stream error, and keep raising it.
 
         The decoder has reached the end of its input, so a later read would otherwise
         return ``b""`` and a truncated stream would read as a short, clean one. Every
-        later read that has no buffered bytes raises ``err`` again, and no size is
+        later read that has no buffered bytes raises it again, and no size is
         published. A seek restarts the decoder (:meth:`_seek`), which reaches the same
         error again at the same place.
+
+        No frame keeps the error in a local as the raise leaves it: the callers ask
+        :meth:`_end_error` without keeping the answer, and this frame drops its own,
+        or the raise's traceback would hold this stream (``kept_errors``).
         """
+        err = self._end_error()
+        assert err is not None
         self._decoder.clear_pending_error()
         self._surplus = None
         try:
@@ -1621,6 +1624,8 @@ class DecompressorStream(ReadOnlyIOStream):
         except BaseException as raised:
             self._spent = KeptError.of(raised)
             raise
+        finally:
+            del err
 
     def _raise_spent(self) -> NoReturn:
         """Raise the recorded error again: a fresh copy, caused by the first raise.
@@ -1759,9 +1764,8 @@ class DecompressorStream(ReadOnlyIOStream):
             # Truncated streams must not publish a clean complete size; surface
             # the deferred fault instead of asserting or treating the prefix as
             # the full stream.
-            err = self._end_error()
-            if err is not None:
-                self._raise_deferred(err)
+            if self._end_error() is not None:
+                self._raise_deferred()
             if self._size is None:
                 raise TruncatedError(
                     "Cannot seek to end: decompressed size is unknown "

@@ -46,6 +46,7 @@ from archivey.internal.streams.decompressor_stream import (
     release_decoder,
     zlib_error,
 )
+from archivey.internal.streams.kept_errors import KeptError
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.types import StreamFormat
@@ -205,7 +206,7 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         # Output bytes [0, frontier) are covered by the Adler-32 (1 for the empty string).
         self._sum = _OutputChecksum(zlib.adler32, 1)
         self._checked = False
-        self._verdict: _StreamChecksumError | None = None
+        self._verdict: KeptError | None = None
 
     def read(self, size: int = -1, /) -> bytes:
         if size == 0:
@@ -283,7 +284,7 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         ``_pos`` there, or at ``start`` when that is later, and a completing read drops
         its bytes past that point."""
         if self._verdict is not None:
-            raise self._verdict.with_traceback(None)
+            self._verdict.raise_again()
         if self._checked or self._pos < self._sum.frontier:
             return b""
         self._checked = True
@@ -297,7 +298,9 @@ class _ZlibAdlerCheckStream(DelegatingStream):
             self._pos = max(first.end, start)
             return self._hand_to_stdlib(size, at=self._pos)
         except _StreamChecksumError as exc:
-            self._verdict = exc
+            # Kept as a copy: the raised instance's traceback holds this frame,
+            # which holds the codec (kept_errors).
+            self._verdict = KeptError.of(exc)
             raise
         return b""
 
