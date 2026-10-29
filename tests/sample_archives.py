@@ -33,7 +33,7 @@ import subprocess
 import tarfile
 import tempfile
 import zipfile
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from archivey.types import ArchiveFormat, ContainerFormat, MemberType, StreamFormat
@@ -121,6 +121,11 @@ class CorpusEntry:
     archive_comment: str | None = None
     # Extra tools/packages the *builder* needs beyond the format's own reader deps.
     requires_binaries: tuple[str, ...] = ()
+    # Optional packages this entry's members need to be read, beyond the format's
+    # own (a 7z PPMd folder needs pyppmd, which a plain 7z does not). Checked with
+    # ``has_package``, so a package archivey does not use under PyPy skips there. Out of
+    # the repr, which is the ``_cache_key`` input: it gates a run and changes no bytes.
+    requires_packages: tuple[str, ...] = field(default=(), repr=False)
     # Encrypt the archive's own header/metadata, not just member data. Listing then
     # needs the password too, so ``open_archive`` itself fails without it (7z ``-mhe``).
     encrypt_header: bool = False
@@ -309,8 +314,10 @@ _COMPRESSED = (
 # py7zr's default folder is solid LZMA2. COPY so the seek contract sees a stored 7z
 # member, not only the compressed-solid path `basic` already covers.
 _SEVENZIP_STORED = (F("stored.bin", b"I am a 7z COPY member.\n" * 250),)
-# PPMd is the one 7z method no other entry writes, so without this the fuzz seeds and
-# the sweep never reach the PPMd decoder. Text, which is what PPMd is for.
+# The other 7z entries are LZMA2, COPY or AES, so without this one the fuzz seeds, the
+# sweep and the seek contract never reach the PPMd decoder. Text, which is what PPMd is
+# for. Two members make it a solid folder with two substreams, so reading the second
+# decodes through the first.
 _SEVENZIP_PPMD = (
     F("ppmd.txt", b"".join(b"line %d of a PPMd member\n" % i for i in range(400))),
     F("second.txt", b"a second member in the same folder\n" * 20),
@@ -389,7 +396,9 @@ CORPUS: tuple[CorpusEntry, ...] = (
     CorpusEntry("large", _LARGE, ("zip", "tar.gz", "tar.zst", "7z", "rar")),
     CorpusEntry("compressed", _COMPRESSED, ("rar",)),
     CorpusEntry("sevenzip-stored", _SEVENZIP_STORED, ("7z",)),
-    CorpusEntry("sevenzip-ppmd", _SEVENZIP_PPMD, ("7z",)),
+    CorpusEntry(
+        "sevenzip-ppmd", _SEVENZIP_PPMD, ("7z",), requires_packages=("pyppmd",)
+    ),
     CorpusEntry("adversarial", _ADVERSARIAL_COMMON, ("zip",)),
     CorpusEntry("adversarial-tar", _ADVERSARIAL_TAR, ("tar", "tar.gz")),
     # Encrypted ZIPs are built with the 7z CLI (stdlib zipfile cannot write encryption).
@@ -804,7 +813,7 @@ def skip_unless_runnable(entry: CorpusEntry, key: str) -> None:
     import pytest
 
     from archivey import FormatSupport, format_availability
-    from tests.conftest import _has_zstd_backend, binary_refusal
+    from tests.conftest import _has_zstd_backend, binary_refusal, has_package
 
     availability = format_availability(FORMAT_KEYS[key])
     if availability.support is FormatSupport.NONE:
@@ -814,6 +823,9 @@ def skip_unless_runnable(entry: CorpusEntry, key: str) -> None:
     for package in READER_PACKAGES.get(key, ()):
         if importlib.util.find_spec(package) is None:
             pytest.skip(f"reader needs package {package!r}")
+    for package in entry.requires_packages:
+        if not has_package(package):
+            pytest.skip(f"entry {entry.id!r} needs package {package!r}")
     for binary in READER_BINARIES.get(key, ()):
         # archivey's own rule for the program, not just a name on PATH.
         if (refusal := binary_refusal(binary)) is not None:
