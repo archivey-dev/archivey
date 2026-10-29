@@ -388,7 +388,15 @@ walker turns each into the same `SparseMap` of offsets and lengths.
 whatever 0.x records it also carries. GNU tar 1.35 reads it so: with a `GNU.sparse.size`
 it lists the realsize, and with a `GNU.sparse.map` it warns and still reads the 1.0 map.
 Without such a major, the 0.x records choose: `GNU.sparse.map` is 0.1, then
-`GNU.sparse.size` or `GNU.sparse.offset`/`numbytes` is 0.0.
+`GNU.sparse.size` or `GNU.sparse.offset`/`numbytes` is 0.0. A 1.0 member with no
+`GNU.sparse.realsize` ends at its last chunk, which is what GNU tar 1.35 extracts (it lists
+the size field, map blocks included); a realsize of 0 is kept, so a chunk ends past it and
+the member fails, as in GNU tar.
+
+**Only an old GNU header holds sparse slots.** Typeflag `S` under ustar or v7 magic is a
+regular file of its stored size, with the ustar prefix joined to its name: in a ustar header
+bytes 345.. are the prefix. GNU tar 1.35 reads it so; `tarfile` reads the slots whatever
+the magic says.
 
 **A seek the filesystem refuses reads as the end of the data.** The walker seeks to
 offsets it adds up from size fields, and a PAX or base-256 size can put one anywhere. An

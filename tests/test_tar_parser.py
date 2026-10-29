@@ -14,6 +14,7 @@ from collections.abc import Callable
 
 import pytest
 
+from archivey import open_archive
 from archivey.exceptions import (
     CorruptionError,
     ResourceLimitError,
@@ -1084,6 +1085,75 @@ def test_pax_sparse_realsize_without_a_major_is_damage() -> None:
     cannot be read, and GNU tar fails on the member."""
     with pytest.raises(CorruptionError):
         _walk(_pax_1_0_member_without_major({"GNU.sparse.realsize": "20"}))
+
+
+def test_pax_sparse_1_0_without_a_realsize_ends_at_its_last_chunk() -> None:
+    """GNU tar 1.35 extracts such a member up to the end of its last chunk (13 bytes
+    here); it lists the size field, map blocks included."""
+    data = _pax_1_0_member_without_major(
+        {"GNU.sparse.major": "1", "GNU.sparse.minor": "0"}
+    )
+    (entry,), _ = _walk(data)
+    assert (entry.sparse_format, entry.size, entry.stored_size) == (
+        SparseFormat.PAX_1_0,
+        13,
+        3,
+    )
+    with open_archive(io.BytesIO(data)) as reader:
+        (member,) = reader.members()
+        assert reader.read(member) == bytes(10) + b"abc"
+
+
+def test_pax_sparse_1_0_with_a_realsize_of_zero_is_damage() -> None:
+    """An explicit realsize of 0 is kept: the chunk ends past it, and GNU tar 1.35
+    fails the member too."""
+    data = _pax_1_0_member("1", "0", {"GNU.sparse.realsize": "0"})
+    (entry,), _ = _walk(data)
+    assert entry.size == 0
+    with (
+        pytest.raises(CorruptionError, match="past the member's size of 0"),
+        open_archive(io.BytesIO(data)) as reader,
+    ):
+        (member,) = reader.members()
+        reader.read(member)
+
+
+def _sparse_typeflag_member(magic: bytes) -> bytes:
+    def header(h: bytearray) -> None:
+        h[345:348] = b"pre"  # the ustar prefix; old GNU puts atime here
+        h[386:398] = _octal(0, 12)
+        h[398:410] = _octal(3, 12)
+        h[483:495] = _octal(10, 12)
+
+    return (
+        _block(b"name", size=3, typeflag=b"S", magic=magic, patch=header)
+        + _data(b"abc")
+        + _END
+    )
+
+
+@pytest.mark.parametrize(
+    ("magic", "name"),
+    [(b"ustar\x0000", b"pre/name"), (b"\x00" * 8, b"name")],
+    ids=["ustar", "v7"],
+)
+def test_sparse_typeflag_outside_old_gnu_is_a_plain_file(
+    magic: bytes, name: bytes
+) -> None:
+    """Old GNU sparse slots exist only in an old GNU header. GNU tar 1.35 reads an
+    "S" under ustar or v7 magic as a regular file of its stored size, joining a
+    ustar prefix."""
+    (entry,), _ = _walk(_sparse_typeflag_member(magic))
+    assert (entry.name, entry.size, entry.sparse_format) == (name, 3, None)
+
+
+def test_sparse_typeflag_in_old_gnu_reads_the_slots() -> None:
+    (entry,), _ = _walk(_sparse_typeflag_member(b"ustar  \x00"))
+    assert (entry.name, entry.size, entry.sparse_format) == (
+        b"name",
+        10,
+        SparseFormat.OLD_GNU,
+    )
 
 
 _LONG_NUMBER = "1" * 5000  # past CPython's 4300-digit int() limit
