@@ -1497,12 +1497,14 @@ class TarWalker:
             sparse, used = read_sparse_map_1_0(
                 self._read, stored_size, charge.name, charge
             )
+            size_field = stored_size
             data_offset += used
             stored_size -= used
             if realsize is None:
-                # No realsize record: GNU tar 1.35 extracts the file up to the
-                # greatest chunk end (and lists the size field, map blocks included).
-                # A realsize of 0 stays 0, and a chunk past it fails as in GNU tar.
+                # No realsize record: GNU tar 1.35 takes the size field (map blocks
+                # included) as the bound, extracts up to the greatest chunk end, and
+                # calls the member malformed when a chunk ends past that field. A
+                # realsize of 0 stays 0, and a chunk past it fails as in GNU tar.
                 size = max(
                     (
                         o + n
@@ -1510,6 +1512,12 @@ class TarWalker:
                     ),
                     default=0,
                 )
+                if size > size_field:
+                    raise CorruptionError(
+                        f"TAR sparse map of {charge.name} has a chunk ending at "
+                        f"{size}, past the member's size field of {size_field} bytes "
+                        "and with no GNU.sparse.realsize"
+                    )
             else:
                 size = realsize
         # The 0.x encodings are chosen by the presence of the records that define

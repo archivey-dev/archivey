@@ -1069,8 +1069,8 @@ def test_pax_sparse_version_with_no_map_is_damage(major: str) -> None:
         _walk(_pax_1_0_member(major, "0"))
 
 
-def _pax_1_0_member_with_records(records: dict[str, str]) -> bytes:
-    map_text = _data(b"1\n10\n3\n")
+def _pax_1_0_member_with_records(records: dict[str, str], offset: int = 10) -> bytes:
+    map_text = _data(b"1\n%d\n3\n" % offset)
     return (
         _pax({"GNU.sparse.name": "real", **records})
         + _block(b"GNUSparseFile.1/real", size=len(map_text) + 3)
@@ -1087,8 +1087,8 @@ def test_pax_sparse_realsize_without_a_major_is_damage() -> None:
         _walk(_pax_1_0_member_with_records({"GNU.sparse.realsize": "20"}))
 
 
-def test_pax_sparse_1_0_without_a_realsize_ends_at_its_last_chunk() -> None:
-    """GNU tar 1.35 extracts such a member up to the end of its last chunk (13 bytes
+def test_pax_sparse_1_0_without_a_realsize_ends_at_its_greatest_chunk_end() -> None:
+    """GNU tar 1.35 extracts such a member up to its greatest chunk end (13 bytes
     here); it lists the size field, map blocks included."""
     data = _pax_1_0_member_with_records(
         {"GNU.sparse.major": "1", "GNU.sparse.minor": "0"}
@@ -1116,6 +1116,37 @@ def test_pax_sparse_1_0_with_a_realsize_of_zero_is_damage() -> None:
     ):
         (member,) = reader.members()
         reader.read(member)
+
+
+def test_pax_sparse_1_0_with_an_empty_realsize_is_damage() -> None:
+    """GNU tar 1.35 ("invalid GNU.sparse.realsize=") and tarfile both refuse it."""
+    data = _pax_1_0_member_with_records(
+        {"GNU.sparse.major": "1", "GNU.sparse.minor": "0", "GNU.sparse.realsize": ""}
+    )
+    with pytest.raises(CorruptionError, match="realsize"):
+        _walk(data)
+
+
+def test_pax_sparse_1_0_without_a_realsize_may_end_at_its_size_field() -> None:
+    """A chunk may end exactly at the size field (515: one map block and 3 bytes)."""
+    data = _pax_1_0_member_with_records(
+        {"GNU.sparse.major": "1", "GNU.sparse.minor": "0"}, offset=512
+    )
+    (entry,), _ = _walk(data)
+    assert entry.size == 515
+
+
+@pytest.mark.parametrize("offset", [513, 1_000_000])
+def test_pax_sparse_1_0_without_a_realsize_past_its_size_field_is_damage(
+    offset: int,
+) -> None:
+    """GNU tar 1.35 calls the member malformed once a chunk ends past the size
+    field, for listing and extraction alike."""
+    data = _pax_1_0_member_with_records(
+        {"GNU.sparse.major": "1", "GNU.sparse.minor": "0"}, offset=offset
+    )
+    with pytest.raises(CorruptionError, match="size field"):
+        _walk(data)
 
 
 def _sparse_typeflag_member(magic: bytes, slots: bytes | None = None) -> bytes:
@@ -1155,19 +1186,11 @@ def test_sparse_typeflag_outside_old_gnu_is_a_plain_file(
     ids=["unreadable-slots", "isextended"],
 )
 def test_sparse_typeflag_under_ustar_ignores_bad_slots(slots: bytes) -> None:
-    """Under ustar magic bytes 386..494 are not slots: values that would stop the walk
-    in an old GNU header list the member at its stored size, as GNU tar 1.35 does."""
+    """Under ustar magic bytes 386..494 are not slots, so neither pattern touches the
+    member, as GNU tar 1.35 reads it. In an old GNU header the 0xff slots stop the
+    walk, and the isextended byte makes a different member (size 0, sparse)."""
     (entry,), _ = _walk(_sparse_typeflag_member(b"ustar\x0000", slots))
     assert (entry.name, entry.size, entry.sparse_format) == (b"pre/name", 3, None)
-
-
-def test_pax_sparse_1_0_with_an_empty_realsize_is_damage() -> None:
-    """GNU tar 1.35 ("invalid GNU.sparse.realsize=") and tarfile both refuse it."""
-    data = _pax_1_0_member_with_records(
-        {"GNU.sparse.major": "1", "GNU.sparse.minor": "0", "GNU.sparse.realsize": ""}
-    )
-    with pytest.raises(CorruptionError, match="realsize"):
-        _walk(data)
 
 
 def test_sparse_typeflag_in_old_gnu_reads_the_slots() -> None:
