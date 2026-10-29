@@ -1243,6 +1243,11 @@ class SequentialReaderAdapter(_PluginAdapter):
                 f"{name}.walk() yielded {member.name!r} with both data and "
                 f"data_length {length}: decoded data has no stored bytes to skip"
             )
+        if data is None and span.checked:
+            raise ValueError(
+                f"{name}.walk() yielded {member.name!r} with checked=True and no "
+                "data: stored bytes are checked against the span's digests"
+            )
         # A directory's data is its declared size too: it stays a DIRECTORY, a read
         # delivers the bytes and the listing reports them (_report_listed). Decoded
         # data has no stored length to check the size against: its size is the one
@@ -1269,7 +1274,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             expected, custom = self._member_digests(member, span.digests, "walk")
         decoded: _Decoded | None = None
         if data is not None:
-            stream = _full_count(data)
+            stream = self._decoded_stream(data)
             decoded = _Decoded(stream, span.checked, index, member.size, member.name)
         forward = layer.forward
         record = _Span(layer, forward.offset, length, expected, custom or None, decoded)
@@ -1423,7 +1428,9 @@ class SequentialReaderAdapter(_PluginAdapter):
                         ):
                             current.finish()
                 except ArchiveyError:
-                    # Reported to whoever read that member; this one starts over.
+                    # Safe to drop: the listing walk drained this member the same
+                    # way and would have failed on it, so a member that raises here
+                    # was never listed. This open starts over.
                     self._close_data_walk(data_walk)
                     data_walk = None
             if data_walk is None:
@@ -1447,7 +1454,8 @@ class SequentialReaderAdapter(_PluginAdapter):
         """Step ``data_walk`` to the member ``decoded`` describes and return its data
         as this walk's reader hands it over."""
         walk = data_walk.walk
-        boundary = self._translated_errors(decoded.name)
+        # A step reads a header no member is named by yet, as the listing walk's do.
+        boundary = self._translated_errors()
         guard = self._handle_guard()
         index = data_walk.next_index
         while True:
@@ -1464,35 +1472,47 @@ class SequentialReaderAdapter(_PluginAdapter):
                 )
             data = span.data
             if index == decoded.index:
-                self._check_rewalked(span, decoded)
-                if data is None:
-                    raise CorruptionError(
-                        f"walking the archive again found no decoded data for "
-                        f"{quoted(decoded.name)}"
-                    )
-                stream = _full_count(data)
+                try:
+                    self._check_rewalked(span, decoded)
+                    if data is None:
+                        raise CorruptionError(
+                            f"walking the archive again found no decoded data for "
+                            f"{quoted(decoded.name)}"
+                        )
+                except BaseException:
+                    if data is not None:
+                        with suppress(Exception), guard:
+                            data.close()
+                    raise
                 return _Decoded(
-                    stream,
+                    self._decoded_stream(data),
                     span.checked,
                     index,
                     decoded.size,
                     decoded.name,
                 )
-            with boundary, guard:
+            # A member on the way, read past under its own name.
+            name = str(span.member.name)
+            with self._translated_errors(name), guard:
                 if data is not None:
-                    stream = _full_count(data)
                     _Decoded(
-                        stream,
+                        self._decoded_stream(data),
                         span.checked,
                         index,
                         span.member.size,
-                        decoded.name,
+                        name,
                     ).finish()
                 elif span.data_length:
                     layer = walk.layer
                     assert layer is not None
                     layer.forward.skip(span.data_length)
             index += 1
+
+    def _decoded_stream(self, data: BinaryIO | io.RawIOBase) -> BinaryIO:
+        """A reader's decoded data as archivey reads it: full-count, and counted as
+        decompressed output, the drain's bytes too (``_decoded_parts`` does not count
+        them again)."""
+        return self._track_decompressed(_full_count(data))
 
     def _check_rewalked(self, span: MemberSpan, decoded: _Decoded) -> None:
         """Refuse a walk started over that does not yield, at the member's place, the
@@ -1558,6 +1578,8 @@ class SequentialReaderAdapter(_PluginAdapter):
             checks_content=decoded.checked,
             custom_digests=record.custom,
             rewind_warning=rewind,
+            # Counted where it is decoded (``_decoded_stream``), drain included.
+            track_output=False,
         )
 
     def _span_parts(

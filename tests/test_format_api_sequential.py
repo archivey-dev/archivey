@@ -55,6 +55,7 @@ from archivey.formats import (
     register_format,
 )
 from archivey.internal.format_adapter import registration_scope
+from archivey.internal.measurement import enable_measurement
 from archivey.internal.streams.streamtools import ReadAheadStream
 from tests.streams_util import CountingBytesIO, NonSeekableBytesIO
 
@@ -1684,3 +1685,39 @@ def test_decoded_reads_take_the_handle_lock(
                 thread.join()
     assert results == {n: _DECODED_DATA[n] for n in ("c.bin", "b.bin", "docs/a.txt")}
     assert overlaps == 0
+
+
+def test_decoded_checked_without_data_is_a_plugin_bug(
+    toys: ArchiveFormat, tmp_path: Path
+) -> None:
+    class Checked(ToysReader):
+        def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+            for span in super().walk(stream):
+                yield span._replace(checked=True)
+
+    fmt = _variant(Checked, ToysContainer.BAD_SIZE)
+    path = _write(tmp_path, build_toys(_ENTRIES))
+    with (
+        open_archive(path, format=fmt) as reader,
+        pytest.raises(ValueError, match="checked=True and no data"),
+    ):
+        reader.members()
+
+
+def test_decoded_bytes_are_counted_once(
+    decoded: _DecodedFixture, tmp_path: Path
+) -> None:
+    """Decoded bytes count as decompressed output whether the caller or the drain
+    reads them, and only once."""
+    fmt, _ = decoded
+    path = _write(tmp_path, build_decoded(_DECODED_ENTRIES))
+    total = sum(len(d) for d in _DECODED_DATA.values()) + len(b"docs/a.txt")
+    with enable_measurement(), open_archive(path, format=fmt) as reader:
+        reader.members()
+        stats = reader.io_stats()
+        assert stats is not None
+        assert stats.bytes_decompressed == total
+        assert reader.read("docs/a.txt") == b"alpha\n"
+        stats = reader.io_stats()
+        assert stats is not None
+        assert stats.bytes_decompressed == total + len(b"alpha\n")

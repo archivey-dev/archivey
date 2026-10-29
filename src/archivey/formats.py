@@ -225,7 +225,8 @@ class MemberSpan(NamedTuple):
 
     checked: bool = False
     """As :attr:`MemberData.checked`: ``data`` checks its bytes itself and raises when
-    they do not match once read to the end."""
+    they do not match once read to the end. Only with ``data``: archivey refuses it on
+    a span of stored bytes."""
 
 
 class ReaderArchiveInfo(NamedTuple):
