@@ -28,7 +28,8 @@ def _windows_setter() -> Callable[[str | int, datetime], bool] | None:
     import msvcrt
     from ctypes import wintypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # pyrefly: ignore[missing-attribute]
+    # pyrefly: ignore[missing-attribute]
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
     class FILETIME(ctypes.Structure):
         _fields_ = (
@@ -73,7 +74,8 @@ def _windows_setter() -> Callable[[str | int, datetime], bool] | None:
         if isinstance(target, int):
             # The descriptor was opened for writing, which grants the handle
             # FILE_WRITE_ATTRIBUTES; the handle stays the descriptor's.
-            handle = msvcrt.get_osfhandle(target)  # pyrefly: ignore[missing-attribute]
+            # pyrefly: ignore[missing-attribute]
+            handle = msvcrt.get_osfhandle(target)
             return bool(set_file_time(handle, ctypes.byref(stamp), None, None))
         handle = create_file(
             target, file_write_attributes, share_all, None, open_existing, flags, None
