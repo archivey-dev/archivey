@@ -77,6 +77,8 @@ _REFUSED: dict[tuple[str, str], str] = {
         for name in ("a*.txt", "aX.txt", "b?.txt", "b1.txt", "only*.dat")
     },
     ("rar15-comment.rar", "FILE1.TXT"): "RAR 1.5",
+    # Follows a link in a RAR5 solid run, which unar 1.10 reads wrongly.
+    ("redirect_unknown_solid__.rar", "b.txt"): "RAR5 solid",
 }
 # Members unar 1.10.1 drops, and the members after them in a solid run, whose bytes
 # then go missing or are stale: ``scripts/gen_rar_fixtures.py`` ``_build_unar_drop``.
