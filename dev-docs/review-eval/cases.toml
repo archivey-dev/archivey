@@ -1,0 +1,129 @@
+# Bugs that got past the review loop, for scripts/review_eval.py.
+#
+# Each case is a merged PR that the loop reviewed (its last round's verdict was
+# conditional, approved or clean) and a later PR that fixed a bug the reviewed
+# commit already had. `head` is the commit that last round reviewed, `round` that
+# round's number in the loop, `base` the head's merge base with main. A replay
+# always reviews `base...head` as round 1 (see README.md). `bug` says what was
+# wrong, for the judge; `caught_if` says what a finding must name to count. Line
+# numbers are at `head`.
+#
+# Add a case when a fix PR names the PR that caused its bug: check that the bug
+# is in the reviewed commit (not added after the last round), and write `bug`
+# from the fix's own description, not from what a reviewer would have to guess.
+
+[[case]]
+id = "zstd-seek-point-in-frame"
+pr = 934
+round = 2
+head = "c0ff10dcccdd48c7952a81009151bad6bc9abd1c"
+base = "5bc9cb46f82d3ce991014ecc8350c61a9e4b84bd"
+fixed_by = "#997 (58d170d8)"
+files = ["src/archivey/internal/streams/decompressor_stream.py:1159-1300"]
+bug = """
+The PR drops a seek index that the decode contradicts and reports
+SEEK_INDEX_DEGRADED, but only for the disagreements it checks (output offsets and
+sizes). A seek point from the index (the zstd seek table) that lands somewhere the
+decoder cannot start, for example inside a frame, still made the decoder raise its
+decode error on the seek: _reset_to_seek_point resumes at the index point and the
+failure goes through _decoding as a plain CorruptionError. Under the index-trust
+ruling the index should be dropped (SEEK_INDEX_DEGRADED) and the stream should
+decode from the start instead.
+"""
+caught_if = """
+A finding says that a seek to an index point the decoder rejects (a decode error
+right after resuming there, before any output) raises instead of being treated as
+the index contradicting the data and dropping it.
+"""
+
+[[case]]
+id = "decoder-death-reraise-cycle"
+pr = 904
+round = 3
+head = "1164f318380784980a96c76d92c3162fd6a4f75a"
+base = "5d19f88e7cf56cea507aa6d5be01662606a0dab0"
+fixed_by = "#1058 (9d66268d)"
+files = ["src/archivey/internal/streams/codecs/decoder_child.py:395-525"]
+bug = """
+A decoder whose child process died keeps the error in self._death and raises the
+same instance again on every later call (`raise self._death`,
+`raise self._death from exc`). Raising a kept instance attaches a new traceback
+whose frames hold the decoder, so the decoder and its error form a reference
+cycle that only the garbage collector frees. Until it runs, the decoder (and
+through it another decoder's child process) stays alive; the leak check failed
+depending on test order.
+"""
+caught_if = """
+A finding says that re-raising the stored exception instance creates a reference
+cycle through its traceback (or otherwise keeps the decoder or its child alive),
+and suggests raising a fresh exception each time.
+"""
+
+[[case]]
+id = "rapidgzip-cut-raw-deflate"
+pr = 545
+round = 2
+head = "d73f8fb6a7592b2ec7d03bc422f32b220acdc45a"
+base = "378206d12d412ed53c05af54e0344a335fdd9866"
+fixed_by = "#646 (d02a4ac5)"
+files = [
+    "src/archivey/internal/streams/codecs.py:2925-2975",
+    "src/archivey/internal/streams/rapidgzip_child.py",
+]
+bug = """
+The PR's goal is that a cut stream read through rapidgzip delivers what the
+standard library delivers. For raw DEFLATE that does not hold: rapidgzip ends a
+raw DEFLATE stream cut after a whole block, or inside its last block, with no
+error, and raw DEFLATE has no trailer (no ISIZE, no Adler-32) for an end check to
+catch it. With a declared size equal to the output before the cut, the
+accelerated read ended cleanly where the standard library raises TruncatedError.
+"""
+caught_if = """
+A finding says that a truncated raw DEFLATE stream (no final block / no
+end-of-stream) can end without an error under rapidgzip, because only gzip and
+zlib have an end check.
+"""
+
+[[case]]
+id = "rapidgzip-cut-gzip-member-then-complete"
+pr = 613
+round = 1
+head = "5bd61cb871708fb8e66fe2f48b95b41fe9319562"
+base = "9a2bdec5169fd5b9f58596a6674c23f14465aff8"
+fixed_by = "#635 (9b615164)"
+files = ["src/archivey/internal/streams/codecs.py:1428-1600"]
+bug = """
+rapidgzip stops at a cut gzip member and ends softly. The ISIZE backstop in
+_GzipTruncationCheckStream compares the output length with the file's last four
+bytes; on a mismatch it asks gzip_has_additional_member, and when a complete
+member follows the cut one it takes the file for multi-member and raises nothing.
+So a file whose first member is cut and which has a complete member after it
+reads short with no error: the backstop never checks that the decode reached the
+end of the source.
+"""
+caught_if = """
+A finding says that a cut member followed by a further, complete member passes
+the ISIZE backstop (the multi-member exemption hides the truncation), or that
+the backstop should check rapidgzip consumed the whole source.
+"""
+
+[[case]]
+id = "pax-sparse-version-by-records"
+pr = 738
+round = 5
+head = "12b428a912c3bde2740a3ff56e29997b7bbc11a3"
+base = "6641c86c959128a338354d95650a374504d3f5c3"
+fixed_by = "#850 (e0bf370a)"
+files = ["src/archivey/internal/backends/tar_parser.py:1005-1050"]
+bug = """
+The PAX sparse encoding is chosen by which records are present, in the order
+GNU.sparse.map (0.1), then GNU.sparse.size or GNU.sparse.offset/numbytes (0.0),
+then GNU.sparse.major/realsize (1.0). A member with GNU.sparse.major=1 that also
+carries GNU.sparse.size is read as 0.0 and fails on open, and one with a stray
+GNU.sparse.map is read as 0.1 with size 0. GNU tar 1.35 selects 1.0 by the
+member's own major version first.
+"""
+caught_if = """
+A finding says that the sparse format is picked by record presence rather than by
+GNU.sparse.major, so a 1.0 member that also has a 0.0 or 0.1 record is misread.
+"""

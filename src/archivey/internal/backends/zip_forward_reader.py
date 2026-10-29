@@ -116,7 +116,10 @@ from archivey.internal.password_confirm import (
     run_password_confirm_plan,
 )
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import (
+    ArchiveStreamImpl,
+    MemberStreamParts,
+)
 from archivey.internal.streams.codecs import open_codec_stream
 from archivey.internal.streams.decompressor_stream import DataAfterEndError
 from archivey.internal.streams.streamtools import (
@@ -2437,20 +2440,20 @@ class ZipForwardReader(ZipReader):
 
     def _iter_with_data(
         self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
-    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
         # close_previous=False: moving to the next header reads past the previous
         # member's data, and its stream reads nothing after that.
 
-        def _open(member: ArchiveMember) -> ArchiveStream | None:
+        def _open(member: ArchiveMember) -> ArchiveStreamImpl | None:
             if not pass_has_data(member):
                 return None
-            return self._open_member(member)
+            return self._open_member_handle(member)
 
         yield from self._drive_pass_streams(
             self._begin_forward_pass(), open_member=_open, close_previous=False
         )
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+    def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         current = self._pass_data
         if current is None or current.member is not member:
             raise ValueError(
@@ -2476,7 +2479,7 @@ class ZipForwardReader(ZipReader):
                 digest="integrity check",
                 why="the password was accepted on a weaker check",
             )
-        return self._wrap_member_stream(stream, member.name, size=member.size)
+        return self._member_parts(stream, member.name, size=member.size)
 
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         member_id = member._member_id

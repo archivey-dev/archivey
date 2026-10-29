@@ -63,6 +63,7 @@ from archivey.internal.detection import (
     probe_config,
 )
 from archivey.internal.diagnostics_collector import collector_from_config
+from archivey.internal.format_adapter import replacement_backend
 from archivey.internal.format_args import (
     coerce_archive_format,
     coerce_stream_or_archive_format,
@@ -71,7 +72,6 @@ from archivey.internal.format_args import (
 from archivey.internal.format_provenance import FormatProvenance
 from archivey.internal.open_site import OpenSite, capture_open_site
 from archivey.internal.password import _PasswordCandidates
-from archivey.internal.plugin_adapter import replacement_backend
 from archivey.internal.registry import (
     format_availability,
     get_registry,
@@ -79,7 +79,6 @@ from archivey.internal.registry import (
     list_supported_formats,
 )
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.codecs import codec_for_stream_format, open_codec_stream
 from archivey.internal.streams.streamtools import (
     OneReadEachStream,
@@ -94,7 +93,7 @@ from archivey.internal.volumes import (
     is_sfx_stub_name,
     resolve_source,
 )
-from archivey.reader import ArchiveReader, ForwardArchiveReader
+from archivey.reader import ArchiveReader, ArchiveStream, ForwardArchiveReader
 from archivey.terminal import display_path
 from archivey.types import (
     ArchiveFormat,
@@ -107,9 +106,9 @@ from archivey.types import (
 )
 
 if TYPE_CHECKING:
+    from archivey.formats import FormatHandler
     from archivey.internal.base_reader import ReadBackend
     from archivey.internal.diagnostics_collector import DiagnosticCollector
-    from archivey.plugins import FormatPlugin
 
 __all__ = [
     "DEFAULT_ARCHIVEY_CONFIG",
@@ -499,7 +498,7 @@ def _refuse_format_off_by_policy(
 
 
 def _refuse_for_replacement(
-    plugin: type[FormatPlugin],
+    plugin: type[FormatHandler],
     what: str,
     fmt: ArchiveFormat,
     archive_name: str | None,
@@ -533,7 +532,7 @@ def _note_unused_arguments(
     passwords: _PasswordCandidates,
     encoding: str | None,
     collector: DiagnosticCollector,
-    replacement: type[FormatPlugin] | None,
+    replacement: type[FormatHandler] | None,
 ) -> None:
     """Emit the ``password=`` / ``encoding=`` hygiene diagnostics for ``backend_cls``.
 

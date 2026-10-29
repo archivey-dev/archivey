@@ -165,8 +165,8 @@ included.
 
 ### 2.3 Member data
 
-`_open_member` opens the file the listing saw and wraps it in the same `ArchiveStream`
-every backend returns, advertising the listed `size`. There is no translator, so a genuine
+`_open_member` opens the file the listing saw, and the same `ArchiveStream` every backend's
+members get serves it, advertising the listed `size`. There is no translator, so a genuine
 `OSError` (a permission error, a vanished file) propagates unchanged.
 
 The tree can change between the walk and the open, so the open checks that the file is

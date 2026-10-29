@@ -28,7 +28,7 @@ base-class helpers each module calls:
 | Single-file | `_validate_at_open` | 6, including `_codec_input`, `_wrap_compressed_input`, `_seek_handle_wrapper` |
 | Directory | `_check_extraction_dest` | `_wrap_member_stream` |
 | ISO | `_translate_exception` | 7: `_wrap_member_stream`, `_handle_guard`, `_translated_errors`, `_track_source_seeks`, three `_emit_*` |
-| TAR | `_iter_with_data`, `_pull_member`, `_register_member`, `_list_before_extraction`, `_translate_exception` | 13 |
+| TAR | `_iter_with_data`, `_before_pull_locked`, `_register_member`, `_list_before_extraction`, `_translate_exception` | 13 |
 | ZIP | `_iter_with_data`, `_ensure_link_target`, `_archive_comment`, `_cost_receipt`, `_translate_exception` | 17 |
 | ZIP (forward) | the ZIP set, plus `_listed_in_index_order`, `_account_archive_comment` | — |
 | RAR | `_iter_with_data`, `_ensure_link_target`, `_translate_exception` | 20 |
@@ -98,7 +98,7 @@ small abstract classes with no internal state, `IndexedReader` or `SequentialRea
 (§2). An internal adapter, `PluginReaderAdapter(BaseArchiveReader)`, holds the plugin
 reader and implements the four abstract methods by calling it. For a sequential reader
 it also implements the forward-pass hooks TAR uses (`_iter_with_data`,
-`_list_before_extraction`, `_pull_member`), once, for every sequential plugin. The
+`_list_before_extraction`, `_before_pull_locked`), once, for every sequential plugin. The
 indexed case is sketched here:
 
 ```python
@@ -343,7 +343,7 @@ public way to feed it. `SequentialReader.walk()` is that way.
   only, because on a pipe or a compressed source there is no seekable source to give.
 
 The shared-pass locking (a `CONCURRENT` reader whose walk has a live member stream) is
-TAR's `_pull_member` hand-off, moved into the adapter. It is the risky part of the
+TAR's `_before_pull_locked` hand-off, moved into the adapter. It is the risky part of the
 adapter. The cross-format pass tests cover TAR's; for a plugin,
 `tests/test_plugins_sequential.py` covers concurrent reads and a walk started again
 after a failed listing.
@@ -557,7 +557,7 @@ format can come from someone else without the maintainer writing it.
   registration only, and `FormatInfo.from_plugin` so a caller can refuse plugin formats.
 - **The sequential pass is shared state.** A `CONCURRENT` reader whose walk has a live
   member stream must hand that stream off before another caller pulls (TAR's
-  `_pull_member`). Mitigation: the hand-off is written once in the adapter and CPIO
+  `_before_pull_locked`). Mitigation: the hand-off is written once in the adapter and CPIO
   runs the cross-format pass and concurrency tests.
 - **The adapter drifts from the internals.** A base-class change that the four built-in
   families absorb can break the adapter. Mitigation: ISO and CPIO run in the normal

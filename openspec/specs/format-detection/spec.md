@@ -115,12 +115,18 @@ The system SHALL execute format detection with this algorithm:
    handle. A source that cannot seek cheaply SHALL skip it, except that a tail already
    held in the detection prefix still matches. A source shorter than the block SHALL NOT
    be read for it.
-6. **Content probes** — formats with no exact magic. Match → `detected_by="content_probe"`.
+6. **Self-checking header** — a format with no magic whose first block proves itself,
+   today a TAR header without `ustar` (a v7 tar): the first 512 bytes SHALL parse as a
+   TAR header, so the stored checksum equals the unsigned or signed sum of the block with
+   its checksum field as spaces and every numeric field is a number, and the name SHALL
+   be non-empty. Match → `PROBABLE` / `detected_by="content_probe"`. This SHALL run on
+   every source, whatever its name, after trailer magic and before the content probes.
+7. **Content probes** — formats with no exact magic. Match → `detected_by="content_probe"`.
    Unless `ArchiveyConfig.always_probe_content` is set, only the probe of a stream format
    the source's extension names SHALL run (see *Magic-less formats are detected by a
    content probe*); `open_stream` SHALL run every probe.
-7. **Extension** — `Path` with a known extension → `GUESS` / `detected_by="extension"`.
-8. `FormatDetectionError` when nothing matched. When step 6 ran only the probes the
+8. **Extension** — `Path` with a known extension → `GUESS` / `detected_by="extension"`.
+9. `FormatDetectionError` when nothing matched. When step 7 ran only the probes the
    extension allows, the message SHALL name the three ways to read a nameless
    probe-only stream: `format=`, `open_stream()` and `always_probe_content=True`.
 
@@ -151,7 +157,7 @@ part of the prefix has (`access-mode-and-cost`, "a non-blocking read is not end 
 | ISO with a zeroed system area | `ISO` / `CERTAIN` / `magic`; unchanged |
 | Source smaller than the extended window, size known | Step 4 skipped without an extended peek; falls through |
 | Source too short for the window, size unknown | Short peek, no match, falls through — never an error for being short |
-| Real Brotli stream larger than the window, no extension, `always_probe_content=True` | One bounded peek misses at step 4, then step 6 detects it |
+| Real Brotli stream larger than the window, no extension, `always_probe_content=True` | One bounded peek misses at step 4, then step 7 detects it |
 
 ### Requirement: Conflict resolution — magic wins and warning is emitted
 
@@ -236,6 +242,9 @@ zstd: the walk is arithmetic over already-peeked bytes and never extends the rea
 | Starts `50 4B 03 04` | ZIP, `CERTAIN`, `magic` |
 | Magic table consulted for zlib | No zlib entry; CMF/FLG → zlib probe |
 | `ustar` at 257, ≥512 bytes | TAR, `CERTAIN`, `magic` |
+| No `ustar`; first 512 bytes a TAR header with a matching checksum and a name, from a path, a `BytesIO` or a pipe, named or not | TAR, `PROBABLE`, `content_probe` |
+| The same block one byte off its checksum, or with an empty name, no extension | `FormatDetectionError` |
+| gzip of such a v7 tar | `TAR_GZ`, `PROBABLE`, `content_probe` |
 | Raw CD sector sync at 0 | ISO, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
 | `koly` block at offset 0 | `DMG`, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
 | `koly` trailer, and no earlier step matched | `DMG`, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
@@ -393,8 +402,9 @@ here still opens through a `.lzma` name.
 
 For single-file compressors (gzip, bzip2, xz, zstd, lz4, lzip, LZMA Alone, zlib,
 brotli, unix-compress), detection SHALL decompress a bounded amount of *content*
-and look for TAR `ustar` at offset 257, reporting combined formats (`TAR_GZ`, …)
-when present. Need ≥512 decompressed bytes.
+and look for TAR `ustar` at offset 257, or a first header that passes the
+self-checking header test (a v7 tar), reporting combined formats (`TAR_GZ`, …) when
+present. Need ≥512 decompressed bytes.
 
 Compressed input is supplied via a **bounded, non-consuming view** (up to
 `_INNER_TAR_MAX_PROBE_BYTES`, ≥ largest bzip2 first-block compressed size):
@@ -931,8 +941,9 @@ decodes cleanly or runs out of input there, and both SHALL be accepted.
 
 ### Requirement: A read failure on probe-only evidence names its provenance
 
-When a single-file result's format came from a content probe with **no corroborating
-evidence** (matching extension or inner-TAR upgrade) — at any `DetectionConfidence` — a
+When a result's format came from a content probe with **no corroborating evidence**
+(matching extension, inner-TAR upgrade, or a self-checking header, which corroborates
+itself) — at any `DetectionConfidence` — a
 decode failure while reading the fabricated single member SHALL report that the format
 identification was unconfirmed, rather than presenting as a plain truncation of a file
 whose format is settled. See `error-handling` for the attribute, message, and diagnostic
@@ -951,6 +962,8 @@ cleanly is a success.
 | Probe + `.tar.br` extension reported as bare `BROTLI`, read fails | Corroborated — the deferred inner-TAR case is agreement, not conflict; `format_unconfirmed=False` |
 | Probe + an extension that **disagrees** (`.zip` over Brotli bytes), read fails | Not corroborated; `format_unconfirmed=True`, and a `FORMAT_EXTENSION_CONFLICT` is raised |
 | Probe hit upgraded to `TAR_*` via inner-TAR, read fails | Corroborated; `format_unconfirmed=False` |
+| TAR found by its header checksum (step 6), with no name or a `.tar` name, read fails | Corroborated by the checksum; `format_unconfirmed=False` |
+| TAR found by its header checksum under a name that **disagrees** (`.zip`), read fails | Still corroborated by the checksum; `format_unconfirmed=False`, and a `FORMAT_EXTENSION_CONFLICT` is raised |
 | Probe-only result, read succeeds | Success; no error, no downgrade |
 
 ### Requirement: An inner-TAR upgrade corroborates a content-probe identification

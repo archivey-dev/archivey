@@ -11,6 +11,7 @@ from typing import Never, get_type_hints
 
 import pytest
 
+from archivey import ArchiveStream
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     OneReadEachStream,
@@ -66,6 +67,14 @@ def test_readonly_base_read_is_the_runtime_guard() -> None:
 
     with pytest.raises((TypeError, NotImplementedError)):
         _ForgotRead().read()
+
+
+def test_archive_stream_base_read_is_the_runtime_guard() -> None:
+    # The public base redeclares read(), so it needs the same raising body: on 3.11 a
+    # subclass that omits read() can still be built. Calling the body directly pins it
+    # on every Python version.
+    with pytest.raises(NotImplementedError):
+        ArchiveStream.read(object(), 1)  # type: ignore[arg-type]
 
 
 def test_readonly_base_name_is_absent() -> None:
@@ -398,7 +407,12 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.source as source_mod
     import archivey.internal.streams.codecs.bcj2_filter as bcj2
     import archivey.internal.streams.streamtools.slice as slice_mod
-    from archivey.internal import detection, password_confirm, plugin_adapter
+    from archivey.internal import (
+        detection,
+        format_adapter,
+        password_confirm,
+        walk_handoff,
+    )
     from archivey.internal.backends import (
         rar_copy_sources,
         rar_reader,
@@ -433,7 +447,9 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     )
 
     forwards_or_owns = {
-        archive_stream.ArchiveStream,
+        # The public base declares it; its one implementation is the next entry.
+        ArchiveStream,
+        archive_stream.ArchiveStreamImpl,
         blocks.BlockStream,  # owns its resume points: every block start
         bcj2.Bcj2DecoderStream,  # owns its one resume point: the folder start
         rapidgzip_child.RapidgzipChildStream,  # asks the child's rapidgzip index
@@ -501,14 +517,24 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         # the decompressed stream) in one pass. TAR stores member data as is, so no
         # codec above it has a table, and a pass's member streams are forward-only.
         tar_parser._ForwardSlice,
-        # A random-access pass's member data: the slice above, or a member view from
-        # where the slice stopped once the walk moves on. Forward-only, stored bytes.
-        tar_reader._WalkHandoffStream,
+        # A random-access pass's member data: the slice above (or a sequential
+        # format's span window), or a view from where it stopped once the walk moves
+        # on. Forward-only, stored bytes.
+        walk_handoff.WalkHandoffStream,
         # A random-access member's data view: the view's offsets, forwarded.
         tar_reader._MemberDataView,
         # A sequential plugin's member data in a streaming pass: stored bytes read
         # forward from the walk's stream, like TAR's slice; no codec above it.
-        plugin_adapter._SpanWindow,
+        format_adapter._SpanWindow,
+        # A sequential plugin's decoded member data (``MemberSpan.data``), read
+        # forward through the walk that yielded it or through a walk of its own; the
+        # plugin decodes, so no archivey codec above it keeps a table.
+        format_adapter._DecodedWindow,
+        format_adapter._DataWalkStream,
+        # The compressed input of a stream a streaming walk decompresses part-way
+        # (``ForwardStream.decompress``): the walk's buffer read forward, below the
+        # codec, which keeps no table over it.
+        format_adapter._ForwardInput,
         # A ZIP member's compressed bytes, read forward from the local-header walk's
         # stream in one pass, below any codec: compressed offsets, no table.
         zip_local_walk.MemberData,

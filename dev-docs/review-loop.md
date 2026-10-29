@@ -153,6 +153,9 @@ assistant, answers only people.
 - **Reaching the maintainer.** The workflow puts the question on the pull request.
   Carrying it into the project chat, in plain language and one at a time, is a separate
   hop and not GitHub's to make.
+- **Measuring the reviewer.** After changing the review skill, the workflow prompt or
+  the model, rerun the bugs the loop missed ([`review-eval/`](review-eval/README.md))
+  and add the score to its results.
 
 ## Setup
 

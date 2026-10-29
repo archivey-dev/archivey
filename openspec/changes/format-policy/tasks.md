@@ -47,7 +47,7 @@ last one archives the change.
       construction refusals; a replacement is refused on a volume set, an SFX-found
       archive and a pipe.
 - [x] 2.5 Docs and spec: the "Adding a format" guide (replacement plugins); the
-      `FormatPlugin.format`, `extensions`, `magic` and `probe` docstrings in
+      `FormatHandler.format`, `extensions`, `magic` and `probe` docstrings in
       `plugins.py`, which today describe registration only; the `format-plugins` delta.
 
 ## 3. Optional libraries and availability (part 3)

@@ -821,6 +821,7 @@ class CentralDirectoryWalk:
         pos = 0
         index = 0
         follower = _ChainFollower(read_at, end)
+        sig = CENTRAL_HEADER_SIGNATURE
         while pos < cd_size:
             ensure(pos, pos + CENTRAL_HEADER_SIZE)
             off = pos - data_start
@@ -855,15 +856,19 @@ class CentralDirectoryWalk:
             extra = data[at : at + extra_len]
             at += extra_len
             comment = data[at : at + comment_len]
-            self._follow_signatures(
-                follower,
-                data,
-                data_start,
-                name_at - data_start,
-                entry_end - data_start,
-                index,
-                base,
-            )
+            # Almost no entry's fields hold a header signature, and the search costs
+            # less than the call, so search here and follow only on a hit.
+            found = data.find(sig, name_at - data_start, entry_end - data_start)
+            if found >= 0:
+                self._follow_signatures(
+                    follower,
+                    data,
+                    data_start,
+                    found,
+                    entry_end - data_start,
+                    index,
+                    base,
+                )
 
             entry = _central_entry(fields, name, extra, comment, index=index, base=base)
             # An offset deferred to a ZIP64 extra field is not corrected. The first
@@ -914,7 +919,7 @@ class CentralDirectoryWalk:
             if entry_end < cd_size:
                 ensure(pos, entry_end + 4)
                 at = entry_end - data_start
-                if data[at : at + 4] != CENTRAL_HEADER_SIGNATURE:
+                if data[at : at + 4] != sig:
                     self._check_cut_name(entry)
                     # The name agrees, but a length is wrong: the comment, the
                     # entry's last field, may be cut. The extra field is checked
@@ -939,13 +944,14 @@ class CentralDirectoryWalk:
         follower: _ChainFollower,
         data: bytes,
         data_start: int,
-        lo: int,
+        found: int,
         hi: int,
         index: int,
         base: int,
     ) -> None:
-        """Raise when a central header signature in ``data[lo:hi]``, entry ``index``'s
-        fields, starts entries that entry swallowed (:meth:`_swallowed`)."""
+        """Raise when a central header signature in ``data[found:hi]``, entry
+        ``index``'s fields, starts entries that entry swallowed (:meth:`_swallowed`).
+        ``found`` is where the first such signature starts."""
         sig = CENTRAL_HEADER_SIGNATURE
         find = data.find
         starts = data.startswith
@@ -953,7 +959,6 @@ class CentralDirectoryWalk:
         held = len(data)
         last_header = held - CENTRAL_HEADER_SIZE
         cd_end = self._end.cd_size - data_start
-        found = find(sig, lo, hi)
         while found >= 0:
             # Most signatures inside a field are part of it: the header they would
             # start steps to a place no header starts. That is settled here, from

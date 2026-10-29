@@ -4,13 +4,15 @@
 from __future__ import annotations
 
 import ast
+import gzip
 import io
+import lzma
 import random
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
-from archivey_ar import AR, ArPlugin, ArReader
+from archivey_ar import AR, ArHandler, ArReader
 
 import archivey
 from archivey import (
@@ -22,7 +24,7 @@ from archivey import (
     detect_format,
     open_archive,
 )
-from archivey.plugins import SequentialReader, register_format
+from archivey.formats import SequentialReader, register_format
 
 DATA = Path(__file__).parent / "data"
 PACKAGE = Path(__file__).parents[1] / "src" / "archivey_ar"
@@ -46,7 +48,7 @@ ARCHIVES = {
 
 @pytest.fixture(scope="session", autouse=True)
 def _registered() -> None:
-    register_format(ArPlugin)
+    register_format(ArHandler)
 
 
 class _Pipe(io.RawIOBase):
@@ -169,6 +171,36 @@ def test_detection() -> None:
         assert info.format == AR, name
         assert info.detected_by == "magic"
         assert info.from_plugin
+
+
+@pytest.mark.parametrize(
+    ("stream", "compress", "suffix"),
+    [
+        (archivey.StreamFormat.GZIP, lambda data: gzip.compress(data, mtime=0), ".gz"),
+        (archivey.StreamFormat.XZ, lzma.compress, ".xz"),
+    ],
+    ids=["gz", "xz"],
+)
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_inside_a_compression_stream(
+    tmp_path: Path,
+    stream: archivey.StreamFormat,
+    compress: Callable[[bytes], bytes],
+    suffix: str,
+    pipe: bool,
+) -> None:
+    """``.a.gz`` and ``.a.xz``: archivey decodes the stream, the reader sees ar."""
+    data = compress((DATA / "gnu.a").read_bytes())
+    path = tmp_path / f"t.a{suffix}"
+    path.write_bytes(data)
+    fmt = archivey.ArchiveFormat(AR.container, stream)
+    assert detect_format(io.BytesIO(data)).format == fmt
+    with open_archive(_Pipe(data) if pipe else path, streaming=pipe) as reader:
+        assert reader.format == fmt
+        seen = {m.name: s.read() for m, s in reader.stream_members() if s is not None}
+    assert list(seen) == NAMES
+    for member_name in CONTENT:
+        _check_content("gnu", seen[member_name], member_name)
 
 
 def test_a_thin_archive_is_refused() -> None:
@@ -351,7 +383,7 @@ def test_the_package_uses_only_public_archivey() -> None:
     """The point of the package: a format added from outside, through the plugin API."""
     used = {name for path in PACKAGE.rglob("*.py") for name in _imports(path)}
     archivey_modules = {name for name in used if name.split(".")[0] == "archivey"}
-    assert archivey_modules == {"archivey", "archivey.plugins"}
+    assert archivey_modules == {"archivey", "archivey.formats"}
 
 
 def test_the_reader_is_a_sequential_reader() -> None:

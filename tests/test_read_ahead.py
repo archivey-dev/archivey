@@ -19,7 +19,7 @@ import pytest
 
 from archivey.exceptions import ArchiveyError, CorruptionError
 from archivey.internal.hashing import crc32_digest
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -204,7 +204,7 @@ def _translate(err: Exception) -> ArchiveyError | None:
 
 def test_archive_stream_passes_read_ahead_to_its_codec_stream() -> None:
     inner, source = _decoded(*_CHUNKS)
-    stream = ArchiveStream(lambda: inner, translate=_translate)
+    stream = ArchiveStreamImpl(lambda: inner, translate=_translate)
     assert stream.read_ahead(3, 1000) == _CHUNKS[0]
     assert source.calls == 1
 
@@ -220,7 +220,7 @@ def test_archive_stream_with_a_verifier_reads_through_it() -> None:
     """Bytes from ``read_ahead`` would skip the digest check, so a stream with a
     verifier reads ``n`` through it, and the mismatch is raised."""
     bad = crc32_digest(zlib.crc32(_DATA) ^ 1)
-    stream = ArchiveStream(
+    stream = ArchiveStreamImpl(
         lambda: _NoReadAhead(_DATA),
         translate=_translate,
         expected_hashes={HashAlgorithm.CRC32: bad},
@@ -232,7 +232,7 @@ def test_archive_stream_with_a_verifier_reads_through_it() -> None:
 
 def test_archive_stream_repeats_its_verdict_without_asking_the_codec() -> None:
     inner, source = _decoded(*_CHUNKS, decoder=_FailsOnFeed(3))
-    stream = ArchiveStream(lambda: inner, translate=_translate)
+    stream = ArchiveStreamImpl(lambda: inner, translate=_translate)
     assert stream.read_ahead(200, 1000) == _DATA[:200]
     with pytest.raises(CorruptionError) as first:
         stream.read_ahead(1, 1000)
@@ -279,6 +279,60 @@ def test_seeks_and_tell_inside_the_surplus() -> None:
     assert buffer.read(150) == _DATA[100:250]
     assert buffer.tell() == 250
     assert buffer.read() == _DATA[250:]
+
+
+# --- ReadAheadStream.read_arrived -----------------------------------------------------
+
+
+def test_read_arrived_takes_the_buffered_bytes_first() -> None:
+    inner, source = _decoded(*_CHUNKS)
+    buffer = ReadAheadStream(inner, 8192, fill_arrived=True)  # type: ignore[arg-type]
+    assert buffer.read(5) == _DATA[:5]
+    assert buffer.read_arrived(10) == _DATA[5:15]
+    # Fewer buffered bytes than asked for: those, without reading the source.
+    assert buffer.read_arrived(1000) == _DATA[15:100]
+    assert source.calls == 1
+    assert buffer.tell() == 100
+
+
+def test_read_arrived_with_fill_arrived_is_one_feed() -> None:
+    inner, source = _decoded(*_CHUNKS)
+    buffer = ReadAheadStream(inner, 8192, fill_arrived=True)  # type: ignore[arg-type]
+    assert buffer.read_arrived(1000) == _CHUNKS[0]
+    assert source.calls == 1
+    assert buffer.read_arrived(1000) == _CHUNKS[1]
+    assert source.calls == 2
+    assert buffer.tell() == 200
+
+
+def test_read_arrived_without_fill_arrived_is_a_read() -> None:
+    """The fallback: a full-count fill, as ``read(n)``."""
+    inner, source = _decoded(*_CHUNKS)
+    buffer = ReadAheadStream(inner, 8192)  # type: ignore[arg-type]
+    assert buffer.read_arrived(150) == _DATA[:150]
+    assert source.calls == len(_CHUNKS) + 1
+    assert buffer.read_arrived(1000) == _DATA[150:]
+    assert buffer.read_arrived(1000) == b""
+
+
+def test_read_arrived_raises_a_held_error() -> None:
+    inner, _ = _decoded(*_CHUNKS, decoder=_FailsOnFeed(3))
+    buffer = ReadAheadStream(inner, 8192, fill_arrived=True)  # type: ignore[arg-type]
+    assert buffer.read(150) == _DATA[:150]
+    # The fill fails with bytes still buffered: they come back, the error is held.
+    assert buffer.read(100) == _DATA[150:200]
+    with pytest.raises((OSError, ArchiveyError)):
+        buffer.read_arrived(10)
+
+
+def test_read_arrived_refuses_misuse() -> None:
+    inner, _ = _decoded(*_CHUNKS)
+    buffer = ReadAheadStream(inner, 8192, fill_arrived=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="positive"):
+        buffer.read_arrived(0)
+    buffer.close()
+    with pytest.raises(ValueError, match="closed"):
+        buffer.read_arrived(1)
 
 
 @pytest.mark.parametrize("size", [1, 7, 150, 1000])

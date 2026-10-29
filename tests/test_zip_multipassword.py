@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import lzma
 import os
 import struct
 import tempfile
@@ -873,6 +874,38 @@ def test_zipcrypto_zstd_confirm_is_bounded(monkeypatch: pytest.MonkeyPatch) -> N
     compressed = zstd_backend().compress(payload)
     blob = build_zipcrypto_zip(
         RIGHT, NAME.encode(), payload, compression=93, compressed=compressed
+    )
+    plans: list[password_confirm.PasswordConfirmPlan] = []
+    real_plan = zip_reader.plan_password_confirm
+
+    def spy(*args: Any, **kwargs: Any) -> password_confirm.PasswordConfirmPlan:
+        plans.append(real_plan(*args, **kwargs))
+        return plans[-1]
+
+    monkeypatch.setattr(zip_reader, "plan_password_confirm", spy)
+    assert _read_member(blob, [b"wrong", RIGHT]) == payload
+    assert [plan.read_bytes for plan in plans] == [PASSWORD_CONFIRM_PREFIX_BYTES]
+
+
+def test_zipcrypto_xz_member_decodes() -> None:
+    """ZipCrypto over XZ (method 95), with one candidate and with two."""
+    payload = DATA * 50
+    blob = build_zipcrypto_zip(
+        RIGHT, NAME.encode(), payload, compression=95, compressed=lzma.compress(payload)
+    )
+    assert _read_member(blob, RIGHT) == payload
+    assert _read_member(blob, [b"wrong", RIGHT]) == payload
+
+
+def test_zipcrypto_xz_confirm_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Several candidates on a large XZ member confirm on a prefix, not the CRC.
+
+    Mutation check: dropping ``Codec.XZ`` from ``REJECTING_CODECS`` fails here, as
+    the plan then reads the whole member.
+    """
+    payload = os.urandom(PASSWORD_CONFIRM_PREFIX_BYTES * 4)
+    blob = build_zipcrypto_zip(
+        RIGHT, NAME.encode(), payload, compression=95, compressed=lzma.compress(payload)
     )
     plans: list[password_confirm.PasswordConfirmPlan] = []
     real_plan = zip_reader.plan_password_confirm

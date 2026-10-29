@@ -782,7 +782,7 @@ the ZIP method id to the shared codec layer.
 
 The reason is coverage and uniformity, in that order. `ZipExtFile` handles STORED, DEFLATE,
 BZIP2 and LZMA; the codec layer adds Deflate64 (9), Zstd (93) and PPMd (98), which the
-registry already advertised for ZIP. It also puts ZIP member reads on the same
+registry already advertised for ZIP, and XZ (95), which is core. It also puts ZIP member reads on the same
 `VerifyingStream` and the same exception translation as every other backend, so a corrupt
 body raises `CorruptionError` and a cut-short one raises `TruncatedError` through shared
 code — and it is what lets a ZIP member use the accelerators when the caller turns them on,
@@ -799,12 +799,14 @@ reports "Unsupported Method" and "Data Error". Each of these errors names the me
 Under ZipCrypto those settings are decrypted with a key one byte vouched for, so both
 stay `CorruptionError` there and count as the candidate failing.
 
-A member's compressed data is one stream of its codec and nothing else, as 7-Zip,
-Info-ZIP and `zipfile` read it: each codec ends the member at its stream's end (an LZMA
-member at its end marker; `lzma.LZMAFile` would start a second raw stream on the bytes
-after it and read that as content). The reader opens every member with
-`StreamConfig.refuse_input_after_end`, so any byte of the compressed data the codec
-leaves after that end, a zero too, and a second stream, are `DataAfterEndError` (a
+A member's compressed data is its codec's data and nothing else, as 7-Zip, Info-ZIP and
+`zipfile` read it. For most methods that is one stream; for Zstd and XZ it is the frames
+or streams their formats define as the data (below). Each codec ends the member at the
+end of that data (an LZMA member at its end marker; `lzma.LZMAFile` would start a second
+raw stream on the bytes after it and read that as content). The reader opens every
+member with `StreamConfig.refuse_input_after_end`, so any byte of the compressed data
+the codec leaves after that end, a zero too, and a second stream where the format defines
+one, are `DataAfterEndError` (a
 `CorruptionError`), raised once the output before them has been read, whatever the
 declared size and CRC cover. 7-Zip 23.01 `7z t` fails every such member ("Data Error",
 or "There are some data after the end of the payload data"), and the bytes may be a side
@@ -814,9 +816,14 @@ table below records. A Zstd member (method 93) reads every frame, skippable ones
 a `.zst` file and a 7z Zstd coder do: RFC 8878 defines Zstd data as one or more frames,
 and the member's sizes and CRC check the whole output (maintainer, 2026-10-21). Bytes
 after the last frame that start no frame are refused like any other input after the end. An
-LZMA member with bit 1 clear, and a PPMd member, end at their declared size, and their
-input must end there too: right after it for LZMA (or one zero byte later, which 7-Zip's
-encoder sometimes writes), after the end mark PPMd8 must carry. So a declared size short
+XZ member (method 95) reads the same way, for the same reason: the xz format (spec §2.2)
+defines its data as one or more streams with stream padding (groups of four zero bytes)
+between and after them, and 7-Zip 23.01 and 26.05 read such a member in full. Zero bytes that
+do not fill a group of four, or any other byte after the last stream, are input after the
+end; 7-Zip fails those members too. An LZMA member with bit 1 clear, and a PPMd member,
+end at their declared size, and their input must end there too: right after it for LZMA
+(or one zero byte later, which 7-Zip's encoder sometimes writes), after the end mark
+PPMd8 must carry. So a declared size short
 of the stream's data is `CorruptionError`, not `TruncatedError`: the input is too long,
 not short. The 7z handbook (§ coders, *Input after the stream*) has how each codec finds
 its end, and what it cannot see; `inflate64` drops input after a Deflate64 stream's end
@@ -960,10 +967,25 @@ store different numbers:
 
 The difference is self-correcting: the EOCD's own position is known once it is found, so
 `(eocd_pos - size_cd) - offset_cd` recovers the base under either convention and every
-entry offset is read through it. This is why `payload_offset` is defined as the absolute
-position of the earliest local file header rather than as the adjustment — the adjustment
-is 0 for `zipapp`, which would report the motivating case as unprefixed. An empty archive
-has no local header to point at, so there `payload_offset` is the EOCD-derived base.
+entry offset is read through it. Every member sits at the base plus a stored offset that
+is not negative, so **the base is never after any member**.
+
+`payload_offset` is where to start reading: **never after the archive's first member, and
+exactly that member when the detection step saw it.** It is not only a label:
+`open_archive` hands it to the reader, which cuts the source there, so a value after the
+first member would cut members off. The forward scan meets the earliest local header and
+reports it; an empty archive has no local header, so there it reports the base. A planned
+step that finds the ZIP from its end record (the tail probe of the `pe-aware-sfx-location`
+change) sees only the base, and will report that with no read to refine it.
+
+**A base of 0 is a real answer, not a missing one.** For a ZIP written in place, the
+stored offsets count from byte 0 of the file, stub included, so by the ZIP's own numbers
+the archive starts at byte 0, and reading from there finds every member. The forward scan
+reports the same ZIP at its first local header, after the stub; both are correct starts.
+Today only the forward scan reports a prefixed ZIP, so `payload_offset > 0` still marks
+one, as the `FormatInfo` docstring says. Once the tail probe ships it can report 0 for a
+prefixed ZIP, and the test moves to a separate field (`FormatInfo.prefixed`, planned in the
+same change).
 
 **Producers disagree about encodings.** Info-ZIP and others write valid UTF-8 names without
 setting bit 11, which is the case the sniff exists for; `tests/fixtures/external/encoding_infozip_jules.zip`

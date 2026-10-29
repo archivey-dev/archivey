@@ -10,18 +10,24 @@ by three shapes that a script can find faster than a reviewer:
   its file (``width``);
 - a new test the PR body says fails on `main`, which passes there (``red-on-base``).
 
+It also prints the review tier the changed paths put the pull request in (``tier``): how
+deep a review round goes, and whether the public API moved. The reviewer runs the same
+command, so the PR body's Risk section can be checked against it.
+
 67 of the 70 findings raised after round 1 were caused by the previous round's fix, so the
 same checks apply to the fix commits before the label goes on again.
 
     uv run python scripts/review_prep.py                 # sweep + width against origin/main
     uv run python scripts/review_prep.py --base HEAD~1   # just the last commit's fixes
     uv run python scripts/review_prep.py red-on-base tests/test_x.py::test_y ...
+    uv run python scripts/review_prep.py tier            # light, standard or deep, and why
 
 ``sweep`` only reports: whether a hit is stale needs reading. ``width`` exits 1 when an
 added line is wider than its file allows. ``red-on-base`` prints a table to paste into the
 PR body in place of a prose "fails on main" claim.
 
-``sweep`` and ``width`` are stdlib only and run under any Python 3.10+;
+``sweep``, ``width`` and ``tier`` are stdlib only and run under any Python 3.10+, so a
+reviewer without the project environment runs ``python3 scripts/review_prep.py tier``;
 ``red-on-base`` runs pytest, so it needs the project's environment and refuses to start
 without one.
 """
@@ -336,6 +342,133 @@ def width(files: Iterable[FileDiff], base: str, head: str = "HEAD") -> list[str]
     return report
 
 
+# --- tier: how deep the review goes ----------------------------------------------------
+
+# A pull request is light only when every path it changes is here: user and maintainer
+# prose, tests and benchmarks. Two rules keep the rest out:
+# - What an agent or a review round reads as its own instructions or contracts is never
+#   light: the skills and commands (`.claude/`, `.cursor/`, so they are not listed here)
+#   and the files in NOT_LIGHT.
+# - Neither is a gate inside a light folder: the skip markers and the benchmark gate.
+# `openspec/` is not light either, because a spec is a contract.
+LIGHT_PREFIXES = (
+    "docs/",
+    "dev-docs/",
+    "tests/",
+    "benchmarks/",
+)
+LIGHT_FILES = ("mkdocs.yml",)
+NOT_LIGHT = (
+    # Instructions and contracts
+    "AGENTS.md",
+    "CLAUDE.md",
+    "CONTRIBUTING.md",
+    "dev-docs/design-rules.md",
+    "dev-docs/threat-model.md",
+    "dev-docs/api-surface.txt",
+    # Gates
+    "tests/conftest.py",
+    "benchmarks/wall_baseline.py",
+)
+
+# Paths where one bug breaks a safety guarantee for every format: writes stay inside the
+# destination, resources stay bounded, archive-supplied input never reaches a command
+# line or a terminal as anything but inert text. One of them makes the pull request deep.
+# Edit the list here; the skill does not repeat it.
+#
+# Format parsers and codecs (`internal/backends/`, `internal/streams/codecs/`) stay
+# standard by design, though they read hostile bytes: listing them would make nearly
+# every format PR deep, and they have their own defences that a review round does not
+# replace (the fuzzing jobs, the CVE replays, the hostile-input checklist every standard
+# round runs).
+DEEP_SECURITY = (
+    "src/archivey/paths.py",
+    "src/archivey/config.py",
+    "src/archivey/internal/config.py",
+    "src/archivey/terminal.py",
+    "src/archivey/internal/extraction.py",
+    "src/archivey/internal/file_copy_pass.py",
+    "src/archivey/internal/link_watch.py",
+    "src/archivey/internal/long_paths.py",
+    "src/archivey/internal/naming.py",
+    "src/archivey/internal/unix_mode.py",
+    "src/archivey/internal/windows_reparse.py",
+    "src/archivey/internal/bomb_tracker.py",
+    "src/archivey/internal/listing_limits.py",
+    "src/archivey/internal/resource_usage.py",
+    "src/archivey/internal/external/",
+    "src/archivey/internal/streams/child_process.py",
+)
+# A deep pull request touching one of these also goes to the maintainer to merge.
+DEEP_MAINTAINER = (".github/workflows/", "scripts/release.py")
+
+API_SURFACE = "dev-docs/api-surface.txt"
+
+
+def _matches(path: str, entries: Iterable[str]) -> bool:
+    return any(path.startswith(e) if e.endswith("/") else path == e for e in entries)
+
+
+@dataclass
+class Tier:
+    name: str  # "light", "standard" or "deep"
+    reasons: list[str]
+    maintainer_merges: bool
+    api_changed: bool
+
+
+def tier(paths: Iterable[str]) -> Tier:
+    """Classify the changed paths (renames give both sides) into a review tier."""
+    paths = sorted(set(paths))
+    security = [p for p in paths if _matches(p, DEEP_SECURITY)]
+    maintainer = [p for p in paths if _matches(p, DEEP_MAINTAINER)]
+    api_changed = API_SURFACE in paths
+    if security or maintainer:
+        return Tier("deep", security + maintainer, bool(maintainer), api_changed)
+    heavier = [
+        p
+        for p in paths
+        if _matches(p, NOT_LIGHT)
+        or not (
+            _matches(p, LIGHT_PREFIXES)
+            or p in LIGHT_FILES
+            or ("/" not in p and p.endswith(".md"))
+        )
+    ]
+    if paths and not heavier:
+        return Tier("light", [], False, api_changed)
+    return Tier("standard", heavier, False, api_changed)
+
+
+def changed_paths(base: str, head: str) -> list[str]:
+    out = git("diff", "--name-status", "-M", f"{base}...{head}")
+    paths: list[str] = []
+    for line in out.splitlines():
+        # A rename lists the old path and the new one; both count.
+        paths.extend(line.split("\t")[1:])
+    return paths
+
+
+def tier_report(t: Tier) -> list[str]:
+    lines = [f"tier: {t.name}"]
+    if t.name == "deep":
+        lines += [f"  deep path: {p}" for p in t.reasons]
+        if t.maintainer_merges:
+            lines.append(
+                "  merge: the maintainer merges this one (workflow or release)"
+            )
+    elif t.name == "standard" and not t.reasons:
+        lines.append("  no committed changes against the base")
+    elif t.name == "standard":
+        shown = t.reasons[:5]
+        more = f" (+{len(t.reasons) - len(shown)} more)" if len(t.reasons) > 5 else ""
+        lines.append(f"  not light because of: {', '.join(shown)}{more}")
+    lines.append(
+        f"public API: {'changed (' + API_SURFACE + ')' if t.api_changed else 'unchanged'}"
+    )
+    return lines
+
+
 # --- red-on-base: do the new tests fail without this PR's src/? -------------------------
 
 
@@ -461,7 +594,7 @@ def main(argv: list[str] | None = None) -> int:
         "command",
         nargs="?",
         default="all",
-        choices=["all", "sweep", "width", "red-on-base"],
+        choices=["all", "sweep", "width", "red-on-base", "tier"],
     )
     parser.add_argument("tests", nargs="*", help="red-on-base: pytest node ids")
     args = parser.parse_args(argv)
@@ -470,6 +603,10 @@ def main(argv: list[str] | None = None) -> int:
         if not args.tests:
             parser.error("red-on-base needs at least one pytest node id")
         return red_on_base(args.base, args.tests)
+
+    if args.command == "tier":
+        print("\n".join(tier_report(tier(changed_paths(args.base, args.head)))))
+        return 0
 
     files = parse_diff(git("diff", "-U0", f"{args.base}...{args.head}"))
     status = 0
@@ -485,6 +622,11 @@ def main(argv: list[str] | None = None) -> int:
         print("=== width: added lines wider than their file (rewrap the paragraph)")
         print("\n".join(found) if found else "nothing found")
         status = 1 if found else 0
+    if args.command == "all":
+        print(
+            "=== tier: how deep the review goes (copy into the PR body's Risk section)"
+        )
+        print("\n".join(tier_report(tier(changed_paths(args.base, args.head)))))
     return status
 
 
