@@ -202,6 +202,37 @@ def _rar5_filetime_overflow(tmp_path: Path) -> Path:
     return out
 
 
+def _7z_filetime_overflow(tmp_path: Path) -> Path:
+    """A 7z whose member mtime is the FILETIME 2**64 - 1, past datetime's range.
+
+    Written by ``7z`` with the header left uncompressed (``-mhc=off``), so the known
+    mtime's eight bytes can be found and replaced, then both header CRCs fixed.
+    """
+    src = tmp_path / "src7z"
+    src.mkdir()
+    member = src / "a.txt"
+    member.write_bytes(b"hi\n")
+    os.utime(member, (1_000_000_000, 1_000_000_000))
+    out = tmp_path / "filetime.7z"
+    subprocess.run(
+        ["7z", "a", "-mx0", "-mhc=off", "-bd", "-bso0", str(out), "a.txt"],
+        cwd=src,
+        check=True,
+    )
+    data = bytearray(out.read_bytes())
+    next_offset, next_size = struct.unpack_from("<QQ", data, 12)
+    start = 32 + next_offset
+    header = data[start : start + next_size]
+    filetime = struct.pack("<Q", (1_000_000_000 + 11_644_473_600) * 10_000_000)
+    assert header.count(filetime) == 1
+    at = start + header.find(filetime)
+    data[at : at + 8] = b"\xff" * 8
+    struct.pack_into("<I", data, 28, zlib.crc32(data[start : start + next_size]))
+    struct.pack_into("<I", data, 8, zlib.crc32(data[12:32]))
+    out.write_bytes(bytes(data))
+    return out
+
+
 def _iso_month_13(tmp_path: Path) -> Path:
     import pycdlib
 
@@ -269,6 +300,14 @@ def _tar_header_mtime_overflow(tmp_path: Path) -> Path:
             "ntfs",
             str(2**64 - 1),
             id="rar5-filetime-overflow",
+        ),
+        pytest.param(
+            _7z_filetime_overflow,
+            "NTFS timestamp",
+            "ntfs",
+            str(2**64 - 1),
+            id="7z-filetime-overflow",
+            marks=requires_binary("7z"),
         ),
         # pycdlib stamps the build time, so only the patched month is fixed.
         pytest.param(
