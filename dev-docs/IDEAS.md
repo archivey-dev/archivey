@@ -261,10 +261,6 @@ Each idea carries a status:
   `rar` writer at test time and skip on every CI leg. Generate their archives once and
   commit them, as ADR 0016 did for the corpus. Inventory: `tests/fixtures/rar/README.md`
   §"Tests that still need the `rar` writer at runtime".
-- **Check that the Windows `unrar` download is rarlab's.** *Open idea.* The Windows CI leg
-  downloads `unrarw64.exe` from an unversioned URL, so a pinned digest would go stale. An
-  Authenticode check for the win.rar GmbH signature is the likely answer
-  (`scripts/install-rarlab-unrar.ps1`).
 - **Move the `unrar` finder onto `CliToolFinder`.** *Open idea.* `find_rarlab_unrar` repeats
   the policy in `internal/external/cli.py`, so a probe or cache fix lands twice. About
   sixty test sites patch the finder's internals, so do it as its own change, with those
