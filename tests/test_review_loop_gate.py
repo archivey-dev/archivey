@@ -446,6 +446,76 @@ def test_a_decision_carries_its_question() -> None:
     assert "Once it is answered, add the `review` label again" in answer.comment
 
 
+# --- the deep pass -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", sorted(gate.DEEP_PASS_STARTS))
+def test_an_approved_deep_pull_request_starts_the_deep_pass(name: str) -> None:
+    answer = finish(verdict_file(verdict=name), tier="deep")
+    assert answer.deep_pass_next
+    assert "the deep pass starts" in answer.comment
+    assert "round 3" in answer.comment
+    # The approving round is an ordinary one; the pass marks its own round.
+    assert gate.DEEP_PASS_FIELD not in answer.comment.splitlines()[0]
+
+
+@pytest.mark.parametrize("tier", ["light", "standard", "", None])
+def test_only_a_deep_pull_request_gets_the_deep_pass(tier: str | None) -> None:
+    answer = finish(verdict_file(verdict="approved"), tier=tier)
+    assert not answer.deep_pass_next
+    assert "No further round is needed" in answer.comment
+
+
+def test_a_conditional_approval_of_a_deep_pull_request_asks_for_a_round() -> None:
+    """The deep pass reads finished code, so the fixes get one more round first."""
+    answer = finish(verdict_file(verdict="conditional"), tier="deep")
+    assert not answer.deep_pass_next
+    assert not answer.stop
+    assert "one more round" in answer.comment
+    assert "add the `review` label again" in answer.comment
+    assert answer.label == "approved-with-fixes"
+    # Once the deep pass has run, a conditional approval ends the re-reading as usual.
+    after = finish(
+        verdict_file(verdict="conditional"),
+        tier="deep",
+        markers=rounds("approved") + [deep_pass_marker(2)],
+    )
+    assert after.stop
+    assert "No further round is needed" in after.comment
+
+
+def deep_pass_marker(n: int) -> str:
+    return f"{gate.ROUND_MARKER} n={n} sha={SHA} verdict=findings {gate.DEEP_PASS_FIELD} -->"
+
+
+def test_the_deep_pass_runs_once() -> None:
+    markers = rounds("approved") + [deep_pass_marker(2)]
+    assert gate.read_history(markers).deep_pass_done
+    assert not gate.read_history(rounds("approved", "findings")).deep_pass_done
+    again = finish(verdict_file(verdict="approved"), tier="deep", markers=markers)
+    assert not again.deep_pass_next
+    assert "No further round is needed" in again.comment
+
+
+def test_the_deep_pass_marks_its_round_and_it_counts() -> None:
+    answer = finish(verdict_file(verdict="findings"), tier="deep", deep_pass=True)
+    first = answer.comment.splitlines()[0]
+    assert first.endswith(f"verdict=findings {gate.DEEP_PASS_FIELD} -->")
+    assert answer.counted and not answer.deep_pass_next
+    history = gate.read_history([first])
+    assert history.rounds == 1 and history.deep_pass_done
+
+
+def test_no_deep_pass_past_the_ceiling() -> None:
+    answer = finish(
+        verdict_file(verdict="approved"),
+        tier="deep",
+        round=gate.MAX_FORCED_ROUNDS,
+        final=True,
+    )
+    assert not answer.deep_pass_next
+
+
 # --- the command line the workflow calls ----------------------------------------------
 
 
@@ -477,6 +547,7 @@ def test_finish_mode_writes_the_keys_the_workflow_reads() -> None:
         "reason",
         "label",
         "unlabel",
+        "deep_pass_next",
     }
 
 
@@ -524,7 +595,13 @@ def test_the_label_comes_off_before_the_review_runs() -> None:
 _BLOCK_INDENT = " " * 10
 
 
+#: The shell both close steps run; the workflow's steps only call it.
+CLOSE_SCRIPT = ROOT / "scripts" / "review_loop_close.sh"
+
+
 def _close_step(name: str = "Close the round") -> str:
+    if name in ("Close the round", "Close the deep pass"):
+        return CLOSE_SCRIPT.read_text(encoding="utf-8")
     lines = WORKFLOW.read_text(encoding="utf-8").splitlines()
     start = next(i for i, line in enumerate(lines) if f"- name: {name}" in line)
     body = next(i for i in range(start, len(lines)) if lines[i].strip() == "run: |")
@@ -595,11 +672,16 @@ def test_the_close_step_runs_as_written(
         "PR": "7",
         "GITHUB_REPOSITORY": REPO,
         "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+        "GITHUB_OUTPUT": str(tmp_path / "output.txt"),
+        "TIER": "standard",
     }
     subprocess.run([bash, "-c", script], cwd=ROOT, env=env, check=True)
 
     result = json.loads((work / "finish.json").read_text(encoding="utf-8"))
     assert result["counted"] is counted
+    # A standard pull request never starts the deep pass.
+    output = (tmp_path / "output.txt").read_text(encoding="utf-8")
+    assert output == "deep_pass_next=false\n"
     calls = (tmp_path / "gh.log").read_text(encoding="utf-8")
     assert "pr comment 7" in calls
     posted = (work / "comment.md").read_text(encoding="utf-8")
@@ -650,3 +732,59 @@ def test_a_refused_round_posts_only_a_comment_it_has(
     subprocess.run([bash, "-c", script], cwd=ROOT, env=env, check=True)
     log = tmp_path / "gh.log"
     assert log.exists() is bool(comment)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the step runs on ubuntu-latest")
+@pytest.mark.parametrize(
+    ("tier", "deep_pass", "starts"),
+    [("deep", "false", True), ("standard", "false", False), ("deep", "true", False)],
+    ids=["deep", "standard", "the-pass-itself"],
+)
+def test_the_close_script_says_when_the_deep_pass_starts(
+    tmp_path: Path, tier: str, deep_pass: str, starts: bool
+) -> None:
+    """The workflow's deep-pass steps read `deep_pass_next` from the close's outputs."""
+    bash, jq = shutil.which("bash"), shutil.which("jq")
+    if bash is None or jq is None:  # pragma: no cover - minimal runners
+        pytest.skip("needs bash and jq")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "gh"
+    stub.write_text(f'#!/bin/sh\necho "$@" >> {tmp_path}/gh.log\n', encoding="utf-8")
+    stub.chmod(0o755)
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "loop-verdict.json").write_text(
+        json.dumps(verdict_file(verdict="clean")), encoding="utf-8"
+    )
+
+    script = _close_step().replace("/tmp/", f"{work}/")
+    env = os.environ | {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "ROUND": "2",
+        "FINAL": "false",
+        "HEAD_SHA": SHA,
+        "PR": "7",
+        "GITHUB_REPOSITORY": REPO,
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+        "GITHUB_OUTPUT": str(tmp_path / "output.txt"),
+        "TIER": tier,
+        "DEEP_PASS": deep_pass,
+    }
+    subprocess.run([bash, "-c", script], cwd=ROOT, env=env, check=True)
+    output = (tmp_path / "output.txt").read_text(encoding="utf-8")
+    assert output == f"deep_pass_next={str(starts).lower()}\n"
+    posted = (work / "comment.md").read_text(encoding="utf-8")
+    assert ("pass=deep" in posted.splitlines()[0]) is (deep_pass == "true")
+
+
+def test_both_closes_run_the_same_script() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    for name in ("Close the round", "Close the deep pass"):
+        step = text[text.index(f"- name: {name}") :]
+        step = (
+            step[: step.index("\n      - name:", 1)]
+            if "\n      - name:" in step[1:]
+            else step
+        )
+        assert "run: bash scripts/review_loop_close.sh" in step

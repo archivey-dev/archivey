@@ -93,6 +93,22 @@ with the optional accelerators and codecs a change is about. Opus reviewed until
 2026-10-29; on the [review-eval](review-eval/README.md) set Sonnet caught as many of
 the bugs the loop had missed at about an eighth of the cost.
 
+**A deep pull request gets one deep pass once Sonnet approves it.** Sonnet's rounds
+clear the straightforward findings first. When a round on a `deep`-tier pull request
+ends `clean` or `approved`, the same workflow run asks Cursor for a full review
+(an `@cursoragent` comment) and runs one Opus round, the deep pass, which reads the
+change as a first look and skips the findings already on the pull request. The deep
+pass is a counted round: its closing comment's marker carries `pass=deep`, which is
+how later rounds know it ran, and it never runs twice. Until it has run, a
+`conditional` verdict on a deep pull request asks for one more round instead of
+stopping, so the pass still starts once the fixes land. Its findings, and Cursor's,
+then go through the ordinary rounds. The tier comes from the base branch's
+`review_prep.py`, as for the risk label; `finish()` in the gate holds the rule.
+
+The prompt both reviewers get is
+[`.github/review-loop-prompt.md`](../.github/review-loop-prompt.md), filled in by
+`scripts/review_loop_prompt.py`; both closes run `scripts/review_loop_close.sh`.
+
 ## Counting rounds
 
 Each finished round posts one closing comment from `github-actions[bot]` whose first line
@@ -167,8 +183,8 @@ assistant, answers only people.
 - **Reaching the maintainer.** The workflow puts the question on the pull request.
   Carrying it into the project chat, in plain language and one at a time, is a separate
   hop and not GitHub's to make.
-- **Measuring the reviewer.** After changing the review skill, the workflow prompt or
-  the model, rerun the bugs the loop missed ([`review-eval/`](review-eval/README.md))
+- **Measuring the reviewer.** After changing the review skill, the prompt
+  (`.github/review-loop-prompt.md`) or the model, rerun the bugs the loop missed ([`review-eval/`](review-eval/README.md))
   and add the score to its results.
 
 ## Setup
@@ -196,6 +212,10 @@ the three `risk:` labels.
   Each round is a fresh session with no memory of the last one, which is deliberate: a
   reviewer that remembers proposing a fix is a poor judge of that fix. Keeping one warm
   session across rounds was considered and rejected (davitf, 2026-09-19).
+
+- **Whether Cursor answers the workflow's comment is untested.** The deep pass asks
+  Cursor with a comment from `github-actions[bot]`; if Cursor only answers people, the
+  Opus pass still runs and Cursor has to be asked by hand.
 
 ## What this replaced
 
