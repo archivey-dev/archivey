@@ -98,6 +98,7 @@ from archivey.exceptions import (
     ResourceLimitError,
     UnsupportedFeatureError,
 )
+from archivey.format_policy import FormatPolicy
 from archivey.internal.arg_checks import (
     check_config,
     check_path_not_empty,
@@ -951,8 +952,9 @@ def _scan_for_sfx_payload(
 
 def probe_config(config: ArchiveyConfig | None) -> ArchiveyConfig:
     """The library default config carrying only ``config``'s detection settings
-    (``detection_budget``, ``always_probe_content`` and ``process_isolation``, which
-    says where the probes' trial decodes run).
+    (``detection_budget``, ``always_probe_content``, ``process_isolation``, which
+    says where the probes' trial decodes run, and ``formats``, so a plugin the caller
+    turned off runs no code here either).
 
     For a detection whose result is internal (a stub check, the rescan that words an
     empty-listing advisory): it spends what the caller allowed, but its diagnostics
@@ -965,6 +967,7 @@ def probe_config(config: ArchiveyConfig | None) -> ArchiveyConfig:
         config.detection_budget is DEFAULT_ARCHIVEY_CONFIG.detection_budget
         and config.always_probe_content == DEFAULT_ARCHIVEY_CONFIG.always_probe_content
         and config.process_isolation is DEFAULT_ARCHIVEY_CONFIG.process_isolation
+        and config.formats == DEFAULT_ARCHIVEY_CONFIG.formats
     ):
         return DEFAULT_ARCHIVEY_CONFIG
     return replace(
@@ -972,6 +975,7 @@ def probe_config(config: ArchiveyConfig | None) -> ArchiveyConfig:
         detection_budget=config.detection_budget,
         always_probe_content=config.always_probe_content,
         process_isolation=config.process_isolation,
+        formats=config.formats,
     )
 
 
@@ -1013,6 +1017,11 @@ def detect_format(
     source's name ends in that format's extension, unless
     :attr:`ArchiveyConfig.always_probe_content` is set; a nameless raw stream of these
     formats raises :class:`FormatDetectionError`.
+
+    ``config.formats`` (:class:`~archivey.FormatPolicy`) does not change the answer for
+    a built-in format. A plugin format it turns off is not detected: its magic,
+    extensions and content probe are left out, and ``unavailable_tiers`` records each
+    tier that left one out as ``NOT_ENABLED_BY_POLICY``.
 
     A stub-only ``.exe`` / ``.sfx`` (no archive magic) beside a 7-Zip split first
     volume is detected as that volume's format when ``follow_stub_volumes`` is true
@@ -1114,6 +1123,7 @@ def _detect_source_into(
             receipt,
             always_probe=always_probe,
             isolation=effective_config.process_isolation,
+            formats=effective_config.formats,
         )
     except FormatDetectionError:
         alt = _first_volume_beside_stub(source) if follow_stub_volumes else None
@@ -1130,6 +1140,7 @@ def _detect_source_into(
                 receipt,
                 always_probe=always_probe,
                 isolation=effective_config.process_isolation,
+                formats=effective_config.formats,
             )
     diagnostics = (
         collector.snapshot()
@@ -1161,11 +1172,45 @@ def _detect_format_body(
     *,
     always_probe: bool = False,
     isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
+    formats: FormatPolicy,
 ) -> FormatInfo:
     registry = get_registry()
     magic_entries = registry.magic_entries()
     trailers = registry.trailer_entries()
     extension_map = registry.extension_map()
+    probes = registry.content_probes()
+    # A plugin format the policy turns off is not a candidate: its probe is its own
+    # code, and its magic, matched in registration order, could claim a file that an
+    # allowed plugin also matches. Built-in formats are candidates under every policy,
+    # so their answer never depends on it. Each tier that loses an entry is recorded
+    # below, once the workspace exists.
+    off_near = off_far = off_extension = off_probe = False
+    off_formats: set[ArchiveFormat] = set()
+    if formats._turns_off_plugins:
+
+        def is_off(fmt: ArchiveFormat) -> bool:
+            if isinstance(fmt.container, PluginContainer) and not formats.allows(fmt):
+                off_formats.add(fmt)
+                return True
+            return False
+
+        kept_magic: list[MagicSignature] = []
+        for e in magic_entries:
+            if not is_off(e.format):
+                kept_magic.append(e)
+            elif e.offset + len(e.magic) <= DETECTION_LIMIT:
+                off_near = True
+            else:
+                off_far = True
+        magic_entries = kept_magic
+        kept_extensions = {
+            ext: fmt for ext, fmt in extension_map.items() if not is_off(fmt)
+        }
+        off_extension = len(kept_extensions) < len(extension_map)
+        extension_map = kept_extensions
+        kept_probes = [(f, p) for f, p in probes if not is_off(f)]
+        off_probe = len(kept_probes) < len(probes)
+        probes = kept_probes
     name = source_name(source)
     ext_match = _match_extension(name, extension_map)
     ext_fmt = ext_match[0] if ext_match is not None else None
@@ -1175,6 +1220,15 @@ def _detect_format_body(
         def conclude(info: FormatInfo, evidence: _ConflictEvidence) -> FormatInfo:
             _warn_on_conflict(collector, name, ext_match, info.format, evidence)
             return _attach_receipt(info, workspace)
+
+        for tier, left_out in (
+            ("near_magic", off_near),
+            ("far_magic", off_far),
+            ("content_probe", off_probe),
+            ("extension", off_extension),
+        ):
+            if left_out:
+                workspace.record_skip(tier, TierSkipReason.NOT_ENABLED_BY_POLICY)
 
         # Magic signals split by where they live: "near" ones fit in the default window;
         # "far" ones (ISO's CD001 at 32 769) need an extended peek taken on demand.
@@ -1347,7 +1401,6 @@ def _detect_format_body(
                 "a structurally valid executable header (PE, ELF or Mach-O), and no "
                 "archive was found behind it"
             )
-        probes = registry.content_probes()
         if not always_probe:
             named_probes = [(f, p) for f, p in probes if _probe_named(f, ext_match)]
             # Recorded whenever the name left a probe out, even if another one runs: a
@@ -1444,5 +1497,13 @@ def _detect_format_body(
                 "only recognised by its extension: give the file one (.lzma, .zz, "
                 ".br), pass format=, use open_stream(), or set "
                 "ArchiveyConfig(always_probe_content=True)."
+            )
+        if off_formats:
+            # Added to the advice above, not in its place: the file may be one of the
+            # formats that advice reaches, and only the policy reaches an off plugin.
+            names = ", ".join(sorted(f.display_name for f in off_formats))
+            message += (
+                f" ArchiveyConfig.formats turns off the plugin formats {names}, so "
+                "they were not tried."
             )
         raise FormatDetectionError(message, archive_name=name)

@@ -157,3 +157,21 @@ Settings you'd keep the same across many archives live in `archivey.ArchiveyConf
 [accelerators](reading.md#seeking-inside-a-member), and how [diagnostics](errors-and-diagnostics.md)
 are reported. Without it, the defaults apply. The [reference][archivey.ArchiveyConfig] lists
 every setting.
+
+`ArchiveyConfig.formats` takes a [`FormatPolicy`][archivey.FormatPolicy], which decides which
+formats a call opens. A format is a container and its compression, and both have to be allowed:
+
+```python
+from archivey import ArchiveyConfig, ContainerFormat as C, FormatPolicy, StreamFormat as S
+
+# ZIP, and TAR with or without gzip or xz. Nothing else opens.
+UPLOADS = ArchiveyConfig(formats=FormatPolicy(only={C.ZIP, C.TAR, S.GZIP, S.XZ}))
+
+# Everything except RAR, and no plugin formats.
+NO_RAR = ArchiveyConfig(formats=FormatPolicy(exclude={C.RAR}, plugins=False))
+```
+
+A file in a format the policy turns off raises `UnsupportedFeatureError`, and the message says
+which entry would let it open. `format=` doesn't get around it. `detect_format` still reports
+what a file is, and `config.formats.allows(info.format)` tells you whether it would open. A plugin
+format that's turned off isn't detected at all, so its code doesn't run.
