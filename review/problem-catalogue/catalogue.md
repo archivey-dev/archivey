@@ -2223,12 +2223,19 @@ trailer sum cannot use the index either. Recorded as a confirmed limitation with
 
 ### UL-08 — A native codec binding can crash on damaged or crafted input
 
-**Problem.** The PPMd binding has a known issue that can crash the process on damaged or
-crafted input, fixed in an upcoming release of the binding.
+**Problem.** A codec binding has a known issue that can crash the whole process on damaged
+or crafted input, fixed in an upcoming release of the binding.
+
+**Symptom.** The process aborts while decoding a damaged member, or at teardown after a
+run that otherwise passed.
+
+**Evidence.** Aborts seen in the project's own test runs and stress jobs.
 
 **Answer today.** Every decode is bounded by the container's declared size, and every PPMd
 member decodes in a child process by default. `known-issues.md` §`pyppmd` crashes on damaged
 or crafted PPMd data; ADR 0022.
+
+**Sources.** `known-issues.md`; ADR 0022.
 
 ---
 
