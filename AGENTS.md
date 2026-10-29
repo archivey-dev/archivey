@@ -165,7 +165,8 @@ the rule is in the wrong place.
    Same two skills, sequenced; the loop is the second opinion.
 
 **Nothing from the internal tracker goes into PR text or repo files.** This repository is
-public; the tracker is not. Three rules, and they are about the *internal tracker* only:
+public; the tracker is not. Three rules, and the check that enforces one of them; all
+are about the *internal tracker* only:
 
 - **Never** an internal-tracker URL, anywhere — PR title or body, review or inline
   comment, commit message, or a file in the repo.

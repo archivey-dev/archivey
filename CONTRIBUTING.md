@@ -39,8 +39,9 @@ claim (`.claude/skills/address-review-findings/SKILL.md` §5).
 
 `check.sh` mirrors CI's `lint` job and every job in `docs-checks.yml`: ruff,
 **`pyrefly`**, **`ty`**, the OpenSpec checks, the docs-tree and link checks, the strict
-docs build, the check on what that build rendered and the tracker-URL check. The script
-itself is the list. It runs every gate even after one fails and lists what failed at the
+docs build, the check on what that build rendered and the tracker-URL check. The one
+exception is the docs job's pytest step (`tests/test_github_templates.py`), which
+`test.sh` runs. The script itself is the list. It runs every gate even after one fails and lists what failed at the
 end, so a single run tells you everything that is wrong. Without `--fix` it writes
 nothing and answers "will CI pass?".
 
