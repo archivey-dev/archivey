@@ -152,12 +152,13 @@ property archivey.ArchiveStream.verified: Verification
 method archivey.ArchiveStream.writable(self) -> bool
 method archivey.ArchiveStream.write(self, b: object, /) -> int
 class archivey.ArchiveyConfig()
-init archivey.ArchiveyConfig(use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO, use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO, process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES, zip_unflagged_fallback_encoding: str = 'cp437', rar_allow_glob_member_concatenation: bool = False, rar_decompressor: RarDecompressor = RarDecompressor.AUTO, read_link_targets: bool = True, extraction_limits: ExtractionLimits = ExtractionLimits(...), listing_limits: ListingLimits = ListingLimits(...), decoder_limits: DecoderLimits = DecoderLimits(...), spool_limits: SpoolLimits = SpoolLimits(...), detection_budget: DetectionBudget = DetectionBudget(...), always_probe_content: bool = False, diagnostic_policy: DiagnosticPolicy = <factory>, max_retained_diagnostic_references: int = 256, on_diagnostic: OnDiagnostic | None = None) -> None
+init archivey.ArchiveyConfig(use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO, use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO, process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES, zip_unflagged_fallback_encoding: str = 'cp437', rar_allow_glob_member_concatenation: bool = False, rar_decompressor: RarDecompressor = RarDecompressor.AUTO, read_link_targets: bool = True, extraction_limits: ExtractionLimits = ExtractionLimits(...), listing_limits: ListingLimits = ListingLimits(...), decoder_limits: DecoderLimits = DecoderLimits(...), spool_limits: SpoolLimits = SpoolLimits(...), detection_budget: DetectionBudget = DetectionBudget(...), always_probe_content: bool = False, diagnostic_policy: DiagnosticPolicy = <factory>, max_retained_diagnostic_references: int = 256, on_diagnostic: OnDiagnostic | None = None, formats: FormatPolicy = <factory>) -> None
 field archivey.ArchiveyConfig.always_probe_content: bool = False
 field archivey.ArchiveyConfig.decoder_limits: DecoderLimits = DecoderLimits(...)
 field archivey.ArchiveyConfig.detection_budget: DetectionBudget = DetectionBudget(...)
 field archivey.ArchiveyConfig.diagnostic_policy: DiagnosticPolicy = <factory>
 field archivey.ArchiveyConfig.extraction_limits: ExtractionLimits = ExtractionLimits(...)
+field archivey.ArchiveyConfig.formats: FormatPolicy = <factory>
 field archivey.ArchiveyConfig.listing_limits: ListingLimits = ListingLimits(...)
 field archivey.ArchiveyConfig.max_retained_diagnostic_references: int = 256
 field archivey.ArchiveyConfig.on_diagnostic: OnDiagnostic | None = None
@@ -384,6 +385,13 @@ field archivey.FormatInfo.format: ArchiveFormat
 field archivey.FormatInfo.payload_offset: int = 0
 field archivey.FormatInfo.unavailable_tiers: tuple[TierSkip, ...] = ()
 property archivey.FormatInfo.from_plugin: bool
+class archivey.FormatPolicy()
+init archivey.FormatPolicy(*, only: Iterable[ContainerFormat | PluginContainer | StreamFormat] | None = None, exclude: Iterable[ContainerFormat | PluginContainer | StreamFormat] = (), plugins: bool = True, replace: Mapping[ContainerFormat, type[FormatHandler]] | None = None) -> None
+field archivey.FormatPolicy.exclude: frozenset[ContainerFormat | PluginContainer | StreamFormat]
+field archivey.FormatPolicy.only: frozenset[ContainerFormat | PluginContainer | StreamFormat] | None
+field archivey.FormatPolicy.plugins: bool
+field archivey.FormatPolicy.replace: Mapping[ContainerFormat, type[FormatHandler]]
+method archivey.FormatPolicy.allows(self, fmt: ArchiveFormat) -> bool
 class archivey.FormatSupport(Enum)
 enum archivey.FormatSupport
 value archivey.FormatSupport.FULL = 'full'

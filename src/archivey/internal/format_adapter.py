@@ -38,6 +38,8 @@ from archivey.exceptions import (
     CorruptionError,
     TruncatedError,
     UnsupportedFeatureError,
+    _UsageTypeError,
+    _UsageValueError,
     exception_detail,
 )
 from archivey.formats import (
@@ -1939,6 +1941,69 @@ def _extensions(
                 for codec_ext in codec.extensions:
                     extensions[f"{ext}{codec_ext}"] = pair
     return extensions
+
+
+# The built-in containers a plugin can replace (``FormatPolicy(replace=)``): the ones an
+# indexed plugin can read. TAR and RAW_STREAM read in one pass, DIRECTORY is not a file,
+# and DMG is recognised only to be refused.
+REPLACEABLE_CONTAINERS = frozenset(
+    {
+        ContainerFormat.ZIP,
+        ContainerFormat.SEVEN_Z,
+        ContainerFormat.RAR,
+        ContainerFormat.ISO,
+    }
+)
+
+
+def check_replacement(container: object, plugin: object) -> None:
+    """Refuse a ``FormatPolicy(replace={container: plugin})`` entry that cannot be used.
+
+    Run when the policy is built, so a bad plugin fails before any open.
+    """
+    call = "FormatPolicy(replace=…)"
+    if not isinstance(container, ContainerFormat):
+        raise _UsageTypeError(
+            f"{call} takes ContainerFormat keys, got {container!r} "
+            f"({type(container).__name__})."
+        )
+    if container not in REPLACEABLE_CONTAINERS:
+        names = ", ".join(
+            sorted(f"ContainerFormat.{c.name}" for c in REPLACEABLE_CONTAINERS)
+        )
+        raise _UsageValueError(
+            f"{call} cannot replace ContainerFormat.{container.name}; it takes {names}."
+        )
+    if not (isinstance(plugin, type) and issubclass(plugin, FormatHandler)):
+        raise _UsageTypeError(
+            f"{call} takes a FormatHandler subclass for ContainerFormat."
+            f"{container.name}, got {plugin!r}."
+        )
+    name = plugin.__name__
+    if issubclass(plugin, SequentialFormatHandler):
+        raise _UsageValueError(
+            f"{call}: {name} is a SequentialFormatHandler; a replacement reads an "
+            "indexed container and subclasses FormatHandler."
+        )
+    expected = ArchiveFormat(container, StreamFormat.UNCOMPRESSED)
+    fmt = getattr(plugin, "format", None)
+    if fmt != expected:
+        raise _UsageValueError(
+            f"{call}: {name}.format must be {expected!r} to replace "
+            f"ContainerFormat.{container.name}, got {fmt!r}."
+        )
+    if plugin.extensions or plugin.magic or plugin.probe is not None:
+        raise _UsageValueError(
+            f"{call}: {name} declares extensions, magic or a probe. A replacement is "
+            "found by the built-in detection and declares none."
+        )
+
+
+@functools.cache
+def replacement_backend(plugin: type[FormatHandler]) -> type[ReadBackend]:
+    """The backend that reads a built-in container with ``plugin``, built once per
+    plugin class. It is not registered, so detection never sees it."""
+    return _backend_class(plugin, plugin.format, {})
 
 
 def _backend_class(

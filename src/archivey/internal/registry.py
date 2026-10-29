@@ -14,7 +14,7 @@ import functools
 import importlib
 from collections.abc import Callable
 from types import ModuleType
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from archivey.config import ProcessIsolation
 from archivey.cost import StreamCapability
@@ -44,6 +44,9 @@ from archivey.types import (
     StreamFormat,
     TrailerSignature,
 )
+
+if TYPE_CHECKING:
+    from archivey.formats import FormatHandler
 
 
 class ContentProbe(Protocol):
@@ -353,6 +356,24 @@ class BackendRegistry:
             # No backend, so no source shape to report: the SEEKABLE default stands as
             # the conservative answer.
             return FormatAvailability(fmt, FormatSupport.NONE, ())
+        return self._backend_availability(
+            fmt, backend_cls, check_programs=check_programs, member_codecs=True
+        )
+
+    def _backend_availability(
+        self,
+        fmt: ArchiveFormat,
+        backend_cls: type[ReadBackend],
+        *,
+        check_programs: bool,
+        member_codecs: bool,
+    ) -> FormatAvailability:
+        """The support of ``fmt`` when ``backend_cls`` reads it.
+
+        ``member_codecs`` folds in the optional member codecs the built-in reader of
+        the container can use; a replacement plugin decodes its members its own way,
+        so only its own ``requires`` count.
+        """
 
         # Derived from the flag open_archive() itself enforces, so the queryable answer
         # cannot drift from the enforced one. Reported on every path below, including the
@@ -397,7 +418,9 @@ class BackendRegistry:
         # Backend + stream codec usable; fold in the optional *member* codecs the
         # container can use. A multi-codec container missing some still opens -> PARTIAL.
         missing: list[MissingComponent] = []
-        for codec in _CONTAINER_OPTIONAL_CODECS.get(fmt.container, ()):
+        for codec in (
+            _CONTAINER_OPTIONAL_CODECS.get(fmt.container, ()) if member_codecs else ()
+        ):
             if not is_codec_available(codec):
                 requirement = codec_requirement(codec)
                 assert requirement is not None  # an optional codec always declares one
@@ -454,7 +477,41 @@ class BackendRegistry:
         """
         return self._readers.get(fmt)
 
-    def reader_for_format(self, fmt: ArchiveFormat) -> type[ReadBackend]:
+    def reader_for_format(
+        self,
+        fmt: ArchiveFormat,
+        *,
+        replacement: type[FormatHandler] | None = None,
+    ) -> type[ReadBackend]:
+        """The backend class that opens ``fmt``: ``replacement``'s, else the registered
+        one.
+
+        ``replacement`` is what ``FormatPolicy._replacement_for(fmt)`` answered for the
+        caller's policy; ``None`` asks for the registered backend. Raises when that
+        backend cannot read here: ``UnsupportedFeatureError`` for no backend or a
+        recognised-only format, ``PackageNotInstalledError`` for a missing package, a
+        replacement plugin's ``requires`` included. The caller has already refused a
+        format the policy does not allow.
+        """
+        if replacement is not None:
+            # Imported here: the plugin adapter imports this module.
+            from archivey.internal.format_adapter import replacement_backend
+
+            backend = replacement_backend(replacement)
+            availability = self._backend_availability(
+                fmt, backend, check_programs=False, member_codecs=False
+            )
+            if availability.support is FormatSupport.NONE:
+                hints = "; ".join(
+                    f"{m.name} ({m.advice})" for m in availability.missing
+                )
+                raise PackageNotInstalledError(
+                    f"Format {fmt.display_name} is read by {replacement.__name__} "
+                    f"(ArchiveyConfig.formats.replace), which is not available: "
+                    f"missing {hints}",
+                    source_format=fmt,
+                )
+            return backend
         availability = self.format_availability(fmt)
         if availability.support is FormatSupport.NONE:
             backend_cls = self._readers.get(fmt)

@@ -1,8 +1,8 @@
 > **Design approved 2026-10-27** (option A and every call in `design.md` §7). The
-> implementation builds on the plugin API stack (`plugin-api`) and starts once that
-> stack has merged. This change carries deltas for `backend-registry`,
-> `format-detection`, `packaging-and-extras` and `error-handling`; the deltas to
-> `format-plugins` and `archive-reading` come with the implementation PR.
+> implementation builds on the plugin API (`plugin-api`) and lands in three pull
+> requests, one per part of `tasks.md`. This change carries deltas for
+> `backend-registry`, `format-detection`, `format-plugins`, `packaging-and-extras` and
+> `error-handling`.
 
 ## Why
 
@@ -58,12 +58,11 @@ Nothing changes for a caller who does not set `formats`.
 ## Impact
 
 - Specs: `backend-registry` (policy and reader selection), `format-detection` (skipped
-  probes), `format-plugins` (replacement plugins), `archive-reading` (the refusals),
-  `packaging-and-extras` (excluded libraries), `error-handling`
+  probes), `format-plugins` (replacement plugins), `packaging-and-extras` (excluded libraries), `error-handling`
   (`PackageNotInstalledError.missing`).
 - Code: `config.py`, a new `FormatPolicy` (in `config.py` or `types.py`),
   `internal/registry.py` (`reader_for_format` takes the policy), `internal/detection.py`
-  (plugin probes filtered), `internal/plugin_adapter.py` (replacement backends), the
+  (plugin probes filtered), `internal/format_adapter.py` (replacement backends), the
   codec and backend availability checks (`deps.py`), `core.py` (one check at the reader
   choice, and the volume and SFX refusals for a replacement).
 - Public API: three new root names (`FormatPolicy`, `OptionalLibrary`,

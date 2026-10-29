@@ -34,8 +34,9 @@ The system SHALL execute format detection with this algorithm:
 8. `FormatDetectionError` when nothing matched. When step 6 ran only the probes the
    extension allows, the message SHALL name the three ways to read a nameless
    probe-only stream: `format=`, `open_stream()` and `always_probe_content=True`. When
-   the policy left a plugin out at any step, the message SHALL name the policy
-   instead, since none of the three reaches a plugin that is off.
+   the policy left a plugin out at any step, the message SHALL also name the policy
+   and the plugin formats it turned off, since none of the three reaches a plugin that
+   is off.
 
 A plugin format that `ArchiveyConfig.formats` does not allow SHALL NOT be a candidate
 at any step: its magic SHALL NOT match at steps 2 and 4, its probe SHALL NOT run at step
