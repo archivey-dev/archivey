@@ -428,6 +428,24 @@ def parse_header_block(
     )
 
 
+def starts_with_header(prefix: bytes) -> bool:
+    """Whether ``prefix`` opens with a TAR header block the walk would accept.
+
+    Detection's check for a TAR without magic: a v7 header, or one an old writer filled
+    in without ``ustar``. The block must parse as :func:`parse_header_block` parses it,
+    so its checksum matches the block's byte sum (the field itself counted as eight
+    spaces) and every numeric field is a number. Its name must also be non-empty. A zero block is not a header: an empty TAR has no header to
+    check.
+
+    Text and binary data pass only when built to. It is the test ``tarfile.is_tarfile``
+    and Commons Compress make, and GNU tar's own reading of the first block.
+    """
+    if len(prefix) < BLOCKSIZE:
+        return False
+    header = parse_header_block(prefix[:BLOCKSIZE], 0)
+    return isinstance(header, HeaderBlock) and bool(header.name)
+
+
 def _sparse_slots(block: bytes, start: int, count: int) -> tuple[tuple[int, int], ...]:
     """Old GNU map slots: ``count`` (offset, numbytes) pairs of 12-byte numbers.
 

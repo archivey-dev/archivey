@@ -487,6 +487,10 @@ sending side when the ZIP is done.
 - **Needs:** nothing for a plain `.tar`. A compressed TAR needs what its compressor needs
   ([Single-file compressors](#single-file-compressors)).
 - **Listing:** archivey parses the headers itself, the same way on every Python version.
+- **Old tars with no magic:** a v7 tar (`tar --format=v7`, old bsdtar or star) has no `ustar`
+  signature. archivey recognises it by its first header's checksum, from a file, a pipe or a
+  `BytesIO`, with or without a `.tar` name, and inside a compressor (a gzipped one is `TAR_GZ`).
+  It is reported as `PROBABLE`, not `CERTAIN`.
 - **Reading members:** a plain TAR from a file reads each member straight from its place. A
   compressed TAR is solid: reaching a member means decompressing everything before it, so a
   single `stream_members()` pass is the fast way to read it.
@@ -1185,9 +1189,10 @@ file; with `format=`, a `.bz2` opens at once. Close the sending side when the fi
   exact magic in the first 4 KiB, then an SFX scan behind an executable stub, then exact magic
   further in (ISO 9660's `CD001` at 32 769, on one extended peek that a source too small for it
   never pays for), then the 512-byte `koly` block at the end of a seekable source
-  ([Disk images](#disk-images)), then content probes for the formats with no magic (next item),
-  then the extension. A bzip2 or xz header that is the first block of a disk image loses to its
-  `koly` block. A step that matches nothing falls through to the next; nothing is rejected for
+  ([Disk images](#disk-images)), then a TAR header with no magic
+  ([TAR](#tar-and-compressed-tar)), then content probes for the formats with no magic (next
+  item), then the extension. A bzip2 or xz header that is the first block of a disk image loses
+  to its `koly` block. A step that matches nothing falls through to the next; nothing is rejected for
   failing an earlier one. When only the extension matched and the decode then fails, the error has
   `format_unconfirmed=True`, and archivey reports `EXTENSION_FORMAT_UNCONFIRMED`.
 - **Content probes run only for a matching name by default.** LZMA Alone, zlib and Brotli have no

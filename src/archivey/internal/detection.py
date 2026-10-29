@@ -38,9 +38,9 @@ today OLE compound files), and the error then names that evidence. A non-archive
 also stops the SFX scan.
 
 The steps run strongest-signal-first: near magic → SFX scan → **far magic** → trailer
-magic → content probes → extension. Both signals ahead of the probes are there for the
-same reason — a probe is the weakest evidence archivey has, and one asked to judge
-arbitrary bytes will sometimes say yes:
+magic → self-checking header → content probes → extension. The signals ahead of the
+probes are there for the same reason — a probe is the weakest evidence archivey has, and
+one asked to judge arbitrary bytes will sometimes say yes:
 
 - A **self-extracting** archive has no archive magic at offset 0 at all: a prefix
   (executable stub or ``#!`` launcher) comes first. When the leading bytes look
@@ -64,6 +64,13 @@ arbitrary bytes will sometimes say yes:
   replaces it. The read is a cheap seek that restores the handle. A non-seekable source
   and an ``ArchiveStream`` are not seeked to the end; a tail already inside the prefix
   (a short pipe, which the far-magic peek reads to its end) still matches.
+- A **self-checking header** is a first block that proves its format with no magic in
+  it (``ReadBackend.HEADER_CHECKS``; today a v7 TAR header, whose checksum must equal
+  its byte sum and whose numeric fields must parse). It is ``PROBABLE`` /
+  ``content_probe``, and it runs on every source, named or not: the check is arithmetic
+  over the peeked window, and a scan of 200 333 local files found no block that passed
+  it outside a real tar. The inner-TAR probe accepts it too, so a gzipped v7 tar is
+  ``TAR_GZ``.
 """
 
 from __future__ import annotations
@@ -148,6 +155,11 @@ if TYPE_CHECKING:
 # signature at offset 257 (one 512-byte header block covers it). Registration keeps a
 # sequential plugin's magic within them, so a plugin cannot make the probe decode more.
 INNER_CONTAINER_PROBE_BYTES = 512
+
+# The window a self-checking header needs: every check today reads one 512-byte block
+# (``ReadBackend.HEADER_CHECKS``). A shorter prefix budget turns the step off, and the
+# receipt says so.
+HEADER_CHECK_BYTES = 512
 
 # Upper bound on compressed input the inner-container probe reads from the source when
 # the peeked detection prefix is too short. bzip2 is block-transform (BWT) based: it emits no output
@@ -386,7 +398,9 @@ def _probe_inner_container(
     The codec layer decodes the compressed source and the first 512 decoded bytes are
     matched against the registry's inner-container magic (``ReadBackend.INNER_MAGIC``):
     TAR's ``ustar`` at offset 257 first, then the magic of each registered sequential
-    plugin, which registration keeps within those 512 bytes. So a tarball, or a plugin's
+    plugin, which registration keeps within those 512 bytes. A v7 tar has no magic, so
+    when none matches, a first TAR header that checks itself
+    (``ReadBackend.HEADER_CHECKS``) still finds it. So a tarball, or a plugin's
     sequential archive, wrapped in the compressor is found the same way, and a plugin
     cannot make the probe decode more. The decoder reads from a bounded, non-consuming
     view of the source (:class:`_BoundedPeekReader` over ``peek_more``), so it pulls
@@ -518,6 +532,14 @@ def _probe_inner_container(
             sig.format
             for sig in get_registry().inner_magic_entries()
             if head[sig.offset : sig.offset + len(sig.magic)] == sig.magic
+        ),
+        None,
+    ) or next(
+        # A first header that checks itself: a v7 tar has no magic.
+        (
+            fmt
+            for fmt, check in get_registry().header_checks()
+            if fmt.container is ContainerFormat.TAR and check(head)
         ),
         None,
     )
@@ -1287,7 +1309,34 @@ def _detect_format_body(
                 _ConflictEvidence.MAGIC,
             )
 
-        # 5. Content probes, unless the prefix is a confirmed executable or a known
+        # 5. Self-checking headers: a format with no magic whose first block proves
+        # itself (a v7 TAR header, by its checksum). Before the content probes, and not
+        # held back by the name as they are: the check is arithmetic over bytes already
+        # peeked, and text or binary data passes only when built to. A hit is its own
+        # corroboration (DR-7): a checksum and every numeric field had to hold, so a
+        # later read failure is not stamped as probe-only. A window too short for the
+        # block is recorded, as the magic tiers record theirs.
+        header_checks = registry.header_checks()
+        if header_checks:
+            _record_tier_limit(
+                workspace,
+                "header_check",
+                enabled=budget.max_prefix_bytes > 0,
+                covered=budget.max_prefix_bytes >= HEADER_CHECK_BYTES,
+            )
+        for check_fmt, check in header_checks:
+            if check(data):
+                return conclude(
+                    FormatInfo(
+                        check_fmt,
+                        DetectionConfidence.PROBABLE,
+                        "content_probe",
+                        corroborated=True,
+                    ),
+                    _ConflictEvidence.CONTENT_PROBE,
+                )
+
+        # 6. Content probes, unless the prefix is a confirmed executable or a known
         # non-archive signature. The reason is kept for the error below. Unless the
         # config asks for all of them, only the probe of the format the extension names
         # runs: a probe is the weakest evidence, and on an unnamed source it is the only
@@ -1360,7 +1409,7 @@ def _detect_format_body(
                     )
                     return conclude(info, _ConflictEvidence.CONTENT_PROBE)
 
-        # 6. Extension-only guess.
+        # 7. Extension-only guess.
         if ext_fmt is not None:
             return _attach_receipt(
                 FormatInfo(ext_fmt, DetectionConfidence.GUESS, "extension"),
