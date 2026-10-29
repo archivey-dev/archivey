@@ -78,8 +78,9 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   memory. A stream from `open()` decodes only as much as you ask for, so `stream.read(n)` holds
   about `n` bytes however large the member is, but a `stream.read()` with no size returns the rest
   of the member. `DecoderLimits` is the main limit that applies to a read. It caps the decoder's own
-  memory, so the data you read takes additional memory on top. `ExtractionLimits` doesn't apply,
-  because it covers only what `extract_all` writes to disk. A RAR archive opened from a file object
+  memory, so the data you read takes additional memory on top. `ExtractionLimits` covers what
+  `extract_all` writes to disk, with one exception: a compressed tar is held to its `max_ratio`
+  whenever it's decoded, so a read from one can raise `ResourceLimitError` too. A RAR archive opened from a file object
   rather than a path is copied to a temporary file the first time a member needs `unrar` or `unar`.
   `spool_limits.max_bytes` caps that copy, along with the few other temporary files archivey makes
   for RAR archives, listed in the table below. When the archive records a member's size in

@@ -846,12 +846,14 @@ def test_delegating_stream_peel_inventory() -> None:
     ``source_byte_size`` from its own ``size`` rather than by being peeled.
     """
     _import_all_archivey_modules()
+    from archivey.internal import bomb_tracker
     from archivey.internal.streams import counting
 
     found = _delegating_stream_subclasses()
     peels = {cls for cls in found if cls.peel_for_source_size is True}
     assert peels == {
         counting.SeekCountingStream,
+        bomb_tracker.DecodeRatioGuard,
     }, (
         "DelegatingStream subclass peel_for_source_size does not match "
         "the inventory (only a pass-through wrapper whose size is the "

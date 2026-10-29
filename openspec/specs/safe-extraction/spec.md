@@ -1380,12 +1380,14 @@ archive-wide ratio of the reader's `extraction_limits` in every use (listing, a
 member read, a pass, `extract_all`): once the furthest offset decoded passes
 `ratio_activation_threshold`, and its ratio to the archive's size (the static
 denominator), or to the compressed bytes read so far past
-`live_ratio_activation_threshold` (the live one), passes `max_ratio`, the next read
-or seek SHALL raise `ResourceLimitError`, the same type an extraction's archive-wide
-check raises. The rule is the one that check applies (`archive_ratio_refusal`). A
-backward seek that decodes again does not count again. Reads and forward seeks reach
-the decoder in steps of at most 1 MiB, so the decode stops within a step of the
-limit. `max_ratio=None` turns it off.
+`live_ratio_activation_threshold` (the live one), passes `max_ratio`, the read or
+seek that crosses it SHALL raise `ResourceLimitError`, the same type an extraction's
+archive-wide check raises, and SHALL NOT return the bytes it decoded. The rule is the
+one that check applies (`archive_ratio_refusal`). A backward seek that decodes again
+does not count again. Reads and forward seeks, a seek to the end included, reach the
+decoder in steps of at most 1 MiB, so the decode stops within a step of the limit. A
+decoder error after a read already returned bytes in the same call is held for the
+next call, so the prefix of a cut stream is kept. `max_ratio=None` turns it off.
 
 #### Scenario: compressed container decode matrix
 

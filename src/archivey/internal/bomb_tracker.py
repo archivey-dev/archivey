@@ -1,5 +1,6 @@
 """The decompression-bomb tracker: the byte, ratio and entry-count limits one extraction
-enforces as it writes (``ExtractionLimits``)."""
+enforces as it writes (``ExtractionLimits``), and the archive-wide ratio a compressed
+container's decode is held to in every use (:class:`DecodeRatioGuard`)."""
 
 from __future__ import annotations
 
@@ -10,7 +11,10 @@ from archivey.config import ExtractionLimits
 from archivey.exceptions import ResourceLimitError
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
-from archivey.internal.streams.streamtools.binaryio import read_blocking
+from archivey.internal.streams.streamtools.binaryio import (
+    read_blocking,
+    source_byte_size,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -311,12 +315,16 @@ class DecodeRatioGuard(DelegatingStream):
     decoding for minutes. Extraction would refuse the same archive at the same ratio;
     this refuses it while listing, reading or extracting alike. The measure is the
     furthest offset decoded, so a backward seek that decodes again costs nothing
-    here. Reads and forward seeks go to the decoder in steps of at most 1 MiB, so a
-    refusal comes within a step of the limit.
+    here. Reads and seeks forward go to the decoder in steps of at most 1 MiB, a seek
+    to the end included, so a refusal comes within a step of the limit, from the call
+    that crosses it, whose bytes are withheld.
     """
 
-    # Changes no bytes and no positions: verification and resume offsets look through.
+    # Changes no bytes and no positions: verification and resume offsets look
+    # through, and so do a cheap size and seek cost (``source_byte_size``,
+    # ``seek_is_expensive``), which are the decoder's.
     forwards_verification = True
+    peel_for_source_size = True
     readinto_passthrough = False
 
     def __init__(
@@ -333,6 +341,15 @@ class DecodeRatioGuard(DelegatingStream):
         self._consumed = consumed
         self._pos = 0  # over a decoder that has not started
         self._decoded = 0  # the furthest offset decoded
+        # The decoder's error after a read that already returned bytes: raised by
+        # the next call, so the prefix a damaged stream decodes is not lost
+        # (the hazard ReadAheadStream holds its error for).
+        self._held: Exception | None = None
+
+    def _raise_held(self) -> None:
+        if self._held is not None:
+            err, self._held = self._held, None
+            raise err
 
     def _check(self, position: int) -> None:
         if position <= self._decoded or self._limits.max_ratio is None:
@@ -353,6 +370,7 @@ class DecodeRatioGuard(DelegatingStream):
             )
 
     def read(self, n: int = -1, /) -> bytes:
+        self._raise_held()
         if n is not None and 0 <= n <= _GUARD_STEP:
             data = read_blocking(self._inner, n)
             self._pos += len(data)
@@ -362,7 +380,13 @@ class DecodeRatioGuard(DelegatingStream):
         left = -1 if n is None or n < 0 else n
         while left != 0:
             step = _GUARD_STEP if left < 0 else min(left, _GUARD_STEP)
-            data = read_blocking(self._inner, step)
+            try:
+                data = read_blocking(self._inner, step)
+            except Exception as e:
+                if not parts:
+                    raise
+                self._held = e
+                break
             if not data:
                 break
             parts.append(data)
@@ -373,10 +397,20 @@ class DecodeRatioGuard(DelegatingStream):
         return b"".join(parts)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        self._raise_held()
         if whence == io.SEEK_END:
-            self._pos = self._inner.seek(offset, whence)
-            self._check(self._pos)
-            return self._pos
+            # The decoder serves this by decoding to its end in one call: find the
+            # end from its cheap size, or by reading to it a step at a time.
+            size = source_byte_size(self._inner)
+            if size is None:
+                while True:
+                    data = read_blocking(self._inner, _GUARD_STEP)
+                    if not data:
+                        break
+                    self._pos += len(data)
+                    self._check(self._pos)
+                size = self._pos
+            offset, whence = size + offset, io.SEEK_SET
         target = offset if whence == io.SEEK_SET else self._pos + offset
         while target - self._pos > _GUARD_STEP:
             step_to = self._pos + _GUARD_STEP
@@ -394,6 +428,7 @@ class DecodeRatioGuard(DelegatingStream):
     def read_ahead(self, need: int, n: int, /) -> bytes:
         """The decoder's ``read_ahead`` (:class:`ReadAheadStream` with
         ``fill_arrived``): at least ``need`` bytes, up to ``n``, of what has arrived."""
+        self._raise_held()
         data = cast("_ReadsAhead", self._inner).read_ahead(need, n)
         self._pos += len(data)
         self._check(self._pos)
