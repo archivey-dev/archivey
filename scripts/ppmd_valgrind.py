@@ -1,36 +1,14 @@
 #!/usr/bin/env python3
-"""Deterministic valgrind gate for the pyppmd output-buffer use-after-free.
+"""Deterministic valgrind gate for archivey's PPMd decoder.
 
-Background
-----------
-On pyppmd 1.3.x the native decode worker thread is left blocked in its input
-reader whenever a ``decode`` requests more output than the fed input can produce
-(``max_length=-1``, an oversized bound, or a large post-eof / NUL budget over a
-truncated stream). ``OutputBuffer_Finish`` then frees the decode's output block
-while that worker still holds a raw pointer into it, and the worker is later
-resumed (by the next call or by ``Ppmd7T_Free`` at teardown) to free-run into the
-freed block — a use-after-free write at ``ThreadDecoder.c:134``. Root-cause
-analysis, valgrind evidence, and the 1.2.0→1.3.0 (#126) regression window are in
-``dev-docs/investigations/ppmd-native-investigation-results.md`` (§D, §J).
-
-Unlike the crash-rate soak in ``scripts/pyppmd_crash_repro.py`` (a probabilistic
-race whose rate swings with allocator layout and Python/GIL mode), this driver is
-**deterministic**: valgrind's memcheck reports the invalid write on the shape that
-reproduces it every run. It runs in the non-required ``PPMd native stress``
-workflow (Linux). A green run here on a fixed pyppmd — or archivey's
-``quiesce-on-close`` mitigation for the archivey scenarios — across the hot-race
-platforms is the evidence needed to retire ``--allow-exit-after-green`` for the
-PPMd module; it is **not** on its own sufficient on a single host (the observable
-teardown abort is already ~0 there).
+Runs archivey's ``PpmdDecoder`` on truncated PPMd7 input under valgrind's memcheck
+and fails on any memcheck error. It runs in the non-required ``PPMd native stress``
+workflow (Linux). See ``dev-docs/known-issues.md``.
 
 Scenarios
 ---------
-* ``pyppmd-overshoot`` — bare ``pyppmd``: ``decode(packed, -1)`` over a truncated
-  stream. The canonical reproducer; **expected to fail (nonzero) on 1.3.x**, pass
-  on a fixed release. Use it as a pyppmd-regression / fixed-release detector.
 * ``archivey-truncated`` — archivey ``PpmdDecoder``: truncated PPMd7 fed + flushed
-  then disposed via ``__del__``. Exercises the shipped mitigations + the
-  ``quiesce-on-close`` fix; expected **clean**. A failure here is an archivey bug.
+  then disposed via ``__del__``. Expected **clean**.
 * ``archivey-stream`` — same, driven through ``PpmdDecompressorStream`` so disposal
   runs the explicit ``close()`` path. Expected **clean**.
 
@@ -38,14 +16,12 @@ Usage
 -----
 ::
 
-    python scripts/ppmd_uaf_valgrind.py                       # all archivey scenarios
-    python scripts/ppmd_uaf_valgrind.py --scenario archivey-truncated
-    python scripts/ppmd_uaf_valgrind.py --scenario pyppmd-overshoot  # pyppmd detector
-    python scripts/ppmd_uaf_valgrind.py --scenario all --cycles 8
+    python scripts/ppmd_valgrind.py                       # all scenarios
+    python scripts/ppmd_valgrind.py --scenario archivey-truncated
+    python scripts/ppmd_valgrind.py --scenario all --cycles 8
 
-Exit code is nonzero if valgrind reports any memcheck error in a scenario that is
-expected to be clean (the ``pyppmd-overshoot`` detector is reported but does not
-fail the run unless ``--strict-pyppmd`` is passed). Requires ``valgrind`` on PATH.
+Exit code is nonzero if valgrind reports any memcheck error. Requires ``valgrind`` on
+PATH.
 """
 
 from __future__ import annotations
@@ -62,9 +38,7 @@ from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Highly compressible payload: a small mid-stream cut still leaves the worker
-# wanting many more symbols than the truncated input can produce, so it parks past
-# logical EOF — the precondition for the UAF.
+# Highly compressible payload, so a small mid-stream cut leaves much undecoded.
 _PREAMBLE = textwrap.dedent(
     """\
     import os, sys
@@ -76,22 +50,11 @@ _PREAMBLE = textwrap.dedent(
     CONTENT = (b"the quick brown fox jumps over the lazy dog\\n" * 200)
     _e = pyppmd.Ppmd7Encoder(ORDER, MEM)
     PACKED = _e.encode(CONTENT) + _e.flush()
-    CYCLES = int(os.environ.get("PPMD_UAF_CYCLES", "6"))
+    CYCLES = int(os.environ.get("PPMD_VALGRIND_CYCLES", "6"))
     """
 )
 
 _SCENARIOS: dict[str, str] = {
-    # Bare pyppmd, the canonical reproducer (fails on 1.3.x, passes when fixed).
-    "pyppmd-overshoot": _PREAMBLE
-    + textwrap.dedent(
-        """\
-        for _ in range(CYCLES):
-            dec = pyppmd.Ppmd7Decoder(ORDER, MEM)
-            out = dec.decode(PACKED[: len(PACKED) // 2], -1)  # INT_MAX budget, truncated
-            del dec
-        print("ok", flush=True)
-        """
-    ),
     # archivey PpmdDecoder, truncated PPMd7, disposed via __del__.
     "archivey-truncated": _PREAMBLE
     + textwrap.dedent(
@@ -131,11 +94,6 @@ _SCENARIOS: dict[str, str] = {
     ),
 }
 
-# Scenarios expected to be clean (a memcheck error fails the run). The bare-pyppmd
-# reproducer is a detector: on 1.3.x it is *expected* to error, so it does not fail
-# the run unless --strict-pyppmd is given.
-_EXPECT_CLEAN = {"archivey-truncated", "archivey-stream"}
-
 _ERROR_SUMMARY = re.compile(r"ERROR SUMMARY:\s+(\d+)\s+errors")
 
 
@@ -143,12 +101,12 @@ def _run_scenario(name: str, cycles: int, timeout: float) -> tuple[int, bool, st
     """Return (memcheck_error_count, body_ok, tail_of_output)."""
     script = _SCENARIOS[name]
     env = dict(os.environ)
-    env["PPMD_UAF_CYCLES"] = str(cycles)
-    # Keep pymalloc (do NOT set PYTHONMALLOC=malloc): the UAF'd output blocks are
+    env["PPMD_VALGRIND_CYCLES"] = str(cycles)
+    # Keep pymalloc (do NOT set PYTHONMALLOC=malloc): the decoder's output blocks are
     # large PyBytes that pymalloc routes to raw malloc, so valgrind already tracks
     # them; forcing libc malloc for every allocation instead floods the report with
     # CPython-interpreter false positives (measured ~984 errors on a clean run).
-    with tempfile.TemporaryDirectory(prefix="ppmd-uaf-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="ppmd-valgrind-") as tmp:
         driver = Path(tmp) / f"{name}.py"
         driver.write_text(script.format(repo=str(_REPO_ROOT)), encoding="utf-8")
         cmd = [
@@ -198,11 +156,6 @@ def main(argv: list[str] | None = None) -> int:
         default=400.0,
         help="Per-scenario valgrind timeout (s).",
     )
-    parser.add_argument(
-        "--strict-pyppmd",
-        action="store_true",
-        help="Also fail the run if the bare-pyppmd reproducer reports errors (i.e. require a fixed pyppmd).",
-    )
     args = parser.parse_args(argv)
 
     if shutil.which("valgrind") is None:
@@ -222,15 +175,9 @@ def main(argv: list[str] | None = None) -> int:
         names = [args.scenario]
 
     failed = False
-    print(f"ppmd_uaf_valgrind: scenarios={names} cycles={args.cycles}")
+    print(f"ppmd_valgrind: scenarios={names} cycles={args.cycles}")
     for name in names:
         errors, body_ok, tail = _run_scenario(name, args.cycles, args.timeout)
-        # `pyppmd-overshoot` is a detector: memcheck errors are the *expected*
-        # outcome on 1.3.x and do not fail the run unless --strict-pyppmd requires
-        # a fixed pyppmd. Every other scenario must be clean.
-        clean_required = name in _EXPECT_CLEAN or (
-            name == "pyppmd-overshoot" and args.strict_pyppmd
-        )
         # A scenario that never ran its body (import error, early crash, wrong env)
         # or produced no parseable valgrind summary is a failure regardless: a
         # "0 errors" from a body that never executed the repro is a false PASS.
@@ -240,10 +187,8 @@ def main(argv: list[str] | None = None) -> int:
             status, scenario_failed = "FAIL (no valgrind summary)", True
         elif errors == 0:
             status, scenario_failed = "OK", False
-        elif clean_required:
-            status, scenario_failed = "FAIL", True
         else:
-            status, scenario_failed = "DETECTED", False  # detector, expected
+            status, scenario_failed = "FAIL", True
         failed = failed or scenario_failed
         print(f"  {name:<20} memcheck_errors={errors:<6} {status}")
         if scenario_failed or errors != 0:

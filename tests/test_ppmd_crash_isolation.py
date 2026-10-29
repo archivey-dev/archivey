@@ -1,7 +1,7 @@
 """PPMd on corrupt input fails cleanly, and valid input decodes the same on both paths.
 
-pyppmd (1.3.1, and 1.2.0) segfaults when asked to decode after a corrupt stream has
-hit its end early. Every PPMd member therefore decodes in a child process
+pyppmd has a known issue on corrupt input (``dev-docs/known-issues.md``). Every PPMd
+member therefore decodes in a child process
 (``ppmd_child``, on the shared decoder worker), unless ``process_isolation`` is
 ``NONE``; there ``PpmdDecoder`` hands pyppmd a member whole when it is at most
 ``DecoderLimits.max_ppmd_held_input`` of compressed input. The hostile-input
@@ -136,9 +136,7 @@ def test_random_input_raises_and_never_crashes(variant: int, path: str) -> None:
     """Random bytes (a wrong key, a hostile member) raise an archivey error.
 
     Every input starts with a zero byte, so PPMd7's range decoder accepts it and the
-    model decodes garbage until it reaches an end. Before the hold, archivey then fed
-    pyppmd the rest of the member, and every child of 100 such inputs segfaulted
-    (7z and ZIP alike). Reads alternate between ``read()`` and 4 KiB ``read(n)``.
+    model decodes garbage until it reaches an end. Reads alternate between ``read()`` and 4 KiB ``read(n)``.
     """
     _run_ppmd_child(
         textwrap.dedent(

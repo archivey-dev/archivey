@@ -91,7 +91,7 @@ others miss.
   limits archivey accepts rather than fixes. [Security](security.md) covers what you need to know as
   a user, and the [full threat
   model](https://github.com/archivey-dev/archivey/blob/main/dev-docs/threat-model.md) has the rest.
-- **Bugs found in other libraries.** Comparing decoders turned up a use-after-free in pyppmd, three
+- **Bugs found in other libraries.** Comparing decoders turned up a known issue in pyppmd, three
   decoder bugs in pybcj and a hang in py7zr. Archivey avoids or works around each one.
 
 ## What this makes practical

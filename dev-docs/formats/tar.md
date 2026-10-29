@@ -183,10 +183,12 @@ than a block is `TruncatedError`.
 member's `max_metadata_bytes` budget at its declared size before it is read, then read with
 `read_within_reach` in 64 KiB steps, so the allocation follows the bytes that exist, not
 the size field ([`threat-model.md`](../threat-model.md) O15). A member's data area is
-skipped with one seek on a seekable stream. A forward-only walk reads through it in
-64 KiB steps and raises `TruncatedError` at the first short read, so the skip costs the
-bytes present: a 2 KiB archive declaring a 2**45-byte member fails at once instead of
-looping on the declared size. On a seekable stream a seek past the end succeeds, so when
+skipped with one seek on a seekable stream. A forward-only walk skips it in 64 KiB steps
+and raises `TruncatedError` at the first short read, so the skip costs the bytes
+present: a 2 KiB archive declaring a 2**45-byte member fails at once instead of looping
+on the declared size. Member data a caller reads through a forward-only walk is read in
+1 MiB steps (`DATA_READ_STEP`, the piece the member verifier reads), so a size field
+there causes at most a 1 MiB allocation. On a seekable stream a seek past the end succeeds, so when
 the walk finds nothing where the next header should start, it checks that the last byte
 of the previous member's data area exists: a member cut short is `TruncatedError`, not a
 clean end.

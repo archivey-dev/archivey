@@ -5,12 +5,10 @@ Windows/Linux native aborts can be chased on the *minimal* surface (see
 ``dev-docs/known-issues.md`` and ``scripts/ppmd_native_stress.py``).
 
 Notes:
-- In-process PPMd7 create/destroy loops are skipped on Windows (have aborted CI with
-  ``STATUS_HEAP_CORRUPTION`` / access violation); that axis lives in the stress job.
+- In-process PPMd7 create/destroy loops are skipped on Windows (have aborted CI);
+  that axis lives in the stress job.
 - PPMd7 streams require ``unpack_size`` (7z always passes the folder size): the format
-  has no end mark, and on pyppmd 1.3.x any decode request materially past the true
-  payload corrupts the heap — the exact remaining size (py7zr-style) is the safe
-  contract. Unsized PPMd8 is allowed (end-marked) and never passes ``-1`` (bounded
+  has no end mark, and the exact remaining size (py7zr-style) is the safe contract. Unsized PPMd8 is allowed (end-marked) and never passes ``-1`` (bounded
   drain loop).
 """
 
@@ -146,9 +144,7 @@ def test_archivey_ppmd7_trailing_null_payload() -> None:
 def test_archivey_ppmd7_unpack_size_prevents_overshoot() -> None:
     """``unpack_size`` keeps PPMd7 output within the known member/folder length.
 
-    Unsized ``decode(..., -1)`` can overshoot and intermittently abort inside
-    ``pyppmd`` 1.3.1 — do not exercise that path in-process here; see
-    ``scripts/pyppmd_crash_repro.py --mode overshoot``.
+    Do not exercise unsized decodes in-process here (``dev-docs/known-issues.md``).
     """
     payload = b"alpha\n" * 100
     packed = _encode_ppmd7(payload)
@@ -369,8 +365,8 @@ def test_archivey_ppmd7_repeated_construct_destroy() -> None:
 # ---------------------------------------------------------------------------
 # quiesce-on-close wiring + logic (deterministic; no native abort dependency)
 #
-# The teardown use-after-free (dev-docs/investigations/ppmd-native-investigation-results.md
-# §D/§I) is a race that does not reproduce reliably in-process, so these tests
+# The teardown issue (dev-docs/known-issues.md) does not reproduce reliably
+# in-process, so these tests
 # assert the *mechanism* — that a parked worker is driven to exit on dispose and
 # the happy path is skipped — with fakes, not by trying to provoke a crash.
 # ---------------------------------------------------------------------------
@@ -503,19 +499,14 @@ def test_decompressor_stream_seek_recreate_closes_old_decoder() -> None:
 # ---------------------------------------------------------------------------
 # Adversarial-input regression tests (pyppmd 1.3.x native aborts)
 #
-# pyppmd 1.3.x heap corruption fires when the native decoder runs past the true
-# end of stream (unbounded budget); see dev-docs/known-issues.md and
-# dev-docs/investigations/pyppmd-upstream-report.md. These tests pin the shapes damaged or
+# See dev-docs/known-issues.md. These tests pin the shapes damaged or
 # hostile archives can force — truncation, early close, garbage tails — which
 # must fail cleanly (archivey exception or bounded output) and never abort the
 # process.
 #
-# Unfinished-decoder teardown also hits an upstream ``Ppmd7T_Free`` race when a
-# worker is still blocked on input; that can silently poison the heap and only
-# abort at pytest GC / interpreter exit ("exit-after-green"). These cases therefore
-# run in a **fresh subprocess** so a child abort cannot take down the parent
-# session (Windows already needed this; Linux hits the same Free race at lower
-# rate). Bare-``pyppmd`` soaks: ``scripts/pyppmd_crash_repro.py``.
+# Unfinished-decoder teardown can abort at pytest GC / interpreter exit
+# ("exit-after-green"). These cases therefore run in a **fresh subprocess** so a
+# child abort cannot take down the parent session.
 # ---------------------------------------------------------------------------
 
 
@@ -523,10 +514,9 @@ def _run_ppmd_child(script: str, *, timeout: float = 60.0) -> None:
     """Run ``script`` in a fresh interpreter; require a successful test body.
 
     The child must print a line ``ok`` when the archivey assertion holds. Exit 0
-    is required when possible. A **teardown** native abort (SIGSEGV/SIGABRT /
-    Windows STATUS_HEAP_CORRUPTION) *after* ``ok`` is the residual upstream
-    ``Ppmd7T_Free`` race on unfinished workers — subprocess isolation keeps that
-    out of the parent session, but cannot force a clean child exit. Those are
+    is required when possible. A **teardown** native abort *after* ``ok`` is the
+    residual upstream issue — subprocess isolation keeps that out of the parent
+    session, but cannot force a clean child exit. Those are
     accepted here so required CI is not flaky-red on a documented residual.
     Mid-script crashes (no ``ok``, or non-zero before success) still fail the
     test.
@@ -555,7 +545,7 @@ def _run_ppmd_child(script: str, *, timeout: float = 60.0) -> None:
             f"stderr:\n{proc.stderr}"
         )
         return
-    # Non-zero after a green body: residual Ppmd7T_Free / GC abort in the child.
+    # Non-zero after a green body: residual teardown abort in the child.
     if body_ok:
         return
     raise AssertionError(
@@ -804,8 +794,8 @@ def test_ppmd_decoder_never_passes_unbounded_max_length(
 ) -> None:
     """No decode call may reach pyppmd with ``max_length=-1``.
 
-    ``-1`` grants the pyppmd 1.3.x native worker an effectively unlimited symbol
-    budget — the heap-corruption path. Sized decodes pass the remaining
+    ``-1`` grants the native worker an effectively unlimited symbol budget. Sized
+    decodes pass the remaining
     ``unpack_size``; unsized PPMd8 must use the bounded drain loop instead.
     """
     packed = _encode_ppmd7(_CONTENT) if variant == 7 else _encode_ppmd8(_CONTENT)
@@ -829,11 +819,8 @@ def test_ppmd_decoder_never_passes_unbounded_max_length(
 def test_archivey_ppmd7_requires_unpack_size() -> None:
     """Unsized PPMd7 is rejected outright — there is no safe decode request for it.
 
-    PPMd7 has no end mark, and on pyppmd 1.3.x a decode request materially past the
-    true remaining output leaves the native worker waiting for input, which corrupts
-    the heap when the decoder is freed (bare pyppmd: +65536 over crashed 13/20, +64
-    and +4096 over 0/20). With no declared size there is no correct output boundary
-    either, so construction fails fast instead.
+    PPMd7 has no end mark, so with no declared size there is no correct output
+    boundary, and construction fails fast instead.
     """
     with pytest.raises(ValueError, match="unpack_size"):
         PpmdDecompressorStream(

@@ -212,6 +212,72 @@ def test_close_while_stream_members_suspended_closes_reader(
     reader.close()  # idempotent
 
 
+# A pass's streams hold the live-stream slot together: the pass is checked once, at its
+# first stream, instead of each stream checking in and out of the gate.
+_RANDOM_ACCESS_READ_SOURCES = [p for p in _READ_SOURCES if not p.values[1]]
+
+
+@pytest.mark.parametrize(("make_source", "streaming"), _RANDOM_ACCESS_READ_SOURCES)
+def test_stream_members_beside_a_live_open_stream_is_refused(
+    tmp_path: Path, make_source, streaming: bool
+) -> None:
+    """Without ``concurrent_operations``, a pass is refused at its first stream while
+    a stream from ``open()`` is live, as each of its streams was when each checked in.
+
+    Fails when the pass's streams skip the gate altogether (no
+    ``admit_pass_streams``)."""
+    with open_archive(make_source(tmp_path), streaming=streaming) as reader:
+        first = next(m for m in reader.members() if m.is_file and m.size)
+        handle = reader.open(first)
+        with pytest.raises(ArchiveyUsageError, match="already open"):
+            for _member, _stream in reader.stream_members():
+                pass
+        handle.close()
+        # With the handle closed the same pass shape runs.
+        for _member, stream in reader.stream_members():
+            if stream is not None:
+                stream.read()
+
+
+class _PlainIterator:
+    """A backend pass that is a plain iterator, not a generator: ``close()`` has no
+    ``close`` of the backend's to call (``_closer_of`` gives ``None``)."""
+
+    def __init__(self, pairs: Iterator[tuple[object, object]]) -> None:
+        self._pairs = pairs
+
+    def __iter__(self) -> _PlainIterator:
+        return self
+
+    def __next__(self) -> tuple[object, object]:
+        return next(self._pairs)
+
+
+def test_close_closes_the_stream_a_suspended_pass_handed_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pass's own wind-down closes the stream the caller holds, whatever the
+    backend's pass does: its streams are not registered for ``close()`` to find.
+
+    Fails when the wind-down leaves the held stream to the backend's pass (here a
+    plain iterator, which ``close()`` cannot close)."""
+    reader = open_archive(_zip_with_files(tmp_path))
+    backend_pass = reader._iter_with_data
+    monkeypatch.setattr(
+        reader,
+        "_iter_with_data",
+        lambda copies: _PlainIterator(iter(backend_pass(copies))),
+    )
+    it = reader.stream_members()
+    _member, stream = next(it)
+    assert stream is not None
+    assert stream.read(1) == b"a"
+    reader.close()
+    assert stream.closed
+    with pytest.raises(ArchiveyUsageError, match="closed"):
+        next(it)
+
+
 @pytest.mark.parametrize(("make_source", "streaming"), _SUSPENDED_SOURCES)
 def test_with_exit_closes_reader_with_suspended_stream_members(
     tmp_path: Path, make_source, streaming: bool

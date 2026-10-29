@@ -2775,8 +2775,7 @@ def test_aes_ppmd_wrong_key_moves_on_to_the_next_password(tmp_path: Path) -> Non
     """A wrong key whose garbage stops PPMd short is a wrong key, not a crash.
 
     ``wrong856`` used to end password iteration with pyppmd's ``MemoryError`` before
-    ``secret`` was tried (``dev-docs/investigations/ppmd-native-investigation-results.md``
-    §K.4). Run in a child process like
+    ``secret`` was tried. Run in a child process like
     the other PPMd garbage decodes.
     """
     import base64
