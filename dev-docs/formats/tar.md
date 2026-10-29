@@ -391,9 +391,9 @@ Without such a major, the 0.x records choose: `GNU.sparse.map` is 0.1, then
 `GNU.sparse.size` or `GNU.sparse.offset`/`numbytes` is 0.0. A 1.0 member with no
 `GNU.sparse.realsize` ends at its greatest chunk end, which is what GNU tar 1.35 extracts
 (it lists the stored size, the header's or a PAX `size` record's, map blocks included); a
-chunk ending past the stored size is damage, as GNU tar calls it malformed. A realsize of 0 is kept, so a chunk ends past it
-and the member fails, as in GNU tar. An empty `GNU.sparse.realsize` is damage, as
-GNU tar and `tarfile` both refuse it.
+chunk ending past the stored size is damage, as GNU tar calls it malformed. A realsize of
+0 is kept, so a chunk ends past it and the member fails, as in GNU tar. An empty
+`GNU.sparse.realsize` is damage, as GNU tar and `tarfile` both refuse it.
 
 **Only an old GNU header holds sparse slots.** Typeflag `S` under ustar or v7 magic is a
 regular file of its stored size, with the ustar prefix joined to its name: in a ustar header
