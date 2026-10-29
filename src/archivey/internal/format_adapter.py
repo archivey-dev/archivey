@@ -1135,6 +1135,9 @@ class SequentialReaderAdapter(_PluginAdapter):
         """Give ``layer`` the walk's ``ForwardStream`` over its stream."""
         stream = layer.stream
         size = layer.shared.size if layer.shared is not None else None
+        skip_buffered = (
+            stream.skip_buffered if isinstance(stream, ReadAheadStream) else None
+        )
 
         def cut(at: int, offset: int, n: int) -> TruncatedError:
             error = TruncatedError(
@@ -1167,9 +1170,12 @@ class SequentialReaderAdapter(_PluginAdapter):
         def skip(offset: int, n: int) -> None:
             nonlocal landed
             end = offset + n
+            # Padding and small members are usually in the walk's buffer already.
+            if skip_buffered is not None and skip_buffered(n):
+                return
             if seekable:
-                # A seek inside the walk's buffer moves its offset; one past it is a
-                # pointer move on a file, and fetches nothing on a remote one.
+                # A seek past the buffer is a pointer move on a file, and fetches
+                # nothing on a remote one.
                 if size is not None and end > size:
                     raise cut(size, offset, n)
                 stream.seek(end)
