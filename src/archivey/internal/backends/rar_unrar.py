@@ -1272,9 +1272,10 @@ def unrar_selection_keys(view: str) -> tuple[str, ...]:
     """Keys under which a member must be indexed so an exact mask can find it.
 
     An exact mask (no ``?``) selects a name only when, after ``ConvertPath``, it
-    equals the name up to trailing dots (exactly, without the dot rule), or equals the part of the name before
-    one of its separators. The keys are those strings, folded on Windows. The
-    index is a filter: :func:`unrar_mask_selects` still decides.
+    equals the name up to trailing dots (exactly, without the dot rule), or equals
+    the part of the name before one of its separators. The keys are those strings,
+    folded on Windows. The index is a filter: :func:`unrar_mask_selects` still
+    decides.
     """
     if sys.platform == "win32":
         view = view.replace("/", "\\")  # as in :func:`unrar_mask_selects`
