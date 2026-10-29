@@ -1,10 +1,7 @@
 name: PPMd native stress
 
-# Investigation vehicle for intermittent ``pyppmd`` native aborts on *valid* PPMd
-# streams (Windows STATUS_HEAP_CORRUPTION; Linux SIGSEGV / malloc abort after
-# other-codec warmup; Linux/Windows exit-after-green abort of
-# tests/test_ppmd_raw_streams.py). See dev-docs/known-issues.md and
-# dev-docs/investigations/ppmd-native-investigation-results.md §K.
+# Stress for the known ``pyppmd`` native issue on PPMd streams. See
+# dev-docs/known-issues.md.
 #
 # Runs weekly, on demand, and on a pull request that changes the PPMd code, the child
 # process around it, its tests, the scripts below, this file, or the dependency pins (a
@@ -98,9 +95,8 @@ jobs:
           --summary ppmd-stress-summary-${{ matrix.os }}-py${{ matrix.python-version }}.md
 
       - name: Soak test_ppmd_raw_streams (pytest module exit abort)
-        # Distinct fingerprint from warmup_codecs: full pytest module goes green
-        # (sessionfinish exit=0) then SIGSEGV/SIGABRT on process exit. Required CI
-        # soft-passes that abort; this non-required soak keeps the signal visible.
+        # Required CI soft-passes an abort at exit of this module; this
+        # non-required soak keeps the signal visible.
         # Hard-fails the step on any child crash (no --allow-exit-after-green).
         if: steps.sync.outcome == 'success'
         env:
@@ -116,16 +112,13 @@ jobs:
         if: runner.os == 'Linux' && steps.sync.outcome == 'success'
         run: sudo apt-get update && sudo apt-get install -y valgrind
 
-      - name: Deterministic UAF gate (valgrind, Linux)
-        # Pins the output-buffer use-after-free (ThreadDecoder.c:134) deterministically.
+      - name: Deterministic valgrind gate (Linux)
         # The archivey scenarios MUST be clean (a regression here is an archivey bug and
-        # fails the step); the bare-pyppmd overshoot reproducer is a detector run without
-        # --strict-pyppmd, so its expected-red on 1.3.x does not fail the step. Still
-        # non-required overall. See dev-docs/investigations/ppmd-native-investigation-results.md §J.
+        # fails the step). Still non-required overall.
         if: runner.os == 'Linux' && steps.sync.outcome == 'success'
         run: >
           uv run --python ${{ matrix.python-version }} --no-sync
-          python scripts/ppmd_uaf_valgrind.py --scenario all
+          python scripts/ppmd_valgrind.py --scenario all
 
       - name: Stress PPMd (pytest marker entry points)
         # Run even when the script step failed (crash signal), but not when setup/sync

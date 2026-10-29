@@ -17,7 +17,9 @@ transition on, or a test of, four independent pieces of state:
   the callback, not about a second caller.
 - **Whether the member list exists yet** (``cache_state``). See :class:`ReaderState`.
 - **How many member streams are alive** (``_live_streams``, plus ``_reservations`` for
-  an ``open()`` that has passed the gate but not built its stream yet).
+  an ``open()`` that has passed the gate but not built its stream yet). The streams a
+  ``stream_members()`` pass hands out are in neither: the pass holds the slot for all
+  of them (:meth:`ReaderState.admit_pass_streams`).
 - **How far the close has got** (``lifecycle`` and the leases), below.
 
 Leases, and why teardown is separate from close
@@ -25,8 +27,9 @@ Leases, and why teardown is separate from close
 
 Marking the reader closed does not close the archive. A lease is held by whatever still
 reads through the source: the reader itself (one lease, from construction until
-``close()``, kept as ``_reader_lease_held``), each live member stream or reservation
-(counted in ``_lease_count``), and a ``stream_members()`` pass that ``close()`` found
+``close()``, kept as ``_reader_lease_held``), each live ``open()`` stream or reservation
+(counted in ``_lease_count``; a pass's streams take none, as the pass's token keeps the
+source open until the pass ends or is wound down), and a ``stream_members()`` pass that ``close()`` found
 suspended at a yield (one lease, ``_pass_wind_down_lease``, from the close transition
 until ``close()`` has wound the pass down and closed the streams; a flag for the same
 reason as the reader's). The underlying file handle or ``unrar`` /
@@ -54,7 +57,7 @@ import gc
 import threading
 import weakref
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 from archivey.exceptions import ArchiveyUsageError
 from archivey.types import MemberStreams
@@ -67,6 +70,7 @@ if TYPE_CHECKING:
 
 
 T = TypeVar("T")
+_P = ParamSpec("_P")
 
 # A dropped pass or member stream releases what it held here only when it is freed.
 # CPython usually frees it at once, when its last reference goes (the end of a ``for``
@@ -92,9 +96,11 @@ def _overlap_refused(message: str) -> ArchiveyUsageError:
     return exc
 
 
-def _retry_after_collecting(attempt: Callable[[], T]) -> T:
-    """``attempt()``; refused for an overlap, ``attempt`` again after a collection has
-    run the cleanup of passes and streams already dropped.
+def _retry_after_collecting(
+    attempt: Callable[_P, T], *args: _P.args, **kwargs: _P.kwargs
+) -> T:
+    """``attempt(*args)``; refused for an overlap, ``attempt`` again after a collection
+    has run the cleanup of passes and streams already dropped.
 
     This runs on every interpreter, so whether a call is refused depends only on
     whether the earlier pass or stream is still reachable, never on when a collection
@@ -103,12 +109,12 @@ def _retry_after_collecting(attempt: Callable[[], T]) -> T:
     and raises.
     """
     try:
-        return attempt()
+        return attempt(*args, **kwargs)
     except ArchiveyUsageError as exc:
         if not getattr(exc, _OVERLAP_MARK, False):
             raise
     gc.collect()
-    return attempt()
+    return attempt(*args, **kwargs)
 
 
 # Passes that may run beside workers and beside one another on a CONCURRENT reader.
@@ -161,12 +167,14 @@ class OperationToken:
     # loop body, so a call from that thread is not re-entry from a callback and
     # ``_same_thread_token_locked`` skips the token. While the generator is executing a
     # step (where a diagnostic callback fires) the flag is False and the token counts.
-    # Set with :meth:`ReaderState.set_suspended`. A suspended pass also does not block
+    # Set with :meth:`ReaderState.set_suspended`, and cleared by :meth:`ReaderState.resume`
+    # when a pass comes back from its yield. A suspended pass also does not block
     # ``close()``: the reader closes and the pass is wound down (see ``pass_closer``).
     suspended: bool = field(default=False, repr=False)
-    # Winds down the backend side of a ``stream_members()`` pass: closes the format's
-    # own member iterator, whose ``finally`` closes its last stream and releases
-    # pass-scoped resources (a solid block, an ``unrar`` pipe). When ``close()`` closes
+    # Winds down a ``stream_members()`` pass: closes the stream the caller may still
+    # hold (nothing else closes it, as a pass's streams are not registered), then the
+    # format's own member iterator, whose ``finally`` releases pass-scoped resources (a
+    # solid block, an ``unrar`` pipe). When ``close()`` closes
     # the reader under a pass suspended at a yield, :meth:`ReaderState.mark_reader_closed`
     # hands it over together with a lease, so teardown waits until it has run. Set with
     # :meth:`ReaderState.set_pass_closer`, under the lock like ``suspended``.
@@ -328,7 +336,7 @@ class ReaderState:
         return self._root
 
     def acquire_pass(self, name: str) -> OperationToken:
-        return _retry_after_collecting(lambda: self._acquire_pass_once(name))
+        return _retry_after_collecting(self._acquire_pass_once, name)
 
     def _acquire_pass_once(self, name: str) -> OperationToken:
         """Acquire a data-pass token: root when free, else a child under an internal owner."""
@@ -379,6 +387,14 @@ class ReaderState:
         """Mark a generator-held pass as suspended at a yield, or running again."""
         with self._lock:
             token.suspended = suspended
+
+    def resume(self, token: OperationToken, op: str) -> None:
+        """A pass is running again after its yield, and the reader must still be open:
+        ``set_suspended(token, False)`` and ``require_open(op)`` under one lock, since
+        a pass runs this once per member."""
+        with self._lock:
+            token.suspended = False
+            self._require_admissible_locked(op)
 
     def set_pass_closer(
         self, token: OperationToken, closer: Callable[[], None] | None
@@ -455,7 +471,7 @@ class ReaderState:
             self._children.discard(child)
 
     def acquire_worker(self, name: str) -> OperationToken:
-        return _retry_after_collecting(lambda: self._acquire_worker_once(name))
+        return _retry_after_collecting(self._acquire_worker_once, name)
 
     def _acquire_worker_once(self, name: str) -> OperationToken:
         """Short-lived token for random ``open()`` / ``read()`` (D7).
@@ -586,9 +602,34 @@ class ReaderState:
             self._reservations.add(token)
             return token
 
+    def admit_pass_streams(self) -> None:
+        """A data pass is about to hand out its first stream: refused beside a live
+        member stream, under the gate's rule.
+
+        Contention only: the lifecycle was checked when the pass took its token
+        (``acquire_pass``), and a pass that is not suspended blocks ``close()``.
+
+        A pass's streams take the one live-stream slot together, not one by one: the
+        pass closes each before it opens the next and closes the last when it ends or
+        is wound down, so nothing it hands out outlives it, and while it runs no other
+        stream can be admitted (without ``CONCURRENT`` a pass refuses the worker calls
+        that would open one; with it, the gate admits every stream). So one check, at
+        the pass's first stream, is the check every one of its streams made, and its
+        streams take no lease and no entry of their own.
+        """
+        _retry_after_collecting(self._admit_pass_streams_once)
+
+    def _admit_pass_streams_once(self) -> None:
+        with self._lock:
+            self._refuse_second_stream_locked()
+
     def _admit_live_stream_locked(self) -> None:
         """The live-stream gate: refuse a second stream, or take a lease for one."""
         self._require_lifecycle_open_locked("open()")
+        self._refuse_second_stream_locked()
+        self._lease_count += 1
+
+    def _refuse_second_stream_locked(self) -> None:
         if not (self.concurrent or self._internal_opens_active_locked()) and (
             self._live_streams or self._reservations
         ):
@@ -600,7 +641,6 @@ class ReaderState:
                 "concurrent_operations=True "
                 f"(this archive was opened without concurrent_operations at {loc})."
             )
-        self._lease_count += 1
 
     def bind_live_stream(
         self, token: LiveStreamReservation, stream: ArchiveStreamImpl
@@ -630,12 +670,14 @@ class ReaderState:
     def acquire_live_stream(self, stream: ArchiveStreamImpl) -> None:
         """Register a public member stream; enforce the single-live-stream gate.
 
-        The gate and the record of reserve-then-bind, in one step: the eager ``open()``
-        path reserves first, and the lazy ``stream_members`` path, which has its stream
-        already, comes here. Both share the gate check (``_admit_live_stream_locked``).
+        The gate and the record of reserve-then-bind, in one step, for a caller that
+        has its stream already (the extraction coordinator re-opening a retyped
+        member); the eager ``open()`` path reserves first. Both share the gate check
+        (``_admit_live_stream_locked``). A ``stream_members()`` pass does not come here:
+        see :meth:`admit_pass_streams`.
         """
         ref = weakref.ref(stream)
-        _retry_after_collecting(lambda: self._acquire_live_stream_once(stream, ref))
+        _retry_after_collecting(self._acquire_live_stream_once, stream, ref)
 
     def _acquire_live_stream_once(
         self, stream: ArchiveStreamImpl, ref: weakref.ref[ArchiveStreamImpl]
