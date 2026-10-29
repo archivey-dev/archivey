@@ -780,8 +780,8 @@ that mask select the wrong members, or none:
   those bytes are already part of `AccessCost.SOLID`, so the error names the flag instead. Setting
   `ArchiveyConfig.rar_allow_glob_member_concatenation=True` reads it anyway. Two cases are not
   affected: a name that matches no earlier member with data (an accidental `report*.pdf` stored
-  before `report1.pdf`) reads with no flag, and a solid `stream_members()` pass reads everything, because it builds no
-  mask at all.
+  before `report1.pdf`) reads with no flag, and a solid `stream_members()` pass reads everything,
+  because it builds no mask at all.
 - **`*` or `?` in a directory part of the name, or a backslash in it:** `unrar` cannot read the
   member, and the flag does not change that. The one exception is a backslash in a RAR5 name
   written on Windows, which `unrar` on Linux and macOS reads as `_`.
