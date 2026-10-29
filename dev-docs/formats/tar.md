@@ -312,7 +312,7 @@ pass.
 | `created` | The PAX `LIBARCHIVE.creationtime` keyword, which libarchive writes when the source OS has a birth time. No other TAR writer is known to store one, so it is `None` for most archives |
 | `ctime` | PAX `ctime` only. It is the inode-change time (`st_ctime`), so it never fills `created`. A libarchive tar can carry both |
 | `mode`, `uid`, `gid`, `uname`, `gname` | From the header; a PAX record of the same name overrides `uid`, `gid`, `uname` or `gname`. A PAX `uid` or `gid` that is not a number, or is past 4294967295 (2**32 - 1, the range of `uid_t` and `gid_t` on every platform GNU tar ships on), is ignored and the header's value kept, as GNU tar 1.35 keeps it. GNU tar also reports such an id ("out of range", exit 2); archivey keeps the header's value silently. A v7 header has no `uname` or `gname`: its bytes 257.. are not fields, and GNU tar reads none there. `mode` keeps the permission and setuid/setgid/sticky bits only, masked before `stat.S_IMODE`, so a negative or wider-than-32-bit base-256 mode cannot fail the listing |
-| `is_sparse` | True for the old GNU `S` typeflag and for all three PAX sparse encodings. Sparse records on a link, device, FIFO or directory make no sparse member |
+| `is_sparse` | True for an `S` typeflag in an old GNU header and for all three PAX sparse encodings. Sparse records on a link, device, FIFO or directory make no sparse member |
 | `extra` | `tar.type` always; `special_file_type` on device and FIFO members; `tar.pax_headers` when there are any (read-only, a `dict` subclass whose changes raise `TypeError`; members with no records of their own share one per set of global records); `tar.devmajor` / `tar.devminor` for a character or block device (`3`, `4`) in a ustar or GNU header, the only headers GNU tar reads them from; a FIFO or a v7 header has none, and bytes in those fields there are not read. A device whose field is not a number has none either, and carries `MEMBER_HEADER_RECORD_SKIPPED` |
 
 A pass that is the listing (a streaming pass, or a random-access pass with no listing
@@ -389,9 +389,10 @@ whatever 0.x records it also carries. GNU tar 1.35 reads it so: with a `GNU.spar
 it lists the realsize, and with a `GNU.sparse.map` it warns and still reads the 1.0 map.
 Without such a major, the 0.x records choose: `GNU.sparse.map` is 0.1, then
 `GNU.sparse.size` or `GNU.sparse.offset`/`numbytes` is 0.0. A 1.0 member with no
-`GNU.sparse.realsize` ends at its last chunk, which is what GNU tar 1.35 extracts (it lists
-the size field, map blocks included); a realsize of 0 is kept, so a chunk ends past it and
-the member fails, as in GNU tar.
+`GNU.sparse.realsize` ends at its greatest chunk end, which is what GNU tar 1.35 extracts
+(it lists the size field, map blocks included); a realsize of 0 is kept, so a chunk ends
+past it and the member fails, as in GNU tar. An empty `GNU.sparse.realsize` is damage, as
+GNU tar and `tarfile` both refuse it.
 
 **Only an old GNU header holds sparse slots.** Typeflag `S` under ustar or v7 magic is a
 regular file of its stored size, with the ustar prefix joined to its name: in a ustar header
@@ -598,6 +599,7 @@ ours.
 | A hardlink placed before the only member it names does not extract | **format** | A hardlink refers to an earlier member, as tarfile and `tar(1)` read it; `LinkTargetNotFoundError` in both modes (§2.3) |
 | Extracting a sparse file refuses with a ratio error, or fills the disk with zeros | **archivey** | Holes are written as zeros and counted as output (§2.4). Measured: a 10 MiB sparse file with one byte of data is a 10 240-byte tar, and `extract_all()` refuses it at 1024:1. By design (§6); raise `max_ratio` for an archive known to hold sparse files |
 | GNU tar extracts a sparse file and archivey refuses it with `UnsupportedFeatureError` | **archivey** | The sparse map is out of order or overlapping. Serving its chunks in logical order would buffer up to the member's logical size in a streaming pass, so archivey refuses the map (§2.3). Only crafted archives are known to hold one. By design (§6); there is no plan to support it, and it is revisited if a real archive appears |
+| A PAX 1.0 sparse member with no `GNU.sparse.realsize` lists smaller than in `tar -tvf` | **archivey** | archivey lists the greatest chunk end, which is what GNU tar 1.35 extracts; GNU tar and `tarfile` list the size field, map blocks included (§2.2) |
 | A plain member after a global PAX header carrying `GNU.sparse.realsize` or `GNU.sparse.size` lists its stored bytes; GNU tar 1.35 and `tarfile` list it at the global size | **archivey** | Only a member's own `x` records choose its sparse encoding, so a global sparse size makes no member sparse. For `[g: GNU.sparse.realsize=20][a: 3 bytes "abc"]` GNU tar and `tarfile` list `a` as 20 bytes, `abc` padded with NULs; archivey lists the 3 stored bytes. A global `GNU.sparse.major` is ignored by all three |
 | A directory lists with a `size` and `MEMBER_DIRECTORY_DATA_IGNORED` | **format** / **archivey** | An old-style (NUL, `0` or `7`) `d/` header declared data blocks (§2.2). GNU tar creates the directory and drops them without a word, as 7-Zip does for NUL and `0`; archivey does the same and says so. `read()` on the directory, and the stream `stream_members()` yields for it, deliver the bytes |
 | A member lists as a `FILE` with `MEMBER_TYPE_UNKNOWN` | **format** | Its typeflag is one archivey does not know, and the header declares data (§2.2). GNU tar extracts it as a regular file with a warning; archivey lists, reads and extracts it the same way. With no data it is `OTHER` and is not extracted, where GNU tar writes an empty file |

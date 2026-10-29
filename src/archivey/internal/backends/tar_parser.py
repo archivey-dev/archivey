@@ -1482,6 +1482,13 @@ class TarWalker:
             _sparse_major_1_or_more(merged.get(b"GNU.sparse.major"))
         ):
             sparse_format = SparseFormat.PAX_1_0
+            realsize_record = merged.get(b"GNU.sparse.realsize")
+            if realsize_record is not None and not realsize_record.value:
+                # Present and empty is damage, as for the 0.x records below; GNU
+                # tar 1.35 and tarfile both refuse it.
+                raise CorruptionError(
+                    f"TAR PAX record GNU.sparse.realsize of {charge.name} is empty"
+                )
             realsize = _pax_int(merged, b"GNU.sparse.realsize", charge.name)
             # The map is the first blocks of the data area. It is read here, as
             # tarfile and GNU tar read it, so a bad map fails the listing as in the
@@ -1493,11 +1500,15 @@ class TarWalker:
             data_offset += used
             stored_size -= used
             if realsize is None:
-                # No realsize record: GNU tar 1.35 extracts the file up to the end of
-                # its last chunk (and lists the size field, map blocks included). A
-                # realsize of 0 stays 0, and a chunk past it fails as in GNU tar.
+                # No realsize record: GNU tar 1.35 extracts the file up to the
+                # greatest chunk end (and lists the size field, map blocks included).
+                # A realsize of 0 stays 0, and a chunk past it fails as in GNU tar.
                 size = max(
-                    (o + n for o, n in zip(sparse.offsets, sparse.lengths)), default=0
+                    (
+                        o + n
+                        for o, n in zip(sparse.offsets, sparse.lengths, strict=True)
+                    ),
+                    default=0,
                 )
             else:
                 size = realsize
