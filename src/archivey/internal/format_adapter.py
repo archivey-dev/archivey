@@ -676,6 +676,16 @@ class _Span:
         self.decoded = decoded
 
 
+def _span_names(span: MemberSpan) -> tuple[str, str]:
+    """The name a span's member was presented by, and the one archivey lists it by:
+    the same in the listing walk and in every walk started over."""
+    member = span.member
+    presented = span.stored_name if span.stored_name is not None else member.name
+    return presented, normalize_member_name(
+        presented, member.type, backslash_is_separator=False
+    )
+
+
 def _full_count(data: BinaryIO | io.RawIOBase) -> BinaryIO:
     """``data`` as archivey reads a reader's stream: full-count."""
     stream = cast(BinaryIO, data)
@@ -699,7 +709,16 @@ class _Decoded:
     walk started over finds it again; ``size`` (the listed one) and ``name`` are the
     member's, for the drain."""
 
-    __slots__ = ("checked", "consumed", "done", "index", "name", "size", "stream")
+    __slots__ = (
+        "checked",
+        "consumed",
+        "done",
+        "index",
+        "name",
+        "prefix",
+        "size",
+        "stream",
+    )
 
     def __init__(
         self,
@@ -716,6 +735,9 @@ class _Decoded:
         self.name = name
         # Bytes read so far, by the caller or the drain.
         self.consumed = 0
+        # The decoded bytes of the members before it in the listing walk: what a walk
+        # started over decodes to reach it.
+        self.prefix = 0
         self.done = False
 
     def read(self, n: int) -> bytes:
@@ -1167,6 +1189,8 @@ class SequentialReaderAdapter(_PluginAdapter):
             with boundary, guard:
                 span = next(walk, None)
         index = 0
+        # Decoded bytes of the members walked so far (``_Decoded.prefix``).
+        prefix = 0
         while span is not None:
             self._walk_index = index
             # The layer the walk read this span's header from: a decompress() in the
@@ -1178,6 +1202,8 @@ class SequentialReaderAdapter(_PluginAdapter):
             record = member._raw
             assert isinstance(record, _Span)
             decoded = self._listing_decoded = record.decoded
+            if decoded is not None:
+                decoded.prefix = prefix
             try:
                 yield member
             except BaseException:
@@ -1194,6 +1220,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                 self._listing_decoded = None
                 with self._translated_errors(member.name), guard:
                     decoded.finish()
+                prefix += decoded.consumed
                 with boundary, guard:
                     span = next(walk, None)
                 continue
@@ -1264,10 +1291,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                     f"{name}.walk() yielded {member.name!r} with size {member.size} "
                     f"and data_length {length}: a member's data is stored as it is"
                 )
-        presented = span.stored_name if span.stored_name is not None else member.name
-        member.name = normalize_member_name(
-            presented, member.type, backslash_is_separator=False
-        )
+        presented, member.name = _span_names(span)
         expected: dict[HashAlgorithm, bytes] | None = None
         custom: CustomDigests | None = None
         if span.digests:
@@ -1371,7 +1395,10 @@ class SequentialReaderAdapter(_PluginAdapter):
                         what=f"{self._format.display_name} member data",
                     )
                     rewind = RewindWarning(
-                        codec_name=self._format.display_name, suggest_install=False
+                        codec_name=self._format.display_name,
+                        suggest_install=False,
+                        # A seek back decodes the members before this one again too.
+                        min_redecode_bytes=decoded.prefix,
                     )
             elif self._decoded_in_place(decoded):
                 assert self._handle_lock is not None
@@ -1470,6 +1497,11 @@ class SequentialReaderAdapter(_PluginAdapter):
                 raise CorruptionError(
                     f"walking the archive again ended before {quoted(decoded.name)}"
                 )
+            if not isinstance(span.member, ArchiveMember):
+                raise TypeError(
+                    f"{type(self._reader).__name__}.walk() yielded "
+                    f"{type(span.member).__name__}, not an ArchiveMember"
+                )
             data = span.data
             if index == decoded.index:
                 try:
@@ -1491,8 +1523,8 @@ class SequentialReaderAdapter(_PluginAdapter):
                     decoded.size,
                     decoded.name,
                 )
-            # A member on the way, read past under its own name.
-            name = str(span.member.name)
+            # A member on the way, read past under the name it is listed by.
+            name = _span_names(span)[1]
             with self._translated_errors(name), guard:
                 if data is not None:
                     _Decoded(
@@ -1517,13 +1549,7 @@ class SequentialReaderAdapter(_PluginAdapter):
     def _check_rewalked(self, span: MemberSpan, decoded: _Decoded) -> None:
         """Refuse a walk started over that does not yield, at the member's place, the
         member the listing walk did: ``walk()`` must repeat itself."""
-        member = span.member
-        presented = span.stored_name if span.stored_name is not None else member.name
-        found = (
-            normalize_member_name(presented, member.type, backslash_is_separator=False)
-            if isinstance(member, ArchiveMember) and isinstance(presented, str)
-            else None
-        )
+        found = _span_names(span)[1]
         if found != decoded.name:
             raise ValueError(
                 f"{type(self._reader).__name__}.walk() yielded {found!r} as member "

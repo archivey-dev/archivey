@@ -1721,3 +1721,25 @@ def test_decoded_bytes_are_counted_once(
         stats = reader.io_stats()
         assert stats is not None
         assert stats.bytes_decompressed == total + len(b"alpha\n")
+
+
+def test_decoded_seek_back_reports_the_walk_it_costs(
+    decoded: _DecodedFixture, tmp_path: Path
+) -> None:
+    """A seek back on decoded data walks again through every member before it, so
+    the rewind diagnostic counts their bytes, not only the member's own."""
+    fmt, _ = decoded
+    entries = [
+        ("big.bin", MemberType.FILE, random.Random(5).randbytes(2 << 20)),
+        ("small.bin", MemberType.FILE, b"s" * 1000),
+    ]
+    path = _write(tmp_path, build_decoded(entries))
+    with (
+        open_archive(path, format=fmt, seekable_members=True) as reader,
+        reader.open("small.bin") as stream,
+    ):
+        assert stream.read(100) == b"s" * 100
+        stream.seek(0)
+        assert stream.read() == b"s" * 1000
+        counts = reader.diagnostics.counts
+    assert counts[DiagnosticCode.STREAM_REWIND_REDECOMPRESSES] == 1
