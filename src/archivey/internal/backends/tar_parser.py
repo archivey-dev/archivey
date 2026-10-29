@@ -84,11 +84,12 @@ PAX_NUMBER_DIGITS = 20
 MAX_PAX_ID = 2**32 - 1
 
 # The read step for what the walk reads and a header sizes: an extended header, the
-# data area a forward-only walk skips (``_discard``), and the zero blocks it scans at the
-# end. A declared size is attacker-chosen, so it is never one read. The skip stays at
-# this step: it is bound by the decoder, and 1 MiB measured no faster when listing a
-# compressed tar of 1 MiB members, while a smaller step over-reads less at the end of a
-# short archive.
+# data area a forward-only walk skips (``_discard``), and a link's declared data span
+# it scans for zeros (``_read_zeros``). A declared size is attacker-chosen, so it is
+# never one read. The skip stays at this step: on a compressed source it is bound by
+# the decoder (1 MiB measured no faster listing a compressed tar of 1 MiB members), on
+# an uncompressed one buffered reads are cheap, and a smaller step over-reads less at
+# the end of a short archive.
 READ_STEP = 64 * 1024
 # The read step for member data a consumer reads through the walk (``_ForwardSlice``)
 # from a stream of unknown length: still a bound on the allocation a declared size can

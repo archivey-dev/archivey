@@ -573,7 +573,8 @@ declares 3 GiB over 100 KB of data peaks at 1 MiB. pycdlib reads
 through archivey's source (`internal/source.py` `ArchiveSource`), which applies
 `read_within_reach` as well. Where the remaining length is a fact (a path's `stat`, a
 `BytesIO` buffer, a regular file's `fstat`) the read is clamped to it; otherwise it is
-served in bounded steps, so the peak tracks the bytes that exist. An fsspec `size`
+served in bounded steps, so the peak is the bytes that exist plus at most one step: the
+step is the granularity of the overshoot a hostile size field can cause. An fsspec `size`
 attribute is a hint, not a fact, and is stepped. A short read then fails: the TAR walker
 raises `TruncatedError`, and pycdlib's error is translated to `CorruptionError`. The ISO
 reader passes every source to `open_fp` as an `ArchiveSource`, a path included, so there
