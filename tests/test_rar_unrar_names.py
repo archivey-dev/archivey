@@ -31,6 +31,7 @@ from archivey.internal.backends.rar_unrar import (
     _member_include_switch,
     _unrar_env,
     find_rarlab_unrar,
+    unrar_dot_rule,
     unrar_mask_is_usable,
     unrar_mask_selects,
     unrar_mask_view,
@@ -180,6 +181,8 @@ def _check_masks(
     archive: Path, views: list[str | None], masks: list[str | bytes]
 ) -> None:
     mismatches: list[tuple[Any, list[int], list[int]]] = []
+    dot_rule = unrar_dot_rule()
+    assert dot_rule is not None
     for mask in masks:
         mask_view = unrar_mask_view(mask)
         assert mask_view is not None
@@ -188,7 +191,8 @@ def _check_masks(
         expected = [
             index
             for index, view in enumerate(views)
-            if view is not None and unrar_mask_selects(mask_view, view)
+            if view is not None
+            and unrar_mask_selects(mask_view, view, dot_rule=dot_rule)
         ]
         actual = _unrar_selects(archive, mask, len(views))
         if actual != expected:
@@ -571,3 +575,161 @@ def test_encoding_argument_leaves_rar5_names_alone() -> None:
         names = [member.name for member in reader.members()]
     with open_archive(path, encoding="cp500") as reader:
         assert [member.name for member in reader.members()] == names
+
+
+def test_dot_rule_probe_archive_is_the_one_the_tests_build(tmp_path: Path) -> None:
+    """The embedded probe archive is ``ab`` (``A``) then ``ab.`` (``D``), stored."""
+    blocks = _rar5_parse(_fixture("hostile_argv__.rar").read_bytes())
+    template = next(block for block in blocks if block["type"] == 2)
+    head = [block for block in blocks if block["type"] == 1]
+    tail = [block for block in blocks if block["type"] == 5]
+    files = []
+    for name, data in ((b"ab", b"A"), (b"ab.", b"D")):
+        block = dict(template)
+        block.update(
+            name=name,
+            host_os=1,
+            cinfo=0,
+            unpacked=len(data),
+            crc=struct.pack("<I", zlib.crc32(data)),
+            data=data,
+        )
+        files.append(block)
+    assert _rar5_build(head + files + tail) == rar_unrar._DOT_RULE_PROBE_ARCHIVE
+
+
+def test_the_dot_rule_decides_whether_a_trailing_dot_matches_nothing() -> None:
+    assert unrar_mask_selects("./ab.", "ab", dot_rule=True)
+    assert not unrar_mask_selects("./ab.", "ab", dot_rule=False)
+    assert unrar_mask_selects("./ab.", "ab.", dot_rule=False)
+    assert not unrar_mask_selects("./ab.", "ab..", dot_rule=False)
+    assert unrar_mask_selects("./a?.", "ab.", dot_rule=False)
+    assert not unrar_mask_selects("./a?.", "ab", dot_rule=False)
+    assert rar_unrar.unrar_dot_rule_can_matter("./ab.")
+    assert rar_unrar.unrar_dot_rule_can_matter("./d/x.txt")
+    assert not rar_unrar.unrar_dot_rule_can_matter("./ab")
+    assert not rar_unrar.unrar_dot_rule_can_matter("./../ab")
+
+
+@requires_binary("unrar")
+def test_dot_rule_probe_answers_for_the_installed_unrar(tmp_path: Path) -> None:
+    """The probe's answer is the selection this unrar makes for ``ab.``.
+
+    Every pinned CI unrar has the rule; 7.30 beta 2 does not.
+    """
+    rar_unrar._cached_dot_rule.clear()
+    answer = unrar_dot_rule()
+    assert answer is not None
+    assert find_rarlab_unrar() in rar_unrar._cached_dot_rule
+    archive = _build_rar5(tmp_path, [(b"ab", 1), (b"ab.", 1)])
+    assert _unrar_selects(archive, "ab.", 2) == ([0, 1] if answer else [1])
+
+
+@pytest.mark.parametrize(
+    ("stdout", "expected"), [(b"AD", True), (b"D", False), (b"", None), (b"A", None)]
+)
+def test_dot_rule_probe_reads_the_pipe(
+    monkeypatch: pytest.MonkeyPatch, stdout: bytes, expected: bool | None
+) -> None:
+    calls: list[list[Any]] = []
+
+    def run(argv: list[Any], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        calls.append(argv)
+        archive = Path(argv[-1])
+        assert archive.read_bytes() == rar_unrar._DOT_RULE_PROBE_ARCHIVE
+        return subprocess.CompletedProcess(argv, 0, stdout, b"")
+
+    monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", lambda: "/fake/unrar")
+    monkeypatch.setattr(rar_unrar, "_stat_identity", lambda path: (1, 2, 3, 4))
+    monkeypatch.setattr(rar_unrar.subprocess, "run", run)
+    monkeypatch.setattr(rar_unrar, "_cached_dot_rule", {})
+    assert unrar_dot_rule() is expected
+    assert unrar_dot_rule() is expected
+    assert len(calls) == 1, "an unchanged binary is asked once"
+    assert calls[0][:3] == ["/fake/unrar", "p", "-inul"]
+    assert _member_include_switch("ab.") in calls[0]
+    monkeypatch.setattr(rar_unrar, "_stat_identity", lambda path: (1, 2, 3, 5))
+    unrar_dot_rule()
+    assert len(calls) == 2, "a replaced binary is asked again"
+
+
+def test_dot_rule_probe_that_cannot_run_is_not_stored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def run(argv: list[Any], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        raise OSError("EMFILE")
+
+    monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", lambda: "/fake/unrar")
+    monkeypatch.setattr(rar_unrar, "_stat_identity", lambda path: (1, 2, 3, 4))
+    monkeypatch.setattr(rar_unrar.subprocess, "run", run)
+    monkeypatch.setattr(rar_unrar, "_cached_dot_rule", {})
+    assert unrar_dot_rule() is None
+    assert rar_unrar._cached_dot_rule == {}
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize("answer", [True, False, None])
+def test_reader_asks_for_the_dot_rule_only_when_it_changes_the_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answer: bool | None
+) -> None:
+    """``ab`` and ``ab.``: only the read of ``ab.`` depends on the rule.
+
+    Under the rule the mask ``ab.`` also selects the ``ab`` before it, so the read
+    skips that member's bytes; without it, nothing is skipped. An unknown answer
+    refuses that read and no other.
+    """
+    asked: list[bool | None] = []
+
+    def probe() -> bool | None:
+        asked.append(answer)
+        return answer
+
+    monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
+    monkeypatch.setattr("archivey.internal.backends.rar_reader.unrar_dot_rule", probe)
+    blocks = _rar5_parse(_build_rar5(tmp_path, [(b"ab", 1), (b"ab.", 1)]).read_bytes())
+    path = tmp_path / "dot.rar"
+    path.write_bytes(_rar5_build(blocks))
+    original = RarReader._unrar_selection
+    prefixes: list[int] = []
+
+    def spy(self: RarReader, *args: Any, **kwargs: Any) -> Any:
+        result = original(self, *args, **kwargs)
+        prefixes.append(result[0])
+        return result
+
+    monkeypatch.setattr(RarReader, "_unrar_selection", spy)
+    real = unrar_dot_rule()
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
+        first, second = reader.members()
+        assert reader.read(first) == _payload(0)
+        assert asked == [], "the mask ab selects the same members under both rules"
+        if answer is None:
+            with pytest.raises(UnsupportedFeatureError, match="probe"):
+                reader.read(second)
+        elif answer == real:
+            assert reader.read(second) == _payload(1)
+        else:
+            # A wrong answer plans the wrong skip for what this unrar sends.
+            with pytest.raises(ArchiveyError):
+                reader.read(second)
+    assert asked == [answer]
+    # The read of ab plans no skip; the read of ab. skips ab only under the rule,
+    # and an unknown answer plans nothing.
+    assert prefixes == {True: [0, len(_payload(0))], False: [0, 0], None: [0]}[answer]
+
+
+@requires_binary("unrar", "unar")
+def test_auto_reads_with_unar_when_the_dot_rule_probe_has_no_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The binary on PATH is the trouble, not the archive, so ``AUTO`` falls back."""
+    monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
+    monkeypatch.setattr(
+        "archivey.internal.backends.rar_reader.unrar_dot_rule", lambda: None
+    )
+    path = _build_rar5(tmp_path, [(b"ab", 1), (b"ab.", 1)])
+    with open_archive(path) as reader:
+        assert [reader.read(member) for member in reader.members()] == [
+            _payload(0),
+            _payload(1),
+        ]
