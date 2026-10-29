@@ -67,11 +67,11 @@ two or more, or a `yes` turning into a `no` on the same case across two runs, as
 signal. The judge reads only for the named bug; it does not count false positives,
 so read the saved `review.md` files when the number of findings changes a lot.
 
-The isolation is by prompt as well as by construction: the reviewer runs with Bash,
-so it could reach another checkout, or GitHub through a credential the machine
-injects (the runner drops the GitHub token variables, but a proxy that adds auth is
-beyond it), if it ignored the prompt. Nothing checks that it
-did not; a review that cites code or PR numbers from after `head` is the sign.
+The isolation is by prompt as well as by construction. The reviewer runs with Bash,
+so if it ignored the prompt it could reach another checkout, or GitHub through a
+credential the machine injects: the runner drops the GitHub token variables, but a
+proxy that adds auth is beyond it. Nothing checks that it did not; a review that
+cites code or PR numbers from after `head` is the sign.
 
 ## Adding a case
 
