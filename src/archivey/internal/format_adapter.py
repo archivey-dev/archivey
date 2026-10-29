@@ -1658,18 +1658,21 @@ class SequentialReaderAdapter(_PluginAdapter):
 
         A pass's window (:class:`_SpanWindow`, or the :class:`MemberDataView` a
         handoff falls back to) raises ``TruncatedError`` at a cut itself, so with no
-        digest the member gets no verifier to read through. The window's length is
-        the member's size, so the size check it replaces checked nothing more: the walk
-        refuses a span whose listed size differs from its data length and fills an unset
-        size from it (:meth:`_take_span_checked`), and only a member with data gets a
-        stream (``pass_has_data``). ``check_size`` is for a plain view (``open()``),
-        which ends short at a cut: the listed size is checked above it."""
+        digest the member gets no verifier to read through, when its listed size is
+        its data length. The walk makes them equal for a file and for a directory
+        that stores data: it refuses a span whose listed size differs and fills an
+        unset size from it (:meth:`_take_span_checked`). A directory that lists a
+        size and stores nothing also gets a stream (``pass_has_data``), and its size
+        is checked above the window, as it is for a plain view (``check_size``,
+        ``open()``), which ends short at a cut."""
         expected = record.expected if record.expected is not None else member.hashes
         return self._member_parts(
             stream,
             member.name,
             size=member.size,
-            expected_size=member.size if check_size else None,
+            expected_size=(
+                member.size if check_size or member.size != record.length else None
+            ),
             expected_hashes=expected or None,
             verify_member=member,
             # A window and a view both stop at the data's end.

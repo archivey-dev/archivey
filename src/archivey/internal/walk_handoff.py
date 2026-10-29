@@ -5,6 +5,9 @@ format) reads each member's data through the walk's own stream. On a solid archi
 compressed one) that is where it pays: the archive is decoded once, not twice. When
 the walk moves on before the pass has read the member to its end, the stream reads a
 view of its own from where it stopped instead (``BaseArchiveReader._walk_handoff_locked``).
+
+It also holds :class:`MemberDataView`, the cut-raising view a member's data is read
+through whether or not a walk is at it: TAR's own ``open()`` uses it as well.
 """
 
 from __future__ import annotations
