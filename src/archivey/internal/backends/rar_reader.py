@@ -2384,8 +2384,8 @@ class RarReader(BaseArchiveReader):
     ) -> tuple[UnarRarPolicy, _DictionaryCost] | None:
         """The ``unar`` policy and dictionary cost for a member ``unrar`` cannot name.
 
-        ``unar`` names entries by index, so a stored name ``unrar`` cannot be given, or
-        a glob name that also matches earlier members, costs it nothing. ``AUTO``
+        ``unar`` names entries by index, so no refusal about addressing a member by name
+        (each one :class:`_UnrarCannotAddress` carries) applies to it. ``AUTO``
         therefore reads such a member with an accepted ``unar`` when one is installed,
         where it would otherwise refuse it. ``None`` keeps the ``unrar`` refusal when:
 
@@ -3949,6 +3949,8 @@ class RarReader(BaseArchiveReader):
                 earlier = self._members[position]
                 prefix += _member_stream_size(earlier)
                 cost = _larger_cost(cost, self._dictionary_costs[id(earlier)])
+        # The target drops out when it matched only through a dot rule this binary
+        # lacks, or when archivey's port of unrar's matcher and unrar disagree.
         # Neither refusal below is about the archive: unar names entries by index,
         # so AUTO may still read the member with it (DR-11).
         if not selects_target:

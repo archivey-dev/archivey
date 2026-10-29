@@ -793,6 +793,9 @@ that mask select the wrong members, or none:
   members come before the one you asked for, archivey asks the `unrar` on `PATH` once, with a
   small test archive, which way it matches. If it gives no usable answer, the read raises
   `UnsupportedFeatureError`.
+- **A non-ASCII name in an older RAR (1.5-4) archive on a system with no UTF-8 locale:** `unrar`
+  reads such a name through the locale, so archivey cannot tell which bytes `unrar` sends before
+  any later member, and a read of a later member raises `UnsupportedFeatureError`.
 - **An unpaired surrogate in a RAR 1.5-4 name:** archivey selects the member with `?` in place of
   each such unit, and when that pattern also matches an earlier member, the read raises
   `UnsupportedFeatureError` unless you set `rar_allow_glob_member_concatenation`.
