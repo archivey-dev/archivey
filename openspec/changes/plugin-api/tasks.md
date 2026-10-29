@@ -16,12 +16,17 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
       on a seekable source, link targets read from data. *`SequentialReaderAdapter`
       serves the walk as the member walk, through the base class's passes; link targets
       are read while walking (design §2a, "As built"). TAR's one-pass random-access read
-      waits for outer compression.*
-- [ ] 1.2c Decoded `MemberSpan.data` (drain on advance, re-walk for random access),
+      waits for outer compression.* *After outer compression and
+      `ForwardStream.decompress`, TAR's one-pass random-access pass moved into
+      `BaseArchiveReader` (`_pass_reads_through_walk`, `WalkHandoffStream`) and the
+      sequential adapter uses it: `stream_members()` and `extract_all()` decode a
+      compressed archive once.*
+- [x] 1.2c Decoded `MemberSpan.data` (drain on advance, re-walk for random access),
       `ForwardStream.decompress`, `checked` members counted as verified,
       `ReaderArchiveInfo.is_solid`. *1a landed `checked` and `is_solid`;
-      `ForwardStream.decompress` landed after outer compression; decoded data is
-      left.*
+      `ForwardStream.decompress` landed after outer compression; decoded data
+      landed last: the drain stops one byte past the listed size, and opens in
+      archive order share one walk.*
 - [x] 1.2d `ReaderContext.decompress(data, method, *, size, properties)`: a member's
       compressed bytes through archivey's codec layer, with the caller's config and
       the member's sizes, for raw Deflate, Deflate64, bzip2, Zstandard, LZ4 frames,

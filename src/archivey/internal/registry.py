@@ -213,6 +213,18 @@ class BackendRegistry:
             if codec.walks_magic_prefix and codec.single_file_format is not None
         ]
 
+    def header_checks(self) -> list[tuple[ArchiveFormat, Callable[[bytes], bool]]]:
+        """(format, check) pairs for formats whose first block checks itself.
+
+        ``check(prefix)`` answers "does the source open with my header?" for a format
+        with no magic but a self-checking header (``ReadBackend.HEADER_CHECKS``; today
+        TAR, by its header checksum). Built-in backends first, then plugins.
+        """
+        checks: list[tuple[ArchiveFormat, Callable[[bytes], bool]]] = []
+        for cls in (*self._reader_classes, *self._plugin_classes):
+            checks.extend(cls.HEADER_CHECKS)
+        return checks
+
     def sfx_magic_entries(self) -> list[MagicSignature]:
         """Magic the SFX scan hunts for behind an executable stub.
 

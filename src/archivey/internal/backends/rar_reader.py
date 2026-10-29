@@ -116,6 +116,8 @@ from archivey.internal.backends.rar_unrar import (
     open_unrar_p,
     plan_unrar_mask,
     rarlab_unrar_missing,
+    unrar_dot_rule,
+    unrar_dot_rule_can_matter,
     unrar_mask_keys,
     unrar_mask_selects,
     unrar_member_view,
@@ -3873,9 +3875,17 @@ class RarReader(BaseArchiveReader):
         the target does not count: the read stops at the target's end, and that
         member's window fills only as ``unrar`` writes to the pipe.
 
+        When the selection up to the target depends on whether this ``unrar`` lets a
+        ``.`` in the mask match nothing, it asks the binary once
+        (:func:`unrar_dot_rule`, cached per binary path and stat identity), so this
+        step may spawn ``unrar`` on an embedded archive.
+
         Raises ``UnsupportedFeatureError`` when the answer is not known: the mask
         does not select the target itself, or an earlier member's name cannot be
-        read the way ``unrar`` reads it on this host.
+        read the way ``unrar`` reads it on this host. Raises
+        :class:`_UnrarCannotAddress` when the dot-rule probe gave no answer, so that
+        ``AUTO`` can hand the member to ``unar``, and ``PackageNotInstalledError``
+        from :func:`find_rarlab_unrar` when it has to probe and no ``unrar`` is found.
         """
         names = self._unrar_names()
         target_position = names.positions[id(target)]
@@ -3888,20 +3898,49 @@ class RarReader(BaseArchiveReader):
             for key in keys:
                 found.update(names.by_key.get(key, ()))
             candidates = sorted(found)
-        prefix = 0
-        others = False
-        selects_target = False
-        cost = self._dictionary_costs[id(target)]
+        considered: list[int] = []
         for position in candidates:
-            view = names.views[position]
-            if view is None:
+            if names.views[position] is None:
                 continue
             raw = self._members[position]._raw
             assert isinstance(raw, RarMemberInfo)
             if raw.is_file_version_history() and not version_control:
                 continue
-            if not unrar_mask_selects(mask_view, view):
-                continue
+            considered.append(position)
+        # unrar 7.30 beta 2 dropped the rule that lets a "." in the mask match
+        # nothing (:func:`unrar_dot_rule`). Without it a mask selects a subset of
+        # what it selects with it (the rule only ever adds a match), so the second
+        # pass needs only the first one's result. Ask the binary which rule it has
+        # only when the two disagree up to the target: a member after it changes
+        # neither the skip nor the cost, and counting it in ``others`` under either
+        # rule only bounds the read, which is safe.
+        with_dot_rule = self._unrar_selected(mask_view, considered, dot_rule=True)
+        selected = with_dot_rule
+        if unrar_dot_rule_can_matter(mask_view):
+            without_dot_rule = self._unrar_selected(
+                mask_view, with_dot_rule, dot_rule=False
+            )
+            up_to_target = [p for p in with_dot_rule if p <= target_position]
+            if up_to_target != [p for p in without_dot_rule if p <= target_position]:
+                dot_rule = unrar_dot_rule()
+                if dot_rule is None:
+                    # The binary on PATH is the trouble, not the archive, so AUTO
+                    # may still read the member with unar (DR-11).
+                    raise _UnrarCannotAddress(
+                        self._unrar_name_refused(
+                            target,
+                            "the members unrar selects with this mask depend on how "
+                            "it matches a '.', and this unrar did not answer the "
+                            "probe for it",
+                        )
+                    )
+                if not dot_rule:
+                    selected = without_dot_rule
+        prefix = 0
+        others = False
+        selects_target = False
+        cost = self._dictionary_costs[id(target)]
+        for position in selected:
             if position == target_position:
                 selects_target = True
                 continue
@@ -3929,6 +3968,19 @@ class RarReader(BaseArchiveReader):
                 )
             others = True
         return prefix, others, cost
+
+    def _unrar_selected(
+        self, mask_view: str, candidates: list[int], *, dot_rule: bool
+    ) -> list[int]:
+        """The positions among ``candidates`` that the mask selects under ``dot_rule``."""
+        views = self._unrar_names().views
+        selected: list[int] = []
+        for position in candidates:
+            view = views[position]
+            assert view is not None, "_unrar_selection drops members with no view"
+            if unrar_mask_selects(mask_view, view, dot_rule=dot_rule):
+                selected.append(position)
+        return selected
 
     def _unrar_name_refused(
         self, member: ArchiveMember, reason: str
@@ -4324,7 +4376,8 @@ class RarReader(BaseArchiveReader):
             return self._open_member_with_unar(
                 member, raw, policy, dictionary_cost=cost
             )
-        # ``unrar`` it is, through an include mask; nothing has been spawned yet.
+        # ``unrar`` it is, through an include mask. Nothing has been spawned for the
+        # read yet; the selection step may have run the dot-rule probe once.
         after_unknown = self._solid_after_unknown_error(member, raw, masked_unrar=True)
         if after_unknown is not None:
             raise after_unknown
@@ -4345,7 +4398,9 @@ class RarReader(BaseArchiveReader):
     ) -> Callable[[str | None, bool], BinaryIO]:
         """Check what ``unrar p`` needs to read ``member``; return its spawner.
 
-        Every refusal is decided here from the parsed member table and spawns nothing.
+        Every refusal is decided here from the parsed member table, plus at most one
+        cached run of the dot-rule probe (:func:`unrar_dot_rule`) when the members a
+        mask selects depend on it; the read itself spawns nothing here.
         The spawner takes the password and whether the member has a digest archivey
         checks itself, and copies a stream source to disk on its first call.
         """
@@ -4358,8 +4413,9 @@ class RarReader(BaseArchiveReader):
         self, member: ArchiveMember, raw: RarMemberInfo
     ) -> Callable[[str | None, bool], BinaryIO]:
         """:meth:`_unrar_spawner`, with the refusals about naming the member raised as
-        :class:`_UnrarCannotAddress`: a name ``unrar`` cannot be given, or an include
-        mask that also matches earlier members (``rar_allow_glob_member_concatenation``).
+        :class:`_UnrarCannotAddress`: a name ``unrar`` cannot be given, an include mask
+        that also matches earlier members (``rar_allow_glob_member_concatenation``), or
+        a selection that depends on a dot rule the binary did not report.
         """
         # unrar addresses the member by name (``path`` or ``path;n``) through a ``-n``
         # include mask (see open_unrar_p); a history row needs ``-ver``. The mask is
@@ -4467,7 +4523,8 @@ class RarReader(BaseArchiveReader):
         self._check_dictionary_memory(member, dictionary_cost)
 
         # Only on spawn: every refusal above is decided from the parsed member table
-        # and spawns nothing, so a stream source must not be spooled to disk to reach one.
+        # (plus, at most, the dot-rule probe, which reads an embedded archive and
+        # not this one), so a stream source must not be spooled to disk to reach one.
         def _spawn(data_password: str | None, has_hash: bool) -> BinaryIO:
             path = self._unrar_path_for(raw)
             proc, stdout = open_unrar_p(

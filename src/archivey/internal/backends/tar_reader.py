@@ -52,7 +52,7 @@ from __future__ import annotations
 
 import re
 import threading
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime
 from typing import BinaryIO, Literal, cast
@@ -93,12 +93,12 @@ from archivey.internal.backends.tar_parser import (
     TarSpan,
     TarWalker,
     shown_value,
+    starts_with_header,
     validate_sparse_map,
 )
 from archivey.internal.base_reader import (
     BaseArchiveReader,
     ReadBackend,
-    _ProgressivePassIterator,
     pass_has_data,
     reject_start_offset,
 )
@@ -129,7 +129,6 @@ from archivey.internal.streams.streamtools import (
     DelegatingStream,
     LockedStream,
     ReadAheadStream,
-    ReadOnlyIOStream,
     SharedView,
     SparseStream,
     check_read_size,
@@ -431,61 +430,6 @@ class _MemberDataView(DelegatingStream):
         return ask_resume_offset(self._inner, target)
 
 
-class _WalkHandoffStream(ReadOnlyIOStream):
-    """A pass's member data, read through the walk until the walk moves on.
-
-    The walk's next pull calls :meth:`detach` under the walk lock
-    (``TarReader._before_pull_locked``). From then on the stream reads a view of its own
-    from where it stopped (on a compressed tar, a decoder seek back), so the walk can
-    move on for another caller while the pass is still reading this member. A stream
-    detached after its last read builds no view.
-    """
-
-    def __init__(self, reader: TarReader, span: TarSpan, data: BinaryIO) -> None:
-        self._data = data
-        self._view: BinaryIO | None = None
-        self._reader = reader
-        self._span = span
-        self._detached_at: int | None = None
-        self._pos = 0
-        super().__init__()
-
-    def tell(self) -> int:
-        if self.closed:
-            raise ValueError("I/O operation on closed file.")
-        return self._pos
-
-    def detach(self) -> None:
-        """Stop reading through the walk. Called under the walk lock."""
-        if self._detached_at is None and not self.closed:
-            self._detached_at = self._pos
-
-    def read(self, n: int = -1, /) -> bytes:
-        if self.closed:
-            raise ValueError("read from a closed TAR member stream")
-        if self._detached_at is None:
-            with self._reader._walk_lock:
-                if self._detached_at is None:
-                    data = self._data.read(n)
-                    # Under the lock: a pull on another thread detaches at this
-                    # position, so it must already count the bytes returned here.
-                    self._pos += len(data)
-                    return data
-        if self._view is None:
-            self._view = self._reader._independent_data(
-                self._span, self._detached_at or 0
-            )
-        data = self._view.read(n)
-        self._pos += len(data)
-        return data
-
-    def close(self) -> None:
-        if self._view is not None:
-            self._view.close()
-        self._data.close()
-        super().close()
-
-
 class TarReader(BaseArchiveReader):
     """Reads a TAR archive (plain or compressed) with :class:`TarWalker`.
 
@@ -528,10 +472,6 @@ class TarReader(BaseArchiveReader):
         self._codec = encoding if encoding is not None else "utf-8"
         self._source = source
         self._compressed = format.stream != StreamFormat.UNCOMPRESSED
-        # The one pass stream reading member data through the walk, if any; the walk
-        # detaches it before its next pull (``_before_pull_locked``). Set only under
-        # ``_walk_lock`` (``_walk_data``), so none appears during a batch of pulls.
-        self._walk_stream: _WalkHandoffStream | None = None
         # Streaming only: the buffer in front of the codec stream or the source, built
         # by this reader, so closed by it. Random access keeps each walk's view
         # (``_walker_view``) and each compressed member's view instead, so a reader
@@ -733,20 +673,6 @@ class TarReader(BaseArchiveReader):
         assert counted <= cap, (counted, cap)
         return (cap - counted, cap)
 
-    def _before_pull_locked(self) -> None:
-        """Hand off a pass's stream before the base pulls.
-
-        A pass may still be reading the member the walk is at through the walk. That
-        stream moves to a view of its own first (:class:`_WalkHandoffStream`), so a
-        pull for another caller, such as ``members()`` from another thread under
-        ``CONCURRENT``, does not cut it off. The pass's own next pull hands over a
-        stream it is about to close, which costs nothing.
-        """
-        live = self._walk_stream
-        if live is not None:
-            self._walk_stream = None
-            live.detach()
-
     def _register_member(
         self,
         idx: int,
@@ -796,62 +722,24 @@ class TarReader(BaseArchiveReader):
         pass stamps ids and resolves backward links."""
         return self._iter_members()
 
-    def _iter_with_data_random_access(
-        self,
-    ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
-        """``stream_members()`` on a random-access reader, in one forward pass.
+    def _pass_reads_through_walk(self) -> bool:
+        """A random-access pass reads through the walk until it ends, so a compressed
+        tar is decoded once for the headers and the data, not once for each."""
+        return True
 
-        The base's version lists every member first and then reads their data, which
-        on a compressed tar decodes the stream to its end for the headers and then again
-        from the start for the data. Here, when the walk has not ended yet, the walk and
-        the data share one pass: the member is registered and yielded, and its data is
-        read before the walk parses the next header, so every seek goes forward.
-        Members are registered as they arrive, as the base's walk registers them, so
-        ``members()`` afterwards serves the same list, and the pass links a hardlink to
-        an earlier member only, as the streaming pass does.
-
-        A pass over a listing that is already complete reads the members' data in
-        archive order, which is one forward sweep too (after one seek back to the first
-        member). The pass has its own cursor over the reader's one walk, so a pass
-        abandoned early does not make the next one start part-way.
-        """
-        if self._walk_done:
-            yield from super()._iter_with_data()
-            return
-
-        def _open_in_walk(member: ArchiveMember) -> BinaryIO:
-            # The raw body, not another ArchiveStream. The lazy handle below is the
-            # one wrapper; a second one was built and collapsed on every member.
-            with self._translated_errors(member.name):
-                return self._member_body(member, in_walk=True)
-
-        def _open(member: ArchiveMember) -> ArchiveStreamImpl | None:
-            if not pass_has_data(member):
-                return None
-            return self._lazy_member_stream(member, _open_in_walk, track_output=True)
-
-        yield from self._drive_pass_streams(
-            _ProgressivePassIterator(self), open_member=_open
-        )
-
-    def _list_before_extraction(self) -> None:
-        """List as members arrive in the extraction's one pass, not before it.
-
-        The base lists the whole archive before an extraction, which on a compressed
-        tar decodes the stream once for the headers and again for the data. Here the
-        pass the extraction runs (:meth:`_iter_with_data_random_access`) registers each
-        member with the limits enforced, as every pass does, so ``ResourceLimitError``
-        is raised at the member that crosses a cap, before it is written, as
-        ``members()`` raises it. A listing that is already complete is the base's case.
-        """
-        if self._walk_done:
-            super()._list_before_extraction()
+    def _open_member_in_walk(self, member: ArchiveMember) -> MemberStreamParts:
+        # The raw body, not another ArchiveStream: the pass's lazy handle adopts the
+        # parts and is the one wrapper.
+        with self._translated_errors(member.name):
+            return self._member_parts(
+                self._member_body(member, in_walk=True), member.name, size=member.size
+            )
 
     def _iter_with_data(
         self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
     ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
         if not self._streaming:
-            yield from self._iter_with_data_random_access()
+            yield from super()._iter_with_data(copies)
             return
         # Pull from the shared instance-held progressive pass so __iter__,
         # stream_members, and members_report share one cursor and finalization.
@@ -1702,21 +1590,13 @@ class TarReader(BaseArchiveReader):
         return stream
 
     def _walk_data(self, span: TarSpan) -> BinaryIO:
-        """``span``'s data for a pass, through the walk when the walk is at it.
-
-        Called under the walk lock. Reading through the walk is what lets a pass
-        over a compressed tar decode it once. Only one stream reads through the walk
-        at a time, and only while the walk is at the start of this member's data;
-        any other open (a second pass behind the first, or one in step with it) gets
-        a view of its own.
-        """
+        """``span``'s data for a pass, through the walk when the walk is at it
+        (:meth:`_walk_handoff_locked`). Called under the walk lock."""
         data = self._walker.open_data(span)
-        live = self._walk_stream
-        if not data.in_place() or (live is not None and not live.closed):
-            return self._independent_data(span)
-        stream = _WalkHandoffStream(self, span, data)
-        self._walk_stream = stream
-        return stream
+        return self._walk_handoff_locked(
+            data if data.in_place() else None,
+            lambda start: self._independent_data(span, start),
+        )
 
     def _streamed_member_stream(self, member: ArchiveMember) -> ArchiveStreamImpl:
         """Open ``member``'s data for a streaming pass. A bad sparse map raises on the
@@ -1795,6 +1675,11 @@ class TarReadBackend(ReadBackend):
         MagicSignature(257, b"ustar", ArchiveFormat.TAR),
     )
     INNER_MAGIC: tuple[MagicSignature, ...] = MAGIC
+    # A v7 tar (``tar --format=v7``, old bsdtar, star) has no magic. Its first header's
+    # checksum identifies it instead, as ``tarfile.is_tarfile`` and GNU tar take it.
+    HEADER_CHECKS: tuple[tuple[ArchiveFormat, Callable[[bytes], bool]], ...] = (
+        (ArchiveFormat.TAR, starts_with_header),
+    )
     # TAR is walkable front-to-back, so streaming=True works on a non-seekable source
     # (random access always needs a seekable one — that side is format-independent).
     SUPPORTS_STREAMING_NON_SEEKABLE = True

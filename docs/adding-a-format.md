@@ -468,6 +468,10 @@ bytes, from a file or a pipe.
 - **Cost.** One compression stream holds every member, so the archive is solid:
   `archive.info.is_solid` is `True`, the listing needs decompression, and with random
   access, reading a member before the last one read decodes again from the start.
+  On a reader that has not listed the archive yet, `stream_members()` and
+  `extract_all()` read each member's data as the walk reaches it, so they decode the
+  archive once, as for a `.tar.gz`. Once the archive is listed (`members()` first), a
+  pass decodes it a second time, in one forward sweep.
 - **Limits.** The decoder limits and the decompression-ratio guard apply as for a
   `.tar.gz`, and bytes after the compressed stream are reported with
   `ARCHIVE_TRAILING_DATA`.
@@ -494,7 +498,53 @@ compression stream before the walk reaches it, so have `archive_info()` return
 `ReaderArchiveInfo(is_solid=True)`: the cost receipt then says members are read through
 one stream, and that listing needs decompression, from the moment the archive opens.
 The compressed stream is taken to run to the end of the archive: bytes after its end are
-reported with `ARCHIVE_TRAILING_DATA`, not refused.
+reported with `ARCHIVE_TRAILING_DATA`, not refused. A pass over such an archive decodes
+it once, as one inside a compression stream does (see **Cost** above).
+
+### Data a library decodes
+
+Some formats compress each member on its own, with a method only a library decodes (LHA,
+ARJ), or are read through a library that decodes as it walks (a libarchive wrapper).
+There are no stored bytes to describe with `data_length`. Hand archivey the decoded
+data instead, as a stream in `MemberSpan.data`, and leave `data_length` at 0:
+
+```python
+def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+    while (header := read_header(stream)) is not None:
+        member = ArchiveMember(type=MemberType.FILE, name=header.name, size=header.size)
+        data = MemberDecoder(stream, header.method, header.packed_size)
+        yield MemberSpan(member, 0, (MemberDigest("crc32", header.crc),), data=data)
+        stream.skip(data.packed_left)
+```
+
+- **When it is read.** The stream needs to be good only until the walk moves on.
+  Before archivey asks `walk()` for the next member, it reads what the caller left of
+  the data, up to the member's `size`, and closes the stream. So when `walk()` resumes,
+  the library is past the member, and the walk reads on from there.
+- **Sizes.** Give `size` when the header lists it. Data longer than it raises
+  `CorruptionError`, and shorter `TruncatedError`, as for any member. A `FILE` with no
+  `size` is read to the end of the stream, and `size` is filled in once it has been.
+  Draining unread data stops one byte past the listed size, so a header that lies
+  about it cannot make archivey decode without end.
+- **Checks.** `MemberSpan.digests` are checked against the decoded bytes. If the
+  library checks them itself and raises when they do not match, set
+  `MemberSpan(checked=True)`, as for `MemberData.checked`.
+- **Random access.** A member's decoded data exists only while the walk is at it. In a
+  pass (`stream_members()`, `extract_all()`), archivey reads it right then, so the
+  archive is decoded once. `open()` or `read()` of a member afterwards walks the archive
+  again from the start to that member, draining the members before it. Opening members
+  in archive order carries on from the last one, so reading them all in order decodes
+  the archive once more, not once per member. With `seekable_members=True`, a seek
+  back walks again too. Have `archive_info()` return
+  `ReaderArchiveInfo(is_solid=True)` so the cost receipt says so.
+- **Walking again.** Because of that, `walk()` is called again while an earlier walk
+  is still open, and with `concurrent_operations=True` from several threads (archivey
+  holds one lock across each call into the reader and each read of its streams). Keep
+  a walk's state in the generator, not on the reader. A second walk must yield the
+  same members in the same order: archivey finds a member again by its place, and
+  raises `ValueError` if another member is there.
+- **Link targets.** With `link_target_in_data = True`, a symlink's target is read from
+  its decoded data.
 
 ## Reading untrusted bytes
 
@@ -660,8 +710,6 @@ can refuse plugin formats by checking `FormatInfo.from_plugin`.
 
 - A format with an index inside an outer compressor. Only a format read in one pass can
   be.
-- In a format read in one pass, member data that a library decodes, or that is
-  compressed per member: `MemberSpan` describes bytes stored as they are.
 - Self-extracting archives, multi-volume sets and passwords.
 - New diagnostic codes. A plugin reports with archivey's existing codes.
 - Writing archives.

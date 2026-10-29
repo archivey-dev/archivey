@@ -4343,7 +4343,7 @@ def test_unrar_mask_selection_treats_brackets_as_literal() -> None:
     from archivey.internal.backends.rar_unrar import unrar_mask_selects
 
     def selects(name: str, mask: str) -> bool:
-        return unrar_mask_selects("./" + mask, name)
+        return unrar_mask_selects("./" + mask, name, dot_rule=True)
 
     assert selects("a*.txt", "a?.txt")
     assert selects("aX.txt", "a?.txt")
@@ -4374,7 +4374,7 @@ def test_unrar_mask_selection_follows_unrar_path_rules() -> None:
     from archivey.internal.backends.rar_unrar import unrar_mask_selects
 
     def selects(name: str, mask: str) -> bool:
-        return unrar_mask_selects("./" + mask, name)
+        return unrar_mask_selects("./" + mask, name, dot_rule=True)
 
     # A mask selects everything below the path it names.
     assert selects("ab/x.txt", "ab")
@@ -4405,16 +4405,16 @@ def test_unrar_mask_selection_on_windows_takes_either_separator_in_the_name(
 
     monkeypatch.setattr(rar_unrar.sys, "platform", "win32")
     for name in ("subdir/aY.txt", "subdir\\aY.txt"):
-        assert unrar_mask_selects("./subdir/a?.txt", name)
-        assert unrar_mask_selects("./subdir/aY.txt", name)
-        assert unrar_mask_selects("./subdir", name)
-        assert not unrar_mask_selects("./other/a?.txt", name)
+        assert unrar_mask_selects("./subdir/a?.txt", name, dot_rule=True)
+        assert unrar_mask_selects("./subdir/aY.txt", name, dot_rule=True)
+        assert unrar_mask_selects("./subdir", name, dot_rule=True)
+        assert not unrar_mask_selects("./other/a?.txt", name, dot_rule=True)
         keys = unrar_mask_keys("./subdir/aY.txt")
         assert keys is not None
         assert set(keys) & set(unrar_selection_keys(name))
     monkeypatch.setattr(rar_unrar.sys, "platform", "linux")
-    assert unrar_mask_selects("./subdir/a?.txt", "subdir/aY.txt")
-    assert not unrar_mask_selects("./subdir/a?.txt", "subdir\\aY.txt")
+    assert unrar_mask_selects("./subdir/a?.txt", "subdir/aY.txt", dot_rule=True)
+    assert not unrar_mask_selects("./subdir/a?.txt", "subdir\\aY.txt", dot_rule=True)
 
 
 def test_unrar_name_pos_takes_a_drive_only_after_an_ascii_letter(
@@ -4451,16 +4451,16 @@ def test_unrar_mask_selection_windows_fold_does_not_change_wildcard_length(
     from archivey.internal.backends.rar_unrar import unrar_mask_selects
 
     monkeypatch.setattr(rar_unrar.sys, "platform", "win32")
-    assert unrar_mask_selects("./a?b.txt", "aßb.txt")
-    assert unrar_mask_selects("./aßb.txt", "aßb.txt")
-    assert not unrar_mask_selects("./a??b.txt", "aßb.txt")
+    assert unrar_mask_selects("./a?b.txt", "aßb.txt", dot_rule=True)
+    assert unrar_mask_selects("./aßb.txt", "aßb.txt", dot_rule=True)
+    assert not unrar_mask_selects("./a??b.txt", "aßb.txt", dot_rule=True)
     # Literals that differ only in case: the per-character fold, not the
     # length check. Deleting ``.upper()`` leaves the three assertions above
     # green and fails these.
-    assert unrar_mask_selects("./a?b.txt", "AXB.TXT")
-    assert not unrar_mask_selects("./a?c.txt", "AXB.TXT")
+    assert unrar_mask_selects("./a?b.txt", "AXB.TXT", dot_rule=True)
+    assert not unrar_mask_selects("./a?c.txt", "AXB.TXT", dot_rule=True)
     # An exact name folds too: Windows unrar would pipe both.
-    assert unrar_mask_selects("./same.txt", "SAME.TXT")
+    assert unrar_mask_selects("./same.txt", "SAME.TXT", dot_rule=True)
 
 
 def test_unrar_glob_mask_is_linear_on_a_hostile_member_name() -> None:
@@ -4484,7 +4484,7 @@ def test_unrar_glob_mask_is_linear_on_a_hostile_member_name() -> None:
         hostile = "a" + "*a" * stars + "b.txt"
         mask = _unrar_mask_for(hostile)
         started = time.perf_counter()
-        assert not _unrar_match(mask, name)
+        assert not _unrar_match(mask, name, dot_rule=True)
         elapsed = time.perf_counter() - started
         # Microseconds in practice; the old form needed 18 s at stars=8 alone.
         assert elapsed < 1.0, f"{stars} wildcards took {elapsed:.3f}s"
@@ -4496,28 +4496,35 @@ def test_unrar_match_is_a_single_walk() -> None:
     that may stand for nothing at the end of the name."""
     from archivey.internal.backends.rar_unrar import _unrar_match
 
-    assert _unrar_match("", "")
-    assert not _unrar_match("?", "")
-    assert not _unrar_match("", "a")
-    assert _unrar_match("a?c", "a.c")
-    assert _unrar_match("a?c", "a\nc")
-    assert _unrar_match("a?c", "abc")
-    assert not _unrar_match("a?c", "ac")
-    assert not _unrar_match("a?c", "abbc")
-    assert _unrar_match("a[b]c", "a[b]c")
-    assert not _unrar_match("a[b]c", "abc")
-    assert _unrar_match(r"a\bc", r"a\bc")
-    assert not _unrar_match(r"a\bc", "abc")
-    assert _unrar_match("a+c", "a+c")
-    assert not _unrar_match("a+c", "aac")
-    assert _unrar_match("a.", "a")
-    assert _unrar_match("a..", "a")
-    assert not _unrar_match("a", "a.")
-    assert not _unrar_match("a.b", "a")
+    assert _unrar_match("", "", dot_rule=True)
+    assert not _unrar_match("?", "", dot_rule=True)
+    assert not _unrar_match("", "a", dot_rule=True)
+    assert _unrar_match("a?c", "a.c", dot_rule=True)
+    assert _unrar_match("a?c", "a\nc", dot_rule=True)
+    assert _unrar_match("a?c", "abc", dot_rule=True)
+    assert not _unrar_match("a?c", "ac", dot_rule=True)
+    assert not _unrar_match("a?c", "abbc", dot_rule=True)
+    assert _unrar_match("a[b]c", "a[b]c", dot_rule=True)
+    assert not _unrar_match("a[b]c", "abc", dot_rule=True)
+    assert _unrar_match(r"a\bc", r"a\bc", dot_rule=True)
+    assert not _unrar_match(r"a\bc", "abc", dot_rule=True)
+    assert _unrar_match("a+c", "a+c", dot_rule=True)
+    assert not _unrar_match("a+c", "aac", dot_rule=True)
+    assert _unrar_match("a.", "a", dot_rule=True)
+    assert _unrar_match("a..", "a", dot_rule=True)
+    assert not _unrar_match("a", "a.", dot_rule=True)
+    assert not _unrar_match("a.b", "a", dot_rule=True)
+    assert _unrar_match("a.\\bc", "a\\bc", dot_rule=True)
+    # unrar 7.30 beta 2 has no such dot: the mask a. selects a. and nothing else.
+    assert not _unrar_match("a.\\bc", "a\\bc", dot_rule=False)
+    assert not _unrar_match("a.", "a", dot_rule=False)
+    assert not _unrar_match("a..", "a.", dot_rule=False)
+    assert _unrar_match("a.", "a.", dot_rule=False)
+    assert _unrar_match("a?c", "a.c", dot_rule=False)
     # A ``*`` here means the mask was not built by ``_unrar_mask_for`` and the
     # skip is about to be sized against a mask unrar never saw.
     with pytest.raises(AssertionError):
-        _unrar_match("a*c", "abc")
+        _unrar_match("a*c", "abc", dot_rule=True)
 
 
 def test_unrar_mask_narrowing_keeps_the_member() -> None:
@@ -4538,7 +4545,12 @@ def test_unrar_mask_narrowing_keeps_the_member() -> None:
     words = [
         "".join(w) for n in range(5) for w in itertools.product(alphabet, repeat=n)
     ]
-    unreachable = [w for w in words if not _unrar_match(_unrar_mask_for(w), w)]
+    unreachable = [
+        (w, dot_rule)
+        for w in words
+        for dot_rule in (True, False)
+        if not _unrar_match(_unrar_mask_for(w), w, dot_rule=dot_rule)
+    ]
     assert not unreachable, f"mask stopped matching its own member: {unreachable[:5]}"
 
 

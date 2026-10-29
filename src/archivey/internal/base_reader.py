@@ -139,6 +139,7 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.internal.streams.verify import CustomDigests
 from archivey.internal.timestamps import TimestampIssue
+from archivey.internal.walk_handoff import WalkHandoffStream
 from archivey.internal.windows_reparse import (
     REPARSE_HEADER_BYTES,
     parse_reparse_data,
@@ -416,6 +417,11 @@ class ReadBackend(ABC):
     # probe instead: (format, probe) pairs, where the probe inspects a peeked prefix and
     # returns True on a match (Brotli has no signature; zlib's 2-byte header is too weak).
     CONTENT_PROBES: tuple[tuple[ArchiveFormat, ContentProbe], ...] = ()
+    # Formats this backend reads whose first block checks itself, with no magic to find:
+    # (format, check) pairs, where the check takes the peeked prefix and returns True
+    # when it opens with such a block (a v7 TAR header, by its checksum). Stronger
+    # evidence than a content probe, so it runs on every source, named or not.
+    HEADER_CHECKS: tuple[tuple[ArchiveFormat, Callable[[bytes], bool]], ...] = ()
     # Exact magic at the start of a fixed-length block at EOF. A hit is ``magic`` /
     # ``CERTAIN``, and it outranks a near-magic format listed in ``preempts``.
     TRAILER: tuple[TrailerSignature, ...] = ()
@@ -706,6 +712,11 @@ class BaseArchiveReader(ArchiveReader):
         # the same thread reaches the ``_walk_pulling`` check instead of deadlocking.
         # It is taken after the materialization election, never before it.
         self._walk_lock = threading.RLock()
+        # A random-access pass's member stream that reads through the walk
+        # (``_walk_handoff_locked``); the walk detaches it before its next pull
+        # (``_before_pull_locked``). Set only under ``_walk_lock``, so none appears
+        # during a batch of pulls.
+        self._walk_stream: WalkHandoffStream | None = None
         self._walk_built: list[ArchiveMember] = []
         self._walk_emits: dict[int, EmitLog] = {}
         # An unused log from a position that emitted nothing (``_pull_replayable``).
@@ -969,6 +980,13 @@ class BaseArchiveReader(ArchiveReader):
         ``copies`` matters only to a backend with file copies (RAR, which overrides
         this); ``_iter_stream_members`` applies ``copies.streams`` for every backend.
         """
+        if (
+            not self._streaming
+            and not self._walk_done
+            and self._pass_reads_through_walk()
+        ):
+            yield from self._iter_with_data_through_walk()
+            return
         report: MemberListReport | None = None
         members = self._begin_forward_pass() if self._streaming else None
         if members is None:
@@ -990,6 +1008,33 @@ class BaseArchiveReader(ArchiveReader):
             open_member=_open,
             close_previous=True,
             after_members=_raise_report_error,
+        )
+
+    def _iter_with_data_through_walk(
+        self,
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
+        """``stream_members()`` on a random-access reader, in one forward pass.
+
+        Until the walk has ended, the walk and the data share one pass: the member is
+        registered and yielded, and its data is read through the walk before the walk
+        parses the next header, so every read goes forward. Members are registered as
+        they arrive, as the base's walk registers them, so ``members()`` afterwards
+        serves the same list, and the pass links a hardlink to an earlier member only,
+        as the streaming pass does. The pass has its own cursor over the reader's one
+        walk, so a pass abandoned early does not make the next one start part-way. A
+        pass over a listing that is already complete is the default's, which reads the
+        members' data in archive order: one forward sweep too, after one seek back to
+        the first member.
+        """
+
+        def _open(member: ArchiveMember) -> ArchiveStreamImpl | None:
+            self._read_pass_link_target(member)
+            if not pass_has_data(member):
+                return None
+            return self._lazy_member_stream(member, self._open_member_in_walk)
+
+        yield from self._drive_pass_streams(
+            _ProgressivePassIterator(self), open_member=_open
         )
 
     def _read_pass_link_target(self, member: ArchiveMember) -> None:
@@ -1757,13 +1802,43 @@ class BaseArchiveReader(ArchiveReader):
             return self._pull_members_locked(1)
 
     def _before_pull_locked(self) -> None:
-        """A backend's hand-off of a stream the walk is reading (TAR's
-        ``_WalkHandoffStream``) before the walk moves. Nothing by default.
+        """Hand off a pass's stream before the walk moves.
+
+        A random-access pass may still be reading the member the walk is at through
+        the walk (:meth:`_walk_handoff_locked`). That stream moves to a view of its own first
+        (:class:`WalkHandoffStream`), so a pull for another caller, such as
+        ``members()`` from another thread under ``CONCURRENT``, does not cut it off.
+        The pass's own next pull hands over a stream it is about to close, which costs
+        nothing.
 
         Called under ``_walk_lock`` once per :meth:`_pull_members_locked` call, before
         one or more pulls, so it must leave nothing for the walk to hand off for the
         whole batch: whatever it hands off must only be set under ``_walk_lock``, so
         nothing new appears until the lock is released."""
+        live = self._walk_stream
+        if live is not None:
+            self._walk_stream = None
+            live.detach()
+
+    def _walk_handoff_locked(
+        self, in_place: BinaryIO | None, reopen: Callable[[int], BinaryIO]
+    ) -> BinaryIO:
+        """A pass's member data, through the walk when the walk is at it.
+
+        Called under ``_walk_lock``. ``in_place`` reads the member's data through the
+        walk's own stream, or is ``None`` when the walk is not at the start of it;
+        ``reopen(start)`` opens a view of the data of its own from ``start``. Only one
+        stream reads through the walk at a time: any other open (a second pass behind
+        the first, or one in step with it) gets a view of its own.
+        """
+        live = self._walk_stream
+        if in_place is None or (live is not None and not live.closed):
+            if in_place is not None:
+                in_place.close()
+            return reopen(0)
+        stream = WalkHandoffStream(in_place, reopen, self._walk_lock)
+        self._walk_stream = stream
+        return stream
 
     def _pull_members_locked(self, count: int) -> ArchiveMember | None:
         """Pull up to ``count`` members (at least one), as ``_pull_member`` describes,
@@ -2094,15 +2169,40 @@ class BaseArchiveReader(ArchiveReader):
         Called by the extraction coordinator before its pass. On a random-access reader
         the default lists every member first, with the limits enforced, so nothing is
         written from an archive over them. A backend whose listing is itself a scan of
-        the data may instead list as members arrive during the pass (TAR), and not
-        decode the archive twice. A streaming reader always does that: its one pass is
+        the data may instead list as members arrive during the pass (TAR, a sequential
+        format: :meth:`_pass_reads_through_walk`), and not decode the archive twice. A streaming reader always does that: its one pass is
         the listing. Every pass enforces the limits as it registers members.
 
         A listing that ends in damage does not raise here: the pass writes the
         members listed before it and then raises the damage, as a TAR pass does.
+
+        A random-access pass that reads through the walk
+        (:meth:`_pass_reads_through_walk`) lists as members arrive too, until the walk
+        has ended: it registers each member with the limits enforced, so
+        ``ResourceLimitError`` is raised at the member that crosses a cap, before it is
+        written, as ``members()`` raises it. The members before it are written, as a
+        streaming pass writes them (DR-5).
         """
-        if not self._streaming:
+        if not self._streaming and (
+            self._walk_done or not self._pass_reads_through_walk()
+        ):
             self._materialize_members()
+
+    def _pass_reads_through_walk(self) -> bool:
+        """Whether a random-access pass reads member data through the walk.
+
+        A backend whose listing is a scan of the data (TAR, a sequential format) says
+        yes: until the walk has ended, ``stream_members()`` and extraction then share
+        one forward pass with it, through :meth:`_open_member_in_walk`, and a solid
+        archive is decoded once instead of once for the headers and again for the
+        data. False by default. A backend with file copies (``FileCopyPass``) must not
+        say yes: this pass does not take them."""
+        return False
+
+    def _open_member_in_walk(self, member: ArchiveMember) -> MemberStreamParts:
+        """``member``'s data for a pass that reads through the walk
+        (:meth:`_pass_reads_through_walk`), usually through :meth:`_walk_handoff_locked`."""
+        raise NotImplementedError
 
     def _account_archive_comment(self) -> None:
         self._listing_tracker.account_archive_comment(self._archive_comment())
