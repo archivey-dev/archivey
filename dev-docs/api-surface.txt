@@ -908,6 +908,7 @@ class archivey.formats.ForwardStream()
 init archivey.formats.ForwardStream(read: Callable[[int], bytes], skip: Callable[[int, int], None], decompress: Callable[[int, StreamFormat], ForwardStream] | None = None) -> None
 method archivey.formats.ForwardStream.decompress(self, stream_format: StreamFormat) -> ForwardStream
 property archivey.formats.ForwardStream.offset: int
+method archivey.formats.ForwardStream.peek(self, n: int) -> bytes
 method archivey.formats.ForwardStream.read(self, n: int) -> bytes
 method archivey.formats.ForwardStream.read_exact(self, n: int) -> bytes
 method archivey.formats.ForwardStream.read_struct(self, fmt: str | struct.Struct) -> tuple[Any, ...]

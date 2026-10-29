@@ -324,6 +324,9 @@ class ForwardStream:
         self._skip_fn = skip
         self._decompress_fn = decompress
         self._offset = 0
+        # Bytes peek() read ahead, served before the stream's own: they start at
+        # ``_offset``.
+        self._peeked = b""
         # Set once decompress() has handed the rest of the bytes to a decoded stream.
         self._handed_off = False
 
@@ -338,9 +341,31 @@ class ForwardStream:
         if n < 0:
             raise ValueError(f"ForwardStream.read() takes a size of 0 or more, got {n}")
         self._check_not_handed_off()
-        data = self._read_fn(n)
+        peeked = self._peeked
+        if peeked:
+            if n <= len(peeked):
+                data, self._peeked = peeked[:n], peeked[n:]
+            else:
+                self._peeked = b""
+                data = peeked + self._read_fn(n - len(peeked))
+        else:
+            data = self._read_fn(n)
         self._offset += len(data)
         return data
+
+    def peek(self, n: int) -> bytes:
+        """The next ``n`` bytes, fewer only at the end of the archive, without moving
+        past them: the next :meth:`read` or :meth:`skip` starts at the same
+        :attr:`offset`. A format looks ahead with it, as TAR does at a block that may
+        be its end. On a pipe the bytes are read and kept until then, so keep ``n``
+        small."""
+        if n < 0:
+            raise ValueError(f"ForwardStream.peek() takes a size of 0 or more, got {n}")
+        self._check_not_handed_off()
+        peeked = self._peeked
+        if len(peeked) < n:
+            peeked = self._peeked = peeked + self._read_fn(n - len(peeked))
+        return peeked[:n]
 
     def read_exact(self, n: int) -> bytes:
         """``n`` bytes, or ``TruncatedError`` when the archive ends first."""
@@ -366,7 +391,14 @@ class ForwardStream:
         if n < 0:
             raise ValueError(f"ForwardStream.skip() takes a size of 0 or more, got {n}")
         self._check_not_handed_off()
-        self._skip_fn(self._offset, n)
+        peeked = self._peeked
+        if peeked:
+            taken = min(n, len(peeked))
+            self._peeked = peeked[taken:]
+            if n > taken:
+                self._skip_fn(self._offset + taken, n - taken)
+        else:
+            self._skip_fn(self._offset, n)
         self._offset += n
 
     def decompress(self, stream_format: StreamFormat) -> ForwardStream:
@@ -389,9 +421,14 @@ class ForwardStream:
 
         Raises ``ValueError`` for a format that is not a compression stream
         (``UNCOMPRESSED``), and ``ArchiveyUsageError`` when this stream has already
-        handed off, or was not built by archivey.
+        handed off, holds bytes :meth:`peek` read ahead, or was not built by archivey.
         """
         self._check_not_handed_off()
+        if self._peeked:
+            raise ArchiveyUsageError(
+                "decompress() starts where the stream is: read or skip the bytes "
+                "peek() looked at first"
+            )
         if self._decompress_fn is None:
             raise ArchiveyUsageError(
                 "this ForwardStream was not built by archivey and cannot decompress"

@@ -420,6 +420,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         sevenzip_reader,
         tar_parser,
         tar_reader,
+        tar_sequential,
         zip_aes,
         zip_forward_reader,
         zip_local_walk,
@@ -531,6 +532,9 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         # plugin decodes, so no archivey codec above it keeps a table.
         format_adapter._DecodedWindow,
         format_adapter._DataWalkStream,
+        # The TAR port's sparse member: its stored chunks read forward from the walk's
+        # stream, below the SparseStream that expands them; stored bytes, no table.
+        tar_sequential._StoredChunks,
         # The compressed input of a stream a streaming walk decompresses part-way
         # (``ForwardStream.decompress``): the walk's buffer read forward, below the
         # codec, which keeps no table over it.
