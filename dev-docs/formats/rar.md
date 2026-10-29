@@ -1008,8 +1008,8 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
   the target's size so the fused overrun probe does not see the next match. Stored
   members never take this path. A glob confined to the basename, with no `\`, is the
   demuxed set; a glob in a directory component and a backslash stay refused (§5). The
-  `rar_allow_glob_member_concatenation` refusal still applies only to a glob name; a
-  name with no `*` or `?` that shares its mask with earlier members reads without it.
+  `rar_allow_glob_member_concatenation` refusal applies to any name whose mask selects
+  earlier members with data, glob or not (maintainer decision, 2026-10-29).
 - **`-ver` is added** when the target is a history row, or when a solid pass contains any
   versioned payload FILE, because the mask excludes history rows otherwise and the demux
   would go out of alignment.
@@ -1368,12 +1368,13 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | An encrypted RAR 1.5 / 2.x old-style comment (PASSWORD or SALT flag) is `None`, with or without `unrar` or a password | **archivey** | Known limitation, because it cannot be tested: RARLAB `rar` 7.00 writes no old-style comment subblocks and no repo fixture carries either flag. The parser (`_parse_rar3_old_comment_subblocks`) drops the comment when either flag is set, stored (`M0`) comments included, so nothing is decoded or spawned. `decompress_rar3_blob` repeats the check as a second guard for direct callers: the comment subblock keeps no salt, so the synthetic FILE header it builds could not carry one (§2.2) |
 | A member read has no time bound | **archivey** | `open_unrar_p` hands the caller a pipe with no read timeout; the only timeouts are the version probe and the teardown. A wall-clock cap refuses legitimately long members, and an idle or first-byte deadline kills valid solid reads, where `unrar` emits nothing while it decodes the members ahead of the target. Documented rather than bounded for 0.2.0; a caller-supplied timeout was the alternative and was not taken |
 | Opening a compressed member whose stored name has a glob in a directory component, or a backslash, raises `UnsupportedFeatureError` | **archivey** | Windows `unrar` treats `\` as a separator so a Linux literal-backslash name emits nothing, and a glob in a directory component has not been measured enough to demux. Basename globs without `\` still demux. `rar_decompressor='unar'` reads these members by position, and the error says so. The matcher is now a port of `unrar`'s own `CmpName` (§2.3), so lifting the directory-glob refusal is a matter of measuring it; [`IDEAS.md`](../IDEAS.md) carries what it would take |
-| Opening a glob-named member whose mask also matches **earlier** members raises `UnsupportedFeatureError` | **archivey** | Names like this are almost always constructed. On a nonsolid archive `unrar -n./a*.txt` also decompresses every earlier match — unbounded, and outside `ExtractionLimits`, which do not reach `open()`/`read()`. On a solid archive that decode is already inside `AccessCost.SOLID`, and what the mask adds is only the transfer of bytes archivey then discards — a bounded factor on work the read already owes (§6). Refused either way; `ArchiveyConfig.rar_allow_glob_member_concatenation=True` reads it anyway, and the error names the flag. A glob name matching nothing else is unaffected. A solid `stream_members()` pass builds no mask, so it is unaffected — a **nonsolid** one takes the named route and is refused like any other mode, which is deliberate (§2.3, §6). Under `AUTO` an accepted `unar` reads the member by index instead (`_unar_for_unaddressable`), except for a read that needs a password (`_member_needs_password`: `unar` would show it on its command line) or an archive `unar` would have to copy (a stream, or a prefix) |
+| Opening a member whose mask also selects **earlier** members (a glob, a duplicate name, two names `unrar` reads alike) raises `UnsupportedFeatureError` | **archivey** | Names like this are almost always constructed. On a nonsolid archive `unrar -n./a*.txt` also decompresses every earlier match — unbounded, and outside `ExtractionLimits`, which do not reach `open()`/`read()`. On a solid archive that decode is already inside `AccessCost.SOLID`, and what the mask adds is only the transfer of bytes archivey then discards — a bounded factor on work the read already owes (§6). Refused either way; `ArchiveyConfig.rar_allow_glob_member_concatenation=True` reads it anyway, and the error names the flag. A glob name matching nothing else is unaffected. A solid `stream_members()` pass builds no mask, so it is unaffected — a **nonsolid** one takes the named route and is refused like any other mode, which is deliberate (§2.3, §6). Under `AUTO` an accepted `unar` reads the member by index instead (`_unar_for_unaddressable`), except for a read that needs a password (`_member_needs_password`: `unar` would show it on its command line) or an archive `unar` would have to copy (a stream, or a prefix) |
 
 ## 6. Decisions
 
 | Choice | Why | Rejected |
 | --- | --- | --- |
+| Refuse any name whose `unrar` mask selects earlier members with data, glob or not, behind `rar_allow_glob_member_concatenation` (2026-10-29) | A duplicate name, or two names `unrar` reads alike, makes `unrar` decode the earlier members exactly as a glob does, and the 09-20 ruling refuses that decode on both shapes. Under `auto` an accepted `unar` reads the member by index instead, as for a glob. The flag keeps its name: renaming a public field is a separate call | Keeping the refusal for globs only; a second flag for shared plain names |
 | Native metadata parser; `unrar` for member data only | Listing works with no binary and no `rarfile` dependency, and archivey's cost and streaming model is not bent to another library's | `rarfile`, which couples listing to its own decompressor stack — kept as a test oracle (ADR [0002](../decisions/0002-native-rar-metadata-unrar-data.md)) |
 | RARLAB `unrar` **or** `rar`, no silent fallback to other tools | The alternatives are measurably worse in ways a caller cannot see: `unar` returns empty files with a success exit on a whole archive class, `7z` depends on a plugin that may or may not be installed, `bsdtar` writes gigabytes on a stored member. A degraded backend chosen behind the caller's back is the failure mode `PackageNotInstalledError` exists to prevent. Accepting RARLAB `rar` is the same vendor's `p` command, not a second engine | Probing `PATH` the way `rarfile` does (threat-model C1, [`alternative-rar-decompressors.md`](../investigations/alternative-rar-decompressors.md)) |
 | Refuse RARLAB `unrar` older than **6.0** at the banner probe | `-n` glob demux and `-ver` were checked from 6.02 up. 5.91 passed those RAR data tests but hangs on an anonymous-fd multi-volume probe that 6.12+ exits 3 on — a path archivey does not use. Floor 6.0 so Debian 12 / Ubuntu 22.04 apt packages work. Parsed from the same identification banner as the RARLAB sniff, cached with the probe, not re-read per member. Open and stored reads do not require it; compressed old-style comments stay `None` | Floor 7.0, which would refuse those distro packages; checking per member; treating a RARLAB banner with no parseable version as 6.0 |
@@ -1482,11 +1483,6 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   `unar` puts the password on its command line (C1), and `unar` has limits of its own
   on some solid archives (§3). So a fallback can itself refuse, and must say which tool
   refused.
-- **Open: a shared plain name reads without the glob-concatenation flag.** The flag
-  exists because a glob read makes `unrar` decode earlier members only to discard them.
-  A duplicate name, or a mask naming a directory, does the same, and reads without it,
-  since the flag's name and documentation are about globs. Whether it should cover
-  every shared mask is the maintainer's call.
 - **Open: the name model on Windows and macOS is unmeasured.** The selection tests run
   on Linux only.
   - Windows: the case fold is Python's per-character `.upper()` where `unrar` uses
@@ -1555,8 +1551,8 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
     including the member, total unpacked size of those members). That is wider than
     "the member's own stream", on purpose.
   - **A shared `unrar` mask.** A named `unrar` read decodes every member its mask
-    selects, in archive order: a glob with `rar_allow_glob_member_concatenation=True`,
-    or a duplicate name, which needs no opt-in. The count is the largest among the
+    selects, in archive order: a glob or a duplicate name, read with
+    `rar_allow_glob_member_concatenation=True`. The count is the largest among the
     target and the selected members before it (`RarReader._unrar_selection` returns
     it). In a nonsolid archive each earlier match sizes its own window; in a solid one
     the target's count already covers them. A match after the target is not counted:

@@ -34,6 +34,11 @@ from tests.test_audit_rar_iso_dir import (
 )
 
 _UNRAR_ONLY = ArchiveyConfig(rar_decompressor="unrar")
+# A name that selects earlier members too is refused by default; these tests read
+# through the shared mask on purpose.
+_UNRAR_SHARED = ArchiveyConfig(
+    rar_decompressor="unrar", rar_allow_glob_member_concatenation=True
+)
 _NAMES = [b"a\xffq.txt", b"a\xfeq.txt"]
 
 
@@ -81,7 +86,7 @@ def test_rar5_undecodable_names_each_read_their_own_bytes(
     """``unrar`` reads both names as ``a``; each read still returns its own member."""
     expected = _original_payloads()
     path = _rar5_with_undecodable_names(tmp_path, solid=solid)
-    with open_archive(path, config=_UNRAR_ONLY) as archive:
+    with open_archive(path, config=_UNRAR_SHARED) as archive:
         members = archive.members()
         # Reversed, so the second read has to skip what the shared mask selects first.
         got = [archive.read(member) for member in reversed(members)]
@@ -106,7 +111,7 @@ def test_rar5_undecodable_names_extract_as_two_files(
     expected = _original_payloads()
     path = _rar5_with_undecodable_names(tmp_path, solid=False)
     dest = tmp_path / "out"
-    with open_archive(path, config=_UNRAR_ONLY) as archive:
+    with open_archive(path, config=_UNRAR_SHARED) as archive:
         archive.extract_all(dest, policy=policy)
     for name, payload in zip(written, expected):
         assert (dest / name).read_bytes() == payload
