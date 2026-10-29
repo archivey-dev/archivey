@@ -28,7 +28,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from archivey import ArchiveFormat, StreamFormat, open_archive
+from archivey import ArchiveFormat, ContainerFormat, StreamFormat, open_archive
 from archivey.formats import register_format
 from archivey.internal.backends.tar_sequential import (
     TAR_SEQUENTIAL,
@@ -53,18 +53,18 @@ def _build(path: Path, count: int, size_range: tuple[int, int], seed: int) -> No
     path.write_bytes(raw)
 
 
-def _ops(work: Path) -> dict[str, Callable[[Path, ArchiveFormat | None], None]]:
-    def listing(path: Path, fmt: ArchiveFormat | None) -> None:
+def _ops(work: Path) -> dict[str, Callable[[Path, ArchiveFormat], None]]:
+    def listing(path: Path, fmt: ArchiveFormat) -> None:
         with open_archive(path, format=fmt) as reader:
             reader.members()
 
-    def stream_members(path: Path, fmt: ArchiveFormat | None) -> None:
+    def stream_members(path: Path, fmt: ArchiveFormat) -> None:
         with open_archive(path, format=fmt) as reader:
             for _, stream in reader.stream_members():
                 if stream is not None:
                     stream.read()
 
-    def pipe_stream(path: Path, fmt: ArchiveFormat | None) -> None:
+    def pipe_stream(path: Path, fmt: ArchiveFormat) -> None:
         with (
             path.open("rb") as raw,
             open_archive(raw, format=fmt, streaming=True) as reader,
@@ -73,13 +73,13 @@ def _ops(work: Path) -> dict[str, Callable[[Path, ArchiveFormat | None], None]]:
                 if stream is not None:
                     stream.read()
 
-    def read_each(path: Path, fmt: ArchiveFormat | None) -> None:
+    def read_each(path: Path, fmt: ArchiveFormat) -> None:
         with open_archive(path, format=fmt) as reader:
             for member in reader.members():
                 if member.is_file:
                     reader.read(member)
 
-    def extract_all(path: Path, fmt: ArchiveFormat | None) -> None:
+    def extract_all(path: Path, fmt: ArchiveFormat) -> None:
         dest = work / "out"
         if dest.exists():
             shutil.rmtree(dest)
@@ -136,9 +136,11 @@ def main() -> None:
                     if path.suffix == ".gz"
                     else StreamFormat.UNCOMPRESSED
                 )
+                # Both get the format, so neither pays for detection.
+                builtin = ArchiveFormat(ContainerFormat.TAR, stream)
                 port = ArchiveFormat(TAR_SEQUENTIAL.container, stream)
                 for name, op in ops.items():
-                    builtin_s = _best(functools.partial(op, path, None), args.repeat)
+                    builtin_s = _best(functools.partial(op, path, builtin), args.repeat)
                     port_s = _best(functools.partial(op, path, port), args.repeat)
                     print(
                         f"{label:<24}{name:<16}{builtin_s * 1000:>8.1f}ms"
