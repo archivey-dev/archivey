@@ -1147,11 +1147,13 @@ def _break_child_start(
 def test_a_child_that_cannot_start_is_a_resource_limit_under_on(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, how: str
 ) -> None:
-    """ON asked for rapidgzip, so a refused child is an error, not a quiet fallback."""
+    """ON asked for rapidgzip, so a refused child is an error, not a quiet fallback,
+    and one that says nothing about the data."""
     path = _write(tmp_path, "valid.gz", gzip.compress(_payload()))
     _break_child_start(monkeypatch, tmp_path, how)
-    with pytest.raises(ResourceUnavailableError, match="cannot start"):
+    with pytest.raises(ResourceUnavailableError, match="cannot start") as caught:
         open_codec_stream(Codec.GZIP, str(path), config=_ON)
+    assert is_no_verdict(caught.value)
 
 
 @pytest.mark.parametrize("mode", ["path", "bytesio"])
