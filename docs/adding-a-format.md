@@ -468,6 +468,10 @@ bytes, from a file or a pipe.
 - **Cost.** One compression stream holds every member, so the archive is solid:
   `archive.info.is_solid` is `True`, the listing needs decompression, and with random
   access, reading a member before the last one read decodes again from the start.
+  On a reader that has not listed the archive yet, `stream_members()` and
+  `extract_all()` read each member's data as the walk reaches it, so they decode the
+  archive once, as for a `.tar.gz`. Once the archive is listed (`members()` first), a
+  pass decodes it a second time, in one forward sweep.
 - **Limits.** The decoder limits and the decompression-ratio guard apply as for a
   `.tar.gz`, and bytes after the compressed stream are reported with
   `ARCHIVE_TRAILING_DATA`.
@@ -494,7 +498,8 @@ compression stream before the walk reaches it, so have `archive_info()` return
 `ReaderArchiveInfo(is_solid=True)`: the cost receipt then says members are read through
 one stream, and that listing needs decompression, from the moment the archive opens.
 The compressed stream is taken to run to the end of the archive: bytes after its end are
-reported with `ARCHIVE_TRAILING_DATA`, not refused.
+reported with `ARCHIVE_TRAILING_DATA`, not refused. A pass over such an archive decodes
+it once, as one inside a compression stream does (see **Cost** above).
 
 ## Reading untrusted bytes
 

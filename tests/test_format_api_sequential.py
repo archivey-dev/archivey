@@ -14,6 +14,7 @@ import gzip
 import io
 import lzma
 import os
+import random
 import struct
 import threading
 import zlib
@@ -55,7 +56,7 @@ from archivey.formats import (
 )
 from archivey.internal.format_adapter import registration_scope
 from archivey.internal.streams.streamtools import ReadAheadStream
-from tests.streams_util import NonSeekableBytesIO
+from tests.streams_util import CountingBytesIO, NonSeekableBytesIO
 
 _MAGIC = b"TS"
 _HEADER = struct.Struct("<2scHII")  # magic, type, name length, data length, CRC-32
@@ -594,6 +595,110 @@ def test_random_access_inside_a_compression_stream(
         assert info.cost.listing_cost is ListingCost.REQUIRES_DECOMPRESSION
         assert info.cost.access_cost is AccessCost.SOLID
         assert info.cost.solid_block_count == 1
+
+
+# Members that do not compress, so decoding the archive twice reads its bytes twice.
+_INCOMPRESSIBLE = [
+    ("docs", MemberType.DIRECTORY, b""),
+    ("one.bin", MemberType.FILE, random.Random(1).randbytes(300_000)),
+    ("two.bin", MemberType.FILE, random.Random(2).randbytes(300_000)),
+    ("three.bin", MemberType.FILE, random.Random(3).randbytes(300_000)),
+]
+
+
+def _one_pass_archive(shape: str) -> bytes:
+    if shape == "gzip":
+        return _gz(build_toys(_INCOMPRESSIBLE))
+    # Part-way: the first member stored, the rest in a gzip stream the walk opens.
+    name = StreamFormat.GZIP.value.encode()
+    return (
+        build_toys(_INCOMPRESSIBLE[:2], end=False)
+        + _HEADER.pack(_MAGIC, b"Z", len(name), 0, 0)
+        + name
+        + _gz(build_toys(_INCOMPRESSIBLE[2:]))
+    )
+
+
+@pytest.mark.parametrize("shape", ["gzip", "part-way"])
+@pytest.mark.parametrize("call", ["extract_all", "stream_members"])
+def test_random_access_pass_decodes_once(
+    toys: ArchiveFormat, rpmish: ArchiveFormat, tmp_path: Path, shape: str, call: str
+) -> None:
+    """A random-access pass over a compressed archive reads the member data through
+    the walk, so the archive is read once, not once for the headers and again for
+    the data."""
+    data = _one_pass_archive(shape)
+    source = CountingBytesIO(data)
+    fmt = _TOYS_GZ if shape == "gzip" else rpmish
+    with open_archive(source, format=fmt) as reader:  # type: ignore[arg-type]
+        if call == "extract_all":
+            reader.extract_all(tmp_path / "out")
+            got = {
+                name: (tmp_path / "out" / name).read_bytes()
+                for name, kind, _ in _INCOMPRESSIBLE
+                if kind is MemberType.FILE
+            }
+        else:
+            got = {m.name: s.read() for m, s in reader.stream_members() if s}
+        # The pass listed the archive as it went.
+        assert [m.name for m in reader.members()] == [
+            "docs/",
+            "one.bin",
+            "two.bin",
+            "three.bin",
+        ]
+    assert got == {n: d for n, k, d in _INCOMPRESSIBLE if k is MemberType.FILE}
+    assert source.bytes_read < len(data) * 1.2, (source.bytes_read, len(data))
+
+
+@pytest.mark.parametrize("mode", ["plain", "gzip", "pipe"])
+def test_extract_past_a_listing_limit_writes_the_members_before_it(
+    toys: ArchiveFormat, tmp_path: Path, mode: str
+) -> None:
+    """The pass registers each member with the limits enforced: the members before the
+    one that crosses a limit are written, then ``ResourceLimitError`` is raised, in
+    either access mode (DR-5; the safe-extraction damaged-listing matrix)."""
+    data = build_toys(_INCOMPRESSIBLE)
+    if mode == "gzip":
+        data = _gz(data)
+    config = archivey.ArchiveyConfig(
+        listing_limits=archivey.ListingLimits(max_members=3)
+    )
+    source = (
+        NonSeekableBytesIO(data)
+        if mode == "pipe"
+        else _write(tmp_path, data, "t.toys.gz" if mode == "gzip" else "t.toys")
+    )
+    dest = tmp_path / "out"
+    with (
+        open_archive(source, config=config, streaming=mode == "pipe") as reader,
+        pytest.raises(archivey.ResourceLimitError),
+    ):
+        reader.extract_all(dest)
+    assert (dest / "one.bin").read_bytes() == _INCOMPRESSIBLE[1][2]
+    assert (dest / "two.bin").read_bytes() == _INCOMPRESSIBLE[2][2]
+    assert not (dest / "three.bin").exists()
+
+
+@pytest.mark.parametrize("shape", ["gzip", "part-way"])
+def test_random_access_pass_member_survives_the_walk_moving_on(
+    toys: ArchiveFormat, rpmish: ArchiveFormat, shape: str
+) -> None:
+    """A member the pass is reading through the walk reads on from a view of its own
+    when another call moves the walk on."""
+    fmt = _TOYS_GZ if shape == "gzip" else rpmish
+    with open_archive(
+        io.BytesIO(_one_pass_archive(shape)), format=fmt, concurrent_operations=True
+    ) as reader:
+        for member, stream in reader.stream_members():
+            if member.name != "two.bin":
+                continue
+            assert stream is not None
+            head = stream.read(1000)
+            # Walks to the end of the archive, past this member.
+            assert len(reader.members()) == 4
+            assert head + stream.read() == _INCOMPRESSIBLE[2][2]
+            break
 
 
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])

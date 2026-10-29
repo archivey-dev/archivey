@@ -16,7 +16,11 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
       on a seekable source, link targets read from data. *`SequentialReaderAdapter`
       serves the walk as the member walk, through the base class's passes; link targets
       are read while walking (design §2a, "As built"). TAR's one-pass random-access read
-      waits for outer compression.*
+      waits for outer compression.* *After outer compression and
+      `ForwardStream.decompress`, TAR's one-pass random-access pass moved into
+      `BaseArchiveReader` (`_pass_reads_through_walk`, `WalkHandoffStream`) and the
+      sequential adapter uses it: `stream_members()` and `extract_all()` decode a
+      compressed archive once.*
 - [ ] 1.2c Decoded `MemberSpan.data` (drain on advance, re-walk for random access),
       `ForwardStream.decompress`, `checked` members counted as verified,
       `ReaderArchiveInfo.is_solid`. *1a landed `checked` and `is_solid`;
