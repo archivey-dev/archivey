@@ -1541,10 +1541,11 @@ def _another_writer_takes(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
     real_link = os.link
     real_rename = os.rename
 
-    def link(src: str, dst: str, *, follow_symlinks: bool = True) -> None:
+    def link(src: str, dst: str, **kwargs: bool) -> None:
+        # Forwarded only when given: Windows refuses an explicit follow_symlinks.
         if os.path.basename(str(dst)) == name:
             take(dst)
-        real_link(src, dst, follow_symlinks=follow_symlinks)
+        real_link(src, dst, **kwargs)
 
     def rename(src: str, dst: str) -> None:
         if os.path.basename(str(dst)) == name:
