@@ -63,7 +63,7 @@ $PSNativeCommandUseErrorActionPreference = $false
 # cache, whose key is this file's hash.
 $Version = '723'
 $Sha256 = '8ff0daf3ed564cc743c0e23ff2e253997ffc74460f9673f0b6dd037b2db4ce7b'
-$Url = "https://www.rarlab.com/rar/unrarw64.exe"  # TEMPORARY: 7.30 beta 2 check
+$Url = "https://www.rarlab.com/rar/winrar-x64-$Version.exe"
 
 # The RARLAB banner is what archivey's finder actually requires, so it is the
 # test for "is this binary the right one" on every path through this script —
@@ -134,8 +134,7 @@ while ($true) {
 # which would otherwise fail later, inside 7-Zip, with nothing pointing at the
 # download.
 $got = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
-Write-Host "install-rarlab-unrar: TEMPORARY $Url SHA-256 $got"
-if ($false) {
+if ($got -ne $Sha256) {
     $size = (Get-Item -LiteralPath $installer).Length
     throw "install-rarlab-unrar: $Url has SHA-256 $got ($size bytes), expected $Sha256"
 }
