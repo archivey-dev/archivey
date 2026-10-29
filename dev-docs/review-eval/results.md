@@ -5,6 +5,34 @@ One section per run worth keeping, newest first. `skill` is the tree hash of
 Score: `yes` = 1, `partial` = 0.5. The reviews themselves are kept outside the
 repository.
 
+## 2026-10-29: Opus and Sonnet on the tiered skill
+
+Same day, after #1081 (tiers) and #1103 merged: skill `1f096043d315`, judge
+`claude-sonnet-5-5`, tools Read, Grep, Glob and Bash. One run per case per model,
+both models at once.
+
+| Case | PR | Opus 5 | Sonnet 5.5 |
+|---|---|---|---|
+| zstd-seek-point-in-frame | #934 | no | partial |
+| decoder-death-reraise-cycle | #904 | yes | yes |
+| rapidgzip-cut-raw-deflate | #545 | no | no |
+| rapidgzip-cut-gzip-member-then-complete | #613 | no | yes |
+| pax-sparse-version-by-records | #738 | no | yes |
+| **Score** | | **1 of 5** | **3.5 of 5** |
+| Cost (USD) | | 38.33 | 4.94 |
+| Minutes, slowest case | | 24 | 7 |
+
+Every Opus review chose the standard tier (deep for #904), the same depth as the
+baseline's untiered skill, so the tiers do not explain the drop from 3 to 1: it is
+mostly run-to-run variance. The zstd case is the clearest: the baseline Opus run
+found it with a measured repro, this one did not mention it. One run per case is
+not enough to rank two models; Sonnet's lead here needs a second run before it
+means anything.
+
+Sonnet's reviews are about a third the length (10 to 16 KB against 26 to 40 KB)
+and its catches on #613 and #738 name the exact input the fix found, the cut first
+member and `GNU.sparse.major=1` with `GNU.sparse.size`.
+
 ## 2026-10-29: baseline
 
 Reviewer `claude-opus-5` with Read, Grep, Glob and Bash; judge `claude-sonnet-5-5`;
