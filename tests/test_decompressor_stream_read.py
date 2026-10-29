@@ -31,6 +31,7 @@ from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     SeekPoint,
 )
+from tests.conftest import assert_raised_again
 
 _DATA = bytes(range(256)) * 97  # 24_832 bytes, not a multiple of any read size below
 
@@ -275,7 +276,7 @@ def test_a_decoder_error_after_output_hands_back_the_buffer_then_raises() -> Non
     for _ in range(2):
         with pytest.raises(OSError) as again:
             stream.read(len(_DATA))
-        assert again.value is first.value
+        assert_raised_again(again.value, first.value)
     # A seek restarts the decoder, which hands back its first chunk again.
     assert stream.seek(0) == 0
     assert stream.read(len(got)) == got

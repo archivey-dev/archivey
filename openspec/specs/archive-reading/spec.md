@@ -772,7 +772,8 @@ that is not a `bool` SHALL raise `ArchiveyUsageError` at the call.
 are lazy: unselected/unread members are not opened/decompressed and do not request
 passwords. Yields the original mutable `ArchiveMember` so late-bound fields stay
 visible. A yielded stream whose deferred open fails on its first read (a wrong password,
-an unsupported method) SHALL raise the same error object on every later read and SHALL
+an unsupported method) SHALL raise that error again on every later read, as a content
+verdict is raised again (same type and arguments, first raise as its cause), and SHALL
 NOT try the open again.
 
 Symlink targets stored as member data (ZIP, 7z, RAR3/4) are the one exception, and only

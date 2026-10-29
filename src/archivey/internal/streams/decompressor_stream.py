@@ -55,6 +55,7 @@ from archivey.internal.diagnostics_collector import (
 )
 from archivey.internal.logs import streams as logger
 from archivey.internal.streams.child_process import is_no_verdict
+from archivey.internal.streams.kept_errors import KeptError
 from archivey.internal.streams.native_memory import end_lzma_decoder
 from archivey.internal.streams.resume import (
     ResumeReachedStreamEnd,
@@ -900,7 +901,8 @@ class DecompressorStream(ReadOnlyIOStream):
         self._size: int | None = None
         # The deferred error this stream raised at its end (see _raise_deferred), or the
         # error the decoder raised (see _decoding), until a seek restarts the decoder.
-        self._spent: BaseException | None = None
+        # Kept without its frames (``kept_errors``).
+        self._spent: KeptError | None = None
 
     def seekable(self) -> bool:
         return self._inner.seekable()
@@ -1382,7 +1384,7 @@ class DecompressorStream(ReadOnlyIOStream):
         except Exception as exc:
             if self._drop_index_at_failed_point(exc):
                 return None
-            self._spent = exc
+            self._spent = KeptError.of(exc)
             raise
 
     def _drop_index_at_failed_point(self, exc: Exception) -> bool:
@@ -1614,20 +1616,21 @@ class DecompressorStream(ReadOnlyIOStream):
         """
         self._decoder.clear_pending_error()
         self._surplus = None
-        self._spent = err
-        raise err
+        try:
+            raise err
+        except BaseException as raised:
+            self._spent = KeptError.of(raised)
+            raise
 
     def _raise_spent(self) -> NoReturn:
-        """Raise the recorded error again, with this raise's traceback only.
+        """Raise the recorded error again: a fresh copy, caused by the first raise.
 
-        Re-raising the stored instance as is would append each raise's frames to one
-        traceback, which grows with every retry and keeps every frame on it alive.
-        The same instance is raised each time, so a caller that kept an earlier raise
-        sees its traceback replaced by the latest one; the message and type do not
-        change, and a bounded traceback is worth more than the first raise's frames.
+        Raising the stored instance would tie this stream into a cycle through the
+        raise's frames (``kept_errors``), and append each raise's frames to one
+        traceback that grows with every retry.
         """
         assert self._spent is not None
-        raise self._spent.with_traceback(None)
+        self._spent.raise_again()
 
     def close(self) -> None:
         # Quiesce any decoder-owned native worker before dropping references, so a

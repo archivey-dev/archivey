@@ -37,7 +37,7 @@ from archivey.types import (
     ArchiveMember,
     MemberType,
 )
-from tests.conftest import requires, requires_binary
+from tests.conftest import assert_raised_again, requires, requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
 
 
@@ -169,7 +169,7 @@ def test_a_failed_lazy_open_raises_the_same_error_again() -> None:
         stream.read()
     with pytest.raises(CorruptionError) as second:
         stream.read(1)
-    assert second.value is first.value
+    assert_raised_again(second.value, first.value)
     assert calls == 1
     stream.close()
     with pytest.raises(ValueError, match="closed file"):
@@ -198,7 +198,7 @@ def test_a_member_whose_lazy_open_failed_raises_the_same_error_again() -> None:
                 stream.read()
             with pytest.raises(UnsupportedFeatureError) as second:
                 stream.read()
-            assert second.value is first.value
+            assert_raised_again(second.value, first.value)
     assert seen == 1
 
 
