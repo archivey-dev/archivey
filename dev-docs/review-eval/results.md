@@ -7,8 +7,9 @@ repository.
 
 ## 2026-10-29: baseline
 
-Reviewer `claude-opus-5`, judge `claude-sonnet-5-5`, skill `85ec33dd9507` (main before
-the light/standard/deep tiers). One run per case.
+Reviewer `claude-opus-5` with Read, Grep, Glob and Bash; judge `claude-sonnet-5-5`;
+skill `85ec33dd9507` (main before the light/standard/deep tiers). One run per case,
+each a cold round 1 (README §"How a run works" lists how that differs from the loop).
 
 | Case | PR | Caught | Finding | Cost (USD) | Minutes |
 |---|---|---|---|---|---|

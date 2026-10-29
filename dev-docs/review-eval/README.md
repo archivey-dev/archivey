@@ -26,6 +26,28 @@ model and a prompt adapted from the workflow's: review round 1, post nothing, ed
 nothing, and give the full review as the answer. A second, cheaper model reads the
 review and the case and answers `yes`, `partial` or `no`.
 
+A case's `head` is usually reachable only through GitHub's `refs/pull/<n>/head`,
+since PR branches are deleted at merge; the runner fetches it from `origin` when the
+clone lacks it. `main` is also set as `origin/main` in the replay, which is what
+`review_prep.py` diffs against.
+
+A replay is not the round that missed the bug, in four ways that hold for every
+run, so scores stay comparable with each other but not with the loop:
+
+- **Always round 1.** The loop passed most of these bugs in a later round (the
+  `round` field), which reads `reference/fix-round.md` and only the fix diff. The
+  replay reads `base...head` cold with `reference/code-pr.md`, so a change to
+  `fix-round.md` does not move the score.
+- **Only the skill is current.** Everything else the skill sends the reviewer to
+  (`dev-docs/design-rules.md`, the format handbook pages, the threat model) is as
+  it was at `base`, and some of it did not exist yet (`design-rules.md` is absent
+  for #545 and #613). Copying today's versions in would be worse: a handbook page
+  or `known-issues.md` written after the fix can describe the very bug.
+- **No WebFetch.** The loop allows it; a replay leaves it out, because the PR's
+  page on GitHub shows the later rounds and the fix. `meta.json` records the tools.
+- **No GitHub.** `gh` is a stub, so the PR body comes from `pr-bodies/` and there
+  are no earlier review comments to read.
+
 ```text
 python3 scripts/review_eval.py list
 python3 scripts/review_eval.py run --out /tmp/eval --case zstd-seek-point-in-frame
@@ -46,7 +68,9 @@ signal. The judge reads only for the named bug; it does not count false positive
 so read the saved `review.md` files when the number of findings changes a lot.
 
 The isolation is by prompt as well as by construction: the reviewer runs with Bash,
-so it could reach another checkout if it ignored the prompt. Nothing checks that it
+so it could reach another checkout, or GitHub through a credential the machine
+injects (the runner drops the GitHub token variables, but a proxy that adds auth is
+beyond it), if it ignored the prompt. Nothing checks that it
 did not; a review that cites code or PR numbers from after `head` is the sign.
 
 ## Adding a case

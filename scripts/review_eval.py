@@ -48,6 +48,9 @@ SKILL = Path(".claude/skills/code-review-skill")
 COPIED = (SKILL, Path("scripts/review_prep.py"))
 
 REVIEW_MODEL = "claude-opus-5"  # what .github/workflows/review-loop.yml runs
+# The loop's tools less WebFetch: a fetch of the PR's page on GitHub would show the
+# later rounds and the fix.
+REVIEW_TOOLS = "Read,Grep,Glob,Bash"
 JUDGE_MODEL = "claude-sonnet-5-5"
 TIMEOUT = 3600
 
@@ -114,6 +117,7 @@ Answer with one JSON object and nothing else:
 class Case:
     id: str
     pr: int
+    round: int
     head: str
     base: str
     fixed_by: str
@@ -148,8 +152,38 @@ def skill_version() -> str:
     return tree + ("-dirty" if dirty else "")
 
 
+def ensure_commits(case: Case) -> None:
+    """Fetch ``case.head`` from GitHub's ``refs/pull/<pr>/head`` when this clone lacks
+    it: a PR branch is deleted at merge, so most reviewed commits are reachable only
+    there."""
+
+    def have(sha: str) -> bool:
+        probe = subprocess.run(
+            ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
+            cwd=ROOT,
+            check=False,
+            stderr=subprocess.DEVNULL,
+        )
+        return probe.returncode == 0
+
+    if not have(case.head):
+        subprocess.run(
+            ["git", "fetch", "-q", "--no-tags", "origin",
+             f"refs/pull/{case.pr}/head:refs/review-eval/pr{case.pr}"],
+            cwd=ROOT, check=False,
+        )  # fmt: skip
+    for name, sha in (("head", case.head), ("base", case.base)):
+        if not have(sha):
+            raise RuntimeError(
+                f"{case.id}: {name} {sha[:12]} is not in this clone; run `git fetch "
+                f"origin refs/pull/{case.pr}/head:refs/review-eval/pr{case.pr}` (head) "
+                "or unshallow the clone (base)"
+            )
+
+
 def prepare(case: Case, work: Path) -> Path:
     """A repository holding history up to ``case.head`` only, ``main`` at its base."""
+    ensure_commits(case)
     repo = work / "repo"
     if repo.exists():
         shutil.rmtree(repo)
@@ -164,6 +198,8 @@ def prepare(case: Case, work: Path) -> Path:
         git("update-ref", "-d", ref)
     git("checkout", "-q", "pr", cwd=repo)
     git("branch", "main", case.base, cwd=repo)
+    # Tools such as `review_prep.py tier` diff against origin/main by default.
+    git("update-ref", "refs/remotes/origin/main", case.base, cwd=repo)
     for path in COPIED:
         dest = repo / path
         if dest.is_dir():
@@ -209,12 +245,16 @@ def review(case: Case, out: Path, model: str) -> None:
     repo = prepare(case, work)
     env = dict(os.environ)
     env["PATH"] = f"{work / 'bin'}{os.pathsep}{env['PATH']}"
-    # The old head's SessionStart hook would set up a dev environment.
+    # `--setting-sources ""` already keeps the old head's SessionStart hook from
+    # loading; this keeps it a no-op should a run load project settings again.
     env["CLAUDE_CODE_REMOTE"] = "false"
+    # Without a token `gh api` and the like fail too, not just the stubbed command.
+    for name in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN"):
+        env.pop(name, None)
     started = time.monotonic()
     result = claude(
         REVIEW_PROMPT.format(pr=case.pr, body=case.body),
-        model=model, cwd=repo, tools="Read,Grep,Glob,Bash", env=env,
+        model=model, cwd=repo, tools=REVIEW_TOOLS, env=env,
     )  # fmt: skip
     (work / "review.md").write_text(result.get("result", ""), encoding="utf-8")
     meta = {
@@ -222,6 +262,7 @@ def review(case: Case, out: Path, model: str) -> None:
         "pr": case.pr,
         "head": case.head,
         "model": model,
+        "tools": REVIEW_TOOLS,
         "skill": skill_version(),
         "seconds": round(time.monotonic() - started),
         "cost_usd": result.get("total_cost_usd"),
@@ -264,24 +305,29 @@ def summary(cases: list[Case], out: Path) -> str:
         "|---|---|---|---|---|---|",
     ]
     score = 0.0
+    unscored = []
     for case in cases:
         work = out / case.id
         meta = json.loads((work / "meta.json").read_text())
         verdict = json.loads((work / "judge.json").read_text())
+        if verdict["caught"] not in ("yes", "partial", "no"):
+            unscored.append(case.id)
         score += {"yes": 1.0, "partial": 0.5}.get(verdict["caught"], 0.0)
         finding = " ".join(
             filter(None, (verdict.get("finding"), verdict.get("severity")))
         )
         cost = meta.get("cost_usd")
+        cost_text = "?" if cost is None else f"{cost:.2f}"
         lines.append(
             f"| {case.id} | #{case.pr} | {verdict['caught']} | {finding or '-'} | "
-            f"{cost:.2f} | {meta['seconds'] // 60} |"
-            if cost is not None
-            else f"| {case.id} | #{case.pr} | {verdict['caught']} | {finding or '-'} | ? "
-            f"| {meta['seconds'] // 60} |"
+            f"{cost_text} | {meta['seconds'] // 60} |"
         )
     lines.append("")
     lines.append(f"Score: {score:g} of {len(cases)} (yes = 1, partial = 0.5).")
+    if unscored:
+        lines.append(
+            f"Not scored (judge reply unreadable; rerun `judge`): {', '.join(unscored)}."
+        )
     text = "\n".join(lines) + "\n"
     (out / "summary.md").write_text(text)
     return text

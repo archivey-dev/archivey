@@ -2,9 +2,11 @@
 #
 # Each case is a merged PR that the loop reviewed (its last round's verdict was
 # conditional, approved or clean) and a later PR that fixed a bug the reviewed
-# commit already had. `head` is the commit that last round reviewed, `base` its
-# merge base with main. `bug` says what was wrong, for the judge; `caught_if` says
-# what a finding must name to count. Line numbers are at `head`.
+# commit already had. `head` is the commit that last round reviewed, `round` that
+# round's number in the loop, `base` the head's merge base with main. A replay
+# always reviews `base...head` as round 1 (see README.md). `bug` says what was
+# wrong, for the judge; `caught_if` says what a finding must name to count. Line
+# numbers are at `head`.
 #
 # Add a case when a fix PR names the PR that caused its bug: check that the bug
 # is in the reviewed commit (not added after the last round), and write `bug`
@@ -13,6 +15,7 @@
 [[case]]
 id = "zstd-seek-point-in-frame"
 pr = 934
+round = 2
 head = "c0ff10dcccdd48c7952a81009151bad6bc9abd1c"
 base = "5bc9cb46f82d3ce991014ecc8350c61a9e4b84bd"
 fixed_by = "#997 (58d170d8)"
@@ -36,6 +39,7 @@ the index contradicting the data and dropping it.
 [[case]]
 id = "decoder-death-reraise-cycle"
 pr = 904
+round = 3
 head = "1164f318380784980a96c76d92c3162fd6a4f75a"
 base = "5d19f88e7cf56cea507aa6d5be01662606a0dab0"
 fixed_by = "#1058 (9d66268d)"
@@ -58,6 +62,7 @@ and suggests raising a fresh exception each time.
 [[case]]
 id = "rapidgzip-cut-raw-deflate"
 pr = 545
+round = 2
 head = "d73f8fb6a7592b2ec7d03bc422f32b220acdc45a"
 base = "378206d12d412ed53c05af54e0344a335fdd9866"
 fixed_by = "#646 (d02a4ac5)"
@@ -82,6 +87,7 @@ zlib have an end check.
 [[case]]
 id = "rapidgzip-cut-gzip-member-then-complete"
 pr = 613
+round = 1
 head = "5bd61cb871708fb8e66fe2f48b95b41fe9319562"
 base = "9a2bdec5169fd5b9f58596a6674c23f14465aff8"
 fixed_by = "#635 (9b615164)"
@@ -104,6 +110,7 @@ the backstop should check rapidgzip consumed the whole source.
 [[case]]
 id = "pax-sparse-version-by-records"
 pr = 738
+round = 5
 head = "12b428a912c3bde2740a3ff56e29997b7bbc11a3"
 base = "6641c86c959128a338354d95650a374504d3f5c3"
 fixed_by = "#850 (e0bf370a)"
