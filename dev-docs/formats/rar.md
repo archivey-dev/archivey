@@ -538,7 +538,11 @@ is still not an old-scheme set; stub-follow owns that shape.
 in the map; no `unrar`, no `rarfile`. `reader.get()` and name lookup are served
 from that table. FILE headers QO omitted are parsed. §1.1.
 
-**Volumes are resolved before parsing.** `name.partN.rar` (RAR5 and newer RAR4), an SFX
+**Volumes are resolved before parsing.** A discovered volume that is a symlink is refused
+(`OpenError`), and `ArchiveyConfig.discover_volumes=False` reads only the named file, in
+`resolve_source` and in the reader's own `_open_shared_source` walk; `unrar`, run on
+volume 1's path, can still open later volumes by name (threat model "Volume discovery
+trusts the folder"). `name.partN.rar` (RAR5 and newer RAR4), an SFX
 first volume `name.part1.sfx` / `name.part1.exe` beside later `.partN.rar` parts, and
 `name.rar` (or an old-scheme SFX `name.exe` / `name.sfx`) + `name.r00`, `name.r01`, …
 (older RAR4) are all discovered from any member of the set — the old scheme by walking
