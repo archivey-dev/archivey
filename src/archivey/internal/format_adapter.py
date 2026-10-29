@@ -1783,11 +1783,12 @@ class SequentialReaderAdapter(_PluginAdapter):
 
         A window (:class:`_SpanWindow`) or a view (:class:`MemberDataView`) raises
         ``TruncatedError`` at a cut itself, so with no digest the member gets no
-        verifier to read through. Its length is the member's size, so a size check
-        would check nothing more: the walk refuses a span whose listed size differs
-        from its data length and fills an unset size from it
-        (:meth:`_take_span_checked`), and only a member with data gets a stream
-        (``pass_has_data``). Decoded data is the reader's, so its size is checked."""
+        verifier to read through, when its listed size is its data length. The walk
+        makes them equal for a file and for a directory that stores data: it refuses
+        a span whose listed size differs and fills an unset size from it
+        (:meth:`_take_span_checked`). A directory that lists a size and stores
+        nothing also gets a stream (``pass_has_data``), and its size is checked above
+        the window, as decoded data's is: what a decode makes is the reader's."""
         expected = record.expected if record.expected is not None else member.hashes
         decode = record.decode
         if decode is not None:
@@ -1802,7 +1803,11 @@ class SequentialReaderAdapter(_PluginAdapter):
             stream,
             member.name,
             size=member.size,
-            expected_size=member.size if decode is not None else None,
+            expected_size=(
+                member.size
+                if decode is not None or member.size != record.length
+                else None
+            ),
             expected_hashes=expected or None,
             verify_member=member,
             # A window and a view both stop at the data's end; what a decode makes of

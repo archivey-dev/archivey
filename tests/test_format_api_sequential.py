@@ -75,6 +75,7 @@ class ToysContainer(PluginContainer):
     RPMISH = "toys-rpmish"
     DECODED = "toys-decoded"
     PEEKING = "toys-peeking"
+    SIZED_EMPTY_DIRECTORY = "toys-sized-empty-directory"
 
 
 TOYS = ArchiveFormat(ToysContainer.TOYS, StreamFormat.UNCOMPRESSED)
@@ -494,6 +495,39 @@ def test_a_directory_with_data_is_reported(
         ("f", MemberType.FILE, 2, b"ok"),
     ]
     assert counts[archivey.DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED] == 1
+
+
+class _SizedEmptyDirectoryReader(ToysReader):
+    """Lists every directory with a size of 5 and no stored data."""
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        for span in super().walk(stream):
+            if span.member.type is MemberType.DIRECTORY:
+                span.member.size = 5
+            yield span
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_a_directory_listing_a_size_it_does_not_store_raises_on_read(
+    toys: ArchiveFormat, tmp_path: Path, pipe: bool
+) -> None:
+    # The data window ends at the stored length (0); the listed size is what the
+    # read is checked against, in a pass as in open().
+    fmt = _variant(_SizedEmptyDirectoryReader, ToysContainer.SIZED_EMPTY_DIRECTORY)
+    data = build_toys([("d", MemberType.DIRECTORY, b"")])
+    source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data)
+    with open_archive(source, format=fmt, streaming=pipe) as reader:
+        for member, stream in reader.stream_members():
+            assert member.size == 5
+            assert stream is not None
+            with pytest.raises(TruncatedError):
+                stream.read()
+    if not pipe:
+        with (
+            open_archive(source, format=fmt) as reader,
+            pytest.raises(TruncatedError),
+        ):
+            reader.read("d/")
 
 
 class _ClosingReader(ToysReader):

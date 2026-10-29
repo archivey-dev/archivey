@@ -5,6 +5,9 @@ format) reads each member's data through the walk's own stream. On a solid archi
 compressed one) that is where it pays: the archive is decoded once, not twice. When
 the walk moves on before the pass has read the member to its end, the stream reads a
 view of its own from where it stopped instead (``BaseArchiveReader._walk_handoff_locked``).
+
+It also holds :class:`MemberDataView`, the cut-raising view a member's data is read
+through whether or not a walk is at it: a sequential format's ``open()`` uses it as well.
 """
 
 from __future__ import annotations
@@ -18,7 +21,6 @@ from archivey.internal.streams.decompressor_stream import _COMPRESSED_READ_SIZE_
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     ReadOnlyIOStream,
-    SharedView,
     check_read_size,
 )
 from archivey.internal.streams.streamtools.binaryio import (
@@ -113,8 +115,8 @@ class WalkHandoffStream(ReadOnlyIOStream):
 class MemberDataView(DelegatingStream):
     """A random-access member's data area that raises at a cut, not a clean end.
 
-    TAR's own opens use it, and so does a handoff's view once the walk has moved on
-    (TAR's and the sequential adapter's ``reopen``).
+    The sequential adapter's opens use it, and so does a handoff's view once the walk
+    has moved on (its ``reopen``).
 
     The view under it returns ``b""`` where the archive ends, which reads as the end of
     the member. Here a read that ends before ``length`` keeps the full-count rule (ADR
@@ -126,7 +128,7 @@ class MemberDataView(DelegatingStream):
     readinto_passthrough = False
 
     def __init__(
-        self, view: SharedView, data_offset: int, length: int, *, what: str
+        self, view: BinaryIO, data_offset: int, length: int, *, what: str
     ) -> None:
         super().__init__(view)
         self._data_offset = data_offset
