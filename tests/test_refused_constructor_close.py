@@ -261,7 +261,7 @@ _CLOSE_STATE_FIRST = {
         "assigns _adapter, _walk and _window, all close() reads, before "
         "ReadOnlyIOStream.__init__"
     ),
-    "archivey.internal.streams.streamtools.shared.MemberDataView": (
+    "archivey.internal.walk_handoff.MemberDataView": (
         "DelegatingStream.__init__ first; close() reads nothing assigned after it"
     ),
     "archivey.internal.streams.streamtools.fullcount.FullCountStream": (

@@ -78,7 +78,7 @@ from archivey.internal.streams.streamtools.binaryio import (
 from archivey.internal.streams.streamtools.fullcount import FullCountStream
 from archivey.internal.streams.streamtools.locked import LockedStream
 from archivey.internal.streams.streamtools.readahead import ReadAheadStream
-from archivey.internal.streams.streamtools.shared import MemberDataView, SharedSource
+from archivey.internal.streams.streamtools.shared import SharedSource
 from archivey.internal.streams.streamtools.slice import (
     SharedView,
     SlicingStream,
@@ -96,7 +96,6 @@ __all__ = [
     "DelegatingStream",
     "FullCountStream",
     "LockedStream",
-    "MemberDataView",
     "OneReadEachStream",
     "ReadAheadStream",
     "ReadOnlyIOStream",

@@ -87,7 +87,6 @@ from archivey.internal.streams.respawn import RespawnStream
 from archivey.internal.streams.streamtools import (
     FullCountStream,
     LockedStream,
-    MemberDataView,
     OneReadEachStream,
     ReadAheadStream,
     ReadOnlyIOStream,
@@ -101,6 +100,7 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.internal.streams.streamtools.binaryio import read_blocking
 from archivey.internal.streams.verify import CustomDigests, hasher_factory
+from archivey.internal.walk_handoff import MemberDataView
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -1445,8 +1445,9 @@ class SequentialReaderAdapter(_PluginAdapter):
             return self._span_parts(member, record, stream, check_size=True)
         return self._span_parts(member, record, stream)
 
-    @property
+    @functools.cached_property
     def _archive_what(self) -> str:
+        # Built once: it is read on every member open, and the format never changes.
         return f"{self._format.display_name} archive"
 
     def _span_view(self, record: _Span, start: int) -> BinaryIO:
@@ -1657,9 +1658,12 @@ class SequentialReaderAdapter(_PluginAdapter):
 
         A pass's window (:class:`_SpanWindow`, or the :class:`MemberDataView` a
         handoff falls back to) raises ``TruncatedError`` at a cut itself, so with no
-        digest the member gets no verifier to read through. ``check_size`` is for a
-        plain view (``open()``), which ends short at a cut: the listed size is checked
-        above it."""
+        digest the member gets no verifier to read through. The window's length is
+        the member's size, so the size check it replaces checked nothing more: the walk
+        refuses a span whose listed size differs from its data length and fills an unset
+        size from it (:meth:`_take_span_checked`), and only a member with data gets a
+        stream (``pass_has_data``). ``check_size`` is for a plain view (``open()``),
+        which ends short at a cut: the listed size is checked above it."""
         expected = record.expected if record.expected is not None else member.hashes
         return self._member_parts(
             stream,

@@ -127,7 +127,6 @@ from archivey.internal.streams.codecs import (
 from archivey.internal.streams.decompressor_stream import _StreamChecksumError
 from archivey.internal.streams.streamtools import (
     LockedStream,
-    MemberDataView,
     ReadAheadStream,
     SharedView,
     SparseStream,
@@ -135,6 +134,7 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.internal.timestamps import TimestampIssue, unix_to_datetime
 from archivey.internal.unix_mode import special_file_type_from_tar_typeflag
+from archivey.internal.walk_handoff import MemberDataView
 from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_SPECIAL_FILE_TYPE,

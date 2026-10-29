@@ -441,7 +441,6 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         fullcount,
         locked,
         readahead,
-        shared,
         solid,
         sparse,
     )
@@ -522,7 +521,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         # on. Forward-only, stored bytes.
         walk_handoff.WalkHandoffStream,
         # A random-access member's data view: the view's offsets, forwarded.
-        shared.MemberDataView,
+        walk_handoff.MemberDataView,
         # A sequential plugin's member data in a streaming pass: stored bytes read
         # forward from the walk's stream, like TAR's slice; no codec above it.
         format_adapter._SpanWindow,
@@ -675,7 +674,7 @@ def test_delegating_stream_close_inventory() -> None:
     """
     _import_all_archivey_modules()
 
-    from archivey.internal import password_confirm
+    from archivey.internal import password_confirm, walk_handoff
     from archivey.internal.backends import (
         rar_copy_sources,
         rar_reader,
@@ -688,7 +687,6 @@ def test_delegating_stream_close_inventory() -> None:
         fullcount,
         locked,
         readahead,
-        shared,
         sparse,
     )
 
@@ -710,7 +708,7 @@ def test_delegating_stream_close_inventory() -> None:
         rar_copy_sources._TeeBlock,
         sparse.SparseStream,
         readahead.ReadAheadStream,
-        shared.MemberDataView,
+        walk_handoff.MemberDataView,
     }
     subclass_closes_inner = {
         cli.ProcessOutputStream,
