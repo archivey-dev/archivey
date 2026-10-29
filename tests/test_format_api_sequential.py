@@ -1617,7 +1617,9 @@ def test_decoded_seekable_members(decoded: _DecodedFixture, tmp_path: Path) -> N
         assert stream.read(10) == expected[5:15]
         stream.seek(0)
         assert stream.read() == expected
-    assert reader_type.walks >= 3
+    # The listing, the open, and one walk from the start for each of the two seeks
+    # back (seek(5) after reading to 1010, then seek(0)); the forward seek reads on.
+    assert reader_type.walks == 4
 
 
 def test_decoded_rewalk_must_repeat_itself(
