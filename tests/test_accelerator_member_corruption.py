@@ -10,7 +10,6 @@ standard library's.
 from __future__ import annotations
 
 import struct
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -18,7 +17,7 @@ import pytest
 from archivey.config import AcceleratorMode, ArchiveyConfig
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.streams.codecs.rapidgzip_child import RapidgzipChildStream
-from tests.conftest import requires, requires_binary
+from tests.conftest import requires, requires_binary, run_7z
 from tests.test_audit2_zip import _build_zip, _Entry, _outcome, _raw_deflate
 
 pytestmark = requires("rapidgzip")
@@ -95,8 +94,8 @@ def _7z_deflate(tmp_path: Path) -> tuple[bytes, int]:
     """A 7z holding one Deflate member, and where its packed stream ends."""
     (tmp_path / "a.txt").write_bytes(_PAYLOAD)
     archive = tmp_path / "a.7z"
-    subprocess.run(
-        ["7z", "a", "-m0=Deflate", "-bd", "-bso0", str(archive), "a.txt"],
+    run_7z(
+        ["a", "-m0=Deflate", "-bd", "-bso0", str(archive), "a.txt"],
         cwd=tmp_path,
         check=True,
     )
