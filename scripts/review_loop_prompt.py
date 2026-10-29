@@ -6,8 +6,8 @@ appends what it prints to ``$GITHUB_OUTPUT``: ``prompt`` (the filled-in
 `.github/review-loop-prompt.md`), and ``round`` and ``final`` for the round it is.
 Stdlib only.
 
-Reads ``PR``, ``GITHUB_REPOSITORY``, ``ROUND`` (the gate's round), ``MAX_ROUNDS`` and
-``PASS`` from the environment. ``PASS=deep`` is the deep pass, which runs as the round
+Reads ``PR``, ``GITHUB_REPOSITORY``, ``ROUND`` (the gate's round), ``MAX_ROUNDS``,
+``PASS`` and ``TIER`` from the environment. ``PASS=opus`` is the Opus pass, which runs as the round
 after the gate's, in the same workflow run; anything else is an ordinary round.
 """
 
@@ -22,23 +22,27 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ROOT / ".github" / "review-loop-prompt.md"
 
-#: The paragraph a deep pass's prompt carries, in place of ``{PASS}``.
-DEEP_PASS = """
-This round is the deep pass. Earlier rounds, by another reviewer, approved this
-pull request, and this repository runs one full review by a stronger model on a deep
+#: The paragraph an Opus pass's prompt carries, in place of ``{PASS}``.
+OPUS_PASS = """
+This round is the Opus pass. Earlier rounds, by another reviewer, approved this
+pull request, and this repository runs one full review by a stronger model on a
 pull request once that happens. Read it as a first look, not as a fix round: the
 whole change against the base, with the reference doc §1 names for a first look, at
-the deep tier. Their findings are on the pull request; do not repeat them, skip the
-status bullets for their IDs, and look hardest at what they could have missed. Cursor
-is reviewing it at the same time, so leave its comments alone.
+the tier §1 gives it. Their findings are on the pull request; do not repeat them, skip
+the status bullets for their IDs, and look hardest at what they could have missed, and
+at severities they may have rated too low.
+"""
+
+#: Added to `OPUS_PASS` on a deep pull request, where the workflow asks Cursor too.
+CURSOR_TOO = """Cursor is reviewing it at the same time, so leave its comments alone.
 """
 
 
 def render(env: dict[str, str]) -> tuple[str, int, bool]:
     """The prompt, the round it is for, and whether that round is the agents' last."""
-    deep = env.get("PASS") == "deep"
+    opus = env.get("PASS") == "opus"
     max_rounds = int(env["MAX_ROUNDS"])
-    rnd = int(env["ROUND"]) + (1 if deep else 0)
+    rnd = int(env["ROUND"]) + (1 if opus else 0)
     text = TEMPLATE.read_text(encoding="utf-8")
     # The comment at the top is for whoever edits the template, not for the reviewer.
     text = re.sub(r"\A<!--.*?-->\n", "", text, flags=re.DOTALL)
@@ -47,7 +51,11 @@ def render(env: dict[str, str]) -> tuple[str, int, bool]:
         "REPOSITORY": env["GITHUB_REPOSITORY"],
         "ROUND": str(rnd),
         "MAX_ROUNDS": str(max_rounds),
-        "PASS": DEEP_PASS if deep else "",
+        "PASS": (
+            OPUS_PASS + (CURSOR_TOO if env.get("TIER") == "deep" else "")
+            if opus
+            else ""
+        ),
     }
     for name, value in values.items():
         text = text.replace("{" + name + "}", value)

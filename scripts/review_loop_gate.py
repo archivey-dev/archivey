@@ -31,13 +31,13 @@ the pull request's ``updated_at`` in the webhook, which labelling bumps; see
 **Finish** (``--finish``)::
 
     {"round": 3, "final": false, "head_sha": "abc...", "live_head_sha": "def...",
-     "repository": "...", "tier": "deep", "deep_pass": false,
+     "repository": "...", "tier": "deep", "opus_pass": false,
      "markers": ["<!-- archivey-review-round n=1 ... -->"],
      "verdict": {"verdict": "findings", "summary": "...", "question": ""}}
     -> {"verdict": "findings", "stop": false, "counted": true,
         "comment": "...", "reason": "...", "label": "changes-requested",
         "unlabel": ["approved", "approved-with-fixes", "needs-decision"],
-        "deep_pass_next": false}
+        "opus_pass_next": false}
 
 ``verdict`` is the file the reviewing agent wrote, or ``null`` when it wrote none.
 ``head_sha`` is the commit the round checked out and read; ``live_head_sha`` is the
@@ -48,9 +48,9 @@ the marker that makes the round count. ``label`` is the outcome label the workfl
 on, taking the ``unlabel`` ones off; see `OUTCOME_LABELS`.
 
 ``tier`` is the pull request's review tier (``python3 scripts/review_prep.py tier``),
-``deep_pass`` says this round was the deep pass, and ``markers`` are the same first
-lines `decide` reads. ``deep_pass_next`` asks the workflow to run the deep pass now;
-see `DEEP_PASS_STARTS`.
+``opus_pass`` says this round was the Opus pass, and ``markers`` are the same first
+lines `decide` reads. ``opus_pass_next`` asks the workflow to run the Opus pass now;
+see `OPUS_PASS_STARTS`.
 """
 
 from __future__ import annotations
@@ -133,22 +133,24 @@ VERDICT_STOPS = {
     "decision": False,
 }
 
-#: The tier whose pull requests get the deep pass.
-DEEP_TIER = "deep"
+#: The tiers whose pull requests get the Opus pass. A light pull request does not; on a
+#: deep one, the workflow also asks Cursor for a full review at the same time.
+OPUS_PASS_TIERS = frozenset({"standard", "deep"})
 
-#: The verdicts after which a deep pull request's deep pass runs: one full review by a
-#: stronger model, in the same workflow run, while Cursor is asked for one too.
+#: The verdicts after which a pull request's Opus pass runs: one full review by the
+#: stronger model, in the same workflow run.
 #:
-#: The rounds before it are the everyday reviewer's, so that the plain issues are fixed
-#: before the two expensive passes read the change (davitf, 2026-10-29). A conditional
-#: approval is not in here: its fixes are still to come, so on a deep pull request it
-#: asks for one more round to read them, and the pass follows the round that approves
-#: outright. The deep pass runs once per pull request; the rounds after it are fix
+#: The rounds before it are the everyday reviewer's (Sonnet), so that the plain issues
+#: are fixed before the expensive pass reads the change (davitf, 2026-10-29). Sonnet
+#: finds about as much but misjudges severity more often, and the verdict rests on
+#: severity, so its approval gets a second look. A conditional approval is not in here:
+#: its fixes are still to come, so it asks for one more round to read them, and the pass
+#: follows the round that approves outright. The Opus pass runs once per pull request; the rounds after it are fix
 #: rounds again.
-DEEP_PASS_STARTS = frozenset({"clean", "approved"})
+OPUS_PASS_STARTS = frozenset({"clean", "approved"})
 
-#: The field a deep pass's round marker carries, so later runs know it happened.
-DEEP_PASS_FIELD = "pass=deep"
+#: The field an Opus pass's round marker carries, so later runs know it happened.
+OPUS_PASS_FIELD = "pass=opus"
 
 #: What an unreadable or unrecognised verdict is treated as. See `VERDICT_STOPS`.
 DEFAULT_VERDICT = "findings"
@@ -189,25 +191,25 @@ class History:
     rounds: int
     #: Commits a review stopped on before reaching a verdict.
     failed_shas: frozenset[str]
-    #: A deep pass already ran on this pull request.
-    deep_pass_done: bool = False
+    #: An Opus pass already ran on this pull request.
+    opus_pass_done: bool = False
 
 
 def read_history(markers: object) -> History:
     """What the workflow's own earlier comments record, from their first lines."""
     rounds = 0
     failed: set[str] = set()
-    deep = False
+    opus = False
     for line in markers if isinstance(markers, list) else []:
         if not isinstance(line, str):
             continue
         fields = dict(_FIELD.findall(line))
         if line.startswith(ROUND_MARKER + " "):
             rounds += 1
-            deep = deep or fields.get("pass") == "deep"
+            opus = opus or fields.get("pass") == "opus"
         elif line.startswith(ATTEMPT_MARKER + " ") and fields.get("sha"):
             failed.add(fields["sha"])
-    return History(rounds, frozenset(failed), deep)
+    return History(rounds, frozenset(failed), opus)
 
 
 def _when(value: object) -> datetime | None:
@@ -408,8 +410,8 @@ class Finish:
     label: str = ""
     #: The other outcome labels, to take off when `label` goes on.
     unlabel: tuple[str, ...] = ()
-    #: Run the deep pass now, as the next round (`DEEP_PASS_STARTS`).
-    deep_pass_next: bool = False
+    #: Run the Opus pass now, as the next round (`OPUS_PASS_STARTS`).
+    opus_pass_next: bool = False
 
 
 def finish(event: dict) -> Finish:
@@ -440,15 +442,16 @@ def finish(event: dict) -> Finish:
 
     v = read_verdict(event.get("verdict"))
     summary = f" {v.summary}" if v.summary else ""
-    deep_pass = bool(event.get("deep_pass"))
-    # Only a deep pull request whose deep pass has not run yet is waiting for one.
-    awaits_deep = (
-        event.get("tier") == DEEP_TIER
-        and not deep_pass
-        and not read_history(event.get("markers")).deep_pass_done
+    opus_pass = bool(event.get("opus_pass"))
+    # Only a pull request whose tier gets the Opus pass, and whose pass has not run
+    # yet, is waiting for one.
+    awaits_opus = (
+        event.get("tier") in OPUS_PASS_TIERS
+        and not opus_pass
+        and not read_history(event.get("markers")).opus_pass_done
     )
-    deep_next = (
-        awaits_deep and v.verdict in DEEP_PASS_STARTS and rnd < MAX_FORCED_ROUNDS
+    opus_next = (
+        awaits_opus and v.verdict in OPUS_PASS_STARTS and rnd < MAX_FORCED_ROUNDS
     )
     live = str(event.get("live_head_sha") or "")
     unseen = (
@@ -472,22 +475,28 @@ def finish(event: dict) -> Finish:
             )
         return sentence
 
-    if deep_next:
+    if opus_next:
         body = (
-            f"**Round {rnd} approved, so the deep pass starts.**{summary}\n\n"
-            "This is a deep pull request: round "
-            f"{rnd + 1}, a full review by a stronger model, runs now in this same "
-            "workflow run, and Cursor is asked for a full review too. Wait for both, "
-            "then work through their findings with `address-review-findings`."
+            f"**Round {rnd} approved, so the Opus pass starts.**{summary}\n\n"
+            f"Round {rnd + 1}, a full review by Opus, runs now in this same workflow "
+            "run"
+            + (
+                ", and Cursor is asked for a full review too. Wait for both, then work "
+                "through their findings"
+                if event.get("tier") == "deep"
+                else ". Wait for it, then work through its findings"
+            )
+            + " with `address-review-findings`."
         )
-    elif awaits_deep and v.verdict == "conditional":
+    elif awaits_opus and v.verdict == "conditional":
         body = (
             f"**Round {rnd} approves once its findings are fixed.**{summary}\n\n"
-            "This is a deep pull request, so the fixes get one more round: work "
+            "An approval here is followed by an Opus pass, so the fixes get one more "
+            "round first: work "
             "through the findings with `address-review-findings`, push, and "
             + again(
                 f"add the {label} label again. When a round approves outright, the "
-                "deep pass runs (a full review by a stronger model, and one by Cursor)."
+                "Opus pass runs."
             )
         )
     elif v.verdict == "decision":
@@ -539,20 +548,20 @@ def finish(event: dict) -> Finish:
 
     marker = (
         f"{ROUND_MARKER} n={rnd}{f' sha={sha}' if sha else ''} verdict={v.verdict}"
-        f"{f' {DEEP_PASS_FIELD}' if deep_pass else ''} -->"
+        f"{f' {OPUS_PASS_FIELD}' if opus_pass else ''} -->"
     )
     outcome = OUTCOME_LABELS[v.verdict]
     return Finish(
         v.verdict,
         # A conditional approval that waits for a round to read its fixes is not one
         # that stops.
-        v.stop and not (awaits_deep and v.verdict == "conditional"),
+        v.stop and not (awaits_opus and v.verdict == "conditional"),
         True,
         f"{marker}\n\n{body}{unseen}{footer}",
         v.reason,
         outcome,
         tuple(sorted({other for other in OUTCOME_LABELS.values() if other != outcome})),
-        deep_next,
+        opus_next,
     )
 
 

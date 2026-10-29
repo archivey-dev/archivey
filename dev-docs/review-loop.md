@@ -93,16 +93,22 @@ with the optional accelerators and codecs a change is about. Opus reviewed until
 2026-10-29; on the [review-eval](review-eval/README.md) set Sonnet caught as many of
 the bugs the loop had missed at about an eighth of the cost.
 
-**A deep pull request gets one deep pass once Sonnet approves it.** Sonnet's rounds
-clear the straightforward findings first. When a round on a `deep`-tier pull request
-ends `clean` or `approved`, the same workflow run asks Cursor for a full review
-(an `@cursoragent` comment) and runs one Opus round, the deep pass, which reads the
-change as a first look and skips the findings already on the pull request. The deep
-pass is a counted round: its closing comment's marker carries `pass=deep`, which is
-how later rounds know it ran, and it never runs twice. Until it has run, a
-`conditional` verdict on a deep pull request asks for one more round instead of
-stopping, so the pass still starts once the fixes land. Its findings, and Cursor's,
-then go through the ordinary rounds. The tier comes from the base branch's
+**Once Sonnet approves, Opus reads the pull request once.** Sonnet's rounds clear the
+straightforward findings first. When a round on a `standard` or `deep` pull request
+ends `clean` or `approved`, the same workflow run starts one Opus round, the Opus pass,
+which reads the change as a first look, skips the findings already on the pull
+request, and looks hardest at what they missed and at severities rated too low. On a
+`deep` pull request it also asks Cursor for a full review (an `@cursoragent`
+comment). A `light` pull request gets neither. The reason is the 2026-10-21 comparison
+of the three reviewers on five pull requests: Sonnet found about as many
+issues as Opus, but missed an important one in a single format's code and rated two
+important ones as nits, and the verdict rests on severity.
+
+The Opus pass is a counted round: its closing comment's marker carries `pass=opus`,
+which is how later rounds know it ran, and it never runs twice. Until it has run, a
+`conditional` verdict on a standard or deep pull request asks for one more round
+instead of stopping, so the pass still starts once the fixes land. Its findings, and
+Cursor's, then go through the ordinary rounds. The tier comes from the base branch's
 `review_prep.py`, as for the risk label; `finish()` in the gate holds the rule.
 
 The prompt both reviewers get is
@@ -213,7 +219,7 @@ the three `risk:` labels.
   reviewer that remembers proposing a fix is a poor judge of that fix. Keeping one warm
   session across rounds was considered and rejected (davitf, 2026-09-19).
 
-- **Whether Cursor answers the workflow's comment is untested.** The deep pass asks
+- **Whether Cursor answers the workflow's comment is untested.** The Opus pass asks
   Cursor with a comment from `github-actions[bot]`; if Cursor only answers people, the
   Opus pass still runs and Cursor has to be asked by hand.
 

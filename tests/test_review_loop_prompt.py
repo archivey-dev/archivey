@@ -30,20 +30,26 @@ def test_an_ordinary_round_fills_every_placeholder() -> None:
     for name in ("PR", "REPOSITORY", "ROUND", "MAX_ROUNDS", "PASS"):
         assert "{" + name + "}" not in text
     assert "archivey-dev/archivey" in text
-    assert "deep pass" not in text
+    assert "Opus pass" not in text
     # The editors' header stays out of the reviewer's prompt.
     assert not text.startswith("<!--")
 
 
-def test_the_deep_pass_is_the_round_after_the_gate_s() -> None:
-    text, rnd, final = prompt.render(ENV | {"PASS": "deep"})
+def test_the_opus_pass_is_the_round_after_the_gate_s() -> None:
+    text, rnd, final = prompt.render(ENV | {"PASS": "opus", "TIER": "standard"})
     assert rnd == 3
     assert final is False
-    assert "This round is the deep pass." in text
+    assert "This round is the Opus pass." in text
+    assert "Cursor" not in text
 
 
-def test_a_deep_pass_at_the_cap_is_the_last_round() -> None:
-    _, rnd, final = prompt.render(ENV | {"ROUND": "4", "PASS": "deep"})
+def test_on_a_deep_pull_request_the_pass_leaves_cursor_alone() -> None:
+    text, _, _ = prompt.render(ENV | {"PASS": "opus", "TIER": "deep"})
+    assert "leave its comments alone" in text
+
+
+def test_an_opus_pass_at_the_cap_is_the_last_round() -> None:
+    _, rnd, final = prompt.render(ENV | {"ROUND": "4", "PASS": "opus"})
     assert (rnd, final) == (5, True)
 
 

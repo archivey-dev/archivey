@@ -53,7 +53,7 @@ jobs:
       github.event.label.name == 'review' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    # A round and, on a deep pull request, the deep pass after it.
+    # A round and, on a standard or deep pull request, the Opus pass after it.
     timeout-minutes: 100
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -185,7 +185,7 @@ jobs:
           uv sync --frozen --group dev --extra all
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
-      # The tier decides whether a deep pass follows the round. The base branch's copy
+      # The tier decides whether an Opus pass follows the round. The base branch's copy
       # of the script, as `risk-label.yml` uses: a pull request must not lower its own
       # tier by editing the path lists. Written beside the pull request's copy, since
       # it finds the repository from its own path, and removed again at once.
@@ -226,8 +226,8 @@ jobs:
           allowed_bots: "claude,claude[bot],cursor,cursor[bot]"
           # Sonnet, not Opus: on the review-eval set (dev-docs/review-eval/results.md)
           # it caught as many of the bugs the loop missed, at about an eighth of the
-          # cost. Raising its effort did not help either. Opus reads a deep pull
-          # request once, in the deep pass below.
+          # cost. Raising its effort did not help either. Opus reads a standard or
+          # deep pull request once, in the Opus pass below.
           claude_args: |
             --model claude-sonnet-5-5
             --allowedTools Read,Grep,Glob,WebFetch,Bash
@@ -243,35 +243,39 @@ jobs:
           FINAL: ${{ steps.gate.outputs.final }}
           HEAD_SHA: ${{ steps.gate.outputs.head_sha }}
           TIER: ${{ steps.tier.outputs.tier }}
-          DEEP_PASS: "false"
+          OPUS_PASS: "false"
         run: bash scripts/review_loop_close.sh
 
-      # The deep pass: a deep pull request whose rounds have approved it gets one full
-      # review by Opus, as the next round, and one by Cursor. The gate decides when
-      # (`DEEP_PASS_STARTS`), and it runs once per pull request. In this same run,
-      # because a label the workflow's own token adds starts no workflow.
+      # The Opus pass: a standard or deep pull request whose rounds have approved it
+      # gets one full review by Opus, as the next round, and a deep one gets one by
+      # Cursor too. The gate decides when (`OPUS_PASS_STARTS`), and it runs once per
+      # pull request. In this same run, because a label the workflow's own token adds
+      # starts no workflow.
       - name: Ask Cursor for a full review
-        if: steps.close.outputs.deep_pass_next == 'true'
+        if: >-
+          steps.close.outputs.opus_pass_next == 'true' &&
+          steps.tier.outputs.tier == 'deep'
         run: |
           gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "@cursoragent please do a full code review of this pull request with this repository's \`code-review-skill\`: the whole diff against its base, as a first look. Post the findings as review comments; do not push.
 
           ---
-          _Posted by the review workflow for the deep pass._"
+          _Posted by the review workflow for the Opus pass._"
 
-      - name: Write the deep-pass prompt
-        id: deep_prompt
-        if: steps.close.outputs.deep_pass_next == 'true'
+      - name: Write the Opus-pass prompt
+        id: opus_prompt
+        if: steps.close.outputs.opus_pass_next == 'true'
         env:
           ROUND: ${{ steps.gate.outputs.round }}
           MAX_ROUNDS: ${{ steps.gate.outputs.max_rounds }}
-          PASS: deep
+          PASS: opus
+          TIER: ${{ steps.tier.outputs.tier }}
         run: |
           rm -f /tmp/loop-verdict.json
           python3 scripts/review_loop_prompt.py >> "$GITHUB_OUTPUT"
 
-      - name: Claude deep pass
-        id: deep
-        if: steps.close.outputs.deep_pass_next == 'true'
+      - name: Claude Opus pass
+        id: opus
+        if: steps.close.outputs.opus_pass_next == 'true'
         uses: anthropics/claude-code-action@v1
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -281,14 +285,14 @@ jobs:
           claude_args: |
             --model claude-opus-5
             --allowedTools Read,Grep,Glob,WebFetch,Bash
-          prompt: ${{ steps.deep_prompt.outputs.prompt }}
+          prompt: ${{ steps.opus_prompt.outputs.prompt }}
 
-      - name: Close the deep pass
-        if: always() && steps.close.outputs.deep_pass_next == 'true'
+      - name: Close the Opus pass
+        if: always() && steps.close.outputs.opus_pass_next == 'true'
         env:
-          ROUND: ${{ steps.deep_prompt.outputs.round }}
-          FINAL: ${{ steps.deep_prompt.outputs.final }}
+          ROUND: ${{ steps.opus_prompt.outputs.round }}
+          FINAL: ${{ steps.opus_prompt.outputs.final }}
           HEAD_SHA: ${{ steps.gate.outputs.head_sha }}
           TIER: ${{ steps.tier.outputs.tier }}
-          DEEP_PASS: "true"
+          OPUS_PASS: "true"
         run: bash scripts/review_loop_close.sh

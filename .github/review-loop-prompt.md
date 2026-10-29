@@ -1,6 +1,6 @@
 <!-- The prompt for a review-loop round. `.github/workflows/review-loop.yml` fills in
 the braced names and passes the result to the reviewer. {PASS} is empty for an ordinary
-round and holds the deep pass's paragraph (`DEEP_PASS` in the workflow) for that one. -->
+round and holds the Opus pass's paragraph (`OPUS_PASS` in the workflow) for that one. -->
 Review pull request #{PR} in {REPOSITORY}.
 This is review round {ROUND}. Your verdict decides
 whether the closing comment asks for another round; the implementer adds

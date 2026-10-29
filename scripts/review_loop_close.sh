@@ -2,10 +2,10 @@
 # Closes a review round: hands the reviewer's verdict file to
 # `scripts/review_loop_gate.py --finish`, posts the closing comment it writes, and puts
 # the outcome label on. `.github/workflows/review-loop.yml` runs it after every round,
-# the deep pass's included; it is a file of its own so the two closes cannot drift.
+# the Opus pass's included; it is a file of its own so the two closes cannot drift.
 #
-# Reads ROUND, FINAL, HEAD_SHA, PR and GITHUB_REPOSITORY, and TIER and DEEP_PASS when
-# set; writes `deep_pass_next` to GITHUB_OUTPUT. The files under /tmp are the gate
+# Reads ROUND, FINAL, HEAD_SHA, PR and GITHUB_REPOSITORY, and TIER and OPUS_PASS when
+# set; writes `opus_pass_next` to GITHUB_OUTPUT. The files under /tmp are the gate
 # step's (`markers.txt`) and the reviewer's (`loop-verdict.json`).
 set -euo pipefail
 # A missing file is a review that did not finish, which does not count. A file
@@ -23,7 +23,7 @@ fi
 live="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
   --json headRefOid --jq .headRefOid || true)"
 
-# The gate step's markers say whether this pull request's deep pass already ran.
+# The gate step's markers say whether this pull request's Opus pass already ran.
 touch /tmp/markers.txt
 jq -n \
   --argjson round "$ROUND" \
@@ -32,18 +32,18 @@ jq -n \
   --arg live_head_sha "$live" \
   --arg repository "$GITHUB_REPOSITORY" \
   --arg tier "${TIER:-}" \
-  --argjson deep_pass "${DEEP_PASS:-false}" \
+  --argjson opus_pass "${OPUS_PASS:-false}" \
   --rawfile markers /tmp/markers.txt \
   --argjson verdict "$verdict" \
   '{round: $round, final: $final, head_sha: $head_sha,
     live_head_sha: $live_head_sha, repository: $repository,
-    tier: $tier, deep_pass: $deep_pass,
+    tier: $tier, opus_pass: $opus_pass,
     markers: ($markers | split("\n") | map(select(length > 0))),
     verdict: $verdict}' \
   | python3 scripts/review_loop_gate.py --finish > /tmp/finish.json
 jq -r '"Verdict: \(.verdict) stop=\(.stop) counted=\(.counted) — \(.reason)"' \
   /tmp/finish.json >> "$GITHUB_STEP_SUMMARY"
-echo "deep_pass_next=$(jq -r '.deep_pass_next // false' /tmp/finish.json)" \
+echo "opus_pass_next=$(jq -r '.opus_pass_next // false' /tmp/finish.json)" \
   >> "${GITHUB_OUTPUT:-/dev/null}"
 
 jq -j '.comment // ""' /tmp/finish.json > /tmp/comment.md
