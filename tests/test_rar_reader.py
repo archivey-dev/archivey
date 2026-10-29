@@ -1185,6 +1185,76 @@ def test_multi_volume_roundtrip() -> None:
         assert archive.cost.notes == ()
 
 
+def _stdin_payload(stem: str) -> bytes:
+    """The bytes ``scripts/gen_rar_fixtures.py`` piped to ``rar -si`` for ``stem``."""
+    seed, size = {
+        "stdin_vol": (b"stdin-vol", 2000),
+        "stdin_vol_m3": (b"stdin-vol-m3", 4000),
+    }[stem]
+    lines = (
+        hashlib.sha256(seed + i.to_bytes(4, "big")).hexdigest().encode() + b"\n"
+        for i in range(size // 65 + 1)
+    )
+    return b"".join(lines)[:size]
+
+
+@pytest.mark.parametrize(
+    "stem",
+    [
+        "stdin_vol",
+        pytest.param("stdin_vol_m3", marks=requires_unrar_cli()),
+    ],
+)
+def test_volumes_written_from_stdin_take_the_size_from_the_last_part(
+    stem: str, tmp_path: Path
+) -> None:
+    """``rar a -v -si`` marks every part but the last "size unknown" and leaves a
+    placeholder in the size field; the last part has the real size. The placeholder
+    was listed as the size, so reads failed as truncated and extraction as a ratio
+    bomb."""
+    payload = _stdin_payload(stem)
+    with open_archive(_fixture(f"{stem}.part1.rar")) as archive:
+        [member] = archive.members()
+        assert member.size == len(payload)
+        assert archive.read(member) == payload
+    with open_archive(_fixture(f"{stem}.part1.rar")) as archive:
+        assert [s.read() for _, s in archive.stream_members() if s] == [payload]
+    with open_archive(_fixture(f"{stem}.part1.rar")) as archive:
+        archive.extract_all(tmp_path)
+    assert (tmp_path / "stdin.txt").read_bytes() == payload
+
+
+def test_stored_member_of_unknown_size_takes_its_packed_size() -> None:
+    """With the "size unknown" flag and no later part, a stored member's size is its
+    packed size, which is what ``unrar`` reads; the size field is ignored."""
+    data = bytearray(_fixture("basic_nonsolid__.rar").read_bytes())
+    pos = 8  # past the RAR5 signature
+    while True:
+        size, body_at = load_vint(data, pos + 4)
+        block_type, q = load_vint(data, body_at)
+        flags, q = load_vint(data, q)
+        if flags & 0x0001:
+            _, q = load_vint(data, q)
+        data_size = 0
+        if flags & 0x0002:
+            data_size, q = load_vint(data, q)
+        if block_type == 2:
+            break
+        pos = body_at + size + data_size
+    # file1.txt: one-byte file flags, then its size, 13, as a two-byte vint (rar
+    # pads it); 127 in its place keeps the header's length.
+    assert data[q + 1 : q + 3] == b"\x8d\x00"
+    data[q] |= 0x08
+    data[q + 1] = 0xFF
+    crc = zlib.crc32(data[pos + 4 : body_at + size]) & 0xFFFFFFFF
+    data[pos : pos + 4] = crc.to_bytes(4, "little")
+    with open_archive(io.BytesIO(bytes(data))) as archive:
+        member = archive.members()[0]
+        assert member.name == "file1.txt"
+        assert member.size == 13
+        assert archive.read(member) == b"Hello, world!"
+
+
 def test_multi_volume_rnn_roundtrip() -> None:
     """Classic RAR4 volumes: ``name.rar`` + ``name.r00`` (``-vn`` naming)."""
     first = _fixture("tinyvol_rnn.rar")

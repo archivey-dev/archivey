@@ -208,6 +208,10 @@ _RAR5_MAIN_SOLID = 0x04
 _RAR5_FILE_ISDIR = 0x01
 _RAR5_FILE_HAS_MTIME = 0x02
 _RAR5_FILE_HAS_CRC32 = 0x04
+# The unpacked size is unknown: ``rar a -v -si`` sets it on each part of a member read
+# from stdin but the last, which carries the size once the input has ended. ``unrar``
+# lists the size as "?" and reads such a member to the end of its packed data.
+_RAR5_FILE_UNKNOWN_SIZE = 0x08
 
 _RAR5_COMPR_SOLID = 0x40
 
@@ -411,6 +415,10 @@ class RarMemberInfo:
     split_after: bool
     comment: str | _Rar3Comment | None = None
     spanned_volumes: bool = False
+    # RAR5 ``_RAR5_FILE_UNKNOWN_SIZE``: ``file_size`` is not the member's size. A
+    # merge takes the size from a later part that knows it; a stored member that
+    # no part sizes takes its packed size, which is its size.
+    size_unknown: bool = False
     # Where each part's packed bytes sit, as ``(data_offset, size)`` in the
     # concatenated volume space, for a member merged across volumes; empty for a
     # member in one part. ``data_offset`` and ``compress_size`` stay the first part's
@@ -1824,6 +1832,18 @@ def _set_uow_owner(member: RarMemberInfo, owner: RarOwner) -> None:
         )
 
 
+def _settle_unknown_stored_size(member: RarMemberInfo) -> None:
+    """Size a stored member whose header leaves the size unknown by its packed bytes.
+
+    Only once its last part is in (``split_after`` clear): a part before it would
+    give the size so far. A compressed member keeps its declared value, which no
+    known writer leaves unresolved on the last part.
+    """
+    if member.size_unknown and member.is_stored and not member.split_after:
+        member.file_size = member.compress_size
+        member.size_unknown = False
+
+
 def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
     """Collapse a SPLIT_AFTER continuation into the first part (rarfile-style).
 
@@ -1872,6 +1892,11 @@ def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
     )
     old.split_after = new.split_after
     old.spanned_volumes = True
+    if old.size_unknown and not new.size_unknown:
+        # The part that knows the size is the last one ``rar -v -si`` writes.
+        old.file_size = new.file_size
+        old.size_unknown = False
+    _settle_unknown_stored_size(old)
 
 
 # ---------------------------------------------------------------------------
@@ -4046,7 +4071,7 @@ def _parse_rar5_file_block(
     if is_directory and not is_symlink:
         filename = filename + "/"
 
-    return RarMemberInfo(
+    member = RarMemberInfo(
         filename=filename,
         orig_filename=orig_filename,
         file_size=file_size,
@@ -4079,6 +4104,7 @@ def _parse_rar5_file_block(
         volume_index=volume_index,
         split_before=split_before,
         split_after=split_after,
+        size_unknown=bool(file_flags & _RAR5_FILE_UNKNOWN_SIZE),
         file_version=file_version,
         owner=owner,
         # RAR5 keeps the directory flag apart from the dictionary bits, so a
@@ -4091,6 +4117,8 @@ def _parse_rar5_file_block(
         header_walk_stop_reason=stop_reason,
         timestamp_issues=tuple(timestamp_issues) if timestamp_issues else (),
     )
+    _settle_unknown_stored_size(member)
+    return member
 
 
 def _parse_rar5_owner(xdata: bytes, pos: int) -> RarOwner:
