@@ -106,7 +106,7 @@ class FormatPolicy:
     exclude: frozenset[FormatEntry] = frozenset()
     exclude_libraries: frozenset[OptionalLibrary] = frozenset()  # §5a
     plugins: bool = True
-    replace: Mapping[ContainerFormat, type[FormatPlugin]] = {}  # stored read-only
+    replace: Mapping[ContainerFormat, type[FormatHandler]] = {}  # stored read-only
 
     def allows(self, fmt: ArchiveFormat) -> bool: ...
 ```
@@ -178,9 +178,10 @@ look: with an off plugin left out, `x.cpio.gz` would open as one gzip member.
 A file that only an off plugin would recognise gets `FormatDetectionError`, a reported
 absence (DR-1), not a wrong answer. This also holds under `always_probe_content=True` and
 in `open_stream`, which run every probe the policy allows. When the policy left a
-plugin out at any step and nothing matched, the `FormatDetectionError` message names the policy rather than
-the three ways to read a nameless probe-only stream, none of which reaches a plugin that
-is off. Each tier that left an off plugin out (`near_magic`, `far_magic`, `content_probe`,
+plugin out at any step and nothing matched, the `FormatDetectionError` message also names
+the policy and the plugin formats it turned off, after the three ways to read a nameless
+probe-only stream: the file may be one of the formats those reach, and none of them
+reaches a plugin that is off. Each tier that left an off plugin out (`near_magic`, `far_magic`, `content_probe`,
 `extension`) is recorded in the detection receipt as
 `TierSkipReason.NOT_ENABLED_BY_POLICY`, the reason detection already gives a probe the
 extension rule leaves out, so the receipt does not look like a complete search.
@@ -202,7 +203,7 @@ before opening. `FormatInfo` gets no new field (DR-13).
 ## 5. Replacing a built-in reader
 
 ```python
-class StrongZipPlugin(FormatPlugin):
+class StrongZipPlugin(FormatHandler):
     format = ArchiveFormat.ZIP   # a built-in format, not a PluginContainer
     # no extensions, magic or probe: detection stays the built-in's
     def open(self, source, context): ...
@@ -226,7 +227,7 @@ class StrongZipPlugin(FormatPlugin):
   - an archive found behind an SFX stub (the plugin would see the stub);
   - a read-once source, as for any indexed plugin.
   The format-specific options (`zip_unflagged_fallback_encoding`, `rar_decompressor`,
-  ...) reach the plugin through `PluginContext.config`. Honouring them is the plugin's
+  ...) reach the plugin through `ReaderContext.config`. Honouring them is the plugin's
   job, and the plugin guide says so.
 - **Which containers.** ZIP, 7z, RAR and ISO, which an indexed plugin can read. TAR and
   `RAW_STREAM` wait for the sequential shape (`plugin-api` task 1b). `DIRECTORY` and
@@ -268,6 +269,13 @@ an editor completes both, and the docs list the members. Construction still conv
 each entry with `OptionalLibrary(name)` and refuses anything else with
 `ArchiveyUsageError` that lists the members, for a caller without a type checker. A
 test pins the `Literal` against the enum, as for `DiagnosticCodeStr`.
+
+The maintainer asked (2026-10-28) that archivey use the type itself wherever its code
+names one of these packages: the codec requirements, the lazy imports, the backends'
+required modules and the availability checks hold `OptionalLibrary` members, not
+strings. `MissingComponent.name` stays `str`, since it also names programs (`unrar`,
+`unar`) and a plugin's own modules; for one of archivey's packages it holds the member,
+which is a `str`, so `component.name in policy.exclude_libraries` needs no conversion.
 
 - **The names** are the package names that `MissingComponent.name` (on
   `FormatAvailability.missing`) already reports: `pyppmd`, `inflate64`, `brotli`, `lz4`,
@@ -397,7 +405,7 @@ maintainer, and no caller is known that would act on it differently.
   the replacement backend (built once per plugin class and cached) or the registered
   one. `open_stream` makes the same `allows` check before it opens the codec, so the
   CLI, which uses only these, follows the policy too.
-- Detection reads `policy` only to filter plugin probes.
+- Detection reads `policy` only to leave out the plugin formats it turns off.
 - The CLI gets no flag in this change. `--formats` can follow if someone asks.
 
 ## 7. Calls for the maintainer

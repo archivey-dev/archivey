@@ -79,7 +79,11 @@ from archivey.internal.registry import (
 )
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.codecs import codec_for_stream_format, open_codec_stream
-from archivey.internal.streams.streamtools import OneReadEachStream, is_stream
+from archivey.internal.streams.streamtools import (
+    OneReadEachStream,
+    is_stream,
+    source_name,
+)
 from archivey.internal.volumes import (
     OpenSourceInput,
     ResolvedSource,
@@ -402,7 +406,8 @@ def open_archive(
         EncryptionError: The member list is encrypted (7z, RAR) and no password given
             opens it.
         UnsupportedFeatureError: The format is recognized, but this archive uses a
-            variant or feature archivey cannot read.
+            variant or feature archivey cannot read, or ``config.formats`` does not
+            allow the format.
         PackageNotInstalledError: The format needs an optional package that is not
             installed, such as ``pycdlib`` for ISO.
         ResourceLimitError: The archive exceeds a limit that is checked at open, such as
@@ -477,6 +482,17 @@ def open_archive(
         # Once a reader exists it closes its source; until then nobody else will.
         slot.current.close()
         raise
+
+
+def _refuse_format_off_by_policy(
+    config: ArchiveyConfig, fmt: ArchiveFormat, archive_name: str | None
+) -> None:
+    """Raise ``UnsupportedFeatureError`` when ``config.formats`` does not allow ``fmt``."""
+    refusal = config.formats._refusal(fmt)
+    if refusal is not None:
+        raise UnsupportedFeatureError(
+            refusal, source_format=fmt, archive_name=archive_name
+        )
 
 
 class _SourceSlot:
@@ -662,6 +678,11 @@ def _open_resolved(
             resolved = _follow_stub_volume(slot, resolved_format, config) or resolved
     archive_source = slot.current
     archive_name = resolved.archive_name
+
+    # The caller's format policy first: a format it turns off is refused whatever else
+    # would be said about the file, so the caller is not told to install a package or
+    # buffer a pipe for a format it does not want to open.
+    _refuse_format_off_by_policy(config, resolved_format, archive_name)
 
     # ZIP is here for 7-Zip's ``-v`` byte slices, which rejoin into an ordinary ZIP.
     # Info-ZIP's spanned sets never reach this point as a joined source (they are not
@@ -850,6 +871,7 @@ def open_stream(
         ResourceLimitError: The stream asks a decoder for more memory than
             :class:`~archivey.DecoderLimits` allows, raised by the read of the returned
             stream that starts the decoder.
+        UnsupportedFeatureError: ``config.formats`` does not allow the format.
         PackageNotInstalledError: The format needs an optional package that is not
             installed.
         DiagnosticRaisedError: A diagnostic that the :class:`~archivey.DiagnosticPolicy`
@@ -945,7 +967,7 @@ def _open_stream_from_source(
             "forward-only pass."
         )
 
-    stream_format = _resolve_stream_format(
+    opened_format, stream_format = _resolve_stream_format(
         format, codec_input, collector, effective_config
     )
     # Only an explicit format= can be UNCOMPRESSED: detection never returns a
@@ -955,6 +977,12 @@ def _open_stream_from_source(
             "open_stream requires a compressed stream format "
             f"(got {stream_format!r}); use open_archive for uncompressed containers."
         )
+    # The format the stream is, as open_archive would name it: a bare StreamFormat is
+    # its raw stream, and a compressed tar stays a tar, so a policy that refuses TAR
+    # refuses its gzip layer here too.
+    _refuse_format_off_by_policy(
+        effective_config, opened_format, source_name(codec_input)
+    )
 
     codec = codec_for_stream_format(stream_format)
     # The codec stream is the whole source, so bytes after its end are reported.
@@ -992,8 +1020,9 @@ def _resolve_stream_format(
     open_source: ArchiveSource,
     collector: DiagnosticCollector,
     config: ArchiveyConfig,
-) -> StreamFormat:
-    """Map open_stream's ``format=`` argument (or auto-detect) to a StreamFormat.
+) -> tuple[ArchiveFormat, StreamFormat]:
+    """Map open_stream's ``format=`` argument (or auto-detect) to the format the source
+    is and the StreamFormat to decode.
 
     Only ``None`` reaches the detection branch below: ``open_stream`` has already
     converted a string spelling and refused a value of neither format type
@@ -1001,7 +1030,7 @@ def _resolve_stream_format(
     asked for auto-detection.
     """
     if isinstance(format, StreamFormat):
-        return format
+        return ArchiveFormat(ContainerFormat.RAW_STREAM, format), format
     if isinstance(format, ArchiveFormat):
         # An UNKNOWN container never reaches here: open_stream refuses it before any I/O.
         outer = outer_stream_format(format)
@@ -1011,7 +1040,7 @@ def _resolve_stream_format(
                 "pass a StreamFormat, a raw-stream ArchiveFormat "
                 "(e.g. ArchiveFormat.GZ) or a compressed tar, or use open_archive."
             )
-        return outer
+        return format, outer
 
     # The invariant the docstring states, enforced rather than described: without it a
     # future caller of this private helper would auto-detect a value it was handed,
@@ -1032,4 +1061,4 @@ def _resolve_stream_format(
             "containers.",
             source_format=detected.format,
         )
-    return outer
+    return detected.format, outer

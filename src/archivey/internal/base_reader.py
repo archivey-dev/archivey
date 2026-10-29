@@ -1464,7 +1464,8 @@ class BaseArchiveReader(ArchiveReader):
         from archivey.internal.detection import detect_format, probe_config
 
         try:
-            # The budget only: see probe_config for why not the caller's config.
+            # The detection settings only: see probe_config for why not the caller's
+            # config.
             detected = detect_format(
                 provenance.source, config=probe_config(self._config)
             ).format

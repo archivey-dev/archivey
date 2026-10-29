@@ -14,6 +14,7 @@ from archivey.detection_cost import (
 )
 from archivey.diagnostics import DiagnosticPolicy, OnDiagnostic
 from archivey.exceptions import ArchiveyUsageError
+from archivey.format_policy import FormatPolicy
 from archivey.internal.arg_checks import (
     check_callable,
     check_encoding,
@@ -826,6 +827,12 @@ class ArchiveyConfig:
     """A callback called with each diagnostic the policy collects or raises, as it is
     emitted, or ``None``."""
 
+    formats: FormatPolicy = field(default_factory=FormatPolicy)
+    """Which formats this call may open. See :class:`~archivey.FormatPolicy`.
+
+    The default allows every format archivey reads and every registered plugin format.
+    """
+
     def __post_init__(self) -> None:
         """Check the fields at construction, and convert the two that hold enums.
 
@@ -862,6 +869,7 @@ class ArchiveyConfig:
             ("decoder_limits", DecoderLimits),
             ("spool_limits", SpoolLimits),
             ("diagnostic_policy", DiagnosticPolicy),
+            ("formats", FormatPolicy),
         )
         for field_name, expected in instance_fields:
             check_instance(
