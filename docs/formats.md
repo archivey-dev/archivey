@@ -797,15 +797,18 @@ that mask select the wrong members, or none:
   members come before the one you asked for, archivey asks the `unrar` on `PATH` once, with a
   small test archive, which way it matches. If it gives no usable answer, the read raises
   `UnsupportedFeatureError`.
+- **A non-ASCII name in an older RAR (1.5-4) archive on a system with no UTF-8 locale:** `unrar`
+  reads such a name through the locale, so archivey cannot tell which bytes `unrar` sends before
+  any later member, and a read of a later member raises `UnsupportedFeatureError`.
 - **An unpaired surrogate in a RAR 1.5-4 name:** archivey selects the member with `?` in place of
   each such unit, and when that pattern also matches an earlier member, the read raises
   `UnsupportedFeatureError` unless you set `rar_allow_glob_member_concatenation`.
 
 `unar` selects members by position, so none of these apply to it. Under the default `"auto"`,
-archivey reads such a member with `unar` when one it accepts is installed, except a name that
-cannot be handed back as a mask. It does not use `unar` when the read needs a password (`unar`
-takes it on its command line), when the archive is a stream or has data before the RAR (`unar`
-would need its own copy of it), or when `unar` is known to misread the archive.
+archivey reads such a member with `unar` when one it accepts is installed. It does not use `unar`
+when the read needs a password (`unar` takes it on its command line), when the archive is a stream
+or has data before the RAR (`unar` would need its own copy of it), or when `unar` is known to
+misread the archive.
 `rar_decompressor="unar"` reads every member by position.
 
 ### Damage and endings
