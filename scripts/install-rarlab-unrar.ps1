@@ -62,7 +62,7 @@ $PSNativeCommandUseErrorActionPreference = $false
 # digest fails and prints the new one. Editing this file also refreshes CI's
 # cache, whose key is this file's hash.
 $Version = '723'
-$Sha256 = '0000000000000000000000000000000000000000000000000000000000000000'
+$Sha256 = '8ff0daf3ed564cc743c0e23ff2e253997ffc74460f9673f0b6dd037b2db4ce7b'
 $Url = "https://www.rarlab.com/rar/winrar-x64-$Version.exe"
 
 # The RARLAB banner is what archivey's finder actually requires, so it is the
