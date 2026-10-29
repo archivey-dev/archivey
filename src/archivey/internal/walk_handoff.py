@@ -25,6 +25,26 @@ from archivey.internal.streams.streamtools.binaryio import (
     read_blocking,
 )
 
+# The most a member data read asks of the stream under it at once. The size a read
+# wants comes from a header, which may claim far more than the archive holds, and a
+# read of ``n`` bytes from a file or a buffered stream allocates ``n`` up front.
+MEMBER_READ_STEP = 1 << 20
+
+
+def read_stepped(read: Callable[[int], bytes], want: int) -> bytes:
+    """Up to ``want`` bytes from the full-count ``read``, fewer only at its end, asked
+    for at most :data:`MEMBER_READ_STEP` at a time."""
+    if want <= MEMBER_READ_STEP:
+        return read(want)
+    chunks = []
+    while want:
+        chunk = read(min(want, MEMBER_READ_STEP))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        want -= len(chunk)
+    return b"".join(chunks)
+
 
 class WalkHandoffStream(ReadOnlyIOStream):
     """A pass's member data, read through the walk until the walk moves on.
@@ -117,7 +137,8 @@ class MemberDataView(DelegatingStream):
         want = self._length - position if whole else min(n, self._length - position)
         if want <= 0:
             return b""
-        data = read_blocking(self._inner, want)
+        inner = self._inner
+        data = read_stepped(lambda size: read_blocking(inner, size), want)
         if len(data) < want and (whole or not data):
             raise TruncatedError(
                 f"{self._what} is truncated inside a member's data at offset "

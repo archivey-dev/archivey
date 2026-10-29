@@ -1834,7 +1834,7 @@ def test_refused_seek_through_open_archive_is_truncation(typeflag: bytes) -> Non
     data = _tar_entry_with_data(typeflag, size_field=size_field)
     source = _SeekRefusingBytesIO(data, err=errno.EINVAL)
     with (
-        pytest.raises(TruncatedError, match="the archive ends at offset 3072"),
+        pytest.raises(TruncatedError, match="inside a member.s data at offset 3072"),
         open_archive(source, format=ArchiveFormat.TAR) as ar,
     ):
         ar.members()
