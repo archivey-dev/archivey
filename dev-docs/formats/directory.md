@@ -260,9 +260,9 @@ There are no producers; there are filesystems, and each reports `lstat` differen
 
 The listing is safe to hand a hostile tree. The walk never follows a symlink or junction,
 so it cannot loop. Every name is built from real directory entries, so there is no `..`,
-absolute path or empty component to normalize.
-The listing limits bound the member count and the retained text. Extraction goes through
-the shared filter ([`threat-model.md`](../threat-model.md)).
+absolute path or empty component to normalize. The listing limits bound the member count
+and the retained text. Extraction goes through the shared filter
+([`threat-model.md`](../threat-model.md)).
 
 What is specific to this backend is the gap between listing and reading, when someone
 else can write to the tree while archivey reads it: an upload staging directory, a shared
