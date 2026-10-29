@@ -1280,6 +1280,7 @@ def test_stored_last_part_of_unknown_size_is_not_sized_alone(tmp_path: Path) -> 
         assert archive.read(member) == payload
 
 
+@requires("cryptography")
 def test_encrypted_stored_member_of_unknown_size_keeps_its_declared_size() -> None:
     """Ciphertext is padded to the AES block, so the packed size is not the member's
     size; the declared one is kept."""
@@ -1288,6 +1289,29 @@ def test_encrypted_stored_member_of_unknown_size_keeps_its_declared_size() -> No
         [member] = [m for m in archive.members() if m.name == "size_7.bin"]
         assert member.size == 7
         assert len(archive.read(member)) == 7
+
+
+def test_stored_member_whose_encryption_is_unknown_keeps_its_declared_size() -> None:
+    """A header walk that stopped with extra area unread may have missed the record
+    that says the member is ciphertext, whose packed size is padded: not settled."""
+    from archivey.internal.backends.rar_parser import _settle_unknown_stored_size
+
+    with open_archive(_fixture("basic_nonsolid__.rar")) as archive:
+        raw = archive.members()[0]._raw
+    assert isinstance(raw, RarMemberInfo) and raw.is_stored
+    unknown = dataclasses.replace(
+        raw,
+        size_unknown=True,
+        file_size=127,
+        header_walk_stop_reason="truncated extra area",
+    )
+    assert unknown.encryption_unknown and not unknown.is_encrypted
+    _settle_unknown_stored_size(unknown)
+    assert unknown.file_size == 127
+    assert unknown.size_unknown
+    settled = dataclasses.replace(unknown, header_walk_stop_reason=None)
+    _settle_unknown_stored_size(settled)
+    assert settled.file_size == settled.compress_size
 
 
 def test_multi_volume_rnn_roundtrip() -> None:
