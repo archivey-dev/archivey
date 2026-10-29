@@ -704,9 +704,11 @@ def test_a_child_killed_from_outside_ends_the_stream(
         with pytest.raises(expected) as first:
             stream.seek(0)
         assert type(first.value) is expected
+        assert is_no_verdict(first.value)
         with pytest.raises(expected) as second:
             stream.read(1)
         assert str(second.value) == str(first.value)
+        assert is_no_verdict(second.value)
 
 
 @pytest.mark.parametrize("returncode", [-9, -15, 1])
