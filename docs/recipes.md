@@ -478,8 +478,8 @@ print(contains_archive("upload.zip"))
 
 The member is copied to a temporary file because its first bytes aren't always enough. An ISO keeps
 its signature 32 KiB into the file, and a ZIP, 7z or RAR can sit behind a program or any other
-leading bytes, so the archive may start far into the member. A check of the first few KiB alone is only a fast first
-filter, and a member it lets through still needs the full check.
+leading bytes, so the archive may start far into the member. A check of the first few KiB alone
+is only a fast first filter, and a member it lets through still needs the full check.
 
 zlib, Brotli and `.lzma` data start with nothing that identifies them, and the copy has no file name
 to go by. Without `always_probe_content=True`, `detect_format` misses them, though `open_archive`
