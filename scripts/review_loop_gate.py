@@ -144,9 +144,10 @@ OPUS_PASS_TIERS = frozenset({"standard", "deep"})
 #: are fixed before the expensive pass reads the change (davitf, 2026-10-29). Sonnet
 #: finds about as much but misjudges severity more often, and the verdict rests on
 #: severity, so its approval gets a second look. A conditional approval is not in here:
-#: its fixes are still to come, so it asks for one more round to read them, and the pass
-#: follows the round that approves outright. The Opus pass runs once per pull request; the rounds after it are fix
-#: rounds again.
+#: its fixes are still to come, so it asks for one more round to read them. It starts
+#: the pass only as the second conditional in a row, or with no agent round left
+#: (`finish`), so the pass is never skipped. The Opus pass runs once per pull request;
+#: the rounds after it are fix rounds again.
 OPUS_PASS_STARTS = frozenset({"clean", "approved"})
 
 #: The field an Opus pass's round marker carries, so later runs know it happened.
@@ -193,6 +194,8 @@ class History:
     failed_shas: frozenset[str]
     #: An Opus pass already ran on this pull request.
     opus_pass_done: bool = False
+    #: The verdict of the last counted round, or empty before the first.
+    last_verdict: str = ""
 
 
 def read_history(markers: object) -> History:
@@ -200,6 +203,7 @@ def read_history(markers: object) -> History:
     rounds = 0
     failed: set[str] = set()
     opus = False
+    last = ""
     for line in markers if isinstance(markers, list) else []:
         if not isinstance(line, str):
             continue
@@ -207,9 +211,10 @@ def read_history(markers: object) -> History:
         if line.startswith(ROUND_MARKER + " "):
             rounds += 1
             opus = opus or fields.get("pass") == "opus"
+            last = fields.get("verdict", "")
         elif line.startswith(ATTEMPT_MARKER + " ") and fields.get("sha"):
             failed.add(fields["sha"])
-    return History(rounds, frozenset(failed), opus)
+    return History(rounds, frozenset(failed), opus, last)
 
 
 def _when(value: object) -> datetime | None:
@@ -427,6 +432,20 @@ def finish(event: dict) -> Finish:
         # on #352 did, 481 ms in) has not spent the reviewer's time. The attempt marker
         # records the commit, so an agent cannot retry it into a loop (`decide`).
         marker = f"{ATTEMPT_MARKER} n={rnd}{f' sha={sha}' if sha else ''} -->"
+        if event.get("opus_pass"):
+            # The round before it approved, so there is nothing for an agent to push;
+            # a person's label runs a round whose approval starts the pass again.
+            return Finish(
+                DEFAULT_VERDICT,
+                False,
+                False,
+                f"{marker}\n\n**The Opus pass did not finish.** It stopped before it "
+                "reached a verdict, so it was not counted and has not read this pull "
+                f"request. Add the {label} label again to retry: a round runs, and "
+                "its approval starts the pass. An agent's retry at this same commit "
+                "is refused; a person's is not." + footer,
+                "no verdict file from the Opus pass",
+            )
         return Finish(
             DEFAULT_VERDICT,
             False,
@@ -443,16 +462,26 @@ def finish(event: dict) -> Finish:
     v = read_verdict(event.get("verdict"))
     summary = f" {v.summary}" if v.summary else ""
     opus_pass = bool(event.get("opus_pass"))
-    # Only a pull request whose tier gets the Opus pass, and whose pass has not run
-    # yet, is waiting for one.
+    history = read_history(event.get("markers"))
+    # Only a pull request whose tier gets the Opus pass, whose pass has not run yet,
+    # and which still has a round left for it, is waiting for one.
     awaits_opus = (
         event.get("tier") in OPUS_PASS_TIERS
         and not opus_pass
-        and not read_history(event.get("markers")).opus_pass_done
+        and not history.opus_pass_done
+        and rnd < MAX_FORCED_ROUNDS
     )
-    opus_next = (
-        awaits_opus and v.verdict in OPUS_PASS_STARTS and rnd < MAX_FORCED_ROUNDS
+    # A conditional approval gets one more round, so its fixes land before Opus reads.
+    # It starts the pass instead when that round would be the second conditional in a
+    # row (the skill's round budget makes late rounds conditional on nits alone), or
+    # when no round an agent can ask for is left to run it.
+    conditional_starts = v.verdict == "conditional" and (
+        # `final` covers the ceiling too: every round past the agent cap is final.
+        history.last_verdict == "conditional" or final
     )
+    opus_next = awaits_opus and (v.verdict in OPUS_PASS_STARTS or conditional_starts)
+    # A conditional approval that asks for one more round before the pass.
+    re_round = awaits_opus and v.verdict == "conditional" and not opus_next
     live = str(event.get("live_head_sha") or "")
     unseen = (
         f"\n\n**Pushed during the round.** The review read `{sha[:8]}`; the branch is "
@@ -476,8 +505,13 @@ def finish(event: dict) -> Finish:
         return sentence
 
     if opus_next:
+        approval = (
+            "approves once its findings are fixed"
+            if v.verdict == "conditional"
+            else "approved"
+        )
         body = (
-            f"**Round {rnd} approved, so the Opus pass starts.**{summary}\n\n"
+            f"**Round {rnd} {approval}, so the Opus pass starts.**{summary}\n\n"
             f"Round {rnd + 1}, a full review by Opus, runs now in this same workflow "
             "run"
             + (
@@ -488,16 +522,14 @@ def finish(event: dict) -> Finish:
             )
             + " with `address-review-findings`."
         )
-    elif awaits_opus and v.verdict == "conditional":
+    elif re_round:
+        # Never at the agent cap or the ceiling: `conditional_starts` covers those.
         body = (
             f"**Round {rnd} approves once its findings are fixed.**{summary}\n\n"
             "An approval here is followed by an Opus pass, so the fixes get one more "
-            "round first: work "
-            "through the findings with `address-review-findings`, push, and "
-            + again(
-                f"add the {label} label again. When a round approves outright, the "
-                "Opus pass runs."
-            )
+            "round first: work through the findings with `address-review-findings`, "
+            f"push, and add the {label} label again. When that round approves, even "
+            "with fixes still listed, the Opus pass runs."
         )
     elif v.verdict == "decision":
         body = (
@@ -550,17 +582,21 @@ def finish(event: dict) -> Finish:
         f"{ROUND_MARKER} n={rnd}{f' sha={sha}' if sha else ''} verdict={v.verdict}"
         f"{f' {OPUS_PASS_FIELD}' if opus_pass else ''} -->"
     )
-    outcome = OUTCOME_LABELS[v.verdict]
+    # No outcome label while the Opus pass is still to read the pull request: an
+    # `approved` put on now would stay if the pass died. The pass's close sets it.
+    outcome = "" if opus_next else OUTCOME_LABELS[v.verdict]
     return Finish(
         v.verdict,
         # A conditional approval that waits for a round to read its fixes is not one
         # that stops.
-        v.stop and not (awaits_opus and v.verdict == "conditional"),
+        v.stop and not re_round,
         True,
         f"{marker}\n\n{body}{unseen}{footer}",
         v.reason,
         outcome,
-        tuple(sorted({other for other in OUTCOME_LABELS.values() if other != outcome})),
+        tuple(sorted({o for o in OUTCOME_LABELS.values() if o != outcome}))
+        if outcome
+        else (),
         opus_next,
     )
 

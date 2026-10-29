@@ -20,7 +20,8 @@ name: Review loop
 # stands. Those labels only report; the gate never reads them.
 #
 # The first lines of this workflow's closing comments are the only state: which rounds
-# ran, with what verdict, and where a review failed. Nothing runs without a fresh label.
+# ran, with what verdict, and where a review failed. Nothing runs without a fresh label,
+# except the Opus pass, which follows an approving round in that same run.
 #
 # `scripts/review_loop_gate.py` makes the decisions and writes the closing comment, and
 # is unit tested. `dev-docs/review-loop.md` is the prose version.
@@ -54,7 +55,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     # A round and, on a standard or deep pull request, the Opus pass after it.
-    timeout-minutes: 100
+    timeout-minutes: 110
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PR: ${{ github.event.pull_request.number }}
@@ -186,12 +187,16 @@ jobs:
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       # The tier decides whether an Opus pass follows the round. The base branch's copy
-      # of the script, as `risk-label.yml` uses: a pull request must not lower its own
-      # tier by editing the path lists. Written beside the pull request's copy, since
-      # it finds the repository from its own path, and removed again at once.
+      # of the script, as `risk-label.yml` uses, so the path lists the pull request
+      # edits do not move its own tier (the gate and the prompt are still the pull
+      # request's: see review-loop.md, Known rough edges). Written beside the pull
+      # request's copy, since it finds the repository from its own path, and removed
+      # again at once. A failure here only loses the Opus pass (an empty tier), never
+      # the round itself.
       - name: Find the risk tier
         id: tier
         if: steps.gate.outputs.run == 'true'
+        continue-on-error: true
         env:
           BASE: ${{ github.event.pull_request.base.ref }}
         run: |
@@ -210,10 +215,14 @@ jobs:
           ROUND: ${{ steps.gate.outputs.round }}
           MAX_ROUNDS: ${{ steps.gate.outputs.max_rounds }}
           PASS: ""
+          TIER: ${{ steps.tier.outputs.tier }}
         run: python3 scripts/review_loop_prompt.py >> "$GITHUB_OUTPUT"
 
+      # Each review has its own timeout inside the job's, so a slow round leaves the
+      # Opus pass its time, and both closes theirs.
       - name: Claude review
         if: steps.gate.outputs.run == 'true'
+        timeout-minutes: 45
         uses: anthropics/claude-code-action@v1
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -250,8 +259,11 @@ jobs:
       # gets one full review by Opus, as the next round, and a deep one gets one by
       # Cursor too. The gate decides when (`OPUS_PASS_STARTS`), and it runs once per
       # pull request. In this same run, because a label the workflow's own token adds
-      # starts no workflow.
+      # starts no workflow. The steps run whatever happened before them (`!cancelled()`),
+      # so a failed side step cannot drop a pass the round's comment has announced, and
+      # the Cursor request is best-effort.
       - name: Ask Cursor for a full review
+        continue-on-error: true
         if: >-
           steps.close.outputs.opus_pass_next == 'true' &&
           steps.tier.outputs.tier == 'deep'
@@ -263,19 +275,18 @@ jobs:
 
       - name: Write the Opus-pass prompt
         id: opus_prompt
-        if: steps.close.outputs.opus_pass_next == 'true'
+        if: "!cancelled() && steps.close.outputs.opus_pass_next == 'true'"
         env:
           ROUND: ${{ steps.gate.outputs.round }}
           MAX_ROUNDS: ${{ steps.gate.outputs.max_rounds }}
           PASS: opus
           TIER: ${{ steps.tier.outputs.tier }}
-        run: |
-          rm -f /tmp/loop-verdict.json
-          python3 scripts/review_loop_prompt.py >> "$GITHUB_OUTPUT"
+        run: python3 scripts/review_loop_prompt.py >> "$GITHUB_OUTPUT"
 
       - name: Claude Opus pass
         id: opus
-        if: steps.close.outputs.opus_pass_next == 'true'
+        if: "!cancelled() && steps.close.outputs.opus_pass_next == 'true'"
+        timeout-minutes: 45
         uses: anthropics/claude-code-action@v1
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -290,8 +301,9 @@ jobs:
       - name: Close the Opus pass
         if: always() && steps.close.outputs.opus_pass_next == 'true'
         env:
-          ROUND: ${{ steps.opus_prompt.outputs.round }}
-          FINAL: ${{ steps.opus_prompt.outputs.final }}
+          # The gate's round: the close script makes the pass the round after it.
+          ROUND: ${{ steps.gate.outputs.round }}
+          MAX_ROUNDS: ${{ steps.gate.outputs.max_rounds }}
           HEAD_SHA: ${{ steps.gate.outputs.head_sha }}
           TIER: ${{ steps.tier.outputs.tier }}
           OPUS_PASS: "true"

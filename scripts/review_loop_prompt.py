@@ -30,8 +30,18 @@ pull request once that happens. Read it as a first look, not as a fix round: the
 whole change against the base, with the reference doc §1 names for a first look, at
 the tier §1 gives it. Their findings are on the pull request; do not repeat them, skip
 the status bullets for their IDs, and look hardest at what they could have missed, and
-at severities they may have rated too low.
+at severities they may have rated too low. Number your findings on from the highest
+ID already on the pull request, as §6 asks across rounds, so none collides with theirs.
 """
+
+#: In place of ``{CONDITIONAL}`` on an ordinary round of a standard or deep pull request,
+#: where `finish` in `review_loop_gate.py` makes the first "conditional" ask for a round.
+CONDITIONAL_RE_ROUNDS = """
+
+  On this pull request one exception holds until its Opus pass has run (a closing
+  comment says when it does): a first "conditional" asks for one more round, so the
+  fixes land before Opus reads, and a second one in a row starts the pass. Still pick
+  the verdict that matches your verdict line; the workflow manages the rounds."""
 
 #: Added to `OPUS_PASS` on a deep pull request, where the workflow asks Cursor too.
 CURSOR_TOO = """Cursor is reviewing it at the same time, so leave its comments alone.
@@ -54,6 +64,11 @@ def render(env: dict[str, str]) -> tuple[str, int, bool]:
         "PASS": (
             OPUS_PASS + (CURSOR_TOO if env.get("TIER") == "deep" else "")
             if opus
+            else ""
+        ),
+        "CONDITIONAL": (
+            CONDITIONAL_RE_ROUNDS
+            if not opus and env.get("TIER") in ("standard", "deep")
             else ""
         ),
     }

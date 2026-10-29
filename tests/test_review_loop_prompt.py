@@ -28,7 +28,7 @@ ENV = {
 def test_an_ordinary_round_fills_every_placeholder() -> None:
     text, rnd, final = prompt.render(ENV)
     assert (rnd, final) == (2, False)
-    for name in ("PR", "REPOSITORY", "ROUND", "MAX_ROUNDS", "PASS"):
+    for name in ("PR", "REPOSITORY", "ROUND", "MAX_ROUNDS", "PASS", "CONDITIONAL"):
         assert "{" + name + "}" not in text
     assert "archivey-dev/archivey" in text
     assert "Opus pass" not in text
@@ -68,3 +68,16 @@ def test_the_output_is_one_multiline_value_and_two_plain_ones() -> None:
     body, _, tail = rest.partition(f"\n{delimiter}\n")
     assert delimiter not in body
     assert tail == "round=2\nfinal=false\n"
+
+
+def test_a_standard_or_deep_round_is_told_conditional_asks_for_a_round() -> None:
+    for tier in ("standard", "deep"):
+        text, _, _ = prompt.render(ENV | {"TIER": tier})
+        assert 'a first "conditional" asks for one more round' in text
+    for tier in ("light", ""):
+        text, _, _ = prompt.render(ENV | {"TIER": tier})
+        assert "asks for one more round" not in text
+    # The pass itself is past that rule.
+    text, _, _ = prompt.render(ENV | {"TIER": "standard", "PASS": "opus"})
+    assert "asks for one more round" not in text
+    assert "Number your findings on from the highest" in text

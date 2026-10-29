@@ -6,8 +6,17 @@
 #
 # Reads ROUND, FINAL, HEAD_SHA, PR and GITHUB_REPOSITORY, and TIER and OPUS_PASS when
 # set; writes `opus_pass_next` to GITHUB_OUTPUT. The files under /tmp are the gate
-# step's (`markers.txt`) and the reviewer's (`loop-verdict.json`).
+# step's (`markers.txt`) and the reviewer's (`loop-verdict.json`), which this script
+# consumes so the next review in the same job cannot be closed with it.
+#
+# For the Opus pass (OPUS_PASS=true), ROUND is the gate's round and MAX_ROUNDS the
+# agent cap: the pass is the round after, worked out here rather than taken from a
+# step that may not have run, so a pass that never started still gets its comment.
 set -euo pipefail
+if [ "${OPUS_PASS:-false}" = true ]; then
+  ROUND=$((ROUND + 1))
+  if [ "$ROUND" -ge "$MAX_ROUNDS" ]; then FINAL=true; else FINAL=false; fi
+fi
 # A missing file is a review that did not finish, which does not count. A file
 # that is there but is not a JSON object still counts — the findings were
 # posted — and the gate treats its verdict as `findings`.
@@ -18,6 +27,7 @@ elif jq -e 'type == "object"' /tmp/loop-verdict.json >/dev/null 2>&1; then
 else
   verdict='"unreadable"'
 fi
+rm -f /tmp/loop-verdict.json
 
 # The head now, to name any push that landed while the review ran.
 live="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
