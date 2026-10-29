@@ -23,7 +23,12 @@ from archivey.exceptions import StreamNotSeekableError
 from archivey.internal.measurement import enable_measurement, io_stats
 from archivey.reader import ForwardArchiveReader
 from archivey.terminal import display_path
-from archivey.types import ArchiveFormat, ContainerFormat, StreamFormat
+from archivey.types import (
+    ArchiveFormat,
+    ContainerFormat,
+    PluginContainer,
+    StreamFormat,
+)
 
 
 def reject_stdin_token(archive: str) -> None:
@@ -92,8 +97,8 @@ def outer_layer_format(fmt: ArchiveFormat) -> ArchiveFormat | None:
         return fmt
     if (
         fmt.container is ContainerFormat.TAR
-        and fmt.stream is not StreamFormat.UNCOMPRESSED
-    ):
+        or isinstance(fmt.container, PluginContainer)
+    ) and fmt.stream is not StreamFormat.UNCOMPRESSED:
         return ArchiveFormat(ContainerFormat.RAW_STREAM, fmt.stream)
     return None
 

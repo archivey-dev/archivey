@@ -16,6 +16,7 @@ from archivey.cli.filters import MemberSelection
 from archivey.cli.main import main
 from archivey.exceptions import ReadError
 from archivey.internal.base_reader import BaseArchiveReader
+from archivey.internal.member_pass import MemberPassImpl
 from archivey.paths import match_glob
 from archivey.types import ArchiveMember
 from tests.test_extraction_damaged_listing import _rar_cut
@@ -440,7 +441,7 @@ def test_a_damaged_index_still_counts_the_untested_members(
             yield next(members)
             raise ReadError("simulated stream failure")
 
-        return MemberPass(_gen())  # type: ignore[arg-type]
+        return MemberPassImpl(_gen())  # type: ignore[arg-type]
 
     monkeypatch.setattr(BaseArchiveReader, "stream_members", _dies_after_first)
     assert main(["t", str(archive)]) == EXIT_FAIL

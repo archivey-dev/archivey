@@ -356,8 +356,8 @@ def _normalizing(monkeypatch: pytest.MonkeyPatch, module: str) -> None:
     ("kind", "module"),
     [
         pytest.param("zip", "backends.zip_reader", id="zip"),
-        # ISO is read through archivey.plugins: the adapter normalizes its names.
-        pytest.param("iso", "plugin_adapter", id="iso", marks=requires("pycdlib")),
+        # ISO is read through archivey.formats: the adapter normalizes its names.
+        pytest.param("iso", "format_adapter", id="iso", marks=requires("pycdlib")),
         pytest.param("7z", "backends.sevenzip_reader", id="7z"),
         pytest.param("rar", "backends.rar_reader", id="rar"),
     ],

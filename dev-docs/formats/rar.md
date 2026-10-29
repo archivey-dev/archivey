@@ -973,9 +973,17 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
   character on Linux; `ConvertFileHeader` turns a Windows-host RAR5 `\` into `_` on
   Unix), how the path is cleaned (`ConvertPath` drops leading `./`, `../` and anything
   up to the last `/../`), and how the mask is compared (`CmpName` with
-  `MATCH_WILDSUBPATH`, including the rule that a trailing `.` in the mask may stand for
-  nothing). `unrar_member_view` gives the name `unrar` reads, `unrar_mask_view` the
-  mask, and `unrar_mask_selects` the comparison.
+  `MATCH_WILDSUBPATH`, including the rule that a `.` in the mask may stand for nothing
+  at the end of the name or before a `\`). `unrar_member_view` gives the name
+  `unrar` reads, `unrar_mask_view` the mask, and `unrar_mask_selects` the comparison.
+- **That dot rule depends on the binary, so archivey asks it.** unrar 7.30 beta 2
+  rewrote `match()` without it: `-n./ab.` no longer selects `ab`. Its banner still
+  reads `UNRAR 7.30`, like beta 1, which has the rule. When a read's selection differs
+  between the two rules, `unrar_dot_rule` runs `unrar p -n./ab.` once on an embedded
+  two-member archive (`ab`, `ab.`) and caches the answer per binary. When the binary
+  gives neither answer, that read is refused, and under `AUTO` it goes to an accepted
+  `unar` the way a name `unrar` cannot address does. A read whose selection up to the
+  target is the same either way, almost every one, never runs the probe.
 - **Every read sizes a skip past the members its mask selects before the target**, not
   only a glob read: two members with the same name, two names `unrar` reads alike, and
   a mask that names a directory holding earlier members all emit more than the target.
@@ -988,7 +996,10 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
   `unrar` reads it on this host (a non-ASCII 8-bit name with no UTF-8 locale, or a
   code point glibc converts past U+10FFFF). A later member that cannot be modelled
   only forces the bounded pipe. Those refusals name `rar_decompressor='unar'`, which
-  addresses members by position.
+  addresses members by position, and under `AUTO` the read falls back to `unar` when
+  one it accepts is installed: `unrar` is addressed by name and `unar` by index, so
+  none of these refusals apply to `unar`. For the two host-dependent shapes (the
+  locale and glibc cases) that is DR-11: the trouble is this host's `unrar`.
 - **`*` and `?` in a member name are `unrar` wildcards, not archivey's.** Masks have **no
   escape** (`[` and `]` are literal; `\` does not escape), so `-n./a*.txt` concatenates
   every matching member in archive order with no headers — including `subdir/aY.txt`.
@@ -1350,7 +1361,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | A 7-Zip SFX stub sitting beside a numbered split (`vol.exe` next to `vol.exe.001` / `vol.7z.001` / `vol.zip.001`) | **archivey** | Opening the stub follows that first volume. The stub is still not a sibling. An old-scheme SFX first volume (`name.exe` + `.r00`) is discovered as volume 1 of that `.rNN` set |
 | A RAR on a pipe or socket cannot be opened at all, in either access mode | **format** | Block headers are chained forward but the walk still seeks; nothing is buffered for you (ADR [0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
 | A RAR 1.5-4 name stored only as 8-bit bytes can list in the wrong code page | **format** | The header records none. Archivey guesses strict UTF-8, then cp437 for a DOS or Windows host and windows-1252 otherwise; `encoding=` overrides the guess, as in ZIP. Reading is unaffected (§2.2) |
-| Some members raise `UnsupportedFeatureError` on the `unrar` path and read with `rar_decompressor='unar'` | **archivey** | A name `unrar` reads as empty or with no name part, one holding a surrogate, any member after a non-ASCII 8-bit name when no UTF-8 locale is available, and a compressed member whose name has a backslash or a glob in a directory component: `unrar` cannot be told which member is meant, and archivey will not guess (§2.3) |
+| Some members raise `UnsupportedFeatureError` on the `unrar` path and read with `rar_decompressor='unar'` | **archivey** | A name `unrar` reads as empty or with no name part, one holding a surrogate, any member after a non-ASCII 8-bit name when no UTF-8 locale is available, a compressed member whose name has a backslash or a glob in a directory component, and a member whose selection depends on the dot rule when the `unrar` on `PATH` does not answer the dot-rule probe: `unrar` cannot be told which member is meant, and archivey will not guess (§2.3) |
 | Every RAR5 symlink and hard link has no `hashes` entry, where ZIP and 7z have one | **format** | The stored field covers zero bytes, so the only honest answer is no digest (§2.2). RAR3/4 keeps its digest, which is genuine — but note what it covers: the **target string**, not anything the link points at, the same as ZIP's and 7z's (§2.2, §6) |
 | Opening several members of a solid archive at once runs one whole-archive decode **per open**, concurrently | **format** / **archivey** | There are no block boundaries to share (§1), so `concurrent_operations=True` makes overlapping reads correct without making them cheap: measured, three open streams are three live `unrar` processes, each decoding from the start, all reaped on close. `AccessCost.SOLID` is the only signal and it does not scale with the number of open streams. Without the flag the second `open()` is refused with `ArchiveyUsageError` and spawns nothing — the live-stream slot is reserved before the member is opened (#293), where it used to be taken after |
 | A compressed RAR 1.5 / 2.x old-style comment is `None` without RARLAB `unrar` | **archivey** | Listing and stored old-style comments stay native; the proprietary compressed blob is decoded only when the optional binary is available (§2.2) |

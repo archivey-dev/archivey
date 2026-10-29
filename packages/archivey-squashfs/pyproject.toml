@@ -1,5 +1,5 @@
 # SquashFS images for archivey, as a format plugin outside the library. It uses only
-# `archivey.plugins` and archivey's public names (tests/test_squashfs.py checks), so it
+# `archivey.formats` and archivey's public names (tests/test_squashfs.py checks), so it
 # is the proof that a format can be added from outside. Not published.
 
 [build-system]

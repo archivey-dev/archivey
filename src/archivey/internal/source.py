@@ -78,7 +78,7 @@ from archivey.internal.arg_checks import raise_if_text_stream
 # ``archive_stream`` imports nothing back from the source boundary (this module, the
 # detection workspace, ``volumes``), so :func:`seek_is_expensive` can type-test it here
 # without a lazy import.
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 from archivey.internal.streams.streamtools import (
     DEFAULT_UNKNOWN_LENGTH_READ_STEP,
     ReadOnlyIOStream,
@@ -562,11 +562,11 @@ class ArchiveSource(ReadOnlyIOStream):
     def seek_is_expensive(self) -> bool:
         """Whether a seek on this source may re-decode what it skips.
 
-        True when the caller's stream is an :class:`~archivey.ArchiveStream`, under any
-        pass-through buffer (see :func:`seek_is_expensive`), and for a joined set with
-        such a stream among its volumes: a read near the end of the set seeks that
-        volume. A path, and a caller stream that is a file or a ``BytesIO``, answer
-        ``False``.
+        True when the caller's stream is archivey's own member stream
+        (``ArchiveStreamImpl``), under any pass-through buffer (see
+        :func:`seek_is_expensive`), and for a joined set with such a stream among its
+        volumes: a read near the end of the set seeks that volume. A path, and a caller
+        stream that is a file or a ``BytesIO``, answer ``False``.
         """
         return self._seek_is_expensive
 
@@ -973,8 +973,9 @@ def _check_peek_range(n: int, start: int) -> None:
 def seek_is_expensive(stream: BinaryIO) -> bool:
     """Whether repositioning ``stream`` may cost a re-decode rather than a pointer move.
 
-    True for an :class:`~archivey.ArchiveStream`: many codecs serve a backward seek by
-    decoding again from the start, and a seek to the end decodes everything before it.
+    True for archivey's own member stream (``ArchiveStreamImpl``): many codecs serve a
+    backward seek by decoding again from the start, and a seek to the end decodes
+    everything before it.
     The same holds under a pass-through layer (a ``BufferedReader``, a seek counter),
     which :func:`underlying_stream` peels the way :func:`source_byte_size` does. True as
     well for an :class:`ArchiveSource` that borrows one, which is how ``open_archive``
@@ -990,7 +991,7 @@ def seek_is_expensive(stream: BinaryIO) -> bool:
     own = getattr(stream, "seek_is_expensive", None)
     if isinstance(own, bool):
         return own
-    return isinstance(underlying_stream(stream), ArchiveStream)
+    return isinstance(underlying_stream(stream), ArchiveStreamImpl)
 
 
 __all__ = ["ArchiveSource", "JoinedVolumes", "seek_is_expensive"]

@@ -28,6 +28,7 @@ from archivey import (
     open_archive,
 )
 from archivey.diagnostics import DiagnosticCode
+from archivey.internal import base_reader
 from archivey.internal.reader_state import LifecycleState, ReaderState
 from archivey.reader import ArchiveReader
 from archivey.types import MemberStreams
@@ -894,3 +895,81 @@ def test_listing_after_an_abandoned_pass_refuses_the_same_way_each_time(
                 reader.members()
             messages.append(str(refused.value))
     assert len(set(messages)) == 1, messages
+
+
+def _many_members(fmt: str, names: list[str]) -> bytes:
+    buf = io.BytesIO()
+    if fmt == "zip":
+        with zipfile.ZipFile(buf, "w") as zf:
+            for name in names:
+                zf.writestr(name, b"x")
+    else:
+        with tarfile.open(fileobj=buf, mode="w:gz" if fmt == "tar.gz" else "w") as tf:
+            for name in names:
+                info = tarfile.TarInfo(name)
+                info.size = 1
+                tf.addfile(info, io.BytesIO(b"x"))
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("extra", [-1, 0, 1, base_reader._DRAIN_BATCH])
+@pytest.mark.parametrize(
+    ("fmt", "streaming"),
+    [("zip", False), ("zip", True), ("tar", False), ("tar.gz", False)],
+    ids=["zip", "zip-streaming", "tar", "tar.gz"],
+)
+def test_listing_drains_across_batch_boundaries(
+    fmt: str, streaming: bool, extra: int
+) -> None:
+    """A listing pulls in batches of ``_DRAIN_BATCH``; every member is listed, in
+    order, however the count falls. A streaming ZIP pass drains through the streaming
+    branch (``_walk_ahead``), and a TAR runs its hand-off hook once per batch."""
+    names = [f"f{i}" for i in range(base_reader._DRAIN_BATCH + extra)]
+    data = _many_members(fmt, names)
+    with open_archive(
+        io.BytesIO(data), streaming=streaming, concurrent_operations=not streaming
+    ) as reader:
+        if streaming:
+            listed = [m.name for m, _ in reader.stream_members()]
+        else:
+            listed = [m.name for m in reader.members()]
+    assert listed == names
+
+
+def test_listing_lets_a_waiting_thread_in_between_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A thread that starts waiting for the walk lock during a listing's first batch
+    gets it at a batch boundary, not only once the listing ends: the drain yields after
+    each release."""
+    batches = 40
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for i in range(base_reader._DRAIN_BATCH * batches):
+            zf.writestr(f"f{i}", b"")
+    pulled = 0
+    got_in_at: list[int] = []
+    waiters: list[threading.Thread] = []
+    pull = base_reader.BaseArchiveReader._pull_members_locked
+
+    def counting(self: base_reader.BaseArchiveReader, count: int) -> object:
+        nonlocal pulled
+        pulled += 1
+        if pulled == 1:  # under the lock: the waiter blocks until a release
+            # A drain batch, not a one-member pull that releases the lock at once.
+            assert count == base_reader._DRAIN_BATCH, count
+
+            def wait_for_the_lock() -> None:
+                with self._walk_lock:
+                    got_in_at.append(pulled)
+
+            waiters.append(threading.Thread(target=wait_for_the_lock))
+            waiters[0].start()
+        return pull(self, count)
+
+    monkeypatch.setattr(base_reader.BaseArchiveReader, "_pull_members_locked", counting)
+    with open_archive(io.BytesIO(buf.getvalue()), concurrent_operations=True) as reader:
+        reader.members()
+        waiters[0].join()
+    assert pulled > batches  # the listing ran in batches
+    assert got_in_at[0] < batches // 2, got_in_at

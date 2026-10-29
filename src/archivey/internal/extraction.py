@@ -27,10 +27,9 @@ import io
 import os
 import posixpath
 import stat
-import tempfile
 import uuid
 from collections.abc import Callable, Collection, Generator, Iterator
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Protocol, assert_never, cast
 
@@ -52,6 +51,7 @@ from archivey.internal.bomb_tracker import (
     AlwaysStopResourceLimitError,
     BombTracker,
 )
+from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.dry_run import DryRun, scratch_for
 from archivey.internal.file_copy_pass import FileCopyPass
 from archivey.internal.filters import (
@@ -90,13 +90,13 @@ if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
     from archivey.internal.base_reader import BaseArchiveReader
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
 
 _CHUNK = 1024 * 1024  # 1 MiB copy chunk
 
 # Prefix of the temp files atomic FILE writes stage in the destination directory
-# (mkstemp appends a random suffix), and of the staging directory of a pass that stages
+# (``_new_temp_file`` appends the run's token and a count), and of the staging directory of a pass that stages
 # its members (``_write_staged``: a ZIP from a pipe). Python-level failures remove
 # them; a removal the filesystem refuses (logged) or a hard kill (SIGKILL, power loss)
 # can leave one: leftover ``.archivey-tmp-*`` files and directories in an extraction
@@ -104,6 +104,9 @@ _CHUNK = 1024 * 1024  # 1 MiB copy chunk
 # there (a staging directory holds a running pipe extraction's only copy of its
 # data). Documented in docs/extracting.md; keep the value and that doc in sync.
 _TMP_PREFIX = ".archivey-tmp-"
+# Names ``_new_temp_file`` tries before it gives up. A bound, not a count it is expected
+# to reach: the names carry this run's own random token, so a taken one is rare.
+_TEMP_ATTEMPTS = 10000
 
 # A module attribute, not ``os.name`` at each use, so a test can take the Windows path
 # on POSIX.
@@ -275,12 +278,13 @@ def _open_new_file(path: Path, mode: int) -> int:
     ``mode`` is the creation mode, so the umask applies to it as it does to any new
     file. The flags are ``mkstemp``'s: ``O_EXCL`` fails loudly on a name that appeared
     underneath us, ``O_NOFOLLOW`` refuses a symlink planted there, and ``O_BINARY`` /
-    ``O_NOINHERIT`` matter on Windows only.
+    ``O_NOINHERIT`` matter on Windows only. The path is passed as a ``str``, so an
+    error names it as a ``str`` on PyPy too, which keeps a ``Path`` there.
     """
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     for extra in ("O_NOFOLLOW", "O_BINARY", "O_NOINHERIT"):
         flags |= getattr(os, extra, 0)
-    return os.open(long_path(path), flags, mode)
+    return os.open(os.fspath(long_path(path)), flags, mode)
 
 
 class _AbortExtraction(Exception):
@@ -379,9 +383,9 @@ def _possible_names(name: str) -> set[str]:
 
 def _until_listing_damage(
     reader: BaseArchiveReader,
-    pairs: Iterator[tuple[ArchiveMember, ArchiveStream | None]],
+    pairs: Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]],
     found: list[CorruptionError],
-) -> Generator[tuple[ArchiveMember, ArchiveStream | None], None, None]:
+) -> Generator[tuple[ArchiveMember, ArchiveStreamImpl | None], None, None]:
     """``pairs``, ending quietly when the listing's own damage ends them.
 
     That damage is appended to ``found`` for the caller to raise once the members
@@ -575,6 +579,9 @@ class _RunState:
     # resolution, so each of those clears it (``_note_link_change`` and
     # ``_resolutions_changed``).
     resolved_parents: dict[str, str] = field(default_factory=dict)
+    # Names of the run's temp files (``_new_temp_file``): a random token, then a count.
+    temp_token: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    temp_count: int = 0
     # ``_hardlink_chain_end``'s memo: a hard link's ``_member_id`` -> the first
     # member on its chain that is not a HARDLINK, or ``None``.
     hardlink_ends: dict[int, ArchiveMember | None] = field(default_factory=dict)
@@ -617,6 +624,14 @@ class _RunState:
     written_files: dict[tuple[int, Path], tuple[int, int, int, int]] = field(
         default_factory=dict
     )
+
+    # The string a ``dest / name`` join puts before ``name``, for ``_physical_path`` and
+    # ``_callers_parent``: built by pathlib's own join, so it agrees with pathlib's
+    # spelling (``""`` for ``Path(".")``, ``"/"`` for the root, ``"C:"`` for a drive).
+    dest_prefix: str = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.dest_prefix = os.fspath(self.dest / "_")[:-1]
 
 
 @dataclass
@@ -693,6 +708,9 @@ class ExtractionCoordinator:
         self._current = _MemberState()
         # Set for the length of a dry run; ``None`` on a real run.
         self._dry: DryRun | None = None
+        # ``_parent``'s one-entry cache: the last path asked for, and its parent.
+        self._parent_of: Path | None = None
+        self._parent_path: Path | None = None
         # Set by a dry run, from its scratch tree; see ExtractionReport.
         self.dry_run_top_level: tuple[tuple[str, bool], ...] | None = None
         self.dry_run_links: tuple[tuple[str, str], ...] | None = None
@@ -1118,7 +1136,7 @@ class ExtractionCoordinator:
         if presented_name is not None and recorded_index is not None:
             self._set_result(
                 recorded_index,
-                replace(
+                copy_with(
                     results[recorded_index],
                     presented_name=presented_name,
                     rewrites=rewrites,
@@ -2021,7 +2039,7 @@ class ExtractionCoordinator:
         )
 
         if original.is_anti:
-            return replace(
+            return copy_with(
                 self._apply_anti_item(original, target), requested_path=requested
             )
 
@@ -2076,11 +2094,11 @@ class ExtractionCoordinator:
         # rename, so it reports the actual (merged) path; every other outcome reports the
         # member's own intended destination, so RENAME shows up as requested_path != path.
         if prior is not None and result.status is ExtractionStatus.EXTRACTED:
-            result = replace(
+            result = copy_with(
                 result, requested_path=result.path, collided_with=collided_with
             )
         else:
-            result = replace(
+            result = copy_with(
                 result, requested_path=requested, collided_with=collided_with
             )
 
@@ -2206,7 +2224,7 @@ class ExtractionCoordinator:
             return ExtractionResult(
                 original, None, ExtractionStatus.NOT_OVERWRITTEN, None
             )
-        self._makedirs(dest_path.parent, transformed)
+        self._makedirs(self._parent(dest_path), transformed)
         return None
 
     def _resolve_collision(
@@ -2318,6 +2336,20 @@ class ExtractionCoordinator:
                     return written
         return path
 
+    def _parent(self, path: Path) -> Path:
+        """``path.parent``, the same object again for the same ``path``.
+
+        Writing a member asks for its parent up to three times (``_callers_parent``,
+        which a member at the top of the destination answers without it,
+        ``_make_room`` and the temp file next to it). Each new parent object builds
+        its parts, its string and its comparison key again: a few microseconds a
+        member that one cached object pays once. ``Path`` is immutable, so the cache
+        holds no state to go stale."""
+        if path is not self._parent_of:
+            self._parent_path = path.parent
+            self._parent_of = path
+        return cast("Path", self._parent_path)
+
     def _callers_parent(self, path: Path) -> Path | None:
         """The parent of ``path`` under the destination that the caller holds as an
         entry that is not a directory (a file, or a symlink that does not resolve to
@@ -2329,10 +2361,17 @@ class ExtractionCoordinator:
         wrote is not the caller's: ``_makedirs`` fails the member with an error that
         names it."""
         dest = self._state.dest
-        parent = path.parent
+        spelled = os.fspath(path)
+        if spelled == self._state.dest_prefix + os.path.basename(spelled):
+            # A member at the top of the destination, compared as strings: a
+            # ``Path`` comparison of a new parent costs a few times more.
+            return None
+        parent = self._parent(path)
+        # ``parent == dest`` still catches what the string test cannot: a destination
+        # equal under ``Path`` rules but spelled differently (case on Windows).
         if (
-            parent == dest
-            or parent in self._state.created_dirs
+            parent in self._state.created_dirs
+            or parent == dest
             or os.path.isdir(long_path(parent))
         ):
             # The common case: a directory this run made (``created_dirs`` drops
@@ -2655,7 +2694,14 @@ class ExtractionCoordinator:
         resolved (``_physical_rel``); ``path`` itself when that parent does not resolve
         inside the root."""
         rel = self._physical_rel(path)
-        return self._state.dest / rel if rel is not None else path
+        if rel is None:
+            return path
+        prefix = self._state.dest_prefix
+        if os.fspath(path) == prefix + rel.replace("/", os.sep):
+            # The common case, a parent that resolves to itself: ``path`` is already
+            # that path, and a join would only build an equal one (a few microseconds).
+            return path
+        return self._state.dest / rel
 
     def _collision_key(self, path: Path) -> str:
         """The collision-map key of the entry at ``path``: where it physically is.
@@ -3255,11 +3301,11 @@ class ExtractionCoordinator:
         results = self._state.results
         prior = results[index]
         if prior.presented_name is not None and new.presented_name is None:
-            new = replace(
+            new = copy_with(
                 new, presented_name=prior.presented_name, rewrites=prior.rewrites
             )
         if prior.requested_path is not None and new.requested_path is None:
-            new = replace(new, requested_path=prior.requested_path)
+            new = copy_with(new, requested_path=prior.requested_path)
         results[index] = new
 
     def _append_result(self, new: ExtractionResult) -> int:
@@ -3624,7 +3670,7 @@ class ExtractionCoordinator:
             if prior.status is ExtractionStatus.EXTRACTED:
                 self._set_result(
                     link.result_index,
-                    replace(
+                    copy_with(
                         prior, path=None, status=ExtractionStatus.BLOCKED, error=error
                     ),
                 )
@@ -3682,7 +3728,7 @@ class ExtractionCoordinator:
         # more extracted members than ``results`` contains.
         self._set_result(
             index,
-            replace(
+            copy_with(
                 clobbered,
                 path=None,
                 status=ExtractionStatus.OVERWRITTEN,
@@ -3742,6 +3788,14 @@ class ExtractionCoordinator:
         (``_make_room_for_parents``), so any other failure is the filesystem's, and
         propagates unchanged.
         """
+        try:
+            if stat.S_ISDIR(os.lstat(long_path(path)).st_mode):
+                # Already a directory, the common case: ``os.makedirs`` would create
+                # nothing, and nothing below would change. One ``lstat`` instead of four
+                # calls.
+                return
+        except OSError:
+            pass
         # The components that do not exist yet: this run creates them, so a directory
         # member naming one later is not the caller's (``_is_callers_directory``).
         missing: list[Path] = []
@@ -3923,8 +3977,8 @@ class ExtractionCoordinator:
         file carrying the content gets the link's (policy-capped) mode, not the source's.
 
         Under TRUSTED, a member with no stored mode gets the mode an ordinary file
-        creation would, ``0o666`` less the umask, rather than ``mkstemp``'s private
-        ``0o600``. Nothing chmods it afterwards, so the temp's creation mode is the file's
+        creation would, ``0o666`` less the umask, rather than the private ``0o600`` of
+        ``_new_temp_file``. Nothing chmods it afterwards, so the temp's creation mode is the file's
         final mode. STRICT and STANDARD give a mode-less member their own default instead
         (see ``_effective_mode``), so this arm is TRUSTED's alone.
 
@@ -3948,15 +4002,12 @@ class ExtractionCoordinator:
         # exists.
         self._state.tracker.check_recorded_size()
         if self._effective_mode(member) is None:
-            tmp = self._temp_sibling(dest_path.parent)
+            tmp = self._temp_sibling(self._parent(dest_path))
             fd = _open_new_file(tmp, 0o666)
         else:
-            # mkstemp hands back an already-open fd; write straight into it (no
-            # close+reopen). Its 0o600 keeps the content private until the chmod below.
-            fd, tmp_name = tempfile.mkstemp(
-                dir=long_path(dest_path.parent), prefix=_TMP_PREFIX
-            )
-            tmp = Path(tmp_name)
+            # Write straight into the new file's fd (no close+reopen). Its 0o600 keeps
+            # the content private until the chmod below.
+            fd, tmp = self._new_temp_file(self._parent(dest_path))
         try:
             with os.fdopen(fd, "wb") as dst:
                 if copy_begins is not None:
@@ -3970,7 +4021,7 @@ class ExtractionCoordinator:
                     emit_progress=self._current.emit_progress,
                 )
             self._apply_metadata(tmp, member)
-            self._swap_into_place(tmp, dest_path, member)
+            self._swap_into_place(tmp, dest_path, member, fresh=True)
         except BaseException:
             # os.replace consumes the temp on success; on any earlier failure remove it so
             # no .archivey-tmp-* file is left behind (the existing destination is untouched).
@@ -4136,7 +4187,7 @@ class ExtractionCoordinator:
                         member_name=member.name,
                     )
                 # No usable path took a link: fall back to a copy.
-                # Created private when a mode follows (as mkstemp would), at the ordinary
+                # Created private when a mode follows (as ``_new_temp_file`` does), at the ordinary
                 # creation mode when none does, the same as a FILE write.
                 create_mode = (
                     0o600 if self._effective_mode(member) is not None else 0o666
@@ -4190,7 +4241,9 @@ class ExtractionCoordinator:
             return False
         return self._occupied(dest) if atomic else os.path.lexists(long_path(dest))
 
-    def _swap_into_place(self, tmp: Path, dest: Path, member: ArchiveMember) -> None:
+    def _swap_into_place(
+        self, tmp: Path, dest: Path, member: ArchiveMember, *, fresh: bool = False
+    ) -> None:
         """Move the staged temp ``tmp`` onto ``dest`` with ``os.replace``, the last step
         of every atomic write (``_write_file_atomic``, ``_place_link``).
 
@@ -4200,7 +4253,9 @@ class ExtractionCoordinator:
         routes onto a link to the same file). ``dest`` then already names the right
         file, so only the temp name is left, and it is removed here. After a real
         rename the temp name is gone and the unlink finds nothing. The unlink covers
-        Windows either way.
+        Windows either way. ``fresh`` says ``tmp`` is a file this write created, which
+        no other name can share, so on POSIX the rename always takes the temp name and
+        the unlink is skipped.
 
         Any error from the unlink is ignored: ``os.replace`` has already put the member
         in place, and a temp name left behind is a stray the docs call safe to delete,
@@ -4221,14 +4276,39 @@ class ExtractionCoordinator:
                 if not self._taken_after_check(dest, atomic=True):
                     raise
                 raise self._already_exists(dest, member) from exc
+            if fresh and not _WINDOWS:
+                return
             with contextlib.suppress(OSError):
                 os.unlink(long_path(tmp))
+
+    def _new_temp_file(self, parent: Path) -> tuple[int, Path]:
+        """Create a new ``.archivey-tmp-*`` file in ``parent`` at mode 0o600 and return
+        its open fd and its path, the return of ``tempfile.mkstemp``, with its flags
+        (``_open_new_file``).
+
+        The names are this run's random token and a counter, rather than ``mkstemp``'s
+        random draw per file, which cost a few microseconds a member. So within a run
+        the names are predictable. That is safe: the destination is trusted at rest
+        (see the threat model), and ``O_EXCL`` / ``O_NOFOLLOW`` refuse a name or a
+        symlink planted underneath. On a name that is taken, the next number is tried.
+        """
+        state = self._state
+        for _ in range(_TEMP_ATTEMPTS):
+            state.temp_count += 1
+            path = parent / f"{_TMP_PREFIX}{state.temp_token}{state.temp_count:x}"
+            try:
+                return _open_new_file(path, 0o600), path
+            except FileExistsError:
+                continue
+        raise FileExistsError(
+            errno.EEXIST, "No usable temporary name found", str(parent)
+        )
 
     @staticmethod
     def _temp_sibling(parent: Path) -> Path:
         """A free ``.archivey-tmp-*`` name in ``parent`` for an atomic swap.
 
-        Unlike ``_write_file_atomic`` this cannot use ``mkstemp``: ``os.link`` needs a
+        Unlike ``_new_temp_file`` this does not create the file: ``os.link`` needs a
         name that does *not* exist. The destination is trusted at rest (see the threat
         model), and ``os.link`` / ``os.replace`` fail loudly on a name that appeared
         underneath us, so a uuid4 name is enough."""

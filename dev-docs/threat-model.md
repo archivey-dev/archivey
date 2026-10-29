@@ -874,7 +874,7 @@ raw library exception, and never a silent wrong answer. Genuine I/O errors propa
 unchanged, and no handler swallows or reclassifies an unknown exception.
 
 **Mechanism.** Each backend translates its library's exceptions. For ISO,
-`IsoPlugin.translate_exception` maps `_PYCDLIB_ERRORS`, for errors in `open()` and those
+`IsoHandler.translate_exception` maps `_PYCDLIB_ERRORS`, for errors in `open()` and those
 the reader does not translate itself: pycdlib's exception base plus the bare `IndexError`, `struct.error`, `UnicodeDecodeError`, `AttributeError`,
 `KeyError` and `ValueError` fuzzing found it raising, but never `OSError`. Advisories
 that are not errors are `Diagnostic` values with stable codes and a per-code policy
@@ -1056,7 +1056,7 @@ member as fact.
 - Brotli has no magic, so it is found by a content probe, which without gates accepted
   about 8% of random data. `open_archive` and `detect_format` run that probe only for a
   `.br` or `.brotli` name unless `always_probe_content` is set; `open_stream` always runs
-  it ([`topics/detection.md`](topics/detection.md) §2.5). The probe rejects a first meta-block larger than a
+  it ([`topics/detection.md`](topics/detection.md) §2.6). The probe rejects a first meta-block larger than a
   known-length source, a fully visible source that does not decode to completion, and
   later overruns or trailing bytes found by a bounded block-chain walk, and decodes up
   to the first compressed block that walk reaches (within 1 MiB and the decode allowance),
@@ -1089,10 +1089,11 @@ the program that runs is one whose behaviour we have characterized.
 default") takes RARLAB `unrar` or `rar` when installed and `unar` otherwise, decided once
 at open. A read `unar` refuses is not retried with `unrar`, and reads `unar` gets wrong
 are refused before it runs. The other direction has one exception: a member `unrar`
-cannot address by name (a glob mask that also matches earlier members, a glob in a
-directory component, a backslash) is read with an accepted `unar` by index, unless the
-read needs a password, the archive is a stream or has a prefix (a copy), or `unar` refuses it
-(`_unar_for_unaddressable`). `unrar-free`, `7z` and `bsdtar` are never used: their
+cannot address by name (any refusal `_UnrarCannotAddress` carries, such as a glob mask
+that also matches earlier members, a glob in a directory component, a backslash, or an
+earlier name whose reading by this host's `unrar` cannot be modelled) is read with an
+accepted `unar` by index, unless the read needs a password, the archive is a stream or has
+a prefix (a copy), or `unar` refuses it (`_unar_for_unaddressable`). `unrar-free`, `7z` and `bsdtar` are never used: their
 failures (empty files with a success exit, a missing plugin, gigabytes written for a
 stored member) are invisible to the caller. A non-RARLAB `unrar` raises
 `PackageNotInstalledError`. Both paths use a banner probe with a timeout and a

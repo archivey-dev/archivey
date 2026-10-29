@@ -1,5 +1,5 @@
 # CPIO archives for archivey, as a format plugin outside the library. It uses only
-# `archivey.plugins` and archivey's public names (tests/test_cpio.py checks), so it is
+# `archivey.formats` and archivey's public names (tests/test_cpio.py checks), so it is
 # the proof that a format read in one forward pass can be added from outside. Not
 # published.
 

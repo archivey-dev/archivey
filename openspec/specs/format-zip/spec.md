@@ -38,7 +38,8 @@ The ZIP backend SHALL expose these properties for every opened ZIP archive:
 `reader.get()` and other name lookups SHALL use the central-directory-derived
 member map without extra archive I/O. Unencrypted ZIP member data SHALL decode
 through the shared `compressed-streams` codec layer (bounded local-header parse
-+ slice + method-id dispatch), including extended codecs when their backends are
++ slice + method-id dispatch), including XZ (method 95, `.xz` data, decoded in core
+with stdlib `lzma`), and extended codecs when their backends are
 installed: Deflate64 (method 9, via `[recommended]`/`inflate64`), ZSTD (method 93), PPMD
 (method 98, ZIP PPMd8 framing via `[recommended]`/`pyppmd`). A missing optional backend
 SHALL raise `PackageNotInstalledError`. An unknown/unsupported method id SHALL
@@ -123,6 +124,9 @@ encoder sometimes flushes it past the decoder's last read.
 | Zstd member with a second frame or a skippable frame after its first, declared size and CRC covering all of it | Decodes every frame, as a `.zst` file does; a declared size or CRC that stops at the first frame raises `CorruptionError` |
 | DEFLATE64 (method 9) member, `inflate64` backend present | Decodes; absent backend → `PackageNotInstalledError` |
 | ZSTD (method 93) / PPMD (method 98) member, backend present | Decodes; absent backend → `PackageNotInstalledError` |
+| XZ (method 95) member, as 7-Zip writes it with `-mm=XZ` | Decodes in core; lists `CompressionAlgorithm.XZ` |
+| XZ member with a second xz stream, or stream padding (groups of four zero bytes) between or after its streams, declared size and CRC covering all of it | Decodes every stream, as an `.xz` file does (7-Zip reads it too) |
+| XZ member with junk, or zero bytes that do not fill a group of four, after its last stream | `CorruptionError` (7-Zip: "Data Error", or "There are some data after the end of the payload data") |
 | Unsupported/unknown method id | `UnsupportedFeatureError`; no guessed output |
 | Corrupt member body | `CorruptionError` / `TruncatedError` |
 | LZMA member, `lc + lp` over 4 (`-mm=LZMA:lc=8`) | `UnsupportedFeatureError` naming `lc` and `lp` |

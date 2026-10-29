@@ -2,7 +2,7 @@
 
 Reads Unix ar archives (`.a` static libraries, `.lib`, and the outer layer of `.deb`
 packages) with [archivey](https://github.com/archivey-dev/archivey), as a format plugin
-read in one forward pass, so from a pipe too. It is written against `archivey.plugins`
+read in one forward pass, so from a pipe too. It is written against `archivey.formats`
 only, as a second check (after archivey-cpio) that such a format can be added from
 outside archivey. It is not published.
 
@@ -10,10 +10,10 @@ outside archivey. It is not published.
 import sys
 
 import archivey
-from archivey.plugins import register_format
-from archivey_ar import ArPlugin
+from archivey.formats import register_format
+from archivey_ar import ArHandler
 
-register_format(ArPlugin)
+register_format(ArHandler)
 
 with archivey.open_archive("libfoo.a") as archive:
     for member in archive.members():

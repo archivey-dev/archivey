@@ -1279,7 +1279,13 @@ the members after the damage, which were never listed, have no result. This is t
 Ruled by the maintainer (davitf, 2026-10-03); the rationale and the rejected
 alternatives are in `dev-docs/formats/rar.md` §6.
 
-The listing limits SHALL still be checked before anything is written. A hardlink in the
+The listing limits SHALL still be checked before a member over them is written. A format
+whose listing is one index checks them before anything is written. A format whose listing
+is a scan of the data (TAR, a sequential format added through `archivey.formats`) checks
+each member as the pass registers it, in either access mode, so the members listed before
+the one that crosses a limit are written and then `ResourceLimitError` is raised: a
+streaming pass cannot do otherwise, and random access ends up the same on disk (DR-5). A
+hardlink in the
 prefix whose source was not selected SHALL still be completed by the second pass before
 the raise; a hardlink only points back, so its source is in the prefix. A member
 selection that the prefix satisfies SHALL NOT stop the pass before the damage, and its
@@ -1296,7 +1302,7 @@ read at open, so damage there fails the open.
 | Same, `members=` naming one prefix member | That member written, then the listing's error |
 | Same, `members=` naming a prefix hardlink whose source is not selected | The link written with the source's bytes, then the listing's error |
 | Same, `members=` naming a prefix member and an entry that matches nothing, `MEMBER_SELECTOR_UNMATCHED` set to `RAISE` | The prefix member written, then the listing's error; no `MEMBER_SELECTOR_UNMATCHED` |
-| Same, prefix over a listing limit | `ResourceLimitError`; nothing written |
+| Same, prefix over a listing limit | The members before the one over the limit written, then `ResourceLimitError` |
 
 ### Requirement: ExtractionReport is an immutable operation result
 

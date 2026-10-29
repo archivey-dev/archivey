@@ -20,9 +20,12 @@ from archivey.cost import (
     ListingCost,
     StreamCapability,
 )
-from archivey.exceptions import ArchiveyUsageError
+from archivey.diagnostics import DiagnosticCode, DiagnosticPolicy
+from archivey.exceptions import ArchiveyUsageError, DiagnosticRaisedError
 from archivey.internal.base_reader import BaseArchiveReader
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.measurement import enable_measurement
+from archivey.internal.streams.archive_stream import MemberStreamParts
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
@@ -62,8 +65,8 @@ class _IndexedReader(BaseArchiveReader):
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield ArchiveMember(type=MemberType.FILE, name="a.txt", size=1)
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
-        return self._wrap_member_stream(io.BytesIO(b"x"), member.name, size=member.size)
+    def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
+        return self._member_parts(io.BytesIO(b"x"), member.name, size=member.size)
 
     def _get_archive_info(self) -> ArchiveInfo:
         return _info(ArchiveFormat.ZIP, ListingCost.INDEXED, StreamCapability.SEEKABLE)
@@ -80,8 +83,8 @@ class _ForwardOnlyReader(BaseArchiveReader):
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield ArchiveMember(type=MemberType.FILE, name="a.txt", size=1)
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
-        return self._wrap_member_stream(io.BytesIO(b"x"), member.name, size=member.size)
+    def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
+        return self._member_parts(io.BytesIO(b"x"), member.name, size=member.size)
 
     def _get_archive_info(self) -> ArchiveInfo:
         return _info(
@@ -144,9 +147,9 @@ class _OpenCountingReader(_IndexedReader):
         yield ArchiveMember(type=MemberType.FILE, name="a.txt", size=1)
         yield ArchiveMember(type=MemberType.FILE, name="b.txt", size=1)
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+    def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         self.opens += 1
-        return self._wrap_member_stream(io.BytesIO(b"x"), member.name, size=member.size)
+        return self._member_parts(io.BytesIO(b"x"), member.name, size=member.size)
 
 
 def test_stream_members_opens_lazily() -> None:
@@ -329,8 +332,8 @@ class _FailingScanReader(BaseArchiveReader):
         yield ArchiveMember(type=MemberType.FILE, name="a.txt", size=1)
         raise archivey.CorruptionError("scan failed mid-pass")
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
-        return self._wrap_member_stream(io.BytesIO(b"x"), member.name, size=member.size)
+    def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
+        return self._member_parts(io.BytesIO(b"x"), member.name, size=member.size)
 
     def _get_archive_info(self) -> ArchiveInfo:
         return _info(
@@ -458,3 +461,90 @@ def test_streaming_incomplete_listing_survives_link_finalize_double_fault() -> N
     assert [m.name for m in report] == ["link"]
     assert is_corruption_not_truncation(report.error)
     assert "listing damaged" in str(report.error)
+
+
+# --- One handle per member: ``_open_member`` returns the member's parts ---------------
+
+
+class _UnverifiableDigestReader(_IndexedReader):
+    """A reader whose member lists a digest no hasher exists for."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.opened: list[io.BytesIO] = []
+
+    def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
+        data = io.BytesIO(b"x")
+        self.opened.append(data)
+        return self._member_parts(
+            data,
+            member.name,
+            size=member.size,
+            expected_hashes={"no-such-digest": b"\0"},  # type: ignore[dict-item]
+        )
+
+
+def _digest_reader(*, raising: bool) -> _UnverifiableDigestReader:
+    policy = DiagnosticPolicy(
+        raise_on={DiagnosticCode.DIGEST_UNVERIFIABLE} if raising else ()
+    )
+    return _UnverifiableDigestReader(
+        ArchiveFormat.ZIP,
+        False,
+        "x.zip",
+        collector=DiagnosticCollector(policy=policy),
+    )
+
+
+def test_a_lazy_handle_reports_its_members_unverifiable_digest() -> None:
+    """The handle that serves the member builds its verifier on first read, inside
+    its own scope, so the digest it cannot check is reported on that handle."""
+    reader = _digest_reader(raising=False)
+    for _member, stream in reader.stream_members():
+        assert stream is not None
+        assert stream.diagnostics.counts == {}
+        assert stream.read() == b"x"
+        assert stream.diagnostics.counts == {DiagnosticCode.DIGEST_UNVERIFIABLE: 1}
+
+
+def test_an_open_handle_reports_its_members_unverifiable_digest() -> None:
+    reader = _digest_reader(raising=False)
+    with reader.open("a.txt") as f:
+        assert f.diagnostics.counts == {DiagnosticCode.DIGEST_UNVERIFIABLE: 1}
+        assert f.read() == b"x"
+
+
+def test_a_tracking_lazy_handle_takes_over_parts_under_measurement() -> None:
+    """``_wrap_member_stream`` counts the bytes of an opener that returns a stream,
+    but parts are passed through to the handle, which takes over their checks."""
+    with enable_measurement():
+        reader = _digest_reader(raising=False)
+        member = next(iter(reader.members()))
+        stream = reader._wrap_member_stream(
+            member.name, lambda: reader._open_member(member), size=member.size
+        )
+        with stream:
+            assert stream.read() == b"x"
+            assert stream.diagnostics.counts == {DiagnosticCode.DIGEST_UNVERIFIABLE: 1}
+
+
+def test_a_lazy_handle_that_refuses_its_member_closes_the_data() -> None:
+    """A verifier refused under a RAISE policy fails the open, and the member's data,
+    which no handle took, is closed rather than left to the garbage collector."""
+    reader = _digest_reader(raising=True)
+    for _member, stream in reader.stream_members():
+        assert stream is not None
+        with pytest.raises(DiagnosticRaisedError):
+            stream.read()
+        assert [data.closed for data in reader.opened] == [True]
+        # The same open, so the same error, and no second open of the member.
+        with pytest.raises(DiagnosticRaisedError):
+            stream.read()
+        assert len(reader.opened) == 1
+
+
+def test_an_open_that_refuses_its_member_closes_the_data() -> None:
+    reader = _digest_reader(raising=True)
+    with pytest.raises(DiagnosticRaisedError):
+        reader.open("a.txt")
+    assert [data.closed for data in reader.opened] == [True]

@@ -1,5 +1,5 @@
 # Unix ar archives for archivey, as a format plugin outside the library. It uses only
-# `archivey.plugins` and archivey's public names (tests/test_ar.py checks), as a second
+# `archivey.formats` and archivey's public names (tests/test_ar.py checks), as a second
 # check, after archivey-cpio, of the API for formats read in one forward pass. Not
 # published.
 

@@ -2,19 +2,19 @@
 
 Register it once, then open SquashFS images like any other archive::
 
-    from archivey.plugins import register_format
-    from archivey_squashfs import SquashfsPlugin
+    from archivey.formats import register_format
+    from archivey_squashfs import SquashfsHandler
 
-    register_format(SquashfsPlugin)
+    register_format(SquashfsHandler)
 """
 
 from __future__ import annotations
 
 from archivey import ArchiveFormat, PluginContainer, StreamFormat
-from archivey.plugins import FormatPlugin, Magic, PluginContext, PluginSource
+from archivey.formats import FormatHandler, Magic, ReaderContext, ReaderSource
 from archivey_squashfs.reader import MAGIC, SquashfsReader
 
-__all__ = ["SQUASHFS", "SquashfsContainer", "SquashfsPlugin", "SquashfsReader"]
+__all__ = ["SQUASHFS", "SquashfsContainer", "SquashfsHandler", "SquashfsReader"]
 
 
 class SquashfsContainer(PluginContainer):
@@ -24,7 +24,7 @@ class SquashfsContainer(PluginContainer):
 SQUASHFS = ArchiveFormat(SquashfsContainer.SQUASHFS, StreamFormat.UNCOMPRESSED)
 
 
-class SquashfsPlugin(FormatPlugin):
+class SquashfsHandler(FormatHandler):
     """SquashFS 4.0 images: ``.squashfs``, ``.sqfs`` and snap packages."""
 
     format = SQUASHFS
@@ -32,5 +32,5 @@ class SquashfsPlugin(FormatPlugin):
     magic = (Magic(0, MAGIC),)
     uses_encoding = True
 
-    def open(self, source: PluginSource, context: PluginContext) -> SquashfsReader:
+    def open(self, source: ReaderSource, context: ReaderContext) -> SquashfsReader:
         return SquashfsReader(source, context)

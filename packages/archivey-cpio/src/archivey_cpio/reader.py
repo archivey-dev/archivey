@@ -53,12 +53,12 @@ from archivey.diagnostics import (
     SpecialFileDataContext,
     UnknownMemberTypeContext,
 )
-from archivey.plugins import (
+from archivey.formats import (
     ForwardStream,
     MemberDigest,
     MemberSpan,
-    PluginArchiveInfo,
-    PluginContext,
+    ReaderArchiveInfo,
+    ReaderContext,
     SequentialReader,
 )
 
@@ -195,13 +195,13 @@ class CpioReader(SequentialReader):
 
     link_target_in_data = True
 
-    def __init__(self, context: PluginContext) -> None:
+    def __init__(self, context: ReaderContext) -> None:
         self._context = context
         self._variant: Variant | None = None
 
-    def archive_info(self) -> PluginArchiveInfo:
+    def archive_info(self) -> ReaderArchiveInfo:
         variant = self._variant
-        return PluginArchiveInfo(
+        return ReaderArchiveInfo(
             format_version=None if variant is None else variant.value,
             extra={} if variant is None else {"cpio.variant": variant.value},
         )

@@ -32,10 +32,8 @@ Triage (2026-07, rerun 2026-10-28 against libarchive 3.9.0dev with the plugins)
   (``test_compat_lzip_3``).
 
 **ZIP**
-* **GAP** ZIPX XZ (method 95) — no codec path yet, with or without WinZip AES
-  around it.
-* ZIPX PPMd / Zstd decode via the shared codec layer when `[recommended]` is
-  installed; WinZip AES (method 99) decrypts via the same extra.
+* ZIPX XZ decodes via the shared codec layer in core; PPMd and Zstd do when
+  `[recommended]` is installed, and WinZip AES (method 99) decrypts via the same extra.
 * **GAP** ZIP members whose payload exceeds the declared size (libarchive
   fixtures) — size/CRC checks reject them.
 * **GAP** assorted ZIP edge cases (extra padding, UTF-8 path presentation,
@@ -68,8 +66,6 @@ Triage (2026-07, rerun 2026-10-28 against libarchive 3.9.0dev with the plugins)
 from __future__ import annotations
 
 import binascii
-import importlib
-import importlib.util
 import io
 import os
 import re
@@ -87,11 +83,9 @@ from archivey import (
     detect_format,
     open_archive,
 )
-from archivey.internal.plugin_adapter import registration_scope
-from archivey.internal.registry import get_registry
-from archivey.plugins import register_format
 from archivey.types import ArchiveFormat, ContainerFormat, StreamFormat
 from tests.conftest import ARCHIVEY_TEST_CACHE, binary_refusal, requires
+from tests.corpus_plugins import installed_plugins
 from tests.sample_archives import publish_cached
 
 _ENV = "ARCHIVEY_LIBARCHIVE_TEST_FILES"
@@ -173,12 +167,8 @@ _XFAIL: dict[str, tuple[bool, str]] = {
         "HARNESS: libarchive lists no members for this bare lzip fixture",
     ),
     # --- ZIP ---
-    # ZIPX PPMd8 / Zstd / WinZip AES now decode via the shared codec / cryptography paths;
+    # ZIPX XZ / PPMd8 / Zstd / WinZip AES now decode via the shared codec / cryptography paths;
     # they are no longer xfailed (AES fixtures use passwords from `_PASSWORDS`).
-    "test_read_format_zip_xz_multi.zipx": (
-        True,
-        "GAP: ZIPX XZ unsupported (no ZIP method-95 codec path yet)",
-    ),
     "test_read_data_into_fd_size_exceeds_declared_deflate.zip": (
         True,
         "GAP: stdlib zipfile rejects payload larger than declared size",
@@ -186,10 +176,6 @@ _XFAIL: dict[str, tuple[bool, str]] = {
     "test_read_data_into_fd_size_exceeds_declared_stored.zip": (
         True,
         "GAP: stdlib zipfile rejects payload larger than declared size",
-    ),
-    "test_read_format_zip_winzip_aes256_large_xz.zip": (
-        True,
-        "GAP: ZIPX XZ unsupported (no ZIP method-95 codec path yet)",
     ),
     "test_read_format_zip_size_exceeds_declared_deflate.zip": (
         True,
@@ -463,13 +449,6 @@ def _uu_param(path: Path) -> pytest.ParameterSet:
     )
 
 
-# The format plugins in packages/, by module and class.
-_PLUGINS = (
-    ("archivey_cpio", "CpioPlugin"),
-    ("archivey_ar", "ArPlugin"),
-    ("archivey_squashfs", "SquashfsPlugin"),
-)
-
 _ROOT = _files_dir()
 _UU_SOURCES = list(_iter_uu_sources(_ROOT)) if _ROOT is not None else []
 
@@ -486,15 +465,7 @@ pytestmark = [
 def _plugins() -> Iterator[None]:
     """Register the plugins in packages/ that are installed, so their fixtures are
     compared instead of skipped as unknown formats; undone when the module ends."""
-    with registration_scope():
-        for module, name in _PLUGINS:
-            # Not installed: skipped. Installed and failing to import: an error.
-            if importlib.util.find_spec(module) is None:
-                continue
-            plugin = getattr(importlib.import_module(module), name)
-            # A plugin's own tests may have registered it in this process already.
-            if get_registry().registered_reader(plugin.format) is None:
-                register_format(plugin)
+    with installed_plugins():
         yield
 
 
