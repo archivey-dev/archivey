@@ -436,15 +436,21 @@ class UnarRarPolicy:
     def solid_pass_refusal(self, info: RarMemberInfo) -> str | None:
         """Why this payload member cannot come out of the solid pass's run, or ``None``.
 
-        In a RAR 2.x-4.x archive, one encrypted member anywhere refuses the whole run:
-        ``unar`` would have to decode it to reach any later member of the solid stream.
+        The archive's refusal when there is one (encrypted RAR 2.x-4.x headers);
+        otherwise what ``_plan_solid_pass`` recorded for the member: its
+        ``member_refusal``, or the cap on how many entries one run may name.
         """
         if self._archive_refusal is not None:
             return self._archive_refusal
         return self._pass_refusals.get(id(info))
 
     def solid_pass_emits_data(self) -> bool:
-        """Whether the solid pass's run writes at least one byte when it decrypts."""
+        """Whether the solid pass's run writes at least one byte when it decrypts.
+
+        Asked only of a planned run: with an archive refusal nothing is planned, and
+        ``_pass_indexes`` is ``None`` for that reason rather than "every entry".
+        """
+        assert self._archive_refusal is None
         if self._pass_indexes is not None:
             return any(
                 info.file_size > 0
@@ -457,10 +463,17 @@ class UnarRarPolicy:
         """Whether the solid pass's run holds encrypted data.
 
         A RAR 2.x-4.x archive with encrypted members can still have a run that holds
-        none: the pass leaves them out (``member_refusal``).
+        none: the pass leaves them out (``member_refusal``). This asks the definite
+        question, not ``_needs_password``: a member whose header stopped before
+        encryption could be ruled out (``encryption_unknown``) says nothing about the
+        run, and counting it would call an empty run of a plaintext archive a wrong
+        password. Asked only of a planned run, as ``solid_pass_emits_data`` is.
         """
+        assert self._archive_refusal is None
+        if self._archive.has_header_encryption:
+            return True
         return any(
-            _needs_password(self._archive, info)
+            info.is_encrypted
             for info in self._archive.members
             if self._pass_indexes is None or id(info) in self._pass_offsets
         )

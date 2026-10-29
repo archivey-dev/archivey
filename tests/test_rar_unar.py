@@ -990,13 +990,29 @@ def _solid_rar4_with_encrypted_member(index: int) -> rar_parser.RarArchive:
     with open(_RAR / "basic_solid__rar4.rar", "rb") as f:
         archive = rar_parser.parse_rar_archive(f)
     compressed = [m for m in archive.members if not rar_unar.uses_no_dictionary(m)]
+    # The marked member needs members before it and after it in one solid stream.
+    assert len(compressed) > index + 1 and all(m.file_solid for m in compressed[1:])
     compressed[index].is_encrypted = True
     return archive
 
 
+def test_a_member_of_unknown_encryption_does_not_make_the_run_need_a_password() -> None:
+    """``encryption_unknown`` is the fail-closed flag a member is presented with; it
+    says nothing about the run, so an empty run of a plaintext archive stays a short
+    read rather than a wrong password."""
+    with open(_RAR / "solid_groups__.rar", "rb") as f:
+        archive = rar_parser.parse_rar_archive(f)
+    payload = [m for m in archive.members if m.is_payload_file()]
+    payload[0].header_walk_stop_reason = "test"
+    assert payload[0].encryption_unknown
+    policy = rar_unar.UnarRarPolicy(archive)
+    assert policy.solid_pass_emits_data()
+    assert not policy.solid_pass_needs_password()
+
+
 def test_rar4_solid_pass_refuses_only_what_the_encrypted_member_blocks() -> None:
     """The pass refuses the encrypted member and the members its solid stream carries
-    into, as ``open()`` does, and keeps the ones before it in its run."""
+    into (its ``member_refusal``), and keeps the ones before it in its run."""
     archive = _solid_rar4_with_encrypted_member(1)
     policy = rar_unar.UnarRarPolicy(archive)
     payload = [m for m in archive.members if m.is_payload_file()]

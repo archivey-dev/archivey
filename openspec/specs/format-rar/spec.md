@@ -1221,9 +1221,12 @@ stores one; otherwise, when `unar` produces no data for a non-empty encrypted me
 the read SHALL raise `EncryptionError`. The
 system SHALL refuse with `UnsupportedFeatureError`, before spawning `unar`:
 
-- an encrypted RAR 2.x-4.x member that archivey does not decrypt itself, and every
-  member of a solid pass over such an archive (`unar` 1.10 returns no data for it, and
-  exits 0, even with the right password);
+- an encrypted RAR 2.x-4.x member that archivey does not decrypt itself (`unar` 1.10
+  returns no data for it, and exits 0, even with the right password), and in a solid
+  archive every compressed member its solid stream carries into. A solid pass SHALL
+  refuse those members and read the others, those before the encrypted member
+  included, since `unar -i` names entries by index and decodes nothing past the last
+  one named; with encrypted RAR 2.x-4.x headers it SHALL refuse every member;
 - a member or solid pass that needs a password that is not ASCII, or contains NUL
   (`unar` 1.10 does not decrypt with it);
 - every member of a multi-volume RAR5 set with encrypted headers (XADMaster 1.10.8
@@ -1269,6 +1272,8 @@ most `rar` writes, SHALL be `None` and SHALL NOT be weighed or decoded.
 | `unar` selected, encrypted RAR5 member, wrong password | `EncryptionError` |
 | `unar` selected, encrypted RAR 2.x-4.x member, compressed or split | `UnsupportedFeatureError` naming the RAR 2.x-4.x reason |
 | `unar` selected, stored encrypted RAR 2.9-4 member in one part, `open()` | Decrypted by archivey; `unar` is not spawned |
+| `unar` selected, solid RAR 2.x-4.x pass with an encrypted compressed member | That member and the compressed members after it in its solid stream refused, saying `unar` 1.10 cannot read them and naming `rar_decompressor='unrar'`; the members before it read correctly |
+| `unar` selected, solid RAR5 pass where a member's header stopped before encryption was ruled out, empty run | Not `EncryptionError`: the member's fail-closed flag says nothing about the run |
 | `unar` selected, non-ASCII password | `UnsupportedFeatureError` naming the password reason |
 | `unar` selected, RAR5 volume set with encrypted headers, right password | `UnsupportedFeatureError` |
 | `unar` selected, RAR5 solid, empty file first | Members with data after it are refused; listing is not |
