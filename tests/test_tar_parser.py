@@ -1089,7 +1089,7 @@ def test_pax_sparse_realsize_without_a_major_is_damage() -> None:
 
 def test_pax_sparse_1_0_without_a_realsize_ends_at_its_greatest_chunk_end() -> None:
     """GNU tar 1.35 extracts such a member up to its greatest chunk end (13 bytes
-    here); it lists the size field, map blocks included."""
+    here); it lists the stored size, map blocks included."""
     data = _pax_1_0_member_with_records(
         {"GNU.sparse.major": "1", "GNU.sparse.minor": "0"}
     )
@@ -1127,8 +1127,8 @@ def test_pax_sparse_1_0_with_an_empty_realsize_is_damage() -> None:
         _walk(data)
 
 
-def test_pax_sparse_1_0_without_a_realsize_may_end_at_its_size_field() -> None:
-    """A chunk may end exactly at the size field (515: one map block and 3 bytes)."""
+def test_pax_sparse_1_0_without_a_realsize_may_end_at_its_stored_size() -> None:
+    """A chunk may end exactly at the stored size (515: one map block and 3 bytes)."""
     data = _pax_1_0_member_with_records(
         {"GNU.sparse.major": "1", "GNU.sparse.minor": "0"}, offset=512
     )
@@ -1137,15 +1137,15 @@ def test_pax_sparse_1_0_without_a_realsize_may_end_at_its_size_field() -> None:
 
 
 @pytest.mark.parametrize("offset", [513, 1_000_000])
-def test_pax_sparse_1_0_without_a_realsize_past_its_size_field_is_damage(
+def test_pax_sparse_1_0_without_a_realsize_past_its_stored_size_is_damage(
     offset: int,
 ) -> None:
-    """GNU tar 1.35 calls the member malformed once a chunk ends past the size
-    field, for listing and extraction alike."""
+    """GNU tar 1.35 calls the member malformed once a chunk ends past the stored
+    size, for listing and extraction alike."""
     data = _pax_1_0_member_with_records(
         {"GNU.sparse.major": "1", "GNU.sparse.minor": "0"}, offset=offset
     )
-    with pytest.raises(CorruptionError, match="size field"):
+    with pytest.raises(CorruptionError, match="stored size"):
         _walk(data)
 
 
