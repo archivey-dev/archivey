@@ -399,8 +399,20 @@ DEEP_SECURITY = (
     "src/archivey/internal/external/",
     "src/archivey/internal/streams/child_process.py",
 )
-# A deep pull request touching one of these also goes to the maintainer to merge.
-DEEP_MAINTAINER = (".github/workflows/", "scripts/release.py")
+# A deep pull request touching one of these also goes to the maintainer to merge. The
+# review loop's own rules are here because a pull request is reviewed under its own copy
+# of them (dev-docs/review-loop.md, Known rough edges): the tier is read from the base
+# branch, so a pull request that edits them cannot take itself off this list.
+DEEP_MAINTAINER = (
+    ".github/workflows/",
+    "scripts/release.py",
+    ".github/review-loop-prompt.md",
+    ".claude/skills/code-review-skill/",
+    "scripts/review_loop_close.sh",
+    "scripts/review_loop_gate.py",
+    "scripts/review_loop_prompt.py",
+    "scripts/review_prep.py",
+)
 
 API_SURFACE = "dev-docs/api-surface.txt"
 
