@@ -155,7 +155,7 @@ _STREAMS_WITH_CHECKSUM = frozenset(
 # trailing scan may be a failed check over members already read, and says so.
 _STREAMS_WITH_UNTYPED_CHECKSUM = frozenset((StreamFormat.BZIP2, StreamFormat.XZ))
 
-# What :meth:`TarReader._verify_tar_eof` found where the end-of-archive marker belongs:
+# What :meth:`TarReader._check_end` found where the end-of-archive marker belongs:
 # no block, a partial one, a non-null block after a zero block that ended at least one
 # member (the marker is damaged, the listing whole), a header that does not parse (the
 # listing is shortened), or a non-null block after a zero block with no member before
@@ -206,7 +206,7 @@ def _member_type(entry: TarEntry) -> MemberType:
     if typeflag not in _KNOWN_TYPES and entry.size:
         # An unknown typeflag that declares data: GNU tar extracts it as a regular
         # file with a warning, and 7-Zip 23.01 extracts it as one. The data area is the
-        # structure (DR-25; maintainer ruling, 2026-10-17). _to_member reports it.
+        # structure (DR-25; maintainer ruling, 2026-10-17). _MemberTyper.span reports it.
         return MemberType.FILE
     # Character/block devices, FIFOs, multi-volume and volume headers, and an unknown
     # typeflag with no data.

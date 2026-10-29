@@ -26,7 +26,7 @@ shape.
 
 | Shape | Catches | What leaves | Example |
 |---|---|---|---|
-| **Cleanup and re-raise** | `BaseException` | the original | `core.open_archive`, `TarReader.__init__`, `_bounded_member_pipe` |
+| **Cleanup and re-raise** | `BaseException` | the original | `core.open_archive`, `SequentialReaderAdapter._span_parts`, `_bounded_member_pipe` |
 | **Error combination** | `Exception` (or `BaseException` when an interrupt must not skip the mandatory step) | the first error, or an `ExceptionGroup`; never nothing | `ArchiveStream.close`, `_maybe_teardown`, `ProcessOutputStream.close` |
 | **Primary error wins** | `Exception` | the error already in flight; the cleanup failure is attached as a note or dropped | `BaseArchiveReader.open`, `note_raised_seek` |
 | **Translator handoff** | `Exception` | a translated `ArchiveyError` `from` the original, or the original unchanged | `ArchiveStreamImpl._fail`, `_TranslatedErrorBoundary` |

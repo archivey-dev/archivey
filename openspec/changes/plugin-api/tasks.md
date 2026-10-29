@@ -83,11 +83,18 @@ No task starts until the maintainer approves the 2026-10-25 revision of `design.
 The test of the sequential shape, as the ISO port is of the indexed one (maintainer,
 2026-10-28): it may stay internal for speed afterwards.
 
-- [ ] 2b.1 `ForwardStream.peek(n)`: TAR looks at the block after a link with a size, and
+- [x] 2b.1 `ForwardStream.peek(n)`: TAR looks at the block after a link with a size, and
       replays blocks at its end checks. On a pipe the peeked bytes are buffered and
       served to the next read (maintainer, 2026-10-28).
-- [ ] 2b.2 Port `TarWalker` to `walk()` after outer compression (stage 3) and decoded
+- [x] 2b.2 Port `TarWalker` to `walk()` after outer compression (stage 3) and decoded
       member data for sparse files (stage 4); benchmark against the built-in reader.
+      *As built (draft, for the maintainer to judge): `TarReader` is a
+      `SequentialReader` registered with `register_builtin_format`, and the old
+      reader is gone. Sparse members use stored data with a decode step
+      (`MemberSpan.decode`) rather than decoded data, so the walk skips them by
+      their stored size. Also added: `MemberSpan.retained_bytes`,
+      `ReaderContext.metadata_bytes_left()`, `ReaderContext.stream_format` and
+      `ReaderContext.report(..., fatal=True)`.*
 
 ## 2. ISO onto the interface
 
