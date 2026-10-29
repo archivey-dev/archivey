@@ -807,6 +807,20 @@ class ArchiveyConfig:
     every probe because its caller already says the source is a compressed stream.
     """
 
+    discover_volumes: bool = True
+    """Whether a path is read with the volumes found beside it.
+
+    By default :func:`~archivey.open_archive` and :func:`~archivey.detect_format` read
+    a path that names one part of a multi-volume set (``x.part1.rar``, ``x.7z.001``,
+    ``x.r00``, or a self-extracting stub beside ``x.exe.001``) together with the other
+    parts in the same directory, whichever part it names. A part found that way that is
+    a symbolic link is refused with :class:`~archivey.OpenError`. Set this to
+    ``False`` to read a path as the one file it names: no other file is opened. To read
+    a set then, pass its volumes as a list. That suits a directory other users can
+    write to, where a planted part (a hard link to a file the caller can read and they
+    cannot, which looks like any file) would end up inside an extracted member.
+    """
+
     diagnostic_policy: DiagnosticPolicy = field(default_factory=DiagnosticPolicy)
     """Whether each diagnostic code is ignored, collected or raised.
 
@@ -901,6 +915,7 @@ class ArchiveyConfig:
             "rar_allow_glob_member_concatenation",
             "read_link_targets",
             "always_probe_content",
+            "discover_volumes",
         ):
             check_instance(
                 getattr(self, field_name),

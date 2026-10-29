@@ -271,6 +271,14 @@ release adds and plugin formats that another library registers. An `exclude=` li
 what it names, so a format added later opens. The policy decides which reader runs, not what
 detection reads: detection still looks for every built-in format, within `detection_budget`.
 
+Opening one part of a multi-volume set by path, such as `x.part1.rar` or `x.7z.001`, also reads
+the other parts in the same folder. A part found that way that is a symbolic link is refused with
+`OpenError`, so someone who can only add files to a shared folder can't link a planted part to a
+file you can read and they can't. A hard link would get past that, and some systems, macOS among
+them, let any user make one. If others can write to the folder, set
+`ArchiveyConfig(discover_volumes=False)`: a path is then read as the one file it names, and you
+pass a set's volumes as a list.
+
 For archives from strangers, the default `policy="strict"` refuses or rewrites every kind of unsafe
 member archivey knows of. The [policy
 table](extracting.md#what-each-policy-does-with-unusual-members) on the Extracting page shows what

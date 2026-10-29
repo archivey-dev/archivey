@@ -1087,8 +1087,11 @@ def detect_format_into(
     # volume 1. A middle part has no magic of its own, so detecting the named file
     # alone refused what ``open_archive`` opens. Resolution can itself raise, before
     # detection reads a byte: ``TruncatedError`` for a numbered set with a gap.
-    with closing(resolve_source(source).source) as resolved:
-        return _detect_source_into(resolved, config, collector, follow_stub_volumes)
+    discover = (config or DEFAULT_ARCHIVEY_CONFIG).discover_volumes
+    with closing(resolve_source(source, discover_volumes=discover).source) as resolved:
+        return _detect_source_into(
+            resolved, config, collector, follow_stub_volumes and discover
+        )
 
 
 def _detect_source_into(

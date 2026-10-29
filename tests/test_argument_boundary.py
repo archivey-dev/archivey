@@ -545,6 +545,7 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
         "rar_allow_glob_member_concatenation",
         "read_link_targets",
         "always_probe_content",
+        "discover_volumes",
     ):
         for bad in ("false", 0, 1, None):
             rows.append(

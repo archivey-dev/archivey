@@ -1303,6 +1303,20 @@ budget one level at a time. The caller bounds depth and total size. Public:
 `extract` only. Chunk untrusted payloads. Public:
 [security.md §Where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 
+### Volume discovery trusts the folder
+
+Opening one part of a set by path reads the other parts beside it
+(`internal/volumes.py` `discover_volume_siblings`, and the RAR reader's own walk). A part
+found that way that is a symlink is refused, so a user who can only add files to a
+shared folder cannot point a planted `x.part2.rar` at a file the caller can read and they
+cannot, and have its bytes come out inside an extracted member. A hard link looks like any
+file and passes; Linux's `protected_hardlinks` stops an unprivileged user making one to a
+file they cannot read, macOS does not. `ArchiveyConfig(discover_volumes=False)` reads a
+path as the one file it names. `unrar`, run on volume 1's path, may still open later
+volumes by name, but a member that continues into a volume archivey was not given is
+refused before `unrar` reads it. Public:
+[security.md §Hardening](../docs/security.md#hardening).
+
 ### A probe can fabricate a member
 
 When a content probe's identification is wrong (see

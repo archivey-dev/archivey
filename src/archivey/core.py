@@ -207,7 +207,7 @@ def _follow_stub_volume(
     refusals of :func:`_refuse_unjoined_volume_names`.
     """
     stub = slot.current.path
-    if stub is None:
+    if stub is None or (config is not None and not config.discover_volumes):
         return None
     alt = first_volume_for_stub(stub)
     if alt is None:
@@ -465,7 +465,9 @@ def open_archive(
     # Collector is created before detection so open + detect share one budget /
     # occurrence order, and reader.diagnostics covers both.
     collector = collector_from_config(effective_config)
-    resolved = resolve_source(source)
+    resolved = resolve_source(
+        source, discover_volumes=effective_config.discover_volumes
+    )
     slot = _SourceSlot(resolved.source)
     try:
         return _open_resolved(

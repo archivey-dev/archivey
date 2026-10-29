@@ -20,6 +20,7 @@ import pytest
 from archivey import detect_format, open_archive
 from archivey.config import ArchiveyConfig, RarDecompressor
 from archivey.exceptions import (
+    ArchiveyError,
     ArchiveyUsageError,
     CorruptionError,
     FormatDetectionError,
@@ -2501,3 +2502,87 @@ def test_name_patterns_are_ascii_only(
     # letters. Volume and suffix markers are ASCII, so lookalikes must not match.
     assert accepts(name)
     assert not accepts(lookalike)
+
+
+def _split_zip(directory: Path) -> tuple[Path, bytes]:
+    """A ZIP cut into ``x.zip.001`` and ``x.zip.002``, as ``7z -v`` writes it."""
+    buf = io.BytesIO()
+    payload = os.urandom(3000)
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("payload.bin", payload)
+    data = buf.getvalue()
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "x.zip.001").write_bytes(data[:2000])
+    (directory / "x.zip.002").write_bytes(data[2000:])
+    return directory / "x.zip.001", payload
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+def test_a_discovered_volume_that_is_a_symlink_is_refused(tmp_path: Path) -> None:
+    """A planted ``x.zip.002`` linking elsewhere would put that file's bytes into a
+    member, so a part found beside the named one must not be a link."""
+    first, _ = _split_zip(tmp_path / "set")
+    elsewhere = tmp_path / "elsewhere.bin"
+    (first.parent / "x.zip.002").rename(elsewhere)
+    try:
+        (first.parent / "x.zip.002").symlink_to(elsewhere)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    with pytest.raises(OpenError, match=r"x\.zip\.002.*symbolic link"):
+        open_archive(first)
+    with pytest.raises(OpenError, match="symbolic link"):
+        detect_format(first)
+    # Named by the caller, the same link is read.
+    with open_archive([first, first.parent / "x.zip.002"]) as reader:
+        assert [m.name for m in reader.members()] == ["payload.bin"]
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+def test_a_set_in_a_linked_directory_is_read(tmp_path: Path) -> None:
+    """Only the parts archivey finds are checked: the caller named the directory."""
+    _, payload = _split_zip(tmp_path / "real")
+    try:
+        (tmp_path / "linked").symlink_to(tmp_path / "real", target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    with open_archive(tmp_path / "linked" / "x.zip.001") as reader:
+        assert reader.read("payload.bin") == payload
+
+
+def test_discovery_off_reads_only_the_named_file(tmp_path: Path) -> None:
+    for name in ("tinyvol.part1.rar", "tinyvol.part2.rar"):
+        shutil.copy(_RAR_FIXTURES / name, tmp_path / name)
+    off = ArchiveyConfig(discover_volumes=False)
+    with (
+        pytest.raises(TruncatedError, match="volume 2 is missing"),
+        open_archive(tmp_path / "tinyvol.part1.rar", config=off) as reader,
+    ):
+        reader.members()
+    # The same set, listed, still reads.
+    with open_archive(
+        [tmp_path / "tinyvol.part1.rar", tmp_path / "tinyvol.part2.rar"], config=off
+    ) as reader:
+        assert reader.read("payload.bin") == b"ABCDEFGH" * 200
+    # A numbered part is read alone too: its first slice holds no directory.
+    first, payload = _split_zip(tmp_path / "zip")
+    with open_archive(first) as reader:
+        assert reader.read("payload.bin") == payload
+    with pytest.raises(ArchiveyError), open_archive(first, config=off) as reader:
+        reader.read("payload.bin")
+
+
+def test_discovery_off_does_not_follow_a_stub_to_its_volumes(tmp_path: Path) -> None:
+    """A self-extracting stub with no archive in it opens its split set only by
+    discovery: ``vol.exe`` beside ``vol.zip.001``."""
+    _, payload = _split_zip(tmp_path)
+    for part in ("001", "002"):
+        (tmp_path / f"x.zip.{part}").rename(tmp_path / f"vol.zip.{part}")
+    stub = tmp_path / "vol.exe"
+    stub.write_bytes(b"MZ" + b"\x00" * 510)
+    with open_archive(stub) as reader:
+        assert reader.read("payload.bin") == payload
+    off = ArchiveyConfig(discover_volumes=False)
+    with pytest.raises(FormatDetectionError):
+        open_archive(stub, config=off)
+    with pytest.raises(FormatDetectionError):
+        detect_format(stub, config=off)
