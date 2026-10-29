@@ -171,7 +171,8 @@ archives": a sized read gives the readable prefix and the next read raises, and 
 with no size raises with nothing.
 
 **A random-access member view stops at the end of the archive** and then returns no
-bytes. `_MemberDataView` sits on it and knows the member's stored length, so a read that
+bytes. `MemberDataView` (`internal/walk_handoff.py`, shared with the sequential
+adapter's handoff view) sits on it and knows the member's stored length, so a read that
 ends short raises `TruncatedError` under the same contract. It does not need the source
 size, so a seekable source with no cheap size gets the same errors as a file.
 

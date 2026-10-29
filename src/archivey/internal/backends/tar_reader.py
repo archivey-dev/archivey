@@ -126,20 +126,15 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.decompressor_stream import _StreamChecksumError
 from archivey.internal.streams.streamtools import (
-    DelegatingStream,
     LockedStream,
     ReadAheadStream,
     SharedView,
     SparseStream,
-    check_read_size,
     ensure_bufferedio,
-)
-from archivey.internal.streams.streamtools.binaryio import (
-    ask_resume_offset,
-    read_blocking,
 )
 from archivey.internal.timestamps import TimestampIssue, unix_to_datetime
 from archivey.internal.unix_mode import special_file_type_from_tar_typeflag
+from archivey.internal.walk_handoff import MemberDataView
 from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_SPECIAL_FILE_TYPE,
@@ -392,42 +387,6 @@ def _tar_time_issue(
         value_repr=value_repr,
         message=f"Invalid TAR {label} for {quoted(name)}: {value_repr}",
     )
-
-
-class _MemberDataView(DelegatingStream):
-    """A random-access member's data area that raises at a cut, not a clean end.
-
-    The view under it returns ``b""`` where the archive ends, which reads as the end of
-    the member. Here a read that ends before ``length`` keeps the full-count rule (ADR
-    0014): a sized read returns the bytes before the cut and the next read raises, and a
-    read with no size raises and returns nothing. The source size is not needed.
-    """
-
-    readinto_passthrough = False
-
-    def __init__(self, view: SharedView, data_offset: int, length: int) -> None:
-        super().__init__(view)
-        self._data_offset = data_offset
-        self._length = length
-
-    def read(self, n: int | None = -1, /) -> bytes:
-        n = check_read_size(n)
-        position = self._inner.tell()
-        whole = n < 0
-        want = self._length - position if whole else min(n, self._length - position)
-        if want <= 0:
-            return b""
-        data = read_blocking(self._inner, want)
-        if len(data) < want and (whole or not data):
-            raise TruncatedError(
-                "TAR archive is truncated inside a member's data at offset "
-                f"{self._data_offset + position + len(data)}"
-            )
-        return data
-
-    def nearest_resume_offset(self, target: int) -> int | None:
-        # The member's offsets are the view's.
-        return ask_resume_offset(self._inner, target)
 
 
 class TarReader(BaseArchiveReader):
@@ -1565,7 +1524,7 @@ class TarReader(BaseArchiveReader):
         A view of its own: a read seeks the shared stream under the handle lock when
         the handle is elsewhere, so members and the walk read independently. The view
         clamps its length to the source size when it has one, so a read past the end
-        of the file is not issued; _MemberDataView reports a cut member either way. A
+        of the file is not issued; MemberDataView reports a cut member either way. A
         plain tar passes its known size rather than probing it on every open. A codec
         stream keeps the probe: its size comes from the decompressor (try_get_size),
         not from the source.
@@ -1580,7 +1539,9 @@ class TarReader(BaseArchiveReader):
         )
         if start:
             view.seek(start)
-        stream: BinaryIO = _MemberDataView(view, span.data_offset, span.stored_size)
+        stream: BinaryIO = MemberDataView(
+            view, span.data_offset, span.stored_size, what="TAR archive"
+        )
         if self._compressed:
             # The codec stream has no buffer of its own here (_open_byte_stream), so
             # a read smaller than this would cost a decoder seek and read. The buffer
