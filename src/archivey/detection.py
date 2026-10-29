@@ -75,8 +75,8 @@ class FormatInfo:
 
     corroborated: bool = field(default=False, compare=False, repr=False)
     """Provisional and informational, not part of the :func:`~archivey.detect_format`
-    contract: whether a matching extension or an inner-TAR upgrade corroborated a
-    content-probe claim.
+    contract: whether a matching extension, an inner-TAR upgrade, or a self-checking
+    header (a TAR header checksum) corroborated a content-probe claim.
 
     Read it only together with ``detected_by == "content_probe"``. ``False`` also means
     "not a probe at all", so an exact magic hit reads ``False`` too. A later release may
@@ -110,7 +110,7 @@ class FormatInfo:
 
     @property
     def from_plugin(self) -> bool:
-        """Whether ``format`` is one a plugin added (``archivey.plugins``), not a
+        """Whether ``format`` is one a plugin added (``archivey.formats``), not a
         built-in one. A plugin's parser is not covered by archivey's limits, so a
         caller that reads untrusted input can refuse such a format."""
         return isinstance(self.format.container, PluginContainer)

@@ -106,7 +106,8 @@ different events: the extension code keys on `detected_by="extension"` **and an 
 listing or a decode failure** (see `error-handling`, *A decode failure on an
 extension-only format names its provenance*); the probe code keys on **probe-only
 provenance** — `detected_by="content_probe"` with nothing corroborating the claim (no
-matching extension, no inner-TAR upgrade) — **and a decode failure**. A probe-only read
+matching extension, no inner-TAR upgrade, no self-checking header) — **and a decode
+failure**. A probe-only read
 failure MUST NOT double-report under the extension code.
 
 **Confidence is not part of that trigger.** The probe code fires on a probe-only failure at

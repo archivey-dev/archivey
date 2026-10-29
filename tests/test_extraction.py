@@ -15,7 +15,6 @@ import shutil
 import struct
 import subprocess
 import tarfile
-import tempfile
 import time
 import unicodedata
 import warnings
@@ -48,6 +47,7 @@ from archivey.exceptions import (
     ResourceLimitError,
     TruncatedError,
 )
+from archivey.internal import extraction as extraction_module
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.bomb_tracker import AlwaysStopResourceLimitError, BombTracker
 from archivey.internal.extraction import _CHUNK, ExtractionCoordinator
@@ -62,7 +62,7 @@ from archivey.internal.filters import (
     transform_strict,
 )
 from archivey.internal.link_watch import LinkWatch
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import MemberStreamParts
 from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember, MemberType
 from tests.conftest import binary_refusal, case_sensitive
 from tests.corruption_util import raises_corruption_not_truncation
@@ -2415,28 +2415,43 @@ def test_link_onto_a_name_of_the_same_file_leaves_no_temp(
     assert os.path.samefile(dest / "f", dest / "h")
 
 
+@pytest.mark.parametrize("windows", [False, True])
 def test_a_temp_that_cannot_be_removed_does_not_fail_the_member(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, windows: bool
 ) -> None:
-    # The swap removes the temp name after ``os.replace``. When that unlink fails (on
-    # Windows, a scanner holding the file open), the member is already in place, so the
-    # failure must not turn a completed write into FAILED.
-    src = tmp_path / "a.tar"
-    src.write_bytes(_tar_bytes([("file", "f", b"AAA")]))
-    dest = tmp_path / "out"
+    # The swap removes the temp name after ``os.replace``: always on Windows, and on
+    # POSIX for a hard link placed through a temp. When that unlink fails (on Windows,
+    # a scanner holding the file open), the member is already in place, so the failure
+    # must not turn a completed write into FAILED. A file this write created leaves no
+    # temp name on POSIX, so no unlink is tried for it there.
     real_unlink = os.unlink
+    refused: list[str] = []
 
     def unlink(path, *args, **kwargs):
         if os.path.basename(path).startswith(".archivey-tmp-"):
+            refused.append(os.fspath(path))
             raise PermissionError(errno.EACCES, "held open", str(path))
         return real_unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "unlink", unlink)
-    with open_archive(src) as r:
-        report = r.extract_all(dest)
+    monkeypatch.setattr(extraction_module, "_WINDOWS", windows)
 
+    src = tmp_path / "file.tar"
+    src.write_bytes(_tar_bytes([("file", "f", b"AAA")]))
+    with open_archive(src) as r:
+        report = r.extract_all(tmp_path / "file")
     assert [res.status for res in report.results] == [ExtractionStatus.EXTRACTED]
-    assert (dest / "f").read_bytes() == b"AAA"
+    assert (tmp_path / "file" / "f").read_bytes() == b"AAA"
+    assert len(refused) == (1 if windows else 0)
+
+    refused.clear()
+    src = tmp_path / "link.tar"
+    src.write_bytes(_tar_bytes([("file", "f", b"AAA"), ("hard", "h", "f")]))
+    with open_archive(src) as r:
+        report = r.extract_all(tmp_path / "link")
+    assert [res.status for res in report.results] == [ExtractionStatus.EXTRACTED] * 2
+    assert (tmp_path / "link" / "h").read_bytes() == b"AAA"
+    assert refused
 
 
 def test_tar_hardlink_orphan_recovered_seekable(tmp_path: Path) -> None:
@@ -3199,14 +3214,14 @@ def test_orphan_link_whose_temp_file_is_refused_fails_alone(
     # makes the real one.
     src = _orphan_tar_with_link_in_ro(tmp_path)
     dest = tmp_path / "out"
-    mkstemp = tempfile.mkstemp
+    open_new_file = extraction_module._open_new_file
 
-    def refuse_in_ro(*args: object, **kwargs: object) -> tuple[int, str]:
-        if Path(str(kwargs["dir"])).name == "ro":
-            raise PermissionError(errno.EACCES, "Permission denied", kwargs["dir"])
-        return mkstemp(*args, **kwargs)  # type: ignore[arg-type]
+    def refuse_in_ro(path: Path, mode: int) -> int:
+        if path.parent.name == "ro":
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        return open_new_file(path, mode)
 
-    monkeypatch.setattr(tempfile, "mkstemp", refuse_in_ro)
+    monkeypatch.setattr(extraction_module, "_open_new_file", refuse_in_ro)
     with open_archive(src) as r:
         results = r.extract_all(
             dest, members=["ro/L1.txt", "L2.txt"], on_error=OnError.CONTINUE
@@ -3740,8 +3755,8 @@ class _FileThenAntiReader(BaseArchiveReader):
         yield ArchiveMember(type=MemberType.FILE, name="a.txt", size=5)
         yield ArchiveMember(type=MemberType.ANTI, name="a.txt")
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
-        return self._wrap_member_stream(io.BytesIO(b"first"), member.name, size=5)
+    def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
+        return self._member_parts(io.BytesIO(b"first"), member.name, size=5)
 
     def _get_archive_info(self) -> ArchiveInfo:
         return ArchiveInfo(
@@ -6136,3 +6151,30 @@ def test_a_staging_file_the_filesystem_keeps_is_logged(
     with open_archive(archive) as reader:
         reader.extract_all(tmp_path / "out", on_error="continue")
     assert "staged for 'f.txt'" in caplog.text
+
+
+def test_a_taken_temp_name_moves_on_to_the_next(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The run's temp names are a token and a count; one that is taken (O_EXCL) is
+    # skipped, the file lands, and no temp file is left.
+    src = tmp_path / "a.tar"
+    src.write_bytes(_tar_bytes([("file", "d/f.txt", b"x")]))
+    open_new_file = extraction_module._open_new_file
+    tried: list[str] = []
+
+    def first_name_taken(path: Path, mode: int) -> int:
+        tried.append(path.name)
+        if len(tried) == 1:
+            raise FileExistsError(errno.EEXIST, "File exists", str(path))
+        return open_new_file(path, mode)
+
+    monkeypatch.setattr(extraction_module, "_open_new_file", first_name_taken)
+    dest = tmp_path / "out"
+    with open_archive(src) as r:
+        r.extract_all(dest)
+    assert (dest / "d" / "f.txt").read_bytes() == b"x"
+    assert len(tried) == 2
+    assert len(set(tried)) == 2
+    assert all(name.startswith(".archivey-tmp-") for name in tried)
+    assert sorted(p.name for p in (dest / "d").iterdir()) == ["f.txt"]

@@ -54,7 +54,7 @@ from archivey.types import (
 
 if TYPE_CHECKING:
     from archivey.format_policy import FormatPolicy
-    from archivey.plugins import FormatPlugin
+    from archivey.formats import FormatHandler
 
 
 class ContentProbe(Protocol):
@@ -152,7 +152,7 @@ class BackendRegistry:
         self._readers: dict[ArchiveFormat, type[ReadBackend]] = {}
         # Unique reader classes in registration order (a class may serve several formats).
         self._reader_classes: list[type[ReadBackend]] = []
-        # Plugin backends (``archivey.plugins.register_format``), kept apart so every
+        # Plugin backends (``archivey.formats.register_format``), kept apart so every
         # detection table lists them after the built-in backends and the stream codecs:
         # detection takes the first match in table order, so a built-in signal wins.
         self._plugin_classes: list[type[ReadBackend]] = []
@@ -204,6 +204,16 @@ class BackendRegistry:
             entries.extend(cls.MAGIC)
         return entries
 
+    def inner_magic_entries(self) -> list[MagicSignature]:
+        """Magic the inner-container probe matches in decoded bytes (``INNER_MAGIC``).
+
+        Built-in backends first, so TAR's ``ustar`` is tried before any plugin's magic.
+        """
+        entries: list[MagicSignature] = []
+        for cls in (*self._reader_classes, *self._plugin_classes):
+            entries.extend(cls.INNER_MAGIC)
+        return entries
+
     def magic_prefix_walks(self) -> list[tuple[ArchiveFormat, Callable[[bytes], bool]]]:
         """(format, walk) pairs for magic that may sit behind a format's own prefix frames.
 
@@ -217,6 +227,18 @@ class BackendRegistry:
             for codec in SINGLE_FILE_CODECS
             if codec.walks_magic_prefix and codec.single_file_format is not None
         ]
+
+    def header_checks(self) -> list[tuple[ArchiveFormat, Callable[[bytes], bool]]]:
+        """(format, check) pairs for formats whose first block checks itself.
+
+        ``check(prefix)`` answers "does the source open with my header?" for a format
+        with no magic but a self-checking header (``ReadBackend.HEADER_CHECKS``; today
+        TAR, by its header checksum). Built-in backends first, then plugins.
+        """
+        checks: list[tuple[ArchiveFormat, Callable[[bytes], bool]]] = []
+        for cls in (*self._reader_classes, *self._plugin_classes):
+            checks.extend(cls.HEADER_CHECKS)
+        return checks
 
     def sfx_magic_entries(self) -> list[MagicSignature]:
         """Magic the SFX scan hunts for behind an executable stub.
@@ -340,7 +362,7 @@ class BackendRegistry:
         *,
         check_programs: bool = False,
         excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
-        replacement: type[FormatPlugin] | None = None,
+        replacement: type[FormatHandler] | None = None,
     ) -> FormatAvailability:
         """Compute the tri-state support of ``fmt`` compositionally (see ``backend-registry``).
 
@@ -355,7 +377,7 @@ class BackendRegistry:
         """
         if replacement is not None:
             # Imported here: the plugin adapter imports this module.
-            from archivey.internal.plugin_adapter import replacement_backend
+            from archivey.internal.format_adapter import replacement_backend
 
             return self._backend_availability(
                 fmt,
@@ -521,7 +543,7 @@ class BackendRegistry:
         self,
         fmt: ArchiveFormat,
         *,
-        replacement: type[FormatPlugin] | None = None,
+        replacement: type[FormatHandler] | None = None,
         excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
     ) -> type[ReadBackend]:
         """The backend class that opens ``fmt``: ``replacement``'s, else the registered
@@ -537,7 +559,7 @@ class BackendRegistry:
         """
         if replacement is not None:
             # Imported here: the plugin adapter imports this module.
-            from archivey.internal.plugin_adapter import replacement_backend
+            from archivey.internal.format_adapter import replacement_backend
 
             availability = self.format_availability(
                 fmt, excluded=excluded, replacement=replacement

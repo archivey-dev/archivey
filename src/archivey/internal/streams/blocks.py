@@ -1,7 +1,7 @@
 """``BlockStream``: a file stored as fixed-size blocks, each decoded on its own.
 
 SquashFS, CAB, WIM, CSO and seekable zstd store a file this way, so a reader can
-start at any block. The plugin API hands it out as ``archivey.plugins.block_stream``:
+start at any block. The plugin API hands it out as ``archivey.formats.block_stream``:
 the plugin decodes one block, and this stream does the seeking, keeps the block it is
 in, and checks each block's length.
 """

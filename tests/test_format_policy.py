@@ -2,7 +2,7 @@
 
 Built-in formats are detected as always and refused after detection; a plugin format
 the policy turns off is left out of detection. The plugin formats here are TOYA
-variants from ``tests/test_plugins.py``.
+variants from ``tests/test_format_api.py``.
 """
 
 from __future__ import annotations
@@ -36,21 +36,21 @@ from archivey import (
     open_stream,
 )
 from archivey.detection_cost import TierSkipReason
-from archivey.internal.detection import probe_config
-from archivey.internal.plugin_adapter import registration_scope
-from archivey.plugins import (
-    FormatPlugin,
+from archivey.formats import (
+    FormatHandler,
     IndexedReader,
     Magic,
     MemberData,
     MemberRecord,
-    PluginContext,
-    PluginSource,
-    SequentialFormatPlugin,
+    ReaderContext,
+    ReaderSource,
+    SequentialFormatHandler,
     SequentialReader,
 )
+from archivey.internal.detection import probe_config
+from archivey.internal.format_adapter import registration_scope
+from tests.test_format_api import _ENTRIES, _MAGIC, _plugin_with, build_toya
 from tests.test_iso_raw_sectors import _image as _raw_sector_image
-from tests.test_plugins import _ENTRIES, _MAGIC, _plugin_with, build_toya
 from tests.test_sfx import _pe_stub
 
 C = ContainerFormat
@@ -392,7 +392,7 @@ class _StdlibZipReader(IndexedReader[str]):
     """Reads a ZIP with the standard library: a stand-in for a plugin that supports
     something the built-in reader refuses."""
 
-    def __init__(self, source: PluginSource, context: PluginContext) -> None:
+    def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
         self._zip = zipfile.ZipFile(source.view(0))
 
     def iter_members(self) -> Iterator[MemberRecord[str]]:
@@ -415,10 +415,10 @@ class _StdlibZipReader(IndexedReader[str]):
 _opened: list[str] = []
 
 
-class StdlibZipPlugin(FormatPlugin):
+class StdlibZipPlugin(FormatHandler):
     format = ArchiveFormat.ZIP
 
-    def open(self, source: PluginSource, context: PluginContext) -> _StdlibZipReader:
+    def open(self, source: ReaderSource, context: ReaderContext) -> _StdlibZipReader:
         _opened.append(type(self).__name__)
         return _StdlibZipReader(source, context)
 
@@ -460,14 +460,14 @@ def test_a_replacement_is_hashable_and_compares_by_value() -> None:
     assert dict(again.replace) == {C.ZIP: StdlibZipPlugin}
 
 
-def _replacement(**attrs: object) -> type[FormatPlugin]:
+def _replacement(**attrs: object) -> type[FormatHandler]:
     return type("Variant", (StdlibZipPlugin,), attrs)
 
 
-class _SequentialZip(SequentialFormatPlugin):
+class _SequentialZip(SequentialFormatHandler):
     format = ArchiveFormat.ZIP
 
-    def open_sequential(self, context: PluginContext) -> SequentialReader:
+    def open_sequential(self, context: ReaderContext) -> SequentialReader:
         raise NotImplementedError
 
 
@@ -477,8 +477,8 @@ class _SequentialZip(SequentialFormatPlugin):
         ({C.TAR: StdlibZipPlugin}, "cannot replace ContainerFormat.TAR"),
         ({C.DIRECTORY: StdlibZipPlugin}, "cannot replace ContainerFormat.DIRECTORY"),
         ({"zip": StdlibZipPlugin}, "ContainerFormat keys"),
-        ({C.ZIP: object}, "FormatPlugin subclass"),
-        ({C.ZIP: _SequentialZip}, "SequentialFormatPlugin"),
+        ({C.ZIP: object}, "FormatHandler subclass"),
+        ({C.ZIP: _SequentialZip}, "SequentialFormatHandler"),
         ({C.SEVEN_Z: StdlibZipPlugin}, "must be ArchiveFormat"),
         ({C.ZIP: _replacement(magic=(Magic(0, b"PK"),))}, "declares extensions"),
         ({C.ZIP: _replacement(extensions=(".zap",))}, "declares extensions"),
@@ -537,10 +537,10 @@ def test_unused_arguments_name_the_replacement_not_the_format(tmp_path: Path) ->
         assert "replacement reader" in record.context.reason  # type: ignore[union-attr]
 
 
-class _RecordingIsoPlugin(FormatPlugin):
+class _RecordingIsoPlugin(FormatHandler):
     format = ArchiveFormat.ISO
 
-    def open(self, source: PluginSource, context: PluginContext) -> _StdlibZipReader:
+    def open(self, source: ReaderSource, context: ReaderContext) -> _StdlibZipReader:
         _opened.append(type(self).__name__)
         raise AssertionError("the plugin was given a raw sector image")
 

@@ -21,10 +21,11 @@ import stat
 import tempfile
 import unicodedata
 from collections.abc import Generator, Iterable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 from typing import BinaryIO, NamedTuple
 
+from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.filters import (
     resolve_or_raise_on_loop,
     strip_absolute_root,
@@ -362,7 +363,7 @@ class DryRun:
     def rebase_result(self, result: ExtractionResult) -> ExtractionResult:
         if isinstance(result.error, OSError):
             self.rebase_os_error(result.error)
-        return replace(
+        return copy_with(
             result,
             path=None if result.path is None else self.shown(result.path),
             requested_path=(

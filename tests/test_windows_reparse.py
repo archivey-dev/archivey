@@ -969,7 +969,7 @@ def test_a_link_buffer_is_read_only_as_far_as_it_declares(
     buffer, so the member is a file, and the rest is decoded only when it is read.
     """
     delivered: list[int] = []
-    original_open = ZipReader._open_member
+    original_open = ZipReader._open_member_handle
 
     def counting_open(self: ZipReader, member: ArchiveMember) -> object:
         stream = original_open(self, member)
@@ -983,7 +983,7 @@ def test_a_link_buffer_is_read_only_as_far_as_it_declares(
         stream.read = read  # type: ignore[method-assign]
         return stream
 
-    monkeypatch.setattr(ZipReader, "_open_member", counting_open)
+    monkeypatch.setattr(ZipReader, "_open_member_handle", counting_open)
 
     buffer = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, "C:\\target", "C:\\target")
     archive = tmp_path / "padded_reparse.zip"

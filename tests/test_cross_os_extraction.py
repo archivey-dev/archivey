@@ -988,7 +988,6 @@ _ROUTED_CALLS: list[tuple[object, str]] = [
         )
     ),
     *((os.path, name) for name in ("lexists", "exists", "isdir", "islink")),
-    (tempfile, "mkstemp"),
     (shutil, "rmtree"),
     (builtins, "open"),
 ]
@@ -1019,7 +1018,7 @@ def _spy_on_paths(monkeypatch: pytest.MonkeyPatch, root: Path) -> list[str]:
         ) -> object:
             caller = sys._getframe(1).f_globals.get("__name__", "")
             if caller.startswith("archivey."):
-                for value in (*args, kwargs.get("dir")):
+                for value in args:
                     path = under_root(value)
                     if path is not None:
                         seen.append(f"{_name} {path}")

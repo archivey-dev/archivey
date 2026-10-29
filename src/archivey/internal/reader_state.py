@@ -63,7 +63,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from archivey.internal.open_site import OpenSite
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
 
 T = TypeVar("T")
@@ -228,7 +228,7 @@ class ReaderState:
         # (:meth:`live_streams`). Weak, so this map never keeps a dropped stream alive:
         # a dropped stream's ``close()`` runs from ``IOBase.__del__`` and releases its
         # entry (:meth:`release_live_stream_id`).
-        self._live_streams: dict[int, weakref.ref[ArchiveStream]] = {}
+        self._live_streams: dict[int, weakref.ref[ArchiveStreamImpl]] = {}
         self._reservations: set[LiveStreamReservation] = set()
         # Leases of live streams and reservations only.
         self._lease_count = 0
@@ -603,7 +603,7 @@ class ReaderState:
         self._lease_count += 1
 
     def bind_live_stream(
-        self, token: LiveStreamReservation, stream: ArchiveStream
+        self, token: LiveStreamReservation, stream: ArchiveStreamImpl
     ) -> None:
         """Consume ``token``, recording ``id(stream)`` as the live stream.
 
@@ -627,7 +627,7 @@ class ReaderState:
             self._reservations.discard(token)
             return self._release_lease_locked()
 
-    def acquire_live_stream(self, stream: ArchiveStream) -> None:
+    def acquire_live_stream(self, stream: ArchiveStreamImpl) -> None:
         """Register a public member stream; enforce the single-live-stream gate.
 
         The gate and the record of reserve-then-bind, in one step: the eager ``open()``
@@ -638,13 +638,13 @@ class ReaderState:
         _retry_after_collecting(lambda: self._acquire_live_stream_once(stream, ref))
 
     def _acquire_live_stream_once(
-        self, stream: ArchiveStream, ref: weakref.ref[ArchiveStream]
+        self, stream: ArchiveStreamImpl, ref: weakref.ref[ArchiveStreamImpl]
     ) -> None:
         with self._lock:
             self._admit_live_stream_locked()
             self._live_streams[id(stream)] = ref
 
-    def release_live_stream(self, stream: ArchiveStream) -> bool:
+    def release_live_stream(self, stream: ArchiveStreamImpl) -> bool:
         """Release a stream lease. Returns True if the caller should run teardown."""
         return self.release_live_stream_id(id(stream))
 
@@ -663,7 +663,7 @@ class ReaderState:
                 return False
             return self._release_lease_locked()
 
-    def live_streams(self) -> list[ArchiveStream]:
+    def live_streams(self) -> list[ArchiveStreamImpl]:
         """The registered member streams not yet released, in registration order."""
         with self._lock:
             refs = list(self._live_streams.values())

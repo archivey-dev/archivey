@@ -34,6 +34,12 @@ def test_peers_report_runs_at_ci_scale(
     # libarchive-c imports.
     if peers._peer_available("libarchive-c") is None:
         assert any(r.startswith("| ZIP | read_all |") and "×" in r for r in body)
+    # The small-member ZIP and its zipfile peer need only the stdlib, so that row is
+    # measured everywhere; it also pins the label the RESULTS tables regroup by.
+    assert any(
+        r.startswith("| ZIP 200 small | read_all | zipfile |") and "×" in r
+        for r in body
+    )
     # py7zr writes the solid 7z fixture itself, so its rows are measured whenever it
     # imports, including on legs without the system libarchive.
     if peers._peer_available("py7zr") is None:

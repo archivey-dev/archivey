@@ -1,6 +1,6 @@
-"""The plugin API (``archivey.plugins``): an indexed plugin through the public surface.
+"""The plugin API (``archivey.formats``): an indexed plugin through the public surface.
 
-The test format, TOYA, is defined here with ``archivey.plugins`` and the root API
+The test format, TOYA, is defined here with ``archivey.formats`` and the root API
 only: a magic line, a count, one index entry per member (name, type, size, CRC-32,
 data offset), then the data. Each test registers it on a registry restored afterwards
 (``toya`` fixture).
@@ -46,22 +46,23 @@ from archivey.diagnostics import (
     MemberTimestampContext,
     SymlinkTargetContext,
 )
-from archivey.internal import format_args
-from archivey.internal.plugin_adapter import registration_scope
-from archivey.plugins import (
-    FormatPlugin,
+from archivey.formats import (
+    FormatHandler,
     IndexedReader,
     Magic,
     MemberData,
     MemberDigest,
     MemberRecord,
-    PluginArchiveInfo,
-    PluginContext,
-    PluginSource,
+    ReaderArchiveInfo,
+    ReaderContext,
+    ReaderSource,
     block_stream,
     buffered_stream,
     register_format,
 )
+from archivey.internal import format_args
+from archivey.internal.format_adapter import registration_scope
+from archivey.internal.registry import get_registry
 from tests.conftest import requires, requires_zstd
 
 _MAGIC = b"TOYARC1\n"
@@ -96,7 +97,7 @@ def build_toya(
 
 
 class ToyReader(IndexedReader[tuple[int, int]]):
-    def __init__(self, source: PluginSource, context: PluginContext) -> None:
+    def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
         self._source = source
         self._context = context
         head = source.read_at(0, 12)
@@ -130,17 +131,17 @@ class ToyReader(IndexedReader[tuple[int, int]]):
         offset, size = locator
         return MemberData(self._source.view(offset, size))
 
-    def archive_info(self) -> PluginArchiveInfo:
-        return PluginArchiveInfo(format_version="1", comment="toy")
+    def archive_info(self) -> ReaderArchiveInfo:
+        return ReaderArchiveInfo(format_version="1", comment="toy")
 
 
-class ToyPlugin(FormatPlugin):
+class ToyHandler(FormatHandler):
     format = TOYA
     extensions = (".toya",)
     magic = (Magic(0, _MAGIC),)
     uses_encoding = True
 
-    def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+    def open(self, source: ReaderSource, context: ReaderContext) -> ToyReader:
         return ToyReader(source, context)
 
 
@@ -152,7 +153,7 @@ def clean_registry() -> Iterator[None]:
 
 @pytest.fixture
 def toya(clean_registry: None) -> ArchiveFormat:
-    register_format(ToyPlugin)
+    register_format(ToyHandler)
     return TOYA
 
 
@@ -268,12 +269,12 @@ def test_builtin_magic_wins(clean_registry: None) -> None:
     class ZipLike(PluginContainer):
         ZIPLIKE = "ziplike"
 
-    class ZipLikePlugin(ToyPlugin):
+    class ZipLikeHandler(ToyHandler):
         format = ArchiveFormat(ZipLike.ZIPLIKE, StreamFormat.UNCOMPRESSED)
         extensions = ()
         magic = (Magic(0, b"PK\x03\x04"),)
 
-    register_format(ZipLikePlugin)
+    register_format(ZipLikeHandler)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("a", b"a")
@@ -294,22 +295,35 @@ def test_builtin_magic_wins(clean_registry: None) -> None:
         ({"format": ArchiveFormat.ZIP}, "PluginContainer"),
         (
             {"format": ArchiveFormat(ToyContainer.TOYA, StreamFormat.GZIP)},
-            "UNCOMPRESSED",
+            "UNCOMPRESSED stream: an indexed format inside a compression stream",
         ),
     ],
 )
 def test_registration_refusals(
     clean_registry: None, attrs: dict[str, object], match: str
 ) -> None:
-    bad = type("BadPlugin", (ToyPlugin,), attrs)
+    bad = type("BadHandler", (ToyHandler,), attrs)
     with pytest.raises(ArchiveyUsageError, match=match):
         register_format(bad)
 
 
+def test_an_indexed_format_gets_no_compressed_forms(toya: ArchiveFormat) -> None:
+    """Only a sequential format is read inside a compression stream: an indexed one
+    gets no compressed pairs, no compound extensions and no inner magic, so a gzip
+    whose decoded start is the format's magic stays a gzip."""
+    toya_gz = ArchiveFormat(ToyContainer.TOYA, StreamFormat.GZIP)
+    assert toya_gz not in archivey.list_known_formats()
+    registry = get_registry()
+    assert ".toya.gz" not in registry.extension_map()
+    assert all(sig.format != toya for sig in registry.inner_magic_entries())
+    data = lzma.compress(build_toya(_ENTRIES), format=lzma.FORMAT_XZ)
+    assert detect_format(io.BytesIO(data)).format == ArchiveFormat.XZ
+
+
 def test_registration_refuses_clashes(clean_registry: None) -> None:
-    register_format(ToyPlugin)
+    register_format(ToyHandler)
     with pytest.raises(ArchiveyUsageError, match="already registered"):
-        register_format(ToyPlugin)
+        register_format(ToyHandler)
 
     class Builtin(PluginContainer):
         ZIP = "zip"
@@ -320,7 +334,7 @@ def test_registration_refuses_clashes(clean_registry: None) -> None:
     for container in (Builtin.ZIP, Other.TOYA):
         plugin = type(
             "Clash",
-            (ToyPlugin,),
+            (ToyHandler,),
             {
                 "format": ArchiveFormat(container, StreamFormat.UNCOMPRESSED),
                 "extensions": (),
@@ -336,15 +350,15 @@ def test_missing_requirement(clean_registry: None, tmp_path: Path) -> None:
     class Needs(PluginContainer):
         NEEDS = "needsmod"
 
-    class NeedsPlugin(ToyPlugin):
+    class NeedsHandler(ToyHandler):
         format = ArchiveFormat(Needs.NEEDS, StreamFormat.UNCOMPRESSED)
         extensions = (".needsmod",)
         magic = ()
         requires = ("archivey_no_such_module_for_test",)
         install_hint = "pip install no-such-module"
 
-    register_format(NeedsPlugin)
-    availability = format_availability(NeedsPlugin.format)
+    register_format(NeedsHandler)
+    availability = format_availability(NeedsHandler.format)
     assert availability.support is FormatSupport.NONE
     assert availability.missing[0].advice == "pip install no-such-module"
     path = _write(tmp_path, build_toya(_ENTRIES), "t.needsmod")
@@ -362,11 +376,11 @@ def test_translate_exception(clean_registry: None, tmp_path: Path) -> None:
                 return CorruptionError(str(exc))
             return None
 
-    class FailingPlugin(ToyPlugin):
-        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+    class FailingHandler(ToyHandler):
+        def open(self, source: ReaderSource, context: ReaderContext) -> ToyReader:
             return Failing(source, context)
 
-    register_format(FailingPlugin)
+    register_format(FailingHandler)
     path = _write(tmp_path, build_toya(_ENTRIES))
     with (
         open_archive(path) as reader,
@@ -402,13 +416,13 @@ def _plugin_with(
     *,
     reader: type[ToyReader] = ToyReader,
     **attrs: object,
-) -> type[ToyPlugin]:
+) -> type[ToyHandler]:
     """A TOYA variant registered under its own container, reading with ``reader``."""
     container = PluginContainer(f"{name}Container", {name.upper(): name})  # type: ignore[call-overload]
     fmt = ArchiveFormat(container[name.upper()], StreamFormat.UNCOMPRESSED)
 
     def open_(
-        self: FormatPlugin, source: PluginSource, context: PluginContext
+        self: FormatHandler, source: ReaderSource, context: ReaderContext
     ) -> ToyReader:
         return reader(source, context)
 
@@ -419,7 +433,7 @@ def _plugin_with(
         "open": open_,
     }
     body.update(attrs)
-    plugin = type(f"{name.title()}Plugin", (ToyPlugin,), body)
+    plugin = type(f"{name.title()}Plugin", (ToyHandler,), body)
     register_format(plugin)
     return plugin
 
@@ -436,7 +450,7 @@ def test_registration_refuses_a_taken_spelling(
     container = PluginContainer("Taken", {"MINE": container_value})  # type: ignore[call-overload]
     plugin = type(
         "Taken",
-        (ToyPlugin,),
+        (ToyHandler,),
         {
             "format": ArchiveFormat(container.MINE, StreamFormat.UNCOMPRESSED),
             "extensions": (),
@@ -448,7 +462,7 @@ def test_registration_refuses_a_taken_spelling(
     named_zip = PluginContainer("NamedZip", {"ZIP": "mine"})  # type: ignore[call-overload]
     plugin = type(
         "NamedZip",
-        (ToyPlugin,),
+        (ToyHandler,),
         {
             "format": ArchiveFormat(named_zip.ZIP, StreamFormat.UNCOMPRESSED),
             "extensions": (),
@@ -468,13 +482,13 @@ def test_unknown_format_message_lists_plugins(
 
 def test_registration_scope_undoes_registration() -> None:
     with registration_scope():
-        register_format(ToyPlugin)
+        register_format(ToyHandler)
         assert TOYA in archivey.list_known_formats()
     assert TOYA not in archivey.list_known_formats()
     with pytest.raises(ArchiveyUsageError):
         format_args.coerce_archive_format("toya", call="test")
     with registration_scope():
-        register_format(ToyPlugin)
+        register_format(ToyHandler)
 
 
 def test_checked_counts_as_content(clean_registry: None, tmp_path: Path) -> None:
@@ -753,8 +767,8 @@ def test_archive_info_fields(toya: ArchiveFormat, tmp_path: Path) -> None:
     class Solid(ToyReader):
         member_list_upfront = False
 
-        def archive_info(self) -> PluginArchiveInfo:
-            return PluginArchiveInfo(is_solid=True, extra={"solid.blocks": 1})
+        def archive_info(self) -> ReaderArchiveInfo:
+            return ReaderArchiveInfo(is_solid=True, extra={"solid.blocks": 1})
 
     _plugin_with("solid", reader=Solid)
     path = _write(tmp_path, build_toya(_ENTRIES), "t.solid")
@@ -773,7 +787,7 @@ def test_archive_info_errors_are_translated(
     clean_registry: None, tmp_path: Path
 ) -> None:
     class Failing(ToyReader):
-        def archive_info(self) -> PluginArchiveInfo:
+        def archive_info(self) -> ReaderArchiveInfo:
             raise ValueError("bad header")
 
         def translate_exception(self, exc: Exception) -> archivey.ArchiveyError | None:
@@ -815,7 +829,7 @@ def test_plugin_source_path_and_size(clean_registry: None, tmp_path: Path) -> No
     seen: list[tuple[Path | None, int]] = []
 
     class Recording(ToyReader):
-        def __init__(self, source: PluginSource, context: PluginContext) -> None:
+        def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
             super().__init__(source, context)
             seen.append((source.path, source.size))
 
@@ -849,8 +863,8 @@ def test_interface_violations_are_not_reported_as_corruption(
         def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
             yield MemberRecord("not a member", locator=(0, 0))  # type: ignore[arg-type]
 
-    class BadOpen(ToyPlugin):
-        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+    class BadOpen(ToyHandler):
+        def open(self, source: ReaderSource, context: ReaderContext) -> ToyReader:
             return object()  # type: ignore[return-value]
 
     _plugin_with("baddata", reader=BadData)
@@ -871,7 +885,7 @@ def test_interface_violations_are_not_reported_as_corruption(
         open_archive(_write(tmp_path, data, "t.badopen"))
 
 
-# ── PluginContext.decompress ────────────────────────────────────────────────────────
+# ── ReaderContext.decompress ────────────────────────────────────────────────────────
 
 
 def _raw_deflate(data: bytes) -> bytes:
@@ -892,7 +906,7 @@ def _compressed_plugin(
     method: CompressionAlgorithm | StreamFormat,
     properties: bytes | None = None,
     translated: list[Exception] | None = None,
-) -> type[FormatPlugin]:
+) -> type[FormatHandler]:
     """A TOYA plugin whose one member is stored compressed with ``method``; the
     member's data runs to the end of the file."""
 
@@ -915,11 +929,11 @@ def _compressed_plugin(
                 translated.append(exc)
             return None
 
-    class CompressedPlugin(ToyPlugin):
-        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+    class CompressedHandler(ToyHandler):
+        def open(self, source: ReaderSource, context: ReaderContext) -> ToyReader:
             return CompressedReader(source, context)
 
-    return CompressedPlugin
+    return CompressedHandler
 
 
 def _compressed_archive(tmp_path: Path, stored: bytes, plain: bytes = _PLAIN) -> Path:
@@ -951,6 +965,8 @@ def _compress(method: CompressionAlgorithm, data: bytes) -> bytes:
         import lz4.frame
 
         return lz4.frame.compress(data)
+    if method is CompressionAlgorithm.XZ:
+        return lzma.compress(data)
     assert method is CompressionAlgorithm.BROTLI
     import brotli
 
@@ -965,6 +981,7 @@ def _compress(method: CompressionAlgorithm, data: bytes) -> bytes:
         CompressionAlgorithm.BZIP2,
         CompressionAlgorithm.LZMA,
         CompressionAlgorithm.LZMA2,
+        CompressionAlgorithm.XZ,
         pytest.param(CompressionAlgorithm.DEFLATE64, marks=requires("inflate64")),
         pytest.param(CompressionAlgorithm.ZSTD, marks=requires_zstd()),
         pytest.param(CompressionAlgorithm.LZ4, marks=requires("lz4")),
@@ -998,12 +1015,14 @@ def test_decompress_methods(
     [
         pytest.param(CompressionAlgorithm.ZSTD, marks=requires_zstd()),
         pytest.param(CompressionAlgorithm.LZ4, marks=requires("lz4")),
+        CompressionAlgorithm.XZ,
     ],
 )
 def test_decompress_reads_every_frame(
     clean_registry: None, tmp_path: Path, method: CompressionAlgorithm
 ) -> None:
-    """Zstd and LZ4 data may be several frames, and a member reads them all."""
+    """Zstd and LZ4 data may be several frames, and XZ data several streams, and a
+    member reads them all."""
     half = len(_PLAIN) // 2
     stored = _compress(method, _PLAIN[:half]) + _compress(method, _PLAIN[half:])
     register_format(_compressed_plugin(method))
@@ -1030,10 +1049,10 @@ def test_decompress_passes_sizes_to_the_codec(
 ) -> None:
     """Each call gets the member's sizes, which the accelerators choose by, as ZIP
     gives them per member."""
-    from archivey.internal import plugin_adapter
+    from archivey.internal import format_adapter
 
     seen: list[tuple[int | None, int | None]] = []
-    real = plugin_adapter.open_codec_stream
+    real = format_adapter.open_codec_stream
 
     def spy(*args: object, config: object, **kwargs: object) -> object:
         seen.append(
@@ -1044,7 +1063,7 @@ def test_decompress_passes_sizes_to_the_codec(
         )
         return real(*args, config=config, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(plugin_adapter, "open_codec_stream", spy)
+    monkeypatch.setattr(format_adapter, "open_codec_stream", spy)
     stored = _raw_deflate(_PLAIN)
     register_format(_compressed_plugin(CompressionAlgorithm.DEFLATE))
     with open_archive(_compressed_archive(tmp_path, stored)) as reader:
@@ -1057,6 +1076,17 @@ def test_decompress_data_after_end_is_corrupt(
 ) -> None:
     register_format(_compressed_plugin(CompressionAlgorithm.DEFLATE))
     path = _compressed_archive(tmp_path, _raw_deflate(_PLAIN) + b"junk")
+    with open_archive(path) as reader, pytest.raises(CorruptionError):
+        reader.read("m.bin")
+
+
+def test_decompress_xz_member_refuses_data_after_its_streams(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """``XZ`` is the member contract, as in ZIP: bytes that are not stream padding
+    after the last stream are corruption, not trailing data."""
+    register_format(_compressed_plugin(CompressionAlgorithm.XZ))
+    path = _compressed_archive(tmp_path, lzma.compress(_PLAIN) + b"\x00")
     with open_archive(path) as reader, pytest.raises(CorruptionError):
         reader.read("m.bin")
 
@@ -1195,11 +1225,11 @@ def test_a_raw_stream_reads_whole_lengths(
             opened.append(_Trickle(self._source.read_at(offset, length)))
             return MemberData(wrap(opened[-1]))
 
-    class TricklePlugin(ToyPlugin):
-        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+    class TrickleHandler(ToyHandler):
+        def open(self, source: ReaderSource, context: ReaderContext) -> ToyReader:
             return TrickleReader(source, context)
 
-    register_format(TricklePlugin)
+    register_format(TrickleHandler)
     path = _compressed_archive(tmp_path, _PLAIN)
     with open_archive(path) as reader, reader.open("m.bin") as stream:
         assert stream.read(1000) == _PLAIN[:1000]
@@ -1209,13 +1239,13 @@ def test_a_raw_stream_reads_whole_lengths(
 
 def test_only_streams_that_may_read_short_are_wrapped() -> None:
     """A buffered stream and archivey's own streams already return whole reads."""
-    from archivey.internal import plugin_adapter
+    from archivey.internal import format_adapter
     from archivey.internal.streams.streamtools import SharedSource
 
-    assert plugin_adapter._reads_full(io.BytesIO())
+    assert format_adapter._reads_full(io.BytesIO())
     with SharedSource(io.BytesIO(b"abc")).view(0, 3) as view:
-        assert plugin_adapter._reads_full(view)
-    assert not plugin_adapter._reads_full(_Trickle(b""))
+        assert format_adapter._reads_full(view)
+    assert not format_adapter._reads_full(_Trickle(b""))
 
 
 def test_block_stream_decodes_only_the_blocks_it_reads() -> None:
@@ -1304,16 +1334,16 @@ def test_read_exact_raises_truncated_at_the_end(
     seen: list[bytes] = []
 
     class ExactReader(ToyReader):
-        def __init__(self, source: PluginSource, context: PluginContext) -> None:
+        def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
             super().__init__(source, context)
             seen.append(source.read_exact(0, 8))
             source.read_exact(len(_MAGIC), 1 << 20)
 
-    class ExactPlugin(ToyPlugin):
-        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+    class ExactHandler(ToyHandler):
+        def open(self, source: ReaderSource, context: ReaderContext) -> ToyReader:
             return ExactReader(source, context)
 
-    register_format(ExactPlugin)
+    register_format(ExactHandler)
     with pytest.raises(TruncatedError, match="archive ends") as info:
         open_archive(_write(tmp_path, build_toya(_ENTRIES)))
     assert seen == [_MAGIC]
@@ -1323,7 +1353,7 @@ def test_read_exact_raises_truncated_at_the_end(
 def test_a_probe_that_raises_is_no_match(clean_registry: None) -> None:
     """One plugin's broken probe must not change how unrelated input fails."""
 
-    class BrokenProbe(ToyPlugin):
+    class BrokenProbe(ToyHandler):
         magic = ()
         probe = staticmethod(
             lambda prefix: struct.unpack("<I", prefix[100:104])[0] == 1
@@ -1340,7 +1370,7 @@ def test_a_probe_out_of_memory_propagates(clean_registry: None) -> None:
     def probe(prefix: bytes) -> bool:
         raise MemoryError
 
-    class Starved(ToyPlugin):
+    class Starved(ToyHandler):
         magic = ()
 
     Starved.probe = staticmethod(probe)  # type: ignore[assignment]
@@ -1352,7 +1382,7 @@ def test_a_probe_out_of_memory_propagates(clean_registry: None) -> None:
 def test_a_raising_probe_warns_once(
     clean_registry: None, caplog: pytest.LogCaptureFixture
 ) -> None:
-    class BrokenProbe(ToyPlugin):
+    class BrokenProbe(ToyHandler):
         magic = ()
         probe = staticmethod(
             lambda prefix: struct.unpack("<I", prefix[100:104])[0] == 1
@@ -1384,7 +1414,7 @@ def test_a_raising_unhashable_probe_is_no_match(
     with pytest.raises(TypeError):
         hash(_StatefulProbe(100))
 
-    class ObjectProbe(ToyPlugin):
+    class ObjectProbe(ToyHandler):
         magic = ()
         probe = _StatefulProbe(100)
 
@@ -1400,16 +1430,16 @@ def test_a_raising_unhashable_probe_is_no_match(
 def test_bounded_is_inferred_for_a_view_or_block_stream_within_the_size(
     clean_registry: None, tmp_path: Path
 ) -> None:
-    from archivey.internal import plugin_adapter
+    from archivey.internal import format_adapter
     from archivey.internal.streams.streamtools import SharedSource
 
     with SharedSource(io.BytesIO(b"abcdef")).view(0, 4) as view:
-        assert plugin_adapter._bounded(view, 4)
-        assert plugin_adapter._bounded(view, 5)
-        assert not plugin_adapter._bounded(view, 3)
-        assert not plugin_adapter._bounded(view, None)
-    assert plugin_adapter._bounded(block_stream(10, 4, lambda i: b""), 10)
-    assert not plugin_adapter._bounded(io.BytesIO(b"abcd"), 4)
+        assert format_adapter._bounded(view, 4)
+        assert format_adapter._bounded(view, 5)
+        assert not format_adapter._bounded(view, 3)
+        assert not format_adapter._bounded(view, None)
+    assert format_adapter._bounded(block_stream(10, 4, lambda i: b""), 10)
+    assert not format_adapter._bounded(io.BytesIO(b"abcd"), 4)
 
 
 @pytest.mark.parametrize("copy", [False, True], ids=["view", "copied"])
@@ -1424,13 +1454,13 @@ def test_an_inferred_bound_reaches_the_member_stream(
     from archivey.internal.base_reader import BaseArchiveReader
 
     seen: list[bool] = []
-    original = BaseArchiveReader._wrap_member_stream
+    original = BaseArchiveReader._member_parts
 
     def spy(self, *args, **kwargs):  # type: ignore[no-untyped-def]
         seen.append(kwargs.get("bounded", False))
         return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(BaseArchiveReader, "_wrap_member_stream", spy)
+    monkeypatch.setattr(BaseArchiveReader, "_member_parts", spy)
 
     class Copying(ToyReader):
         def open_member(
@@ -1439,11 +1469,11 @@ def test_an_inferred_bound_reaches_the_member_stream(
             with super().open_member(member, locator).stream as view:
                 return MemberData(io.BytesIO(view.read()))
 
-    class CopyingPlugin(ToyPlugin):
-        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+    class CopyingHandler(ToyHandler):
+        def open(self, source: ReaderSource, context: ReaderContext) -> ToyReader:
             return Copying(source, context)
 
-    register_format(CopyingPlugin if copy else ToyPlugin)
+    register_format(CopyingHandler if copy else ToyHandler)
     with open_archive(_write(tmp_path, build_toya(_ENTRIES))) as reader:
         assert reader.read("b.bin") == bytes(range(256)) * 4
     assert seen == [not copy]
@@ -1475,11 +1505,11 @@ def test_translate_exception_mid_read(clean_registry: None, tmp_path: Path) -> N
                 return CorruptionError(str(exc))
             return None
 
-    class FailingPlugin(ToyPlugin):
-        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+    class FailingHandler(ToyHandler):
+        def open(self, source: ReaderSource, context: ReaderContext) -> ToyReader:
             return FailingReader(source, context)
 
-    register_format(FailingPlugin)
+    register_format(FailingHandler)
     path = _write(tmp_path, build_toya(_ENTRIES))
     with (
         open_archive(path) as reader,
@@ -1508,7 +1538,7 @@ class _ForwardOnly(io.RawIOBase):
 
 def _forward_only_plugin(
     opened: list[int], *, listed_size: bool = True
-) -> type[FormatPlugin]:
+) -> type[FormatHandler]:
     class ForwardOnlyReader(ToyReader):
         def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
             for record in super().iter_members():
@@ -1524,11 +1554,11 @@ def _forward_only_plugin(
                 _ForwardOnly(self._source.read_at(offset, size), opened)  # type: ignore[arg-type]
             )
 
-    class ForwardOnlyPlugin(ToyPlugin):
-        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+    class ForwardOnlyHandler(ToyHandler):
+        def open(self, source: ReaderSource, context: ReaderContext) -> ToyReader:
             return ForwardOnlyReader(source, context)
 
-    return ForwardOnlyPlugin
+    return ForwardOnlyHandler
 
 
 def test_seekable_member_over_forward_only_stream(
@@ -1585,7 +1615,7 @@ def _sum16(data: bytes) -> bytes:
     return hasher.digest()
 
 
-def _digest_plugin(digests: dict[str, MemberDigest]) -> type[FormatPlugin]:
+def _digest_plugin(digests: dict[str, MemberDigest]) -> type[FormatHandler]:
     """TOYA with no CRC-32 in the listing: only ``digests`` (by member name) checks."""
 
     class DigestReader(ToyReader):
@@ -1602,11 +1632,11 @@ def _digest_plugin(digests: dict[str, MemberDigest]) -> type[FormatPlugin]:
                 self._source.view(offset, size), digests=(digests[member.name],)
             )
 
-    class DigestPlugin(ToyPlugin):
-        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+    class DigestHandler(ToyHandler):
+        def open(self, source: ReaderSource, context: ReaderContext) -> ToyReader:
             return DigestReader(source, context)
 
-    return DigestPlugin
+    return DigestHandler
 
 
 @pytest.mark.parametrize(
@@ -1778,8 +1808,8 @@ def test_member_stream_is_closed_when_a_hasher_factory_fails(
 
 
 def _reporting_plugin(
-    report: Callable[[PluginContext, ArchiveMember], None],
-) -> type[FormatPlugin]:
+    report: Callable[[ReaderContext, ArchiveMember], None],
+) -> type[FormatHandler]:
     """TOYA whose reader calls ``report(context, member)`` on ``docs/a.txt``."""
 
     class ReportingReader(ToyReader):
@@ -1789,15 +1819,15 @@ def _reporting_plugin(
                     report(self._context, record.member)
                 yield record
 
-    class ReportingPlugin(ToyPlugin):
-        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+    class ReportingHandler(ToyHandler):
+        def open(self, source: ReaderSource, context: ReaderContext) -> ToyReader:
             return ReportingReader(source, context)
 
-    return ReportingPlugin
+    return ReportingHandler
 
 
 def test_report_fills_archive_and_member(clean_registry: None, tmp_path: Path) -> None:
-    def report(context: PluginContext, member: ArchiveMember) -> None:
+    def report(context: ReaderContext, member: ArchiveMember) -> None:
         context.report(
             DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
             "bad date",
@@ -1823,7 +1853,7 @@ def test_report_fills_archive_and_member(clean_registry: None, tmp_path: Path) -
 def test_report_refuses_a_mismatched_context(
     clean_registry: None, tmp_path: Path
 ) -> None:
-    def report(context: PluginContext, member: ArchiveMember) -> None:
+    def report(context: ReaderContext, member: ArchiveMember) -> None:
         context.report(
             DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
             "wrong context",
@@ -1837,7 +1867,7 @@ def test_report_refuses_a_mismatched_context(
 
 
 def test_link_target_unavailable(clean_registry: None, tmp_path: Path) -> None:
-    def report(context: PluginContext, member: ArchiveMember) -> None:
+    def report(context: ReaderContext, member: ArchiveMember) -> None:
         context.link_target_unavailable(
             member,
             reason="target_record_malformed",
@@ -1864,7 +1894,7 @@ def test_link_target_unavailable(clean_registry: None, tmp_path: Path) -> None:
 def test_context_config_is_the_callers(clean_registry: None, tmp_path: Path) -> None:
     seen: list[archivey.ArchiveyConfig] = []
 
-    def report(context: PluginContext, member: ArchiveMember) -> None:
+    def report(context: ReaderContext, member: ArchiveMember) -> None:
         seen.append(context.config)
 
     register_format(_reporting_plugin(report))
@@ -1877,8 +1907,8 @@ def test_context_config_is_the_callers(clean_registry: None, tmp_path: Path) -> 
 def test_plugin_translates_errors_from_open(
     clean_registry: None, tmp_path: Path
 ) -> None:
-    class FailingOpenPlugin(ToyPlugin):
-        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+    class FailingOpenHandler(ToyHandler):
+        def open(self, source: ReaderSource, context: ReaderContext) -> ToyReader:
             raise ValueError("bad header")
 
         def translate_exception(self, exc: Exception) -> archivey.ArchiveyError | None:
@@ -1886,7 +1916,7 @@ def test_plugin_translates_errors_from_open(
                 return CorruptionError(str(exc))
             return None
 
-    register_format(FailingOpenPlugin)
+    register_format(FailingOpenHandler)
     with pytest.raises(CorruptionError, match="bad header"):
         open_archive(_write(tmp_path, build_toya(_ENTRIES)))
 
@@ -1907,7 +1937,7 @@ class _CountingReads(io.BytesIO):
 
 def _bounded_plugin(
     reads: list[int], *, bounded: bool, extra: bytes = b"", cut: int = 0
-) -> type[FormatPlugin]:
+) -> type[FormatHandler]:
     class BoundedReader(ToyReader):
         def open_member(
             self, member: ArchiveMember, locator: tuple[int, int]
@@ -1916,11 +1946,11 @@ def _bounded_plugin(
             data = self._source.read_at(offset, size - cut) + extra
             return MemberData(_CountingReads(data, reads), bounded=bounded)  # type: ignore[arg-type]
 
-    class BoundedPlugin(ToyPlugin):
-        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+    class BoundedHandler(ToyHandler):
+        def open(self, source: ReaderSource, context: ReaderContext) -> ToyReader:
             return BoundedReader(source, context)
 
-    return BoundedPlugin
+    return BoundedHandler
 
 
 @pytest.mark.parametrize("bounded", [False, True])
@@ -2015,7 +2045,7 @@ def test_read_struct_unpacks_and_raises_truncated(
     seen: list[tuple[object, ...]] = []
 
     class StructReader(ToyReader):
-        def __init__(self, source: PluginSource, context: PluginContext) -> None:
+        def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
             super().__init__(source, context)
             seen.append(source.read_struct(len(_MAGIC), "<I"))
             seen.append(source.read_struct(0, struct.Struct("<8s")))
@@ -2023,11 +2053,11 @@ def test_read_struct_unpacks_and_raises_truncated(
             assert end is not None
             source.read_struct(end - 4, "<Q")
 
-    class StructPlugin(ToyPlugin):
-        def open(self, source: PluginSource, context: PluginContext) -> ToyReader:
+    class StructHandler(ToyHandler):
+        def open(self, source: ReaderSource, context: ReaderContext) -> ToyReader:
             return StructReader(source, context)
 
-    register_format(StructPlugin)
+    register_format(StructHandler)
     with pytest.raises(TruncatedError, match="archive ends 4 bytes into the 8"):
         open_archive(_write(tmp_path, build_toya(_ENTRIES)))
     assert seen == [(len(_ENTRIES),), (_MAGIC,)]

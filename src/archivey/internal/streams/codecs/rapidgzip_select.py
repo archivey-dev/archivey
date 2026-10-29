@@ -138,6 +138,15 @@ def _rapidgzip_wanted(config: StreamConfig, *, available: bool) -> bool:
     """
     if config.process_isolation is ProcessIsolation.NONE:
         return False
+    size = config.compressed_input_size
+    if (
+        config.use_rapidgzip is AcceleratorMode.AUTO
+        and size is not None
+        and size < RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
+    ):
+        # What ``enabled_for`` answers below for a small input, without first working
+        # out the seek demand: a ZIP of small members asks this several times each.
+        return False
     if (
         config.use_rapidgzip is AcceleratorMode.AUTO
         and config.expected_decompressed_size is None
@@ -195,8 +204,18 @@ def _auto_without_child(config: StreamConfig, *, available: bool) -> str | None:
     """Why an ``AUTO`` open that wants rapidgzip cannot have it here (no child process
     can run it: :func:`rapidgzip_child_unavailable_reason`), or ``None``."""
     if config.use_rapidgzip is not AcceleratorMode.AUTO:
+        # What ``_wanted_auto_without_child`` answers below, without first asking
+        # whether rapidgzip is wanted.
         return None
     if not _rapidgzip_wanted(config, available=available):
+        return None
+    return _wanted_auto_without_child(config)
+
+
+def _wanted_auto_without_child(config: StreamConfig) -> str | None:
+    """:func:`_auto_without_child` for an open :func:`_rapidgzip_wanted` already wants:
+    the one place its reasons live, for it and for :func:`_rapidgzip_enabled`."""
+    if config.use_rapidgzip is not AcceleratorMode.AUTO:
         return None
     return rapidgzip_child_unavailable_reason()
 
@@ -211,7 +230,7 @@ def _rapidgzip_enabled(config: StreamConfig, *, available: bool) -> bool:
     """
     if not _rapidgzip_wanted(config, available=available):
         return False
-    return _auto_without_child(config, available=available) is None
+    return _wanted_auto_without_child(config) is None
 
 
 def _warn_if_auto_without_child(config: StreamConfig) -> None:

@@ -500,7 +500,7 @@ class DiagnosticCollector:
                         again = emit_log.raised[at]
                         # Raising an object adds the frames it passes to its traceback;
                         # clear it, or each repeat makes the stored exception's longer.
-                        # ``ArchiveStream._raise_verdict`` keeps the first traceback
+                        # ``ArchiveStreamImpl._raise_verdict`` keeps the first traceback
                         # instead, because it short-circuits without reaching the damage
                         # again. A replay re-runs the work up to this emit, so the
                         # current path is where this raise happens, and ``emit`` never

@@ -43,11 +43,11 @@ from archivey import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.plugins import (
+from archivey.formats import (
     ForwardStream,
     MemberSpan,
-    PluginArchiveInfo,
-    PluginContext,
+    ReaderArchiveInfo,
+    ReaderContext,
     SequentialReader,
 )
 
@@ -94,16 +94,16 @@ def _time(mtime: int | None) -> datetime | None:
 class ArReader(SequentialReader):
     """Walks an ar archive of either dialect."""
 
-    def __init__(self, context: PluginContext) -> None:
+    def __init__(self, context: ReaderContext) -> None:
         self._context = context
         self._dialect: str | None = None
         self._symbol_table = False
 
-    def archive_info(self) -> PluginArchiveInfo:
+    def archive_info(self) -> ReaderArchiveInfo:
         extra: dict[str, object] = {"ar.symbol_table": self._symbol_table}
         if self._dialect is not None:
             extra["ar.dialect"] = self._dialect
-        return PluginArchiveInfo(format_version=self._dialect, extra=extra)
+        return ReaderArchiveInfo(format_version=self._dialect, extra=extra)
 
     def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
         magic = stream.read(len(MAGIC))

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, BinaryIO
 
 from archivey.exceptions import ArchiveyError
@@ -14,9 +14,10 @@ from archivey.internal.config import (
     DEFAULT_STREAM_CONFIG,
     StreamConfig,
 )
+from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.streams.archive_stream import (
-    ArchiveStream,
+    ArchiveStreamImpl,
     ExceptionTranslator,
     RewindWarning,
     raise_translated,
@@ -199,7 +200,7 @@ def open_codec_stream(
     seekable: bool | None = None,
     on_close: Callable[[], None] | None = None,
     repeat_verdict: bool = True,
-) -> ArchiveStream:
+) -> ArchiveStreamImpl:
     """Open a decompressing stream for ``codec`` with exceptions translated/stamped.
 
     The returned stream wraps the backend so corrupt/truncated/non-seekable errors surface
@@ -225,7 +226,7 @@ def open_codec_stream(
     reaches only the returned stream and ``config`` is passed on unchanged.
 
     ``repeat_verdict=False`` makes the stream raise each error as the decoder raises
-    it, and not repeat the first one after a seek (``ArchiveStream._fail``). It is for
+    it, and not repeat the first one after a seek (``ArchiveStreamImpl._fail``). It is for
     a stream that only a reader's own views read. A read seeks the shared handle when it
     is not already there. Some reads still seek, and one seek is enough to mark the
     stream rewound.
@@ -235,7 +236,7 @@ def open_codec_stream(
     # ``config.seekable`` is False (no accelerator/index). Public ``open_stream`` passes
     # the caller's ``seekable=`` explicitly.
     stream_seekable = True if seekable is None else seekable
-    return ArchiveStream(
+    return ArchiveStreamImpl(
         lambda: backend.open(source, params),
         translate=backend.translate,
         stamp=stamp,
@@ -337,6 +338,9 @@ def _decoder_config(
     changes: dict[str, Any] = {}
     if collector is not None and config.collector is not collector:
         changes["collector"] = collector
+    # ``ZipReader._member_config`` fills ``source_seekable`` and clears ``seekable`` by
+    # these two rules before it gets here, so a ZIP member's config is copied once: a
+    # change to either rule belongs there too.
     source_seekable = isinstance(source, (str, os.PathLike)) or is_seekable(source)
     if config.seekable and not source_seekable:
         # Seek demand on a source that cannot seek cannot be met, and it would make
@@ -354,6 +358,6 @@ def _decoder_config(
         if size is not None:
             changes["compressed_input_size"] = size
     if changes:
-        config = replace(config, **changes)
+        config = copy_with(config, **changes)
     # Fill before resolve_codec so the translator and rewind_warning agree with open.
     return _BY_CODEC[codec].prepare_config(source, config)

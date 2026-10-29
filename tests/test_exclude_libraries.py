@@ -39,15 +39,15 @@ from archivey import (
     open_stream,
 )
 from archivey.config import AcceleratorMode, RarDecompressor
+from archivey.formats import ReaderContext, ReaderSource
 from archivey.internal.excluded_libraries import EXCLUDED_REASON
-from archivey.internal.plugin_adapter import registration_scope
+from archivey.internal.format_adapter import registration_scope
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.brotli_codec import BrotliCodec
-from archivey.plugins import PluginContext, PluginSource
 from archivey.types import OptionalLibraryStr
 from tests.conftest import requires, requires_binary, requires_zstd, run_7z
+from tests.test_format_api import _ENTRIES, _MAGIC, _plugin_with, build_toya
 from tests.test_format_policy import StdlibZipPlugin
-from tests.test_plugins import _ENTRIES, _MAGIC, _plugin_with, build_toya
 
 C = ContainerFormat
 L = OptionalLibrary
@@ -378,7 +378,7 @@ def test_supported_formats_do_not_filter_by_allows() -> None:
 class _NeedsAbsentModule(StdlibZipPlugin):
     requires = ("archivey_no_such_module",)
 
-    def open(self, source: PluginSource, context: PluginContext) -> object:  # type: ignore[override]
+    def open(self, source: ReaderSource, context: ReaderContext) -> object:  # type: ignore[override]
         raise AssertionError("the plugin opened although its module is missing")
 
 

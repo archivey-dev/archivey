@@ -26,7 +26,7 @@ from archivey.types import (
 )
 
 if TYPE_CHECKING:
-    from archivey.plugins import FormatPlugin
+    from archivey.formats import FormatHandler
     from archivey.types import OptionalLibraryStr
 
 __all__ = ["FormatPolicy"]
@@ -105,7 +105,7 @@ def _coerce_libraries(values: object) -> frozenset[OptionalLibrary]:
 
 
 def _check_named_plugins(
-    replace: Mapping[ContainerFormat, type[FormatPlugin]],
+    replace: Mapping[ContainerFormat, type[FormatHandler]],
     only: frozenset[_FormatEntry] | None,
     excluded: frozenset[OptionalLibrary],
 ) -> None:
@@ -117,7 +117,7 @@ def _check_named_plugins(
     """
     if not excluded:
         return
-    named: list[tuple[str, type[FormatPlugin]]] = [
+    named: list[tuple[str, type[FormatHandler]]] = [
         (f"replace= reads {_entry_name(container)} with", plugin)
         for container, plugin in replace.items()
     ]
@@ -125,7 +125,7 @@ def _check_named_plugins(
     if listed:
         # Imported here: the plugin adapter imports the config, which builds a default
         # policy as it loads.
-        from archivey.internal.plugin_adapter import registered_plugins
+        from archivey.internal.format_adapter import registered_plugins
 
         named.extend(
             (f"only= lists {_entry_name(plugin.format.container)}, read by", plugin)
@@ -145,16 +145,16 @@ def _check_named_plugins(
             )
 
 
-class _Replacements(Mapping[ContainerFormat, "type[FormatPlugin]"]):
+class _Replacements(Mapping[ContainerFormat, "type[FormatHandler]"]):
     """A read-only, hashable mapping, so a policy and the config holding it stay
     hashable as every other config field is."""
 
     __slots__ = ("_items",)
 
-    def __init__(self, items: Mapping[ContainerFormat, type[FormatPlugin]]) -> None:
+    def __init__(self, items: Mapping[ContainerFormat, type[FormatHandler]]) -> None:
         self._items = dict(items)
 
-    def __getitem__(self, key: ContainerFormat) -> type[FormatPlugin]:
+    def __getitem__(self, key: ContainerFormat) -> type[FormatHandler]:
         return self._items[key]
 
     def __iter__(self) -> Iterator[ContainerFormat]:
@@ -173,13 +173,13 @@ class _Replacements(Mapping[ContainerFormat, "type[FormatPlugin]"]):
 def _coerce_replacements(values: object) -> _Replacements:
     if not isinstance(values, Mapping):
         raise _UsageTypeError(
-            f"{_CALL} takes a mapping of ContainerFormat to FormatPlugin subclass for "
+            f"{_CALL} takes a mapping of ContainerFormat to FormatHandler subclass for "
             f"replace=, got {values!r}."
         )
     if values:
         # Imported here, and only when there is something to check: the plugin adapter
         # imports the config, which builds a default policy as it loads.
-        from archivey.internal.plugin_adapter import check_replacement
+        from archivey.internal.format_adapter import check_replacement
 
         for container, plugin in values.items():
             check_replacement(container, plugin)
@@ -235,11 +235,11 @@ class FormatPolicy:
     """Whether registered plugin formats may open. Use ``False`` with ``exclude``;
     under ``only`` a plugin opens only when its container is listed."""
 
-    replace: Mapping[ContainerFormat, type[FormatPlugin]]
+    replace: Mapping[ContainerFormat, type[FormatHandler]]
     """Built-in containers read by a plugin instead of the built-in reader.
 
     A key is ``ContainerFormat.ZIP``, ``SEVEN_Z``, ``RAR`` or ``ISO``. Its plugin is a
-    ``archivey.plugins.FormatPlugin`` that is not registered: its ``format`` is
+    ``archivey.formats.FormatHandler`` that is not registered: its ``format`` is
     the built-in one (``ArchiveFormat.ZIP``), and it declares no ``extensions``,
     ``magic`` or ``probe``, because the file is found by the built-in detection. The
     reader's ``format`` is the built-in format and ``format_info.from_plugin`` is
@@ -249,7 +249,7 @@ class FormatPolicy:
     a source that cannot seek with :class:`~archivey.StreamNotSeekableError`, and a
     raw CD sector image detected as ISO as the built-in reader refuses it. The
     format's own ``ArchiveyConfig`` options reach the plugin through
-    ``PluginContext.config``."""
+    ``ReaderContext.config``."""
 
     exclude_libraries: frozenset[OptionalLibrary]
     """Optional packages that read as not installed in this call.
@@ -279,7 +279,7 @@ class FormatPolicy:
         only: Iterable[ContainerFormat | PluginContainer | StreamFormat] | None = None,
         exclude: Iterable[ContainerFormat | PluginContainer | StreamFormat] = (),
         plugins: bool = True,
-        replace: Mapping[ContainerFormat, type[FormatPlugin]] | None = None,
+        replace: Mapping[ContainerFormat, type[FormatHandler]] | None = None,
         exclude_libraries: Iterable[OptionalLibrary | OptionalLibraryStr] = (),
     ) -> None:
         only_parsed = None if only is None else _coerce_entries(only, param="only=")
@@ -322,7 +322,7 @@ class FormatPolicy:
         object.__setattr__(self, "exclude", exclude_parsed)
         object.__setattr__(self, "plugins", plugins)
 
-    def _replacement_for(self, fmt: ArchiveFormat) -> type[FormatPlugin] | None:
+    def _replacement_for(self, fmt: ArchiveFormat) -> type[FormatHandler] | None:
         """The plugin :attr:`replace` names to read ``fmt``, else ``None``.
 
         The one place that answers it: the open's refusals for a replacement and the

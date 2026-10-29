@@ -81,7 +81,7 @@ Each idea carries a status:
 - **Extension-first detection, and stopping early on agreement.** *Needs design.* Try the
   formats a filename suggests first, then fall back to the full sweep, so a misnamed file
   is still found. Content probes already follow the name: by default only the probe the
-  extension names runs ([`topics/detection.md`](topics/detection.md) §2.5). A second step is to stop as soon as the extension and the content agree, which
+  extension names runs ([`topics/detection.md`](topics/detection.md) §2.6). A second step is to stop as soon as the extension and the content agree, which
   saves the later scan tiers; the sound version may skip the expensive tiers but never a
   cheap exact-magic check. On `/usr`, near magic already settles almost every file, so the
   saving needs a Brotli-heavy corpus to show (the detection-algorithm
@@ -261,10 +261,6 @@ Each idea carries a status:
   `rar` writer at test time and skip on every CI leg. Generate their archives once and
   commit them, as ADR 0016 did for the corpus. Inventory: `tests/fixtures/rar/README.md`
   §"Tests that still need the `rar` writer at runtime".
-- **Check that the Windows `unrar` download is rarlab's.** *Open idea.* The Windows CI leg
-  downloads `unrarw64.exe` from an unversioned URL, so a pinned digest would go stale. An
-  Authenticode check for the win.rar GmbH signature is the likely answer
-  (`scripts/install-rarlab-unrar.ps1`).
 - **Move the `unrar` finder onto `CliToolFinder`.** *Open idea.* `find_rarlab_unrar` repeats
   the policy in `internal/external/cli.py`, so a probe or cache fix lands twice. About
   sixty test sites patch the finder's internals, so do it as its own change, with those

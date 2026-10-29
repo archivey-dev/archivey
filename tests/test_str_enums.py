@@ -118,7 +118,7 @@ def test_source_uses_strenum_for_string_enums() -> None:
         "and later. Found:\n" + "\n".join(mixin)
     )
     # PluginContainer has no members: it is the base a plugin's container enum
-    # subclasses (``archivey.plugins``), so the value checks above cannot run on it.
+    # subclasses (``archivey.formats``), so the value checks above cannot run on it.
     expected = {cls.__name__ for cls in STR_VALUE_ENUMS} | {"PluginContainer"}
     assert strenums == expected, (
         "StrEnum is for an enum whose members are strings, so str() returns "

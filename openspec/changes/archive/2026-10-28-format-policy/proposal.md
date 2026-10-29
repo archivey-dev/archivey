@@ -62,7 +62,7 @@ Nothing changes for a caller who does not set `formats`.
   (`PackageNotInstalledError.missing`).
 - Code: `config.py`, a new `FormatPolicy` (in `config.py` or `types.py`),
   `internal/registry.py` (`reader_for_format` takes the policy), `internal/detection.py`
-  (plugin probes filtered), `internal/plugin_adapter.py` (replacement backends), the
+  (plugin probes filtered), `internal/format_adapter.py` (replacement backends), the
   codec and backend availability checks (`deps.py`), `core.py` (one check at the reader
   choice, and the volume and SFX refusals for a replacement).
 - Public API: two new root names (`FormatPolicy`, `OptionalLibrary`), the

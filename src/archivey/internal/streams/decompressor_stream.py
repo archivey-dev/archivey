@@ -468,7 +468,9 @@ class BaseDecoder:
 
     def close(self) -> None:
         """Give back the decoder processes this decoder holds (see
-        :meth:`Decoder.close`); overridden by PPMd."""
+        :meth:`Decoder.close`); overridden by PPMd. A subclass that knows it holds no
+        child and no other native object to end may skip this walk, as an in-process
+        ``ZlibDecoder`` does; one that adds a duty here must check those overrides."""
         release_decoder_children(self)
 
     def spoil_child(self) -> None:

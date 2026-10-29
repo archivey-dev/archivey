@@ -48,6 +48,7 @@ from archivey.exceptions import (
 from archivey.internal.backends import tar_reader as tar_reader_module
 from archivey.internal.backends.tar_parser import READ_STEP, TarWalker
 from archivey.internal.backends.tar_reader import _WALK_BUFFER
+from archivey.internal.streams.archive_stream import MemberStreamParts
 from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
 from tests.conftest import CPYTHON, requires_zstd, zstd_backend
 from tests.corruption_util import (
@@ -2993,8 +2994,10 @@ def test_chain_through_same_named_members_not_false_cycle() -> None:
             materialized = self._materialized
             return iter(materialized.report.members if materialized is not None else ())
 
-        def _open_member(self, member: ArchiveMember) -> BinaryIO:
-            return io.BytesIO(self._payloads[member.name])
+        def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
+            return self._member_parts(
+                io.BytesIO(self._payloads[member.name]), member.name
+            )
 
         def _get_archive_info(self) -> ArchiveInfo:
             return ArchiveInfo(

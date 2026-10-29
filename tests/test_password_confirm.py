@@ -266,7 +266,9 @@ def test_run_reads_in_bounded_chunks() -> None:
 def test_the_input_cap_is_the_inner_tar_probe_bound() -> None:
     # Design §2: the compressed-input cap is not a new number. If the detection bound
     # moves (bzip2's worst-case block is what sizes both), this one should too.
-    assert PASSWORD_CONFIRM_MAX_INPUT_BYTES == detection._INNER_TAR_MAX_PROBE_BYTES
+    assert (
+        PASSWORD_CONFIRM_MAX_INPUT_BYTES == detection._INNER_CONTAINER_MAX_PROBE_BYTES
+    )
     # Cut on an AES block boundary, so a capped CBC stream never ends mid-block.
     assert PASSWORD_CONFIRM_MAX_INPUT_BYTES % 16 == 0
 
