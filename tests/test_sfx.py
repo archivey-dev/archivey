@@ -14,6 +14,7 @@ would have stayed green through that, so the cases below assert the *members*.
 from __future__ import annotations
 
 import io
+import random
 import shutil
 import struct
 import subprocess
@@ -1645,12 +1646,62 @@ def test_shebang_plus_concatenated_zip_detects_and_lists_members(
     assert members == _FILES
 
 
-def test_jpeg_plus_appended_zip_stays_undetected_under_balanced(tmp_path: Path) -> None:
-    """No prefix cue and no tail under BALANCED — JPEG+ZIP is a later-block case."""
+def test_jpeg_plus_appended_zip_is_found_by_the_last_step_scan(tmp_path: Path) -> None:
+    """No prefix cue, so no SFX scan up front; the scan that runs when every other step
+    declined finds the ZIP, as 7-Zip and unzip do."""
     path = tmp_path / "photo.jpg"
     path.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 100 + _zip_bytes())
-    with pytest.raises(FormatDetectionError):
-        detect_format(path)
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.ZIP
+    assert info.payload_offset == 104
+
+
+_LEADING_BYTES = {
+    "random": random.Random(7).randbytes(8192),
+    "zeros": bytes(8192),
+    "text": b"hello, this is not an archive\n" * 300,
+}
+
+
+@pytest.mark.parametrize("prefix", sorted(_LEADING_BYTES))
+@pytest.mark.parametrize("fmt", ["zip", "7z", "rar"])
+def test_an_archive_behind_leading_bytes_is_found(
+    tmp_path: Path, prefix: str, fmt: str
+) -> None:
+    """Leading bytes with no executable cue: the last-step scan finds the archive and
+    the reader opens it there, as 7-Zip, unrar and unzip do."""
+    payloads = {
+        "zip": (ArchiveFormat.ZIP, _zip_bytes),
+        "7z": (ArchiveFormat.SEVEN_Z, lambda: _7z_bytes(tmp_path)),
+        "rar": (
+            ArchiveFormat.RAR,
+            lambda: (_RAR_FIXTURES / "basic_nonsolid__.rar").read_bytes(),
+        ),
+    }
+    expected, build = payloads[fmt]
+    lead = _LEADING_BYTES[prefix]
+    path = tmp_path / "upload.bin"
+    path.write_bytes(lead + build())
+    info = detect_format(path)
+    assert (info.format, info.payload_offset) == (expected, len(lead))
+    assert info.detected_by == "sfx_scan"
+    with open_archive(path) as archive:
+        assert any(m.is_file for m in archive.members())
+
+
+def test_the_last_step_scan_leaves_a_known_extension_alone(tmp_path: Path) -> None:
+    """A name with a known extension keeps its guess, and the ZIP reader finds the
+    archive behind the leading bytes itself."""
+    lzma = tmp_path / "data.lzma"
+    lzma.write_bytes(_LEADING_BYTES["random"] + _zip_bytes())
+    info = detect_format(lzma)
+    assert (info.detected_by, info.format) == ("extension", ArchiveFormat.LZMA_ALONE)
+    named = tmp_path / "data.zip"
+    named.write_bytes(_LEADING_BYTES["random"] + _zip_bytes())
+    info = detect_format(named)
+    assert (info.detected_by, info.format) == ("extension", ArchiveFormat.ZIP)
+    with open_archive(named) as archive:
+        assert any(m.is_file for m in archive.members())
 
 
 def test_shebang_non_archive_reads_at_most_min_size_sfx_max() -> None:
@@ -1752,19 +1803,15 @@ def test_sfx_hit_validator_is_not_bound_on_instance(cls: type, decoy: bytes) -> 
     assert validator(_peek_view(decoy), None) is HitOutcome.NOT_THIS_FORMAT
 
 
-def test_class_file_does_not_enter_the_sfx_scan() -> None:
-    """``ca fe ba be`` without a fat arch table must not pay ``SFX_MAX``."""
+def test_class_file_is_not_an_executable_stub() -> None:
+    """``ca fe ba be`` without a fat arch table is no executable cue, so the scan runs
+    only as the last step, and finds nothing in a class file."""
     payload = _minimal_class_file(padding=100_000)
     assert executable_cue(payload[:4096]) is ExecutableCue.NONE
     src = InstrumentedBytesIO(payload)
-    try:
-        info = detect_format(src)
-    except FormatDetectionError:
-        info = None
-    # Far magic may peek ~32 KiB on a large source; the SFX scan would read ~100 KiB.
-    assert src.unique_bytes < 50_000
-    if info is not None:
-        assert info.detected_by != "sfx_scan"
+    with pytest.raises(FormatDetectionError):
+        detect_format(src)
+    assert src.unique_bytes <= len(payload)
 
 
 @requires("py7zr")

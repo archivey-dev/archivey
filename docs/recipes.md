@@ -477,8 +477,8 @@ print(contains_archive("upload.zip"))
 ```
 
 The member is copied to a temporary file because its first bytes aren't always enough. An ISO keeps
-its signature 32 KiB into the file, and a self-extracting archive starts with a program, so the
-archive may start far into the member. A check of the first few KiB alone is only a fast first
+its signature 32 KiB into the file, and a ZIP, 7z or RAR can sit behind a program or any other
+leading bytes, so the archive may start far into the member. A check of the first few KiB alone is only a fast first
 filter, and a member it lets through still needs the full check.
 
 zlib, Brotli and `.lzma` data start with nothing that identifies them, and the copy has no file name
@@ -487,8 +487,8 @@ reads the same bytes saved under a name ending in `.zz`, `.br` or `.lzma`. With 
 file that only happens to decode as one of them also counts as an archive, which errs on the side
 of refusing.
 
-Even so, the check finds only what archivey recognizes. Other tools can find more: `unzip` and
-7-Zip also find a ZIP behind arbitrary leading bytes, which archivey doesn't.
+Even so, the check finds only what archivey recognizes. A ZIP, 7z or RAR behind leading bytes is
+found only within the first 2 MiB; `unzip` finds a ZIP from its end, however far in it starts.
 
 A compressed file such as `notes.txt.gz` or `data.zz` counts as an archive here, since it can expand
 as much as one. So do Office documents, JAR files and wheels, which are ZIP archives.

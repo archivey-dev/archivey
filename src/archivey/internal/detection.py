@@ -38,7 +38,7 @@ today OLE compound files), and the error then names that evidence. A non-archive
 also stops the SFX scan.
 
 The steps run strongest-signal-first: near magic → SFX scan → **far magic** → trailer
-magic → self-checking header → content probes → extension. The signals ahead of the
+magic → self-checking header → content probes → leading-bytes scan → extension. The signals ahead of the
 probes are there for the same reason — a probe is the weakest evidence archivey has, and
 one asked to judge arbitrary bytes will sometimes say yes:
 
@@ -47,8 +47,10 @@ one asked to judge arbitrary bytes will sometimes say yes:
   prefix-shaped the detector searches forward for the backends' ``SFX_MAGIC`` within
   the shared ``SFX_MAX`` window and reports the payload start as ``payload_offset``
   (``PROBABLE`` / ``sfx_scan``). The cue is a cost gate — avoid reading 2 MiB from
-  every file — not a false-positive defence; a format-owned validator rejects a
-  decoy. See ``executable_cue`` and ``format-detection``'s "Executable-looking
+  every file before the cheaper steps — not a false-positive defence; a format-owned
+  validator rejects a decoy. With no cue the same scan runs last, as the
+  **leading-bytes scan**, so only a source every other step declined pays for it: an
+  archive behind an image, zeros or text, as 7-Zip, unrar and unzip find one. See ``executable_cue`` and ``format-detection``'s "Executable-looking
   prefixes must not silently become a wrong stream format".
 - **Far magic** is exact magic whose end offset lies outside the default window (today
   ISO 9660's ``CD001`` at 32 769), so it needs an extended peek taken on demand. It runs
@@ -780,6 +782,7 @@ class _ConflictEvidence(Enum):
 
     MAGIC = "magic bytes indicate"
     SFX_SCAN = "archive magic behind an executable stub indicates"
+    LEADING_BYTES = "archive magic behind leading bytes indicates"
     CONTENT_PROBE = "content inspection indicates"
 
 
@@ -1462,7 +1465,31 @@ def _detect_format_body(
                     )
                     return conclude(info, _ConflictEvidence.CONTENT_PROBE)
 
-        # 7. Extension-only guess.
+        # 7. An archive behind leading bytes that look like nothing: the SFX scan's
+        # window and validators without its executable cue, as 7-Zip, unrar and unzip
+        # find one. Last, so only a source every other step declined pays for the
+        # window. An executable cue already ran the scan, and a known non-archive
+        # signature is not a prefix. A name that names a format keeps its guess: the
+        # ZIP, 7z and RAR readers find a prefixed archive themselves, and the ZIP
+        # reader from the end, where the first local header the scan meets may belong
+        # to a later member (a ZIP missing its first bytes).
+        if cue is ExecutableCue.NONE and non_archive is None and ext_fmt is None:
+            sfx_info = _scan_for_sfx_payload(
+                registry.sfx_magic_entries(),
+                peek_more,
+                workspace,
+                scan_limit=min(SFX_MAX, budget.max_scan_bytes),
+                peek_allowance=validator_allowance(budget),
+                validators=registry.sfx_hit_validators(),
+                capped_formats=registry.sfx_parser_scanned_formats(),
+                # With no cue, a bare needle is too weak: every needle needs its
+                # format's validator.
+                restrict_to_validated=True,
+            )
+            if sfx_info is not None:
+                return conclude(sfx_info, _ConflictEvidence.LEADING_BYTES)
+
+        # 8. Extension-only guess.
         if ext_fmt is not None:
             return _attach_receipt(
                 FormatInfo(ext_fmt, DetectionConfidence.GUESS, "extension"),

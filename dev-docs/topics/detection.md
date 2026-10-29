@@ -88,7 +88,8 @@ extension is the last step, and it is used only when every content signal declin
 | 4. Trailer magic | Exact magic at the start of a fixed block at EOF (UDIF `koly`, 512 bytes) | `CERTAIN` | `magic` | 512 bytes, on a cheap seek |
 | 5. Self-checking header | A first block that proves its format with no magic (a v7 TAR header's checksum) | `PROBABLE` | `content_probe` | nothing more read |
 | 6. Content probes | LZMA Alone, zlib, Brotli decoders accept the bytes; by default only the probe the extension names runs | `PROBABLE`, or `GUESS` for weak Brotli | `content_probe` | 1 MiB of decode input for the call |
-| 7. Extension | Longest matching suffix in the aggregated map | `GUESS` | `extension` | nothing read |
+| 7. Leading-bytes scan | Step 2's window, needles and validators, with no prefix cue: run only when steps 1-6 declined, the prefix has no executable cue and no non-archive signature, and the name has no known extension (the readers find a prefixed archive under a name that names them). Every needle needs its validator | `PROBABLE` | `sfx_scan` | `min(size, 2 MiB)` read |
+| 8. Extension | Longest matching suffix in the aggregated map | `GUESS` | `extension` | nothing read |
 
 A near-magic or content-probe match on a single-file compressor is then offered to the
 **inner-TAR probe**, which decodes up to 512 bytes and looks for `ustar` at offset 257, or

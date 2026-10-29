@@ -34,7 +34,8 @@ the file isn't in the specified format, it fails like a damaged one.
 `FormatInfo` with the format and how sure archivey is about it: `CERTAIN` when the format's
 signature matched where the format puts it, `PROBABLE` when a test of its contents matched, and
 `GUESS` when the evidence is weak, such as only the file name. `payload_offset` is more than 0 for a
-self-extracting archive, where the archive starts after a program. A file in no format archivey
+self-extracting archive, where the archive starts after a program, and for any other archive found
+behind leading bytes. A file in no format archivey
 knows raises `FormatDetectionError`. The confidence grade is for a person reading it and may change
 between releases, so decide what to do from the format, not the grade.
 
