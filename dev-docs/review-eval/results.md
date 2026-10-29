@@ -29,9 +29,9 @@ with the reviews. Skill `1f096043d315`, judge `claude-sonnet-5-5`.
 the section below. The pair scores exactly what the normal review scored alone in
 both runs: the claims pass caught nothing the normal review missed.
 
-The claims reviews show one reason. For the three rapidgzip and zstd cases they
-marked the central promise `traced`, not `held`, because `rapidgzip` was not
-installed. The replay runs the reviewer with the machine's Python and no project
+The claims reviews show one reason. For the two rapidgzip cases they marked the
+central promise `traced`, not `held`, because `rapidgzip` was not installed, and
+most Opus and Sonnet reviews of those cases say the same. The replay runs the reviewer with the machine's Python and no project
 environment, and the review loop's workflow installs none either, so neither can
 run the optional accelerators the PR is about.
 
