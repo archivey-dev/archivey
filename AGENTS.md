@@ -173,6 +173,8 @@ public; the tracker is not. Three rules, and they are about the *internal tracke
   or inline comment, a commit message, or a file in the repo. Write "tracked internally"
   instead: the reader cannot open the ticket, so the key is dead weight to them and it
   publishes the internal layout.
+- `scripts/check_tracker_urls.py` (in `check.sh` and CI) enforces the URL rule for
+  tracked files only. Keys, PR text, comments and commit messages are on you.
 - **GitHub `#nnn` is the public record and is always fine** — in PR text, commits,
   comments and repo files alike. This rule does not touch it.
 

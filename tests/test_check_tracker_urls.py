@@ -26,6 +26,7 @@ _HOST = b"linear" + b".app"
         b"see https://" + _HOST + b"/someteam/issue/ABC-12/title",
         b"(<https://" + _HOST + b"/someteam/review/a-pr-1234>)",
         _HOST + b"/someteam",
+        b"Linear" + b".app/someteam/issue/ABC-12 has the detail",
     ],
 )
 def test_a_url_into_a_workspace_is_found(line: bytes) -> None:
@@ -42,6 +43,33 @@ def test_a_url_into_a_workspace_is_found(line: bytes) -> None:
 )
 def test_a_shape_or_a_bare_key_is_not(line: bytes) -> None:
     assert not check.TRACKER_URL.search(line)
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+
+def test_a_tracked_url_fails_the_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The failing path: a tracked file with a URL returns 1 and names file:line; the
+    same tree passes once the file leaves the index."""
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "ok.md").write_bytes(b"tracked internally\n")
+    (tmp_path / "a.md").write_bytes(
+        b"x\nsee https://" + _HOST + b"/someteam/issue/A-1\n"
+    )
+    (tmp_path / "blob.bin").write_bytes(b"\0" + _HOST + b"/someteam")
+    _git(tmp_path, "add", "-A")
+    monkeypatch.setattr(check, "ROOT", tmp_path)
+    assert check.main() == 1
+    out = capsys.readouterr().out
+    assert "a.md:2: " in out
+    assert "blob.bin" not in out and "ok.md" not in out
+    _git(tmp_path, "rm", "-q", "--cached", "a.md")
+    assert check.main() == 0
 
 
 def test_this_tree_has_none() -> None:

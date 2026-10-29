@@ -2,9 +2,9 @@
 # Every fast gate CI runs, in one command.
 #
 # This is the "will CI's non-test jobs pass?" answer: it mirrors the `lint` job in
-# .github/workflows/ci.yml and the `docs` and `openspec` jobs in docs-checks.yml. It
-# does not run the test suite — that is scripts/test.sh, which takes minutes rather than
-# seconds, and the two get run at different cadences.
+# .github/workflows/ci.yml and every job in docs-checks.yml. It does not run the test
+# suite — that is scripts/test.sh, which takes minutes rather than seconds, and the two
+# get run at different cadences.
 #
 # It exists because the gate is a dozen commands and people were running one of them.
 # Pushing after `ruff` alone, with `pyrefly` or `ty` red, is the most common
