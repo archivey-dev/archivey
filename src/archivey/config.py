@@ -739,10 +739,11 @@ class ArchiveyConfig:
     match other members as well, and so does a name shared with an earlier member (a
     duplicate, or two names ``unrar`` reads as the same text). ``unrar`` then decodes
     every earlier match before the member. Names like this are almost always
-    constructed, so the read is refused by default. On a nonsolid archive the extra decode is also unbounded and not
-    reported (:class:`ExtractionLimits` does not cover ``open()`` or ``read()``); on a
-    solid archive those bytes are already inside ``AccessCost.SOLID``. Set ``True`` to
-    read it anyway. A name that selects no earlier member is unaffected either way.
+    constructed, so the read is refused by default. On a nonsolid archive the extra
+    decode is also unbounded and not reported (:class:`ExtractionLimits` does not cover
+    ``open()`` or ``read()``); on a solid archive those bytes are already inside
+    ``AccessCost.SOLID``. Set ``True`` to read it anyway. A name that selects no earlier
+    member is unaffected either way.
     Under ``rar_decompressor=AUTO``, an installed ``unar`` reads such a member by index
     instead of the refusal (see :class:`RarDecompressor`), so this flag matters only
     when ``unrar`` must read it.
