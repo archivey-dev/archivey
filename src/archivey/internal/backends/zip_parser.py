@@ -856,8 +856,8 @@ class CentralDirectoryWalk:
             extra = data[at : at + extra_len]
             at += extra_len
             comment = data[at : at + comment_len]
-            # Almost every entry's fields hold no header signature: test that here,
-            # without the call, which costs more than the search.
+            # Almost no entry's fields hold a header signature, and the search costs
+            # less than the call, so search here and follow only on a hit.
             found = data.find(sig, name_at - data_start, entry_end - data_start)
             if found >= 0:
                 self._follow_signatures(
@@ -919,7 +919,7 @@ class CentralDirectoryWalk:
             if entry_end < cd_size:
                 ensure(pos, entry_end + 4)
                 at = entry_end - data_start
-                if data[at : at + 4] != CENTRAL_HEADER_SIGNATURE:
+                if data[at : at + 4] != sig:
                     self._check_cut_name(entry)
                     # The name agrees, but a length is wrong: the comment, the
                     # entry's last field, may be cut. The extra field is checked
