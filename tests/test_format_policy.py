@@ -2,7 +2,7 @@
 
 Built-in formats are detected as always and refused after detection; a plugin format
 the policy turns off is left out of detection. The plugin formats here are TOYA
-variants from ``tests/test_plugins.py``.
+variants from ``tests/test_format_api.py``.
 """
 
 from __future__ import annotations
@@ -31,10 +31,10 @@ from archivey import (
     open_stream,
 )
 from archivey.detection_cost import TierSkipReason
+from archivey.formats import Magic
 from archivey.internal.detection import probe_config
-from archivey.internal.plugin_adapter import registration_scope
-from archivey.plugins import Magic
-from tests.test_plugins import _ENTRIES, _MAGIC, _plugin_with, build_toya
+from archivey.internal.format_adapter import registration_scope
+from tests.test_format_api import _ENTRIES, _MAGIC, _plugin_with, build_toya
 
 C = ContainerFormat
 S = StreamFormat
