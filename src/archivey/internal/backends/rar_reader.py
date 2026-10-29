@@ -2384,8 +2384,8 @@ class RarReader(BaseArchiveReader):
     ) -> tuple[UnarRarPolicy, _DictionaryCost] | None:
         """The ``unar`` policy and dictionary cost for a member ``unrar`` cannot name.
 
-        ``unar`` names entries by index, so a stored name ``unrar`` cannot be given, or
-        a glob name that also matches earlier members, costs it nothing. ``AUTO``
+        ``unar`` names entries by index, so no refusal about addressing a member by name
+        (each one :class:`_UnrarCannotAddress` carries) applies to it. ``AUTO``
         therefore reads such a member with an accepted ``unar`` when one is installed,
         where it would otherwise refuse it. ``None`` keeps the ``unrar`` refusal when:
 
@@ -3880,12 +3880,12 @@ class RarReader(BaseArchiveReader):
         (:func:`unrar_dot_rule`, cached per binary path and stat identity), so this
         step may spawn ``unrar`` on an embedded archive.
 
-        Raises ``UnsupportedFeatureError`` when the answer is not known: the mask
-        does not select the target itself, or an earlier member's name cannot be
-        read the way ``unrar`` reads it on this host. Raises
-        :class:`_UnrarCannotAddress` when the dot-rule probe gave no answer, so that
-        ``AUTO`` can hand the member to ``unar``, and ``PackageNotInstalledError``
-        from :func:`find_rarlab_unrar` when it has to probe and no ``unrar`` is found.
+        Raises :class:`_UnrarCannotAddress` when the answer is not known, so that
+        ``AUTO`` can hand the member to ``unar``: the mask does not select the
+        target itself, an earlier member's name cannot be read the way ``unrar``
+        reads it on this host, or the dot-rule probe gave no answer. Raises
+        ``PackageNotInstalledError`` from :func:`find_rarlab_unrar` when it has to
+        probe and no ``unrar`` is found.
         """
         names = self._unrar_names()
         target_position = names.positions[id(target)]
@@ -3949,10 +3949,17 @@ class RarReader(BaseArchiveReader):
                 earlier = self._members[position]
                 prefix += _member_stream_size(earlier)
                 cost = _larger_cost(cost, self._dictionary_costs[id(earlier)])
+        # The target drops out when it matched only through a dot rule this binary
+        # lacks, or when archivey's port of unrar's matcher and unrar disagree.
+        # Neither refusal below is about the archive: unar names entries by index,
+        # so AUTO may still read the member with it (DR-11).
         if not selects_target:
-            raise self._unrar_name_refused(
-                target,
-                "the name unrar reads for it cannot be given back to unrar as a mask",
+            raise _UnrarCannotAddress(
+                self._unrar_name_refused(
+                    target,
+                    "the name unrar reads for it cannot be given back to unrar as a "
+                    "mask",
+                )
             )
         for position in names.unknown:
             raw = self._members[position]._raw
@@ -3960,11 +3967,13 @@ class RarReader(BaseArchiveReader):
             if raw.is_file_version_history() and not version_control:
                 continue
             if position < target_position:
-                raise self._unrar_name_refused(
-                    target,
-                    "an earlier member's name cannot be read the way unrar reads it "
-                    "on this system, so the bytes unrar may send before this member "
-                    "cannot be sized",
+                raise _UnrarCannotAddress(
+                    self._unrar_name_refused(
+                        target,
+                        "an earlier member's name cannot be read the way unrar reads "
+                        "it on this system, so the bytes unrar may send before this "
+                        "member cannot be sized",
+                    )
                 )
             others = True
         return prefix, others, cost
@@ -4414,8 +4423,10 @@ class RarReader(BaseArchiveReader):
     ) -> Callable[[str | None, bool], BinaryIO]:
         """:meth:`_unrar_spawner`, with the refusals about naming the member raised as
         :class:`_UnrarCannotAddress`: a name ``unrar`` cannot be given, an include mask
-        that also matches earlier members (``rar_allow_glob_member_concatenation``), or
-        a selection that depends on a dot rule the binary did not report.
+        that also matches earlier members (``rar_allow_glob_member_concatenation``), a
+        mask that does not select the member, an earlier name ``unrar`` reads
+        differently on this host, or a selection that depends on a dot rule the binary
+        did not report.
         """
         # unrar addresses the member by name (``path`` or ``path;n``) through a ``-n``
         # include mask (see open_unrar_p); a history row needs ``-ver``. The mask is

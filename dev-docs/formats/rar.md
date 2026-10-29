@@ -996,7 +996,10 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
   `unrar` reads it on this host (a non-ASCII 8-bit name with no UTF-8 locale, or a
   code point glibc converts past U+10FFFF). A later member that cannot be modelled
   only forces the bounded pipe. Those refusals name `rar_decompressor='unar'`, which
-  addresses members by position.
+  addresses members by position, and under `AUTO` the read falls back to `unar` when
+  one it accepts is installed: `unrar` is addressed by name and `unar` by index, so
+  none of these refusals apply to `unar`. For the two host-dependent shapes (the
+  locale and glibc cases) that is DR-11: the trouble is this host's `unrar`.
 - **`*` and `?` in a member name are `unrar` wildcards, not archivey's.** Masks have **no
   escape** (`[` and `]` are literal; `\` does not escape), so `-n./a*.txt` concatenates
   every matching member in archive order with no headers — including `subdir/aY.txt`.

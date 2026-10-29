@@ -31,22 +31,16 @@ from archivey.internal.streams.decompressor_stream import (
 )
 
 # Per-call output request for PPMd8 decodes without a declared size; 64 KiB matches
-# the stream layer's read chunk. The bound avoids pyppmd's ``-1`` path. On pyppmd
-# 1.3.x a request past the stream's true output leaves the worker waiting for input
-# once it runs past what the range coder's tail lookahead can satisfy, and freeing
-# the decoder in that state corrupts the heap (bare pyppmd, no quiesce: +64/+4096
-# over → 0/20 crashes, +65536 over → 13/20); ``_quiesce_worker`` is what prevents
-# that. PPMd8's end mark stops the worker on valid data; PPMd7 has none, which is
-# why PpmdDecoder refuses to decode it without ``unpack_size``.
+# the stream layer's read chunk. The bound avoids pyppmd's ``-1`` path (see
+# ``dev-docs/known-issues.md``). PPMd8's end mark stops the worker on valid data;
+# PPMd7 has none, which is why PpmdDecoder refuses to decode it without
+# ``unpack_size``.
 _PPMD_UNSIZED_DECODE_CHUNK = 65536
 
-# Per-call ceiling for extra-NUL recovery and post-NUL empty drains. A single
-# ``decode(b"\0", large_remaining)`` on truncated mid-stream input is the
-# exit-after-green / mid-suite abort on pyppmd 1.3.x; chunking at 64 avoids that
-# call shape. When the container pack is known-complete, empty ``decode(b"", 64)``
+# Per-call ceiling for extra-NUL recovery and post-NUL empty drains. When the container pack is known-complete, empty ``decode(b"", 64)``
 # drains may still finish a large tail (including past premature ``eof``); when the
 # pack is known-incomplete, we refuse those post-eof drains (near-EOF MemoryError
-# otherwise). See ``dev-docs/investigations/ppmd-exit-after-green-exploration.md``.
+# otherwise).
 _PPMD_EXTRA_NUL_MAX_OUTPUT = 64
 
 # Bounded number of single-symbol NUL decodes used to quiesce a parked native
@@ -63,11 +57,9 @@ _PPMD_QUIESCE_MAX_CALLS = 8
 # that overstates ``unpack_size`` past that.
 _PPMD_MAX_REQUEST = (1 << 31) - 1
 
-# How PPMd avoids pyppmd's crash on corrupt input: pyppmd segfaults when asked to
-# decode after a corrupt stream has ended early, and a caller feeding it in pieces
-# cannot tell that state from a valid stream waiting for input (see ``ppmd_child``).
-# Handed the whole member at once, a short return is the end and little more is asked
-# of pyppmd, so ``PpmdDecoder`` holds compressed input until it has the whole member,
+# How PPMd works around pyppmd's known issue (``dev-docs/known-issues.md``): handed
+# the whole member at once, a short return is the end and little more is asked of
+# pyppmd, so ``PpmdDecoder`` holds compressed input until it has the whole member,
 # or compressed EOF, or ``DecoderLimits.max_ppmd_held_input``; past that it is fed in
 # pieces. That holds under every ``process_isolation``, which decides only where the
 # decode runs: in a child process, where a crash costs the member only, unless it is
@@ -124,16 +116,10 @@ class PpmdDecoder(BaseDecoder):
 
     ``unpack_size`` (the 7z folder / ZIP member size) is passed through as
     ``max_length`` on every ``decode`` call, matching py7zr's
-    ``PpmdDecompressor.decompress(..., max_length)``. On pyppmd 1.3.x a request past
-    the true end of stream leaves the native worker thread waiting for input once it
-    runs past what the range coder's tail lookahead can satisfy (measured: +64 and
-    +4096 over did not, +65536 over did), and freeing the decoder in that state
-    corrupts the heap (Linux ``malloc`` abort/SIGSEGV, Windows
-    ``STATUS_HEAP_CORRUPTION``); ``-1`` also runs it on a desynchronised model.
-    Requesting exactly the remaining output keeps a valid member out of that state. A
-    container that overstates ``unpack_size`` cannot be detected before decoding;
-    there the spent-payload stop (:meth:`_note_decoded`) and :meth:`_quiesce_worker`
-    hold (crafted members overstated by 64 KiB, 1 MiB and 15 MiB measured clean); see
+    ``PpmdDecompressor.decompress(..., max_length)``. Requesting exactly the remaining
+    output avoids pyppmd's known issue on a valid member. A container that overstates
+    ``unpack_size`` cannot be detected before decoding; there the spent-payload stop
+    (:meth:`_note_decoded`) and :meth:`_quiesce_worker` apply; see
     ``dev-docs/known-issues.md``.
 
     Because PPMd7 has no end mark, there is no safe request size without knowing the
@@ -203,9 +189,8 @@ class PpmdDecoder(BaseDecoder):
         if variant != 8 and unpack_size is None:
             raise ValueError(
                 "PPMd7 (7z var.H) requires unpack_size: the format has no end mark, "
-                "and decoding without the exact output bound runs pyppmd past the "
-                "end of stream (native heap corruption on 1.3.x — see "
-                "dev-docs/known-issues.md)"
+                "and decoding without the exact output bound is unsafe on pyppmd "
+                "(see dev-docs/known-issues.md)"
             )
         if variant != 8 and pack_size is None:
             # Without pack_size, a premature native ``eof`` (pyppmd flips it early on a
@@ -813,20 +798,10 @@ class PpmdDecoder(BaseDecoder):
     def _quiesce_worker(self) -> None:
         """Drive a parked native decode worker to exit before the decoder is freed.
 
-        On pyppmd 1.3.x the decode worker thread is left blocked in the reader
-        whenever a ``decode`` requested more output than the fed input could
-        produce (a truncated or abandoned member). ``Ppmd7T_Free`` — run from the
-        pyppmd decoder's ``dealloc`` — then wakes that worker with no new input,
-        and it free-runs into the output block already released by the previous
-        ``decode`` call: a use-after-free that intermittently aborts the process
-        at GC (the "exit-after-green" residual in ``known-issues.md``).
-
-        Feeding one bounded single-symbol NUL makes the worker consume its tail
-        lookahead and exit on its own 1-symbol budget, so ``Ppmd7T_Free`` sees a
-        finished worker and becomes a no-op. Measured: valgrind 8154 → 0 invalid
-        writes on a truncated-pack teardown. Best-effort and idempotent; safe to
-        call more than once. See ``dev-docs/investigations/ppmd-native-investigation-results.md``
-        (§D root cause, §I mitigation).
+        Works around pyppmd's known issue at teardown of a truncated or abandoned
+        member (``dev-docs/known-issues.md``): one bounded single-symbol NUL lets the
+        worker finish on its own before the decoder is freed. Best-effort and
+        idempotent; safe to call more than once.
         """
         decomp = getattr(self, "_decomp", None)
         if decomp is None:
@@ -842,20 +817,13 @@ class PpmdDecoder(BaseDecoder):
                 # ``not needs_input`` is the "worker not parked" signal — the last
                 # call exited on budget, so Free is already a no-op. The ``eof``
                 # short-circuit is deliberately kept ahead of it: at native eof the
-                # worker is finished AND feeding a NUL here would be a decode-after-eof
-                # (the unbounded form of which is itself a crash path on 1.3.x), so
-                # never issue one — skip instead. The exception is a spent payload
-                # (``_exhausted``): its last call returned short at ``eof``, which
-                # pyppmd reports with ``needs_input`` False even when the worker is
-                # parked on empty input, so neither flag can be trusted and the NUL
-                # is sent anyway. Measured on an overstated ``unpack_size``: without
-                # it valgrind shows the Free-time invalid write and a later decoder
-                # in the same process can start from corrupted state. The cost: when
-                # the short return was the model's end rather than a wait for input,
-                # this NUL is a decode after the end. It measured clean in isolation
-                # and stays a candidate residual (``dev-docs/known-issues.md``). After
-                # a ``ValueError`` pyppmd reports ``eof``, so the check above returns
-                # without decoding, which matters: a NUL there does crash pyppmd.
+                # worker is finished, so never issue a NUL — skip instead. The
+                # exception is a spent payload (``_exhausted``): its last call returned
+                # short at ``eof``, which pyppmd reports with ``needs_input`` False
+                # even when the worker is parked on empty input, so neither flag can
+                # be trusted and the NUL is sent anyway (``dev-docs/known-issues.md``).
+                # After a ``ValueError`` pyppmd reports ``eof``, so the check above
+                # returns without decoding.
                 if not self._exhausted and (
                     decomp.eof or not getattr(decomp, "needs_input", False)
                 ):

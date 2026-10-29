@@ -46,7 +46,7 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.internal.backends import tar_reader as tar_reader_module
-from archivey.internal.backends.tar_parser import READ_STEP, TarWalker
+from archivey.internal.backends.tar_parser import DATA_READ_STEP, TarWalker
 from archivey.internal.backends.tar_reader import _WALK_BUFFER
 from archivey.internal.streams.archive_stream import MemberStreamParts
 from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
@@ -3186,11 +3186,11 @@ def test_plain_tar_member_past_the_walk_buffer_is_one_source_read() -> None:
     The file length is a fact, so the walker asks for the member once, and a read
     larger than the walk buffer rewinds the prefetched tail instead of joining a
     second read onto it. Leaving ``TarWalker.end`` unset reads the member in
-    ``READ_STEP`` pieces, so this size is absent from the recorded requests.
+    ``DATA_READ_STEP`` pieces, so this size is absent from the recorded requests.
     Turning ``rewind_oversize`` off splits the prefetched tail from the rest, so
     the one request of this size is absent there too.
     """
-    payload = b"m" * (_WALK_BUFFER + READ_STEP + 100)
+    payload = b"m" * (_WALK_BUFFER + DATA_READ_STEP + 100)
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as tar:
         info = tarfile.TarInfo("big.bin")
@@ -3208,6 +3208,28 @@ def test_plain_tar_member_past_the_walk_buffer_is_one_source_read() -> None:
 
     assert got == payload
     assert source.requested.count(len(payload)) == 1
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_member_data_read_with_no_known_length_is_stepped(streaming: bool) -> None:
+    """A member's data read through the walk from a source of unknown length asks for
+    at most ``DATA_READ_STEP`` at a time, whatever size its header declares.
+
+    The member declares 3 GiB over 100 KB of data. Handing the declared size to one
+    read (``_ForwardSlice`` passing ``step=want``) fails this with a 3 GiB request.
+    """
+    info = tarfile.TarInfo("big")
+    info.size = 3 << 30
+    data = info.tobuf(format=tarfile.GNU_FORMAT) + b"x" * 100_000
+    source = ReadSizeRecorder(data, advertise_size=False)
+    with (
+        pytest.raises(TruncatedError),
+        open_archive(source, format=ArchiveFormat.TAR, streaming=streaming) as reader,
+    ):
+        for _, stream in reader.stream_members():
+            if stream is not None:
+                stream.read()
+    assert max(source.requested) <= max(DATA_READ_STEP, io.DEFAULT_BUFFER_SIZE)
 
 
 def test_a_member_larger_than_the_read_step_still_reads_whole(tmp_path: Path) -> None:

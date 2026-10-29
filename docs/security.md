@@ -36,14 +36,12 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   abort yours, unless you [run every decoder in a child process](#decoders-in-a-child-process).
 
     ??? note "Why every PPMd member?"
-        pyppmd, the PPMd decoder, can crash when it's asked to keep decoding after a damaged
-        stream has ended early, and a wrong password or a crafted member gets it there. Archivey
-        stops asking once it sees the end, but stopping a decoder that might still be waiting for
-        input takes one more call, and that call can crash it too, on members of any size. In a
-        child process the crash becomes a `CorruptionError` for that member. Archivey reuses the
-        processes, so each PPMd member costs about 1.4 to 2 ms more than decoding in your
-        process. A solid PPMd folder is decoded as one, so it pays that once, plus about 0.1
-        to 0.35 ms for each 4 KiB member read from it.
+        pyppmd, the PPMd decoder, has a known issue that can crash it on damaged or crafted
+        data, fixed in an upcoming pyppmd release. Until then, archivey decodes every PPMd
+        member in a child process, where a crash becomes a `CorruptionError` for that member.
+        Archivey reuses the processes, so each PPMd member costs about 1.4 to 2 ms more than
+        decoding in your process. A solid PPMd folder is decoded as one, so it pays that once,
+        plus about 0.1 to 0.35 ms for each 4 KiB member read from it.
 
 - **Running out of memory raises `MemoryError`, not an `ArchiveyError`,** so it's never mistaken for
   a damaged archive. `DecoderLimits` caps the memory an archive can ask one decoder for, 2 GiB by
@@ -187,11 +185,6 @@ costs only the member being read:
   and places that can't start processes. A damaged or crafted PPMd member can crash your process,
   and rapidgzip isn't used.
 
-pyppmd bundles a copy of 7-Zip's PPMd code from before the fix for
-[CVE-2023-31102](https://nvd.nist.gov/vuln/detail/CVE-2023-31102), an integer underflow and
-invalid read, so it may still have that bug. Under the default, a crash or a wild read there costs
-that member, not your process, though a crafted member may still decode to wrong data.
-
 AES decryption and checksums always run in your process. A child that crashes raises
 `CorruptionError`, and one killed from outside raises `ResourceUnavailableError` (SIGKILL, most
 often the out-of-memory killer) or `ReadError`. No setting limits how long a decoder takes; for that, see
@@ -200,7 +193,7 @@ the time-limit recipe [above](#where-the-guarantees-stop).
 ??? note "Why are processes reused, and what if a member damages one?"
     Starting a process costs 12 to 18 ms, which on an archive of thousands of small members
     would be minutes, so a process that finished a member cleanly decodes the next one. One that
-    reported an error, or a PPMd member that ended early, isn't reused. A crash in a reused process
+    reported an error, or a PPMd member that didn't end cleanly, isn't reused. A crash in a reused process
     isn't blamed on the member being read, since an earlier member may have caused it: that member
     is decoded again in a new process, and only a crash there counts. A process decodes at most 64
     members before it's replaced.
@@ -250,9 +243,8 @@ in the repository measures what each limit costs in time and memory on your mach
 - **`decoder_limits.max_key_derivation_rounds`**, default 2^25, caps the password-hashing work per
   open archive. It costs 0.2-0.7 µs per round, 7-25 s at the default.
 - **`decoder_limits.max_ppmd_held_input`**, default 16 MiB, caps the largest PPMd member
-  that's held and handed to the decoder whole. A larger one is fed in pieces, where pyppmd can't
-  tell a corrupt member that ended from one waiting for more input, the case that can crash it
-  and that `process_isolation` keeps in a child process. It costs up to twice the limit in memory
+  that's held and handed to the decoder whole. A larger one is fed in pieces, which
+  `process_isolation` keeps in a child process. It costs up to twice the limit in memory
   while a PPMd member decodes, 32 MiB at the default.
 - **`spool_limits.max_bytes`**, default 1 GiB, caps the temporary disk space for RAR archives.
   `unrar` and `unar` need the archive as a file, so a RAR opened from a file object is copied, and

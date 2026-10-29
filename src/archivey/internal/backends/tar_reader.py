@@ -52,7 +52,7 @@ from __future__ import annotations
 
 import re
 import threading
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime
 from typing import BinaryIO, Literal, cast
@@ -93,6 +93,7 @@ from archivey.internal.backends.tar_parser import (
     TarSpan,
     TarWalker,
     shown_value,
+    starts_with_header,
     validate_sparse_map,
 )
 from archivey.internal.base_reader import (
@@ -1674,6 +1675,11 @@ class TarReadBackend(ReadBackend):
         MagicSignature(257, b"ustar", ArchiveFormat.TAR),
     )
     INNER_MAGIC: tuple[MagicSignature, ...] = MAGIC
+    # A v7 tar (``tar --format=v7``, old bsdtar, star) has no magic. Its first header's
+    # checksum identifies it instead, as ``tarfile.is_tarfile`` and GNU tar take it.
+    HEADER_CHECKS: tuple[tuple[ArchiveFormat, Callable[[bytes], bool]], ...] = (
+        (ArchiveFormat.TAR, starts_with_header),
+    )
     # TAR is walkable front-to-back, so streaming=True works on a non-seekable source
     # (random access always needs a seekable one — that side is format-independent).
     SUPPORTS_STREAMING_NON_SEEKABLE = True

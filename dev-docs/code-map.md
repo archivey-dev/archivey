@@ -143,6 +143,7 @@ Three things about this path are worth knowing before you debug it:
 | Whether rapidgzip still crashes in-process, so whether its child process is still needed | `scripts/accelerator_crash_search.py` (in-process decodes of damaged input in a watched process, crashes by signature, known ones listed); `.github/workflows/accelerator-crash-search.yml` (monthly and on a lockfile change, not required) |
 | Why an xdist worker died silently in a rapidgzip cut-stream test; stress the child-process path | `scripts/rapidgzip_resume_stress.py` (named scenarios, per-test stall stacks of the worker and its children); `.github/workflows/rapidgzip-resume-stress.yml` (not required); [`investigations/rapidgzip-worker-deaths.md`](investigations/rapidgzip-worker-deaths.md) |
 | How close real archives come to the limits; which archives in a corpus fail or look odd | `scripts/scan_archives.py` (dry-runs a directory tree: CSV with a `flags` column, a log, and per-limit max/p99 against the defaults); `tests/test_scan_archives.py` |
+| Whether archivey reads another library's own test files as that library does | Off unless an environment variable points at a clone: `tests/test_libarchive_corpus.py`, `tests/test_py7zr_corpus.py`, `tests/test_rarfile_corpus.py` run the other library live; `tests/test_commons_compress_corpus.py` compares with Commons Compress's listing pinned in `tests/fixtures/commons_compress/expected.json` (`scripts/gen_commons_compress_expected.py` rewrites it; its triage check runs in the normal suite) |
 
 ---
 
@@ -156,6 +157,7 @@ often they turn out to be the right place:
 | How should we work this change? | `dev-docs/pair-workflow.md` |
 | How would the maintainer settle this design question? | `dev-docs/design-rules.md` |
 | Why is a review round running, or not running, on this PR? | `dev-docs/review-loop.md` |
+| Did a change to the review skill, prompt or model make reviews better or worse? | [`review-eval/README.md`](review-eval/README.md): rerun the bugs the loop missed |
 | What is true *here* for a format / topic? | `dev-docs/formats/<format>.md` / `dev-docs/topics/<topic>.md` when present; else code-map + threat model + ADRs/investigations — create the handbook page in the PR that needs it ([`formats/README.md`](formats/README.md)) |
 | What is the authoritative agent/CI contract? | `openspec/specs/<capability>/spec.md` — capability map in `openspec/project.md` (not the primary human reading surface) |
 | Why was this chosen? (legacy / repo-wide) | `dev-docs/decisions/` (ADR log, `index.md` first); new answers prefer handbook pages |

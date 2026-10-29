@@ -567,11 +567,14 @@ without a bound, read with one `read(size)` as stdlib `tarfile` and pycdlib read
 size to the member's `max_metadata_bytes` budget before it reads anything
 ([Listing](#listing)), then reads it with `streams/streamtools/binaryio.py`
 `read_within_reach` in 64 KiB steps. A forward-only walk skips a member's data area in
-64 KiB steps too, and stops with `TruncatedError` at the first short read. pycdlib reads
+64 KiB steps too, and stops with `TruncatedError` at the first short read. Member data a
+caller reads through that walk is read in 1 MiB steps (`DATA_READ_STEP`): a member that
+declares 3 GiB over 100 KB of data peaks at 1 MiB. pycdlib reads
 through archivey's source (`internal/source.py` `ArchiveSource`), which applies
 `read_within_reach` as well. Where the remaining length is a fact (a path's `stat`, a
 `BytesIO` buffer, a regular file's `fstat`) the read is clamped to it; otherwise it is
-served in bounded steps, so the peak tracks the bytes that exist. An fsspec `size`
+served in bounded steps, so the peak is the bytes that exist plus at most one step: the
+step is the granularity of the overshoot a hostile size field can cause. An fsspec `size`
 attribute is a hint, not a fact, and is stepped. A short read then fails: the TAR walker
 raises `TruncatedError`, and pycdlib's error is translated to `CorruptionError`. The ISO
 reader passes every source to `open_fp` as an `ArchiveSource`, a path included, so there
@@ -1056,7 +1059,7 @@ member as fact.
 - Brotli has no magic, so it is found by a content probe, which without gates accepted
   about 8% of random data. `open_archive` and `detect_format` run that probe only for a
   `.br` or `.brotli` name unless `always_probe_content` is set; `open_stream` always runs
-  it ([`topics/detection.md`](topics/detection.md) §2.5). The probe rejects a first meta-block larger than a
+  it ([`topics/detection.md`](topics/detection.md) §2.6). The probe rejects a first meta-block larger than a
   known-length source, a fully visible source that does not decode to completion, and
   later overruns or trailing bytes found by a bounded block-chain walk, and decodes up
   to the first compressed block that walk reaches (within 1 MiB and the decode allowance),
@@ -1089,10 +1092,11 @@ the program that runs is one whose behaviour we have characterized.
 default") takes RARLAB `unrar` or `rar` when installed and `unar` otherwise, decided once
 at open. A read `unar` refuses is not retried with `unrar`, and reads `unar` gets wrong
 are refused before it runs. The other direction has one exception: a member `unrar`
-cannot address by name (a glob mask that also matches earlier members, a glob in a
-directory component, a backslash) is read with an accepted `unar` by index, unless the
-read needs a password, the archive is a stream or has a prefix (a copy), or `unar` refuses it
-(`_unar_for_unaddressable`). `unrar-free`, `7z` and `bsdtar` are never used: their
+cannot address by name (any refusal `_UnrarCannotAddress` carries, such as a glob mask
+that also matches earlier members, a glob in a directory component, a backslash, or an
+earlier name whose reading by this host's `unrar` cannot be modelled) is read with an
+accepted `unar` by index, unless the read needs a password, the archive is a stream or has
+a prefix (a copy), or `unar` refuses it (`_unar_for_unaddressable`). `unrar-free`, `7z` and `bsdtar` are never used: their
 failures (empty files with a success exit, a missing plugin, gigabytes written for a
 stored member) are invisible to the caller. A non-RARLAB `unrar` raises
 `PackageNotInstalledError`. Both paths use a banner probe with a timeout and a
@@ -1178,9 +1182,8 @@ archivey in a worker they can kill. Public:
 Under the default `process_isolation` the stdlib `zlib`, `bz2` and `lzma`, zstd, lz4,
 brotli and inflate64 run in-process (`NATIVE_DECODERS` isolates them too; under `NONE`
 pyppmd decodes in-process as well and rapidgzip is not used). A crash nobody has found yet
-would abort the process. pyppmd runs in a child by default because the single-byte decode
-that frees a waiting worker at teardown is a decode after the end on a stream that has
-ended ([`known-issues.md`](known-issues.md) §Intermittent `pyppmd` native aborts). Both rapidgzip decoders run in a child process;
+would abort the process. pyppmd runs in a child by default because of a known pyppmd issue
+([`known-issues.md`](known-issues.md) §`pyppmd` crashes on damaged or crafted PPMd data). Both rapidgzip decoders run in a child process;
 `scripts/accelerator_crash_search.py` tells whether they still need to. `MemoryError` is not translated, so
 running out of memory is never mistaken for a damaged archive; the limits above exist to
 keep a hostile archive from getting that far. Public:

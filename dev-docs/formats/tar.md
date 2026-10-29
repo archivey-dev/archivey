@@ -27,7 +27,8 @@ always `None`, because nothing short of the walk knows it (§1). Listing a `.tar
 decompresses the whole stream, members included, and opening a member after that seeks
 backwards in the decompressor (§2.3). A plain tar has no checksum over member data, so a
 flipped byte in a member comes back as a wrong byte with no error (§4). And a pre-POSIX
-"v7" tar has no magic at all, so detection finds it only by its extension (§2.1).
+"v7" tar has no magic at all, so detection finds it by its first header's checksum
+(`PROBABLE`, §2.1).
 
 ## 1. Shape
 
@@ -102,19 +103,27 @@ and the GNU one (`ustar  \x00`). Extensions: `.tar`, the compound forms `.tar.gz
 A compressed tar carries only its compressor's magic. Detection first finds the
 compressed stream, then runs the **inner-TAR probe** (`_probe_inner_tar` in
 `internal/detection.py`): decompress 512 bytes, from at most 1 MiB of compressed input,
-and look for `ustar` at 257. A hit upgrades `GZ` to `TAR_GZ` and reports it as
-`PROBABLE`, because a structural check is weaker than an exact magic. If the codec is
-not installed or the probe's budget does not cover it, detection reports the bare
-compressor, and a `.tar.gz` extension over a bare `GZ` result is treated as the expected
-deferral rather than a mismatch.
+and look for `ustar` at 257, or a first header that passes the header check below. A hit
+upgrades `GZ` to `TAR_GZ` and reports it as `PROBABLE`, because a structural check is
+weaker than an exact magic. If the codec is not installed or the probe's budget does not
+cover it, detection reports the bare compressor, and a `.tar.gz` extension over a bare
+`GZ` result is treated as the expected deferral rather than a mismatch.
 
-Two things the magic cannot do. A **v7 tar**, written before POSIX added the magic
-(`tar --format=v7`), has none, and without a `.tar` extension it fails with
-`FormatDetectionError`. Inside a compressor it opens as the bare compressor even when
-named `.tar.gz`, and its one member is the uncompressed tar. And
-a **zero-filled file** named `.tar` opens as an empty archive by extension, while
-`detect_format()` on the same bytes refuses it, because an empty tar has no header to
-carry the magic ([`docs/formats.md`](../../docs/formats.md)).
+A **v7 tar**, written before POSIX added the magic (`tar --format=v7`, old bsdtar,
+star), has none. Detection finds it by its first header instead
+(`TarReadBackend.HEADER_CHECKS`, `tar_parser.starts_with_header`): the first 512 bytes
+must parse as the walker parses a header, so the stored checksum equals the block's
+unsigned or signed sum and every numeric field is a number, and the name must be
+non-empty. A hit is `PROBABLE` / `content_probe`, from any source, named or not, and the
+inner-TAR probe accepts it too, so a gzipped v7 tar is `TAR_GZ`.
+[`topics/detection.md`](../topics/detection.md) §2.5 has why it runs on nameless sources
+when the content probes do not. Before this check, a v7 tar with no `.tar` name raised
+`FormatDetectionError`, and inside a compressor it opened as the bare compressor.
+
+The magic cannot tell one more thing. A **zero-filled file** named `.tar` opens as an
+empty archive by extension, while `detect_format()` on the same bytes refuses it,
+because an empty tar has no header to carry the magic
+([`docs/formats.md`](../../docs/formats.md)).
 
 TAR takes no part in the prefixed-archive scan. `open_read` calls `reject_start_offset`,
 so a tar behind a stub is not found or opened.
@@ -174,10 +183,12 @@ than a block is `TruncatedError`.
 member's `max_metadata_bytes` budget at its declared size before it is read, then read with
 `read_within_reach` in 64 KiB steps, so the allocation follows the bytes that exist, not
 the size field ([`threat-model.md`](../threat-model.md) O15). A member's data area is
-skipped with one seek on a seekable stream. A forward-only walk reads through it in
-64 KiB steps and raises `TruncatedError` at the first short read, so the skip costs the
-bytes present: a 2 KiB archive declaring a 2**45-byte member fails at once instead of
-looping on the declared size. On a seekable stream a seek past the end succeeds, so when
+skipped with one seek on a seekable stream. A forward-only walk skips it in 64 KiB steps
+and raises `TruncatedError` at the first short read, so the skip costs the bytes
+present: a 2 KiB archive declaring a 2**45-byte member fails at once instead of looping
+on the declared size. Member data a caller reads through a forward-only walk is read in
+1 MiB steps (`DATA_READ_STEP`, the piece the member verifier reads), so a size field
+there causes at most a 1 MiB allocation. On a seekable stream a seek past the end succeeds, so when
 the walk finds nothing where the next header should start, it checks that the last byte
 of the previous member's data area exists: a member cut short is `TruncatedError`, not a
 clean end.
@@ -574,7 +585,6 @@ ours.
 | Two tars joined with `cat` list as one archive's members plus `ARCHIVE_TRAILING_DATA` | **format** / **archivey** | The first trailer ends the walk. archivey does not read past it the way `tar -i` does (§6) |
 | A byte more than 1 MiB past the trailer goes unreported | **archivey** | The trailing-data scan is an effort bound, not a guarantee (§2.2). On a compressed tar that also leaves the stream checksum unchecked, reported as `DIGEST_UNVERIFIABLE` |
 | A `.tar` of nothing but zeros opens as an empty archive | **format** | That is what an empty tar is ([ADR 0015](../decisions/0015-zero-filled-files-are-valid-empty-tars.md)). `detect_format()` still refuses it |
-| A v7 tar with no extension is not detected | **format** | No magic to find (§2.1). Pass `format=ArchiveFormat.TAR` |
 | A hardlink's `link_target` is `./d/b` while the member it names is `d/b` | **format** / **archivey** | `link_target` is documented as stored text. Use `link_target_member` |
 | A hardlink placed before the only member it names does not extract | **format** | A hardlink refers to an earlier member, as tarfile and `tar(1)` read it; `LinkTargetNotFoundError` in both modes (§2.3) |
 | Extracting a sparse file refuses with a ratio error, or fills the disk with zeros | **archivey** | Holes are written as zeros and counted as output (§2.4). Measured: a 10 MiB sparse file with one byte of data is a 10 240-byte tar, and `extract_all()` refuses it at 1024:1. By design (§6); raise `max_ratio` for an archive known to hold sparse files |
@@ -594,6 +604,7 @@ ours.
 | Choice | Why | Rejected |
 | --- | --- | --- |
 | Parse headers with archivey's own walker (`tar_parser.py`) | `tarfile` does not say why a walk stopped, overwrites a sparse member's stored size with its logical size, decides on directories before it knows the final name with a check that differs between Python patch releases; about a third of the backend worked around it. The walker reports why it stopped, keeps exact sizes and name bytes, and lists the same on every Python version ([ADR 0021](../decisions/0021-native-tar-reader.md), [design](../../openspec/changes/archive/2026-10-10-native-tar-reader/design.md)) | Keeping `tarfile` behind overrides of its private methods and copies of its function bodies |
+| Detect a tar with no magic by its first header's checksum, on any source (davi chose it 2026-10-28, thread "Compare with Apache Commons Compress") | 6 of Apache Commons Compress's 86 `.tar` test files have no `ustar`, two of them from users' bug reports; `tarfile.is_tarfile`, Commons Compress and GNU tar all accept them. The check is arithmetic over the window, and a scan of 200 333 local files found no block outside a real tar that passes it | Extension-only, which refused these tars from a pipe and opened them gzipped as bare `GZ`; running the check only for a `.tar` name, as the content probes run, which would leave nameless sources where they were |
 | Read a compressed tar through archivey's own codec stream | One codec layer for every format: the same seek points, accelerators, ratio guard, diagnostics and error translation as a bare `.gz` | A decompression path of the TAR backend's own |
 | Classify the end by the walker's `TarEnd`, then by the block after the stop | The walker knows why it stopped at the block it stopped on. That is the same answer in both access modes and needs no backward seek, which on a compressed tar would mean decoding again | Computing the next header's offset from `offset_data + size`, which is wrong for sparse members; treating every early end as a warning |
 | A rejected header is `CorruptionError` whatever the policy; a missing trailer is a warning | A complete tar never stops on a rejected header, so that one is certain. A missing trailer is ambiguous by construction | One disposition for both, which is either too loud for ordinary trailer-less tars or silent about corruption |
@@ -624,11 +635,6 @@ ours.
   header"), instead of raising `CorruptionError` after the members before it. It would
   not settle the missing-trailer ambiguity, which is in the bytes. What would answer it:
   whether a real caller needs it; `IDEAS.md` lists salvage mode as *Needs design*.
-- **Whether to detect v7 tars by their header checksum.** A 512-byte block whose checksum
-  field matches its byte sum is strong evidence, and it is what `tarfile.is_tarfile`
-  checks. It would also admit random blocks that happen to match, which the current
-  magic never does. What would answer it: how often v7 tars without an extension reach
-  archivey, which nothing measures.
 
 ## 8. Verify
 

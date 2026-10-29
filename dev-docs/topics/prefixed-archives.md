@@ -157,8 +157,9 @@ corrected through the EOCD's own known position, so a prefixed ZIP needs no offs
 detector to be readable. Two consequences follow. It is the only format the tail probe can
 serve. And when the forward scan lands on a decoy needle, the reader usually still succeeds,
 because it finds the real EOCD from the tail of the slice anyway. The two write conventions
-that make its stored offsets differ — and why `payload_offset` is defined as the earliest LFH
-rather than as the EOCD adjustment — are on [`formats/zip.md`](../formats/zip.md) §3.
+that make its stored offsets differ, and what `payload_offset` means for a ZIP (a start
+never after the first member, exact when the detection step saw that member, and 0 as a
+real answer for a ZIP written in place), are on [`formats/zip.md`](../formats/zip.md) §3.
 
 **7z and RAR need the offset.** Their native parsers accept a start offset and read in place
 with no copy. The parser scan (`scan_for_magic`) takes the same hit validator the

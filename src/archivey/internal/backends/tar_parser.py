@@ -51,6 +51,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.internal.streams.decompressor_stream import _COMPRESSED_READ_SIZE_MAX
 from archivey.internal.streams.streamtools import read_within_reach
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.terminal import quoted
@@ -82,15 +83,21 @@ PAX_NUMBER_DIGITS = 20
 # range 0..4294967295") and keeps the header's.
 MAX_PAX_ID = 2**32 - 1
 
-# The read step for data whose size a header declares: an extended header, or the data
-# area a forward-only walk reads through. A declared size is attacker-chosen, so it is
-# never one read.
+# The read step for what the walk reads and a header sizes: an extended header, the
+# data area a forward-only walk skips (``_discard``), and a link's declared data span
+# it scans for zeros (``_read_zeros``). A declared size is attacker-chosen, so it is
+# never one read. The skip stays at this step: on a compressed source it is bound by
+# the decoder (1 MiB measured no faster listing a compressed tar of 1 MiB members), on
+# an uncompressed one buffered reads are cheap, and a smaller step over-reads less at
+# the end of a short archive.
 READ_STEP = 64 * 1024
-# A member data read through the walk (_ForwardSlice) asks for at most this much at a
-# time from a stream of unknown length. The member wrapper above reads in pieces no
-# larger, so this bounds the allocation as READ_STEP does for headers, without
-# splitting each of those pieces into sixteen reads and a join.
-DATA_READ_STEP = 1024 * 1024
+# The read step for member data a consumer reads through the walk (``_ForwardSlice``)
+# from a stream of unknown length: still a bound on the allocation a declared size can
+# cause, at 1 MiB. It matches the piece the member verifier's sized drain reads
+# (``verify._SIZED_DRAIN_CHUNK``, which is this constant too), so one such piece is one
+# read here; at 64 KiB it was sixteen reads and a join. A caller's larger read is still
+# split.
+DATA_READ_STEP = _COMPRESSED_READ_SIZE_MAX
 
 POSIX_MAGIC = b"ustar\x00"
 GNU_MAGIC = b"ustar  \x00"
@@ -431,6 +438,24 @@ def parse_header_block(
         size=size,
         mtime=mtime,
     )
+
+
+def starts_with_header(prefix: bytes) -> bool:
+    """Whether ``prefix`` opens with a TAR header block the walk would accept.
+
+    Detection's check for a TAR without magic: a v7 header, or one an old writer filled
+    in without ``ustar``. The block must parse as :func:`parse_header_block` parses it,
+    so its checksum matches the block's byte sum (the field itself counted as eight
+    spaces) and every numeric field is a number. Its name must also be non-empty. A zero block is not a header: an empty TAR has no header to
+    check.
+
+    Text and binary data pass only when built to. It is the test ``tarfile.is_tarfile``
+    and Commons Compress make, and GNU tar's own reading of the first block.
+    """
+    if len(prefix) < BLOCKSIZE:
+        return False
+    header = parse_header_block(prefix[:BLOCKSIZE], 0)
+    return isinstance(header, HeaderBlock) and bool(header.name)
 
 
 def _sparse_slots(block: bytes, start: int, count: int) -> tuple[tuple[int, int], ...]:

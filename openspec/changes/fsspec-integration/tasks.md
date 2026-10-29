@@ -6,7 +6,7 @@
 
 ## 1. Remote benchmark axis
 
-- [ ] 1.1 `benchmarks/remote.py`: `CountingFileSystem` over local files, recording each
+- [x] 1.1 `benchmarks/remote.py`: `CountingFileSystem` over local files, recording each
       range read, size/info call and `ls` (design §Benchmark).
 - [ ] 1.2 Gated cases on `benchmarks/remote.py`'s own seeded `ci` scale, with member
       sizes varied (design §Benchmark) before 1.4 commits the baseline, and the planner
@@ -17,7 +17,7 @@
       `stream_members()` under `streaming=True`; eight threads reading eight ZIP members;
       more member streams than the pool's window limit. Record the four counts and
       `bytes_fetched / bytes_needed`, and print the modelled time.
-- [ ] 1.4 Run against today's code with a caller-opened fsspec file (no cache, and
+- [x] 1.4 Run against today's code with a caller-opened fsspec file (no cache, and
       fsspec's default cache) and commit `benchmarks/baselines/remote.json`, so the
       planner's gain is a reviewed baseline diff.
 - [ ] 1.5 `benchmarks/remote_http.py`: the same cases over a local range server and

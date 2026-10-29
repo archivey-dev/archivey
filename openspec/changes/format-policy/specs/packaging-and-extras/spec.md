@@ -1,0 +1,57 @@
+# packaging-and-extras — format policy delta
+
+## ADDED Requirements
+
+### Requirement: An excluded optional library reads as not installed
+
+When `FormatPolicy.exclude_libraries` names an optional package, archivey SHALL treat
+that package as not installed for every call made with that config: an accelerator
+under `AUTO` SHALL fall back, a member that needs it SHALL raise
+`PackageNotInstalledError` when opened, and a format that needs it SHALL refuse at open.
+The error SHALL name the policy as the reason. archivey SHALL NOT call into the package
+during such a call. The exclusion SHALL apply only to calls made with that config:
+another call in the same process, on any thread, SHALL see the package as it is.
+
+`format_availability(fmt, config=...)` SHALL count an excluded package as absent,
+listing it in `missing` with the policy as its `reason`; `list_supported_formats` follows
+it (`backend-registry`, *Format support is tri-state and compositional*).
+
+The `PackageNotInstalledError` for an excluded package SHALL list it in `missing` (see
+`error-handling`, *PackageNotInstalledError carries its missing components*), with the
+policy as its `reason`.
+
+`exclude_libraries` SHALL take `OptionalLibrary` members or their string values
+(`OptionalLibraryStr`, a `Literal` of exactly those values), and store
+`frozenset[OptionalLibrary]`. Any other entry SHALL be refused at construction with
+`ArchiveyUsageError` that lists the accepted names; a misspelled name SHALL NOT be
+accepted and ignored. A policy
+that names a plugin (in `replace=`, or a plugin container in `only=`) whose `requires`
+holds an excluded package SHALL be refused at construction with `ArchiveyUsageError`.
+A registered plugin the policy does not name, whose `requires` holds an excluded
+package, SHALL read as NONE under that config, and opening one of its files SHALL raise
+`PackageNotInstalledError` naming the policy.
+
+#### Scenario: An excluded pyppmd refuses only the PPMd member
+
+- **WHEN** a caller opens a 7z archive that holds a PPMd member and a LZMA2 member with
+  `FormatPolicy(exclude_libraries={"pyppmd"})`, with `pyppmd` installed
+- **THEN** both members are listed
+- **AND** reading the PPMd member raises `PackageNotInstalledError` whose `missing`
+  holds `pyppmd` with the policy as its `reason`
+- **AND** the LZMA2 member reads
+- **AND** `format_availability(ArchiveFormat.SEVEN_Z, config=...)` with the same config
+  reports `PARTIAL` with `pyppmd` in `missing`
+
+#### Scenario: Excluding one zstd module falls through to the other
+
+- **WHEN** both `compression.zstd` and `backports.zstd` import, and a caller opens a
+  `.zst` file with `FormatPolicy(exclude_libraries={"compression.zstd"})`
+- **THEN** the file decodes with `backports.zstd`
+- **AND** with both names excluded the open raises `PackageNotInstalledError` that names
+  the policy
+
+#### Scenario: A misspelled library name is refused
+
+- **WHEN** a caller builds `FormatPolicy(exclude_libraries={"pyppm"})`
+- **THEN** construction raises `ArchiveyUsageError` that lists the `OptionalLibrary` names
+- **AND** a type checker reports the same call as an error
