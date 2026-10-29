@@ -243,8 +243,8 @@ There are no producers; there are filesystems, and each reports `lstat` differen
   and set on macOS and Windows.
 - **Windows.** `scandir` data has no identity, hence the per-file `lstat` (§2.2). Every
   symlink is a reparse point and is flagged so. Junctions are detected with
-  `DirEntry.is_junction()`, which exists from Python 3.12; on 3.11 the check returns
-  `False` (§7). `readlink` targets come back with `\` and are converted. Paths past
+  `DirEntry.is_junction()` from Python 3.12, and on 3.11 by the entry's `st_reparse_tag`
+  (`IO_REPARSE_TAG_MOUNT_POINT`), which `lstat` sets on Windows. `readlink` targets come back with `\` and are converted. Paths past
   `MAX_PATH` without long-path support fail the identity `lstat`, and those files list as
   `FILE`.
 - **Some FUSE and network mounts** report `st_ino` 0, so their hardlinks list as separate
@@ -259,7 +259,7 @@ There are no producers; there are filesystems, and each reports `lstat` differen
 ## 4. Threat surface
 
 The listing is safe to hand a hostile tree. The walk never follows a symlink or junction,
-so it cannot loop (Windows on Python 3.11 aside, §7). Every name is built from real
+so it cannot loop. Every name is built from real
 directory entries, so there is no `..`, absolute path or empty component to normalize.
 The listing limits bound the member count and the retained text. Extraction goes through
 the shared filter ([`threat-model.md`](../threat-model.md)).
@@ -329,13 +329,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 
 ## 7. Open questions
 
-- **Does a junction get walked on Windows with Python 3.11?** `DirEntry.is_junction()`
-  arrived in 3.12, and `lstat` reports a junction as a directory, so on 3.11 the walk
-  probably descends into it, and a junction pointing at an ancestor would loop until the
-  path is too long. This is inferred from the code, not measured: the only junction test
-  is skipped below 3.12, although CI runs a Windows 3.11 leg. Running that test there
-  would answer it; if it fails, `st_reparse_tag` (available since 3.8) is the fix.
-  Tracked internally.
+None.
 
 ## 8. Verify
 
@@ -352,7 +346,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Walk order; any depth lists |
 | Metadata: sizes, times, `ctime` not on Windows, mode |
 | Symlinks list as `SYMLINK` and resolve inside the tree |
-| A junction is flagged and not walked (Windows, 3.12+) |
+| A junction is flagged and not walked (Windows; on 3.11 by its reparse tag) |
 | Races skip with a diagnostic; a genuine error fails the listing |
 | Hardlinks: first name `FILE`, later `HARDLINK`; outside names and inode 0 stay `FILE`; the Windows identity `lstat` |
 | A read refuses a file replaced, resized, or swapped for a symlink or FIFO since listing; a directory swapped for a symlink; same-size rewrites and files listed empty still read |

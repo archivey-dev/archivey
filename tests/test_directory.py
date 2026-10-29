@@ -447,10 +447,33 @@ def test_open_symlink_follows_to_real_content(symlink_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_junction_falls_back_to_the_reparse_tag_without_is_junction() -> None:
+    """Before Python 3.12 ``os.DirEntry`` has no ``is_junction()``; the entry's
+    ``st_reparse_tag`` says it instead, so a junction is not walked as a directory."""
+    from types import SimpleNamespace
+
+    from archivey.internal.backends.directory_reader import _is_junction
+    from archivey.internal.windows_reparse import (
+        IO_REPARSE_TAG_MOUNT_POINT,
+        IO_REPARSE_TAG_SYMLINK,
+    )
+
+    old_entry = SimpleNamespace()  # no is_junction attribute, as on 3.11
+    for tag, expected in (
+        (IO_REPARSE_TAG_MOUNT_POINT, True),
+        (IO_REPARSE_TAG_SYMLINK, False),
+        (0, False),
+    ):
+        st = SimpleNamespace(st_reparse_tag=tag)
+        assert _is_junction(old_entry, st) is expected  # type: ignore[arg-type]
+    # No st_reparse_tag at all (every platform but Windows).
+    assert _is_junction(old_entry, SimpleNamespace()) is False  # type: ignore[arg-type]
+    # Where is_junction() exists, it decides.
+    new_entry = SimpleNamespace(is_junction=lambda: True)
+    assert _is_junction(new_entry, SimpleNamespace()) is True  # type: ignore[arg-type]
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="junctions are Windows-only")
-@pytest.mark.skipif(
-    sys.version_info < (3, 12), reason="os.DirEntry.is_junction() needs Python 3.12+"
-)
 def test_windows_junction_detected_and_not_traversed(tmp_path: Path) -> None:
     target = tmp_path / "target"
     target.mkdir()
