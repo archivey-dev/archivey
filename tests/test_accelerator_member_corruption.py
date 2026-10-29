@@ -105,7 +105,7 @@ def test_an_intact_zip_deflate_member_reads_alike_with_rapidgzip_on(
 
 
 def _7z_deflate(tmp_path: Path) -> tuple[bytes, int]:
-    """A 7z holding one Deflate member, and where its packed stream ends."""
+    """A 7z holding one Deflate member, and where its next header starts."""
     (tmp_path / "a.txt").write_bytes(_PAYLOAD)
     archive = tmp_path / "a.7z"
     run_7z(
@@ -115,21 +115,24 @@ def _7z_deflate(tmp_path: Path) -> tuple[bytes, int]:
     )
     data = archive.read_bytes()
     (next_header_offset,) = struct.unpack_from("<Q", data, 12)
-    # The packed stream sits between the 32-byte start header and the next header. That
-    # holds for a plain next header (kHeader, 0x01); a compressed one (kEncodedHeader)
-    # would put its own packed stream at the end of that region, where the damage goes.
-    assert data[32 + next_header_offset] == 0x01, "7z wrote a compressed header"
     return data, 32 + next_header_offset
 
 
 @requires_binary("7z")
-@pytest.mark.parametrize("damage", ["flip", "zero"])
+@pytest.mark.parametrize(
+    "damage",
+    [pytest.param("flip", id="flipped-middle"), pytest.param("zero", id="zeroed-tail")],
+)
 def test_a_damaged_7z_deflate_member_fails_alike_with_rapidgzip_on(
     damage: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     data, packed_end = _7z_deflate(tmp_path)
+    # The packed stream sits between the 32-byte start header and the next header. That
+    # holds for a plain next header (kHeader, 0x01); a compressed one (kEncodedHeader)
+    # would put its own packed stream at the end of that region, where the damage goes.
+    assert data[packed_end] == 0x01, "7z wrote a compressed header"
     if damage == "flip":
         packed = _flip_middle(data[32:packed_end])
     else:
