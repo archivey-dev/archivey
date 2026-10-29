@@ -3,28 +3,21 @@ name: Atheris fuzz
 # Coverage-guided parser/entry-point fuzz (threat-model O5).
 #
 # Mirrors the benchmark split:
-# - pull_request: short budgets, 3-way sharded (each target pays ~30s Atheris cold
-#   start; sharding cuts PR wall time roughly 3× while keeping the full target set)
+# - workflow_call with `short: true`: short budgets, 3-way sharded (each target pays ~30s
+#   Atheris cold start; sharding cuts wall time roughly 3× while keeping the full target
+#   set). ci.yml calls it so in the merge queue only, and its `CI gate` needs it; pull
+#   request pushes do not fuzz (davi, 2026-10-29).
 # - schedule (nightly) + change guard: full partition only when default-branch HEAD
 #   moved in the last ~3 days (dormant stretches cost only the guard step)
 # - workflow_dispatch: force the full partition on demand (optional budget_scale)
 on:
-  pull_request:
-    # Skip documentation-only pull requests. Same list as ci.yml's pull_request paths
-    # (see the comment there), kept identical on purpose so tests/test_ci_doc_paths.py
-    # can check it; the docs/api.md and review/problem-catalogue/ re-includes matter only
-    # in ci.yml, since no test here reads them.
-    paths:
-      - "**"
-      - ".*"
-      - ".*/**"
-      - "!**.md"
-      - "!docs/**"
-      - "!docs_templates/**"
-      - "!mkdocs.yml"
-      - "!LICENSE"
-      - docs/api.md
-      - review/problem-catalogue/**
+  workflow_call:
+    inputs:
+      short:
+        description: "Short sharded budgets (the merge queue) instead of the full partition"
+        type: boolean
+        required: false
+        default: false
   schedule:
     # Offset from benchmark-wall (17 6) so the two nightlies do not start together.
     - cron: "47 6 * * *"
@@ -36,22 +29,22 @@ on:
         default: "1"
 
 concurrency:
-  # A dispatch (a release gate, say) gets its own group, so it and the nightly run never
-  # cancel each other.
-  group: atheris-fuzz-${{ github.event_name == 'pull_request' && github.ref || github.event_name == 'workflow_dispatch' && github.run_id || 'nightly' }}
+  # A call from ci.yml and a dispatch (a release gate, say) each get their own group, so
+  # neither ever cancels the nightly run or the other. A called run stops with ci.yml's.
+  group: atheris-fuzz-${{ (inputs.short || github.event_name == 'workflow_dispatch') && github.run_id || 'nightly' }}
   cancel-in-progress: true
 
 jobs:
   fuzz:
-    name: Atheris (${{ github.event_name == 'pull_request' && format('PR short {0}/3', matrix.shard) || 'full' }})
+    name: Atheris (${{ inputs.short && format('short {0}/3', matrix.shard) || 'full' }})
     runs-on: ubuntu-latest
-    # PR shards: ~6–7 targets × ~30s startup + short fuzz. Nightly: full partition.
-    timeout-minutes: ${{ github.event_name == 'pull_request' && 15 || 60 }}
+    # Short shards: ~6–7 targets × ~30s startup + short fuzz. Nightly: full partition.
+    timeout-minutes: ${{ inputs.short && 15 || 60 }}
     strategy:
       fail-fast: false
       matrix:
-        # PR: three parallel shards. Nightly/dispatch: one sequential full run.
-        shard: ${{ github.event_name == 'pull_request' && fromJSON('[0, 1, 2]') || fromJSON('[0]') }}
+        # Short: three parallel shards. Nightly/dispatch: one sequential full run.
+        shard: ${{ inputs.short && fromJSON('[0, 1, 2]') || fromJSON('[0]') }}
     steps:
       - uses: actions/checkout@v4
 
@@ -59,15 +52,18 @@ jobs:
         id: guard
         env:
           EVENT: ${{ github.event_name }}
+          SHORT: ${{ inputs.short && 'true' || 'false' }}
         run: |
-          if [ "$EVENT" = "pull_request" ] || [ "$EVENT" = "workflow_dispatch" ]; then
+          if [ "$SHORT" = "true" ]; then
+            echo "Called with short=true ($EVENT) — running short budgets."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "mode=short" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$EVENT" = "workflow_dispatch" ]; then
             echo "Event=$EVENT — running."
             echo "run=true" >> "$GITHUB_OUTPUT"
-            if [ "$EVENT" = "pull_request" ]; then
-              echo "mode=pr" >> "$GITHUB_OUTPUT"
-            else
-              echo "mode=full" >> "$GITHUB_OUTPUT"
-            fi
+            echo "mode=full" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # Scheduled: run only if default-branch HEAD was committed within ~3 days.
@@ -123,13 +119,13 @@ jobs:
           BUDGET_SCALE: ${{ github.event.inputs.budget_scale || '1' }}
           ATHERIS_MODE: ${{ steps.guard.outputs.mode }}
           ARCHIVEY_FUZZ_SHARD_INDEX: ${{ matrix.shard }}
-          # PR: 3 shards; nightly/dispatch: single sequential job (count=1).
-          ARCHIVEY_FUZZ_SHARD_COUNT: ${{ github.event_name == 'pull_request' && 3 || 1 }}
+          # Short: 3 shards; nightly/dispatch: single sequential job (count=1).
+          ARCHIVEY_FUZZ_SHARD_COUNT: ${{ inputs.short && 3 || 1 }}
         run: |
           mode="${ATHERIS_MODE:-full}"
           scale="${BUDGET_SCALE:-1}"
-          if [ "$mode" = "pr" ]; then
-            # Short PR budgets — wall time is dominated by per-target Atheris startup
+          if [ "$mode" = "short" ]; then
+            # Short budgets — wall time is dominated by per-target Atheris startup
             # (~30s), so shards matter more than seconds. Depth stays on the nightly.
             export ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER=3
             export ARCHIVEY_FUZZ_BUDGET_SEVENZIP_OPEN=2
@@ -156,7 +152,7 @@ jobs:
             export ARCHIVEY_FUZZ_BUDGET_ZLIB_ACCEL=1
             export ARCHIVEY_FUZZ_BUDGET_DEFLATE_ACCEL=1
             export ARCHIVEY_FUZZ_BUDGET_BZIP2_ACCEL=2
-            echo "PR short budgets (shard $ARCHIVEY_FUZZ_SHARD_INDEX/$ARCHIVEY_FUZZ_SHARD_COUNT): sevenzip_header=$ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER zip=$ARCHIVEY_FUZZ_BUDGET_ZIP"
+            echo "Short budgets (shard $ARCHIVEY_FUZZ_SHARD_INDEX/$ARCHIVEY_FUZZ_SHARD_COUNT): sevenzip_header=$ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER zip=$ARCHIVEY_FUZZ_BUDGET_ZIP"
           else
             export ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER=$((45 * scale))
             export ARCHIVEY_FUZZ_BUDGET_SEVENZIP_OPEN=$((20 * scale))
