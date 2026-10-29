@@ -257,25 +257,6 @@ def _closer_of(source: Iterator[object]) -> Callable[[], None] | None:
     return source.close if isinstance(source, Generator) else None
 
 
-def _pass_wind_down(
-    held: list[ArchiveStreamImpl | None], source_closer: Callable[[], None] | None
-) -> Callable[[], None]:
-    """A ``stream_members()`` pass's ``pass_closer``: close the stream the caller may
-    still hold (``held[0]``), then the backend's pass, whose ``finally`` frees what the
-    pass holds (a solid block, an ``unrar`` pipe)."""
-
-    def wind_down() -> None:
-        stream, held[0] = held[0], None
-        try:
-            if stream is not None:
-                stream.close()
-        finally:
-            if source_closer is not None:
-                source_closer()
-
-    return wind_down
-
-
 def _apply_last_entry_wins_is_current(members: list[ArchiveMember]) -> None:
     """Stamp is_current for duplicate names (last same-name entry wins).
 
@@ -840,8 +821,9 @@ class BaseArchiveReader(ArchiveReader):
         """Admit ``stream`` under the live-stream gate and attach lease release on close.
 
         ``token`` is a reservation already taken (eager ``open()``); bind is
-        infallible. Without ``token`` this acquires a new slot (lazy
-        ``stream_members`` wrappers, which have not spawned yet).
+        infallible. Without ``token`` this acquires a new slot (the extraction
+        coordinator re-opening a retyped member). A ``stream_members()`` pass's streams
+        do not come here (``ReaderState.admit_pass_streams``).
 
         The gate also records the stream, weakly and in open order, for ``close()``
         to close if the caller has not (stdlib parity: ``ZipFile.close()`` and
@@ -3894,17 +3876,29 @@ class BaseArchiveReader(ArchiveReader):
         source_closer: Callable[[], None] | None = None
         # The pass's streams hold the live-stream slot together (see
         # ReaderState.admit_pass_streams): admitted once, at the first, and not
-        # registered for close() to find. So the pass's wind-down closes the one the
-        # caller may hold, before the backend's pass (``held``, kept current per member
-        # without the lock).
+        # registered for close() to find.
         admitted = False
-        held: list[ArchiveStreamImpl | None] = [None]
+
+        def wind_down() -> None:
+            # The pass's pass_closer, run by close() while the pass is suspended at a
+            # yield: close the stream the caller may still hold (``current``; nothing
+            # else will, as it is not registered), then the backend's pass, whose
+            # finally frees what the pass holds (a solid block, an unrar pipe).
+            nonlocal current
+            stream, current = current, None
+            try:
+                if stream is not None:
+                    stream.close()
+            finally:
+                if source_closer is not None:
+                    source_closer()
+
         try:
             if self._streaming:
                 self._enter_forward_pass("stream_members()")
             source = self._iter_with_data(copies)
             source_closer = _closer_of(source)
-            self._state.set_pass_closer(token, _pass_wind_down(held, source_closer))
+            self._state.set_pass_closer(token, wind_down)
             for m, stream in source:
                 if current is not None:
                     current.close()
@@ -3932,7 +3926,7 @@ class BaseArchiveReader(ArchiveReader):
                         # some formats only is a per-format accident callers would
                         # come to rely on. seekable_members=True is for open().
                         stream._make_forward_only()
-                    current = held[0] = stream
+                    current = stream
                     # Suspended at the yield: this thread runs the caller's loop body,
                     # which is not re-entry (see OperationToken.suspended).
                     self._state.set_suspended(token, True)
@@ -4145,9 +4139,10 @@ class BaseArchiveReader(ArchiveReader):
         ticket = object()
         try:
             if self._state.claim_stream_shutdown(ticket):
-                # A stream_members() pass suspended at a yield: close the backend's
-                # pass iterator first, whose finally closes its last stream and then
-                # frees the pass's own resources. The transition took a lease with the
+                # A stream_members() pass suspended at a yield: its wind-down closes
+                # the stream the caller holds (not registered, so the stream close
+                # below does not reach it), then the backend's pass iterator, whose
+                # finally frees the pass's own resources. The transition took a lease with the
                 # closer, so no stream close in here can claim teardown; it runs at
                 # the caller's _maybe_teardown(), after finish_stream_shutdown() drops
                 # the lease. An Exception from the wind-down or the stream shutdown is
