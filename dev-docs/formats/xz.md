@@ -195,7 +195,8 @@ bytes with no whole header is `TruncatedError` when it is empty or a prefix of t
 magic, and `CorruptionError` otherwise.
 
 Seek points are the member starts, from the trailer walk. A backward seek resumes at the
-nearest member.
+nearest member. A forward read records a point only for a member with output: an empty
+member shares its offset with the next member, as a zero-size xz block does.
 
 **LZMA Alone.** `FramedDecompressorStream` over `lzma.LZMADecompressor(FORMAT_ALONE)`,
 one decompressor per stream ([`single-file.md`](single-file.md) §2.3). Zero bytes are

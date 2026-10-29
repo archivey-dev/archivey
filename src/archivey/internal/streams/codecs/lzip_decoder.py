@@ -605,8 +605,7 @@ class LzipDecoder(BaseDecoder):
         points: list[SeekPoint] = []
         for decompressed_size, compressed_size in units:
             # Before-placement: point at member start, then advance cursors. A member
-            # with no output gets no point: it would share its output offset with the
-            # next member's, and two decoded points must rise in both coordinates.
+            # with no output gets no point (the rule on DecodeOut.points).
             if decompressed_size:
                 points.append(SeekPoint(self._decomp_cursor, self._comp_cursor))
             self._comp_cursor += compressed_size

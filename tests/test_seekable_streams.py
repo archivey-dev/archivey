@@ -880,13 +880,17 @@ def test_lzip_empty_members_reread_after_a_seek(parts: list[bytes]) -> None:
     A member with no output records no seek point, so the second read's points cannot
     collide with the first read's at a lower compressed offset.
     """
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
+
     compressed = make_multi_member_lzip(parts)
-    with LzipDecompressorStream(io.BytesIO(compressed)) as stream:
+    seen: list[Any] = []
+    collector = DiagnosticCollector(on_diagnostic=seen.append)
+    with LzipDecompressorStream(io.BytesIO(compressed), collector=collector) as stream:
         assert stream.read() == b"data"
-        stream.seek(0)
-        assert stream.read() == b"data"
-        stream.seek(1)
-        assert stream.read() == b"ata"
+        for offset in range(5):
+            stream.seek(offset)
+            assert stream.read() == b"data"[offset:]
+    assert seen == []
 
 
 # --- lzip seeking via the trailer scan -------------------------------------------------
