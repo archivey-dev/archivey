@@ -1283,12 +1283,19 @@ def test_a_staged_file_lands_by_a_rename_with_its_metadata(
 ) -> None:
     replaced: list[tuple[str, str]] = []
     real_replace = os.replace
+    real_link = os.link
 
     def recording(src: str, dst: str) -> None:
         replaced.append((os.path.basename(os.path.dirname(src)), os.path.basename(dst)))
         real_replace(src, dst)
 
+    def recording_link(src: str, dst: str, **kwargs: bool) -> None:
+        replaced.append((os.path.basename(os.path.dirname(src)), os.path.basename(dst)))
+        real_link(src, dst, **kwargs)
+
+    # Under ERROR the landing on a free name is a link on POSIX.
     monkeypatch.setattr(os, "replace", recording)
+    monkeypatch.setattr(os, "link", recording_link)
     data = _zip([(_entry("run.sh", mode=0o100750), b"#!/bin/sh\n")])
     _extract(data, tmp_path, piped=True, policy="trusted")
     [(staging, landed)] = replaced

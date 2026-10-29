@@ -94,6 +94,12 @@ permissions gets written as it is:
 A folder member merges into a folder that's already there. A file member whose path is an
 existing folder is a conflict like any other.
 
+Under `"error"`, a file that something else writes to the same name while the extraction
+runs, such as a second extraction into the same folder, is not replaced either: the member
+fails as if the file had been there from the start. On Linux and macOS this needs a
+filesystem with hard links; on one without them (FAT, some network drives), the later
+writer replaces the earlier one's file.
+
 `on_error` decides what a failed member does to the rest of the extraction:
 
 | `on_error` | Effect |

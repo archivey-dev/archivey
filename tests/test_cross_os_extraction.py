@@ -801,6 +801,13 @@ def test_replace_over_a_read_only_file_on_windows(tmp_path: Path) -> None:
 # --- More hard links than NTFS allows ----------------------------------------------
 
 
+def _is_landing(src: str | Path) -> bool:
+    """Whether an ``os.link`` call is the ERROR landing of a staged temp (POSIX), not
+    the link a HARDLINK member makes to its source. The link-limit fakes leave it to
+    the real call."""
+    return os.path.basename(os.fspath(src)).startswith(".archivey-tmp-")
+
+
 @pytest.mark.parametrize("refusal", ["emlink", "winerror"])
 def test_hard_link_past_the_link_limit_is_copied(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, refusal: str
@@ -811,7 +818,10 @@ def test_hard_link_past_the_link_limit_is_copied(
     """
     real_link = os.link
 
-    def link(src: str | Path, dst: str | Path) -> None:
+    def link(src: str | Path, dst: str | Path, **kwargs: bool) -> None:
+        if _is_landing(src):
+            real_link(src, dst, **kwargs)
+            return
         if os.stat(src).st_nlink >= 2:
             if refusal == "emlink":
                 raise OSError(errno.EMLINK, "Too many links")
@@ -839,8 +849,11 @@ def test_links_past_the_limit_cost_one_attempt_each(
     real_link = os.link
     calls = 0
 
-    def link(src: str | Path, dst: str | Path) -> None:
+    def link(src: str | Path, dst: str | Path, **kwargs: bool) -> None:
         nonlocal calls
+        if _is_landing(src):
+            real_link(src, dst, **kwargs)
+            return
         calls += 1
         if os.stat(src).st_nlink >= 4:
             raise OSError(errno.EMLINK, "Too many links")
@@ -867,7 +880,10 @@ def test_link_limit_copies_trip_the_archive_wide_ratio(
     it depends on the destination, not the archive."""
     real_link = os.link
 
-    def link(src: str | Path, dst: str | Path) -> None:
+    def link(src: str | Path, dst: str | Path, **kwargs: bool) -> None:
+        if _is_landing(src):
+            real_link(src, dst, **kwargs)
+            return
         if os.stat(src).st_nlink >= 2:
             raise OSError(errno.EMLINK, "Too many links")
         real_link(src, dst)
@@ -887,7 +903,10 @@ def test_link_limit_copies_trip_the_archive_wide_ratio(
     ):
         open_and_extract(io.BytesIO(data), tmp_path / "out", limits=limits)
 
-    def cross_device(src: str | Path, dst: str | Path) -> None:
+    def cross_device(src: str | Path, dst: str | Path, **kwargs: bool) -> None:
+        if _is_landing(src):
+            real_link(src, dst, **kwargs)
+            return
         raise OSError(errno.EXDEV, "Invalid cross-device link")
 
     monkeypatch.setattr(os, "link", cross_device)
@@ -1514,9 +1533,23 @@ def _another_writer_takes(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
     """Simulate another writer (a second extraction into the same folder) creating
     ``name`` as a file between the existence check and the landing. Windows refuses the
     rename of a FILE or HARDLINK with access denied; ``os.symlink`` and ``os.makedirs``
-    refuse a taken name on every OS."""
+    refuse a taken name on every OS. Under ERROR a FILE or HARDLINK lands with
+    ``os.link`` (POSIX) or ``os.rename`` (Windows), which the real call refuses once
+    the name is taken."""
     real_replace = os.replace
     real_makedirs = os.makedirs
+    real_link = os.link
+    real_rename = os.rename
+
+    def link(src: str, dst: str, *, follow_symlinks: bool = True) -> None:
+        if os.path.basename(str(dst)) == name:
+            take(dst)
+        real_link(src, dst, follow_symlinks=follow_symlinks)
+
+    def rename(src: str, dst: str) -> None:
+        if os.path.basename(str(dst)) == name:
+            take(dst)
+        real_rename(src, dst)
 
     def take(dst: str) -> None:
         Path(dst).write_bytes(_OTHER_WRITER)
@@ -1540,6 +1573,8 @@ def _another_writer_takes(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
     monkeypatch.setattr(os, "replace", replace)
     monkeypatch.setattr(os, "symlink", symlink)
     monkeypatch.setattr(os, "makedirs", makedirs)
+    monkeypatch.setattr(os, "link", link)
+    monkeypatch.setattr(os, "rename", rename)
 
 
 # What each landing raises when nothing maps it: the other policies.
@@ -1583,6 +1618,71 @@ def test_landing_on_a_name_taken_after_the_check(
     assert _tree(dest) == ["a.txt", "b.txt"]
 
 
+def _another_writer_takes_before_the_landing(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """Another writer creates ``name`` just before the landing call, which then runs
+    for real: unlike ``_another_writer_takes``, ``os.replace`` is not patched, so on
+    POSIX it would replace the other writer's file without a word."""
+    real_link = os.link
+    real_rename = os.rename
+    real_replace = os.replace
+
+    def take_first(real: Callable[..., None]) -> Callable[..., None]:
+        def call(src: str, dst: str, **kwargs: object) -> None:
+            if os.path.basename(str(dst)) == name:
+                Path(dst).write_bytes(_OTHER_WRITER)
+            real(src, dst, **kwargs)
+
+        return call
+
+    monkeypatch.setattr(os, "link", take_first(real_link))
+    monkeypatch.setattr(os, "rename", take_first(real_rename))
+    monkeypatch.setattr(os, "replace", take_first(real_replace))
+
+
+@pytest.mark.parametrize("kind", ["file", "hard"])
+def test_a_landing_under_error_never_replaces_another_writers_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """Under ERROR a FILE or HARDLINK lands only on a free name, so a file another
+    writer put there after the existence check is the clash, on POSIX too, where a
+    rename would replace it."""
+    dest = tmp_path / "out"
+    _another_writer_takes_before_the_landing(monkeypatch, "b.txt")
+    second: tuple[str, str, bytes | str] = {
+        "file": ("file", "b.txt", b"ours"),
+        "hard": ("hard", "b.txt", "a.txt"),
+    }[kind]
+    archive = _tar([("file", "a.txt", b"first"), second])
+    with pytest.raises(ExtractionError, match="Destination already exists"):
+        open_and_extract(io.BytesIO(archive), dest)
+    assert (dest / "b.txt").read_bytes() == _OTHER_WRITER
+    assert _tree(dest) == ["a.txt", "b.txt"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows lands with os.rename")
+def test_a_filesystem_without_hard_links_lands_with_a_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Where ``link`` fails for another reason than a taken name (FAT, some network
+    mounts: ``EPERM``), the landing falls back to the rename and the member is
+    written."""
+    real_link = os.link
+
+    def link(src: str, dst: str, **kwargs: object) -> None:
+        if os.path.basename(str(dst)) == "b.txt":
+            raise PermissionError(errno.EPERM, "Operation not permitted", str(dst))
+        real_link(src, dst, **kwargs)
+
+    monkeypatch.setattr(os, "link", link)
+    dest = tmp_path / "out"
+    archive = _tar([("file", "a.txt", b"first"), ("file", "b.txt", b"ours")])
+    open_and_extract(io.BytesIO(archive), dest)
+    assert (dest / "b.txt").read_bytes() == b"ours"
+    assert _tree(dest) == ["a.txt", "b.txt"]
+
+
 @_POSIX_SYMLINKS
 def test_a_symlink_landing_on_a_parked_name_taken_again_is_a_clash(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1610,7 +1710,8 @@ def test_a_refused_landing_on_a_parked_copy_is_not_a_clash(
 ) -> None:
     """A streaming pass parks the earlier ``a.txt`` and the later one replaces it under
     any policy. A rename refused there is not the caller's entry in the way, so ERROR
-    does not report it as one: the refusal goes out as it is."""
+    does not report it as one: the refusal goes out as it is. (The first ``a.txt``
+    lands on a free name, which under ERROR is not a rename; the second is.)"""
     real_replace = os.replace
     landings = 0
 
@@ -1618,8 +1719,7 @@ def test_a_refused_landing_on_a_parked_copy_is_not_a_clash(
         nonlocal landings
         if os.path.basename(str(dst)) == "a.txt":
             landings += 1
-            if landings == 2:
-                raise PermissionError(errno.EACCES, "Access is denied", str(dst))
+            raise PermissionError(errno.EACCES, "Access is denied", str(dst))
         real_replace(src, dst)
 
     monkeypatch.setattr(os, "replace", replace)
@@ -1631,4 +1731,4 @@ def test_a_refused_landing_on_a_parked_copy_is_not_a_clash(
             streaming=True,
             overwrite=OverwritePolicy.ERROR,
         )
-    assert landings == 2
+    assert landings == 1

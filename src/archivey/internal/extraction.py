@@ -4270,6 +4270,12 @@ class ExtractionCoordinator:
         extractions into one folder); POSIX refuses it in a sticky directory when someone
         else owns the entry, and otherwise replaces it."""
         with self._readonly_cleared(dest):
+            if (
+                self._overwrite is OverwritePolicy.ERROR
+                and dest not in self._current.parked
+                and self._land_on_free_name(tmp, dest, member)
+            ):
+                return
             try:
                 os.replace(long_path(tmp), long_path(dest))
             except PermissionError as exc:
@@ -4280,6 +4286,46 @@ class ExtractionCoordinator:
                 return
             with contextlib.suppress(OSError):
                 os.unlink(long_path(tmp))
+
+    def _land_on_free_name(self, tmp: Path, dest: Path, member: ArchiveMember) -> bool:
+        """Move ``tmp`` onto ``dest`` only if ``dest`` is still free, under ERROR when
+        the existence check found the name free; return whether it was moved.
+
+        Under ERROR such a ``dest`` must still be free when the member lands, so an
+        entry there now is another writer's (a second extraction into the same folder)
+        and raises the ERROR clash, rather than being replaced as ``os.replace`` would
+        on POSIX. Windows ``os.rename`` refuses a taken name. POSIX has no rename that
+        refuses one in the standard library, so the temp is hard-linked to ``dest``
+        (``link`` refuses a taken name; ``follow_symlinks=False`` links a staged
+        symlink itself) and its temp name removed: about 2 µs more than a rename,
+        against hundreds per member. Where the filesystem has no hard links (FAT, some
+        network and FUSE mounts) the link fails with another error, and ``False``
+        hands the landing back to ``os.replace``, which does not see such a race.
+
+        Under ERROR, ``dest`` is never a name of ``tmp``'s own file here: that happens
+        only when a member lands on an earlier copy, which the existence check refuses
+        unless this run parked it.
+        """
+        try:
+            if _WINDOWS:
+                os.rename(long_path(tmp), long_path(dest))
+                return True
+            os.link(long_path(tmp), long_path(dest), follow_symlinks=False)
+        except FileExistsError as exc:
+            raise self._already_exists(dest, member) from exc
+        except (OSError, NotImplementedError) as exc:
+            if not _WINDOWS:
+                return False
+            # Access denied on an entry another writer just made (see
+            # ``_swap_into_place``) is the same clash.
+            if isinstance(exc, PermissionError) and self._taken_after_check(
+                dest, atomic=True
+            ):
+                raise self._already_exists(dest, member) from exc
+            raise
+        with contextlib.suppress(OSError):
+            os.unlink(long_path(tmp))
+        return True
 
     def _new_temp_file(self, parent: Path) -> tuple[int, Path]:
         """Create a new ``.archivey-tmp-*`` file in ``parent`` at mode 0o600 and return
