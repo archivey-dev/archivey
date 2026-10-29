@@ -924,7 +924,8 @@ class ArchiveMember:
     on Unix (a RAR or 7z made there, a ZIP from any host but FAT, OS/2, NTFS or
     VFAT, an unknown host too) and the Rock Ridge and PAX change times. A TAR gets
     ``created`` only from libarchive's PAX ``LIBARCHIVE.creationtime``. Directory
-    listing uses ``st_birthtime`` only.
+    listing uses ``st_birthtime`` only. Extraction restores it on Windows and macOS;
+    Linux has no way to set a birth time.
     """
 
     ctime: datetime | None = None

@@ -47,6 +47,7 @@ from archivey.exceptions import (
     _UsageTypeError,
     exception_detail,
 )
+from archivey.internal.birth_time import set_birth_time
 from archivey.internal.bomb_tracker import (
     AlwaysStopResourceLimitError,
     BombTracker,
@@ -4424,7 +4425,9 @@ class ExtractionCoordinator:
         return 0o755 if member.is_dir else 0o644
 
     def _apply_metadata(self, path: Path | int, member: ArchiveMember) -> None:
-        """Best-effort ownership / mode / mtime. Failures are swallowed (best-effort).
+        """Best-effort ownership / mode / mtime / birth time. Failures are swallowed
+        (best-effort). The birth time is set where the system allows it
+        (:mod:`~archivey.internal.birth_time`: Windows and macOS).
         ``path`` may be an open descriptor, where the platform takes one.
 
         Ownership goes first: Linux ``chown`` clears setuid/setgid on a non-directory
@@ -4460,6 +4463,11 @@ class ExtractionCoordinator:
                 os.utime(target, (ts, ts))
             except (OSError, ValueError, OverflowError):
                 pass
+        # After utime: macOS moves a birth time later than the new mtime back to it.
+        if member.created is not None:
+            set_birth_time(
+                target if isinstance(target, int) else os.fspath(target), member.created
+            )
 
     # --- progress / misc -----------------------------------------------------------
 
