@@ -586,9 +586,31 @@ class ReaderState:
             self._reservations.add(token)
             return token
 
+    def admit_pass_streams(self) -> None:
+        """A data pass is about to hand out its first stream: refused beside a live
+        member stream, under the gate's rule.
+
+        A pass's streams take the one live-stream slot together, not one by one: the
+        pass closes each before it opens the next and closes the last when it ends or
+        is wound down, so nothing it hands out outlives it, and while it runs no other
+        stream can be admitted (without ``CONCURRENT`` a pass refuses the worker calls
+        that would open one; with it, the gate admits every stream). So one check, at
+        the pass's first stream, is the check every one of its streams made, and its
+        streams take no lease and no entry of their own.
+        """
+        _retry_after_collecting(self._admit_pass_streams_once)
+
+    def _admit_pass_streams_once(self) -> None:
+        with self._lock:
+            self._refuse_second_stream_locked()
+
     def _admit_live_stream_locked(self) -> None:
         """The live-stream gate: refuse a second stream, or take a lease for one."""
         self._require_lifecycle_open_locked("open()")
+        self._refuse_second_stream_locked()
+        self._lease_count += 1
+
+    def _refuse_second_stream_locked(self) -> None:
         if not (self.concurrent or self._internal_opens_active_locked()) and (
             self._live_streams or self._reservations
         ):
@@ -600,7 +622,6 @@ class ReaderState:
                 "concurrent_operations=True "
                 f"(this archive was opened without concurrent_operations at {loc})."
             )
-        self._lease_count += 1
 
     def bind_live_stream(
         self, token: LiveStreamReservation, stream: ArchiveStreamImpl

@@ -257,6 +257,25 @@ def _closer_of(source: Iterator[object]) -> Callable[[], None] | None:
     return source.close if isinstance(source, Generator) else None
 
 
+def _pass_wind_down(
+    held: list[ArchiveStreamImpl | None], source_closer: Callable[[], None] | None
+) -> Callable[[], None]:
+    """A ``stream_members()`` pass's ``pass_closer``: close the stream the caller may
+    still hold (``held[0]``), then the backend's pass, whose ``finally`` frees what the
+    pass holds (a solid block, an ``unrar`` pipe)."""
+
+    def wind_down() -> None:
+        stream, held[0] = held[0], None
+        try:
+            if stream is not None:
+                stream.close()
+        finally:
+            if source_closer is not None:
+                source_closer()
+
+    return wind_down
+
+
 def _apply_last_entry_wins_is_current(members: list[ArchiveMember]) -> None:
     """Stamp is_current for duplicate names (last same-name entry wins).
 
@@ -996,7 +1015,7 @@ class BaseArchiveReader(ArchiveReader):
         def _open(member: ArchiveMember) -> ArchiveStreamImpl | None:
             self._read_pass_link_target(member)
             if pass_has_data(member):
-                return self._lazy_member_stream(member)
+                return self._lazy_member_stream(member, register=False)
             return None
 
         def _raise_report_error() -> None:
@@ -1031,7 +1050,9 @@ class BaseArchiveReader(ArchiveReader):
             self._read_pass_link_target(member)
             if not pass_has_data(member):
                 return None
-            return self._lazy_member_stream(member, self._open_member_in_walk)
+            return self._lazy_member_stream(
+                member, self._open_member_in_walk, register=False
+            )
 
         yield from self._drive_pass_streams(
             _ProgressivePassIterator(self), open_member=_open
@@ -1072,6 +1093,7 @@ class BaseArchiveReader(ArchiveReader):
         | None = None,
         *,
         track_output: bool = False,
+        register: bool = True,
     ) -> ArchiveStreamImpl:
         """A stream over ``member``'s data that defers ``_open_member`` to the first read.
 
@@ -1081,18 +1103,21 @@ class BaseArchiveReader(ArchiveReader):
         ``open_member`` replaces it, and may return a raw byte stream instead: then
         ``track_output=True``, because nothing inside the opener counts the bytes.
         Deferral does not change what a failed open raises — only when.
+
+        ``register=False`` is for a data pass's streams: the pass holds the live-stream
+        slot for all of them (:meth:`_iter_stream_members`), so they are not admitted
+        one by one.
         """
         opener = self._open_member if open_member is None else open_member
-        return self._register_public_stream(
-            self._wrap_member_stream(
-                member.name,
-                lambda: opener(member),
-                size=member.size,
-                # Default False: ``_open_member`` already counts, in ``_member_parts``.
-                track_output=track_output,
-                seekable=self._seek_declared(),
-            )
+        stream = self._wrap_member_stream(
+            member.name,
+            lambda: opener(member),
+            size=member.size,
+            # Default False: ``_open_member`` already counts, in ``_member_parts``.
+            track_output=track_output,
+            seekable=self._seek_declared(),
         )
+        return self._register_public_stream(stream) if register else stream
 
     def _open_member_handle(self, member: ArchiveMember) -> ArchiveStreamImpl:
         """``_open_member`` as an open handle, for code that reads the member itself."""
@@ -3867,15 +3892,29 @@ class BaseArchiveReader(ArchiveReader):
         token = self._state.acquire_pass("stream_members")
         current: ArchiveStreamImpl | None = None
         source_closer: Callable[[], None] | None = None
+        # The pass's streams hold the live-stream slot together (see
+        # ReaderState.admit_pass_streams): admitted once, at the first, and not
+        # registered for close() to find. So the pass's wind-down closes the one the
+        # caller may hold, before the backend's pass (``held``, kept current per member
+        # without the lock).
+        admitted = False
+        held: list[ArchiveStreamImpl | None] = [None]
         try:
             if self._streaming:
                 self._enter_forward_pass("stream_members()")
             source = self._iter_with_data(copies)
             source_closer = _closer_of(source)
-            self._state.set_pass_closer(token, source_closer)
+            self._state.set_pass_closer(token, _pass_wind_down(held, source_closer))
             for m, stream in source:
                 if current is not None:
                     current.close()
+                    current = None
+                if stream is not None and not admitted:
+                    # Held before the check, so a refusal closes it (never opened, so
+                    # the close reads and decodes nothing).
+                    current = stream
+                    self._state.admit_pass_streams()
+                    admitted = True
                     current = None
                 if (
                     not copies.streams
@@ -3893,7 +3932,7 @@ class BaseArchiveReader(ArchiveReader):
                         # some formats only is a per-format accident callers would
                         # come to rely on. seekable_members=True is for open().
                         stream._make_forward_only()
-                    current = stream
+                    current = held[0] = stream
                     # Suspended at the yield: this thread runs the caller's loop body,
                     # which is not re-entry (see OperationToken.suspended).
                     self._state.set_suspended(token, True)

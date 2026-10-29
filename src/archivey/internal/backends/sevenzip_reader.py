@@ -803,21 +803,17 @@ class SevenZipReader(BaseArchiveReader):
                         member, raw.folder_index, folder.get
                     )
                     if content is not None:
-                        return self._register_public_stream(content)
+                        return content
                 return None
             assert member.is_file, "a 7z directory carries no stream"
-            # Registered like the base class's lazy pass streams, so the pass takes
-            # the one live-stream slot and is refused beside a live ``open()``.
+            # Not registered, as the base class's pass streams are not: the pass holds
+            # the live-stream slot for all of them (``_iter_stream_members``).
             if raw.folder_index is None:
-                return self._register_public_stream(
-                    self._member_stream(self._empty_member_parts(member))
-                )
+                return self._member_stream(self._empty_member_parts(member))
             _enter_folder(raw.folder_index)
             folder_index = raw.folder_index
-            return self._register_public_stream(
-                self._member_stream_from_solid(
-                    lambda: folder.get(folder_index, member), member
-                )
+            return self._member_stream_from_solid(
+                lambda: folder.get(folder_index, member), member
             )
 
         def _cleanup() -> None:
