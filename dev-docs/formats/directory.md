@@ -244,9 +244,9 @@ There are no producers; there are filesystems, and each reports `lstat` differen
 - **Windows.** `scandir` data has no identity, hence the per-file `lstat` (§2.2). Every
   symlink is a reparse point and is flagged so. Junctions are detected with
   `DirEntry.is_junction()` from Python 3.12, and on 3.11 by the entry's `st_reparse_tag`
-  (`IO_REPARSE_TAG_MOUNT_POINT`), which `lstat` sets on Windows. `readlink` targets come back with `\` and are converted. Paths past
-  `MAX_PATH` without long-path support fail the identity `lstat`, and those files list as
-  `FILE`.
+  (`IO_REPARSE_TAG_MOUNT_POINT`), which `lstat` sets on Windows. `readlink` targets come
+  back with `\` and are converted. Paths past `MAX_PATH` without long-path support fail
+  the identity `lstat`, and those files list as `FILE`.
 - **Some FUSE and network mounts** report `st_ino` 0, so their hardlinks list as separate
   files. They can also report timestamps outside `datetime`'s range, which list as `None`.
 - **procfs and sysfs** list regular files with `st_size` 0 whose read returns content
@@ -259,8 +259,8 @@ There are no producers; there are filesystems, and each reports `lstat` differen
 ## 4. Threat surface
 
 The listing is safe to hand a hostile tree. The walk never follows a symlink or junction,
-so it cannot loop. Every name is built from real
-directory entries, so there is no `..`, absolute path or empty component to normalize.
+so it cannot loop. Every name is built from real directory entries, so there is no `..`,
+absolute path or empty component to normalize.
 The listing limits bound the member count and the retained text. Extraction goes through
 the shared filter ([`threat-model.md`](../threat-model.md)).
 

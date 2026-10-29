@@ -443,7 +443,7 @@ def test_open_symlink_follows_to_real_content(symlink_dir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Windows NTFS junction handling (runs only on the Windows CI leg)
+# Windows NTFS junction handling (the real-filesystem test runs only on the Windows CI leg)
 # ---------------------------------------------------------------------------
 
 

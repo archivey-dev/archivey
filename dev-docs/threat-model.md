@@ -1285,8 +1285,7 @@ parent's scan and its own lists the target's entries. Reads are still refused wh
 listing recorded an identity. For an identity-less member the reparse check covers only
 the leaf and runs after the open, so a junction swapped in above it, or a swap racing
 the check, reads a same-size file outside the root. Both inferred from the code, not
-measured. On Python 3.11, `DirEntry.is_junction()` does not exist, so a junction may be
-walked ([`formats/directory.md`](formats/directory.md) §7). Public:
+measured. Public:
 [where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 
 ### Nested-archive amplification
