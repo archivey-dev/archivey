@@ -129,7 +129,8 @@ CI also matrixes supported **Python versions** (3.11–3.14 on Linux; 3.11/3.14 
 macOS/Windows). A pull request push runs a reduced set (Linux 3.11 and 3.14, one
 core-only leg, Windows 3.14, free-threaded 3.13t, the benchmark and plugin jobs); the
 merge queue runs every leg plus PyPy, the distribution unar packages and the short
-Atheris fuzz, and a failure there takes the pull request out of the queue. To run the
+Atheris fuzz, and a failure there takes the pull request out of the queue. `ci.yml`
+does not run again after the merge. To run the
 whole set before queueing, dispatch `ci.yml` on your branch. The note at the top of
 `ci.yml` lists which job runs where. Repo `.python-version` pins the default local env to 3.11, so a matrix
 job must pin its Python on every `uv sync` / `uv run`, or newer-version legs silently
