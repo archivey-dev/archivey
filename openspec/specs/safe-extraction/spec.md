@@ -1371,6 +1371,31 @@ SHALL raise `ResourceLimitError`.
 | ZIP member has known `compressed_size` | Per-member ratio applies; archive-wide ratio does not replace it |
 | Nested archive opened from an Archivey member/codec stream with cheap size | Cheap source size may serve as archive-wide denominator; it is the container's unchecked declaration, so `max_extracted_bytes` is the bound that holds |
 
+### Requirement: A compressed container's decode is held to the archive-wide ratio
+
+Listing a container inside a compression stream (a `.tar.gz`, or a sequential format
+handler's `.cpio.xz`) decodes the whole stream, member data included, before
+extraction writes a byte. The system SHALL hold that decoded stream to the
+archive-wide ratio of the reader's `extraction_limits` in every use (listing, a
+member read, a pass, `extract_all`): once the furthest offset decoded passes
+`ratio_activation_threshold`, and its ratio to the archive's size (the static
+denominator), or to the compressed bytes read so far past
+`live_ratio_activation_threshold` (the live one), passes `max_ratio`, the next read
+or seek SHALL raise `ResourceLimitError`, the same type an extraction's archive-wide
+check raises. The rule is the one that check applies (`archive_ratio_refusal`). A
+backward seek that decodes again does not count again. Reads and forward seeks reach
+the decoder in steps of at most 1 MiB, so the decode stops within a step of the
+limit. `max_ratio=None` turns it off.
+
+#### Scenario: compressed container decode matrix
+
+| Case | Expected |
+| --- | --- |
+| 868-byte `.tar.bz2` holding 1 GiB of zeros, from a path | `members()` raises `ResourceLimitError` after about 5 MiB decoded |
+| The same archive from a pipe | Refused once 256 MiB are decoded (the live floor) |
+| The same archive with `ExtractionLimits(max_ratio=None)` | Lists, as before |
+| A `.tar.gz` under the ratio | Lists, reads and extracts unchanged |
+
 ### Requirement: Enforce Maximum Entry Count
 
 The system SHALL count members actually written to disk during one extraction call

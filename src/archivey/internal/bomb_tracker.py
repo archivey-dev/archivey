@@ -3,14 +3,63 @@ enforces as it writes (``ExtractionLimits``)."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import io
+from typing import TYPE_CHECKING, BinaryIO, cast
 
 from archivey.config import ExtractionLimits
 from archivey.exceptions import ResourceLimitError
+from archivey.internal.streams.resume import ask_resume_offset
+from archivey.internal.streams.streamtools import DelegatingStream
+from archivey.internal.streams.streamtools.binaryio import read_blocking
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from archivey.internal.base_reader import BaseArchiveReader
+    from archivey.internal.streams.streamtools.readahead import _ReadsAhead
     from archivey.types import ArchiveMember
+
+
+def archive_ratio_refusal(
+    output: int,
+    *,
+    max_ratio: float | None,
+    floor: int,
+    live_floor: int,
+    static_size: int | None,
+    consumed: Callable[[], int | None] | None,
+) -> str | None:
+    """Why ``output`` decoded bytes break the archive-wide ratio, or ``None``.
+
+    The rule extraction's archive-wide check and a compressed container's decode
+    (:class:`DecodeRatioGuard`) share. The denominator is the archive's size when it is
+    cheaply known (``static_size``), otherwise the compressed bytes read so far
+    (``consumed``, asked only when needed). Nothing is judged before ``floor`` bytes of
+    output, and the live denominator not before ``live_floor`` either: it is what has
+    been read so far, so a blank run at the start of the source reads far above the
+    ratio it will end at once the data after it arrives. Waiting for the live floor lets
+    such a start pass as it does when the whole size is known; once a pipe is read to
+    its end, ``consumed`` is that whole size and the two checks agree (codec-layer
+    re-reads elsewhere only make it larger).
+    """
+    if max_ratio is None or output <= floor:
+        return None
+    if static_size and static_size > 0:
+        if output / static_size > max_ratio:
+            return (
+                f"Archive-wide decompression ratio {output / static_size:.0f}:1 "
+                f"exceeds limit max_ratio={max_ratio:.0f}:1"
+            )
+        return None
+    if consumed is None or output <= live_floor:
+        return None
+    read = consumed()
+    if read and read > 0 and output / read > max_ratio:
+        return (
+            f"Live decompression ratio {output / read:.0f}:1 exceeds limit "
+            f"max_ratio={max_ratio:.0f}:1"
+        )
+    return None
 
 
 class AlwaysStopResourceLimitError(ResourceLimitError):
@@ -230,25 +279,125 @@ class BombTracker:
             if copies
             else ""
         )
-        if self._max_ratio is not None and output > self._ratio_floor:
-            if css and css > 0:
-                if output / css > self._max_ratio:
-                    raise AlwaysStopResourceLimitError(
-                        f"Archive-wide decompression ratio "
-                        f"{output / css:.0f}:1 exceeds limit "
-                        f"max_ratio={self._max_ratio:.0f}:1{detail}"
-                    )
-            elif self._source is not None and output > self._live_ratio_floor:
-                # The live denominator is what has been read so far, so a blank run at
-                # the start of the source reads far above the ratio it will end at once
-                # the data after it arrives. Waiting for the live floor lets such a start
-                # pass as it does when the whole size is known; once a pipe is read to
-                # its end, ``consumed`` is that whole size and this check matches the
-                # static one (codec-layer re-reads elsewhere only make it larger).
-                consumed = self._source.compressed_bytes_consumed
-                if consumed and consumed > 0 and output / consumed > self._max_ratio:
-                    raise AlwaysStopResourceLimitError(
-                        f"Live decompression ratio "
-                        f"{output / consumed:.0f}:1 exceeds limit "
-                        f"max_ratio={self._max_ratio:.0f}:1{detail}"
-                    )
+        source = self._source
+        refusal = archive_ratio_refusal(
+            output,
+            max_ratio=self._max_ratio,
+            floor=self._ratio_floor,
+            live_floor=self._live_ratio_floor,
+            static_size=css,
+            consumed=(
+                (lambda: source.compressed_bytes_consumed)
+                if source is not None
+                else None
+            ),
+        )
+        if refusal is not None:
+            raise AlwaysStopResourceLimitError(refusal + detail)
+
+
+# How far a forward seek moves the decoder before the guard checks again. A codec
+# serves a forward seek by decoding the gap, so one seek over a huge member would
+# decode all of it before a check after the seek could refuse.
+_GUARD_STEP = 1 << 20
+
+
+class DecodeRatioGuard(DelegatingStream):
+    """A compressed container's decoded stream (a ``.tar.gz``), refused once it has
+    decoded past :attr:`~archivey.ExtractionLimits.max_ratio` of the archive's size.
+
+    Listing such an archive decodes all of it, member data included, before
+    extraction counts a byte, so a few hundred bytes of bzip2 could keep ``members()``
+    decoding for minutes. Extraction would refuse the same archive at the same ratio;
+    this refuses it while listing, reading or extracting alike. The measure is the
+    furthest offset decoded, so a backward seek that decodes again costs nothing
+    here. Reads and forward seeks go to the decoder in steps of at most 1 MiB, so a
+    refusal comes within a step of the limit.
+    """
+
+    # Changes no bytes and no positions: verification and resume offsets look through.
+    forwards_verification = True
+    readinto_passthrough = False
+
+    def __init__(
+        self,
+        inner: BinaryIO,
+        *,
+        limits: ExtractionLimits,
+        static_size: int | None,
+        consumed: Callable[[], int | None] | None,
+    ) -> None:
+        super().__init__(inner)
+        self._limits = limits
+        self._static_size = static_size
+        self._consumed = consumed
+        self._pos = 0  # over a decoder that has not started
+        self._decoded = 0  # the furthest offset decoded
+
+    def _check(self, position: int) -> None:
+        if position <= self._decoded or self._limits.max_ratio is None:
+            return
+        self._decoded = position
+        limits = self._limits
+        refusal = archive_ratio_refusal(
+            position,
+            max_ratio=limits.max_ratio,
+            floor=limits.ratio_activation_threshold,
+            live_floor=limits.live_ratio_activation_threshold,
+            static_size=self._static_size,
+            consumed=self._consumed,
+        )
+        if refusal is not None:
+            raise AlwaysStopResourceLimitError(
+                f"{refusal} ({position} bytes of the archive decoded)"
+            )
+
+    def read(self, n: int = -1, /) -> bytes:
+        if n is not None and 0 <= n <= _GUARD_STEP:
+            data = read_blocking(self._inner, n)
+            self._pos += len(data)
+            self._check(self._pos)
+            return data
+        parts: list[bytes] = []
+        left = -1 if n is None or n < 0 else n
+        while left != 0:
+            step = _GUARD_STEP if left < 0 else min(left, _GUARD_STEP)
+            data = read_blocking(self._inner, step)
+            if not data:
+                break
+            parts.append(data)
+            self._pos += len(data)
+            self._check(self._pos)
+            if left > 0:
+                left -= len(data)
+        return b"".join(parts)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        if whence == io.SEEK_END:
+            self._pos = self._inner.seek(offset, whence)
+            self._check(self._pos)
+            return self._pos
+        target = offset if whence == io.SEEK_SET else self._pos + offset
+        while target - self._pos > _GUARD_STEP:
+            step_to = self._pos + _GUARD_STEP
+            self._pos = self._inner.seek(step_to)
+            if self._pos < step_to:  # the stream ended inside the step
+                return self._pos
+            self._check(self._pos)
+        self._pos = self._inner.seek(target)
+        self._check(self._pos)
+        return self._pos
+
+    def tell(self, /) -> int:
+        return self._pos
+
+    def read_ahead(self, need: int, n: int, /) -> bytes:
+        """The decoder's ``read_ahead`` (:class:`ReadAheadStream` with
+        ``fill_arrived``): at least ``need`` bytes, up to ``n``, of what has arrived."""
+        data = cast("_ReadsAhead", self._inner).read_ahead(need, n)
+        self._pos += len(data)
+        self._check(self._pos)
+        return data
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        return ask_resume_offset(self._inner, target)

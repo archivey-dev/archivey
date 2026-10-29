@@ -270,6 +270,10 @@ class ExtractionLimits:
     A member's output never passes the size the archive records for it. Where both
     sizes are recorded, a member over the per-member ratio is refused before any of it
     is written.
+
+    The archive-wide check also holds while a reader decodes a compressed tar (or
+    another container inside a compression stream) for any reason, listing included,
+    since listing one decodes all of it.
     """
 
     ratio_activation_threshold: int = 5 * 2**20

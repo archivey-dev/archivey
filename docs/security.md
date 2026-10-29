@@ -230,7 +230,8 @@ in the repository measures what each limit costs in time and memory on your mach
 - **`extraction_limits.max_ratio`**, default 1000, caps how much a member, or the whole archive,
   expands. It's checked as data is written, and for a member whose size and compressed size the
   archive records, before any of it is written. Outputs under 5 MiB, or 256 MiB for a whole archive
-  read from a pipe, aren't checked. It has no cost of its own.
+  read from a pipe, aren't checked. It has no cost of its own. A compressed tar is held to it
+  whenever archivey decodes it, listing included, since listing one decodes all of it.
 - **`listing_limits.max_members`**, default 262,144, caps the members an archive can list. It costs
   about 25-50 µs and 1.5 KiB of memory per member, under 15 s and 384 MiB at the default.
 - **`listing_limits.max_metadata_bytes`**, default 64 MiB, caps the text kept for names, comments
