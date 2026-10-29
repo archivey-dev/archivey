@@ -226,10 +226,10 @@ def _build_xtime(rar_bin: Path, out: Path, *, extra: Sequence[str] = ()) -> None
     print(f"wrote {_shown(out)}")
 
 
-def _run(cmd: Sequence[str], *, cwd: Path) -> None:
+def _run(cmd: Sequence[str], *, cwd: Path, input: bytes | None = None) -> None:
     env = os.environ.copy()
     env["TZ"] = "UTC"
-    subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, env=env)
+    subprocess.run(cmd, cwd=cwd, input=input, check=True, capture_output=True, env=env)
 
 
 def _write_tree(root: Path, files: Iterable[_File]) -> list[str]:
@@ -730,17 +730,8 @@ def _build_stdin_volumes(rar5_bin: Path, out_dir: Path) -> None:
         for stale in out_dir.glob(f"{stem}.part*.rar"):
             stale.unlink()
         cmd = [str(rar5_bin), "a", "-idq", *extra, "-sistdin.txt"]
-        env = os.environ.copy()
-        env["TZ"] = "UTC"
         with tempfile.TemporaryDirectory() as td:
-            subprocess.run(
-                [*cmd, str(out_dir / f"{stem}.rar")],
-                cwd=td,
-                input=payload,
-                check=True,
-                capture_output=True,
-                env=env,
-            )
+            _run([*cmd, str(out_dir / f"{stem}.rar")], cwd=Path(td), input=payload)
         volumes = sorted(out_dir.glob(f"{stem}.part*.rar"))
         if len(volumes) < 2:
             raise RuntimeError(f"expected {stem} to span at least two volumes")

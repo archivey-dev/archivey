@@ -1224,35 +1224,70 @@ def test_volumes_written_from_stdin_take_the_size_from_the_last_part(
     assert (tmp_path / "stdin.txt").read_bytes() == payload
 
 
+def _flag_size_unknown(data: bytes, *, placeholder: bool = False) -> bytes:
+    """``data`` with the "size unknown" file flag (``0x08``) set on every RAR5 FILE
+    header, and each header CRC redone. ``placeholder`` also writes 127 over the first
+    member's size, a two-byte vint (rar pads it), so the header keeps its length."""
+    out = bytearray(data)
+    pos = 8  # past the RAR5 signature
+    while pos < len(out):
+        size, body_at = load_vint(out, pos + 4)
+        block_type, q = load_vint(out, body_at)
+        flags, q = load_vint(out, q)
+        if flags & 0x0001:  # extra area
+            _, q = load_vint(out, q)
+        data_size = 0
+        if flags & 0x0002:  # data area
+            data_size, q = load_vint(out, q)
+        if block_type == 2:  # FILE; its one-byte file flags are at q
+            out[q] |= 0x08
+            if placeholder:
+                assert out[q + 2] == 0x00  # a padded two-byte size vint
+                out[q + 1 : q + 3] = b"\xff\x00"
+                placeholder = False
+            crc = zlib.crc32(out[pos + 4 : body_at + size]) & 0xFFFFFFFF
+            out[pos : pos + 4] = crc.to_bytes(4, "little")
+        if block_type == 5:  # end of archive
+            break
+        pos = body_at + size + data_size
+    return bytes(out)
+
+
 def test_stored_member_of_unknown_size_takes_its_packed_size() -> None:
     """With the "size unknown" flag and no later part, a stored member's size is its
     packed size, which is what ``unrar`` reads; the size field is ignored."""
-    data = bytearray(_fixture("basic_nonsolid__.rar").read_bytes())
-    pos = 8  # past the RAR5 signature
-    while True:
-        size, body_at = load_vint(data, pos + 4)
-        block_type, q = load_vint(data, body_at)
-        flags, q = load_vint(data, q)
-        if flags & 0x0001:
-            _, q = load_vint(data, q)
-        data_size = 0
-        if flags & 0x0002:
-            data_size, q = load_vint(data, q)
-        if block_type == 2:
-            break
-        pos = body_at + size + data_size
-    # file1.txt: one-byte file flags, then its size, 13, as a two-byte vint (rar
-    # pads it); 127 in its place keeps the header's length.
-    assert data[q + 1 : q + 3] == b"\x8d\x00"
-    data[q] |= 0x08
-    data[q + 1] = 0xFF
-    crc = zlib.crc32(data[pos + 4 : body_at + size]) & 0xFFFFFFFF
-    data[pos : pos + 4] = crc.to_bytes(4, "little")
-    with open_archive(io.BytesIO(bytes(data))) as archive:
+    data = _flag_size_unknown(
+        _fixture("basic_nonsolid__.rar").read_bytes(), placeholder=True
+    )
+    with open_archive(io.BytesIO(data)) as archive:
         member = archive.members()[0]
         assert member.name == "file1.txt"
         assert member.size == 13
         assert archive.read(member) == b"Hello, world!"
+
+
+def test_stored_last_part_of_unknown_size_is_not_sized_alone(tmp_path: Path) -> None:
+    """The flag on every part, the last one included: the member's packed size is the
+    sum of its parts, not the last part's share."""
+    for part in (1, 2, 3):
+        name = f"stdin_vol.part{part}.rar"
+        data = _fixture(name).read_bytes()
+        (tmp_path / name).write_bytes(_flag_size_unknown(data) if part == 3 else data)
+    payload = _stdin_payload("stdin_vol")
+    with open_archive(tmp_path / "stdin_vol.part1.rar") as archive:
+        [member] = archive.members()
+        assert member.size == len(payload)
+        assert archive.read(member) == payload
+
+
+def test_encrypted_stored_member_of_unknown_size_keeps_its_declared_size() -> None:
+    """Ciphertext is padded to the AES block, so the packed size is not the member's
+    size; the declared one is kept."""
+    data = _flag_size_unknown(_fixture("encryption_stored_sizes__.rar").read_bytes())
+    with open_archive(io.BytesIO(data), password="password") as archive:
+        [member] = [m for m in archive.members() if m.name == "size_7.bin"]
+        assert member.size == 7
+        assert len(archive.read(member)) == 7
 
 
 def test_multi_volume_rnn_roundtrip() -> None:

@@ -416,8 +416,8 @@ class RarMemberInfo:
     comment: str | _Rar3Comment | None = None
     spanned_volumes: bool = False
     # RAR5 ``_RAR5_FILE_UNKNOWN_SIZE``: ``file_size`` is not the member's size. A
-    # merge takes the size from a later part that knows it; a stored member that
-    # no part sizes takes its packed size, which is its size.
+    # merge takes the size from a later part that knows it; a plaintext stored member
+    # that no part sizes takes its packed size, which is its size.
     size_unknown: bool = False
     # Where each part's packed bytes sit, as ``(data_offset, size)`` in the
     # concatenated volume space, for a member merged across volumes; empty for a
@@ -1835,11 +1835,21 @@ def _set_uow_owner(member: RarMemberInfo, owner: RarOwner) -> None:
 def _settle_unknown_stored_size(member: RarMemberInfo) -> None:
     """Size a stored member whose header leaves the size unknown by its packed bytes.
 
-    Only once its last part is in (``split_after`` clear): a part before it would
-    give the size so far. A compressed member keeps its declared value, which no
-    known writer leaves unresolved on the last part.
+    Only for the whole member: a member in one part, or a merged one whose last part
+    is in. A part before the last would give the size so far, and an unmerged
+    continuation (``split_before``) only its own share. Only for plaintext, which
+    packs exactly its own bytes; ciphertext is padded to the AES block, and a member
+    whose encryption is unknown may be ciphertext. Any other member keeps its
+    declared value, which no known writer leaves unresolved on the last part.
     """
-    if member.size_unknown and member.is_stored and not member.split_after:
+    if (
+        member.size_unknown
+        and member.is_stored
+        and not member.split_after
+        and not member.split_before
+        and not member.is_encrypted
+        and not member.encryption_unknown
+    ):
         member.file_size = member.compress_size
         member.size_unknown = False
 

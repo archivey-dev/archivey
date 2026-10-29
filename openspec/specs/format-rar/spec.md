@@ -729,9 +729,11 @@ middle or at its end, SHALL list the members of the volumes present and then rai
 earlier volume; a RAR 1.5 / 2.x volume records neither, so one whose first member starts
 on its boundary reads as volume 1, as in `unrar`. A RAR5 part whose file flags say its
 unpacked size is unknown (`0x0008`; `rar a -v -si` sets it on every part of a member read
-from stdin but the last) SHALL NOT give the member's `size`: the size comes from a later
-part that knows it, and a stored member that no part sizes SHALL take its packed size,
-as `unrar` reads such a member to the end of its packed data.
+from stdin but the last) SHALL NOT give the member's `size` when another source does:
+the size comes from a later part that knows it, and a plaintext stored member that no
+part sizes SHALL take its whole packed size in place of the declared value, as `unrar`
+reads such a member to the end of its packed data. A member no part sizes that is
+compressed or encrypted (no known writer leaves one) keeps the declared value.
 
 #### Scenario: volume matrix
 
