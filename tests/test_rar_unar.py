@@ -1030,6 +1030,9 @@ def test_rar4_solid_pass_serves_the_members_before_an_encrypted_one(
         try:
             return read()  # type: ignore[operator]
         except UnsupportedFeatureError as exc:
+            # The error blames unar and names the way out.
+            assert "unar 1.10" in str(exc)
+            assert "rar_decompressor to 'unrar'" in str(exc)
             return type(exc)
 
     with open_archive(path, password="password", config=_UNAR) as archive:
