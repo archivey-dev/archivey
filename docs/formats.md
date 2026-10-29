@@ -798,10 +798,10 @@ that mask select the wrong members, or none:
   `UnsupportedFeatureError` unless you set `rar_allow_glob_member_concatenation`.
 
 `unar` selects members by position, so none of these apply to it. Under the default `"auto"`,
-archivey reads such a member with `unar` when one it accepts is installed, except a name that
-cannot be handed back as a mask. It does not use `unar` when the read needs a password (`unar`
-takes it on its command line), when the archive is a stream or has data before the RAR (`unar`
-would need its own copy of it), or when `unar` is known to misread the archive.
+archivey reads such a member with `unar` when one it accepts is installed. It does not use `unar`
+when the read needs a password (`unar` takes it on its command line), when the archive is a stream
+or has data before the RAR (`unar` would need its own copy of it), or when `unar` is known to
+misread the archive.
 `rar_decompressor="unar"` reads every member by position.
 
 ### Damage and endings

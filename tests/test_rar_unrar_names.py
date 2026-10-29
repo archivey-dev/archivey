@@ -370,6 +370,55 @@ def test_earlier_name_unrar_cannot_be_modelled_refuses_later_reads(
             reader.read(later)
 
 
+@requires_binary("unrar", "unar")
+@_LINUX_ONLY
+def test_auto_reads_with_unar_after_an_earlier_name_unrar_cannot_be_modelled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The host's ``unrar`` is the trouble, not the archive, so ``AUTO`` falls back."""
+    with open_archive(_fixture("hostile_argv__rar4.rar"), config=_UNRAR_ONLY) as ar:
+        expected = ar.read(ar.members()[2])
+    path = _rar4_with_name(tmp_path, b"caf\xe9")
+    monkeypatch.setattr(rar_unrar, "_utf8_locale_name", lambda: None)
+    with open_archive(path) as reader:
+        assert reader.read(reader.members()[2]) == expected
+
+
+def _mask_selects_nothing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """A RAR5 archive whose masks, as modelled, select no member at all."""
+    monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
+    monkeypatch.setattr(
+        "archivey.internal.backends.rar_reader.unrar_mask_selects",
+        lambda mask_view, name_view, *, dot_rule: False,
+    )
+    return _build_rar5(tmp_path, [(b"a.txt", 1), (b"b.txt", 1)])
+
+
+@requires_binary("unrar")
+def test_mask_that_does_not_select_its_member_is_refused_under_unrar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _mask_selects_nothing(monkeypatch, tmp_path)
+    with (
+        open_archive(path, config=_UNRAR_ONLY) as reader,
+        pytest.raises(UnsupportedFeatureError, match="cannot be given back"),
+    ):
+        reader.read(reader.members()[1])
+
+
+@requires_binary("unrar", "unar")
+def test_auto_reads_with_unar_a_member_its_mask_does_not_select(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """unar names entries by index, so the mask is not needed (DR-11)."""
+    path = _mask_selects_nothing(monkeypatch, tmp_path)
+    with open_archive(path) as reader:
+        assert [reader.read(member) for member in reader.members()] == [
+            _payload(0),
+            _payload(1),
+        ]
+
+
 def test_five_and_six_byte_forms_are_modelled_as_glibc_reads_them() -> None:
     """glibc's ``mbrtowc`` decodes five- and six-byte forms above U+10FFFF and
     rejects their overlong spellings. A rejected form is mapped byte by byte like
