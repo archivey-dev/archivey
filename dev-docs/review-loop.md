@@ -79,6 +79,20 @@ this replaced. A round that did not finish or did not run leaves the label as it
 A label left on after later pushes is stale; the closing comment names the commit that
 was reviewed. `OUTCOME_LABELS` in the gate holds the mapping.
 
+**The risk tier shows as a label too.** `risk-label.yml` labels every pull request
+`risk: light`, `risk: standard` or `risk: deep` when it opens and again on each push,
+from `python3 scripts/review_prep.py tier` (the review skill's §1 says what each tier
+asks of a reviewer). It runs the base branch's copy of the script, so a pull request
+cannot lower its own tier by editing the path lists. It only reports, like the outcome
+labels.
+
+**The reviewer is Sonnet, with the project installed.** The round installs the project
+at the pull request's own lockfile (`uv sync --frozen --group dev --extra all`, what
+`scripts/setup-dev-env.sh` installs) and runs `claude-sonnet-5-5`, so it can measure
+with the optional accelerators and codecs a change is about. Opus reviewed until
+2026-10-29; on the [review-eval](review-eval/README.md) set Sonnet caught as many of
+the bugs the loop had missed at about an eighth of the cost.
+
 ## Counting rounds
 
 Each finished round posts one closing comment from `github-actions[bot]` whose first line
@@ -161,7 +175,8 @@ assistant, answers only people.
 
 The workflow reads the `CLAUDE_CODE_OAUTH_TOKEN` repository secret (`claude setup-token`,
 then Settings → Secrets and variables → Actions). The `review` and `no-review` labels and
-the four outcome labels must exist: `gh pr edit` cannot create a missing one.
+the four outcome labels must exist: `gh pr edit` cannot create a missing one. So must
+the three `risk:` labels.
 
 ## Known rough edges
 
