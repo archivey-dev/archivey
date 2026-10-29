@@ -41,7 +41,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import codecs as codecs_module
-from archivey.internal.streams.child_process import outside_death
+from archivey.internal.streams.child_process import is_no_verdict, outside_death
 from archivey.internal.streams.codecs import Codec, open_codec_stream, rapidgzip_child
 from archivey.internal.streams.codecs.rapidgzip_child import (
     RapidgzipChildReportedError,
@@ -673,11 +673,15 @@ def test_a_child_death_is_reported_by_how_it_ended(
         assert rapidgzip_child.crashed_on_data(first.value) is (
             expected is CorruptionError
         )
+        # An end from outside the decoder is no verdict on the data, so a stream
+        # that resumed from an index point keeps that index.
+        assert is_no_verdict(first.value) is (expected is not CorruptionError)
         # Every later call raises the same error again.
         with pytest.raises(expected) as second:
             child.read(1)
         assert type(second.value) is expected
         assert str(second.value) == str(first.value)
+        assert is_no_verdict(second.value) is is_no_verdict(first.value)
 
 
 @_POSIX
