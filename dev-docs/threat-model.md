@@ -1309,7 +1309,11 @@ Opening one part of a set by path reads the other parts beside it
 (`internal/volumes.py` `discover_volume_siblings`, and the RAR reader's own walk). A part
 found that way that is a symlink is refused, so a user who can only add files to a
 shared folder cannot point a planted `x.part2.rar` at a file the caller can read and they
-cannot, and have its bytes come out inside an extracted member. A hard link looks like any
+cannot, and have its bytes come out inside an extracted member. The check is an `lstat`
+at discovery; the parts are opened by name afterwards (`join_volumes` reopens them, and
+`unrar` opens RAR volumes itself), so the same writer can swap a checked part for a link
+before the read. That is the swapping writer of §1, here for the folder beside an archive
+path rather than a directory source, and it is not defended. A hard link looks like any
 file and passes; Linux's `protected_hardlinks` stops an unprivileged user making one to a
 file they cannot read, macOS does not. `ArchiveyConfig(discover_volumes=False)` reads a
 path as the one file it names. `unrar`, run on volume 1's path, may still open later

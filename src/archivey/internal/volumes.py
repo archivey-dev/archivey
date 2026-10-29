@@ -499,13 +499,16 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
     if volumes is not None:
         for volume in volumes:
             if volume.name != path.name and volume.is_symlink():
-                raise OpenError(
-                    f"Volume {display_path(volume)}, found beside "
-                    f"{display_path(path)}, is a symbolic link; archivey does not "
-                    "follow a link it found on its own. Pass the volumes as a list "
-                    "to read them anyway."
-                )
+                raise _discovered_link_error(volume, path)
     return volumes
+
+
+def _discovered_link_error(volume: Path, named: Path) -> OpenError:
+    return OpenError(
+        f"Volume {display_path(volume)}, found beside {display_path(named)}, is a "
+        "symbolic link; archivey does not follow a link it found on its own. Pass "
+        "the volumes as a list to read them anyway."
+    )
 
 
 def _discover_volume_siblings(path: Path) -> list[Path] | None:
@@ -599,6 +602,10 @@ def first_volume_for_stub(path: Path) -> Path | None:
     )
     found = [candidate for candidate in candidates if candidate.is_file()]
     if len(found) == 1:
+        # Found, not named: refused as a link, as a discovered sibling is
+        # (:func:`discover_volume_siblings`), which only tests the parts after it.
+        if found[0].is_symlink():
+            raise _discovered_link_error(found[0], path)
         return found[0]
     if len(found) > 1:
         names = ", ".join(sorted(candidate.name for candidate in found))

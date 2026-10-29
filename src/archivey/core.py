@@ -176,13 +176,18 @@ def _refuse_unjoined_volume_names(
     resolved: ResolvedSource,
     format: ArchiveFormat | None,
     archive_name: str | None,
+    *,
+    discover_volumes: bool = True,
 ) -> None:
     if resolved.volume_count != 1:
         return
     # Numbered parts are joined for ZIP and 7z. An explicit other format= (P8)
     # must be honoured or refused as a format conflict, not rewritten as a
-    # missing-volume error.
-    if format is None or format in (ArchiveFormat.ZIP, ArchiveFormat.SEVEN_Z):
+    # missing-volume error. With discovery off nothing looked for the other parts,
+    # so the part is read as the one file it is, and its reader says what it finds.
+    if discover_volumes and (
+        format is None or format in (ArchiveFormat.ZIP, ArchiveFormat.SEVEN_Z)
+    ):
         error = incomplete_lone_numbered_volume_error(archive_name)
         if error is not None:
             raise error
@@ -639,7 +644,9 @@ def _open_resolved(
     # A lone numbered part names the missing siblings (``TruncatedError``). Info-ZIP
     # ``.zNN`` stays the ZIP rejoin-first ``UnsupportedFeatureError`` — those are
     # never concatenated.
-    _refuse_unjoined_volume_names(resolved, format, archive_name)
+    _refuse_unjoined_volume_names(
+        resolved, format, archive_name, discover_volumes=config.discover_volumes
+    )
 
     # --- Resolve format: a directory path is DIRECTORY (and a conflicting explicit
     # format= is rejected, not ignored); else caller format, else magic detect. ---

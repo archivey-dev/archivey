@@ -20,7 +20,6 @@ import pytest
 from archivey import detect_format, open_archive
 from archivey.config import ArchiveyConfig, RarDecompressor
 from archivey.exceptions import (
-    ArchiveyError,
     ArchiveyUsageError,
     CorruptionError,
     FormatDetectionError,
@@ -2563,12 +2562,13 @@ def test_discovery_off_reads_only_the_named_file(tmp_path: Path) -> None:
         [tmp_path / "tinyvol.part1.rar", tmp_path / "tinyvol.part2.rar"], config=off
     ) as reader:
         assert reader.read("payload.bin") == b"ABCDEFGH" * 200
-    # A numbered part is read alone too: its first slice holds no directory.
+    # A numbered part is opened alone too. Nothing looked for its set, so it is not
+    # refused as one with parts missing: the ZIP reader refuses a split segment.
     first, payload = _split_zip(tmp_path / "zip")
     with open_archive(first) as reader:
         assert reader.read("payload.bin") == payload
-    with pytest.raises(ArchiveyError), open_archive(first, config=off) as reader:
-        reader.read("payload.bin")
+    with pytest.raises(UnsupportedFeatureError, match="Multi-volume"):
+        open_archive(first, config=off)
 
 
 def test_discovery_off_does_not_follow_a_stub_to_its_volumes(tmp_path: Path) -> None:
@@ -2586,3 +2586,46 @@ def test_discovery_off_does_not_follow_a_stub_to_its_volumes(tmp_path: Path) -> 
         open_archive(stub, config=off)
     with pytest.raises(FormatDetectionError):
         detect_format(stub, config=off)
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+def test_a_stub_does_not_lead_to_a_linked_first_volume(tmp_path: Path) -> None:
+    """The first volume beside a stub is found, not named, so it may not be a link."""
+    first, _ = _split_zip(tmp_path / "real")
+    beside = tmp_path / "set"
+    beside.mkdir()
+    (first.parent / "x.zip.002").rename(beside / "vol.zip.002")
+    try:
+        (beside / "vol.zip.001").symlink_to(first)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    stub = beside / "vol.exe"
+    stub.write_bytes(b"MZ" + b"\x00" * 510)
+    with pytest.raises(OpenError, match=r"vol\.zip\.001.*symbolic link"):
+        open_archive(stub)
+    with pytest.raises(OpenError, match="symbolic link"):
+        detect_format(stub)
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+def test_the_named_volume_may_be_a_link(tmp_path: Path) -> None:
+    first, payload = _split_zip(tmp_path / "real")
+    beside = tmp_path / "set"
+    beside.mkdir()
+    (first.parent / "x.zip.002").rename(beside / "l.zip.002")
+    try:
+        (beside / "l.zip.001").symlink_to(first)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    with open_archive(beside / "l.zip.001") as reader:
+        assert reader.read("payload.bin") == payload
+
+
+def test_an_internal_probe_keeps_discovery_off() -> None:
+    """The empty-listing rescan resolves the source by name again, under
+    ``probe_config``: it must not look beside the path either."""
+    from archivey.internal.detection import probe_config
+
+    assert (
+        probe_config(ArchiveyConfig(discover_volumes=False)).discover_volumes is False
+    )

@@ -274,8 +274,10 @@ detection reads: detection still looks for every built-in format, within `detect
 Opening one part of a multi-volume set by path, such as `x.part1.rar` or `x.7z.001`, also reads
 the other parts in the same folder. A part found that way that is a symbolic link is refused with
 `OpenError`, so someone who can only add files to a shared folder can't link a planted part to a
-file you can read and they can't. A hard link would get past that, and some systems, macOS among
-them, let any user make one. If others can write to the folder, set
+file you can read and they can't. That check runs once, when the parts are found, and the parts are
+opened by name later, so it doesn't stop someone who swaps a part for a link in between. A hard link
+also gets past it, and some systems, macOS among them, let any user make one. If others can write to
+the folder, set
 `ArchiveyConfig(discover_volumes=False)`: a path is then read as the one file it names, and you
 pass a set's volumes as a list.
 

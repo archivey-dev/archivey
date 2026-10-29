@@ -953,8 +953,9 @@ def _scan_for_sfx_payload(
 def probe_config(config: ArchiveyConfig | None) -> ArchiveyConfig:
     """The library default config carrying only ``config``'s detection settings
     (``detection_budget``, ``always_probe_content``, ``process_isolation``, which
-    says where the probes' trial decodes run, and ``formats``, so a plugin the caller
-    turned off runs no code here either).
+    says where the probes' trial decodes run, ``formats``, so a plugin the caller
+    turned off runs no code here either, and ``discover_volumes``, so a probe that
+    resolves a path opens no file the caller ruled out).
 
     For a detection whose result is internal (a stub check, the rescan that words an
     empty-listing advisory): it spends what the caller allowed, but its diagnostics
@@ -968,6 +969,7 @@ def probe_config(config: ArchiveyConfig | None) -> ArchiveyConfig:
         and config.always_probe_content == DEFAULT_ARCHIVEY_CONFIG.always_probe_content
         and config.process_isolation is DEFAULT_ARCHIVEY_CONFIG.process_isolation
         and config.formats == DEFAULT_ARCHIVEY_CONFIG.formats
+        and config.discover_volumes == DEFAULT_ARCHIVEY_CONFIG.discover_volumes
     ):
         return DEFAULT_ARCHIVEY_CONFIG
     return replace(
@@ -976,6 +978,7 @@ def probe_config(config: ArchiveyConfig | None) -> ArchiveyConfig:
         always_probe_content=config.always_probe_content,
         process_isolation=config.process_isolation,
         formats=config.formats,
+        discover_volumes=config.discover_volumes,
     )
 
 
@@ -1080,6 +1083,8 @@ def detect_format_into(
     require_source(source)
     check_path_not_empty(source, call="detect_format()")
     check_config(config, call="detect_format(config=…)")
+    discover = (config or DEFAULT_ARCHIVEY_CONFIG).discover_volumes
+    follow_stub_volumes = follow_stub_volumes and discover
     if not isinstance(source, (str, Path)):
         return _detect_source_into(source, config, collector, follow_stub_volumes)
     # A path is resolved once, as ``open_archive`` resolves it: any part of a numbered
@@ -1087,11 +1092,8 @@ def detect_format_into(
     # volume 1. A middle part has no magic of its own, so detecting the named file
     # alone refused what ``open_archive`` opens. Resolution can itself raise, before
     # detection reads a byte: ``TruncatedError`` for a numbered set with a gap.
-    discover = (config or DEFAULT_ARCHIVEY_CONFIG).discover_volumes
     with closing(resolve_source(source, discover_volumes=discover).source) as resolved:
-        return _detect_source_into(
-            resolved, config, collector, follow_stub_volumes and discover
-        )
+        return _detect_source_into(resolved, config, collector, follow_stub_volumes)
 
 
 def _detect_source_into(

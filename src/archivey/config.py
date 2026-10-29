@@ -814,9 +814,11 @@ class ArchiveyConfig:
     a path that names one part of a multi-volume set (``x.part1.rar``, ``x.7z.001``,
     ``x.r00``, or a self-extracting stub beside ``x.exe.001``) together with the other
     parts in the same directory, whichever part it names. A part found that way that is
-    a symbolic link is refused with :class:`~archivey.OpenError`. Set this to
-    ``False`` to read a path as the one file it names: no other file is opened. To read
-    a set then, pass its volumes as a list. That suits a directory other users can
+    a symbolic link is refused with :class:`~archivey.OpenError`, as it is found;
+    swapping a part for a link after that is not caught. Set this to ``False`` to read
+    a path as the one file it names: no other file is opened, and a numbered part
+    (``x.7z.001``) is read alone, so its reader refuses what it finds rather than
+    reporting the other parts missing. To read a set then, pass its volumes as a list. That suits a directory other users can
     write to, where a planted part (a hard link to a file the caller can read and they
     cannot, which looks like any file) would end up inside an extracted member.
     """
