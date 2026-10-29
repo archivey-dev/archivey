@@ -302,10 +302,16 @@ def _as_index_point(point: SeekPoint) -> SeekPoint:
 class DecodeOut:
     """Bytes produced by a decoder step, plus any absolute seek points discovered.
 
-    A decoder records a point only where a unit's output begins, never for a unit with
-    no output. An empty unit's output offset is the next unit's (or the end of the
-    output), so its point would pair one output offset with two compressed offsets,
-    which the seek table reads as damage.
+    The rule every decoder keeps: for any output offset, every pass offers the same
+    point, the latest compressed offset decoding can resume from there, whatever the
+    feed sizes. The seek table keeps a later compressed offset offered at an output
+    offset it has recorded (forward refinement), but reads an earlier one with resume
+    state as damage, so a re-read that offers an earlier point than the first pass kept
+    raises on an honest file. Decoders keep the rule two ways. lzip, xz, zstd and the
+    framed decoders record a point only where a unit's output begins, never for a unit
+    with no output, whose output offset is the next unit's or the end of the output.
+    ``.Z`` records a point after each CLEAR and, of two at one output offset, keeps the
+    later.
     """
 
     data: bytes
@@ -1165,9 +1171,9 @@ class DecompressorStream(ReadOnlyIOStream):
             return
         # Two different resume states at one output offset (xz block records that the
         # backward index scan and a forward read's per-stream scan disagree on). Two
-        # decode-discovered points cannot collide: by the rule on DecodeOut.points they
-        # rise in both coordinates. Points without resume state where one is the
-        # index's were settled above, without a raise.
+        # decode-discovered points cannot collide: by the rule on DecodeOut a pass never
+        # offers an earlier point than one already kept. Points without resume state
+        # where one is the index's were settled above, without a raise.
         raise CorruptionError(
             f"The {self._index_source()} and the data do not agree. Output offset "
             f"{point.decompressed_offset} starts at compressed offset "
