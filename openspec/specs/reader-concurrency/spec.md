@@ -141,7 +141,8 @@ the guarantee. `stream_members()` remains the efficient bounded-memory,
 one-decode path for a sequential solid-archive workload.
 
 **Detectable closed-source misuse and bounds.** A live lease prevents
-reader-owned backend resources from closing underneath a member stream. If a
+reader-owned backend resources from closing underneath a member stream (for a
+`stream_members()` pass, the pass holds it for all of its streams). If a
 caller-owned source is nevertheless closed externally, the reader surface SHALL
 raise a typed error rather than return arbitrary or empty bytes. Archivey
 shared-source views clamp bounds extending past the available source like normal
