@@ -190,6 +190,8 @@ value archivey.CompressionAlgorithm.XZ = 'xz'
 value archivey.CompressionAlgorithm.BCJ = 'bcj'
 value archivey.CompressionAlgorithm.BCJ2 = 'bcj2'
 value archivey.CompressionAlgorithm.DELTA = 'delta'
+value archivey.CompressionAlgorithm.SHRINK = 'shrink'
+value archivey.CompressionAlgorithm.IMPLODE = 'implode'
 value archivey.CompressionAlgorithm.RAR = 'rar'
 value archivey.CompressionAlgorithm.UNKNOWN = 'unknown'
 class archivey.CompressionMethod()

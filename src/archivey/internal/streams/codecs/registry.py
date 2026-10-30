@@ -44,6 +44,7 @@ from archivey.internal.streams.codecs.lzma_codec import (
 from archivey.internal.streams.codecs.ppmd_codec import PpmdCodec
 from archivey.internal.streams.codecs.stored_codec import StoredCodec
 from archivey.internal.streams.codecs.unix_compress_codec import UnixCompressCodec
+from archivey.internal.streams.codecs.zip_legacy_codec import ImplodeCodec, ShrinkCodec
 from archivey.internal.streams.codecs.zlib_codec import (
     DeflateCodec,
     ZlibCodec,
@@ -85,6 +86,8 @@ STREAM_CODECS: tuple[StreamCodec, ...] = (
     UnixCompressCodec(),
     PpmdCodec(),
     Deflate64Codec(),
+    ShrinkCodec(),
+    ImplodeCodec(),
 )
 
 # The codecs presented as standalone single-file formats (a subset of STREAM_CODECS).

@@ -681,9 +681,11 @@ class _PassData:
             noted = _unconfirmed_resource_limit(exc)
             reader._stamp_error_context(noted, member.name)
             raise noted from exc
-        if deferred and method == 98:
+        if deferred and method in (1, 98):
             # PPMd holds a sized member's input until it is all in; a bit-3 member
             # has no size to wait for, so it is fed in pieces, in a child process.
+            # Shrink, which has no end marker, refuses it (Implode needs the size
+            # anyway).
             params = replace(params, input_runs_on=True)
         if deferred:
             # The data reads ahead in small steps (``MemberData._read_ahead``),

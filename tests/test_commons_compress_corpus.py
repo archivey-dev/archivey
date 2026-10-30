@@ -27,8 +27,9 @@ without one the comparison is skipped.
 
 Triage (2026-10-28, CC master ``0c20ded``, 1.29.0-SNAPSHOT), in the report's groups:
 
-* **MISSING FORMAT** CC reads LHA, dump, ARJ, Snappy, ZIP Implode and ZIP Shrink, which
-  Archivey does not implement.
+* **MISSING FORMAT** CC reads LHA, dump, ARJ and Snappy, which Archivey does not
+  implement. ZIP Implode and Shrink, once on this list, now read and match CC on all
+  five of CC's archives (139 members).
 * **POLICY** Archivey refuses, as the format's own tool does: a TAR header with a wrong
   checksum, bytes after a member's Deflate stream (DR-3), and two 7z headers 7-Zip
   calls Headers Error.
@@ -118,16 +119,6 @@ _TRIAGE: dict[str, str] = {
         ("bla.tar.sz", "lorem-ipsum.txt.sz", "mixed.txt.sz"),
         "MISSING FORMAT: Snappy framed",
     ),
-    **dict.fromkeys(
-        (
-            "imploding-4Kdict-2trees.zip",
-            "imploding-8Kdict-3trees.zip",
-            "lorem-ipsum-implode.zip",
-            "moby-imploded.zip",
-        ),
-        "MISSING FORMAT: ZIP Implode (method 6)",
-    ),
-    "SHRUNK.ZIP": "MISSING FORMAT: ZIP Shrink (method 1)",
     "COMPRESS-356.tar": (
         "POLICY: header checksum is wrong; GNU tar also rejects the header"
     ),

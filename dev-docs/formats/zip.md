@@ -782,7 +782,8 @@ the ZIP method id to the shared codec layer.
 
 The reason is coverage and uniformity, in that order. `ZipExtFile` handles STORED, DEFLATE,
 BZIP2 and LZMA; the codec layer adds Deflate64 (9), Zstd (93) and PPMd (98), which the
-registry already advertised for ZIP, and XZ (95), which is core. It also puts ZIP member reads on the same
+registry already advertised for ZIP, and XZ (95), Shrink (1) and Implode (6), which are
+core. It also puts ZIP member reads on the same
 `VerifyingStream` and the same exception translation as every other backend, so a corrupt
 body raises `CorruptionError` and a cut-short one raises `TruncatedError` through shared
 code — and it is what lets a ZIP member use the accelerators when the caller turns them on,
@@ -825,7 +826,20 @@ end at their declared size, and their input must end there too: right after it f
 (or one zero byte later, which 7-Zip's encoder sometimes writes), after the end mark
 PPMd8 must carry. So a declared size short
 of the stream's data is `CorruptionError`, not `TruncatedError`: the input is too long,
-not short. The 7z handbook (§ coders, *Input after the stream*) has how each codec finds
+not short. Shrink (method 1) and Implode (method 6) have no end marker at all, so the
+declared size is their end too: the bits left in the last byte are padding, and a whole
+byte after it is input after the end, as for LZMA. A member whose size is only in a data
+descriptor (bit 3) therefore reads from a file, where the central directory has the size,
+and is `UnsupportedFeatureError` from a pipe. PKZIP 1.x, the only writer of either,
+predates bit 3. Their decoders (`codecs/zip_legacy_decoder.py`) follow 7-Zip's
+`ShrinkDecoder` and Info-ZIP's `unshrink.c` / `explode.c`: a partial clear can free the
+code just read, which stays the parent of the next entry (7-Zip's "orphan"), and a Shrink
+table that fills with no clear is refused, as both tools refuse it; where the two differ
+(an unknown control code, a code that names a free slot) the decoder refuses as 7-Zip
+does, and `unshrink` would leave it to the CRC-32. An Implode copy from before the start
+of the output reads zeros, as both read it. The test-only encoders in
+`tests/zip_legacy_build.py` make the fixtures, checked with `unzip` and 7-Zip 26.05;
+Commons Compress's five PKZIP archives match it in the corpus test. The 7z handbook (§ coders, *Input after the stream*) has how each codec finds
 its end, and what it cannot see; `inflate64` drops input after a Deflate64 stream's end
 and has no `unused_data`, so `Deflate64Decoder` holds back the last byte it is given,
 and input follows the end when `eof` is already True as that byte goes in. The
