@@ -1,7 +1,8 @@
 """A built-in codec written as a :class:`~archivey.formats.CodecHandler`.
 
 A built-in codec is a handler like a plugin's: ``stream_format``, ``magic``,
-``decompressor(call)`` and ``translate_exception`` mean the same. Two things differ.
+``extension_aliases``, ``concatenated``, ``checks_content`` and ``decompressor(call)``
+mean the same. These differ:
 
 - Its ``call`` is a :class:`BuiltinCall`, which also carries the stream config and the
   container's parameters. A built-in reads its private settings there: process
@@ -9,6 +10,13 @@ A built-in codec is a handler like a plugin's: ``stream_format``, ``magic``,
 - It may override the ``_``-prefixed hooks of :class:`BuiltinCodecHandler`, for what a
   plugin codec cannot do yet: an accelerator, a seek index over further streams,
   detection past a structural prefix. Each defaults to doing nothing.
+- Its dependency is ``requirement`` and ``missing_note``, and its probe is
+  ``_content_probe``, not a plugin's ``requires``, ``install_hint`` and ``probe``:
+  :func:`builtin_codec` refuses a handler that sets those.
+- Its ``translate_exception`` maps an ``EOFError`` itself
+  (``StreamCodec._eof_truncation``); the entry adds no fallback, as the plugin adapter
+  does, because an accelerator's translator must leave an ``EOFError`` from the
+  caller's own source alone.
 
 :func:`builtin_codec` makes the registry entry.
 """
@@ -41,7 +49,8 @@ from archivey.internal.streams.codecs.framed_decoder import (
     FramedDecompressorStream,
     StreamIndex,
     StreamStart,
-    stream_magic,
+    never_starts,
+    offset0_start,
 )
 from archivey.types import (
     ArchiveFormat,
@@ -82,12 +91,6 @@ def config_of(call: CodecCall) -> StreamConfig:
     return call.config
 
 
-def _never(data: bytes) -> bool:
-    """The :data:`StreamStart` of a container coder that is one stream."""
-    del data
-    return False
-
-
 class BuiltinCodecHandler(CodecHandler):
     """A built-in codec. Never registered with ``register_codec``;
     :func:`builtin_codec` adds it.
@@ -98,13 +101,19 @@ class BuiltinCodecHandler(CodecHandler):
     """
 
     codec: ClassVar[CodecId]
-    # The name diagnostics and messages give the stream, when not ``codec.value``.
+    # The name diagnostics and messages give the stream (:attr:`stream_name`), when
+    # not ``codec.value``.
     codec_name: ClassVar[str | None] = None
     # The optional package the decoder needs, and its install advice; ``None`` for
     # the standard library. A codec with one overrides :meth:`_library`.
     requirement: ClassVar[MissingComponent | None] = None
     # More install advice for the error a missing ``requirement`` raises.
     missing_note: ClassVar[str] = ""
+
+    @property
+    def stream_name(self) -> str:
+        """The stream's name in messages and diagnostics."""
+        return self.codec_name or self.codec.value
 
     def _library(self) -> OptionalLibrary | str | None:
         """The package the decoder uses, or ``None`` when it is absent. Only called
@@ -120,10 +129,9 @@ class BuiltinCodecHandler(CodecHandler):
     def _stream_start(self, call: BuiltinCall) -> StreamStart:
         """How a further stream starts: one of ``magic`` at offset 0, or nothing for a
         coder that is one stream. Override for a check stricter than ``magic``."""
-        starts = [m.data for m in self.magic if m.offset == 0]
-        if call.params.single_stream or not self.concatenated or not starts:
-            return _never
-        return stream_magic(*(tuple(bytes([b]) for b in data) for data in starts))
+        if call.params.single_stream:
+            return never_starts
+        return offset0_start(self.magic, self.concatenated)
 
     def _stream_index(self, call: BuiltinCall) -> StreamIndex | None:
         """Further streams as seek points. Default: none."""
@@ -143,7 +151,7 @@ class BuiltinCodecHandler(CodecHandler):
     def _rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         """:meth:`StreamCodec.rewind_warning`. Default: the codec's name."""
         del config
-        return RewindWarning(self.codec.value, suggest_install=False)
+        return RewindWarning(self.stream_name, suggest_install=False)
 
     def _magic_behind_prefix(self, prefix: bytes) -> bool:
         """:meth:`StreamCodec.magic_behind_prefix`. Read only when overridden."""
@@ -181,7 +189,7 @@ class BuiltinHandlerCodec(StreamCodec):
         excluded = config.excluded_libraries
         if not self.available(excluded):
             raise self._missing(
-                f"{self.codec.value} streams",
+                f"{handler.stream_name} streams",
                 note=handler.missing_note,
                 excluded=excluded,
             )
@@ -192,7 +200,7 @@ class BuiltinHandlerCodec(StreamCodec):
         return FramedDecompressorStream(
             source,
             lambda: handler.decompressor(call),
-            codec_name=handler.codec_name or self.codec.value,
+            codec_name=handler.stream_name,
             magic=handler._stream_start(call),
             index=handler._stream_index(call),
             collector=config.collector,
@@ -242,37 +250,57 @@ class BuiltinHandlerCodec(StreamCodec):
         return as_excluded(dataclasses.replace(requirement, name=library))
 
 
+def _magic_behind_prefix(self: BuiltinHandlerCodec, prefix: bytes) -> bool:
+    return self.handler._magic_behind_prefix(prefix)
+
+
+def _content_probe(
+    self: BuiltinHandlerCodec,
+    prefix: bytes,
+    *,
+    source_length: int | None = None,
+    read_at: ProbeReadAt | None = None,
+    charge_decode: ProbeChargeDecode | None = None,
+    isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
+) -> bool:
+    return self.handler._content_probe(
+        self,
+        prefix,
+        source_length=source_length,
+        read_at=read_at,
+        charge_decode=charge_decode,
+        isolation=isolation,
+    )
+
+
 def builtin_codec(handler: type[BuiltinCodecHandler]) -> type[StreamCodec]:
-    """The registry entry's class for ``handler``."""
+    """The registry entry's class for ``handler``, named like the module's alias for
+    it (``Bzip2Handler`` gives ``Bzip2Codec``)."""
+    for field in ("requires", "install_hint", "probe"):
+        assert getattr(handler, field) == getattr(CodecHandler, field), (
+            f"{handler.__name__}.{field} is a plugin's; a built-in uses "
+            "requirement, missing_note and _content_probe"
+        )
     fmt = ArchiveFormat(ContainerFormat.RAW_STREAM, handler.stream_format)
-    instance = handler()
+    name = handler.__name__.removesuffix("Handler") + "Codec"
+    attrs: dict[str, Any] = {
+        "__module__": handler.__module__,
+        "__qualname__": name,
+        "handler": handler(),
+        "codec": handler.codec,
+        "stream_format": handler.stream_format,
+        "magic": tuple(MagicSignature(m.offset, m.data, fmt) for m in handler.magic),
+        "requirement": handler.requirement,
+        "extension_aliases": tuple(handler.extension_aliases),
+        "checks_content": bool(handler.checks_content),
+    }
     # Only what the handler overrides: the detector skips a codec whose
     # ``magic_behind_prefix`` or ``content_probe`` is the base's.
-    hooks: dict[str, Any] = {}
     if handler._magic_behind_prefix is not BuiltinCodecHandler._magic_behind_prefix:
-        hooks["magic_behind_prefix"] = lambda self, prefix: (
-            self.handler._magic_behind_prefix(prefix)
-        )
+        attrs["magic_behind_prefix"] = _magic_behind_prefix
     if handler._content_probe is not BuiltinCodecHandler._content_probe:
-        hooks["content_probe"] = lambda self, prefix, **kwargs: (
-            self.handler._content_probe(self, prefix, **kwargs)
-        )
-    return type(
-        f"{handler.__name__}Codec",
-        (BuiltinHandlerCodec,),
-        {
-            **hooks,
-            "handler": instance,
-            "codec": handler.codec,
-            "stream_format": handler.stream_format,
-            "magic": tuple(
-                MagicSignature(m.offset, m.data, fmt) for m in handler.magic
-            ),
-            "requirement": handler.requirement,
-            "extension_aliases": tuple(handler.extension_aliases),
-            "checks_content": bool(handler.checks_content),
-        },
-    )
+        attrs["content_probe"] = _content_probe
+    return type(name, (BuiltinHandlerCodec,), attrs)
 
 
 __all__ = [

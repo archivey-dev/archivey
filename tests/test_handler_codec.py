@@ -3,6 +3,8 @@ the defaults a handler with no private hooks gets, and which hooks the entry has
 
 from __future__ import annotations
 
+import pytest
+
 from archivey.formats import CodecCall, Decompressor, Magic
 from archivey.internal.config import DEFAULT_STREAM_CONFIG
 from archivey.internal.streams.codecs.base import Codec, CodecParams, StreamCodec
@@ -73,3 +75,30 @@ def test_the_entry_has_only_the_detection_hooks_the_handler_overrides() -> None:
     assert probing.magic_behind_prefix(b"..AB")
     assert probing.content_probe(b"yes")
     assert not probing.content_probe(b"no")
+
+
+def test_the_entry_is_named_like_the_modules_alias() -> None:
+    entry = builtin_codec(PlainHandler)
+    assert entry.__name__ == entry.__qualname__ == "PlainCodec"
+    assert entry.__module__ == __name__
+
+
+def test_codec_name_names_the_stream_everywhere() -> None:
+    class Renamed(PlainHandler):
+        codec_name = "renamed"
+
+    entry = builtin_codec(Renamed)()
+    warning = entry.rewind_warning(DEFAULT_STREAM_CONFIG)
+    assert warning is not None and warning.codec_name == "renamed"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("requires", ("somelib",)), ("install_hint", "pip"), ("probe", bool)],
+)
+def test_a_plugins_dependency_or_probe_field_is_refused(
+    field: str, value: object
+) -> None:
+    handler = type("Odd", (PlainHandler,), {field: value})
+    with pytest.raises(AssertionError, match="a built-in uses"):
+        builtin_codec(handler)

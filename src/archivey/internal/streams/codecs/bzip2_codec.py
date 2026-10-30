@@ -118,7 +118,7 @@ def _bzip2_uses_accelerator(config: StreamConfig) -> bool:
     (:func:`_open_rapidgzip`), so this process never imports rapidgzip. ``AUTO`` stays
     on the standard library where no child process can run it, and falls back to it
     when a child cannot be started at open. This is a query: the warning for the first
-    case is logged by :meth:`Bzip2Codec.open`.
+    case is logged by :meth:`Bzip2Handler._open`.
     """
     available = _rapidgzip_present(config)
     if not available or not _bzip2_wanted(config, available=available):
