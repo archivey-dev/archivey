@@ -9,7 +9,8 @@ merged pull requests and reports what a retrospective would otherwise count by h
 - how many pull requests ended on a conditional approval, whose last fixes no round read;
 - findings by severity, and which ones the Opus pass raised rather than a loop round;
 - what happened to each finding: fixed, disproven, escalated, split, or no reply found;
-- findings that name an earlier finding's fix as their cause.
+- findings that name an earlier finding's fix as their cause;
+- rounds whose posts missed the shape the skill asks for (`scripts/review_shape.py`).
 
     python3 scripts/review_tally.py --days 7
     python3 scripts/review_tally.py --since 2026-10-30 --pr 1141 --pr 1143
@@ -94,6 +95,8 @@ class Round:
     n: int
     verdict: str
     opus_pass: bool
+    #: Posting-shape misses the round's close counted (`scripts/review_shape.py`).
+    shape: int = 0
 
 
 @dataclass
@@ -140,7 +143,13 @@ def read_rounds(issue_comments: list[dict]) -> list[Round]:
             n = int(fields.get("n", ""))
         except ValueError:
             continue
-        rounds[n] = Round(n, fields.get("verdict", "").rstrip("-> "), "pass" in fields)
+        shape = fields.get("shape", "0")
+        rounds[n] = Round(
+            n,
+            fields.get("verdict", "").rstrip("-> "),
+            "pass" in fields,
+            int(shape) if shape.isdigit() else 0,
+        )
     return [rounds[n] for n in sorted(rounds)]
 
 
@@ -316,6 +325,15 @@ def report(prs: list[PullRequest], since: datetime) -> str:
             f"{disp[k]} {k}"
             for k in ["fixed", "disproven", "escalated", "split", "other", "no reply"]
             if disp[k]
+        )
+    )
+    misshapen = [(p.number, r) for p in reviewed for r in p.rounds if r.shape]
+    out.append(
+        f"- **Rounds whose posts missed the posting shape:** {len(misshapen)}"
+        + (
+            ": " + ", ".join(f"#{n} round {r.n} ({r.shape})" for n, r in misshapen)
+            if misshapen
+            else ""
         )
     )
     from_fix = [f for f in findings if f.from_fix]

@@ -122,6 +122,14 @@ The prompt both reviewers get is
 [`.github/review-loop-prompt.md`](../.github/review-loop-prompt.md), filled in by
 `scripts/review_loop_prompt.py`; both closes run `scripts/review_loop_close.sh`.
 
+Each close also checks the round's posts against the shape `code-review-skill` §3 and
+§6 ask for (`scripts/review_shape.py`): the `## Round <n> ·` heading and attribution
+line, the collapsed `Measured this round` list, a `### K<n> ·` heading on every inline
+finding and reply, the footer on every post, no tables, and no GitHub API error pasted
+in. The closing comment lists any miss under **Posting shape**, and the round marker
+carries their count (`shape=N`) for the weekly tally. A miss is a reviewer defect to
+fix in the skill or the prompt; it never changes the verdict or the next step.
+
 ## Counting rounds
 
 Each finished round posts one closing comment from `github-actions[bot]` whose first line
@@ -207,7 +215,8 @@ assistant, answers only people.
 - **Counting what it found.** `review-tally.yml` runs `scripts/review_tally.py` each
   Monday over the week's merged pull requests: rounds per pull request, findings by
   severity and by who raised them (a loop round or the Opus pass), each finding's
-  disposition, and findings an earlier fix caused. The report is the run's job summary.
+  disposition, findings an earlier fix caused, and rounds whose posts missed the posting
+  shape. The report is the run's job summary.
   Run the script by hand for any window (`--since`, `--pr`).
 
 ## Setup

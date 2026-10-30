@@ -412,6 +412,7 @@ DEEP_MAINTAINER = (
     "scripts/review_loop_gate.py",
     "scripts/review_loop_prompt.py",
     "scripts/review_prep.py",
+    "scripts/review_shape.py",
 )
 
 API_SURFACE = "dev-docs/api-surface.txt"

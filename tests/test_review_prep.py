@@ -263,6 +263,7 @@ def test_the_maintainer_merges_changes_to_the_review_rules() -> None:
         ".claude/skills/code-review-skill/SKILL.md",
         "scripts/review_loop_gate.py",
         "scripts/review_prep.py",
+        "scripts/review_shape.py",
     ):
         t = prep.tier([rules])
         assert (t.name, t.maintainer_merges) == ("deep", True), rules

@@ -40,6 +40,26 @@ rm -f /tmp/loop-verdict.json
 live="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
   --json headRefOid --jq .headRefOid || true)"
 
+# The posting shape (`scripts/review_shape.py`), checked only when the review got
+# as far as a verdict. A failure to check is no miss: it must not fail a round that
+# already posted.
+echo '[]' > /tmp/shape.json
+if [ "$verdict" != null ]; then
+  for what in issues/comments pulls/reviews pulls/comments; do
+    gh api --paginate --slurp \
+      "repos/$GITHUB_REPOSITORY/${what%%/*}/$PR/${what#*/}?per_page=100" \
+      > "/tmp/shape-${what//\//-}.json" || true
+  done
+  jq -n --argjson round "$ROUND" \
+    --slurpfile ic /tmp/shape-issues-comments.json \
+    --slurpfile rv /tmp/shape-pulls-reviews.json \
+    --slurpfile rc /tmp/shape-pulls-comments.json \
+    '{round: $round, issue_comments: ($ic[0] | add // []),
+      reviews: ($rv[0] | add // []), review_comments: ($rc[0] | add // [])}' \
+    2>/dev/null | python3 scripts/review_shape.py | jq '.misses' > /tmp/shape.json \
+    || echo '[]' > /tmp/shape.json
+fi
+
 # The gate step's markers say whether this pull request's Opus pass already ran.
 touch /tmp/markers.txt
 jq -n \
@@ -52,11 +72,12 @@ jq -n \
   --argjson opus_pass "$opus_pass" \
   --rawfile markers /tmp/markers.txt \
   --argjson verdict "$verdict" \
+  --slurpfile shape /tmp/shape.json \
   '{round: $round, final: $final, head_sha: $head_sha,
     live_head_sha: $live_head_sha, repository: $repository,
     tier: $tier, opus_pass: $opus_pass,
     markers: ($markers | split("\n") | map(select(length > 0))),
-    verdict: $verdict}' \
+    verdict: $verdict, shape: ($shape[0] // [])}' \
   | python3 scripts/review_loop_gate.py --finish > /tmp/finish.json
 jq -r '"Verdict: \(.verdict) stop=\(.stop) counted=\(.counted) — \(.reason)"' \
   /tmp/finish.json >> "$GITHUB_STEP_SUMMARY"
