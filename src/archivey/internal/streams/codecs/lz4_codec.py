@@ -31,6 +31,7 @@ from archivey.types import (
     ArchiveFormat,
     MagicSignature,
     MissingComponent,
+    OptionalLibrary,
     StreamFormat,
 )
 
@@ -52,10 +53,10 @@ class Lz4Codec(StreamCodec):
         MagicSignature(0, LEGACY_MAGIC, ArchiveFormat.LZ4),
     )
     requirement = MissingComponent(
-        "lz4",
+        OptionalLibrary.LZ4,
         "pip install archivey[recommended]",
         ("lz4",),
-        reason=deps.unused_reason("lz4"),
+        reason=deps.unused_reason(OptionalLibrary.LZ4),
     )
 
     def _backend_present(self) -> bool:

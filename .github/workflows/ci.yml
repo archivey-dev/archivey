@@ -1,18 +1,18 @@
 name: CI
 
-# Run on PRs (covers every branch that has one) and on pushes to main (post-merge
-# and direct pushes). Scoping push to main — rather than "**" — avoids running the
-# whole matrix twice for branches with an open PR, where both `push` and
-# `pull_request` would otherwise fire on each commit. No coverage is lost: PR
-# branches are validated by `pull_request`, main by `push`.
-# `workflow_dispatch` is the manual escape hatch: with only event triggers, a run
+# Run on PRs (covers every branch that has one) and in the merge queue. There is no
+# `push` trigger: every commit on main arrives through the queue, whose run tested that
+# same commit, so a run after the merge only repeated it (about 23 jobs per merge on the
+# shared runners; dropped 2026-10-29). Instead a daily scheduled run tests main with
+# every job, PyPy's core-only suite included, so a dependency release or a runner image
+# change shows up within a day; the README badge shows that run. To get a verdict
+# sooner, dispatch this workflow on main.
+# `workflow_dispatch` is also the manual escape hatch: with only event triggers, a run
 # that never gets created cannot be retried, and there is nothing to click. That is
 # not hypothetical — during the 2026-08-06 Actions incident five consecutive events
 # (two pushes, two merges to main, one PR open) produced no run at all, leaving main
 # and an open PR with no way to get a verdict.
 on:
-  push:
-    branches: [main]
   pull_request:
     # A pull request that changes only documentation does not start this workflow; the
     # docs build and OpenSpec checks live in docs-checks.yml so they still run. A
@@ -21,8 +21,9 @@ on:
     # globs with `!`, then the two doc paths that tests read, re-included (later
     # patterns win): docs/api.md (test_public_api) and review/problem-catalogue/
     # (test_review_problem_catalogue). Add a path there when a test starts reading
-    # another doc file. atheris-fuzz.yml carries the same list;
-    # tests/test_ci_doc_paths.py checks that the two match and the re-includes come last.
+    # another doc file. tests/test_ci_doc_paths.py checks that the re-includes come
+    # after every `!` entry, and that atheris-fuzz.yml (called in the merge queue) has
+    # no pull_request trigger of its own.
     # Two cases skip this workflow although code changed, both from GitHub's filter: a
     # rename is seen under its new name only, so moving code into docs/ alone skips it;
     # and a diff over 3,000 files whose matches fall past the first 3,000 skips it too.
@@ -45,12 +46,30 @@ on:
   # The merge queue. Path filters do not apply to merge_group, so every queued group runs
   # the whole workflow, and the `CI gate` job below is the check the ruleset requires.
   merge_group:
+  # Daily full run on main (the default branch; GitHub runs schedules there only).
+  schedule:
+    - cron: "7 3 * * *"
   workflow_dispatch:
 
+# A pull request push runs a reduced set of jobs; the merge queue, the daily run and a
+# dispatched run get all of them. Every job below runs on pull requests unless it says
+# otherwise. On a pull request: lint, the `test` legs (Linux 3.11 and 3.14 [all], Linux
+# 3.11 core-only, Windows 3.14 [all]), free-threaded 3.13t, the structural benchmark and
+# the three plugin jobs. Only past it: the `test-queue` legs (the other Pythons, 3.14
+# core-only, the minimum versions, macOS, Windows 3.11), 3.15t, the distribution unar
+# packages, PyPy and the short Atheris fuzz. A failure there takes the pull request out
+# of the queue. The split exists because the organization's runners are shared (20 jobs
+# at once, 5 of them macOS): full runs on every push kept the queue's runs waiting for a
+# runner until they timed out (2026-10-29). Dispatch this workflow on a branch to run
+# everything before queueing. Pull request runs read the Actions caches saved on main,
+# which only the daily run saves now, so after a `uv.lock` change they may install cold
+# until the next daily run (or a dispatch on main).
+#
 # Cancel an in-progress run when a newer commit arrives for the same PR/branch, so
-# rapid pushes don't pile up redundant full-matrix runs.
+# rapid pushes don't pile up redundant full-matrix runs. Outside pull requests the event
+# is in the group too, so a dispatch on main never cancels the daily run the badge shows.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || format('{0}-{1}', github.ref, github.event_name) }}
   cancel-in-progress: true
 
 jobs:
@@ -89,30 +108,25 @@ jobs:
     # Backstop for a hang outside a test (install/sync). A hung *test* fails much sooner via
     # pytest's per-test --timeout; this just bounds the whole job so it can't run for hours.
     timeout-minutes: 20
-    # Prerelease legs (matrix.prerelease) report but cannot fail the run: a CPython
-    # release candidate, or a dependency with no wheel for it yet, is not a regression.
-    # A row without the key compares null to true, which GitHub evaluates as false, so
-    # every other row still fails the run.
-    continue-on-error: ${{ matrix.prerelease == true }}
     # The full-suite pytest steps below run on all cores (`-n auto`, pytest-xdist): 4 vCPUs
     # on Linux and Windows, 3 on macOS. Measured 2026-10-02 on 4 cores, 3.11: 13m15s serial
     # with coverage, 1m52s with -n 4 and --no-cov, same results. The distro-unar probe and
     # the scripts/ci_run_native_modules.py steps are one process by design.
     # Force every uv sync/run in this job onto the matrix interpreter. Without this,
     # `.python-version` (3.11) wins and "py3.12/3.13/3.14" legs silently re-test 3.11.
-    env:
+    # The legs split into two jobs, `test` here (every run) and `test-queue` (not on pull
+    # requests), which share these steps through the YAML anchors `test-env` and
+    # `test-steps`. Check names stay `os / pyX / install` in both.
+    env: &test-env
       UV_PYTHON: ${{ matrix.python-version }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Linux: full [all] on every supported Python; clean zero-dep core on min+max
-          # only (the core path barely varies across point releases — min/max is enough).
+          # Min and max Python on Linux [all], one core-only leg, and Windows on the max
+          # Python because it differs most from Linux. The rest are in `test-queue`.
           - { os: ubuntu-latest, python-version: "3.11", install: core-only }
-          - { os: ubuntu-latest, python-version: "3.14", install: core-only }
           - { os: ubuntu-latest, python-version: "3.11", install: all }
-          - { os: ubuntu-latest, python-version: "3.12", install: all }
-          - { os: ubuntu-latest, python-version: "3.13", install: all }
           # The one leg that measures coverage. Nothing reads the result (there is no
           # upload and no threshold, see CONTRIBUTING.md), and tracing doubled the run on
           # 3.11 (measured 2026-10-02), where coverage uses the C tracer: every other leg
@@ -121,21 +135,9 @@ jobs:
           # addopts already sets, only because an empty string is false in a GitHub
           # expression: `matrix.coverage && '' || '--no-cov'` would give --no-cov here too.
           - { os: ubuntu-latest, python-version: "3.14", install: all, coverage: true }
-          # CPython 3.15 prerelease (3.15.0rc3 as of 2026-10-08), allowed to fail. Drop
-          # `prerelease` and add the classifier once 3.15.0 final is out.
-          - { os: ubuntu-latest, python-version: "3.15", install: all, prerelease: true }
-          # Minimum supported library versions (uv --resolution lowest-direct) on the min
-          # Python: the [all] legs above run the *current* versions of every dependency, so
-          # this leg pins each declared dep to its floor (pycdlib 1.22, zstandard 0.23, …) to
-          # catch version-specific bugs that the default highest-version resolution hides.
-          - { os: ubuntu-latest, python-version: "3.11", install: all-lowest }
-          # macOS + Windows on min/max Python (cross-platform path/symlink/junction surface).
-          - { os: macos-latest, python-version: "3.11", install: all }
-          - { os: macos-latest, python-version: "3.14", install: all }
-          - { os: windows-latest, python-version: "3.11", install: all }
           - { os: windows-latest, python-version: "3.14", install: all }
 
-    steps:
+    steps: &test-steps
       - uses: actions/checkout@v4
 
       - name: Install uv
@@ -453,6 +455,46 @@ jobs:
           pytest tests/test_property_safety.py -q -n auto
           ${{ matrix.coverage && '--cov-report=term-missing' || '--no-cov' }}
 
+  # The test legs that run only past a pull request: in the merge queue, the daily run
+  # and a dispatched run (see the note at the top). Same steps as `test`.
+  test-queue:
+    name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
+    if: github.event_name != 'pull_request'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    # Prerelease legs (matrix.prerelease) report but cannot fail the run: a CPython
+    # release candidate, or a dependency with no wheel for it yet, is not a regression.
+    # A row without the key compares null to true, which GitHub evaluates as false, so
+    # every other row still fails the run. (`test` has no prerelease row.)
+    continue-on-error: ${{ matrix.prerelease == true }}
+    env: *test-env
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Zero-dep core on the max Python (`test` has the min; the core path barely
+          # varies across point releases, so min/max is enough).
+          - { os: ubuntu-latest, python-version: "3.14", install: core-only }
+          # Linux [all] on the Pythons between min and max.
+          - { os: ubuntu-latest, python-version: "3.12", install: all }
+          - { os: ubuntu-latest, python-version: "3.13", install: all }
+          # CPython 3.15 prerelease (3.15.0rc3 as of 2026-10-08), allowed to fail. Drop
+          # `prerelease` and add the classifier once 3.15.0 final is out.
+          - { os: ubuntu-latest, python-version: "3.15", install: all, prerelease: true }
+          # Minimum supported library versions (uv --resolution lowest-direct) on the min
+          # Python: the [all] legs run the *current* versions of every dependency, so
+          # this leg pins each declared dep to its floor (pycdlib 1.22, zstandard 0.23, …) to
+          # catch version-specific bugs that the default highest-version resolution hides.
+          - { os: ubuntu-latest, python-version: "3.11", install: all-lowest }
+          # macOS on min/max Python and Windows on the min (cross-platform
+          # path/symlink/junction surface; `test` has Windows on the max).
+          - { os: macos-latest, python-version: "3.11", install: all }
+          - { os: macos-latest, python-version: "3.14", install: all }
+          - { os: windows-latest, python-version: "3.11", install: all }
+    # These rows have no `coverage` key: it evaluates to null, so the steps pass
+    # --no-cov. actionlint reports the key as undefined here; that is expected.
+    steps: *test-steps
+
   # Each distribution's packaged unar against archivey's unar RAR5 check, and the unar
   # tests against it. Kept apart from the test matrix and cheap: a container per
   # distribution, core install, two test files.
@@ -484,8 +526,11 @@ jobs:
   # prefixes mirror.gcr.io/library/, so a row's `image` must be a Docker Hub
   # official image (a name with no slash); the names stay Docker Hub's so the job
   # names do not change.
+  #
+  # Not on pull requests: the packages change on the distributions' schedule, not ours.
   unar-distro-packages:
     name: unar package / ${{ matrix.image }}
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     container: mirror.gcr.io/library/${{ matrix.image }}
     timeout-minutes: 15
@@ -540,20 +585,21 @@ jobs:
   #
   # 3.15t is the 3.15 prerelease, allowed to fail like the 3.15 test leg. No lz4 wheel
   # for it yet (2026-10-08), so lz4 builds from source; cryptography ships cp315 abi3t
-  # wheels since 50.0 and keeps the GIL disabled there, as on 3.14t.
+  # wheels since 50.0 and keeps the GIL disabled there, as on 3.14t. 3.15t does not run
+  # on pull requests; 3.13t does.
   free-threaded-concurrency:
     name: free-threaded-concurrency / py${{ matrix.python }} / core + GIL-safe extras
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # As in the test job: a row without `prerelease` (3.13t, a required check) can fail.
+    # As in the `test-queue` job: a row without `prerelease` (3.13t) can fail the run.
     continue-on-error: ${{ matrix.prerelease == true }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - python: "3.13t"
-          - python: "3.15t"
-            prerelease: true
+        include: >-
+          ${{ fromJSON(github.event_name == 'pull_request'
+          && '[{"python": "3.13t"}]'
+          || '[{"python": "3.13t"}, {"python": "3.15t", "prerelease": true}]') }}
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
@@ -624,9 +670,10 @@ jobs:
   # The test steps print no tracebacks (--tb=no) and write a JUnit report (xunit1, which
   # keeps each test's file for its node id); the step after each prints one line per
   # failure from it (scripts/junit_failure_lines.py), so the whole result fits in the
-  # part of the log the GitHub API returns.
+  # part of the log the GitHub API returns. Not on pull requests.
   pypy:
     name: ${{ matrix.python }}
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -653,12 +700,11 @@ jobs:
       - name: Assert zero-dependency core
         if: ${{ !cancelled() }}
         run: uv run --python ${{ matrix.python }} --no-sync python tests/check_zero_dep_core.py
-      # Core-only on PyPy runs on each push to main and on a dispatched run (a release gate,
-      # scripts/release.py), not on pull requests or in the merge queue: it is about five
-      # of this job's fifteen minutes, and the CPython core-only legs already cover the
-      # fallback paths on every pull request.
+      # Core-only on PyPy runs on the daily run and on a dispatched run (a release gate,
+      # scripts/release.py), not in the merge queue: it is about five of this job's fifteen
+      # minutes, and the CPython core-only legs already cover the fallback paths.
       - name: Run full suite (core-only)
-        if: ${{ !cancelled() && github.event_name != 'pull_request' && github.event_name != 'merge_group' }}
+        if: ${{ !cancelled() && github.event_name != 'merge_group' }}
         env:
           PYTHONFAULTHANDLER: "1"
         run: >
@@ -667,7 +713,7 @@ jobs:
           pytest tests/ -q -n auto --timeout=300 -o addopts= --tb=no -p no:warnings
           -m 'not ppmd_native_stress' --junitxml=pypy-core.xml -o junit_family=xunit1
       - name: Failures (core-only), one line each
-        if: ${{ !cancelled() && github.event_name != 'pull_request' && github.event_name != 'merge_group' }}
+        if: ${{ !cancelled() && github.event_name != 'merge_group' }}
         run: python3 scripts/junit_failure_lines.py pypy-core.xml
       - name: Install what installs (runtime extras, then test-only packages)
         if: ${{ !cancelled() }}
@@ -814,6 +860,14 @@ jobs:
       - name: Pytest
         run: uv run --no-sync pytest packages/archivey-ar/tests -q --no-cov -rs
 
+  # The short Atheris fuzz (atheris-fuzz.yml in its short mode, three shards), in the
+  # merge queue only. The nightly and dispatched full runs stay in that workflow.
+  atheris:
+    if: github.event_name == 'merge_group'
+    uses: ./.github/workflows/atheris-fuzz.yml
+    with:
+      short: true
+
   # The one required check of the merge queue (ruleset on main). It runs only for a
   # merge_group and fails when any job above failed or was cancelled; a matrix leg with
   # continue-on-error does not count. On a pull request it is skipped, and the
@@ -822,7 +876,7 @@ jobs:
   gate:
     name: CI gate
     if: ${{ always() && github.event_name == 'merge_group' }}
-    needs: [lint, test, unar-distro-packages, free-threaded-concurrency, pypy, benchmark, squashfs-plugin, cpio-plugin, ar-plugin]
+    needs: [lint, test, test-queue, unar-distro-packages, free-threaded-concurrency, pypy, benchmark, squashfs-plugin, cpio-plugin, ar-plugin, atheris]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

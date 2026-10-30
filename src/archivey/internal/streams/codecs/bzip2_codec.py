@@ -74,6 +74,7 @@ from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.types import (
     ArchiveFormat,
     MagicSignature,
+    OptionalLibrary,
     StreamFormat,
 )
 
@@ -818,8 +819,9 @@ class Bzip2Codec(StreamCodec):
         if _bzip2_uses_accelerator(config):
             return True
         if config.use_indexed_bzip2 is AcceleratorMode.ON:
+            requirement = _rapidgzip_requirement()
             raise PackageNotInstalledError(
-                _rapidgzip_requirement().message("bzip2 random access")
+                requirement.message("bzip2 random access"), missing=(requirement,)
             )
         return False
 
@@ -886,8 +888,8 @@ class Bzip2Codec(StreamCodec):
             accelerator="rapidgzip",
             suggest_install=not _bzip2_uses_accelerator(config)
             and not deps.rapidgzip.available()
-            and not deps.unused_reason("rapidgzip"),
-            unused_reason=deps.unused_reason("rapidgzip"),
+            and not deps.unused_reason(OptionalLibrary.RAPIDGZIP),
+            unused_reason=deps.unused_reason(OptionalLibrary.RAPIDGZIP),
         )
 
     def _accelerator_data_error(self, exc: Exception) -> bool:
