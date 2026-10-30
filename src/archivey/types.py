@@ -925,6 +925,9 @@ class ArchiveInfoExtra(dict[str, object]):
     * ``zip.volume_count`` (``int``)
     * ``rar.volume_count`` (``int``)
     * ``7z.volume_count`` (``int``)
+    * ``ar.symbol_table`` (``bool``)
+    * ``ar.dialect`` (``str``)
+    * ``cpio.variant`` (``str``)
     """
 
     __slots__ = ()
@@ -937,6 +940,12 @@ class ArchiveInfoExtra(dict[str, object]):
     def __getitem__(self, key: Literal["rar.volume_count"], /) -> int: ...
     @overload
     def __getitem__(self, key: Literal["7z.volume_count"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["ar.symbol_table"], /) -> bool: ...
+    @overload
+    def __getitem__(self, key: Literal["ar.dialect"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["cpio.variant"], /) -> str: ...
     @overload
     def __getitem__(self, key: str, /) -> object: ...
     def __getitem__(self, key: str, /) -> object:

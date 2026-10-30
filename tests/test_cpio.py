@@ -237,6 +237,25 @@ def test_inside_a_compression_stream(
     _check_listing(members, "newc")
 
 
+@pytest.mark.parametrize("compressed", [False, True], ids=["plain", "gz"])
+def test_seeks_inside_a_member(tmp_path: Path, compressed: bool) -> None:
+    """With ``seekable_members=True`` a member stream seeks, plain and inside a
+    compression stream (the shared seek matrix has no CPIO row)."""
+    data = (DATA / "gnu-newc.cpio").read_bytes()
+    path = tmp_path / ("t.cpio.gz" if compressed else "t.cpio")
+    path.write_bytes(gzip.compress(data, mtime=0) if compressed else data)
+    content = CONTENT["dir/blocks.bin"]
+    with (
+        open_archive(path, seekable_members=True) as reader,
+        reader.open("dir/blocks.bin") as stream,
+    ):
+        assert stream.seekable()
+        stream.seek(5000)
+        assert stream.read(100) == content[5000:5100]
+        stream.seek(10)
+        assert stream.read() == content[10:]
+
+
 def _offset_of(data: bytes, content: bytes) -> int:
     at = data.find(content)
     assert at > 0

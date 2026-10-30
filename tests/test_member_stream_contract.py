@@ -904,6 +904,17 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
     ("tar-lzma-alone", "no corpus builder for tar + LZMA Alone"),
     ("tar-unix-compress", "no corpus builder for tar + unix compress (.tar.Z)"),
     ("udif", "UDIF is recognised and refused; there is no reader"),
+    (
+        "ar",
+        (
+            "no corpus builder: the corpus trees hold directories, which ar cannot; "
+            "tests/test_ar.py seeks inside members, plain and gzip-compressed"
+        ),
+    ),
+    (
+        "cpio",
+        "no corpus builder; tests/test_cpio.py seeks inside members, plain and gzip",
+    ),
 )
 
 _UNTESTED_FORMATS = {
@@ -912,6 +923,8 @@ _UNTESTED_FORMATS = {
     ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZMA_ALONE): "tar-lzma-alone",
     ArchiveFormat(ContainerFormat.TAR, StreamFormat.UNIX_COMPRESS): "tar-unix-compress",
     ArchiveFormat.DMG: "udif",
+    **{ArchiveFormat(ContainerFormat.AR, stream): "ar" for stream in StreamFormat},
+    **{ArchiveFormat(ContainerFormat.CPIO, s): "cpio" for s in StreamFormat},
 }
 
 

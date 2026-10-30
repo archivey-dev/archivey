@@ -56,7 +56,7 @@ from archivey.formats import (
     SequentialReader,
 )
 from archivey.internal.format_adapter import register_builtin_format
-from archivey.types import ArchiveFormat, ArchiveMember, MemberType
+from archivey.types import ArchiveFormat, ArchiveInfoExtra, ArchiveMember, MemberType
 
 MAGIC = b"!<arch>\n"
 THIN_MAGIC = b"!<thin>\n"
@@ -107,7 +107,7 @@ class ArReader(SequentialReader):
         self._symbol_table = False
 
     def archive_info(self) -> ReaderArchiveInfo:
-        extra: dict[str, object] = {"ar.symbol_table": self._symbol_table}
+        extra = ArchiveInfoExtra({"ar.symbol_table": self._symbol_table})
         if self._dialect is not None:
             extra["ar.dialect"] = self._dialect
         return ReaderArchiveInfo(format_version=self._dialect, extra=extra)
