@@ -1,6 +1,7 @@
 """The decoder for a codec whose library decodes one stream at a time
-(:class:`archivey.formats.Decompressor`): bzip2, zstd, LZ4, LZMA Alone, Shrink,
-Implode and every plugin codec. It ends a stream at its end mark, or where the input
+(:class:`archivey.formats.Decompressor`): bzip2, zstd, LZ4, LZMA Alone, raw LZMA (a
+container's LZMA coder with no declared size), Shrink, Implode and every plugin codec.
+It ends a stream at its end mark, or where the input
 ends for one with none (``end_input()``), and tells a following stream from trailing
 data by its start (:data:`StreamStart`).
 """

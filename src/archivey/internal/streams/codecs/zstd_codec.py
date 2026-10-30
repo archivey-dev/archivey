@@ -134,7 +134,7 @@ class ZstdCodec(StreamCodec):
 
     @override
     def _backend_present(self) -> bool:
-        return deps.zstd is not None
+        return self._library() is not None
 
     @override
     def _library(self) -> str | None:
