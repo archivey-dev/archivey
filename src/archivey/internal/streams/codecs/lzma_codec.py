@@ -352,8 +352,9 @@ class LzmaAloneCodec(_LzmaErrorCodec):
     """Legacy LZMA Alone (``.lzma``) — framed standalone stream, not raw FORMAT_RAW.
 
     The stream takes ``refuse_input_after_end`` from the config, as every codec that
-    decodes through the default ``open`` does. No caller sets it for Alone today, since no container uses Alone as a
-    coder; one that does gets the same refusal as every other codec.
+    decodes through the default ``open`` does. No caller sets it for Alone today, since
+    no container uses Alone as a coder; one that does gets the same refusal as every
+    other codec.
     """
 
     codec = Codec.LZMA_ALONE

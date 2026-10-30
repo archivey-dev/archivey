@@ -1,9 +1,11 @@
-"""What :class:`StreamCodec` gives a codec that decodes through :meth:`decompressor`:
-how a further stream starts, the stream's name, and the package an exclusion names."""
+"""What :class:`StreamCodec` gives a codec that decodes through :meth:`decompressor`,
+a plugin's included: how a further stream starts, the stream's name, and the package
+an exclusion names."""
 
 from __future__ import annotations
 
-from archivey.formats import Decompressor
+from archivey.formats import CodecCall, CodecHandler, Decompressor, Magic
+from archivey.internal.codec_adapter import codec_class
 from archivey.internal.config import DEFAULT_STREAM_CONFIG, StreamConfig
 from archivey.internal.streams.codecs.base import Codec, CodecParams, StreamCodec
 from archivey.types import (
@@ -11,6 +13,7 @@ from archivey.types import (
     MagicSignature,
     MissingComponent,
     OptionalLibrary,
+    PluginStream,
     StreamFormat,
 )
 
@@ -79,3 +82,27 @@ def test_an_exclusion_names_the_package_in_use() -> None:
     requirement = codec.requirement_under(excluded)
     assert requirement is not None and requirement.name == "compression.zstd"
     assert not codec.excluded_by(frozenset({OptionalLibrary.BACKPORTS_ZSTD}))
+
+
+def test_a_plugin_codec_starts_a_further_stream_by_the_same_rule() -> None:
+    # The plugin entry inherits stream_start. No caller opens a plugin codec as a
+    # one-stream coder today (``single_stream`` is set for bzip2 only), but if one
+    # does, the plugin reads one stream as a built-in would.
+    class Stream(PluginStream):
+        DEFAULTS = "defaultsx"
+
+    class Handler(CodecHandler):
+        stream_format = Stream.DEFAULTS
+        magic = (Magic(0, b"AB"),)
+
+        def decompressor(self, call: CodecCall) -> Decompressor:
+            raise NotImplementedError
+
+    entry = codec_class(Handler)()
+    assert entry.stream_start(CodecParams())(b"AB") is True
+    assert entry.stream_start(CodecParams(single_stream=True))(b"AB") is False
+
+    class Once(Handler):
+        concatenated = False
+
+    assert codec_class(Once)().stream_start(CodecParams())(b"AB") is False
