@@ -654,8 +654,8 @@ class FormatHandler(ABC):
     ``ArchiveFormat.ZIP``, and is not registered."""
 
     extensions: ClassVar[tuple[str, ...]] = ()
-    """File extensions with the dot (``".lha"``). An extension a built-in format
-    uses (``".cpio"``) is refused at registration. A replacement plugin declares none: the
+    """File extensions with the dot (``".lha"``). An extension a built-in format uses
+    (``".cpio"``) is refused at registration. A replacement plugin declares none: the
     built-in detection finds its files."""
 
     magic: ClassVar[tuple[Magic, ...]] = ()
