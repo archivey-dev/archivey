@@ -88,38 +88,42 @@ each path is on its list, live in that script.
   workflow or release file. Format parsers and codecs stay standard by design; the script
   says why. This tier is not a commissioned deep review: `deep-reviews.md` does not apply.
   Everything in Standard, plus [`threat-model.md`](../../../dev-docs/threat-model.md) and
-  [`security-review-guide.md`](reference/security-review-guide.md). For each deep path,
-  check the guarantee it carries (writes stay inside the destination, resources stay
-  bounded, archive-supplied input never reaches a command line or a terminal as anything
-  but inert text) and name what you checked in the Snapshot. On a fix round, trace every
-  fix outward (`fix-round.md`), not only the ones that moved a contract. When the script
-  says the maintainer merges, say so in block 1.
+  [`security-review-guide.md`](reference/security-review-guide.md), and the security
+  pass below. On a fix round, trace every fix outward (`fix-round.md`), not only the ones
+  that moved a contract. When the script says the maintainer merges, say so in block 1.
 
-  **A first look at a deep pull request ends with a security pass**, done after the
-  rest of the review and reported on its own. Safe handling of hostile archives is what
-  the deep paths carry, so it gets its own attention rather than whatever is left after
-  the general review (maintainer, 2026-10-30). Take each defended property in
-  `threat-model.md` §3 that a changed path carries, and try to break it with input an
-  attacker controls: a crafted name, size, offset, link target or member order; a
-  truncated or concatenated stream; a hostile directory source. For a workflow or release
-  file, the attacker is whoever can open a pull request or write a branch name, title,
-  label or comment: their text must not reach a `run:` line, a token with more scope
-  than the job needs, or a step that runs code from the pull request with secrets. Run
-  the attempt where you can: that is a check of a claim, not a re-run of the gates (§6).
-  Read the `tests/test_cve_regressions*.py` case closest to the change for the shape of
-  a known attack, and take its result from CI. Under the Snapshot, write one
-  `Security pass:` line per property (§3): what you tried and what happened. Its
-  findings are ordinary findings with the next IDs, and they are **🔴 by default**:
-  lower one only with a measured reason the input cannot reach the code or the harm is
-  bounded, and say which. Some deep paths
-  carry no §3 property: an agent's instructions (skills, commands, `AGENTS.md`,
-  `CONTRIBUTING.md`, the design rules). There the attacker is whoever writes text an
-  agent reads, a pull request body, a comment or an archive member name, and the attempt
-  is whether that text can steer the agent into a command, a token or a write it should
-  not make; write `Security pass: no §3 property carried` and name what you tried. A
-  fix round on a deep pull request runs the pass again only over code its fixes changed.
-  A reviewer new to the pull request after an earlier pass reads its `Security pass:`
-  lines and runs its own on whatever they left untried or did not trace through.
+  **Every round on a deep pull request ends with a security pass**, done after the rest
+  of the review and reported on its own. Safe handling of hostile input is what the deep
+  paths carry, so it gets its own attention rather than whatever is left after the
+  general review (maintainer, 2026-10-30). The script's two lists set the attacker:
+
+  - *A library path* (`DEEP_SECURITY`): the attacker controls the archive or the
+    directory source. Take each defended property in `threat-model.md` §3 the path
+    carries, or, where §3 names none for it, the guarantee every deep library path
+    carries: writes stay inside the destination, resources stay bounded, and
+    archive-supplied input reaches a command line or a terminal only as inert text. Try
+    to break it with a crafted name, size, offset, link target or member order, a
+    truncated or concatenated stream, or a hostile directory source. Build each attempt
+    and its destination in a fresh temporary directory outside the checkout, with limits
+    low enough that a bomb that works stays cheap. Where a
+    `tests/test_cve_regressions*.py` case sits near the change, read it for the shape of
+    a known attack and take its result from CI, or say CI has none yet.
+  - *The release's and the review loop's own files* (`DEEP_MAINTAINER`: workflows, the
+    release script, the loop's prompt and scripts, this skill): the attacker is whoever
+    can open a pull request or write its title, body, branch name, label or a comment.
+    Try whether that text can reach a `run:` line, a token with more scope than the job
+    needs, a step that runs the pull request's code with secrets, or an agent that it
+    steers into a command, a token or a write it should not make.
+
+  Running an attempt checks a claim; it is not a re-run of the gates (§6). Report one
+  `Security pass:` line per property or file (§3): what you tried and what happened. A
+  finding that breaks a §3 property or the library guarantee starts at 🔴, and comes
+  down only with a measured reason the input cannot reach the code or the harm is
+  bounded, said in the finding. A finding on the loop's or the release's files is rated
+  on its impact like any other, with the reason stated. A fix round runs the pass only
+  over code its fixes changed, with lines for what they reach. A reviewer new to the
+  pull request after an earlier pass reads its lines and runs its own on whatever they
+  left untried or did not trace through.
 
 The Snapshot line names the tier. Check the PR body's Risk section against the script: a
 public API change the body does not declare is 🟡, and a wrong tier line is 🟢.
@@ -262,9 +266,9 @@ For the maintainer skimming without the code open. Half a screen unless the chan
 - **Snapshot** — one line: size (approx. lines / small|medium|large), the tier (§1), the
   scope you reviewed, and gates (CI status, §6). The verdict is already in the header, so the
   Snapshot does not restate it.
-- **Security pass** — first look at a deep PR only (§1): one short line per defended
-  property the change carries, `Security pass: <property>: <what you tried> → <what
-  happened>`, with the finding ID where it found one.
+- **Security pass** — every round on a deep PR (§1): one short line per property or
+  file, `Security pass: <property or file>: <what you tried> → <what happened>`, with the
+  finding ID where it found one. A fix round's lines cover only what its fixes reach.
 - **Pass 1 (cold)** — first look at a code PR only: one line naming what the code alone did
   not explain before you opened the PR body or the design, each with its finding ID, or
   `nothing`. It makes the cold read checkable; the rule and why it exists are in
