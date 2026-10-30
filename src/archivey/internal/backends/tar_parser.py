@@ -121,7 +121,10 @@ NO_DATA_TYPES = frozenset((b"1", b"2", b"3", b"4", b"5", b"6"))
 # A link (``1`` or ``2``) with a size is the exception, ruled by the maintainer over GNU
 # tar's reading (2026-10-17): when the block after its header is not a member header,
 # the declared blocks are read as the link's data and skipped, so a zero block among
-# them does not end the walk (TarWalker._place_link_data).
+# them does not end the walk (TarWalker._place_link_data). All of this is about the
+# header's own size field: a PAX size, which GNU tar 1.35 skips, gives these typeflags a
+# data area (LinkData.FRAMED for a link, tar_reader._directory_has_data for ``5``; a
+# device or FIFO with one is refused by the reader).
 
 # The regular-file typeflags whose entry is a directory when its final name ends in
 # "/": AREGTYPE (NUL), REGTYPE (``0``) and CONTTYPE (``7``), the three GNU tar's

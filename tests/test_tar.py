@@ -4744,3 +4744,71 @@ def test_a_pax_framed_member_is_not_extracted(
     data = _pax_framed(typeflag, header_type=header_type, linkname=linkname)
     open_and_extract(io.BytesIO(data), tmp_path, format=ArchiveFormat.TAR)
     assert sorted(os.listdir(tmp_path)) == expected
+
+
+@pytest.mark.parametrize("header_type", [b"x", b"g"])
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_fifo_with_a_pax_size_is_corruption(
+    streaming: bool, header_type: bytes
+) -> None:
+    """GNU tar 1.35 skips the bytes a PAX ``size`` declares after a FIFO header and
+    extracts the FIFO; archivey refuses any size on a device or FIFO header, a shape
+    only a crafted archive has."""
+    tb = tar_build
+    data = (
+        tb.pax({"size": "512"}, typeflag=header_type)
+        + tb.block(b"pipe", typeflag=b"6")
+        + b"\0" * 512
+        + tb.block(b"after", size=1)
+        + tb.data(b"Z")
+        + tb.END
+    )
+    with (
+        open_archive(
+            NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+            format=ArchiveFormat.TAR,
+            streaming=streaming,
+        ) as ar,
+        pytest.raises(CorruptionError, match="fifo.*declares 512 bytes"),
+    ):
+        list(ar.stream_members())
+
+
+def _pax_framed_link_then(tail: bytes) -> bytes:
+    tb = tar_build
+    return (
+        tb.pax({"size": "1024"}) + tb.block(b"lnk", typeflag=b"2", linkname=b"t") + tail
+    )
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_pax_framed_link_span_ending_the_archive_has_no_end_marker(
+    streaming: bool,
+) -> None:
+    """The all-zero exception of a header-size link span does not apply: a PAX size
+    frames real blocks, so the archive ends at their end with no trailer."""
+    data = _pax_framed_link_then(b"\0" * 1024)
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    ) as ar:
+        names = [m.name for m, _ in ar.stream_members()]
+        counts = ar.diagnostics.counts
+        assert counts[DiagnosticCode.MEMBER_LINK_DATA_IGNORED] == 1
+        assert counts[DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING] == 1
+    assert names == ["lnk"]
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_pax_framed_link_span_cut_short_is_truncated(streaming: bool) -> None:
+    data = _pax_framed_link_then(b"\0" * 512)
+    with (
+        open_archive(
+            NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+            format=ArchiveFormat.TAR,
+            streaming=streaming,
+        ) as ar,
+        pytest.raises(TruncatedError),
+    ):
+        list(ar.stream_members())

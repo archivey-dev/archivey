@@ -1239,11 +1239,13 @@ class TarReader(BaseArchiveReader):
                 # data: GNU tar and libarchive ignore its size field and read the next
                 # header where the "data" starts. An all-zero payload would then read
                 # as the end-of-archive marker and every later member would vanish
-                # without a word, so the header is refused as damage (DR-25).
+                # without a word, so the header is refused as damage (DR-25). A PAX
+                # size is refused too, though GNU tar 1.35 skips the bytes it declares
+                # and extracts the entry: only a crafted archive has one there (DR-5a).
                 raise CorruptionError(
                     f"TAR header for {quoted(name)} is a {special.replace('_', ' ')} "
                     f"that declares {entry.size} bytes of data; a device or FIFO entry "
-                    "has no data, and tar skips such a header as damaged",
+                    "has no data, so a size on its header is damage",
                     archive_name=self._archive_name,
                     member_name=name,
                 )
