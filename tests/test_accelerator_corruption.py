@@ -129,11 +129,11 @@ def test_rapidgzip_catch_all_translates_the_same_for_deflate_and_bzip2(
     # one: a RuntimeError it reports is marked, and the reported_by_child arm gives it
     # the same verdict. Unmarked, only the catch-all arm can map it.
     from archivey.internal.streams.codecs import GzipCodec
-    from archivey.internal.streams.codecs.bzip2_codec import Bzip2Handler
+    from archivey.internal.streams.codecs.bzip2_codec import Bzip2Codec
 
     exc = RuntimeError(message)
     assert is_corruption_not_truncation(GzipCodec()._translate_accelerator(exc))
-    assert is_corruption_not_truncation(Bzip2Handler()._translate_accelerator(exc))
+    assert is_corruption_not_truncation(Bzip2Codec()._translate_accelerator(exc))
 
 
 def test_rapidgzip_truncation_is_reported(tmp_path: Path) -> None:

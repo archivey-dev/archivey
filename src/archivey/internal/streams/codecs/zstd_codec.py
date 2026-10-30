@@ -9,7 +9,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
     exception_detail,
 )
-from archivey.formats import CodecCall, Decompressor, Magic
+from archivey.formats import Decompressor
 from archivey.internal.config import (
     DecoderLimits,
     StreamConfig,
@@ -17,24 +17,18 @@ from archivey.internal.config import (
 from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
-    RewindWarning,
 )
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.base import (
     _SKIPPABLE_FRAME,
     Codec,
+    CodecParams,
     StreamCodec,
 )
 from archivey.internal.streams.codecs.framed_decoder import (
     StreamIndex,
     StreamStart,
     stream_magic,
-)
-from archivey.internal.streams.codecs.handler_codec import (
-    BuiltinCall,
-    BuiltinCodecHandler,
-    builtin_codec,
-    config_of,
 )
 from archivey.internal.streams.codecs.isolated import natives_for
 from archivey.internal.streams.codecs.zstd_framing import (
@@ -44,6 +38,8 @@ from archivey.internal.streams.codecs.zstd_framing import (
 from archivey.internal.streams.codecs.zstd_seek_table import build_seek_table_index
 from archivey.internal.streams.decompressor_stream import _StreamChecksumError
 from archivey.types import (
+    ArchiveFormat,
+    MagicSignature,
     MissingComponent,
     OptionalLibrary,
     StreamFormat,
@@ -125,16 +121,20 @@ def _zstd_window_refusal(exc: Exception, limits: DecoderLimits) -> ArchiveyError
     )
 
 
-class ZstdHandler(BuiltinCodecHandler):
+class ZstdCodec(StreamCodec):
     codec = Codec.ZSTD
     stream_format = StreamFormat.ZSTD
-    magic = (Magic(0, ZSTD_FRAME_MAGIC),)
+    magic = (MagicSignature(0, ZSTD_FRAME_MAGIC, ArchiveFormat.ZST),)
     requirement = MissingComponent(
         OptionalLibrary.BACKPORTS_ZSTD, "pip install archivey[recommended]", ("zstd",)
     )
     # The backport is only relevant below 3.14; on 3.14+ the stdlib module is used,
     # so the bare hint alone would send such a caller installing a no-op.
     missing_note = "On Python 3.14+ the stdlib compression.zstd module is used instead."
+
+    @override
+    def _backend_present(self) -> bool:
+        return deps.zstd is not None
 
     @override
     def _library(self) -> str | None:
@@ -144,24 +144,26 @@ class ZstdHandler(BuiltinCodecHandler):
         return deps.zstd_library or OptionalLibrary.BACKPORTS_ZSTD
 
     @override
-    def decompressor(self, call: CodecCall) -> Decompressor:
+    def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
         assert deps.zstd is not None
-        window_log_max, _ = _zstd_window_log_max(call.limits)
-        window_log_max = _probe_window_log_max(window_log_max, call.probe_bound)
+        window_log_max, _ = _zstd_window_log_max(config.decoder_limits)
+        window_log_max = _probe_window_log_max(window_log_max, config.probe_read_bound)
         options = {deps.zstd.DecompressionParameter.window_log_max: window_log_max}
-        return natives_for(config_of(call).process_isolation).zstd_decompressor(options)
+        return natives_for(config.process_isolation).zstd_decompressor(options)
 
     @override
-    def _stream_start(self, call: BuiltinCall) -> StreamStart:
+    def stream_start(self, params: CodecParams) -> StreamStart:
         # Every frame is content, in a .zst file and in a ZIP or 7z coder alike:
         # RFC 8878 defines Zstd data as one or more frames. A skippable frame may
         # come between them, which ``magic`` does not match.
-        del call
+        del params
         return _ZSTD_STREAMS
 
     @override
-    def _stream_index(self, call: BuiltinCall) -> StreamIndex | None:
-        config = call.config
+    def stream_index(
+        self, params: CodecParams, config: StreamConfig
+    ) -> StreamIndex | None:
+        del params
         if not config.seekable:
             return None
         # Declared seek demand only (``seekable-decompressor-streams``): each
@@ -174,7 +176,7 @@ class ZstdHandler(BuiltinCodecHandler):
         )
 
     @override
-    def _translator(self, config: StreamConfig) -> ExceptionTranslator:
+    def translator(self, config: StreamConfig) -> ExceptionTranslator:
         limits = config.decoder_limits
 
         def translate(exc: Exception) -> ArchiveyError | None:
@@ -191,12 +193,12 @@ class ZstdHandler(BuiltinCodecHandler):
                         f"probe reserves: {exc}"
                     )
                 return _zstd_window_refusal(exc, limits)
-            return self.translate_exception(exc)
+            return self.translate(exc)
 
         return translate
 
     @override
-    def translate_exception(self, exc: Exception) -> ArchiveyError | None:
+    def translate(self, exc: Exception) -> ArchiveyError | None:
         if deps.zstd is not None and isinstance(exc, deps.zstd.ZstdError):
             if "Dictionary mismatch" in str(exc):
                 # The frame names a dictionary (its Dictionary_ID), and archivey has no
@@ -214,15 +216,8 @@ class ZstdHandler(BuiltinCodecHandler):
             return CorruptionError(
                 f"Error reading zstd stream: {exception_detail(exc)}"
             )
-        return StreamCodec._eof_truncation(exc, "zstd")
+        return self._eof_truncation(exc, "zstd")
 
     @override
-    def _rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
-        return RewindWarning("zstd")
-
-    @override
-    def _magic_behind_prefix(self, prefix: bytes) -> bool:
+    def magic_behind_prefix(self, prefix: bytes) -> bool:
         return regular_frame_behind_skippable_frames(prefix)
-
-
-ZstdCodec = builtin_codec(ZstdHandler)

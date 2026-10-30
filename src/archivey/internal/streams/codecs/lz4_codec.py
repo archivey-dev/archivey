@@ -8,30 +8,26 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
     exception_detail,
 )
-from archivey.formats import CodecCall, Decompressor, Magic
+from archivey.formats import Decompressor
 from archivey.internal.config import StreamConfig
 from archivey.internal.overrides import override
-from archivey.internal.streams.archive_stream import RewindWarning
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.base import (
     _SKIPPABLE_FRAME,
     Codec,
+    CodecParams,
     StreamCodec,
 )
 from archivey.internal.streams.codecs.framed_decoder import (
     StreamStart,
     stream_magic,
 )
-from archivey.internal.streams.codecs.handler_codec import (
-    BuiltinCall,
-    BuiltinCodecHandler,
-    builtin_codec,
-    config_of,
-)
 from archivey.internal.streams.codecs.isolated import natives_for
 from archivey.internal.streams.codecs.lz4_legacy import LEGACY_MAGIC, Lz4Decompressor
 from archivey.internal.streams.decompressor_stream import _StreamChecksumError
 from archivey.types import (
+    ArchiveFormat,
+    MagicSignature,
     MissingComponent,
     OptionalLibrary,
     StreamFormat,
@@ -46,13 +42,13 @@ _LZ4_STREAMS = stream_magic(
 )
 
 
-class Lz4Handler(BuiltinCodecHandler):
+class Lz4Codec(StreamCodec):
     codec = Codec.LZ4
     stream_format = StreamFormat.LZ4
     magic = (
-        Magic(0, b"\x04\x22\x4d\x18"),
+        MagicSignature(0, b"\x04\x22\x4d\x18", ArchiveFormat.LZ4),
         # The legacy stream ``lz4 -l`` writes, and Linux kernel images use.
-        Magic(0, LEGACY_MAGIC),
+        MagicSignature(0, LEGACY_MAGIC, ArchiveFormat.LZ4),
     )
     requirement = MissingComponent(
         OptionalLibrary.LZ4,
@@ -62,26 +58,24 @@ class Lz4Handler(BuiltinCodecHandler):
     )
 
     @override
-    def _library(self) -> OptionalLibrary | None:
-        if deps.lz4_frame is None or deps.lz4_block is None:
-            return None
-        return OptionalLibrary.LZ4
+    def _backend_present(self) -> bool:
+        return deps.lz4_frame is not None and deps.lz4_block is not None
 
     @override
-    def decompressor(self, call: CodecCall) -> Decompressor:
+    def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
         # A frame or a legacy stream, whichever the data starts with.
-        return Lz4Decompressor(natives_for(config_of(call).process_isolation))
+        return Lz4Decompressor(natives_for(config.process_isolation))
 
     @override
-    def _stream_start(self, call: BuiltinCall) -> StreamStart:
+    def stream_start(self, params: CodecParams) -> StreamStart:
         # Every frame is content, in a .lz4 file and in a 7z coder alike: the LZ4
         # frame format lets frames be appended. A skippable frame may come between
         # them, which ``magic`` does not match.
-        del call
+        del params
         return _LZ4_STREAMS
 
     @override
-    def translate_exception(self, exc: Exception) -> ArchiveyError | None:
+    def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, RuntimeError) and str(exc).startswith("LZ4"):
             if "headerVersion_wrong" in str(exc):
                 # The frame's version bits are not 01, the only version the LZ4 frame
@@ -100,13 +94,4 @@ class Lz4Handler(BuiltinCodecHandler):
         if deps.lz4_block is not None and isinstance(exc, deps.lz4_block.LZ4BlockError):
             # A block of a legacy stream; it has no checksum to fail.
             return CorruptionError(f"Error reading lz4 stream: {exception_detail(exc)}")
-        return StreamCodec._eof_truncation(exc, "lz4")
-
-    @override
-    def _rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
-        # A rewind re-decompresses from the start.
-        del config
-        return RewindWarning("lz4")
-
-
-Lz4Codec = builtin_codec(Lz4Handler)
+        return self._eof_truncation(exc, "lz4")

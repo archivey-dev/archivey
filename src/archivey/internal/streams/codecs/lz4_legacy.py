@@ -29,7 +29,7 @@ from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
 
 if TYPE_CHECKING:
-    from archivey.internal.streams.codecs.framed_decoder import _OneStreamDecompressor
+    from archivey.formats import Decompressor
 
 LEGACY_MAGIC = b"\x02\x21\x4c\x18"
 LEGACY_BLOCK_SIZE = 8 * 2**20
@@ -157,7 +157,7 @@ class Lz4Decompressor:
     def __init__(self, natives: Natives = IN_PROCESS) -> None:
         self._natives = natives
         self._head = b""
-        self._inner: _OneStreamDecompressor | None = None
+        self._inner: Decompressor | None = None
 
     def _pick(self, data: bytes) -> bytes:
         """Choose the decompressor once ``data`` tells; return what it should be fed."""
