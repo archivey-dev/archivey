@@ -488,7 +488,7 @@ def _sparse_slots(block: bytes, start: int, count: int) -> tuple[tuple[int, int]
 _PAX_LENGTH = re.compile(rb"([0-9]{1,20}) ")
 # The keywords an empty value sets to empty, as GNU tar 1.35's decoders store any
 # string. Another keyword's empty value leaves the value in force before it.
-_EMPTY_VALUE_KEPT = frozenset((b"linkpath", b"uname", b"gname"))
+_EMPTY_VALUE_STORED = frozenset((b"linkpath", b"uname", b"gname"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -568,7 +568,7 @@ def parse_pax_records(
         elif key == b"GNU.sparse.numbytes":
             numbytes.append(value)
         pos = record_end
-        if not value and key not in _EMPTY_VALUE_KEPT:
+        if not value and key not in _EMPTY_VALUE_STORED:
             if key == b"size":
                 raise CorruptionError(
                     f"TAR PAX header has an empty size record at byte "

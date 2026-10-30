@@ -354,8 +354,8 @@ GNU tar (DR-6, measured 2026-10-30):
   `CorruptionError`, as GNU tar calls it malformed. Any other empty value is skipped, so
   the global record or the header field stays: POSIX would delete both, and GNU tar
   keeps an empty `path` from naming anything.
-- A `path`, `linkpath`, `uname` or `gname` value ends at its first NUL, as a header field
-  and an `L` or `K` name do.
+- A `path`, `GNU.sparse.name`, `linkpath`, `uname` or `gname` value ends at its first
+  NUL, as a header field and an `L` or `K` name do.
 
 ### 2.3 Member data
 
