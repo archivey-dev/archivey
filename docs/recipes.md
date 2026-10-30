@@ -51,8 +51,7 @@ By default, an extraction raises `ResourceLimitError` once it has written 2 GiB 
 or when data expands more than 1000 times. A sparse TAR member, such as a disk image, can expand
 that much on its own. Listing an archive also raises `ResourceLimitError` past 262,144 members,
 past 64 MiB of text kept for names, comments and link targets, or when a compressed tar expands
-more than 1000 times. A larger dataset from a source you
-trust needs higher limits:
+more than 1000 times. A larger dataset from a source you trust needs higher limits:
 
 ```python
 import archivey
