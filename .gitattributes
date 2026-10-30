@@ -1,3 +1,9 @@
 # The built-in python driver names the enclosing def or class in a hunk header;
 # scripts/review_prep.py keys on it.
 *.py diff=python
+
+# Archive fixtures are bytes, whatever git's text detection guesses: a Windows
+# checkout with core.autocrlf would otherwise rewrite the "\n" in an ar magic.
+tests/fixtures/**/*.a binary
+tests/fixtures/**/*.cpio binary
+tests/fixtures/**/*.sqfs binary
