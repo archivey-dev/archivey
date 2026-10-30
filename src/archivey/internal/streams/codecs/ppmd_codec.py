@@ -24,7 +24,7 @@ from archivey.internal.streams.codecs.base import (
     StreamCodec,
 )
 from archivey.internal.streams.codecs.ppmd_decoder import PpmdDecompressorStream
-from archivey.types import MissingComponent
+from archivey.types import MissingComponent, OptionalLibrary
 
 # 7-Zip's PPMd7 property bounds (``PPMD7_MIN_ORDER`` .. ``PPMD7_MAX_MEM_SIZE`` in
 # C/Ppmd7.h). Its decoder refuses properties outside them as unsupported
@@ -68,10 +68,10 @@ def _check_ppmd7_properties(order: int, mem_size: int) -> None:
 class PpmdCodec(StreamCodec):
     codec = Codec.PPMD
     requirement = MissingComponent(
-        "pyppmd",
+        OptionalLibrary.PYPPMD,
         "pip install archivey[recommended]",
         ("ppmd",),
-        reason=deps.unused_reason("pyppmd"),
+        reason=deps.unused_reason(OptionalLibrary.PYPPMD),
     )
 
     def _backend_present(self) -> bool:

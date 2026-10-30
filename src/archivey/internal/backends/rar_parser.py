@@ -208,6 +208,10 @@ _RAR5_MAIN_SOLID = 0x04
 _RAR5_FILE_ISDIR = 0x01
 _RAR5_FILE_HAS_MTIME = 0x02
 _RAR5_FILE_HAS_CRC32 = 0x04
+# The unpacked size is unknown: ``rar a -v -si`` sets it on each part of a member read
+# from stdin but the last, which carries the size once the input has ended. ``unrar``
+# lists the size as "?" and reads such a member to the end of its packed data.
+_RAR5_FILE_UNKNOWN_SIZE = 0x08
 
 _RAR5_COMPR_SOLID = 0x40
 
@@ -285,6 +289,18 @@ _RAR5_XREDIR_WINDOWS_SYMLINK = 2
 _RAR5_XREDIR_WINDOWS_JUNCTION = 3
 _RAR5_XREDIR_HARD_LINK = 4
 _RAR5_XREDIR_FILE_COPY = 5
+# ``unrar``'s ``FSREDIR_NONE``: a record of this type names no redirect, and ``unrar``
+# treats the member as a plain file.
+_RAR5_XREDIR_NONE = 0
+_RAR5_KNOWN_REDIRECTS = frozenset(
+    {
+        _RAR5_XREDIR_UNIX_SYMLINK,
+        _RAR5_XREDIR_WINDOWS_SYMLINK,
+        _RAR5_XREDIR_WINDOWS_JUNCTION,
+        _RAR5_XREDIR_HARD_LINK,
+        _RAR5_XREDIR_FILE_COPY,
+    }
+)
 
 _RAR5_ENDARC_NEXT_VOLUME = 0x01
 
@@ -411,6 +427,10 @@ class RarMemberInfo:
     split_after: bool
     comment: str | _Rar3Comment | None = None
     spanned_volumes: bool = False
+    # RAR5 ``_RAR5_FILE_UNKNOWN_SIZE``: ``file_size`` is not the member's size. A
+    # merge takes the size from a later part that knows it; a plaintext stored member
+    # that no part sizes takes its packed size, which is its size.
+    size_unknown: bool = False
     # Where each part's packed bytes sit, as ``(data_offset, size)`` in the
     # concatenated volume space, for a member merged across volumes; empty for a
     # member in one part. ``data_offset`` and ``compress_size`` stay the first part's
@@ -497,7 +517,25 @@ class RarMemberInfo:
 
     def is_payload_file(self) -> bool:
         """True if ``unrar p`` emits this member's bytes (regular file, not dir/link/redir)."""
-        return not (self.is_directory or self.is_symlink or self.is_hardlink_or_copy)
+        return not (
+            self.is_directory
+            or self.is_symlink
+            or self.is_hardlink_or_copy
+            or self.has_unknown_redirect()
+        )
+
+    def has_unknown_redirect(self) -> bool:
+        """True for a RAR5 redirect of a type this parser does not know (not 1 to 5;
+        a type-0 record is no redirect and is not kept, see ``_RAR5_XREDIR_NONE``).
+
+        ``unrar`` 7.00 lists such a member as a file, or as a directory under the
+        directory flag, warns "Unknown extra field", creates nothing for it either
+        way and emits no bytes for it in ``unrar p``, so a solid pass must not count
+        it either (measured on ``redirect_unknown_solid__.rar`` and on a copy with
+        the directory flag set).
+        """
+        redir = self.file_redir
+        return redir is not None and redir[0] not in _RAR5_KNOWN_REDIRECTS
 
     def is_file_copy(self) -> bool:
         """True for a RAR5 ``FILE_COPY`` redirect (``rar -oi``, "file reference").
@@ -1824,6 +1862,28 @@ def _set_uow_owner(member: RarMemberInfo, owner: RarOwner) -> None:
         )
 
 
+def _settle_unknown_stored_size(member: RarMemberInfo) -> None:
+    """Size a stored member whose header leaves the size unknown by its packed bytes.
+
+    Only for the whole member: a member in one part, or a merged one whose last part
+    is in. A part before the last would give the size so far, and an unmerged
+    continuation (``split_before``) only its own share. Only for plaintext, which
+    packs exactly its own bytes; ciphertext is padded to the AES block, and a member
+    whose encryption is unknown may be ciphertext. Any other member keeps its
+    declared value, which no known writer leaves unresolved on the last part.
+    """
+    if (
+        member.size_unknown
+        and member.is_stored
+        and not member.split_after
+        and not member.split_before
+        and not member.is_encrypted
+        and not member.encryption_unknown
+    ):
+        member.file_size = member.compress_size
+        member.size_unknown = False
+
+
 def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
     """Collapse a SPLIT_AFTER continuation into the first part (rarfile-style).
 
@@ -1872,6 +1932,11 @@ def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
     )
     old.split_after = new.split_after
     old.spanned_volumes = True
+    if old.size_unknown and not new.size_unknown:
+        # The part that knows the size is the last one ``rar -v -si`` writes.
+        old.file_size = new.file_size
+        old.size_unknown = False
+    _settle_unknown_stored_size(old)
 
 
 # ---------------------------------------------------------------------------
@@ -3988,11 +4053,12 @@ def _parse_rar5_file_block(
                     redir_type, xpos = load_vint(xdata, xpos)
                     redir_flags, xpos = load_vint(xdata, xpos)
                     redir_name, xpos = _load_vstr(xdata, xpos)
-                    file_redir = (
-                        redir_type,
-                        redir_flags,
-                        redir_name.decode("utf8", "surrogateescape"),
-                    )
+                    if redir_type != _RAR5_XREDIR_NONE:
+                        file_redir = (
+                            redir_type,
+                            redir_flags,
+                            redir_name.decode("utf8", "surrogateescape"),
+                        )
                 elif xtype == _RAR5_XFILE_VERSION:
                     _vflags, xpos = load_vint(xdata, xpos)
                     file_version, xpos = load_vint(xdata, xpos)
@@ -4043,10 +4109,15 @@ def _parse_rar5_file_block(
         elif rtype in (_RAR5_XREDIR_HARD_LINK, _RAR5_XREDIR_FILE_COPY):
             is_hardlink_or_copy = True
 
-    if is_directory and not is_symlink:
+    # An unknown redirect is not a directory even under the directory flag: ``unrar``
+    # creates nothing for it (``RarMemberInfo.has_unknown_redirect``).
+    unknown_redirect = (
+        file_redir is not None and file_redir[0] not in _RAR5_KNOWN_REDIRECTS
+    )
+    if is_directory and not is_symlink and not unknown_redirect:
         filename = filename + "/"
 
-    return RarMemberInfo(
+    member = RarMemberInfo(
         filename=filename,
         orig_filename=orig_filename,
         file_size=file_size,
@@ -4079,6 +4150,7 @@ def _parse_rar5_file_block(
         volume_index=volume_index,
         split_before=split_before,
         split_after=split_after,
+        size_unknown=bool(file_flags & _RAR5_FILE_UNKNOWN_SIZE),
         file_version=file_version,
         owner=owner,
         # RAR5 keeps the directory flag apart from the dictionary bits, so a
@@ -4091,6 +4163,8 @@ def _parse_rar5_file_block(
         header_walk_stop_reason=stop_reason,
         timestamp_issues=tuple(timestamp_issues) if timestamp_issues else (),
     )
+    _settle_unknown_stored_size(member)
+    return member
 
 
 def _parse_rar5_owner(xdata: bytes, pos: int) -> RarOwner:
