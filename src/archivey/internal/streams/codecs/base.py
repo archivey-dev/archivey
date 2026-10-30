@@ -76,6 +76,8 @@ class Codec(Enum):
     UNIX_COMPRESS = "unix_compress"  # LZW (.Z)
     PPMD = "ppmd"
     DEFLATE64 = "deflate64"
+    SHRINK = "shrink"  # ZIP method 1 (LZW)
+    IMPLODE = "implode"  # ZIP method 6 (LZ77 + Shannon-Fano)
     # Filter-only (composed with raw LZMA; see LZMA_FILTER_IDS).
     DELTA = "delta"
     BCJ_X86 = "bcj_x86"
@@ -125,6 +127,10 @@ class CodecParams:
       pad after it is not input after the end marker. Must match the bytes passed to
       ``PpmdDecoder.feed`` (not an enclosing member size). Gates post-eof empty
       drains; when omitted, PPMd recovery stays conservative (single capped NUL only).
+    - ``implode_large_window`` / ``implode_literal_tree`` — ZIP method-6 Implode
+      settings, from general-purpose bits 1 (an 8 KiB window, else 4 KiB) and 2 (three
+      Shannon-Fano trees, else two). Implode also needs ``unpack_size``: its data has no
+      end marker. Shrink (method 1) ends at ``unpack_size`` when it is given.
     - ``single_stream`` — the coder's data is one stream of its codec: a bzip2 ZIP
       member or 7z coder. The decoder ends at the first stream's end rather than
       reading a further stream as a concatenated file's, so a further stream is
@@ -150,6 +156,8 @@ class CodecParams:
     ppmd_order: int | None = None
     ppmd_mem_size: int | None = None
     ppmd_restore_method: int = 0
+    implode_large_window: bool = False
+    implode_literal_tree: bool = False
     unpack_size: int | None = None
     pack_size: int | None = None
     single_stream: bool = False
