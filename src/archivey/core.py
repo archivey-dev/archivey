@@ -102,6 +102,7 @@ from archivey.types import (
     FormatSupport,
     MemberStreams,
     MissingComponent,
+    PluginStream,
     StreamFormat,
 )
 
@@ -907,7 +908,7 @@ def _open_resolved(
 def open_stream(
     source: str | Path | BinaryIO,
     *,
-    format: StreamFormat | ArchiveFormat | str | None = None,
+    format: StreamFormat | PluginStream | ArchiveFormat | str | None = None,
     seekable: bool = False,
     config: ArchiveyConfig | None = None,
 ) -> ArchiveStream:
@@ -1035,7 +1036,7 @@ def open_stream(
 
 def _open_stream_from_source(
     codec_input: ArchiveSource,
-    format: StreamFormat | ArchiveFormat | None,
+    format: StreamFormat | PluginStream | ArchiveFormat | None,
     seekable: bool,
     effective_config: ArchiveyConfig,
     collector: DiagnosticCollector,
@@ -1098,11 +1099,11 @@ def _open_stream_from_source(
 
 
 def _resolve_stream_format(
-    format: StreamFormat | ArchiveFormat | None,
+    format: StreamFormat | PluginStream | ArchiveFormat | None,
     open_source: ArchiveSource,
     collector: DiagnosticCollector,
     config: ArchiveyConfig,
-) -> tuple[ArchiveFormat, StreamFormat]:
+) -> tuple[ArchiveFormat, StreamFormat | PluginStream]:
     """Map open_stream's ``format=`` argument (or auto-detect) to the format the source
     is and the StreamFormat to decode.
 
@@ -1111,7 +1112,7 @@ def _resolve_stream_format(
     (``coerce_stream_or_archive_format``), so falling through here means the caller
     asked for auto-detection.
     """
-    if isinstance(format, StreamFormat):
+    if isinstance(format, (StreamFormat, PluginStream)):
         return ArchiveFormat(ContainerFormat.RAW_STREAM, format), format
     if isinstance(format, ArchiveFormat):
         # An UNKNOWN container never reaches here: open_stream refuses it before any I/O.

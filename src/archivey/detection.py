@@ -15,7 +15,7 @@ from typing import Literal
 
 from archivey.detection_cost import DetectionCostReceipt, TierSkip
 from archivey.diagnostics import DiagnosticSummary
-from archivey.types import ArchiveFormat, PluginContainer
+from archivey.types import ArchiveFormat, PluginContainer, PluginStream
 
 __all__ = ["DetectionConfidence", "FormatInfo"]
 
@@ -111,6 +111,9 @@ class FormatInfo:
     @property
     def from_plugin(self) -> bool:
         """Whether ``format`` is one a plugin added (``archivey.formats``), not a
-        built-in one. A plugin's parser is not covered by archivey's limits, so a
-        caller that reads untrusted input can refuse such a format."""
-        return isinstance(self.format.container, PluginContainer)
+        built-in one: its container or its compression stream. A plugin's parser or
+        decoder is not covered by archivey's limits, so a caller that reads untrusted
+        input can refuse such a format."""
+        return isinstance(self.format.container, PluginContainer) or isinstance(
+            self.format.stream, PluginStream
+        )

@@ -24,7 +24,9 @@ from archivey.internal.streams.archive_stream import (
 )
 from archivey.internal.streams.codecs.base import (
     _DEFAULT_PARAMS,
+    AnyStreamFormat,
     Codec,
+    CodecId,
     CodecParams,
     CodecSource,
     StreamCodec,
@@ -58,7 +60,6 @@ from archivey.internal.streams.streamtools import (
 from archivey.types import (
     MissingComponent,
     OptionalLibrary,
-    StreamFormat,
 )
 
 if TYPE_CHECKING:
@@ -66,10 +67,12 @@ if TYPE_CHECKING:
 
 
 # Single source of truth for *openable* codecs. Detection, the single-file reader, and
-# the backend registry iterate these. Filter-only ``Codec`` enum members (DELTA / BCJ_*)
-# are intentionally absent — they compose into raw LZMA via ``LZMA_FILTER_IDS``, not
+# the backend registry read them through the functions below, at call time, so a codec
+# added later by :func:`add_stream_codec` (``archivey.formats.register_codec``) reaches
+# every one of them. Filter-only ``Codec`` enum members (DELTA / BCJ_*) are
+# intentionally absent — they compose into raw LZMA via ``LZMA_FILTER_IDS``, not
 # standalone ``StreamCodec.open``.
-STREAM_CODECS: tuple[StreamCodec, ...] = (
+_STREAM_CODECS: list[StreamCodec] = [
     StoredCodec(),
     GzipCodec(),
     Bzip2Codec(),
@@ -88,36 +91,77 @@ STREAM_CODECS: tuple[StreamCodec, ...] = (
     Deflate64Codec(),
     ShrinkCodec(),
     ImplodeCodec(),
-)
+]
 
-# The codecs presented as standalone single-file formats (a subset of STREAM_CODECS).
-SINGLE_FILE_CODECS: tuple[StreamCodec, ...] = tuple(
-    c for c in STREAM_CODECS if c.single_file_format is not None
-)
-
-_BY_CODEC: dict[Codec, StreamCodec] = {c.codec: c for c in STREAM_CODECS}
-_BY_STREAM_FORMAT: dict[StreamFormat, StreamCodec] = {
-    c.stream_format: c for c in STREAM_CODECS if c.stream_format is not None
+_BY_CODEC: dict[CodecId, StreamCodec] = {c.codec: c for c in _STREAM_CODECS}
+_BY_STREAM_FORMAT: dict[AnyStreamFormat, StreamCodec] = {
+    c.stream_format: c for c in _STREAM_CODECS if c.stream_format is not None
 }
 
 
-def stream_codec(codec: Codec) -> StreamCodec:
+def stream_codecs() -> tuple[StreamCodec, ...]:
+    """Every openable codec, built-in ones first, then registered ones in order."""
+    return tuple(_STREAM_CODECS)
+
+
+def single_file_codecs() -> tuple[StreamCodec, ...]:
+    """The codecs presented as standalone single-file formats (a subset of
+    :func:`stream_codecs`): each one is also read around a TAR or a sequential
+    format (``.tar.gz``, ``.cpio.gz``)."""
+    return tuple(c for c in _STREAM_CODECS if c.single_file_format is not None)
+
+
+def single_file_codec(stream_format: object) -> StreamCodec | None:
+    """The single-file codec for ``stream_format``, or ``None`` when no codec decodes
+    it as a standalone stream (``UNCOMPRESSED`` included)."""
+    sc = _BY_STREAM_FORMAT.get(stream_format)  # type: ignore[call-overload]
+    return sc if sc is not None and sc.single_file_format is not None else None
+
+
+def add_stream_codec(sc: StreamCodec) -> None:
+    """Add ``sc`` after every codec there already is. The caller has checked that its
+    ``codec`` and ``stream_format`` are new."""
+    assert sc.codec not in _BY_CODEC, sc.codec
+    assert sc.stream_format is None or sc.stream_format not in _BY_STREAM_FORMAT
+    _STREAM_CODECS.append(sc)
+    _BY_CODEC[sc.codec] = sc
+    if sc.stream_format is not None:
+        _BY_STREAM_FORMAT[sc.stream_format] = sc
+
+
+def save_codec_state() -> Callable[[], None]:
+    """Save what :func:`add_stream_codec` writes; the result restores it (tests)."""
+    codecs = list(_STREAM_CODECS)
+    by_codec = dict(_BY_CODEC)
+    by_format = dict(_BY_STREAM_FORMAT)
+
+    def restore() -> None:
+        _STREAM_CODECS[:] = codecs
+        _BY_CODEC.clear()
+        _BY_CODEC.update(by_codec)
+        _BY_STREAM_FORMAT.clear()
+        _BY_STREAM_FORMAT.update(by_format)
+
+    return restore
+
+
+def stream_codec(codec: CodecId) -> StreamCodec:
     """The codec object for ``codec`` (raises ``KeyError`` for a filter-only codec)."""
     return _BY_CODEC[codec]
 
 
-def stream_codec_for_format(stream_format: StreamFormat) -> StreamCodec:
+def stream_codec_for_format(stream_format: AnyStreamFormat) -> StreamCodec:
     """The codec object that decodes a single-file/TAR ``StreamFormat``."""
     return _BY_STREAM_FORMAT[stream_format]
 
 
-def codec_for_stream_format(stream_format: StreamFormat) -> Codec:
+def codec_for_stream_format(stream_format: AnyStreamFormat) -> CodecId:
     """Map a single-file/TAR ``StreamFormat`` to its codec."""
     return _BY_STREAM_FORMAT[stream_format].codec
 
 
 def codec_requirement(
-    codec: Codec, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
+    codec: CodecId, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
 ) -> MissingComponent | None:
     """The optional-dependency requirement declared by ``codec``, if any, as a call
     with ``excluded`` reports it (:meth:`StreamCodec.requirement_under`)."""
@@ -126,7 +170,7 @@ def codec_requirement(
 
 
 def is_codec_available(
-    codec: Codec, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
+    codec: CodecId, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
 ) -> bool:
     """Whether ``codec``'s decompression backend is importable right now, and
     ``excluded`` (a call's ``FormatPolicy.exclude_libraries``) does not turn it off.
@@ -150,7 +194,7 @@ class CodecBackend:
     reader's collector reports every stream it opens into that reader.
     """
 
-    codec: Codec
+    codec: CodecId
     config: StreamConfig
     translate: ExceptionTranslator
     rewind_warning: RewindWarning | None
@@ -167,7 +211,7 @@ class CodecBackend:
 
 
 def resolve_codec(
-    codec: Codec, config: StreamConfig = DEFAULT_STREAM_CONFIG
+    codec: CodecId, config: StreamConfig = DEFAULT_STREAM_CONFIG
 ) -> CodecBackend:
     """Resolve ``codec`` to its backend (open function + translator) without opening anything.
 
@@ -193,7 +237,7 @@ def resolve_codec(
 
 
 def open_codec_stream(
-    codec: Codec,
+    codec: CodecId,
     source: CodecSource,
     *,
     config: StreamConfig = DEFAULT_STREAM_CONFIG,
@@ -267,7 +311,7 @@ class OpenedCodec:
 
 
 def open_codec_raw(
-    codec: Codec,
+    codec: CodecId,
     source: CodecSource,
     *,
     config: StreamConfig = DEFAULT_STREAM_CONFIG,
@@ -298,7 +342,7 @@ def open_codec_raw(
 
 
 def _prepared_backend(
-    codec: Codec,
+    codec: CodecId,
     source: CodecSource,
     config: StreamConfig,
     collector: DiagnosticCollector | None,
@@ -325,7 +369,7 @@ def _prepared_backend(
 
 
 def _decoder_config(
-    codec: Codec,
+    codec: CodecId,
     source: CodecSource,
     config: StreamConfig,
     collector: DiagnosticCollector | None,

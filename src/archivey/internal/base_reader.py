@@ -177,6 +177,7 @@ from archivey.types import (
     OptionalLibrary,
     OverwritePolicy,
     OverwritePolicyStr,
+    PluginStream,
     StreamFormat,
     TrailerSignature,
 )
@@ -388,6 +389,19 @@ class ReadBackend(ABC):
     """
 
     FORMATS: tuple[ArchiveFormat, ...]
+    # Whether the backend also reads each of its ``FORMATS`` inside every single-file
+    # compression stream: TAR's ``.tar.gz``, a sequential plugin's ``.cpio.gz``. The
+    # registry makes those pairs when asked, from the codecs registered then, so a
+    # codec registered later reaches them too; ``FORMATS`` does not list them.
+    STREAM_PAIRS: ClassVar[bool] = False
+    # The extensions a stream's own is appended to for those pairs: ``.tar`` gives
+    # ``.tar.gz``, ``.tar.xz``, and so on. Other pair spellings (``.tgz``) go in
+    # ``EXTENSIONS``.
+    PAIR_EXTENSIONS: ClassVar[tuple[str, ...]] = ()
+    # Whether this is the backend for a single compressed file, with no container:
+    # ``ArchiveFormat(RAW_STREAM, <stream>)`` for every single-file codec, made when
+    # asked like the pairs above. Only ``SingleFileBackend`` sets it.
+    RAW_STREAMS: ClassVar[bool] = False
     # ".gz" -> ArchiveFormat.GZ
     EXTENSIONS: Mapping[str, ArchiveFormat] = {}
     # Exact magic-byte signals as data (offset, bytes, format), accepted on the byte match.
@@ -3395,7 +3409,7 @@ class BaseArchiveReader(ArchiveReader):
     def _open_outer_codec_stream(
         self,
         source: ArchiveSource,
-        stream_format: StreamFormat,
+        stream_format: StreamFormat | PluginStream,
         streaming: bool,
         *,
         member_streams: MemberStreams,

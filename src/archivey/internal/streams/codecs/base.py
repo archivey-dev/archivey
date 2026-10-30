@@ -45,6 +45,7 @@ from archivey.types import (
     MagicSignature,
     MissingComponent,
     OptionalLibrary,
+    PluginStream,
     StreamFormat,
 )
 
@@ -88,6 +89,13 @@ class Codec(Enum):
     BCJ_IA64 = "bcj_ia64"
     BCJ_ARM64 = "bcj_arm64"
     BCJ_RISCV = "bcj_riscv"
+
+
+# What names a codec: a built-in :class:`Codec`, or the stream format of a codec a
+# plugin registered (``archivey.formats.register_codec``), which has no ``Codec``.
+CodecId = Codec | PluginStream
+# A compression stream around a container, built-in or a plugin's.
+AnyStreamFormat = StreamFormat | PluginStream
 
 
 # liblzma raw-filter ids for the filter-only codecs. Each one but ARM64 and RISC-V can
@@ -342,11 +350,11 @@ class StreamCodec:
     override just ``open`` + ``translate``.
     """
 
-    codec: ClassVar[Codec]
+    codec: ClassVar[CodecId]
     # The single-file/TAR StreamFormat this codec decodes, when it is a stream format at all
     # (raw container coders such as DEFLATE/LZMA have none). This drives the derived
     # single-file format + extension below.
-    stream_format: ClassVar[StreamFormat | None] = None
+    stream_format: ClassVar[AnyStreamFormat | None] = None
     # Exact magic signals for the standalone format, aggregated by the detector.
     magic: ClassVar[tuple[MagicSignature, ...]] = ()
     # The optional-dependency requirement (package / extra / hint + unlocked capability);

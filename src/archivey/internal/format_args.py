@@ -56,6 +56,7 @@ from archivey.types import (
     ArchiveFormat,
     ContainerFormat,
     PluginContainer,
+    PluginStream,
     StreamFormat,
 )
 
@@ -132,7 +133,7 @@ def _accepted_archive_formats() -> str:
     return ", ".join(repr(s) for s in spellings)
 
 
-def outer_stream_format(fmt: ArchiveFormat) -> StreamFormat | None:
+def outer_stream_format(fmt: ArchiveFormat) -> StreamFormat | PluginStream | None:
     """The codec ``open_stream`` decodes for ``fmt``, or ``None`` when it has none.
 
     A raw stream is its codec. A compressed tar is a tar inside a single-file
@@ -228,7 +229,7 @@ def coerce_archive_format(
 
 def coerce_stream_or_archive_format(
     value: object, *, call: str
-) -> ArchiveFormat | StreamFormat | None:
+) -> ArchiveFormat | StreamFormat | PluginStream | None:
     """Return ``value`` as one of the two format types, or raise ``ArchiveyUsageError``.
 
     ``open_stream``'s wider argument is deliberate, not an inconsistency to iron out:
@@ -236,7 +237,7 @@ def coerce_stream_or_archive_format(
     """
     if value is None:
         return None
-    if isinstance(value, (ArchiveFormat, StreamFormat)):
+    if isinstance(value, (ArchiveFormat, StreamFormat, PluginStream)):
         return value
     # As in ``coerce_archive_format``: a ``StrEnum`` member of a third enum would
     # otherwise be read as a spelling. ``ContainerFormat.ZIP`` survived here only
@@ -255,6 +256,9 @@ def coerce_stream_or_archive_format(
         stream = _lookup(StreamFormat).get(spelling)
         if stream is not None:
             return stream
+        plugin = _plugin_spellings.get(spelling)
+        if plugin is not None and plugin.container is ContainerFormat.RAW_STREAM:
+            return plugin
     raise _usage_error_for(value)(
         f"{call} takes a StreamFormat or an ArchiveFormat (or either spelled as a "
         f"string), but got {_describe(value)}. "

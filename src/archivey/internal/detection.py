@@ -146,6 +146,7 @@ from archivey.types import (
     ContainerFormat,
     MagicSignature,
     PluginContainer,
+    PluginStream,
     StreamFormat,
     TrailerSignature,
 )
@@ -388,7 +389,7 @@ def _match_extension(
 
 
 def _probe_inner_container(
-    stream_format: StreamFormat,
+    stream_format: StreamFormat | PluginStream,
     peek_more: CandidateView,
     workspace: PrefixWorkspace | None = None,
     *,
@@ -657,7 +658,7 @@ _ALSO_NAMES_STREAM: dict[str, StreamFormat] = {".tlz": StreamFormat.LZMA_ALONE}
 
 def _streams_named_by(
     ext_match: tuple[ArchiveFormat, str] | None,
-) -> frozenset[StreamFormat]:
+) -> frozenset[StreamFormat | PluginStream]:
     """The stream formats whose content probe the source's extension allows."""
     if ext_match is None:
         return frozenset()
@@ -1197,7 +1198,10 @@ def _detect_format_body(
     if formats._turns_off_plugins:
 
         def is_off(fmt: ArchiveFormat) -> bool:
-            if isinstance(fmt.container, PluginContainer) and not formats.allows(fmt):
+            if (
+                isinstance(fmt.container, PluginContainer)
+                or isinstance(fmt.stream, PluginStream)
+            ) and not formats.allows(fmt):
                 off_formats.add(fmt)
                 return True
             return False

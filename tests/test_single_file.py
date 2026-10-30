@@ -1071,10 +1071,12 @@ _NOT_A_STREAM = {"zeros": b"\x00" * 40_000, "zero-byte": b""}
 def test_open_validation_table_covers_every_single_file_codec() -> None:
     # A new standalone codec gets open-time validation without a backend change; this
     # makes it fail here until the tables below cover it too.
-    from archivey.internal.streams.codecs import SINGLE_FILE_CODECS
+    from archivey.internal.streams.codecs import single_file_codecs
 
     # The canonical extension only: an alias (``.brotli``) is the same codec.
-    suffixes = {codec.extensions[0] for codec in SINGLE_FILE_CODECS if codec.extensions}
+    suffixes = {
+        codec.extensions[0] for codec in single_file_codecs() if codec.extensions
+    }
     assert suffixes == set(_SINGLE_FILE_CODECS)
 
 
