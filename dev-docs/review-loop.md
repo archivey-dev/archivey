@@ -84,7 +84,9 @@ was reviewed. `OUTCOME_LABELS` in the gate holds the mapping.
 from `python3 scripts/review_prep.py tier` (the review skill's §1 says what each tier
 asks of a reviewer). It runs the base branch's copy of the script, so a pull request
 cannot lower its own tier by editing the path lists. It only reports, like the outcome
-labels.
+labels. A deep pull request's first round ends with a security pass: the reviewer tries
+to break each defended property the change carries, and its findings start at 🔴
+(skill §1).
 
 **The reviewer is Sonnet, with the project installed.** The round installs the project
 at the pull request's own lockfile (`uv sync --frozen --group dev --extra all`, what

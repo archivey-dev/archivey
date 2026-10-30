@@ -95,6 +95,23 @@ each path is on its list, live in that script.
   fix outward (`fix-round.md`), not only the ones that moved a contract. When the script
   says the maintainer merges, say so in block 1.
 
+  **A first look at a deep pull request ends with a security pass**, done after the
+  rest of the review and reported on its own. Safe handling of hostile archives is what
+  the deep paths carry, so it gets its own attention rather than whatever is left after
+  the general review (maintainer, 2026-10-30). Take each defended property in
+  `threat-model.md` §3 that a changed path carries, and try to break it with input an
+  attacker controls: a crafted name, size, offset, link target or member order; a
+  truncated or concatenated stream; a hostile directory source. For a workflow or release
+  file, the attacker is whoever can open a pull request or write a branch name, title,
+  label or comment: their text must not reach a `run:` line, a token with more scope
+  than the job needs, or a step that runs code from the pull request with secrets. Run
+  the attempt where you can, and add the `tests/test_cve_regressions*.py` case closest to
+  the change to what you run. In the Snapshot, write one `Security pass:` line per
+  property: what you tried and what happened. Its findings are ordinary findings with
+  the next IDs, and they are **🔴 by default**: lower one only with a measured reason the
+  input cannot reach the code or the harm is bounded, and say which. A fix round on a
+  deep pull request runs the pass again only over code its fixes changed.
+
 The Snapshot line names the tier. Check the PR body's Risk section against the script: a
 public API change the body does not declare is 🟡, and a wrong tier line is 🟢.
 
