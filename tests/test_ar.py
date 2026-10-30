@@ -319,6 +319,15 @@ def test_a_symbol_table_is_skipped_and_names_the_dialect(
         assert reader.info.extra["ar.dialect"] == dialect
 
 
+def test_a_name_that_is_not_utf8_follows_encoding(tmp_path: Path) -> None:
+    """ar declares no name encoding, so ``encoding=`` replaces the escape fallback."""
+    path = _archive(tmp_path, _ar((b"caf\xe9.txt/", b"data")))
+    with open_archive(path) as reader:
+        assert [m.name for m in reader.members()] == ["caf\udce9.txt"]
+    with open_archive(path, encoding="latin-1") as reader:
+        assert [m.name for m in reader.members()] == ["café.txt"]
+
+
 def test_fields_padded_on_the_left(tmp_path: Path) -> None:
     """GNU ar reads numbers with strtol, which skips leading blanks."""
     header = b"x.txt/".ljust(16) + b"7".rjust(12) + b"0".rjust(6) + b"0".rjust(6)
