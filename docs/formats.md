@@ -7,6 +7,7 @@ the same order: what it needs, how it lists and reads, and its quirks.
 The maintainer handbook has more depth on
 [7z](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/7z.md),
 [ISO](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/iso.md),
+[SquashFS](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/squashfs.md),
 [CPIO](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/cpio.md),
 [ar](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/ar.md),
 [RAR](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/rar.md),
@@ -45,6 +46,9 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
   solid, otherwise direct. Needs a source that can seek.
 - **ISO 9660:** `[recommended]` (`pycdlib`). Listing: from its index. Members: direct. Needs a
   source that can seek.
+- **SquashFS** (`.squashfs`, `.sqfs`, `.snap`): core for gzip, xz, LZMA and LZO images;
+  Zstandard images need what a `.zst` file needs; LZ4 images need `[recommended]`. Listing:
+  from its index. Members: direct. Needs a source that can seek.
 - **CPIO** (`.cpio`, initramfs, RPM payloads): core. Listing: header by header. Members:
   direct. Reads from a pipe, and inside any compressor TAR reads inside (`.cpio.gz`, …).
 - **ar** (`.a`, `.lib`, the outer layer of a `.deb`): core. Listing: header by header. Members:
@@ -130,7 +134,7 @@ The fields that change, by format:
   after its data, until the pass gets past its data. Also from a pipe, until the pass reads the
   index, every field only the index holds: `type`, `name` (where a DOS host makes `\` a separator),
   `mode`, `create_system`, `comment`, and the times and owner ids from its extra fields.
-- **TAR, 7z, RAR, ISO, CPIO:** `is_current` and `link_target_member`.
+- **TAR, 7z, RAR, ISO, SquashFS, CPIO:** `is_current` and `link_target_member`.
 - **Directory:** `link_target_member`. Names never repeat, so `is_current` never changes.
 - **Single compressed files:** `size`, when the format records none. A full read fills it in, and
   the flag stays `False` until then ([Single-file compressors](#single-file-compressors)).
@@ -139,8 +143,8 @@ A symlink whose target archivey has not read yet (`read_link_targets=False`) can
 
 - **ZIP and 7z:** `link_target`. A Windows reparse point whose data is not a link becomes a `FILE`.
 - **RAR:** `link_target`, in RAR 4 only.
-- **TAR, ISO, directory, single compressed files:** nothing. The header, Rock Ridge or the
-  filesystem gives the target with the entry.
+- **TAR, ISO, SquashFS, CPIO, directory, single compressed files:** nothing. The header,
+  Rock Ridge, the inode, the member's data or the filesystem gives the target with the entry.
 
 `members()`, `members_report()` and `get()` return members that read `True`, except unread
 symlinks, and single-file or large macOS ZIP members whose `size` a full read has not filled in
@@ -169,7 +173,7 @@ A CRC-32 is four big-endian bytes, so a CRC you computed compares as
   combined from each member's CRC, equal to the CRC-32 of the whole payload.
 - **CPIO:** none. A crc archive stores a 32-bit sum of each file's data, which a full read
   checks, but it is not a digest `hashes` can hold.
-- **TAR, ar, directory, and every other single compressed file:** none.
+- **TAR, SquashFS, ar, directory, and every other single compressed file:** none.
 
 When a format stores none, compute a digest while reading. A first-pass dedupe index can take the
 best one available:
@@ -1018,6 +1022,24 @@ misread the archive.
 - Raw CD sector images (the `.bin` of a `.bin`/`.cue` pair) are recognised and refused with
   `UnsupportedFeatureError` naming the sector layout. Convert one to a plain `.iso` first (for
   example with `bchunk` or `bin2iso`).
+
+## SquashFS
+
+- **Needs:** nothing for gzip, xz, LZMA and LZO images. A Zstandard image needs what a `.zst`
+  file needs ([below](#single-file-compressors)), and an LZ4 image needs `[recommended]`
+  (`lz4`). LZO is decoded in Python, or by liblzo2 when `python-lzo` is installed.
+- **Listing:** from the image's inode and directory tables.
+- **Reading members:** direct. Small files share a fragment block, which is decoded once for
+  all of them.
+- **From a pipe:** no; the tables come after the file data, so the image needs a source
+  that can seek.
+- `ArchiveInfo.format_version` is `"4.0"`. `ArchiveInfo.extra["squashfs.compressor"]` names
+  the compressor and `extra["squashfs.block_size"]` the block size.
+- Files, directories, symlinks, hard links, sparse files, and devices, FIFOs and sockets
+  (`OTHER`) read. Extended attributes are not read.
+- Big-endian images (SquashFS 3 and older) raise `UnsupportedFeatureError`.
+- SquashFS stores no checksums, so a damaged block is found only when it does not decode to
+  its length.
 
 ## CPIO
 

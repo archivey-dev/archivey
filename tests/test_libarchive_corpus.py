@@ -16,10 +16,6 @@ the ``LIBARCHIVE`` variable names, so a build of the clone can be used without
 installing it (``cmake -S libarchive -B build -DENABLE_TEST=OFF``, then
 ``LIBARCHIVE=build/libarchive/libarchive.so``).
 
-The SquashFS plugin in ``packages/`` is registered when it is installed
-(``uv pip install -e packages/archivey-squashfs``), so its fixtures are compared too;
-without it they are skipped as unknown formats.
-
 Reference ``.uu`` blobs are decoded into ``ARCHIVEY_TEST_CACHE`` on first use.
 Skips archives libarchive cannot open, non-primary split volumes, libarchive
 fuzz/crash fixtures, and formats Archivey does not implement.
@@ -85,7 +81,6 @@ from archivey import (
 )
 from archivey.types import ArchiveFormat, ContainerFormat, StreamFormat
 from tests.conftest import ARCHIVEY_TEST_CACHE, binary_refusal, requires
-from tests.corpus_plugins import installed_plugins
 from tests.sample_archives import publish_cached
 
 _ENV = "ARCHIVEY_LIBARCHIVE_TEST_FILES"
@@ -459,14 +454,6 @@ pytestmark = [
     ),
     requires("libarchive"),
 ]
-
-
-@pytest.fixture(scope="module", autouse=True)
-def _plugins() -> Iterator[None]:
-    """Register the plugins in packages/ that are installed, so their fixtures are
-    compared instead of skipped as unknown formats; undone when the module ends."""
-    with installed_plugins():
-        yield
 
 
 @pytest.fixture(scope="module")

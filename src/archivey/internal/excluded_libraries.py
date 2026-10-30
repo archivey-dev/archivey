@@ -19,8 +19,8 @@ NO_EXCLUSIONS: frozenset[OptionalLibrary] = frozenset()
 EXCLUDED_REASON = "ArchiveyConfig.formats.exclude_libraries turns it off"
 """``MissingComponent.reason`` for an excluded package: installing it would not help.
 
-archivey-squashfs keeps a copy, since a plugin cannot import this module; its tests
-compare the two, so a reword here must reach it."""
+The SquashFS reader keeps a copy, since it is written against the public API only;
+``tests/test_squashfs.py`` compares the two, so a reword here must reach it."""
 
 
 def as_excluded(component: MissingComponent) -> MissingComponent:

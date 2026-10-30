@@ -54,8 +54,8 @@ on:
 # A pull request push runs a reduced set of jobs; the merge queue, the daily run and a
 # dispatched run get all of them. Every job below runs on pull requests unless it says
 # otherwise. On a pull request: lint, the `test` legs (Linux 3.11 and 3.14 [all], Linux
-# 3.11 core-only, Windows 3.14 [all]), free-threaded 3.13t, the structural benchmark and
-# the three plugin jobs. Only past it: the `test-queue` legs (the other Pythons, 3.14
+# 3.11 core-only, Windows 3.14 [all]), free-threaded 3.13t and the structural benchmark.
+# Only past it: the `test-queue` legs (the other Pythons, 3.14
 # core-only, the minimum versions, macOS, Windows 3.11), 3.15t, the distribution unar
 # packages, PyPy and the short Atheris fuzz. A failure there takes the pull request out
 # of the queue. The split exists because the organization's runners are shared (20 jobs
@@ -94,9 +94,9 @@ jobs:
         # the everyday recommended install; core-only is covered by the test matrix.
         run: uv sync --group dev --extra all
       - name: Ruff lint
-        run: uv run ruff check src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/
+        run: uv run ruff check src/ tests/ scripts/ benchmarks/
       - name: Ruff format
-        run: uv run ruff format --check src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/
+        run: uv run ruff format --check src/ tests/ scripts/ benchmarks/
       - name: Pyrefly
         run: uv run pyrefly check
       - name: ty
@@ -784,34 +784,6 @@ jobs:
       - name: Pytest structural gate + measurement unit tests
         run: uv run --no-sync pytest tests/test_benchmark_gate.py tests/test_measurement.py -q
 
-  # The SquashFS reader in packages/archivey-squashfs: a format added from outside the
-  # library, through the public plugin API only. Its own tests, against images
-  # mksquashfs wrote (tests/data/make-images.sh), with lz4 for the LZ4 image and
-  # python-lzo for the second LZO decoder.
-  squashfs-plugin:
-    name: archivey-squashfs plugin
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - name: Set up Python
-        run: uv python install 3.11
-      - name: Install liblzo2, which python-lzo builds against
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends liblzo2-dev
-      - name: Sync, then install the package over it
-        # python-lzo too, so the tests check the package's LZO decoder against liblzo2.
-        run: |
-          uv sync --group dev --extra all
-          uv pip install -e packages/archivey-squashfs --no-deps
-          uv pip install python-lzo
-      - name: Pytest
-        run: uv run --no-sync pytest packages/archivey-squashfs/tests -q --no-cov -rs
-
   # The short Atheris fuzz (atheris-fuzz.yml in its short mode, three shards), in the
   # merge queue only. The nightly and dispatched full runs stay in that workflow.
   atheris:
@@ -828,7 +800,7 @@ jobs:
   gate:
     name: CI gate
     if: ${{ always() && github.event_name == 'merge_group' }}
-    needs: [lint, test, test-queue, unar-distro-packages, free-threaded-concurrency, pypy, benchmark, squashfs-plugin, atheris]
+    needs: [lint, test, test-queue, unar-distro-packages, free-threaded-concurrency, pypy, benchmark, atheris]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

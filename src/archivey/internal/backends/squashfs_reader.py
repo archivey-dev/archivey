@@ -1,4 +1,4 @@
-"""A SquashFS 4.0 reader on archivey's public plugin interface.
+"""A SquashFS 4.0 reader, written against ``archivey.formats``.
 
 The layout, from the squashfs-tools sources and the kernel's ``squashfs_fs.h``: a 96-byte
 superblock, then data blocks and fragment blocks, then the tables. The inode table and
@@ -12,7 +12,11 @@ The reader trusts nothing it reads: every size is checked against what the forma
 allows, the directory walk is a loop that refuses a directory reached twice, and every
 compressed block goes through ``ReaderContext.decompress``, so archivey's decoder limits
 apply, or through a decoder capped at the block's size: ``lz4.block`` for LZ4, and
-:mod:`archivey_squashfs.lzo` for LZO.
+:mod:`.squashfs_lzo` for LZO.
+
+The reader uses only ``archivey.formats`` and archivey's public names, as a format added
+from outside would; ``register_builtin_format`` is the one internal name it uses
+(``tests/test_squashfs.py`` checks). Handbook page: ``dev-docs/formats/squashfs.md``.
 """
 
 from __future__ import annotations
@@ -25,20 +29,16 @@ from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from typing import Any, BinaryIO, NamedTuple
 
-from archivey import (
-    ArchiveMember,
-    CompressionAlgorithm,
+from archivey.exceptions import (
     CorruptionError,
-    MemberType,
-    MissingComponent,
-    OptionalLibrary,
     PackageNotInstalledError,
-    StreamFormat,
     TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.formats import (
+    FormatHandler,
     IndexedReader,
+    Magic,
     MemberData,
     MemberRecord,
     ReaderArchiveInfo,
@@ -46,7 +46,17 @@ from archivey.formats import (
     ReaderSource,
     block_stream,
 )
-from archivey_squashfs import lzo
+from archivey.internal.backends import squashfs_lzo as lzo
+from archivey.internal.format_adapter import register_builtin_format
+from archivey.types import (
+    ArchiveFormat,
+    ArchiveMember,
+    CompressionAlgorithm,
+    MemberType,
+    MissingComponent,
+    OptionalLibrary,
+    StreamFormat,
+)
 
 MAGIC = b"hsqs"
 _SWAPPED_MAGIC = b"sqsh"  # big-endian images, written by SquashFS 3 and older
@@ -66,11 +76,10 @@ _SYMLINK_MAX = 65535
 # level or variant that the same decoder reads.
 # archivey does not use python-lz4 under PyPy, where its frame decoder crashes the
 # interpreter (dev-docs/known-issues.md). Only the block decoder is used here, but no one
-# has shown it safe there, so this package does the same and says why in place of the
+# has shown it safe there, so this reader does the same and says why in place of the
 # install advice.
 _LZ4_UNUSED_REASON = (
-    "archivey-squashfs does not use lz4 under PyPy, where python-lz4 crashes the "
-    "interpreter"
+    "archivey does not use lz4 under PyPy, where python-lz4 crashes the interpreter"
     if sys.implementation.name == "pypy"
     else ""
 )
@@ -223,8 +232,8 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         if OptionalLibrary.LZ4 in self._context.config.formats.exclude_libraries:
             # Turned off for this call: it reads as not installed, and installing it
             # would not help. The same words as archivey's own refusals
-            # (archivey.internal.excluded_libraries.EXCLUDED_REASON), which a plugin
-            # cannot import; a test compares the two.
+            # (archivey.internal.excluded_libraries.EXCLUDED_REASON), which a format
+            # written against the public API cannot import; a test compares the two.
             reason = "ArchiveyConfig.formats.exclude_libraries turns it off"
         if not reason:
             try:
@@ -234,7 +243,10 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
             else:
                 return lz4.block
         requirement = MissingComponent(
-            OptionalLibrary.LZ4, "pip install lz4", ("lz4",), reason=reason
+            OptionalLibrary.LZ4,
+            "pip install archivey[recommended]",
+            ("lz4",),
+            reason=reason,
         )
         raise PackageNotInstalledError(
             requirement.message("an LZ4-compressed SquashFS image"),
@@ -641,3 +653,22 @@ class _MetadataCursor:
             if self.offset == len(data):
                 self._pos, self.offset = next_pos, 0
         return b"".join(parts)
+
+
+class SquashfsHandler(FormatHandler):
+    """SquashFS 4.0 images: ``.squashfs``, ``.sqfs`` and snap packages."""
+
+    format = ArchiveFormat.SQUASHFS
+    extensions = (".squashfs", ".sqfs", ".snap")
+    magic = (Magic(0, MAGIC),)
+    uses_encoding = True
+
+    def open(self, source: ReaderSource, context: ReaderContext) -> SquashfsReader:
+        return SquashfsReader(source, context)
+
+
+SquashfsReadBackend = register_builtin_format(
+    SquashfsHandler,
+    # The tables are at offsets the superblock gives, past the data blocks.
+    NON_SEEKABLE_REASON="its directory and inode tables come after the file data",
+)

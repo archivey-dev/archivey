@@ -21,10 +21,6 @@ normal suite: every file where Archivey and CC disagree must have a reason in
 ``_TRIAGE``, so a rewrite of the pins that brings a new divergence fails until someone
 reads it.
 
-The SquashFS plugin in ``packages/`` is registered when it is installed
-(``uv pip install -e packages/archivey-squashfs``). The pins assume it, so without it
-the comparison is skipped.
-
 Triage (2026-10-28, CC master ``0c20ded``, 1.29.0-SNAPSHOT), in the report's groups:
 
 * **MISSING FORMAT** CC reads LHA, dump, ARJ and Snappy, which Archivey does not
@@ -59,7 +55,6 @@ import pytest
 
 from archivey import ArchiveyConfig, open_archive
 from archivey.types import ArchiveFormat, ContainerFormat
-from tests.corpus_plugins import PLUGINS, installed_plugins
 
 _ENV = "ARCHIVEY_COMMONS_COMPRESS_TEST_FILES"
 EXPECTED_PATH = (
@@ -402,26 +397,15 @@ def _params() -> Iterator[Any]:
             yield pytest.param(name, pipe, id=f"{mode}:{name}")
 
 
-@pytest.fixture(scope="module")
-def _plugins() -> Iterator[frozenset[str]]:
-    with installed_plugins() as installed:
-        yield installed
-
-
 @pytest.mark.skipif(
     _ROOT is None,
     reason=f"set {_ENV} to Commons Compress's src/test/resources to run this corpus",
 )
 @pytest.mark.parametrize(("name", "pipe"), list(_params()))
-def test_archivey_matches_the_pinned_result(
-    name: str, pipe: bool, _plugins: frozenset[str]
-) -> None:
+def test_archivey_matches_the_pinned_result(name: str, pipe: bool) -> None:
     assert _ROOT is not None
     entry = _EXPECTED[name]
     expected = entry.get("pipe", entry["path"]) if pipe else entry["path"]
-    if missing := sorted({module for module, _ in PLUGINS} - _plugins):
-        # A damaged ar file is a CorruptionError with the plugin and no format without.
-        pytest.skip(f"the pins assume every plugin; not installed: {missing}")
     listing = list_with_archivey(_ROOT / name, pipe=pipe)
     assert summarize(listing) == expected, json.dumps(listing, indent=1)
 

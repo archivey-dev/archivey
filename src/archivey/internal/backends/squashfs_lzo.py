@@ -1,7 +1,7 @@
 """LZO1X decompression, for the blocks of an LZO-compressed SquashFS image.
 
 ``python-lzo`` binds liblzo2 and is used when it is installed, but it is GPL and has no
-Linux wheels, so the package also carries this decoder in Python. It follows
+Linux wheels, so archivey also carries this decoder in Python. It follows
 ``lzo1x_decompress_safe`` in the Linux kernel (``lib/lzo/lzo1x_decompress_safe.c``),
 without the LZO-RLE extension, which SquashFS does not write. A SquashFS block decodes to
 at most its block size (1 MiB), so a decoder in Python is slow but bounded.

@@ -168,6 +168,14 @@ def cpio_seeds() -> list[bytes]:
     return tiny + _fixture_seeds("cpio", "*.cpio")
 
 
+def squashfs_seeds() -> list[bytes]:
+    """Tiny blobs and the images in tests/fixtures/squashfs, one per compressor and
+    layout (no fragments, tail ends), each a few KiB."""
+    tiny = [b"", b"hsqs", b"hsqs" + bytes(92), b"sqsh" + bytes(92)]
+    paths = sorted((_REPO_ROOT / "tests" / "fixtures" / "squashfs").glob("*.sqfs"))
+    return tiny + [path.read_bytes() for path in paths]
+
+
 def _fixture_seeds(folder: str, pattern: str) -> list[bytes]:
     """The fixtures in tests/fixtures/<folder>, plain and gzip-compressed."""
     paths = sorted((_REPO_ROOT / "tests" / "fixtures" / folder).glob(pattern))

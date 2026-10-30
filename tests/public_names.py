@@ -30,12 +30,14 @@ def _imported_names(path: Path) -> Iterator[tuple[str, str]]:
             yield from ((node.module, alias.name) for alias in node.names)
 
 
-def assert_only_public_archivey(module_file: str | None) -> None:
+def assert_only_public_archivey(
+    module_file: str | None, *, own: tuple[str, ...] = ()
+) -> None:
     """Every archivey name the module imports is public, apart from the call that
-    registers it as a built-in format."""
+    registers it as a built-in format and the reader's ``own`` helper modules."""
     assert module_file is not None
     for module, name in _imported_names(Path(module_file)):
-        if module.split(".")[0] != "archivey":
+        if module.split(".")[0] != "archivey" or f"{module}.{name}" in own:
             continue
         if module == "archivey.internal.format_adapter":
             assert name == "register_builtin_format", name

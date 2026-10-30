@@ -1,18 +1,15 @@
-"""archivey-squashfs against images written by mksquashfs (``data/make-images.sh``)."""
+"""The SquashFS reader against images written by mksquashfs
+(``fixtures/squashfs/make-images.sh``)."""
 
 from __future__ import annotations
 
-import ast
 import importlib.util
 import io
 import random
 import struct
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from archivey_squashfs import SQUASHFS, SquashfsHandler, lzo
-from archivey_squashfs.reader import SquashfsReader
 
 import archivey
 from archivey import (
@@ -27,11 +24,13 @@ from archivey import (
     detect_format,
     open_archive,
 )
-from archivey.formats import register_format
+from archivey.internal.backends import squashfs_lzo as lzo, squashfs_reader
+from archivey.internal.backends.squashfs_reader import SquashfsReader
 from archivey.internal.excluded_libraries import EXCLUDED_REASON
+from tests.public_names import assert_only_public_archivey
 
-DATA = Path(__file__).parent / "data"
-PACKAGE = Path(__file__).parents[1] / "src" / "archivey_squashfs"
+SQUASHFS = archivey.ArchiveFormat.SQUASHFS
+DATA = Path(__file__).parent / "fixtures" / "squashfs"
 
 # The tree make-images.sh writes, as ``archivey`` lists it.
 CONTENT = {
@@ -75,11 +74,6 @@ IMAGES = [
     "no-fragments",
     "tail-ends",
 ]
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _registered() -> None:
-    register_format(SquashfsHandler)
 
 
 def _image(tmp_path: Path, data: bytes, name: str = "t.sqfs") -> Path:
@@ -139,7 +133,7 @@ def test_a_damaged_lzo_block(tmp_path: Path, lzo_decoder: str) -> None:
 def test_detected_by_magic_and_by_name(tmp_path: Path) -> None:
     info = detect_format(DATA / "gzip.sqfs")
     assert info.format == SQUASHFS
-    assert info.from_plugin
+    assert not info.from_plugin
     renamed = _image(tmp_path, (DATA / "gzip.sqfs").read_bytes(), "image.bin")
     assert detect_format(renamed).format == SQUASHFS
 
@@ -346,19 +340,13 @@ def test_a_symlink_target_longer_than_the_kernel_allows(tmp_path: Path) -> None:
 # ── The package ────────────────────────────────────────────────────────────────────
 
 
-def _imports(path: Path) -> Iterator[str]:
-    for node in ast.walk(ast.parse(path.read_text())):
-        if isinstance(node, ast.Import):
-            yield from (alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            yield node.module
-
-
-def test_the_package_uses_only_public_archivey() -> None:
-    """The point of the package: a format added from outside, through the plugin API."""
-    used = {name for path in PACKAGE.rglob("*.py") for name in _imports(path)}
-    archivey_modules = {name for name in used if name.split(".")[0] == "archivey"}
-    assert archivey_modules == {"archivey", "archivey.formats"}
+def test_the_reader_uses_only_public_archivey() -> None:
+    """Written as a format added from outside would be, apart from its own LZO
+    decoder."""
+    assert_only_public_archivey(
+        squashfs_reader.__file__, own=("archivey.internal.backends.squashfs_lzo",)
+    )
+    assert_only_public_archivey(lzo.__file__)
 
 
 def test_the_reader_is_an_indexed_reader() -> None:
@@ -377,17 +365,15 @@ def test_lz4_turned_off_by_the_policy_reads_as_not_installed() -> None:
         archive.read("a.txt")
     (component,) = e.value.missing
     assert component.name is OptionalLibrary.LZ4
-    # The plugin's copy of archivey's wording: a reword of either fails here.
+    # The reader's copy of archivey's wording: a reword of either fails here.
     assert component.reason == EXCLUDED_REASON
 
 
 def test_lz4_under_pypy_gives_the_reason_not_install_advice(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from archivey_squashfs import reader as reader_module
-
-    reason = "archivey-squashfs does not use lz4 under PyPy, for the test"
-    monkeypatch.setattr(reader_module, "_LZ4_UNUSED_REASON", reason)
+    reason = "archivey does not use lz4 under PyPy, for the test"
+    monkeypatch.setattr(squashfs_reader, "_LZ4_UNUSED_REASON", reason)
     with (
         pytest.raises(PackageNotInstalledError, match="for the test") as exc_info,
         open_archive(DATA / "lz4.sqfs") as archive,

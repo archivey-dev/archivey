@@ -1,4 +1,4 @@
-"""The package's LZO1X decoder, on streams written by liblzo and on damaged ones."""
+"""The SquashFS reader's LZO1X decoder, on streams written by liblzo and on damaged ones."""
 
 from __future__ import annotations
 
@@ -8,7 +8,8 @@ import tracemalloc
 from pathlib import Path
 
 import pytest
-from archivey_squashfs.lzo import LzoError, decompress_python
+
+from archivey.internal.backends.squashfs_lzo import LzoError, decompress_python
 
 # Each written by python-lzo (liblzo2 2.10): ``lzo.compress(data, level, False)``.
 _END = b"\x11\x00\x00"
@@ -65,7 +66,7 @@ def test_matches_liblzo() -> None:
 
 def _metadata_blocks(name: str) -> list[bytes]:
     """The compressed metadata blocks of an LZO image: its inode and directory tables."""
-    image = (Path(__file__).parent / "data" / name).read_bytes()
+    image = (Path(__file__).parent / "fixtures" / "squashfs" / name).read_bytes()
     fields = struct.unpack_from("<IIIIIHHHHHHQQQQQQQQ", image)
     inodes, directories = fields[15], fields[16]
     end = min(v for v in fields[13:19] if directories < v != 0xFFFF_FFFF_FFFF_FFFF)

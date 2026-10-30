@@ -3,8 +3,8 @@
 `archivey.formats` is a small set of shared structures for reading a format. A format
 describes itself and hands archivey its members and their bytes, and archivey does the
 heavy lifting: name checks, limits, links, digests, extraction, and decoding the
-compression around or inside the archive. The built-in ISO 9660 reader is written this
-way, and more built-in formats are planned on it (CPIO, ar, SquashFS, and TAR). The same
+compression around or inside the archive. The built-in ISO 9660, SquashFS, CPIO and ar
+readers are written this way, and TAR is planned on it. The same
 structures are public, so a program or a separate package (a *plugin*) can add a format
 of its own. A format added this way works with `open_archive`, `detect_format`,
 `format=`, `format_availability`, the format lists, extraction and the `archivey`
@@ -52,15 +52,15 @@ same way it does for a built-in format: it normalizes member names, checks them,
 the listing limits, resolves links, checks each member's size and checksum as it is read,
 and extracts safely.
 
-Complete readers written this way are in the repository.
-[`packages/archivey-squashfs`](https://github.com/archivey-dev/archivey/tree/main/packages/archivey-squashfs)
-is a plugin outside archivey, unpublished, for SquashFS images, a format with an index.
-The built-in readers for CPIO,
-[`cpio_reader.py`](https://github.com/archivey-dev/archivey/blob/main/src/archivey/internal/backends/cpio_reader.py),
-and ar,
+Three complete readers in the repository use only `archivey.formats` and archivey's
+public names, apart from the call that registers each as a built-in format, so they read
+as a plugin would:
+[`squashfs_reader.py`](https://github.com/archivey-dev/archivey/blob/main/src/archivey/internal/backends/squashfs_reader.py)
+for SquashFS images, a format with an index, and
+[`cpio_reader.py`](https://github.com/archivey-dev/archivey/blob/main/src/archivey/internal/backends/cpio_reader.py)
+and
 [`ar_reader.py`](https://github.com/archivey-dev/archivey/blob/main/src/archivey/internal/backends/ar_reader.py),
-are read in one pass. They use only `archivey.formats` and archivey's public names too,
-apart from the call that registers each as a built-in format.
+read in one pass.
 
 ## A complete example
 
@@ -267,7 +267,7 @@ block `i` decoded. archivey takes care of the rest:
 `read_block` may return the stream `decompress()` gives rather than bytes. archivey then
 asks it for one byte more than the block's length and refuses the block if it gets it.
 How much the stream decodes to answer is the stream's own: a decoder that buffers decodes
-up to its buffer, so keep that buffer near the block size. The SquashFS package's `read_block`
+up to its buffer, so keep that buffer near the block size. The SquashFS reader's `read_block`
 is short: it reads the block list as far as it needs, returns zeros for a sparse block,
 and decodes the rest. Its first branch returns the file's tail, which SquashFS keeps in a
 fragment block shared with other files: `read_block` only has to return the right bytes
@@ -276,7 +276,7 @@ for each index, wherever the format stores them.
 **Your own decoder.** For a method archivey does not decode, wrap the view in your
 library's decoder, or one of your own. Such a decoder is outside archivey's decoder
 limits, so it must stop at the size the format allows: pass the expected output size and
-refuse anything longer. The SquashFS package does this for its LZ4 and LZO blocks, which
+refuse anything longer. The SquashFS reader does this for its LZ4 and LZO blocks, which
 can never be larger than one block.
 
 ### Seeking and short reads
@@ -575,7 +575,7 @@ These habits keep a crafted file from doing more than raising one of archivey's 
 - **Raise archivey's exceptions** for damage, and let your own bugs propagate, as
   [Errors](#errors) describes.
 
-The SquashFS package's tests show a way to test this. They take an image `mksquashfs`
+The SquashFS reader's tests show a way to test this. They take an image `mksquashfs`
 wrote, change one field (a block size, a fragment index, a directory entry's type) and
 check that each change raises `CorruptionError`, `TruncatedError` or
 `UnsupportedFeatureError`.
@@ -699,7 +699,7 @@ probe is not handed the policy, so it must not import anything `requires` does n
 name. A plugin that imports an optional package only for some files, outside
 `requires`, checks `context.config.formats.exclude_libraries` itself before it imports
 the package, and raises `PackageNotInstalledError` with a `MissingComponent` whose
-`reason` says the policy turned it off. `archivey-squashfs` does this for `lz4`.
+`reason` says the policy turned it off. The SquashFS reader does this for `lz4`.
 
 A library that needs a file name rather than a stream can use `ReaderSource.path`, which is
 the path the archive was opened from, or `None` when it was opened from a stream.
@@ -722,7 +722,7 @@ with open_archive("a.zip", config=MY_ZIP) as reader:
 The replacement is an indexed plugin whose `format` is the built-in one, here
 `ArchiveFormat.ZIP`, and it declares no `extensions`, `magic` or `probe`: the file is
 found by the built-in detection, which does not change. `reader.format` is the built-in
-format and `format_info.from_plugin` is false. ZIP, 7z, RAR and ISO can be replaced.
+format and `format_info.from_plugin` is false. ZIP, 7z, RAR, ISO and SquashFS can be replaced.
 `FormatPolicy` checks the plugin when it is built, so a plugin that does not fit fails
 there, before any open.
 
