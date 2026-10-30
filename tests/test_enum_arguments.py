@@ -55,6 +55,8 @@ from archivey.types import (
     ContainerFormat,
     ExtractionPolicyStr,
     OnErrorStr,
+    OptionalLibrary,
+    OptionalLibraryStr,
     OverwritePolicyStr,
     StreamFormat,
 )
@@ -348,6 +350,7 @@ LITERAL_ALIASES: tuple[tuple[type[Enum], object], ...] = (
     (OnError, OnErrorStr),
     (AbortOn, AbortOnStr),
     (DiagnosticCode, DiagnosticCodeStr),
+    (OptionalLibrary, OptionalLibraryStr),
 )
 
 
