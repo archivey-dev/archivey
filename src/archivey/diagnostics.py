@@ -639,14 +639,14 @@ class HeaderAmbiguityContext(_JsonSafeContext):
 
     ``ambiguity`` names the shape: ``"both_families"`` (a GNU long name or link name
     and a PAX ``path`` or ``linkpath`` for one member; the PAX record wins),
-    ``"repeated"`` (one field set twice: two GNU long name or long link headers, or a
-    PAX keyword twice for one member or in one global header; the last wins, the
-    first in a global header), ``"global_member_field"`` (a global PAX header sets
+    ``"repeated"`` (one field set twice: two GNU long name or long link headers, a PAX
+    keyword twice in one header, or two ``x`` headers for one member, of which only
+    the last applies; the last wins, the first in a global header), ``"global_member_field"`` (a global PAX header sets
     ``path``, ``linkpath`` or ``size`` for every member after it) or
     ``"nul_in_value"`` (a PAX ``path``, ``linkpath``, ``uname``, ``gname`` or
     ``GNU.sparse.name`` holding a NUL byte; the value ends there). ``field`` is the
     PAX keyword, with ``"path"`` and ``"linkpath"`` standing for GNU long name and
-    long link headers. A global header's shape is reported on the member after it.
+    long link headers and ``"x"`` for a repeated ``x`` header. A global header's shape is reported on the member after it.
     """
 
     kind: Literal["header_ambiguity"] = "header_ambiguity"

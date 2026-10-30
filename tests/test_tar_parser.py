@@ -19,6 +19,7 @@ from archivey import (
     ArchiveyConfig,
     DiagnosticCode,
     DiagnosticPolicy,
+    ExtractionStatus,
     open_archive,
 )
 from archivey.diagnostics import HeaderAmbiguityContext
@@ -705,15 +706,18 @@ def test_global_records_are_shared_until_a_global_header_changes_them() -> None:
     assert a.pax[b"comment"].value == b"one"  # the old snapshot is unchanged
 
 
-def test_global_empty_value_deletes_the_key() -> None:
+def test_a_later_global_header_with_an_empty_value_still_replaces() -> None:
+    """``comment`` goes because the second header replaces the first; its empty
+    record is skipped, so it is not what removed the key."""
     data = (
         _pax({"comment": "one"}, typeflag=b"g")
-        + _pax({"comment": ""}, typeflag=b"g")
+        + _pax_body(_rec(b"comment", b"") + _rec(b"other", b"x"), typeflag=b"g")
         + _block(b"a")
         + _END
     )
     (entry,), _ = _walk(data)
     assert b"comment" not in entry.pax
+    assert entry.pax[b"other"].value == b"x"
 
 
 # How PAX records combine follows GNU tar 1.35, measured 2026-10-30 against crafted
@@ -840,6 +844,113 @@ def test_an_empty_linkpath_clears_the_target() -> None:
     )
     (entry,), _ = _walk(data)
     assert (entry.linkname, entry.linkname_source) == (b"", NameSource.PAX)
+
+
+@pytest.mark.parametrize("typeflag", [b"1", b"2"])
+@pytest.mark.parametrize("streaming", [False, True])
+def test_an_empty_link_target_is_unavailable_not_fatal(
+    typeflag: bytes, streaming: bool, tmp_path
+) -> None:
+    """An empty PAX linkpath (or header link name) leaves a symlink or hard link with
+    no target: SYMLINK_TARGET_UNAVAILABLE at listing and LINK_TARGET_UNAVAILABLE at
+    extraction, which goes on to the members after it. GNU tar 1.35 substitutes "."
+    for an empty hard link target and fails that link alone."""
+    for spelling in (
+        _pax({"linkpath": ""}) + _block(b"lnk", typeflag=typeflag, linkname=b"t"),
+        _block(b"lnk", typeflag=typeflag, linkname=b""),
+    ):
+        data = _member(b"t", b"T") + spelling + _member(b"after", b"A") + _END
+        with open_archive(
+            io.BytesIO(data), format=ArchiveFormat.TAR, streaming=streaming
+        ) as ar:
+            members = {m.name: m for m, _ in ar.stream_members()}
+            counts = ar.diagnostics.counts
+            assert counts[DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE] == 1
+        assert members["lnk"].link_target is None
+        assert members["lnk"].link_target_unrecorded
+        dest = tmp_path / f"{typeflag.decode()}-{len(spelling)}-{streaming}"
+        with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+            statuses = {r.member.name: r.status for r in ar.extract_all(dest)}
+        assert statuses == {
+            "t": ExtractionStatus.EXTRACTED,
+            "lnk": ExtractionStatus.LINK_TARGET_UNAVAILABLE,
+            "after": ExtractionStatus.EXTRACTED,
+        }
+
+
+def test_only_the_last_x_header_of_a_member_applies() -> None:
+    """GNU tar 1.35 keeps the last x header and drops the earlier ones: merging them
+    would let a dropped size frame ``hidden`` as the member's data."""
+    data = (
+        _pax({"size": "1024"})
+        + _pax({"mtime": "5"})
+        + _block(b"hdr")
+        + _member(b"hidden", b"H")
+        + _member(b"after", b"A")
+        + _END
+    )
+    entries, _ = _walk(data)
+    assert [(e.name, e.size) for e in entries] == [
+        (b"hdr", 0),
+        (b"hidden", 1),
+        (b"after", 1),
+    ]
+    data = _pax({"path": "p1"}) + _pax({"uname": "u"}) + _block(b"hdr") + _END
+    (entry,), _ = _walk(data)
+    assert entry.name == b"hdr"
+    assert entry.uname_pax is not None and entry.uname_pax.value == b"u"
+
+
+def test_a_global_header_between_does_not_drop_the_member_x_header() -> None:
+    data = (
+        _pax({"path": "p1"})
+        + _pax({"comment": "c"}, typeflag=b"g")
+        + _block(b"hdr")
+        + _END
+    )
+    (entry,), _ = _walk(data)
+    assert entry.name == b"p1"
+
+
+@pytest.mark.parametrize(
+    ("records", "expected"),
+    [
+        # The global path stays when the member's own one is empty after the cut.
+        (_rec(b"path", b"\x00abc"), b"glob"),
+        # In one header, a later path empty after the cut leaves the earlier one.
+        (_rec(b"path", b"p1") + _rec(b"path", b"\x00evil"), b"p1"),
+    ],
+)
+def test_a_path_empty_after_the_nul_cut_leaves_the_value_in_force(
+    records: bytes, expected: bytes
+) -> None:
+    data = (
+        _pax({"path": "glob"}, typeflag=b"g")
+        + _pax_body(records)
+        + _block(b"hdr")
+        + _END
+    )
+    (entry,), _ = _walk(data)
+    assert entry.name == expected
+
+
+@pytest.mark.parametrize(
+    ("typeflag", "records", "binary"),
+    [
+        # x: the last hdrcharset decides, as the last value of any key does.
+        (b"x", [b"ISO-IR 10646 2000 UTF-8", b"BINARY"], True),
+        # g: the first, as the first value of any key does.
+        (b"g", [b"BINARY", b"ISO-IR 10646 2000 UTF-8"], True),
+        (b"g", [b"ISO-IR 10646 2000 UTF-8", b"BINARY"], False),
+    ],
+)
+def test_hdrcharset_follows_its_header_s_rule(
+    typeflag: bytes, records: list[bytes], binary: bool
+) -> None:
+    body = b"".join(_rec(b"hdrcharset", r) for r in records) + _rec(b"path", b"n")
+    parsed = parse_pax_records(body, binary_default=False, first_wins=typeflag == b"g")
+    assert parsed.values[b"path"].binary is binary
+    assert (parsed.values[b"hdrcharset"].value == b"BINARY") is binary
 
 
 @pytest.mark.parametrize(
@@ -1725,10 +1836,10 @@ _AMBIGUOUS = {
         "second",
         ("repeated", "path"),
     ),
-    "path in two x": (
-        _pax({"path": "first"}) + _pax({"path": "second"}) + _file(),
-        "second",
-        ("repeated", "path"),
+    "two x": (
+        _pax({"path": "first"}) + _pax({"uname": "u"}) + _file(),
+        "f",
+        ("repeated", "x"),
     ),
     "uname twice in one g": (
         _pax_body(_rec(b"uname", b"a") + _rec(b"uname", b"b"), typeflag=b"g") + _file(),

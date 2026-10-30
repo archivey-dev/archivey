@@ -346,16 +346,26 @@ what `tarfile` does; each difference below would frame or name a member differen
 GNU tar (DR-6, measured 2026-10-30):
 
 - A global (`g`) header replaces the global records of any earlier one; it does not merge
-  with them. `hdrcharset` alone carries over.
+  with them. `hdrcharset` alone carries over, which is archivey's reading: a listing cannot
+  show what GNU tar does with it.
+- A later `x` header for one member replaces an earlier one, its sparse 0.0 map too; a `g`
+  header between them does not drop it. Merging them, as archivey did, let a dropped
+  `size` frame the next member as data. GNU tar cannot read a 0.0 map split across `x`
+  headers either ("excess GNU.sparse.offset").
 - A key repeated in one header keeps its last value in an `x` header and its first in a
-  `g` header.
-- An empty value sets `linkpath`, `uname` and `gname` to empty: a symlink with an empty
-  `linkpath` has no target (`SYMLINK_TARGET_UNAVAILABLE`). An empty `size` is
+  `g` header. `hdrcharset` follows the same rule, and the one kept decides how the
+  header's names decode.
+- An empty value sets `linkpath`, `uname` and `gname` to empty: a symlink or hard link with
+  an empty `linkpath` has no target (`SYMLINK_TARGET_UNAVAILABLE`, and
+  `LINK_TARGET_UNAVAILABLE` at extraction, which goes on; GNU tar substitutes `.` for an
+  empty hard link target and fails that link). An empty `size` is
   `CorruptionError`, as GNU tar calls it malformed. Any other empty value is skipped, so
   the global record or the header field stays: POSIX would delete both, and GNU tar
   keeps an empty `path` from naming anything.
 - A `path`, `GNU.sparse.name`, `linkpath`, `uname` or `gname` value ends at its first
-  NUL, as a header field and an `L` or `K` name do.
+  NUL, as a header field and an `L` or `K` name do. The cut comes first (in
+  `parse_pax_records`), so a `path` that is empty after it is skipped and the earlier
+  record, the global one or the header field stays.
 
 Four of these shapes come from no known writer, and readers resolve them differently, so
 the member is reported with `MEMBER_HEADER_AMBIGUOUS` (`HeaderAmbiguityContext`, in
@@ -366,8 +376,9 @@ no real writer writes). `TarWalker._next_entry` collects them as `TarEntry.ambig
 - `both_families`: a GNU `L` (or `K`) header and a PAX `path` (or `linkpath`) for one
   member. GNU tar uses the PAX record; `tarfile` uses whichever comes first.
 - `repeated`: one field set twice for one member: two `L` or two `K` headers (GNU tar
-  keeps the last, `tarfile` the first), a PAX key twice in one header or across the
-  member's `x` headers, or twice in one `g` header. The sparse 0.0 map's
+  keeps the last, `tarfile` the first), a PAX key twice in one `x` or `g` header, or two
+  `x` headers for one member (field `x`: GNU tar drops all but the last, `tarfile`
+  merges them). The sparse 0.0 map's
   `GNU.sparse.offset` and `GNU.sparse.numbytes` repeat by design and are not reported.
 - `global_member_field`: a `g` header carrying `path`, `linkpath` or `size`, which then
   names or frames every later member.
