@@ -393,6 +393,6 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 - Code: `internal/streams/codecs/xz_decoder.py` (`XzDecoder`, `_XzState`, `_XzBlockResume`,
   `_read_xz_index_backwards`, `lzma_error_to_archivey`) · `internal/streams/codecs/lzip_decoder.py`
   (`LzipDecoder`, `peek_index_summary`) · `internal/streams/codecs/lzma_codec.py` (`XzCodec`,
-  `LzipCodec`, `LzmaAloneCodec`, `_alone_header_plausible`, `_new_alone_decompressor`)
+  `LzipCodec`, `LzmaAloneHandler`, `_alone_header_plausible`, `_new_alone_decompressor`)
 - Handbook: [`single-file.md`](single-file.md) · [`7z.md`](7z.md) (raw LZMA and LZMA2
   coders) · [`tar.md`](tar.md)

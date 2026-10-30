@@ -347,7 +347,9 @@ class StreamCodec:
     are collected in :data:`STREAM_CODECS`, which the detector, the single-file reader, and
     the registry read directly — so a new standalone codec is a single subclass, with no edits
     to those consumers (see ``compressed-streams``). Container-only / filter-only codecs
-    override just ``open`` + ``translate``.
+    override just ``open`` + ``translate``. Codecs are moving onto
+    :class:`~archivey.formats.CodecHandler`: one written as a handler gets its
+    subclass from ``handler_codec.builtin_codec``.
     """
 
     codec: ClassVar[CodecId]

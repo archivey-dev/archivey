@@ -5,7 +5,7 @@ zstd, LZ4): the stream-start magic that tells a following stream from trailing d
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 
@@ -67,6 +67,24 @@ def stream_magic(*alternatives: tuple[bytes | range, ...]) -> StreamStart:
             for alternative in alternatives
         )
     )
+
+
+def never_starts(data: bytes) -> bool:
+    """The :data:`StreamStart` of a codec that reads one stream: nothing starts another."""
+    del data
+    return False
+
+
+def offset0_start(
+    magic: Iterable[tuple[int, bytes]], concatenated: bool
+) -> StreamStart:
+    """How a further stream starts for a codec that declares ``magic`` as
+    ``(offset, data)`` pairs: one of its offset-0 magics, or nothing when it is not
+    ``concatenated`` or has none. Plugin and built-in codecs share this rule."""
+    starts = [data for offset, data in magic if offset == 0]
+    if not concatenated or not starts:
+        return never_starts
+    return stream_magic(*(tuple(bytes([b]) for b in data) for data in starts))
 
 
 @dataclass(frozen=True)

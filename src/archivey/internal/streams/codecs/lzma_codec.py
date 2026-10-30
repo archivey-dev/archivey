@@ -352,7 +352,12 @@ def _new_alone_decompressor(
 
 
 class LzmaAloneHandler(BuiltinCodecHandler):
-    """Legacy LZMA Alone (``.lzma``) — framed standalone stream, not raw FORMAT_RAW."""
+    """Legacy LZMA Alone (``.lzma``) — framed standalone stream, not raw FORMAT_RAW.
+
+    The stream takes ``refuse_input_after_end`` from the config, as every handler's
+    does. No caller sets it for Alone today, since no container uses Alone as a
+    coder; one that does gets the same refusal as every other codec.
+    """
 
     codec = Codec.LZMA_ALONE
     codec_name = "lzma"
@@ -360,8 +365,6 @@ class LzmaAloneHandler(BuiltinCodecHandler):
     # No exact magic: the properties byte is too weak; recognition is by content probe.
 
     def decompressor(self, call: CodecCall) -> Decompressor:
-        # A rewind re-decompresses from the start; the outer ArchiveStream warns (see
-        # _rewind_warning).
         return _new_alone_decompressor(
             call.probe_bound,
             call.limits,
@@ -382,6 +385,7 @@ class LzmaAloneHandler(BuiltinCodecHandler):
         return functools.partial(_translate_lzma, limits=config.decoder_limits)
 
     def _rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
+        # A rewind re-decompresses from the start; the outer ArchiveStream warns.
         del config
         return RewindWarning("lzma")
 

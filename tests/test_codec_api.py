@@ -639,7 +639,7 @@ def test_plugins_false_turns_the_codec_off(toy: ArchiveFormat) -> None:
 
 
 class _Builtin(ToyHandler):
-    stream_format = StreamFormat.GZIP  # type: ignore[assignment]
+    stream_format = StreamFormat.GZIP
 
 
 class _GzValue(PluginStream):
