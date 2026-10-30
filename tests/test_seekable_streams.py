@@ -866,6 +866,33 @@ def test_lzip_multi_member_seek_after_forward_read_serves_the_right_bytes() -> N
             assert stream.read(length) == content[start : start + length]
 
 
+@pytest.mark.parametrize(
+    "parts",
+    [
+        [b"data", b"", b""],
+        [b"da", b"", b"ta", b""],
+        [b"", b"", b"data"],
+    ],
+)
+def test_lzip_empty_members_reread_after_a_seek(parts: list[bytes]) -> None:
+    """Empty members share an output offset with the next one; a re-read is clean.
+
+    A member with no output records no seek point, so the second read's points cannot
+    collide with the first read's at a lower compressed offset.
+    """
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
+
+    compressed = make_multi_member_lzip(parts)
+    seen: list[Any] = []
+    collector = DiagnosticCollector(on_diagnostic=seen.append)
+    with LzipDecompressorStream(io.BytesIO(compressed), collector=collector) as stream:
+        assert stream.read() == b"data"
+        for offset in range(5):
+            stream.seek(offset)
+            assert stream.read() == b"data"[offset:]
+    assert seen == []
+
+
 # --- lzip seeking via the trailer scan -------------------------------------------------
 
 

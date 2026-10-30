@@ -965,6 +965,18 @@ class ArchiveInfoExtra(dict[str, object]):
         return super().__getitem__(key)
 
 
+def _as_utc(dt: datetime | None, tz_for_naive: tzinfo | None) -> datetime | None:
+    """``dt`` in UTC; a naive ``dt`` first gets ``tz_for_naive``, else the local zone."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        if tz_for_naive is not None:
+            dt = dt.replace(tzinfo=tz_for_naive)
+        else:
+            dt = dt.astimezone()  # naive -> assume local timezone
+    return dt.astimezone(UTC)
+
+
 @dataclass(slots=True)
 class ArchiveMember:
     """One archive entry.
@@ -1038,7 +1050,8 @@ class ArchiveMember:
     on Unix (a RAR or 7z made there, a ZIP from any host but FAT, OS/2, NTFS or
     VFAT, an unknown host too) and the Rock Ridge and PAX change times. A TAR gets
     ``created`` only from libarchive's PAX ``LIBARCHIVE.creationtime``. Directory
-    listing uses ``st_birthtime`` only.
+    listing uses ``st_birthtime`` only. Extraction restores it on Windows and macOS;
+    Linux has no way to set a birth time.
     """
 
     ctime: datetime | None = None
@@ -1232,15 +1245,28 @@ class ArchiveMember:
         local timezone when not given. Whether the stored value was wall-clock remains
         visible on the field itself: ``member.modified.tzinfo is None``.
         """
-        dt = self.modified
-        if dt is None:
-            return None
-        if dt.tzinfo is None:
-            if tz_for_naive is not None:
-                dt = dt.replace(tzinfo=tz_for_naive)
-            else:
-                dt = dt.astimezone()  # naive -> assume local timezone
-        return dt.astimezone(UTC)
+        return _as_utc(self.modified, tz_for_naive)
+
+    def accessed_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None:
+        """:attr:`accessed` as a timezone-aware UTC ``datetime``, or ``None``.
+
+        Converted as :meth:`modified_utc` converts ``modified``.
+        """
+        return _as_utc(self.accessed, tz_for_naive)
+
+    def created_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None:
+        """:attr:`created` as a timezone-aware UTC ``datetime``, or ``None``.
+
+        Converted as :meth:`modified_utc` converts ``modified``.
+        """
+        return _as_utc(self.created, tz_for_naive)
+
+    def ctime_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None:
+        """:attr:`ctime` as a timezone-aware UTC ``datetime``, or ``None``.
+
+        Converted as :meth:`modified_utc` converts ``modified``.
+        """
+        return _as_utc(self.ctime, tz_for_naive)
 
     @property
     def is_file(self) -> bool:

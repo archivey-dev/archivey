@@ -4904,7 +4904,8 @@ class RarReader(BaseArchiveReader):
                 proc,
                 has_verifiable_digest=True,
                 empty_means_wrong_password=(
-                    self._archive_has_encryption and policy.solid_pass_emits_data()
+                    policy.solid_pass_needs_password()
+                    and policy.solid_pass_emits_data()
                 ),
             )
 

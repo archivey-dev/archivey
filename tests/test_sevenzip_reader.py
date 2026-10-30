@@ -704,7 +704,6 @@ def test_encrypted_deflate_family_seeks_with_accelerator(
     method: str,
     config_field: str,
     algo: CompressionAlgorithm,
-    capfd: pytest.CaptureFixture[str],
 ) -> None:
     """Encrypted Deflate/BZip2 with seekable_members=True, AUTO and ON.
 
@@ -713,10 +712,12 @@ def test_encrypted_deflate_family_seeks_with_accelerator(
     leg pins the stdlib path over an AES source. Deflate ON pins the
     accelerator — the wrong-password lie. BZip2 AUTO and ON both
     engage rapidgzip's bundled indexed bzip2 (no verifiability gate).
-    ``capfd`` catches the C-level ``Trailing garbage after EOF ignored!``
-    that an unbounded AES pad used to print on the bzip2 accelerator.
-    Seed 1 is load-bearing: AES unpack_size is not a multiple of 16, so
-    the pad exists and the warning is observable (urandom is often aligned).
+    Seed 1 is load-bearing: AES unpack_size is not a multiple of 16, so the
+    AES stage has a pad after the coder's data (urandom is often aligned).
+    The pad is what makes this leg exercise the reader's cut: the reader cuts
+    the coder's source at that size before the codec sees it, and without the
+    cut only the codec's clip would keep the pad from the end check. That clip
+    is pinned by ``test_bzip2_accelerator_stops_at_the_declared_pack_size``.
     """
     payload = random.Random(1).randbytes(1_600_000)
     archive = _encrypted_codec_archive(tmp_path, method=method, payload=payload)
@@ -742,8 +743,6 @@ def test_encrypted_deflate_family_seeks_with_accelerator(
                 assert stream.read() == payload
                 stream.seek(1000)
                 assert stream.read() == payload[1000:]
-        captured = capfd.readouterr()
-        assert "Trailing garbage" not in captured.err
 
 
 @requires("pyppmd")
