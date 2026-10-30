@@ -1,5 +1,5 @@
 > **Design approved 2026-10-27** (option A and every call in `design.md` §7). The
-> implementation builds on the plugin API (`plugin-api`) and lands in three pull
+> implementation builds on the plugin API (`plugin-api`) and lands in four pull
 > requests, one per part of `tasks.md`. This change carries deltas for
 > `backend-registry`, `format-detection`, `format-plugins`, `packaging-and-extras` and
 > `error-handling`.
@@ -65,8 +65,9 @@ Nothing changes for a caller who does not set `formats`.
   (plugin probes filtered), `internal/format_adapter.py` (replacement backends), the
   codec and backend availability checks (`deps.py`), `core.py` (one check at the reader
   choice, and the volume and SFX refusals for a replacement).
-- Public API: three new root names (`FormatPolicy`, `OptionalLibrary`,
-  `OptionalLibraryStr`), one new config field, a keyword `config=` on
+- Public API: two new root names (`FormatPolicy`, `OptionalLibrary`), the
+  `OptionalLibraryStr` alias in `archivey.types` (where `ExtractionPolicyStr` is), one
+  new config field, a keyword `config=` on
   `format_availability` and `list_supported_formats`, and a `missing` attribute on
   `PackageNotInstalledError`. All additive. The
   `UnsupportedFeatureError` and `PackageNotInstalledError` docstrings widen to cover a
