@@ -27,9 +27,14 @@ from __future__ import annotations
 
 import heapq
 from collections.abc import Generator
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.internal.streams.codecs.unix_compress_decoder import (
+    _MAX_ENTRY_TAIL,
+    _MAX_FLAT_ENTRY,
+    _expand,
+)
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -207,9 +212,23 @@ class ShrinkDecoder(_BitDecoder):
         suffix = bytearray(_SHRINK_TABLE)
         used = bytearray(_SHRINK_TABLE)
         used[:_SHRINK_FIRST_FREE] = b"\x01" * _SHRINK_FIRST_FREE
-        # The free slots, lowest first: "the lowest free slot" in one pop. A clear
-        # frees only slots that were added, so every push is paid for by a code.
-        free = list(range(_SHRINK_FIRST_FREE, _SHRINK_TABLE))
+        # Each slot's string, so a code costs one lookup instead of a walk up its
+        # parents: flat bytes up to _MAX_FLAT_ENTRY, a (base, tail) link above it
+        # (unix-compress's layout and caps, :func:`_expand`), or None for a slot whose
+        # parent was free when it was added (an orphan, and every slot below it). Those
+        # walk the parents on each use, since the slot that becomes the parent can
+        # change. A stored string never goes stale: a slot with children is never
+        # freed, so the parents it was built from stay as they were.
+        # Typed Any: a link's base is always a stored string, never None, which
+        # ``_expand``'s signature cannot say.
+        strings: list[Any] = [bytes([i]) for i in range(256)]
+        strings += [None] * (_SHRINK_TABLE - 256)
+        # The free slots: freed ones in a heap, all below ``fresh``, then the slots
+        # never used from ``fresh`` up. The lowest free slot is the heap's top if
+        # there is one. A clear frees only slots that were added, so every push is
+        # paid for by a code.
+        freed: list[int] = []
+        fresh = _SHRINK_FIRST_FREE
         # Pointers to each slot from other slots (an orphan's parent counts too, as
         # in 7-Zip), and the used slots above 256 that none points to: what a
         # partial clear frees. A clear then costs the slots it frees, not the
@@ -217,41 +236,63 @@ class ShrinkDecoder(_BitDecoder):
         children = [0] * _SHRINK_TABLE
         leaves: set[int] = set()
         width = 9
+        mask = (1 << width) - 1
         prev = -1
-        prev_first = 0
+        prev_str = b""
         size = self._unpack_size
+        out = self._out
+        produced = self._produced
+        limit = self._limit
+        # The bit reader, in locals: synced back to self before each yield.
+        data = self._data
+        pos = self._data_pos
+        bits = self._bits
+        nbits = self._nbits
+        control = False
 
-        while size is None or self._produced < size:
-            try:
-                yield from self._need(width)
-            except _InputEnded:
-                if size is not None:
-                    raise
-                if self._nbits >= 8:
-                    # A whole byte after the last code cannot be padding.
-                    self._truncation = "the input ends inside a code"
-                return
-            code = self._take(width)
-            if code == _SHRINK_CONTROL:
-                if prev < 0:
-                    raise CorruptionError("Shrink stream starts with a control code")
-                try:
-                    sub = yield from self._bits_value(width)
-                except _InputEnded:
-                    self._truncation = "the input ends inside a control code"
-                    raise
-                if sub == _SHRINK_WIDEN:
+        while size is None or produced < size:
+            while nbits < width:
+                if pos < len(data):
+                    bits |= data[pos] << nbits
+                    pos += 1
+                    nbits += 8
+                    continue
+                self._data_pos = pos
+                self._produced = produced
+                if self._eof:
+                    if control:
+                        self._truncation = "the input ends inside a control code"
+                        raise _InputEnded
+                    if size is not None:
+                        raise _InputEnded
+                    if nbits >= 8:
+                        # A whole byte after the last code cannot be padding.
+                        self._truncation = "the input ends inside a code"
+                    return
+                yield False
+                data = self._data
+                pos = self._data_pos
+                limit = self._limit
+            code = bits & mask
+            bits >>= width
+            nbits -= width
+
+            if control:
+                control = False
+                if code == _SHRINK_WIDEN:
                     if width == _SHRINK_MAX_WIDTH:
                         raise CorruptionError(
                             "Shrink stream widens its codes past 13 bits"
                         )
                     width += 1
-                elif sub == _SHRINK_PARTIAL_CLEAR:
-                    freed = leaves
+                    mask = (1 << width) - 1
+                elif code == _SHRINK_PARTIAL_CLEAR:
+                    gone = leaves
                     leaves = set()
-                    for slot in freed:
+                    for slot in gone:
                         used[slot] = 0
-                        heapq.heappush(free, slot)
+                        strings[slot] = None
+                        heapq.heappush(freed, slot)
                         up = parent[slot]
                         if up > 255:
                             children[up] -= 1
@@ -260,22 +301,31 @@ class ShrinkDecoder(_BitDecoder):
                                 leaves.add(up)
                 else:
                     raise CorruptionError(
-                        f"Shrink stream has an unknown control code {sub}"
+                        f"Shrink stream has an unknown control code {code}"
                     )
+                continue
+            if code == _SHRINK_CONTROL:
+                if prev < 0:
+                    raise CorruptionError("Shrink stream starts with a control code")
+                control = True
                 continue
 
             new = -1
             if prev >= 0:
-                if not free:
+                if freed:
+                    new = heapq.heappop(freed)
+                elif fresh < _SHRINK_TABLE:
+                    new = fresh
+                    fresh += 1
+                else:
                     raise CorruptionError(
                         "Shrink stream's code table is full and was not cleared"
                     )
-                new = heapq.heappop(free)
                 # Its last byte is the first of this code's string: for a code that
                 # names the entry itself (KwKwK), the first of the previous string.
                 used[new] = 1
                 parent[new] = prev
-                suffix[new] = prev_first
+                suffix[new] = prev_str[0]
                 if prev > 255:
                     children[prev] += 1
                     leaves.discard(prev)
@@ -285,23 +335,53 @@ class ShrinkDecoder(_BitDecoder):
                 raise CorruptionError("Shrink stream starts with an undefined code")
             if not used[code]:
                 raise CorruptionError(f"Shrink stream names the free code {code}")
-            entry = bytearray()
-            walk = code
-            while walk > 255:
-                if not used[walk] or len(entry) >= _SHRINK_TABLE:
-                    raise CorruptionError(
-                        "Shrink stream's code table links to a free code or loops"
-                    )
-                entry.append(suffix[walk])
-                walk = parent[walk]
-            entry.append(walk)
-            entry.reverse()
+
+            stored = strings[code]
+            entry: bytes
+            if isinstance(stored, bytes):
+                entry = stored
+            elif stored is not None:
+                entry = prev_str if code == prev else _expand(strings, stored)
+            elif code == new and strings[prev] is not None:
+                entry = prev_str + prev_str[:1]
+            else:
+                walked = bytearray()
+                walk = code
+                while walk > 255:
+                    if not used[walk] or len(walked) >= _SHRINK_TABLE:
+                        raise CorruptionError(
+                            "Shrink stream's code table links to a free code or loops"
+                        )
+                    walked.append(suffix[walk])
+                    walk = parent[walk]
+                walked.append(walk)
+                walked.reverse()
+                entry = bytes(walked)
+
             if new >= 0:
                 suffix[new] = entry[0]
+                base = strings[prev]
+                if base is None:
+                    pass
+                elif len(prev_str) < _MAX_FLAT_ENTRY:
+                    strings[new] = prev_str + entry[:1]
+                elif isinstance(base, tuple) and len(base[1]) < _MAX_ENTRY_TAIL:
+                    strings[new] = (base[0], base[1] + entry[:1])
+                else:
+                    strings[new] = (prev, entry[:1])
             prev = code
-            prev_first = entry[0]
-            self._emit(entry)
-            yield from self._budget()
+            prev_str = entry
+            out += entry
+            produced += len(entry)
+            if 0 <= limit <= len(out):
+                self._data_pos = pos
+                self._produced = produced
+                yield True
+                data = self._data
+                pos = self._data_pos
+                limit = self._limit
+        self._data_pos = pos
+        self._produced = produced
 
 
 # --- Implode (method 6): LZ77 with Shannon-Fano coded literals, lengths, distances ---

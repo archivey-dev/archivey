@@ -430,3 +430,39 @@ def test_a_run_of_partial_clears_costs_little() -> None:
     assert elapsed < 5, (
         f"60,000 partial clears took {elapsed:.1f}s: a clear is walking the table again"
     )
+
+
+def test_long_shrink_entries_are_stored_not_walked() -> None:
+    """Each code names the entry it adds (KwKwK), so entries grow by a byte per code,
+    to 3,838 bytes at 12 bits: 7.4 MB of zeros from 6 KB. Long strings stored as links
+    keep a code to one lookup (walking each entry's parents took about 0.6 s here) and
+    the table small (stored flat they would hold about the whole output)."""
+    out = BitWriter()
+    out.write(0, 9)
+    width = 9
+    total = 1
+    for code in range(257, 4096):
+        if code >= 1 << width:
+            out.write(256, width)
+            out.write(1, width)
+            width += 1
+        out.write(code, width)
+        total += code - 255
+    data = out.getvalue()
+
+    def decode() -> None:
+        decoder = ShrinkDecoder(total)
+        got = 0
+        chunk = decoder.feed(data, 1 << 16).data
+        while chunk:
+            assert not chunk.strip(b"\0")
+            got += len(chunk)
+            chunk = decoder.feed(b"", 1 << 16).data
+        assert got == total
+        assert not decoder.flush().data
+
+    start = time.perf_counter()
+    decode()
+    elapsed = time.perf_counter() - start
+    assert elapsed < 0.2, f"7.4 MB of long entries took {elapsed:.2f}s: walking again?"
+    assert traced_peak(decode) < 2 << 20

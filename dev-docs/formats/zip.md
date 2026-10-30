@@ -842,6 +842,12 @@ of the output reads zeros, as both read it. The test-only encoders in
 Commons Compress's five PKZIP archives match it in the corpus test. A partial clear
 makes no output, so no limit sees it: the decoder keeps a child count per slot and the
 set of leaves, and a clear costs the slots it frees, not a walk over the table.
+Shrink stores each slot's string as unix-compress's LZW decoder does (flat up to 256
+bytes, then links with 128-byte tails, its `_expand`), so a code is one lookup, not a
+walk up its parents; only a slot added under a free parent (an orphan) and the slots
+below it walk, since that parent slot can be taken over. That and an inline bit loop
+made it 1.5 to 1.9x faster on text and about 36x on long runs (3 to 6 MB/s on text, about
+half the unix-compress decoder's speed).
 The 7z handbook (§ coders, *Input after the stream*) has how each codec finds
 its end, and what it cannot see; `inflate64` drops input after a Deflate64 stream's end
 and has no `unused_data`, so `Deflate64Decoder` holds back the last byte it is given,
