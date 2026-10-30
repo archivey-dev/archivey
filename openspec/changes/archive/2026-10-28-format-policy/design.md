@@ -291,10 +291,14 @@ which is a `str`, so `component.name in policy.exclude_libraries` needs no conve
   and a `Literal` entry in the same change.
   `compression.zstd` is accepted too: it is the zstd module
   on 3.14 and later, and an optional part of a CPython build. An entry names a module,
-  not a capability, so excluding one zstd module falls through to the other, as when it
-  is absent; to turn off zstd decoding on every interpreter, exclude both. Excluding
-  `backports.zstd` on 3.14 and later, where it is not used, changes nothing, and the
-  docs say so.
+  not a capability. archivey uses one zstd module per process, `compression.zstd`
+  where it imports and `backports.zstd` otherwise, so excluding that module turns zstd
+  off, and excluding the other changes nothing; to turn off zstd decoding on every
+  interpreter, exclude both. *Revised 2026-10-28, in the implementation:* the design
+  said excluding one module falls through to the other. `backports.zstd` does not
+  install on 3.14 and later, so the two are never found together outside a hand-built
+  environment, and a fall-through would have meant importing both and choosing per
+  call in every zstd decoder, the child process's included.
 - **What cannot be excluded.** An unknown name, `zlib`, `bz2` and `lzma`, and a program
   are refused with `ArchiveyUsageError`. Those three standard library codecs cannot be
   turned off: core formats depend on them, and per-algorithm control is out of scope by

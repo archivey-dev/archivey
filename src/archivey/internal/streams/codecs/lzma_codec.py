@@ -399,7 +399,7 @@ class LzmaAloneCodec(_LzmaErrorCodec):
         Completeness and the bounded decode share ``_decodes_sample``; Alone additionally
         requires a positive output length (an empty successful read is not a claim).
         """
-        if not _alone_header_plausible(prefix) or not self.available:
+        if not _alone_header_plausible(prefix) or not self.available():
             return False
         if _alone_payload_has_zero_run(prefix):
             return False

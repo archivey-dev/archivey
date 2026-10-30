@@ -115,6 +115,7 @@ from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     collector_from_config,
 )
+from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.logs import detection as logger
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.sfx import (
@@ -465,7 +466,8 @@ def _probe_inner_container(
             enabled=budget.max_decode_input > 0 and budget.max_decode_output > 0,
         ):
             return None
-    if not is_codec_available(codec):
+    excluded = workspace.excluded_libraries if workspace is not None else NO_EXCLUSIONS
+    if not is_codec_available(codec, excluded):
         if workspace is not None:
             workspace.record_skip("inner_tar", TierSkipReason.CAPABILITY_UNAVAILABLE)
         return None
@@ -510,6 +512,7 @@ def _probe_inner_container(
                     seekable=not view_arrived,
                     decoder_limits=DecoderLimits.UNLIMITED,
                     probe_read_bound=INNER_CONTAINER_PROBE_BYTES,
+                    excluded_libraries=excluded,
                     process_isolation=(
                         workspace.isolation
                         if workspace is not None
@@ -953,8 +956,9 @@ def _scan_for_sfx_payload(
 def probe_config(config: ArchiveyConfig | None) -> ArchiveyConfig:
     """The library default config carrying only ``config``'s detection settings
     (``detection_budget``, ``always_probe_content``, ``process_isolation``, which
-    says where the probes' trial decodes run, and ``formats``, so a plugin the caller
-    turned off runs no code here either).
+    says where the probes' trial decodes run, ``formats``, so a plugin the caller
+    turned off runs no code here either, and ``discover_volumes``, so a probe that
+    resolves a path opens no file the caller ruled out).
 
     For a detection whose result is internal (a stub check, the rescan that words an
     empty-listing advisory): it spends what the caller allowed, but its diagnostics
@@ -968,6 +972,7 @@ def probe_config(config: ArchiveyConfig | None) -> ArchiveyConfig:
         and config.always_probe_content == DEFAULT_ARCHIVEY_CONFIG.always_probe_content
         and config.process_isolation is DEFAULT_ARCHIVEY_CONFIG.process_isolation
         and config.formats == DEFAULT_ARCHIVEY_CONFIG.formats
+        and config.discover_volumes == DEFAULT_ARCHIVEY_CONFIG.discover_volumes
     ):
         return DEFAULT_ARCHIVEY_CONFIG
     return replace(
@@ -976,6 +981,7 @@ def probe_config(config: ArchiveyConfig | None) -> ArchiveyConfig:
         always_probe_content=config.always_probe_content,
         process_isolation=config.process_isolation,
         formats=config.formats,
+        discover_volumes=config.discover_volumes,
     )
 
 
@@ -1080,6 +1086,8 @@ def detect_format_into(
     require_source(source)
     check_path_not_empty(source, call="detect_format()")
     check_config(config, call="detect_format(config=…)")
+    discover = (config or DEFAULT_ARCHIVEY_CONFIG).discover_volumes
+    follow_stub_volumes = follow_stub_volumes and discover
     if not isinstance(source, (str, Path)):
         return _detect_source_into(source, config, collector, follow_stub_volumes)
     # A path is resolved once, as ``open_archive`` resolves it: any part of a numbered
@@ -1087,7 +1095,7 @@ def detect_format_into(
     # volume 1. A middle part has no magic of its own, so detecting the named file
     # alone refused what ``open_archive`` opens. Resolution can itself raise, before
     # detection reads a byte: ``TruncatedError`` for a numbered set with a gap.
-    with closing(resolve_source(source).source) as resolved:
+    with closing(resolve_source(source, discover_volumes=discover).source) as resolved:
         return _detect_source_into(resolved, config, collector, follow_stub_volumes)
 
 
@@ -1211,11 +1219,32 @@ def _detect_format_body(
         kept_probes = [(f, p) for f, p in probes if not is_off(f)]
         off_probe = len(kept_probes) < len(probes)
         probes = kept_probes
+    excluded = formats.exclude_libraries
+    if excluded:
+        # A probe whose format needs a package the policy turns off does not run, so the
+        # package is not called: a codec's probe decodes with it, and a plugin's probe
+        # is handed no policy and may import what its ``requires`` names. Nothing is
+        # recorded in ``unavailable_tiers``: an excluded package reads as absent, and
+        # with it absent the probe would run and answer no, which records nothing
+        # either, so the two stay alike.
+        from archivey.internal.streams.codecs import stream_codec_for_format
+
+        probes = [
+            (fmt, probe)
+            for fmt, probe in probes
+            if not registry.needs_excluded_package(fmt, excluded)
+            and (
+                fmt.stream is StreamFormat.UNCOMPRESSED
+                or not stream_codec_for_format(fmt.stream).excluded_by(excluded)
+            )
+        ]
     name = source_name(source)
     ext_match = _match_extension(name, extension_map)
     ext_fmt = ext_match[0] if ext_match is not None else None
 
-    with PrefixWorkspace(source, budget, receipt, isolation=isolation) as workspace:
+    with PrefixWorkspace(
+        source, budget, receipt, isolation=isolation, excluded_libraries=excluded
+    ) as workspace:
 
         def conclude(info: FormatInfo, evidence: _ConflictEvidence) -> FormatInfo:
             _warn_on_conflict(collector, name, ext_match, info.format, evidence)

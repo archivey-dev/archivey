@@ -24,6 +24,7 @@ from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
     ContainerFormat,
+    DecoderLimits,
     DiagnosticPolicy,
     DiagnosticRaisedError,
     ListingLimits,
@@ -579,7 +580,12 @@ def test_unix_compress_dictionary_memory_is_bounded() -> None:
     def read_all() -> None:
         nonlocal total
         with (
-            open_archive(io.BytesIO(data), format=ArchiveFormat.Z) as ar,
+            # The run is a bomb by ratio; this test is about the dictionary's memory.
+            open_archive(
+                io.BytesIO(data),
+                format=ArchiveFormat.Z,
+                config=ArchiveyConfig(decoder_limits=DecoderLimits(max_ratio=None)),
+            ) as ar,
             ar.open(ar.members()[0]) as stream,
         ):
             while chunk := stream.read(65536):

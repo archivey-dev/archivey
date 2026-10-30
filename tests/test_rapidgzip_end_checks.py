@@ -32,7 +32,7 @@ from typing import BinaryIO
 import pytest
 
 from archivey import open_archive
-from archivey.config import ArchiveyConfig
+from archivey.config import ArchiveyConfig, DecoderLimits
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import TruncatedError
 from archivey.internal.config import AcceleratorMode, StreamConfig
@@ -1181,7 +1181,12 @@ def test_a_second_zlib_stream_is_reported_as_trailing_data(tmp_path) -> None:
     path = tmp_path / "two.zz"
     path.write_bytes(_two_zlib_streams())
     for mode in (_OFF, _ON):
-        config = ArchiveyConfig(use_rapidgzip=mode)
+        # The completing read() this is about. With max_ratio on, the ratio guard
+        # hands the decoder bounded reads, and rapidgzip's bounded reads keep the
+        # second stream's bytes (``_ZlibAdlerCheckStream``); tracked internally.
+        config = ArchiveyConfig(
+            use_rapidgzip=mode, decoder_limits=DecoderLimits(max_ratio=None)
+        )
         with open_archive(
             path, format=ArchiveFormat.ZLIB, config=config, seekable_members=True
         ) as reader:

@@ -216,6 +216,31 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
 
     # ── Decoding ─────────────────────────────────────────────────────────────────────
 
+    def _lz4_block_module(self) -> Any:
+        """``lz4.block``, unless it is missing, unused on this interpreter, or turned
+        off by the caller's policy."""
+        reason = _LZ4_UNUSED_REASON
+        if OptionalLibrary.LZ4 in self._context.config.formats.exclude_libraries:
+            # Turned off for this call: it reads as not installed, and installing it
+            # would not help. The same words as archivey's own refusals
+            # (archivey.internal.excluded_libraries.EXCLUDED_REASON), which a plugin
+            # cannot import; a test compares the two.
+            reason = "ArchiveyConfig.formats.exclude_libraries turns it off"
+        if not reason:
+            try:
+                import lz4.block
+            except ImportError:
+                pass
+            else:
+                return lz4.block
+        requirement = MissingComponent(
+            OptionalLibrary.LZ4, "pip install lz4", ("lz4",), reason=reason
+        )
+        raise PackageNotInstalledError(
+            requirement.message("an LZ4-compressed SquashFS image"),
+            missing=(requirement,),
+        )
+
     def _block_decoder(self, compressor: str) -> Callable[[int, int, int], bytes]:
         """A function that decodes ``length`` bytes at ``start`` to at most ``limit``."""
         method = _DECODED_AS.get(compressor)
@@ -237,27 +262,13 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
 
             return through_archivey
         if compressor == "lz4":
-            try:
-                if _LZ4_UNUSED_REASON:
-                    raise ImportError(_LZ4_UNUSED_REASON)
-                import lz4.block
-            except ImportError:
-                requirement = MissingComponent(
-                    OptionalLibrary.LZ4,
-                    "pip install lz4",
-                    ("lz4",),
-                    reason=_LZ4_UNUSED_REASON,
-                )
-                raise PackageNotInstalledError(
-                    requirement.message("an LZ4-compressed SquashFS image"),
-                    missing=(requirement,),
-                ) from None
+            lz4_block_module = self._lz4_block_module()
 
             def lz4_block(start: int, length: int, limit: int) -> bytes:
                 raw = self._read_exact(start, length, "an LZ4 block")
                 try:
-                    return lz4.block.decompress(raw, uncompressed_size=limit)
-                except lz4.block.LZ4BlockError as exc:
+                    return lz4_block_module.decompress(raw, uncompressed_size=limit)
+                except lz4_block_module.LZ4BlockError as exc:
                     raise CorruptionError(f"the LZ4 block at {start}: {exc}") from None
 
             return lz4_block

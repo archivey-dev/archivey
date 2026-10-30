@@ -465,3 +465,62 @@ the folder and everything under it. No pattern, or a pattern with an empty compo
 | `/etc/**` | `/etc/`, `/etc/passwd` | `etc/passwd` |
 | `a[!-a]b` | `a0b` | `a-b`, `a/b` |
 | `.` member (`is_dir`) with `*/` | Selected | |
+
+### Requirement: An excluded optional library reads as not installed
+
+When `FormatPolicy.exclude_libraries` names an optional package, archivey SHALL treat
+that package as not installed for every call made with that config: an accelerator
+under `AUTO` SHALL fall back, a member that needs it SHALL raise
+`PackageNotInstalledError` when opened, and a format that needs it SHALL refuse at open.
+The error SHALL name the policy as the reason. archivey SHALL NOT call into the package
+during such a call. The exclusion SHALL apply only to calls made with that config:
+another call in the same process, on any thread, SHALL see the package as it is.
+
+`format_availability(fmt, config=...)` SHALL count an excluded package as absent,
+listing it in `missing` with the policy as its `reason`; `list_supported_formats` follows
+it (`backend-registry`, *Format support is tri-state and compositional*).
+
+The `PackageNotInstalledError` for an excluded package SHALL list it in `missing` (see
+`error-handling`, *PackageNotInstalledError carries its missing components*), with the
+policy as its `reason`.
+
+`exclude_libraries` SHALL take `OptionalLibrary` members or their string values
+(`OptionalLibraryStr`, a `Literal` of exactly those values), and store
+`frozenset[OptionalLibrary]`. Any other entry SHALL be refused at construction with
+`ArchiveyUsageError` that lists the accepted names; a misspelled name SHALL NOT be
+accepted and ignored. A policy
+that names a plugin (in `replace=`, or a plugin container in `only=`) whose `requires`
+holds an excluded package SHALL be refused at construction with `ArchiveyUsageError`.
+A registered plugin the policy does not name, whose `requires` holds an excluded
+package, SHALL read as NONE under that config, and opening one of its files SHALL raise
+`PackageNotInstalledError` naming the policy. Its content probe SHALL NOT run under that
+config, since a probe is not handed the policy and may import what `requires` names; a
+file only that probe recognises is then not detected. A `requires` entry names a module,
+and one inside an excluded package (`lz4.block` when `lz4` is excluded) counts as
+excluded.
+
+#### Scenario: An excluded pyppmd refuses only the PPMd member
+
+- **WHEN** a caller opens a 7z archive that holds a PPMd member and a LZMA2 member with
+  `FormatPolicy(exclude_libraries={"pyppmd"})`, with `pyppmd` installed
+- **THEN** both members are listed
+- **AND** reading the PPMd member raises `PackageNotInstalledError` whose `missing`
+  holds `pyppmd` with the policy as its `reason`
+- **AND** the LZMA2 member reads
+- **AND** `format_availability(ArchiveFormat.SEVEN_Z, config=...)` with the same config
+  reports `PARTIAL` with `pyppmd` in `missing`
+
+#### Scenario: Excluding the zstd module in use turns zstd off
+
+- **WHEN** a caller opens a `.zst` file with `FormatPolicy(exclude_libraries=)` naming
+  the zstd module archivey uses (`compression.zstd` where it imports, else
+  `backports.zstd`)
+- **THEN** the open raises `PackageNotInstalledError` whose `missing` names that module
+  with the policy as its `reason`
+- **AND** with only the other module's name excluded the file decodes
+
+#### Scenario: A misspelled library name is refused
+
+- **WHEN** a caller builds `FormatPolicy(exclude_libraries={"pyppm"})`
+- **THEN** construction raises `ArchiveyUsageError` that lists the `OptionalLibrary` names
+- **AND** a type checker reports the same call as an error

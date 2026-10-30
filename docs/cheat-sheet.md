@@ -123,7 +123,6 @@ with archivey.open_archive("download.zip") as archive:
         on_error="stop",    # the first failed member raises
         limits=archivey.ExtractionLimits(
             max_extracted_bytes=2 * 2**30,  # 2 GiB written in total
-            max_ratio=1000.0,               # how much a member, or the archive, may expand
             max_entries=262_144,            # files, folders and links created
         ),
     )
@@ -135,7 +134,8 @@ outside the destination, and device files. Going over a limit raises `ResourceLi
 [Archives you trust](extracting.md#archives-you-trust) shows how to relax them.
 
 Reading has limits too, with the same `ResourceLimitError`: a listing stops at 262,144 members,
-and an archive can ask a decoder for at most 2 GiB of memory. [Hardening](security.md#hardening) lists them, and
+a member, or a whole archive, may expand at most 800 times whether it is read or extracted
+(`DecoderLimits.max_ratio`), and an archive can ask a decoder for at most 2 GiB of memory. [Hardening](security.md#hardening) lists them, and
 `config=archivey.ArchiveyConfig(...)` changes them.
 
 ## From zipfile and tarfile

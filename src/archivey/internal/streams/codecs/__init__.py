@@ -30,8 +30,9 @@ The package, one module per codec plus the shared pieces:
   bzip2 empty-stream check) live in that codec's module.
 - ``<name>_codec`` — one module per codec family: its :class:`StreamCodec`.
 - The engines beside them: ``<name>_decoder`` (``deflate``, ``brotli``, ``ppmd``,
-  ``deflate64``, ``xz``, ``lzip``, ``unix_compress``, ``lzma_filter``), ``framed_decoder``
-  for the one-shot decompressors, framing and resume helpers (``zstd_framing``,
+  ``deflate64``, ``xz``, ``lzip``, ``unix_compress``, ``lzma_filter``,
+  ``zip_legacy``), ``framed_decoder`` for the one-shot decompressors, framing and
+  resume helpers (``zstd_framing``,
   ``brotli_framing``, ``lz4_legacy``, ``bzip2_resume``, ``deflate_resume``), the 7z
   filters (``arm64_filter``, ``riscv_filter``, ``bcj2_filter``), and the child processes and worker
   scripts (``ppmd_child`` / ``ppmd_worker``, ``rapidgzip_child`` / ``rapidgzip_worker``).
@@ -94,6 +95,7 @@ from archivey.internal.streams.codecs.registry import (
 )
 from archivey.internal.streams.codecs.stored_codec import StoredCodec
 from archivey.internal.streams.codecs.unix_compress_codec import UnixCompressCodec
+from archivey.internal.streams.codecs.zip_legacy_codec import ImplodeCodec, ShrinkCodec
 from archivey.internal.streams.codecs.zlib_codec import (
     DeflateCodec,
     ZlibCodec,
@@ -114,6 +116,7 @@ __all__ = [
     "Deflate64Codec",
     "DeflateCodec",
     "GzipCodec",
+    "ImplodeCodec",
     "Lz4Codec",
     "LzipCodec",
     "Lzma2Codec",
@@ -124,6 +127,7 @@ __all__ = [
     "PpmdCodec",
     "ProbeChargeDecode",
     "ProbeReadAt",
+    "ShrinkCodec",
     "StoredCodec",
     "StreamCodec",
     "UnixCompressCodec",

@@ -611,8 +611,8 @@ directory archive or extract into it.
 | `ArchiveyConfig(on_diagnostic=0)` | `ArchiveyUsageError` at construction, not when the first diagnostic fires |
 | `ArchiveyConfig(rar_allow_glob_member_concatenation="false")` | `ArchiveyUsageError` at construction; the refusal is never switched off by a truthy string |
 | `ListingLimits(max_members="x")` | `ArchiveyUsageError` at construction, not `TypeError` mid-listing |
-| `ExtractionLimits(max_ratio=float("nan"))` | `ArchiveyUsageError`; a NaN would leave the ratio guard switched off silently |
-| `ExtractionLimits(ratio_activation_threshold=None)` or `ExtractionLimits(live_ratio_activation_threshold=None)` | `ArchiveyUsageError`; the field is not optional and `None` disables nothing |
+| `DecoderLimits(max_ratio=float("nan"))`, or the deprecated `ExtractionLimits` field | `ArchiveyUsageError`; a NaN would leave the ratio guard switched off silently |
+| `DecoderLimits(ratio_activation_threshold=None)` or `DecoderLimits(live_ratio_activation_threshold=None)`, or the deprecated `ExtractionLimits` fields | `ArchiveyUsageError`; the field is not optional and `None` disables nothing |
 | `ExtractionLimits(max_extracted_bytes=True)` | `ArchiveyUsageError`; `bool` is an `int` subclass and would cap at one byte |
 | `DetectionBudget(..., max_far_bytes=None)` or a negative or `float` field | `ArchiveyUsageError` at construction naming the field; not a `TypeError` or `ValueError` mid-detection, and not a tier silently switched off |
 | `open_archive(src, encoding="rot13")` | `ArchiveyUsageError` naming the argument; not a `LookupError` during a member-name decode |
@@ -698,3 +698,27 @@ vocabulary rather than two that can drift.
 | `ArchiveyConfig(detection_budget="turbo")` | `ArchiveyUsageError` naming the presets, not `AttributeError` on a budget field |
 | `coerce to OverwritePolicy` given `AbortOn.BLOCKED_MEMBER` | `ArchiveyUsageError` reporting a wrong **type**, though `AbortOn` is a `str` subclass |
 | `except ArchiveyError` around any of the refusals | Does not catch it |
+
+### Requirement: PackageNotInstalledError carries its missing components
+
+`PackageNotInstalledError` SHALL have a `missing: tuple[MissingComponent, ...]`
+attribute holding the packages and programs the raise is about, set on every raise.
+For an absent package or program it SHALL name that component; the `unrar` refusals
+SHALL fill it from the same components `format_availability` reports. It SHALL be empty
+only when the program is found but cannot start, where no component is missing; a
+refusal for no usable `unar` SHALL name `unar`. A
+component that the caller's `FormatPolicy` excludes SHALL have the policy as its
+`reason`, so a caller tells a policy refusal from a missing install by checking
+whether a component's `name` is in its own `exclude_libraries`.
+
+The message SHALL still name the package and its install hint, as the format
+requirements ask. The rule that a structured name is not also interpolated into the
+message covers names that `__str__` renders, and `__str__` does not render `missing`.
+
+#### Scenario: A missing unrar is data on the exception
+
+- **WHEN** a caller reads a compressed RAR member with no RARLAB `unrar` or `rar` on
+  `PATH` and no other usable decompressor
+- **THEN** the read raises `PackageNotInstalledError`
+- **AND** its `missing` holds a component named `unrar`, the same one
+  `format_availability(ArchiveFormat.RAR).missing` names

@@ -82,12 +82,15 @@ class PpmdCodec(StreamCodec):
     ) -> BinaryIO:
         # Every PPMd member decodes in a child unless NONE, so this process does not
         # import pyppmd then (it re-enables the GIL on a free-threaded build).
-        if config.process_isolation is ProcessIsolation.NONE:
+        excluded = config.excluded_libraries
+        if self.excluded_by(excluded):
+            present = False
+        elif config.process_isolation is ProcessIsolation.NONE:
             present = deps.pyppmd.load() is not None
         else:
             present = deps.pyppmd.available()
         if not present:
-            raise self._missing("PPMd streams")
+            raise self._missing("PPMd streams", excluded=excluded)
         # ZIP method 98 supplies order/mem/restore directly (PPMd8). 7z supplies a
         # var.H properties blob (PPMd7). Prefer an explicit ``pack_size``; fall back to
         # the sized source length (``SlicingStream`` / path size) filled into

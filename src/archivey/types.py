@@ -569,6 +569,11 @@ class CompressionAlgorithm(Enum):
     DELTA = "delta"
     """A filter that stores the difference between bytes a fixed distance apart. It
     does not compress by itself."""
+    SHRINK = "shrink"
+    """ZIP method 1, an LZW variant from PKZIP 1.x. No current tool writes it."""
+    IMPLODE = "implode"
+    """ZIP method 6, LZ77 with Shannon-Fano codes, from PKZIP 1.x. No current tool
+    writes it."""
     RAR = "rar"
     """RAR's own compression, any version. Not the same as ``ContainerFormat.RAR``,
     which is the archive format."""

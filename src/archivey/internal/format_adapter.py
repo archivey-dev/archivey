@@ -2096,6 +2096,12 @@ def register_plugin(plugin: type[FormatHandler]) -> None:
         add_plugin_spellings(each)
 
 
+def registered_plugins() -> tuple[type[FormatHandler], ...]:
+    """The plugins :func:`register_plugin` registered, in registration order."""
+    backends = get_registry().plugin_backends()
+    return tuple(cast("type[_PluginBackend]", cls).PLUGIN for cls in backends)
+
+
 def register_builtin_format(
     plugin: type[FormatHandler], **overrides: object
 ) -> type[ReadBackend]:

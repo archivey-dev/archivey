@@ -1083,6 +1083,7 @@ def test_zip_member_fuses_verify_no_verifying_stream_layer(tmp_path: Path) -> No
     After verify-fusion, the codec ArchiveStream collapses through and there is
     no VerifyingStream in the chain (review/archive/2026-07-19-stream-layering/collapse-design.md).
     """
+    from archivey.internal.bomb_tracker import MemberRatioGuard
     from archivey.internal.streams.archive_stream import ArchiveStreamImpl
     from archivey.internal.streams.streamtools.slice import SlicingStream
     from archivey.internal.streams.verify import VerifyingStream
@@ -1093,9 +1094,13 @@ def test_zip_member_fuses_verify_no_verifying_stream_layer(tmp_path: Path) -> No
     with open_archive(path) as ar, ar.open("a.bin") as f:
         assert isinstance(f, ArchiveStreamImpl)
         assert f._verifier is not None
-        assert not isinstance(f._inner, ArchiveStreamImpl)
-        assert not isinstance(f._inner, VerifyingStream)
-        assert isinstance(f._inner, SlicingStream)
+        inner = f._inner
+        # The ratio guard over the member's data, which changes no bytes.
+        assert isinstance(inner, MemberRatioGuard)
+        inner = inner._inner
+        assert not isinstance(inner, ArchiveStreamImpl)
+        assert not isinstance(inner, VerifyingStream)
+        assert isinstance(inner, SlicingStream)
         assert f.read() == b"hello-verify-fuse"
 
 
