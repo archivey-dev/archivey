@@ -66,6 +66,27 @@ first, only five findings carried the documentation-debt label, and some of thos
 filed at 🟢 or 💡 (maintainer decision, davitf, 2026-09-24). A cold read that found nothing
 says `nothing` — that is an answer, not an omission.
 
+## Reading outside the diff: send a subagent
+
+The bugs a review misses sit mostly where the diff meets code it did not change: a
+caller, a sibling codec, shared state, the tests of a touched function. Look there, in
+both passes. But every file you read stays in your context for every later turn, so a
+file read at turn 5 is paid for some 50 times. **So you do not open files the diff does
+not touch: subagents do.** Read the diff yourself, and the lines a finding will cite;
+everything else goes through the subagent tool (`Task`, called `Agent` in newer
+versions):
+
+- Pass `model: "sonnet"` and `subagent_type: "Explore"` (or `general-purpose` when the
+  question needs a command run). One narrow question per agent; send independent
+  questions in one message so they run in parallel. Expect to send several per review.
+- Ask what the code does, not whether your suspicion holds: "which callers of `X` can
+  pass `size=None`, and what do they do with the result?", not "confirm that `X` breaks
+  on `None`".
+- Ask for the answer as `file:line` facts, each with the few lines that show it, and
+  for anything the agent looked for and did not find.
+- Re-read the lines a finding cites before you file it: an agent's summary is a lead,
+  not evidence.
+
 ## Pass 2 — whole context (do not skip)
 
 Now open the narrative and contracts:

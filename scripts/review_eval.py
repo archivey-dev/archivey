@@ -345,7 +345,12 @@ def reads(transcript: Path, root: Path | None = None) -> dict:
 
 
 def review(
-    case: Case, out: Path, model: str, effort: str | None = None, install: bool = False
+    case: Case,
+    out: Path,
+    model: str,
+    effort: str | None = None,
+    install: bool = False,
+    tools: str = REVIEW_TOOLS,
 ) -> None:
     work = out / case.id
     work.mkdir(parents=True, exist_ok=True)
@@ -364,7 +369,7 @@ def review(
     started = time.monotonic()
     result = claude(
         REVIEW_PROMPT.format(pr=case.pr, body=case.body),
-        model=model, cwd=repo, tools=REVIEW_TOOLS, env=env, effort=effort,
+        model=model, cwd=repo, tools=tools, env=env, effort=effort,
         transcript=work / "transcript.jsonl",
     )  # fmt: skip
     read = reads(work / "transcript.jsonl", repo)
@@ -377,7 +382,7 @@ def review(
         "model": model,
         "effort": effort,
         "installed": install,
-        "tools": REVIEW_TOOLS,
+        "tools": tools,
         "skill": skill_version(),
         "seconds": round(time.monotonic() - started),
         "cost_usd": result.get("total_cost_usd"),
@@ -471,6 +476,10 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--model", default=REVIEW_MODEL)
             p.add_argument("--effort", help="the reviewer's effort level")
             p.add_argument(
+                "--tools", default=REVIEW_TOOLS,
+                help=f"the reviewer's tools (default {REVIEW_TOOLS}; add Agent for subagents)",
+            )  # fmt: skip
+            p.add_argument(
                 "--install", action="store_true",
                 help="install the project's environment at the PR's lockfile first",
             )  # fmt: skip
@@ -492,7 +501,7 @@ def main(argv: list[str] | None = None) -> int:
 
     def one(case: Case) -> None:
         if args.command == "run":
-            review(case, out, args.model, args.effort, args.install)
+            review(case, out, args.model, args.effort, args.install, args.tools)
         verdict = judge(case, out, args.judge_model)
         print(f"{case.id}: {verdict['caught']}", flush=True)
 
