@@ -139,6 +139,11 @@ class DiagnosticCode(StrEnum):
     MEMBER_LINK_DATA_IGNORED = "member_link_data_ignored"
     """A TAR symlink or hard link header declares data, which nothing reads. The link
     is listed and extracted as a link."""
+    MEMBER_HEADER_AMBIGUOUS = "member_header_ambiguous"
+    """A member's TAR headers state a field in a way no known writer produces, and
+    readers disagree on the result: both a GNU long name and a PAX ``path``, a field
+    set twice, a global header naming or sizing members, or a NUL inside a PAX name.
+    archivey reads it as GNU tar does; another tool may list another name or size."""
     ENCRYPTED_MEMBER_UNVERIFIED = "encrypted_member_unverified"
     """An encrypted member's stream was closed or seeked before its checksum
     confirmed the password, and nothing stronger had confirmed it, so the bytes read
@@ -248,6 +253,8 @@ DiagnosticCodeStr = Literal[
     "member-directory-data-ignored",
     "member_link_data_ignored",
     "member-link-data-ignored",
+    "member_header_ambiguous",
+    "member-header-ambiguous",
     "archive_offset_wrapped",
     "archive-offset-wrapped",
     "member_size_wrapped",
@@ -626,6 +633,33 @@ class LinkDataContext(_JsonSafeContext):
 
 
 @dataclass(frozen=True)
+class HeaderAmbiguityContext(_JsonSafeContext):
+    """A member's TAR headers take a shape no known writer produces, which readers
+    resolve differently. archivey reads it as GNU tar 1.35 does.
+
+    ``ambiguity`` names the shape: ``"both_families"`` (a GNU long name or link name
+    and a PAX ``path`` or ``linkpath`` for one member; the PAX record wins),
+    ``"repeated"`` (one field set twice: two GNU long name or long link headers, or a
+    PAX keyword twice for one member or in one global header; the last wins, the
+    first in a global header), ``"global_member_field"`` (a global PAX header sets
+    ``path``, ``linkpath`` or ``size`` for every member after it) or
+    ``"nul_in_value"`` (a PAX ``path``, ``linkpath``, ``uname``, ``gname`` or
+    ``GNU.sparse.name`` holding a NUL byte; the value ends there). ``field`` is the
+    PAX keyword, with ``"path"`` and ``"linkpath"`` standing for GNU long name and
+    long link headers. A global header's shape is reported on the member after it.
+    """
+
+    kind: Literal["header_ambiguity"] = "header_ambiguity"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    ambiguity: Literal[
+        "both_families", "repeated", "global_member_field", "nul_in_value"
+    ] = "repeated"
+    field: str = ""
+
+
+@dataclass(frozen=True)
 class EncryptedVerificationContext(_JsonSafeContext):
     """An encrypted member's stream closed before its digest checked the password.
 
@@ -872,6 +906,7 @@ DiagnosticContext = (
     | DigestContext
     | DirectoryDataContext
     | LinkDataContext
+    | HeaderAmbiguityContext
     | EncryptedVerificationContext
     | SeekIndexContext
     | StreamRewindContext
@@ -908,6 +943,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.DIGEST_UNVERIFIABLE: "digest",
         DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED: "directory_data",
         DiagnosticCode.MEMBER_LINK_DATA_IGNORED: "link_data",
+        DiagnosticCode.MEMBER_HEADER_AMBIGUOUS: "header_ambiguity",
         DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED: "encrypted_verification",
         DiagnosticCode.SEEK_INDEX_DEGRADED: "seek_index",
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES: "stream_rewind",
@@ -941,6 +977,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.DIGEST_UNVERIFIABLE,
         DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED,
         DiagnosticCode.MEMBER_LINK_DATA_IGNORED,
+        DiagnosticCode.MEMBER_HEADER_AMBIGUOUS,
         DiagnosticCode.SEEK_INDEX_DEGRADED,
         DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS,
         DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS,
@@ -1409,6 +1446,7 @@ __all__ = [
     "EncryptedVerificationContext",
     "ExtractionReport",
     "FormatConflictContext",
+    "HeaderAmbiguityContext",
     "LinkDataContext",
     "LocalHeaderContext",
     "MemberHeaderRecordContext",

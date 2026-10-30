@@ -512,6 +512,54 @@ class PaxRecords:
     values: dict[bytes, PaxValue]
     sparse_offsets: list[bytes]
     sparse_numbytes: list[bytes]
+    # Keys set more than once in the block, apart from the sparse 0.0 map's, each
+    # once (a dict, so a block of one key repeated holds one entry).
+    repeated: dict[bytes, None]
+
+
+# The PAX sparse 0.0 map repeats these two keys by design.
+_SPARSE_MAP_KEYS = frozenset((b"GNU.sparse.offset", b"GNU.sparse.numbytes"))
+# Keys whose value is a string GNU tar cuts at its first NUL (``_c_string``).
+_STRING_KEYS = (b"path", b"linkpath", b"uname", b"gname", b"GNU.sparse.name")
+# Keys that name or frame one member, which a global header applies to every member.
+_MEMBER_KEYS = (b"path", b"linkpath", b"size")
+
+
+class Ambiguity(Enum):
+    """Header shapes no known writer produces, on which readers disagree. The walk
+    reads each as GNU tar 1.35 does; the reader reports it (``MEMBER_HEADER_AMBIGUOUS``).
+    """
+
+    # A GNU long name (or link name) and a PAX path (or linkpath) for one member.
+    # GNU tar uses the PAX record, tarfile the one that comes first.
+    BOTH_FAMILIES = "both_families"
+    # One field set twice for one member: two L or two K headers, or a PAX key twice
+    # in one block or across the member's x headers. GNU tar keeps the last (the
+    # first in a global header), tarfile the first L.
+    REPEATED = "repeated"
+    # A global header carrying path, linkpath or size: every later member gets it.
+    GLOBAL_MEMBER_FIELD = "global_member_field"
+    # A PAX string value holding a NUL byte: GNU tar cuts it there, tarfile does not.
+    NUL_IN_VALUE = "nul_in_value"
+
+
+def _record_ambiguities(
+    records: PaxRecords, found: list[tuple[Ambiguity, bytes]], *, is_global: bool
+) -> None:
+    """Add one PAX block's ambiguities to ``found``."""
+    values = records.values
+    found += [(Ambiguity.REPEATED, key) for key in records.repeated]
+    found += [
+        (Ambiguity.NUL_IN_VALUE, key)
+        for key in _STRING_KEYS
+        if key in values and b"\0" in values[key].value
+    ]
+    if is_global:
+        found += [
+            (Ambiguity.GLOBAL_MEMBER_FIELD, key)
+            for key in _MEMBER_KEYS
+            if key in values
+        ]
 
 
 def parse_pax_records(
@@ -539,6 +587,7 @@ def parse_pax_records(
     raw: dict[bytes, bytes] = {}
     offsets: list[bytes] = []
     numbytes: list[bytes] = []
+    repeated: dict[bytes, None] = {}
     binary = binary_default
     pos = 0
     end = len(data)
@@ -576,14 +625,16 @@ def parse_pax_records(
                 )
             if not key.startswith(b"GNU.sparse."):
                 continue
-        if first_wins and key in raw:
-            continue
+        if key in raw and key not in _SPARSE_MAP_KEYS:
+            repeated[key] = None
+            if first_wins:
+                continue
         raw[key] = value
     # Each value is replaced in place, so the dict is never held twice.
     values = cast("dict[bytes, PaxValue]", raw)
     for key, value in raw.items():
         values[key] = PaxValue(value, binary)
-    return PaxRecords(values, offsets, numbytes)
+    return PaxRecords(values, offsets, numbytes, repeated)
 
 
 _SHOWN_CHARACTERS = 40
@@ -897,6 +948,9 @@ class TarEntry:
     # data (see LinkData). ``size`` keeps the declared byte count; ``stored_size`` is
     # 0, since nothing delivers the bytes.
     link_data: LinkData | None = None
+    # Header shapes no known writer produces in this member's chain, each once, with
+    # the PAX key or name field involved (b"path" for an L header, b"linkpath" for K).
+    ambiguities: tuple[tuple[Ambiguity, bytes], ...] = ()
 
     @property
     def typeflag(self) -> bytes:
@@ -1211,6 +1265,7 @@ class TarWalker:
         sparse_numbytes: list[bytes] = []
         long_name: bytes | None = None
         long_link: bytes | None = None
+        ambiguities: list[tuple[Ambiguity, bytes]] = []
         # Where the last x or L header of this member's chain starts, once there is
         # one: the chain must end in a member header. A global header describes no
         # member, so it starts no chain.
@@ -1278,8 +1333,12 @@ class TarWalker:
                     )
                 offset += BLOCKSIZE + _round_up(parsed.size)
                 if parsed.typeflag == LONG_NAME_TYPE:
+                    if long_name is not None:
+                        ambiguities.append((Ambiguity.REPEATED, b"path"))
                     long_name = _cut_nul(data)
                 elif parsed.typeflag == LONG_LINK_TYPE:
+                    if long_link is not None:
+                        ambiguities.append((Ambiguity.REPEATED, b"linkpath"))
                     long_link = _cut_nul(data)
                 else:
                     try:
@@ -1292,9 +1351,17 @@ class TarWalker:
                         # Records that do not parse make a header that does not parse,
                         # which the reader classifies like any rejected block.
                         return self._reject(header_at, str(exc))
-                    if parsed.typeflag == PAX_GLOBAL_TYPE:
+                    is_global = parsed.typeflag == PAX_GLOBAL_TYPE
+                    _record_ambiguities(records, ambiguities, is_global=is_global)
+                    if is_global:
                         self._apply_global(records.values)
                     else:
+                        if own:
+                            ambiguities += [
+                                (Ambiguity.REPEATED, key)
+                                for key in records.values
+                                if key in own and key not in _SPARSE_MAP_KEYS
+                            ]
                         own.update(records.values)
                         sparse_offsets += records.sparse_offsets
                         sparse_numbytes += records.sparse_numbytes
@@ -1312,6 +1379,12 @@ class TarWalker:
                 )
             except _RejectedHeader as exc:
                 return self._reject(offset, exc.reason)
+            if long_name is not None and b"path" in own:
+                ambiguities.append((Ambiguity.BOTH_FAMILIES, b"path"))
+            if long_link is not None and b"linkpath" in own:
+                ambiguities.append((Ambiguity.BOTH_FAMILIES, b"linkpath"))
+            if ambiguities:
+                entry.ambiguities = tuple(dict.fromkeys(ambiguities))
             self._pos = entry.data_end
             if entry.stored_size:
                 self._unchecked_data_end = entry.data_end

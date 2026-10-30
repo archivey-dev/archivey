@@ -357,6 +357,26 @@ GNU tar (DR-6, measured 2026-10-30):
 - A `path`, `GNU.sparse.name`, `linkpath`, `uname` or `gname` value ends at its first
   NUL, as a header field and an `L` or `K` name do.
 
+Four of these shapes come from no known writer, and readers resolve them differently, so
+the member is reported with `MEMBER_HEADER_AMBIGUOUS` (`HeaderAmbiguityContext`, in
+`ARCHIVE_INTEGRITY_CODES`; maintainer request 2026-10-30: match GNU tar, and report what
+no real writer writes). `TarWalker._next_entry` collects them as `TarEntry.ambiguities`
+(`Ambiguity`); a global header's are reported on the member after it.
+
+- `both_families`: a GNU `L` (or `K`) header and a PAX `path` (or `linkpath`) for one
+  member. GNU tar uses the PAX record; `tarfile` uses whichever comes first.
+- `repeated`: one field set twice for one member: two `L` or two `K` headers (GNU tar
+  keeps the last, `tarfile` the first), a PAX key twice in one header or across the
+  member's `x` headers, or twice in one `g` header. The sparse 0.0 map's
+  `GNU.sparse.offset` and `GNU.sparse.numbytes` repeat by design and are not reported.
+- `global_member_field`: a `g` header carrying `path`, `linkpath` or `size`, which then
+  names or frames every later member.
+- `nul_in_value`: a NUL inside one of the string values above; `tarfile` keeps the bytes
+  after it.
+
+A ustar or GNU header field that differs from the PAX record overriding it is not
+reported: writers put a cut name or a capped size there on purpose.
+
 ### 2.3 Member data
 
 **A member's stream is a view of its data area.** In random access it is a `SharedView`

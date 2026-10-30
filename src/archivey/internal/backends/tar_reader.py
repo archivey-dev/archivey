@@ -69,6 +69,7 @@ from archivey.diagnostics import (
     DiagnosticCode,
     DigestContext,
     DirectoryDataContext,
+    HeaderAmbiguityContext,
     LinkDataContext,
     MemberHeaderRecordContext,
     UnknownMemberTypeContext,
@@ -83,6 +84,7 @@ from archivey.exceptions import (
 from archivey.internal.backends.tar_parser import (
     BLOCKSIZE,
     SPARSE_ENTRY_BYTES,
+    Ambiguity,
     Budget,
     LinkData,
     NameSource,
@@ -1361,9 +1363,57 @@ class TarReader(BaseArchiveReader):
             self._emit_directory_data_ignored(member, index)
         if entry.link_data is not None:
             self._emit_link_data_ignored(member, index, entry)
+        for ambiguity, key in entry.ambiguities:
+            self._emit_header_ambiguous(member, index, ambiguity, key)
         if entry.typeflag not in _KNOWN_TYPES:
             self._emit_member_type_unknown(member, index, entry.typeflag)
         return member
+
+    def _emit_header_ambiguous(
+        self, member: ArchiveMember, member_id: int, ambiguity: Ambiguity, key: bytes
+    ) -> None:
+        """Report ``MEMBER_HEADER_AMBIGUOUS`` for a header shape no known writer
+        produces (:class:`Ambiguity`). The walk read it as GNU tar 1.35 does; the
+        report says so, because ``tarfile`` and other tools read it otherwise and list
+        another name or size. In ``ARCHIVE_INTEGRITY_CODES``: ``STRICT`` refuses it.
+        """
+        field = key.decode("ascii", "backslashreplace")
+        if ambiguity is Ambiguity.BOTH_FAMILIES:
+            gnu = "long name" if key == b"path" else "long link name"
+            what = (
+                f"both a GNU {gnu} header and a PAX {field} record; the PAX record "
+                "is used"
+            )
+        elif ambiguity is Ambiguity.REPEATED:
+            what = (
+                f"{field} set more than once; the last value is used (the first in "
+                "a global header)"
+            )
+        elif ambiguity is Ambiguity.GLOBAL_MEMBER_FIELD:
+            what = (
+                f"a global PAX header setting {field}, which then applies to every "
+                "member after it"
+            )
+        else:
+            what = f"a PAX {field} record holding a NUL byte; the value ends there"
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_HEADER_AMBIGUOUS,
+            message=(
+                f"TAR headers of {quoted(member.name)} have {what}, as GNU tar reads "
+                "them. No known writer produces this, and other readers may list "
+                "another name or size."
+            ),
+            context=HeaderAmbiguityContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=member_id,
+                ambiguity=ambiguity.value,
+                field=field,
+            ),
+            member=member,
+            attach_to_member=True,
+            logger=integrity_logger,
+        )
 
     def _emit_link_data_ignored(
         self, member: ArchiveMember, member_id: int, entry: TarEntry
