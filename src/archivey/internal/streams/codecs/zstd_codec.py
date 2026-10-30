@@ -137,7 +137,9 @@ class ZstdHandler(BuiltinCodecHandler):
 
     def _library(self) -> str | None:
         # The module in use: the standard library's on 3.14+, else the backport.
-        return deps.zstd_library if deps.zstd is not None else None
+        if deps.zstd is None:
+            return None
+        return deps.zstd_library or OptionalLibrary.BACKPORTS_ZSTD
 
     def decompressor(self, call: CodecCall) -> Decompressor:
         assert deps.zstd is not None
