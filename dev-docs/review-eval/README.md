@@ -55,7 +55,7 @@ python3 scripts/review_eval.py run --out /tmp/eval --jobs 5
 python3 scripts/review_eval.py judge --out /tmp/eval    # rescore saved reviews
 ```
 
-Each case is a full Opus review, a few dollars of quota each (see the costs in
+Each case is a full review, one to two dollars of quota with Sonnet (see the costs in
 [`results.md`](results.md)). Try a change on one case first; run the whole set once
 the change is final, and add the line to `results.md` in the same PR.
 

@@ -17,7 +17,8 @@ those use the AI plan's quota.
 
 | Workflow | When it runs | Uses AI quota | What a red run means |
 | --- | --- | --- | --- |
-| `review-loop.yml` | each time the `review` label is added | **yes**, one Opus session per round: up to 5 rounds an agent can ask for, 8 if a person keeps adding the label ([Review loop](review-loop.md)) | the review itself failed to post; re-add the label once |
+| `review-loop.yml` | each time the `review` label is added | **yes**, one Sonnet session per round, plus one Opus pass once Sonnet approves a standard or deep PR (and an `@cursoragent` request on a deep one): up to 5 rounds an agent can ask for (the Opus pass can be a sixth), 8 if a person keeps adding the label ([Review loop](review-loop.md)) | the review itself failed to post; re-add the label once |
+| `risk-label.yml` | each PR opened, pushed or retargeted (same-repository branches only) | no | the tier script failed; the `risk:` label stays as it was ([Review loop](review-loop.md)) |
 | `claude.yml` | an `@claude` mention by a person on an issue or PR | **yes**, one session per mention | nothing, unless you asked for something |
 | `ci.yml` | each PR push (except documentation-only PRs) with a reduced set of jobs, and every job on each merge-queue group, daily on `main` (the README badge) and on a dispatched run; not on pushes to `main`, since the queue already tested each commit there; its `CI gate` job is the queue's required check; in the queue it also calls `atheris-fuzz.yml`'s short fuzz; PyPy's core-only suite runs only on the daily and dispatched runs | no | see [CI is red](#ci-is-red-on-main-or-on-a-pr); it also holds a release until a dispatched run is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
 | `docs-checks.yml` | each PR, each merge-queue group and each push to `main` | no | a docs build or OpenSpec gate broke |

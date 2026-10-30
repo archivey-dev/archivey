@@ -256,6 +256,18 @@ def test_tier_path_lists_name_paths_that_exist() -> None:
         assert path.is_dir() if entry.endswith("/") else path.is_file(), entry
 
 
+def test_the_maintainer_merges_changes_to_the_review_rules() -> None:
+    """A pull request is reviewed under its own copy of these, so a person merges it."""
+    for rules in (
+        ".github/review-loop-prompt.md",
+        ".claude/skills/code-review-skill/SKILL.md",
+        "scripts/review_loop_gate.py",
+        "scripts/review_prep.py",
+    ):
+        t = prep.tier([rules])
+        assert (t.name, t.maintainer_merges) == ("deep", True), rules
+
+
 def test_tier_is_deep_on_a_safety_path_and_the_maintainer_merges_workflows() -> None:
     safety = prep.tier(["src/archivey/internal/extraction.py", "docs/x.md"])
     assert (safety.name, safety.maintainer_merges) == ("deep", False)

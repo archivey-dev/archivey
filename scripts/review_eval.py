@@ -19,7 +19,7 @@ rounds are there to find. The current skill and ``scripts/review_prep.py`` are c
 over the old ones. ``gh`` is replaced by a stub, and the prompt says to post nothing and
 edit nothing: the review is the reviewer's final answer, saved as ``review.md``.
 
-Each review is a full Opus round, so a run of every case costs real quota: run one case
+Each review is a full review round, so a run of every case costs real quota: run one case
 first when trying a change, and the whole set when the change is done.
 
 Needs the ``claude`` CLI on PATH; nothing from the project's environment.
@@ -47,7 +47,7 @@ SKILL = Path(".claude/skills/code-review-skill")
 # Copied with the skill: its §1 tells the reviewer to run the tier command.
 COPIED = (SKILL, Path("scripts/review_prep.py"))
 
-REVIEW_MODEL = "claude-opus-5"  # what .github/workflows/review-loop.yml runs
+REVIEW_MODEL = "claude-sonnet-5-5"  # what .github/workflows/review-loop.yml runs
 # The loop's tools less WebFetch: a fetch of the PR's page on GitHub would show the
 # later rounds and the fix.
 REVIEW_TOOLS = "Read,Grep,Glob,Bash"
