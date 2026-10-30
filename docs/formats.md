@@ -1031,7 +1031,9 @@ misread the archive.
   archive in the other byte order. `ArchiveInfo.format_version` is `None`.
 - A binary archive (GNU cpio's default) has only a 2-byte magic, so it is detected only when
   its name ends in `.cpio` or a compressed spelling of it (`.cpio.gz`, …), or with
-  `always_probe_content=True`, or when you pass `format=` (`"cpio"`, `"cpio.gz"`, …).
+  `always_probe_content=True`, or when you pass `format=` (`"cpio"`, `"cpio.gz"`, …). Inside a
+  compressor the check reads the first 512 decompressed bytes, so an archive whose first name
+  ends past them needs `format="cpio.gz"`.
 - A symlink's target is its data. Devices, FIFOs and sockets are `OTHER`, as in every
   format.
 - In crc, each file's checksum is checked as its data is read.

@@ -839,8 +839,8 @@ class UnknownMemberTypeContext(_JsonSafeContext):
     ``stored_type`` is the format's own spelling of the type: for TAR the typeflag byte
     as a one-character string (the byte as Latin-1), the same byte as
     ``extra["tar.type"]``; for a RAR5 redirect the type number in decimal (``"6"``);
-    a plugin chooses its own (CPIO's is the mode's file-type bits in octal,
-    ``"0o130000"``). ``size`` is the member's
+    for CPIO the mode's file-type bits in octal (``"0o130000"``); a plugin chooses its
+    own. ``size`` is the member's
     ``size``, ``None`` for an ``OTHER`` member. Advisory, so it is not in
     :data:`ARCHIVE_INTEGRITY_CODES`: a TAR member's bytes are delivered and nothing is
     hidden, and a RAR5 redirect of an unknown type holds no bytes, while its stored

@@ -3401,7 +3401,7 @@ class BaseArchiveReader(ArchiveReader):
         member_streams: MemberStreams,
     ) -> BinaryIO:
         """The decoded bytes of an archive inside a compression stream (a ``.tar.gz``,
-        or a sequential plugin format's ``.cpio.xz``): archivey's codec stream over
+        or a sequential format-API format's ``.cpio.xz``): archivey's codec stream over
         ``source``, which the caller closes.
 
         A file goes to the codec as its path, as for a bare compressed file: the codec

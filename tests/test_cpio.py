@@ -8,6 +8,7 @@ import io
 import lzma
 import os
 import random
+import struct
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -243,6 +244,36 @@ def test_a_compressed_binary_archive_is_found_by_its_probe(
     assert detect_format(other).format == bare
 
 
+def _binary(name: bytes) -> bytes:
+    """A little-endian binary archive of one empty file, then the trailer."""
+    out = b""
+    for stored in (name + b"\0", b"TRAILER!!!\0"):
+        # magic, dev, ino, mode, uid, gid, nlink, rdev, mtime (2), namesize, filesize (2)
+        fields = (0o070707, 0, 1, 0o100644, 0, 0, 1, 0, 0, 0, len(stored), 0, 0)
+        out += struct.pack("<13H", *fields) + stored + b"\0" * (len(stored) & 1)
+    return out
+
+
+@pytest.mark.parametrize(("name_size", "found"), [(400, True), (600, False)])
+def test_a_compressed_binary_archive_needs_its_first_name_in_512_bytes(
+    tmp_path: Path, name_size: int, found: bool
+) -> None:
+    """Inside a compressor the probe sees the first 512 decoded bytes, so a first name
+    that ends past them is not found there; uncompressed, the same archive is."""
+    data = _binary(b"n" * name_size)
+    plain = tmp_path / "t.cpio"
+    plain.write_bytes(data)
+    assert detect_format(plain).format == CPIO
+    packed = tmp_path / "t.cpio.gz"
+    packed.write_bytes(gzip.compress(data, mtime=0))
+    pair = archivey.ArchiveFormat(CPIO.container, archivey.StreamFormat.GZIP)
+    assert detect_format(packed).format == (
+        pair if found else archivey.ArchiveFormat.GZ
+    )
+    with open_archive(packed, format="cpio.gz") as reader:
+        assert [m.name for m in reader.members()] == ["n" * name_size]
+
+
 @pytest.mark.parametrize(
     ("stream", "compress"),
     [
@@ -437,6 +468,15 @@ def test_a_held_link_keeps_its_stored_name(tmp_path: Path) -> None:
         open_archive(path, config=strict) as reader,
     ):
         reader.members()
+
+
+def test_a_name_that_is_not_utf8_follows_encoding(tmp_path: Path) -> None:
+    """CPIO declares no name encoding, so ``encoding=`` replaces the escape fallback."""
+    path = _archive(tmp_path, _newc((b"caf\xe9.txt", _FILE, 1, 1, b"x")))
+    with open_archive(path) as reader:
+        assert [m.name for m in reader.members()] == ["caf\udce9.txt"]
+    with open_archive(path, encoding="latin-1") as reader:
+        assert [m.name for m in reader.members()] == ["café.txt"]
 
 
 def test_hostile_headers(tmp_path: Path) -> None:

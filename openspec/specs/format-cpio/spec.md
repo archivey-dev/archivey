@@ -40,6 +40,7 @@ member's data SHALL be checked against the header's sum as it is read.
 | A crc member whose data does not match its sum | `CorruptionError` while it is read |
 | The newc archive gzipped, opened with `format="cpio.gz"` | `ArchiveFormat(CPIO, GZIP)`; `format="cpio"` on those bytes raises `CorruptionError` |
 | The binary archive gzipped, named `.cpio.gz`, or nameless with `always_probe_content=True` | `ArchiveFormat(CPIO, GZIP)` |
+| A gzipped binary archive named `.cpio.gz` whose first name ends past the first 512 decoded bytes | `ArchiveFormat.GZ`: the probe sees only those bytes; `format="cpio.gz"` opens it |
 | The same bytes nameless, or named `.tar.gz`, by default | `ArchiveFormat.GZ`: the binary probe runs only where the name or the config allows it |
 
 ### Requirement: Name an earlier member in every hard link
