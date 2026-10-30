@@ -32,6 +32,7 @@ from archivey import (
     FormatSupport,
     OptionalLibrary,
     PackageNotInstalledError,
+    StreamFormat,
     detect_format,
     format_availability,
     list_supported_formats,
@@ -271,6 +272,18 @@ def test_excluding_the_zstd_module_in_use_turns_zstd_off(tmp_path: Path) -> None
     availability = format_availability(ArchiveFormat.ZST, config=_excluding(in_use))
     assert availability.support is FormatSupport.NONE
     assert [m.name for m in availability.missing] == [in_use]
+
+
+def test_an_excluded_package_that_is_not_installed_is_reported_as_excluded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The policy, not a missing install, is why the read is refused: the error does
+    not send the caller to install a package they turned off."""
+    monkeypatch.setattr(deps, "lz4_frame", None)
+    data = io.BytesIO(b"\x04\x22\x4d\x18" + bytes(16))
+    with pytest.raises(PackageNotInstalledError) as exc_info:
+        open_stream(data, format=StreamFormat.LZ4, config=_excluding(L.LZ4)).read()
+    _assert_refused_by_policy(exc_info.value, L.LZ4)
 
 
 @requires("rapidgzip")

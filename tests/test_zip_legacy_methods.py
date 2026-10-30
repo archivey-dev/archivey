@@ -26,7 +26,8 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.streams.codecs.zip_legacy_decoder import ShrinkDecoder
+from archivey.internal.streams.codecs.framed_decoder import FramedDecoder
+from archivey.internal.streams.codecs.zip_legacy_decoder import ShrinkDecompressor
 from tests.conftest import run_7z
 from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO
@@ -60,6 +61,11 @@ _IMPLODE_VARIANTS = [
     pytest.param(True, False, id="8k-2trees"),
     pytest.param(True, True, id="8k-3trees"),
 ]
+
+
+def _shrink_decoder(size: int | None) -> FramedDecoder:
+    """A Shrink decompressor behind the decoder the stream drives."""
+    return FramedDecoder(lambda: ShrinkDecompressor(size), magic=lambda _data: False)
 
 
 def _entries() -> list[LegacyEntry]:
@@ -433,7 +439,7 @@ def test_a_run_of_partial_clears_costs_little() -> None:
         out.write(256, 9)
         out.write(2, 9)
     data = out.getvalue()
-    decoder = ShrinkDecoder(10**9)
+    decoder = _shrink_decoder(10**9)
     start = time.perf_counter()
     assert decoder.feed(data).data == b"A"
     elapsed = time.perf_counter() - start
@@ -485,7 +491,7 @@ def test_long_shrink_entries_are_stored_not_walked(
     data = out.getvalue()
 
     def decode() -> None:
-        decoder = ShrinkDecoder(total)
+        decoder = _shrink_decoder(total)
         got = 0
         chunk = decoder.feed(data, 1 << 16).data
         while chunk:
@@ -532,8 +538,8 @@ def _clears_among_long_links(
 
 
 def _decode_or_error(data: bytes, chunk: int, budget: int) -> bytes | None:
-    """``ShrinkDecoder`` output with no declared size, or None if it refused it."""
-    decoder = ShrinkDecoder(None)
+    """``ShrinkDecompressor`` output with no declared size, or None if it refused it."""
+    decoder = _shrink_decoder(None)
     out = bytearray()
     try:
         for i in range(0, len(data), chunk):

@@ -23,6 +23,7 @@ from archivey.internal.excluded_libraries import (
 )
 from archivey.internal.format_adapter import prefix_probe
 from archivey.internal.format_args import add_plugin_spellings, plugin_spelling_clash
+from archivey.internal.overrides import override
 from archivey.internal.registry import _optional, get_registry
 from archivey.internal.streams.archive_stream import RewindWarning
 from archivey.internal.streams.codecs.base import (
@@ -33,7 +34,8 @@ from archivey.internal.streams.codecs.base import (
 from archivey.internal.streams.codecs.framed_decoder import (
     FramedDecompressorStream,
     StreamStart,
-    stream_magic,
+    never_starts,
+    offset0_start,
 )
 from archivey.internal.streams.codecs.registry import add_stream_codec, stream_codecs
 from archivey.types import (
@@ -50,20 +52,15 @@ if TYPE_CHECKING:
     from archivey.formats import CodecCall, CodecHandler
 
 
-def _never(data: bytes) -> bool:
-    """The :data:`StreamStart` of a codec that reads one stream: nothing starts another."""
-    del data
-    return False
-
-
 class HandlerCodec(StreamCodec):
     """The base of the codec class :func:`codec_class` builds for each handler."""
 
     handler: CodecHandler
     # How a further stream starts (``CodecHandler.concatenated``).
     # A static method: a plain function here would be bound, and called with the codec.
-    starts: StreamStart = staticmethod(_never)
+    starts: StreamStart = staticmethod(never_starts)
 
+    @override
     def requirement_under(
         self, excluded: frozenset[OptionalLibrary]
     ) -> MissingComponent | None:
@@ -86,15 +83,19 @@ class HandlerCodec(StreamCodec):
             as_excluded(component) if is_excluded_module(name, excluded) else component
         )
 
+    @override
     def _backend_present(self) -> bool:
         return all(_optional(name) is not None for name in self.handler.requires)
 
+    @override
     def excluded_by(self, excluded: frozenset[OptionalLibrary]) -> bool:
         return any(is_excluded_module(n, excluded) for n in self.handler.requires)
 
+    @override
     def available(self, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS) -> bool:
         return not self.excluded_by(excluded) and self._backend_present()
 
+    @override
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
@@ -114,12 +115,14 @@ class HandlerCodec(StreamCodec):
             refuse_input_after_end=config.refuse_input_after_end,
         )
 
+    @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
         translated = self.handler.translate_exception(exc)
         if translated is not None:
             return translated
         return self._eof_truncation(exc, self.handler.stream_format.value)
 
+    @override
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         return RewindWarning(self.handler.stream_format.value, suggest_install=False)
 
@@ -173,11 +176,7 @@ def codec_class(handler: type[CodecHandler]) -> type[HandlerCodec]:
         "extension_aliases": tuple(handler.extension_aliases),
         "checks_content": bool(handler.checks_content),
     }
-    starts = [m.data for m in handler.magic if m.offset == 0]
-    if handler.concatenated and starts:
-        attrs["starts"] = staticmethod(
-            stream_magic(*(tuple(bytes([b]) for b in data) for data in starts))
-        )
+    attrs["starts"] = staticmethod(offset0_start(handler.magic, handler.concatenated))
     if handler.probe is not None:
         attrs["content_probe"] = _content_probe(handler.probe)
     return type(f"{handler.__name__}Codec", (HandlerCodec,), attrs)

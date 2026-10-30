@@ -18,7 +18,6 @@ children are ended at interpreter exit, and a forked process forgets its parent'
 from __future__ import annotations
 
 import atexit
-import copy
 import marshal
 import os
 import subprocess
@@ -54,6 +53,7 @@ from archivey.internal.streams.codecs.decoder_worker import (
     parse_error_payload,
     read_exact_or_none,
 )
+from archivey.internal.streams.kept_errors import unraised
 
 WORKER = Path(__file__).with_name("decoder_worker.py")
 
@@ -247,25 +247,18 @@ def _release(holder: list[_Lease]) -> None:
 
 
 def _unraised(exc: Exception) -> Exception:
-    """A copy of ``exc`` that has never been raised, or ``exc`` itself when its type
-    cannot be rebuilt from its arguments.
+    """A copy of ``exc`` that has never been raised (:func:`unraised`).
 
     A decoder keeps the error its child died with and raises it again on every later
-    call (:class:`DecoderChild`). The kept instance must never be the one raised: a
-    raise attaches a traceback, whose frames hold the decoder, and the decoder holds the
-    instance, a cycle that only the garbage collector breaks. When the raise comes from
-    a decoder that the collector is finalizing (``PpmdDecoder.__del__`` sends its
-    one-symbol decode at close), the new frames also reach, through ``f_back``, the
-    code the collection interrupted, and the cycle keeps that code's locals alive past
-    its return: a decoder there keeps its child process leased.
-
-    The copy is shallow: a mutable attribute (``__notes__``, say) is shared with
-    ``exc``. A recorded death is built fresh and carries none.
+    call (:class:`DecoderChild`), and the kept instance must never be the one raised
+    (see :mod:`kept_errors`). When the raise comes from a decoder that the collector
+    is finalizing (``PpmdDecoder.__del__`` sends its one-symbol decode at close), the
+    new frames also reach, through ``f_back``, the code the collection interrupted,
+    and the cycle keeps that code's locals alive past its return: a decoder there
+    keeps its child process leased. A recorded death is built fresh and carries no
+    notes.
     """
-    try:
-        return copy.copy(exc)
-    except Exception:  # noqa: BLE001 - a type that copy cannot rebuild: keep the cycle
-        return exc
+    return unraised(exc)
 
 
 class _Died(Exception):

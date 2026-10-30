@@ -307,7 +307,7 @@ pass.
 | `raw_name` | The stored bytes of whatever supplied the name, always. Never `None` |
 | `link_target` | The link name as stored (a PAX `linkpath`, else a GNU long link name, else the header's `linkname`), decoded as below, for symlinks and hardlinks; the walker drops a link name on any other type before keeping it. A hardlink stores an archive path, so a tar made from `./d` stores `./d/b` while the member it names is listed as `d/b`. `link_target_member` is the resolved one |
 | `size` | The logical size for a file, which for a sparse member is the size its sparse records declare, not the bytes stored. `None` for everything else. `compressed_size` is never set |
-| `modified` | The PAX `mtime` record when there is one, parsed once with its fraction, else the header's `mtime`. A value `datetime` cannot hold is `None` plus `MEMBER_TIMESTAMP_INVALID`. So is a PAX `mtime` that is not a number: it lists as `None`, not as the Unix epoch |
+| `modified` | The PAX `mtime` record when there is one, parsed once with its fraction, else the header's `mtime`. A value `datetime` cannot hold is `None` plus `MEMBER_TIMESTAMP_INVALID`. So is a PAX `mtime` that is not a number: it lists as `None`, not as the Unix epoch. A header `mtime` field of only NUL bytes and blanks is `None` with no report (`HeaderBlock.mtime`): it records no time, and reading it as 0, as GNU tar 1.35 and `tarfile` do for all NULs, would be a guess (DR-1; maintainer ruling 2026-10-30; §6). An octal zero stays the epoch |
 | `accessed` | PAX `atime` only. A record that is not a number, or out of range, is `None` plus `MEMBER_TIMESTAMP_INVALID`, as for `modified`; the same holds for `created` and `ctime`. A number is what GNU tar 1.35 reads, `-?digits(.digits*)?`; Python float syntax beyond that (`+1000`, `1e3`, `1_000`, blanks, `.5`, `inf`) is not one, and the report quotes the first 40 characters of the value |
 | `created` | The PAX `LIBARCHIVE.creationtime` keyword, which libarchive writes when the source OS has a birth time. No other TAR writer is known to store one, so it is `None` for most archives |
 | `ctime` | PAX `ctime` only. It is the inode-change time (`st_ctime`), so it never fills `created`. A libarchive tar can carry both |
@@ -665,6 +665,7 @@ ours.
 | `encoding=` has no effect on some names | **archivey** | PAX names are UTF-8 by definition, and a ustar or GNU name whose bytes are valid UTF-8 is read as UTF-8 too; `encoding=` decodes only bytes that are not valid UTF-8 (§2.2) |
 | `encoding=` is accepted and changes nothing at all (`utf-16`, `idna`) | **archivey** | Where the codec cannot decode a field's stored bytes, the field decodes as with no `encoding=`, with no diagnostic, as ZIP and ISO do; a codec that cannot read ASCII as ASCII fails on most names (§2.2) |
 | A tar that GNU tar lists to the end stops listing at an old GNU sparse header, with `CorruptionError` | **archivey** | The header's real size is negative or past 2**63 - 1. GNU tar 1.35 reports it ("out of off_t range"), lists the member with size 0 and reads on; archivey refuses the header, as for an old GNU sparse map slot it cannot read (§6) |
+| A member GNU tar dates 1970-01-01 lists with no `modified` | **archivey** | Its header `mtime` field holds only NULs or blanks, so it records no time; GNU tar 1.35 and `tarfile` read it as 0 (§2.2, §6). A PAX `mtime` record, when there is one, still gives the time |
 
 ## 6. Decisions
 
@@ -694,6 +695,7 @@ ours.
 | AppleDouble sidecars (`._name`, `__MACOSX/`) stay ordinary members with no marking key (davi, 2026-10-16, project thread) | Marked by name alone, a key adds nothing over the name filter in `docs/formats.md` and also marks a real file named `._x` | `extra["macos.resource_of"]` set from the name (#839, closed). Reopen with a mark that checks the AppleDouble magic in the data (`IDEAS.md`) |
 | Walk one header per pull | Each member is registered, and counted against the caps, before the next header is parsed, so the caps bound what the walker parses, not only what archivey keeps | Batches of headers per lock hold, which come back only if the listing benchmark needs them |
 | An old GNU sparse real size that is negative or past 2**63 - 1 refuses the header and stops the walk | The real size is the member's listed size, and there is no honest one to list. The walk already stops on an old GNU sparse map slot it cannot read, so every old GNU sparse number is treated alike. The shape is crafted (no writer stores such a value), and DR-5a allows the stricter rule for it. Read as it stands, a negative size with an empty map lists as an empty file with no error | Listing the member with size 0 and reading on, as GNU tar 1.35 does, which serves a size the archive does not hold. Listing it with no size and a diagnostic, which would be the same change for every number field whose damage ends the walk |
+| A header `mtime` field of only NULs and blanks lists no `modified`, with no report (maintainer ruling 2026-10-30, thread "Compare our TAR reader with tar-codec") | The field records no time, and 1970 would be a guess presented as a fact (DR-1). Nothing else in the header is wrong, so there is nothing to report | Read it as 0, as GNU tar 1.35 and `tarfile` both do for all NULs (measured 2026-10-30; GNU tar reports an all-blank field and lists -1) |
 
 ## 7. Open questions
 
@@ -725,6 +727,7 @@ ours.
 | ustar and GNU names, link targets, `uname` and `gname` are UTF-8 by default, not the locale's codec; `encoding=` decodes only bytes that are not valid UTF-8; a PAX record that is not UTF-8 falls back to that same codec |
 | Out-of-range `mtime` degrades |
 | A bad PAX `mtime`, `atime`, `ctime` or `LIBARCHIVE.creationtime` is `None` and reported, each once; a PAX `mtime` of `0` stays the epoch |
+| An all-NUL or all-blank header `mtime` is `None` with no report, an octal zero the epoch, and a PAX `mtime` fills an all-NUL field |
 | Old GNU and PAX 0.0, 0.1 and 1.0 sparse members list as sparse and read back logically |
 | A sparse member cut in its stored data, inside a chunk or at a chunk's first byte, delivers its prefix, then raises `TruncatedError`, in every encoding and both modes |
 | A PAX size past `int()`'s digit limit is `CorruptionError`, not `ValueError`; such a `uid` or `gid` is ignored |

@@ -594,6 +594,8 @@ On a compressed tar, the stream's own checksum adds three cases:
   numbers in `extra["tar.devmajor"]` and `extra["tar.devminor"]`. A device number field that is not
   a number is dropped and reported as `MEMBER_HEADER_RECORD_SKIPPED`, as GNU tar lists such a
   device too.
+- **A header time of only NUL bytes or blanks is no time.** Unless a PAX record carries the time,
+  the member has no `modified` and nothing is reported, where GNU tar and `tarfile` show 1970-01-01.
 - **A member of an unknown type is a file when it has data.** A header whose type byte archivey
   does not know (such as `9`) and that declares data is a `FILE` of that size, which reads and
   extracts like any file, as GNU tar extracts it. One that declares no data is `OTHER`, and its
@@ -787,17 +789,19 @@ that mask select the wrong members, or none:
   `open()` or `read()`, and the error says how many bytes it would have cost. On a solid archive
   those bytes are already part of `AccessCost.SOLID`, so the error names the flag instead. Setting
   `ArchiveyConfig.rar_allow_glob_member_concatenation=True` reads it anyway. Two cases are not
-  affected: a name that matches no other member (an accidental `report*.pdf` beside `report1.pdf`)
-  reads with no flag, and a solid `stream_members()` pass reads everything, because it builds no
-  mask at all.
+  affected: a name that matches no earlier member with data (an accidental `report*.pdf` stored
+  before `report1.pdf`) reads with no flag, and a solid `stream_members()` pass reads everything,
+  because it builds no mask at all.
 - **`*` or `?` in a directory part of the name, or a backslash in it:** `unrar` cannot read the
   member, and the flag does not change that. The one exception is a backslash in a RAR5 name
   written on Windows, which `unrar` on Linux and macOS reads as `_`.
 - **Several members under one name** (two members with the same name, or two names `unrar` reads
-  the same way): `unrar` writes every member a name selects, in archive order, and archivey skips to
-  the one you asked for, so each read returns that member's own bytes. A RAR5 name that is not valid
-  UTF-8 is cut by `unrar` at its first invalid byte, and is read through that shorter name the same
-  way.
+  the same way): `unrar` would decode every earlier member with that name first, as for a `*` name,
+  so reading a later one raises `UnsupportedFeatureError` naming the same flag, unless every
+  earlier one is empty. With
+  `rar_allow_glob_member_concatenation=True`, archivey skips the earlier members' bytes, so each
+  read returns that member's own bytes. A RAR5 name that is not valid UTF-8 is cut by `unrar` at
+  its first invalid byte, and is handled through that shorter name the same way.
 - **A name `unrar` reads as empty** raises `UnsupportedFeatureError`, and so does a name `unrar`
   reads but that cannot be handed back to it as a mask.
 - **A name ending in `.`, or with a `.` before a `\`:** `unrar` up to 7.30 beta 1 lets the mask
@@ -1206,7 +1210,8 @@ file; with `format=`, a `.bz2` opens at once. Close the sending side when the fi
   never pays for), then the 512-byte `koly` block at the end of a seekable source
   ([Disk images](#disk-images)), then a TAR header with no magic
   ([TAR](#tar-and-compressed-tar)), then content probes for the formats with no magic (next
-  item), then the extension. A bzip2 or xz header that is the first block of a disk image loses
+  item), then the same 2 MiB scan for a ZIP, 7z or RAR behind leading bytes of any kind, then the
+  extension. A bzip2 or xz header that is the first block of a disk image loses
   to its `koly` block. A step that matches nothing falls through to the next; nothing is rejected for
   failing an earlier one. When only the extension matched and the decode then fails, the error has
   `format_unconfirmed=True`, and archivey reports `EXTENSION_FORMAT_UNCONFIRMED`.
@@ -1252,6 +1257,15 @@ file; with `format=`, a `.bz2` opens at once. Close the sending side when the fi
   as `payload_offset`. A launcher is text, so behind `#!` only formats with a structural check
   (ZIP, 7z, RAR) are searched for. Among several 7z candidates, one that ends exactly at the end of
   the file is preferred over an earlier one that ends short of it.
+- **An archive behind any leading bytes** (an image, zeros, text) is found too, as 7-Zip, `unrar`
+  and `unzip` find it: when no other step matched, the same 2 MiB scan runs without an executable
+  cue, for ZIP, 7z and RAR, each with its structural check. It is the last content step, so a file
+  archivey recognizes pays nothing for it; a file it does not recognize pays a read of up to 2 MiB.
+  On a source that cannot seek and whose length is not known yet, such as a pipe, the scan covers
+  only the bytes detection has already read, and `sfx_scan` is listed in `unavailable_tiers` as
+  `CAPABILITY_UNAVAILABLE`.
+  A file whose name has a known extension skips it and gets the extension's guess; the ZIP, 7z and
+  RAR readers find an archive behind leading bytes themselves.
 - **Ties go to the earlier step, then to registration order.** Detection stops at the first step
   that matches, and within a step the first backend registered wins. A file that is two formats at
   once (a polyglot) gets one fixed answer; pass `format=` to read it as the other.

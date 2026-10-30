@@ -45,10 +45,9 @@ class Lz4LegacyDecompressor:
     """One legacy LZ4 stream, behind the one-stream decompressor interface.
 
     The interface is the one ``FramedDecoder`` drives (``decompress(data, max_length)``,
-    ``eof``, ``unused_data``, ``needs_input``). ``eof`` is set only at a size field that
-    ends the stream; a stream that runs to the end of its input is complete when
-    :attr:`complete_at_end_of_input` says so. Corrupt blocks raise
-    ``lz4.block.LZ4BlockError``.
+    ``eof``, ``unused_data``, ``needs_input``, ``end_input``). ``eof`` is set at a size
+    field that ends the stream, and by :meth:`end_input` when the input ends where the
+    stream may. Corrupt blocks raise ``lz4.block.LZ4BlockError``.
     """
 
     def __init__(self, natives: Natives = IN_PROCESS) -> None:
@@ -130,20 +129,22 @@ class Lz4LegacyDecompressor:
         end = self._block_end()
         return end is None or (end != _STREAM_END and len(self._input) < end)
 
-    @property
-    def complete_at_end_of_input(self) -> bool:
-        """True when the input may end here: between blocks, or in zeros after one.
+    def end_input(self) -> None:
+        """The input ended: the stream is complete when that is between blocks, or in
+        zeros after one.
 
         The format has no end mark, so a stream cut exactly between two blocks is
         complete by this test too: that truncation cannot be seen, and the read comes
         out short with no error, as it does with ``lz4 -dc``.
         """
-        return (
+        if (
             self._magic_checked
             and not self.eof
             and not self._output
             and not self._input.strip(b"\x00")
-        )
+        ):
+            self.eof = True
+            self._input.clear()
 
 
 class Lz4Decompressor:
@@ -184,10 +185,11 @@ class Lz4Decompressor:
         return self._inner is not None and self._inner.eof
 
     @property
-    def unused_data(self) -> bytes | None:
+    def unused_data(self) -> bytes:
         if self._inner is None:
             return b""
-        return self._inner.unused_data
+        # lz4.frame reports no leftover as None.
+        return self._inner.unused_data or b""
 
     @property
     def needs_input(self) -> bool:
@@ -195,8 +197,6 @@ class Lz4Decompressor:
             return True
         return self._inner.needs_input
 
-    @property
-    def complete_at_end_of_input(self) -> bool:
-        return isinstance(self._inner, Lz4LegacyDecompressor) and (
-            self._inner.complete_at_end_of_input
-        )
+    def end_input(self) -> None:
+        if isinstance(self._inner, Lz4LegacyDecompressor):
+            self._inner.end_input()

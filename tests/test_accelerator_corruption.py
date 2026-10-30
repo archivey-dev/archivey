@@ -38,6 +38,7 @@ from archivey.internal.streams.codecs.stdlib_takeover import (
     _StdlibOnAcceleratorError,
 )
 from archivey.internal.streams.decompressor_stream import DataAfterEndError
+from tests.conftest import assert_raised_again
 from tests.corruption_util import (
     is_corruption_not_truncation,
     raises_corruption_not_truncation,
@@ -127,11 +128,12 @@ def test_rapidgzip_catch_all_translates_the_same_for_deflate_and_bzip2(
     # The test builds an unmarked RuntimeError by hand because the child cannot produce
     # one: a RuntimeError it reports is marked, and the reported_by_child arm gives it
     # the same verdict. Unmarked, only the catch-all arm can map it.
-    from archivey.internal.streams.codecs import Bzip2Codec, GzipCodec
+    from archivey.internal.streams.codecs import GzipCodec
+    from archivey.internal.streams.codecs.bzip2_codec import Bzip2Handler
 
     exc = RuntimeError(message)
     assert is_corruption_not_truncation(GzipCodec()._translate_accelerator(exc))
-    assert is_corruption_not_truncation(Bzip2Codec()._translate_accelerator(exc))
+    assert is_corruption_not_truncation(Bzip2Handler()._translate_accelerator(exc))
 
 
 def test_rapidgzip_truncation_is_reported(tmp_path: Path) -> None:
@@ -731,7 +733,7 @@ def test_gzip_backstop_keeps_raising_after_its_own_truncation(read_all: bool) ->
         _drain(stream, read_all, got)
     with pytest.raises(TruncatedError) as again:
         stream.read(4096)
-    assert again.value is first.value
+    assert_raised_again(again.value, first.value)
     assert stream.seek(0) == 0
     reread = bytearray()
     with pytest.raises(TruncatedError) as second:

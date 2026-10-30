@@ -19,7 +19,6 @@ import io
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from types import TracebackType
 from typing import TYPE_CHECKING, BinaryIO, NoReturn, cast
 
 from archivey.config import REWIND_REDECODE_WARN_BYTES
@@ -39,6 +38,7 @@ from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     retire_decoder_children,
 )
+from archivey.internal.streams.kept_errors import KeptError
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     check_read_size,
@@ -310,14 +310,12 @@ class ArchiveStreamImpl(ArchiveStream):
     # instance assigns one only when it changes, which keeps the constructor cheap
     # (``stream_members()`` builds a stream per member). Each is documented where
     # ``__init__`` or the method that changes it sets it.
-    _open_error: Exception | None = None
-    _open_error_tb: TracebackType | None = None
+    _open_error: KeptError | None = None
     _open_interrupted_by: type[BaseException] | None = None
     _inner: BinaryIO | None = None
     _rewind_warned = False
     _closing = False
-    _verdict: ArchiveyError | None = None
-    _verdict_tb: TracebackType | None = None
+    _verdict: KeptError | None = None
     _verdict_rewound = False
     _uninterrupted = True
     _ended_from_start = False
@@ -376,9 +374,9 @@ class ArchiveStreamImpl(ArchiveStream):
             self._open_fn: MemberOpener | None = None
         else:
             self._open_fn = open_fn
-        # ``_open_error`` / ``_open_error_tb``: the error a failed lazy open raised,
-        # and its traceback: a retry raises it again instead of calling ``open_fn`` a
-        # second time. ``_open_interrupted_by``: the type of a ``BaseException``
+        # ``_open_error``: the error a failed lazy open raised, kept without its
+        # frames (``kept_errors``): a retry raises it again instead of calling
+        # ``open_fn`` a second time. ``_open_interrupted_by``: the type of a ``BaseException``
         # (``KeyboardInterrupt``) that stopped the lazy open. Not the stream's error,
         # so it is not raised again; a retry names it.
         self._translate = translate
@@ -396,9 +394,10 @@ class ArchiveStreamImpl(ArchiveStream):
         # a RAISE policy): ``IOBase.__del__`` still calls ``close()`` on an instance
         # whose ``__init__`` raised.
         self._verifier = verifier
-        # ``_verdict``: the content verdict this stream raised, if any. Every later
-        # read and seek raises it again (see ``_fail``). ``_verdict_tb``: its traceback
-        # as first raised, where the damage was found. ``_verdict_rewound``: whether
+        # ``_verdict``: the content verdict this stream raised, if any, kept without its
+        # frames (``kept_errors``). Every later read and seek raises it again (see
+        # ``_fail``), caused by its first raise, where the damage was found.
+        # ``_verdict_rewound``: whether
         # the caller has seeked since the verdict last raised. A seek restarts the
         # decode, so the prefix reads again; the read that reaches the end raises.
         # False for a stream that only a reader's own views read. A read seeks the
@@ -547,7 +546,7 @@ class ArchiveStreamImpl(ArchiveStream):
                 if failed is not None:
                     # The open already failed: this is the same open, so it fails
                     # the same way, as a member's content verdict does (``_fail``).
-                    raise failed.with_traceback(self._open_error_tb)
+                    failed.raise_again()
                 interrupted = self._open_interrupted_by
                 if interrupted is not None:
                     raise ArchiveyUsageError(
@@ -642,9 +641,10 @@ class ArchiveStreamImpl(ArchiveStream):
             self._fail(e)
         except Exception as raised:
             with self._open_lock:
-                self._open_error = raised
-                self._open_error_tb = raised.__traceback__
+                self._open_error = KeptError.of(raised)
             raise
+        finally:
+            del e  # this frame is in the raise's traceback (raise_translated)
 
     def _collapse_nested(self, nested: ArchiveStreamImpl) -> BinaryIO:
         """Reduce a nested ``ArchiveStreamImpl`` to a bytes stream for this handle.
@@ -724,9 +724,12 @@ class ArchiveStreamImpl(ArchiveStream):
         its layer does (a closed pipe, a buffer gone), and translated that could read
         as damage. Raise the closed-file error a read after ``close()`` raises.
         """
-        if self._closing or self.closed:
-            raise ValueError("I/O operation on closed file.") from e
-        self._fail(e)
+        try:
+            if self._closing or self.closed:
+                raise ValueError("I/O operation on closed file.") from e
+            self._fail(e)
+        finally:
+            del e  # this frame is in the raise's traceback (raise_translated)
 
     def _fail(self, e: Exception) -> NoReturn:
         """Translate + stamp ``e`` and raise it, remembering a content verdict.
@@ -739,29 +742,31 @@ class ArchiveStreamImpl(ArchiveStream):
         not the seek forfeited the digest check: a caller who catches it and seeks back
         cannot re-read the damaged member as complete, clean data. A content error that
         a rewound read raises is that same verdict found again (a seek to 0 re-arms the
-        verifier), so the stream raises the error object it raised first. A stream built
+        verifier), so the stream raises the verdict it raised first again. A stream built
         with ``repeat_verdict=False`` remembers nothing and raises each error as it comes.
         """
         try:
-            self._raise_translated(e)
-        except ArchiveyError as raised:
-            if _is_content_verdict(raised) and self._inner is not None:
-                # A digest mismatch found here, above the decoder: a decoder process
-                # that produced the bad bytes must not serve another member.
-                retire_decoder_children(self._inner)
-            if not self._repeat_verdict or not _is_content_verdict(raised):
-                raise
-            repeat = self._verdict is not None and self._verdict_rewound
-            if self._verdict is None:
-                self._verdict = raised
-                self._verdict_tb = raised.__traceback__
-            self._verdict_rewound = False
-            if not repeat:
-                raise
-        # A rewind re-arms the verifier, so a rewound read finds the damage again and
-        # raises a new error for it: raise the one this stream already raised.
-        assert self._verdict is not None
-        raise self._verdict.with_traceback(self._verdict_tb)
+            try:
+                self._raise_translated(e)
+            except ArchiveyError as raised:
+                if _is_content_verdict(raised) and self._inner is not None:
+                    # A digest mismatch found here, above the decoder: a decoder process
+                    # that produced the bad bytes must not serve another member.
+                    retire_decoder_children(self._inner)
+                if not self._repeat_verdict or not _is_content_verdict(raised):
+                    raise
+                repeat = self._verdict is not None and self._verdict_rewound
+                if self._verdict is None:
+                    self._verdict = KeptError.of(raised)
+                self._verdict_rewound = False
+                if not repeat:
+                    raise
+            # A rewind re-arms the verifier, so a rewound read finds the damage again and
+            # raises a new error for it: raise the one this stream already raised.
+            assert self._verdict is not None
+            self._verdict.raise_again()
+        finally:
+            del e  # this frame is in the raise's traceback (raise_translated)
 
     def _reached_end(self, n: int, data: bytes) -> bool:
         """Whether a rewound read reached the end, where the damage was found.
@@ -781,19 +786,18 @@ class ArchiveStreamImpl(ArchiveStream):
             return False
 
     def _raise_verdict(self) -> None:
-        """Raise the content verdict this stream already raised, if there is one.
-
-        Each ``raise`` adds the caller's frames to the exception's traceback, and the
-        object lives as long as the stream. Resetting it to the first traceback keeps
-        a retry loop from growing it without bound, and keeps it pointing at where the
-        damage was found.
-        """
+        """Raise the content verdict this stream already raised, if there is one: a
+        fresh copy, caused by the first raise, where the damage was found
+        (``kept_errors``)."""
         if self._verdict is not None:
-            raise self._verdict.with_traceback(self._verdict_tb)
+            self._verdict.raise_again()
 
     def _raise_translated(self, e: Exception) -> NoReturn:
         """Translate + stamp ``e`` and raise, or re-raise it unchanged."""
-        raise_translated(e, self._translate, self._stamp, self._member_name)
+        try:
+            raise_translated(e, self._translate, self._stamp, self._member_name)
+        finally:
+            del e  # this frame is in the raise's traceback (raise_translated)
 
     def read(self, n: int | None = -1, /) -> bytes:
         scope = self._diagnostics_scope
@@ -1220,9 +1224,7 @@ class ArchiveStreamImpl(ArchiveStream):
             # errors it kept. Their tracebacks refer to this stream, so keeping them
             # would leave the stream for the cycle collector.
             self._open_error = None
-            self._open_error_tb = None
             self._verdict = None
-            self._verdict_tb = None
             on_close = self._on_close
             self._on_close = None
             teardown_exc: Exception | None = None
@@ -1231,15 +1233,20 @@ class ArchiveStreamImpl(ArchiveStream):
                     on_close()
                 except Exception as e:  # noqa: BLE001 - combine with close failure below
                     teardown_exc = e
-            if close_exc is not None and teardown_exc is not None:
-                raise ExceptionGroup(
-                    "member-stream close and archive teardown both failed",
-                    [close_exc, teardown_exc],
-                )
-            if close_exc is not None:
-                raise close_exc
-            if teardown_exc is not None:
-                raise teardown_exc
+            # The errors are dropped as the raise leaves: its traceback holds this
+            # frame, which holds the stream (kept_errors).
+            try:
+                if close_exc is not None and teardown_exc is not None:
+                    raise ExceptionGroup(
+                        "member-stream close and archive teardown both failed",
+                        [close_exc, teardown_exc],
+                    )
+                if close_exc is not None:
+                    raise close_exc
+                if teardown_exc is not None:
+                    raise teardown_exc
+            finally:
+                del close_exc, teardown_exc
 
     def __repr__(self) -> str:
         return f"<{type(self).__name__} inner={self._inner!r}>"
@@ -1257,10 +1264,33 @@ def raise_translated(
     before it builds the stream that will carry its translator
     (:func:`~archivey.internal.streams.codecs.registry.open_codec_raw`), so an open
     failure raises what the stream would have raised.
+
+    No frame the raise passes through may keep the error it raises, or ``e``, which
+    the raised error holds as its cause, in a local: the error's traceback holds those
+    frames, so the local would make a cycle that only the garbage collector breaks,
+    and until it runs the frames keep the stream and its decoder alive. This function
+    and the stream's own boundaries delete their copy as the raise leaves them.
     """
+    translated = _translation(e, translate, stamp, member_name)
+    try:
+        if translated is None:
+            raise e
+        raise translated from e
+    finally:
+        del e, translated
+
+
+def _translation(
+    e: Exception,
+    translate: ExceptionTranslator,
+    stamp: ErrorStamp,
+    member_name: str | None,
+) -> Exception | None:
+    """The stamped error ``raise_translated`` raises for ``e``, or None to raise ``e``
+    itself (stamped when it is an ``ArchiveyError``)."""
     if isinstance(e, ArchiveyError):
         stamp(e)
-        raise e
+        return None
     translated_closed = as_closed_source_error(e, member_name)
     if translated_closed is not None:
         # The *inner* stream hit a closed handle underneath it — typically the
@@ -1270,13 +1300,12 @@ def raise_translated(
         # ValueError from _ensure_open). BaseArchiveReader._raise_translated maps
         # the same error raised while a member opens, with the same message.
         logger.debug("Translated exception: %r -> %r", e, translated_closed)
-        raise translated_closed from e
+        return translated_closed
     translated = translate(e)
     if translated is not None:
         stamp(translated)
         logger.debug("Translated exception: %r -> %r", e, translated)
-        raise translated from e
-    raise e
+    return translated
 
 
 def compose_translators(

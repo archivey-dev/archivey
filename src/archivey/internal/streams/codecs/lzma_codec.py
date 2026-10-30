@@ -17,6 +17,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.formats import CodecCall
 from archivey.internal.config import (
     DecoderLimits,
     StreamConfig,
@@ -24,6 +25,7 @@ from archivey.internal.config import (
     probe_lzma_dictionary,
 )
 from archivey.internal.hashing import crc32_digest
+from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import ExceptionTranslator, RewindWarning
 from archivey.internal.streams.codecs.base import (
     Codec,
@@ -34,7 +36,16 @@ from archivey.internal.streams.codecs.base import (
     ProbeReadAt,
     StreamCodec,
 )
-from archivey.internal.streams.codecs.framed_decoder import FramedDecompressorStream
+from archivey.internal.streams.codecs.framed_decoder import (
+    FramedDecompressorStream,
+    StreamStart,
+)
+from archivey.internal.streams.codecs.handler_codec import (
+    BuiltinCall,
+    BuiltinCodecHandler,
+    builtin_codec,
+    config_of,
+)
 from archivey.internal.streams.codecs.isolated import (
     IN_PROCESS,
     Decompressor,
@@ -341,36 +352,51 @@ def _new_alone_decompressor(
     return _ClampedAloneDecompressor(read_bound, natives)
 
 
-class LzmaAloneCodec(_LzmaErrorCodec):
-    """Legacy LZMA Alone (``.lzma``) — framed standalone stream, not raw FORMAT_RAW."""
+class LzmaAloneHandler(BuiltinCodecHandler):
+    """Legacy LZMA Alone (``.lzma``) — framed standalone stream, not raw FORMAT_RAW.
+
+    The stream takes ``refuse_input_after_end`` from the config, as every handler's
+    does. No caller sets it for Alone today, since no container uses Alone as a
+    coder; one that does gets the same refusal as every other codec.
+    """
 
     codec = Codec.LZMA_ALONE
+    codec_name = "lzma"
     stream_format = StreamFormat.LZMA_ALONE
     # No exact magic: the properties byte is too weak; recognition is by content probe.
 
-    def open(
-        self, source: CodecSource, params: CodecParams, config: StreamConfig
-    ) -> BinaryIO:
-        # A rewind re-decompresses from the start; the outer ArchiveStream warns (see
-        # rewind_warning).
-        return FramedDecompressorStream(
-            source,
-            functools.partial(
-                _new_alone_decompressor,
-                config.probe_read_bound,
-                config.decoder_limits,
-                natives_for(config.process_isolation),
-            ),
-            codec_name="lzma",
-            magic=_starts_alone_stream,
-            collector=config.collector,
-            report_trailing_data=config.report_trailing_data,
+    @override
+    def decompressor(self, call: CodecCall) -> Decompressor:
+        return _new_alone_decompressor(
+            call.probe_bound,
+            call.limits,
+            natives_for(config_of(call).process_isolation),
         )
 
-    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
+    @override
+    def _stream_start(self, call: BuiltinCall) -> StreamStart:
+        # No magic: a further stream is one whose header liblzma would decode.
+        del call
+        return _starts_alone_stream
+
+    @override
+    def translate_exception(self, exc: Exception) -> ArchiveyError | None:
+        return _translate_lzma(exc)
+
+    @override
+    def _translator(self, config: StreamConfig) -> ExceptionTranslator:
+        # The limits the stream's decompressors are built with, so a memlimit refusal
+        # names the cap (``new_capped_decompressor``).
+        return functools.partial(_translate_lzma, limits=config.decoder_limits)
+
+    @override
+    def _rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
+        # A rewind re-decompresses from the start; the outer ArchiveStream warns.
+        del config
         return RewindWarning("lzma")
 
-    def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
+    @override
+    def _extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
         header = ctx.peek_header(_ALONE_HEADER_SIZE)
         if len(header) < _ALONE_HEADER_SIZE:
             return
@@ -378,8 +404,10 @@ class LzmaAloneCodec(_LzmaErrorCodec):
         if size != _ALONE_UNKNOWN_SIZE:
             member.size = size
 
-    def content_probe(
+    @override
+    def _content_probe(
         self,
+        entry: StreamCodec,
         prefix: bytes,
         *,
         source_length: int | None = None,
@@ -399,18 +427,21 @@ class LzmaAloneCodec(_LzmaErrorCodec):
         Completeness and the bounded decode share ``_decodes_sample``; Alone additionally
         requires a positive output length (an empty successful read is not a claim).
         """
-        if not _alone_header_plausible(prefix) or not self.available():
+        if not _alone_header_plausible(prefix) or not entry.available():
             return False
         if _alone_payload_has_zero_run(prefix):
             return False
         if source_length is not None and source_length <= _ALONE_HEADER_SIZE:
             return False
-        return self._decodes_sample(
+        return entry._decodes_sample(
             prefix,
             source_length=source_length,
             require_output=True,
             isolation=isolation,
         )
+
+
+LzmaAloneCodec = builtin_codec(LzmaAloneHandler)
 
 
 LZMA_DICTIONARY_FILTERS: dict[int, str] = {

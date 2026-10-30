@@ -386,6 +386,164 @@ def test_an_empty_stream_after_the_magic_is_truncated(toy: ArchiveFormat) -> Non
         stream.read()
 
 
+class EndlessStream(PluginStream):
+    ENDLESS = "toyendless"
+
+
+class EndlessDecompressor(ToyDecompressor):
+    """A TOY stream with no end record: it ends where its input does, between two
+    records (``end_input``)."""
+
+    def end_input(self) -> None:
+        if self._in:
+            raise ToyError("the input ends inside a record")
+        self._ended = self._started
+
+
+class EndlessHandler(ToyHandler):
+    stream_format = EndlessStream.ENDLESS
+    extension_aliases = ()
+    concatenated = False
+    # The stream has no CRC-32 to check.
+    checks_content = False
+
+    def decompressor(self, call: CodecCall) -> EndlessDecompressor:
+        return EndlessDecompressor()
+
+
+def _endless(data: bytes) -> bytes:
+    """``data`` as a TOY stream with no end record."""
+    return toy_compress(data)[:-5]
+
+
+@pytest.mark.parametrize("data", [_TEXT, b""])
+def test_end_input_ends_a_stream_with_no_end_mark(data: bytes) -> None:
+    with registration_scope():
+        register_codec(EndlessHandler)
+        with open_stream(
+            NonSeekableBytesIO(_endless(data)), format=EndlessStream.ENDLESS
+        ) as stream:
+            assert stream.read() == data
+
+
+def test_an_error_from_end_input_is_raised_after_the_output() -> None:
+    with registration_scope():
+        register_codec(EndlessHandler)
+        with open_stream(
+            io.BytesIO(_endless(_TEXT)[:-3]), format=EndlessStream.ENDLESS
+        ) as stream:
+            got = stream.read(len(_TEXT) - 200)
+            with pytest.raises(CorruptionError, match="inside a record"):
+                stream.read()
+    assert _TEXT.startswith(got)
+
+
+class _FlushingOutput(EndlessDecompressor):
+    def end_input(self) -> bytes:  # type: ignore[override]
+        return b"late"
+
+
+def test_an_end_input_that_returns_output_is_refused() -> None:
+    class Handler(EndlessHandler):
+        def decompressor(self, call: CodecCall) -> EndlessDecompressor:
+            return _FlushingOutput()
+
+    with registration_scope():
+        register_codec(Handler)
+        with (
+            open_stream(io.BytesIO(_endless(b"x")), format=EndlessStream.ENDLESS) as s,
+            pytest.raises(TypeError, match="returns no output"),
+        ):
+            s.read()
+
+
+def test_a_stream_end_input_leaves_unended_is_truncated() -> None:
+    with registration_scope():
+        register_codec(EndlessHandler)
+        with (
+            open_stream(io.BytesIO(b""), format=EndlessStream.ENDLESS) as s,
+            pytest.raises(TruncatedError, match="empty"),
+        ):
+            s.read()
+
+
+class HeldStream(PluginStream):
+    HELD = "toyheld"
+
+
+class HeldDecompressor:
+    """Magic, an 8-byte count and a byte: that byte, ``count`` times, which it gives out
+    only once ``end_input`` says nothing follows. Its output is held back until then."""
+
+    def __init__(self) -> None:
+        self._in = bytearray()
+        self._left = 0
+        self._byte = b""
+        self._ended = False
+        self.unused_data = b""
+
+    def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        self._in += data
+        if not self._ended:
+            return b""
+        n = self._left if max_length < 0 else min(max_length, self._left)
+        self._left -= n
+        return self._byte * n
+
+    def end_input(self) -> None:
+        if len(self._in) != 13 or self._in[:4] != b"HELD":
+            raise ToyError("not a whole HELD stream")
+        self._left = int.from_bytes(self._in[4:12], "big")
+        self._byte = bytes(self._in[12:13])
+        self._ended = True
+
+    @property
+    def eof(self) -> bool:
+        return self._ended and not self._left
+
+    @property
+    def needs_input(self) -> bool:
+        return not self._ended
+
+
+class HeldHandler(CodecHandler):
+    stream_format = HeldStream.HELD
+    magic = (Magic(0, b"HELD"),)
+    concatenated = False
+    checks_content = False
+
+    def decompressor(self, call: CodecCall) -> HeldDecompressor:
+        return HeldDecompressor()
+
+
+def _held(count: int) -> bytes:
+    return b"HELD" + count.to_bytes(8, "big") + b"x"
+
+
+def test_output_held_back_until_the_input_ends_is_read_after_end_input() -> None:
+    # 300 KiB from one end_input: several bounded drains, read in small and whole.
+    count = 300 * 1024
+    with registration_scope():
+        register_codec(HeldHandler)
+        with open_stream(
+            NonSeekableBytesIO(_held(count)), format=HeldStream.HELD
+        ) as stream:
+            assert stream.read(10) == b"x" * 10
+            assert stream.read() == b"x" * (count - 10)
+            assert stream.read() == b""
+
+
+def test_held_back_output_is_bounded_by_the_ratio_limit() -> None:
+    # 13 bytes claiming 1 TiB: the drain goes out in pieces, so the ratio guard stops
+    # it long before memory runs out.
+    with registration_scope():
+        register_codec(HeldHandler)
+        with open_archive(io.BytesIO(_held(1 << 40))) as reader:
+            member = reader.members()[0]
+            with pytest.raises(ResourceLimitError):
+                reader.read(member)
+
+
 def test_the_decoders_error_goes_through_translate_exception(
     toy: ArchiveFormat,
 ) -> None:
@@ -558,7 +716,7 @@ def test_plugins_false_turns_the_codec_off(toy: ArchiveFormat) -> None:
 
 
 class _Builtin(ToyHandler):
-    stream_format = StreamFormat.GZIP  # type: ignore[assignment]
+    stream_format = StreamFormat.GZIP
 
 
 class _GzValue(PluginStream):
