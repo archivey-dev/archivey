@@ -37,12 +37,14 @@ After a full walk, :meth:`TarReader._verify_tar_eof` checks the end, from the
 
 A directory listed from an old-style regular-file header named ``d/`` keeps its declared
 ``size`` and is reported with ``MEMBER_DIRECTORY_DATA_IGNORED`` at listing; ``open()``
-and ``stream_members()`` deliver the bytes, extraction creates the directory (DR-3).
+and ``stream_members()`` deliver the bytes, extraction creates the directory (DR-3). A
+``DIRTYPE`` header whose size is a PAX record is read the same way, as GNU tar skips
+those bytes.
 
 A symlink or hard link header with a size is listed as a link with no ``size``. When
-the block after it is not a member header, the walker skips the declared blocks (see
-``TarWalker._place_link_data``) and the link is reported with
-``MEMBER_LINK_DATA_IGNORED`` at listing; extraction creates the link.
+the block after it is not a member header, or the size is a PAX record, the walker
+skips the declared blocks (see ``TarWalker._place_link_data``) and the link is reported
+with ``MEMBER_LINK_DATA_IGNORED`` at listing; extraction creates the link.
 
 These codes follow the diagnostic policy like any other: a caller who wants one to fail
 sets it to ``RAISE`` (``DiagnosticPolicy.STRICT`` does so for all of them).
@@ -69,6 +71,7 @@ from archivey.diagnostics import (
     DiagnosticCode,
     DigestContext,
     DirectoryDataContext,
+    HeaderAmbiguityContext,
     LinkDataContext,
     MemberHeaderRecordContext,
     UnknownMemberTypeContext,
@@ -83,6 +86,7 @@ from archivey.exceptions import (
 from archivey.internal.backends.tar_parser import (
     BLOCKSIZE,
     SPARSE_ENTRY_BYTES,
+    Ambiguity,
     Budget,
     LinkData,
     NameSource,
@@ -249,6 +253,15 @@ def _member_type(entry: TarEntry) -> MemberType:
     return MemberType.OTHER
 
 
+def _directory_has_data(entry: TarEntry) -> bool:
+    """Whether ``entry`` is a directory with a data area: an old-style ``d/``
+    regular-file header with a size, or a ``DIRTYPE`` header a PAX ``size`` gave one
+    (GNU tar skips those bytes). A GNU dumpdir's data is its listing, not this."""
+    if entry.old_style_directory:
+        return entry.size > 0
+    return entry.typeflag == b"5" and entry.stored_size > 0
+
+
 def _directory_declaring_blocks(member: ArchiveMember | None) -> TarSpan | None:
     """``member``'s span when it is a ``DIRTYPE`` header with a non-zero size, else None.
 
@@ -261,7 +274,8 @@ def _directory_declaring_blocks(member: ArchiveMember | None) -> TarSpan | None:
         return None
     span = member._raw
     assert isinstance(span, TarSpan), "TAR member is missing its span"
-    if span.typeflag != b"5" or not span.size:
+    if span.typeflag != b"5" or not span.size or span.stored_size:
+        # A stored size is a PAX size, which framed the blocks: they were read.
         return None
     return span
 
@@ -295,7 +309,8 @@ _STORED_COMPRESSION: tuple[CompressionMethod, ...] = (
 
 def _pax_text(entry: TarEntry, key: bytes) -> str | None:
     """The PAX record ``key`` in force for ``entry`` as text, or ``None`` when it is
-    absent or empty (an empty value in a member's own header cancels the keyword)."""
+    absent or empty (the walker keeps an empty value only for the keywords it clears,
+    ``parse_pax_records``)."""
     value = entry.pax.get(key)
     if value is None or not value.value:
         return None
@@ -1232,11 +1247,13 @@ class TarReader(BaseArchiveReader):
                 # data: GNU tar and libarchive ignore its size field and read the next
                 # header where the "data" starts. An all-zero payload would then read
                 # as the end-of-archive marker and every later member would vanish
-                # without a word, so the header is refused as damage (DR-25).
+                # without a word, so the header is refused as damage (DR-25). A PAX
+                # size is refused too, though GNU tar 1.35 skips the bytes it declares
+                # and extracts the entry: only a crafted archive has one there (DR-5a).
                 raise CorruptionError(
                     f"TAR header for {quoted(name)} is a {special.replace('_', ' ')} "
                     f"that declares {entry.size} bytes of data; a device or FIFO entry "
-                    "has no data, and tar skips such a header as damaged",
+                    "has no data, so a size on its header is damage",
                     archive_name=self._archive_name,
                     member_name=name,
                 )
@@ -1255,12 +1272,12 @@ class TarReader(BaseArchiveReader):
             name=name,
             raw_name=entry.name,
             # An old-style directory keeps its declared size: its regular-file
-            # typeflag gives it a data area, which open() and a pass deliver (DR-3). A DIRTYPE
-            # size names no data area, so it is dropped here and judged at the end
-            # of the walk (_verify_tar_eof).
+            # typeflag gives it a data area, which open() and a pass deliver (DR-3), and
+            # so does a DIRTYPE one whose size is a PAX record. A DIRTYPE header's own
+            # size names no data area, so it is dropped here and judged at the end of
+            # the walk (_verify_tar_eof).
             size=entry.size
-            if member_type == MemberType.FILE
-            or (entry.old_style_directory and entry.size)
+            if member_type == MemberType.FILE or _directory_has_data(entry)
             else None,
             modified=modified,
             # The permission bits are the low twelve, which is what stat.S_IMODE
@@ -1359,15 +1376,69 @@ class TarReader(BaseArchiveReader):
                 attach_to_member=True,
                 logger=backends_logger,
             )
-        if entry.old_style_directory and entry.size:
+        if _directory_has_data(entry):
+            # An old-style directory, or a DIRTYPE one a PAX size gave a data area:
             # GNU tar creates the directory and skips the bytes without a word (7-Zip
             # too, for NUL and 0). Say so; read() delivers them.
             self._emit_directory_data_ignored(member, index)
         if entry.link_data is not None:
             self._emit_link_data_ignored(member, index, entry)
+        for ambiguity, key in entry.ambiguities:
+            self._emit_header_ambiguous(member, index, ambiguity, key)
         if entry.typeflag not in _KNOWN_TYPES:
             self._emit_member_type_unknown(member, index, entry.typeflag)
         return member
+
+    def _emit_header_ambiguous(
+        self, member: ArchiveMember, member_id: int, ambiguity: Ambiguity, key: bytes
+    ) -> None:
+        """Report ``MEMBER_HEADER_AMBIGUOUS`` for a header shape no known writer
+        produces (:class:`Ambiguity`). The walk read it as GNU tar 1.35 does; the
+        report says so, because ``tarfile`` and other tools read it otherwise and list
+        another name or size. In ``ARCHIVE_INTEGRITY_CODES``: ``STRICT`` refuses it.
+        """
+        field = key.decode("ascii", "backslashreplace")
+        if ambiguity is Ambiguity.BOTH_FAMILIES:
+            gnu = "long name" if key == b"path" else "long link name"
+            what = (
+                f"a GNU {gnu} header that a PAX record overrides; the PAX record is "
+                "used"
+            )
+        elif ambiguity is Ambiguity.REPEATED:
+            what = (
+                f"{field} set more than once; the last value is used (the first in "
+                "a global header)"
+            )
+        elif ambiguity is Ambiguity.GLOBAL_MEMBER_FIELD:
+            what = (
+                f"a global PAX header setting {field}, which then applies to every "
+                "member after it"
+            )
+        elif ambiguity is Ambiguity.NUL_IN_VALUE:
+            what = f"a PAX {field} record holding a NUL byte; the value ends there"
+        else:
+            what = (
+                f"a global PAX header that drops the {field} an earlier global header "
+                "set; it no longer applies"
+            )
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_HEADER_AMBIGUOUS,
+            message=(
+                f"TAR headers of {quoted(member.name)} have {what}, as GNU tar reads "
+                "them. No known writer produces this, and other readers may list "
+                "another name or size."
+            ),
+            context=HeaderAmbiguityContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=member_id,
+                ambiguity=ambiguity.value,
+                field=field,
+            ),
+            member=member,
+            attach_to_member=True,
+            logger=integrity_logger,
+        )
 
     def _emit_link_data_ignored(
         self, member: ArchiveMember, member_id: int, entry: TarEntry
@@ -1384,7 +1455,12 @@ class TarReader(BaseArchiveReader):
         """
         kind = "Symlink" if member.type == MemberType.SYMLINK else "Hard link"
         declares = f"{kind} {quoted(member.name)} declares {entry.size} bytes of data"
-        if entry.link_data is LinkData.ENDS_ARCHIVE:
+        if entry.link_data is LinkData.FRAMED:
+            what = (
+                f"{declares} in a PAX size record; a TAR link entry has no data area, "
+                "so the blocks are skipped, as GNU tar skips them."
+            )
+        elif entry.link_data is LinkData.ENDS_ARCHIVE:
             what = (
                 f"{declares}, and the archive ends on zero bytes before the span those "
                 "bytes would occupy ends: if the blocks are there, they are zeros cut "
