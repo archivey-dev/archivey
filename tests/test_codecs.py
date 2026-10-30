@@ -69,6 +69,8 @@ from tests.conftest import (
     requires,
     requires_binary,
     requires_zstd,
+    run_7z,
+    sevenzip_version,
     zstd_backend,
 )
 from tests.corruption_util import (
@@ -1189,15 +1191,47 @@ def test_unix_compress_non_block_mode_streams_match_gzip(
         assert _lzw_decode_in_chunks(compressed, chunk) == data
 
 
-def _seven_zip_decompress(compressed: bytes, tmp_path: Path) -> bytes:
-    """``7z``'s reading of a ``.Z`` stream, through a file in ``tmp_path``."""
-    import subprocess
+def _seven_zip_decompress(
+    compressed: bytes, tmp_path: Path, program: str = "7z"
+) -> bytes:
+    """``program``'s reading of a ``.Z`` stream, through a file in ``tmp_path``.
 
+    A refusal fails with the 7-Zip version and its stderr, so a CI log says which
+    7-Zip read the stream and why it stopped."""
     path = tmp_path / "data.Z"
     path.write_bytes(compressed)
-    return subprocess.run(
-        ["7z", "e", "-so", str(path)], capture_output=True, check=True
-    ).stdout
+    result = run_7z(["e", "-so", str(path)], program=program)
+    if result.returncode != 0:
+        pytest.fail(
+            f"{program} (7-Zip {sevenzip_version(program)}) exited {result.returncode} on "
+            f"{path.name}: {result.stderr.decode(errors='replace').strip()}"
+        )
+    return result.stdout
+
+
+# 7-Zip 26.05 rewrote its .Z decoder to move to 10-bit codes when a 9-bit table fills,
+# as the original ``compress``, ncompress 5.0 and GNU gzip do. 7-Zip up to 26.04, unar
+# and ncompress since commit 3303f31 keep 9-bit codes, as archivey does
+# (``unix-compress.md`` §3), so only those versions are a reference at 9 bits.
+_SEVEN_ZIP_WIDENS_NINE_BITS = (26, 5)
+
+
+def _requires_nine_bit_7z() -> pytest.MarkDecorator:
+    """Skip unless ``7z`` is a 7-Zip that keeps 9-bit codes once the table fills."""
+    version = sevenzip_version()
+    return pytest.mark.skipif(
+        version is not None and version >= _SEVEN_ZIP_WIDENS_NINE_BITS,
+        reason=f"7z is 7-Zip {version}, which widens a full 9-bit .Z table to 10 bits",
+    )
+
+
+def _seven_zip_widening_nine_bits() -> str | None:
+    """The first of ``7zz`` and ``7z`` that is 7-Zip 26.05 or later, or None."""
+    for program in ("7zz", "7z"):
+        version = sevenzip_version(program)
+        if version is not None and version >= _SEVEN_ZIP_WIDENS_NINE_BITS:
+            return program
+    return None
 
 
 # (block_mode, clear_every): without block mode, block mode with no CLEAR, and block
@@ -1206,15 +1240,16 @@ _NINE_BIT_LAYOUTS = [(False, 0), (True, 0), (True, 300)]
 
 
 @requires_binary("7z")
+@_requires_nine_bit_7z()
 @pytest.mark.parametrize(("block_mode", "clear_every"), _NINE_BIT_LAYOUTS)
 @pytest.mark.parametrize("payload", sorted(_NON_BLOCK_PAYLOADS))
 def test_unix_compress_nine_bit_streams_decode_exactly(
     payload: str, block_mode: bool, clear_every: int, tmp_path: Path
 ) -> None:
     """At 9 bits the table fills and codes stay 9 bits wide; after a CLEAR the table
-    restarts at 9 bits. ``7z`` is the reference. GNU gzip is not: it moves to 10-bit
-    codes when the table fills even at 9 bits, and refuses these streams. See
-    ``dev-docs/formats/unix-compress.md`` §3."""
+    restarts at 9 bits. ``7z`` up to 26.04 is the reference. GNU gzip is not: it moves
+    to 10-bit codes when the table fills even at 9 bits, and refuses these streams, as
+    7-Zip 26.05 does. See ``dev-docs/formats/unix-compress.md`` §3."""
     data = _NON_BLOCK_PAYLOADS[payload]
     compressed = _lzw_compress(data, 9, block_mode=block_mode, clear_every=clear_every)
     assert _seven_zip_decompress(compressed, tmp_path) == data
@@ -1222,13 +1257,36 @@ def test_unix_compress_nine_bit_streams_decode_exactly(
         assert _lzw_decode_in_chunks(compressed, chunk) == data
 
 
+@pytest.mark.skipif(
+    _seven_zip_widening_nine_bits() is None, reason="needs 7-Zip 26.05 or later"
+)
+def test_unix_compress_nine_bit_full_table_is_refused_by_7zip_26_05(
+    tmp_path: Path,
+) -> None:
+    """7-Zip 26.05 reads codes after a full 9-bit table as 10 bits wide, so a stream
+    that keeps 9-bit codes, which archivey decodes to its input, is a data error there.
+    If 7-Zip goes back to 9-bit codes this fails, and the skip above can go."""
+    program = _seven_zip_widening_nine_bits()
+    assert program is not None
+    data = _NON_BLOCK_PAYLOADS["random"]
+    compressed = _lzw_compress(data, 9, block_mode=True)
+    assert _lzw_decode_in_chunks(compressed, 1 << 20) == data
+    path = tmp_path / "data.Z"
+    path.write_bytes(compressed)
+    result = run_7z(["e", "-so", str(path)], program=program)
+    assert result.returncode == 2, result
+    assert b"Data Error" in result.stderr
+
+
 @requires_binary("7z")
+@_requires_nine_bit_7z()
 def test_unix_compress_ncompress_5_0_nine_bit_damage_reads_as_wrong_bytes(
     tmp_path: Path,
 ) -> None:
     """ncompress 5.0's ``-b9`` bug: the table takes code 512, which is later written in
-    9 bits. The stream decodes with no error to wrong bytes, the same as ``7z`` reads,
-    because nothing in the format marks the damage (``unix-compress.md`` §3)."""
+    9 bits. The stream decodes with no error to wrong bytes, the same as ``7z`` up to
+    26.04 reads, because nothing in the format marks the damage (``unix-compress.md``
+    §3)."""
     data = _NON_BLOCK_PAYLOADS["random"]
     damaged = _lzw_compress(data, 9, block_mode=True, table_limit=512)
     assert damaged != _lzw_compress(data, 9, block_mode=True)

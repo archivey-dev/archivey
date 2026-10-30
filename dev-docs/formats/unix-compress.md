@@ -139,6 +139,13 @@ ncompress 5.0 and GNU gzip 1.12 refuse every 9-bit file, damaged or not. Their d
 move to 10-bit codes when the table fills, even when the header says 9, which is the other
 half of the same ncompress fix. So their refusal is not evidence against a file.
 
+7-Zip 26.05 (2026-10-21) went the other way. Its rewritten decoder moves to 10-bit codes
+when a 9-bit table fills, as the original `compress` and ncompress 5.0 do, and it reports
+`Data Error` on every 9-bit file that filled its table, including ones archivey reads to
+their input. 7-Zip up to 26.04 keeps 9-bit codes. The 9-bit oracle tests in
+`tests/test_codecs.py` skip where `7z` is 26.05 or later, and one test pins 26.05's
+refusal so a later change shows up.
+
 Without block mode (`compress -C`) no installed tool writes files, so the tests carry
 their own encoder, which writes both modes. GNU gzip 1.12 reads its output like archivey at 10 to 16 bits. The
 Apple gzip on macOS returned different bytes for the long zero runs, so the tests use
