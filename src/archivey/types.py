@@ -928,6 +928,8 @@ class ArchiveInfoExtra(dict[str, object]):
     * ``ar.symbol_table`` (``bool``)
     * ``ar.dialect`` (``str``)
     * ``cpio.variant`` (``str``)
+    * ``squashfs.compressor`` (``str``)
+    * ``squashfs.block_size`` (``int``)
     """
 
     __slots__ = ()
@@ -946,6 +948,10 @@ class ArchiveInfoExtra(dict[str, object]):
     def __getitem__(self, key: Literal["ar.dialect"], /) -> str: ...
     @overload
     def __getitem__(self, key: Literal["cpio.variant"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["squashfs.compressor"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["squashfs.block_size"], /) -> int: ...
     @overload
     def __getitem__(self, key: str, /) -> object: ...
     def __getitem__(self, key: str, /) -> object:

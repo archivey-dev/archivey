@@ -50,6 +50,7 @@ from archivey.internal.backends import squashfs_lzo as lzo
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.types import (
     ArchiveFormat,
+    ArchiveInfoExtra,
     ArchiveMember,
     CompressionAlgorithm,
     MemberType,
@@ -613,10 +614,12 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
     def archive_info(self) -> ReaderArchiveInfo:
         return ReaderArchiveInfo(
             format_version="4.0",
-            extra={
-                "squashfs.compressor": self._compressor,
-                "squashfs.block_size": self._sb.block_size,
-            },
+            extra=ArchiveInfoExtra(
+                {
+                    "squashfs.compressor": self._compressor,
+                    "squashfs.block_size": self._sb.block_size,
+                }
+            ),
         )
 
 
