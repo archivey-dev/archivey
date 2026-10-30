@@ -992,7 +992,9 @@ class SequentialReaderAdapter(_PluginAdapter):
         # access keeps each layer's codec and views by where it starts, so a walk
         # started over reads through the ones it opened before.
         self._layer_streams: list[BinaryIO] = []
-        self._layer_sources: dict[tuple[int, int, StreamFormat], SharedSource] = {}
+        self._layer_sources: dict[
+            tuple[int, int, StreamFormat | PluginStream], SharedSource
+        ] = {}
         # A compressed pair (``.cpio.gz``): the codec stream the walk and the member
         # data read, as TAR's (``_open_outer_codec_stream``). The walk sees decoded
         # bytes only.
@@ -1143,7 +1145,11 @@ class SequentialReaderAdapter(_PluginAdapter):
         return layer
 
     def _decompress_layer(
-        self, walk: _Walk, parent: _Layer, offset: int, stream_format: StreamFormat
+        self,
+        walk: _Walk,
+        parent: _Layer,
+        offset: int,
+        stream_format: StreamFormat | PluginStream,
     ) -> ForwardStream:
         """``ForwardStream.decompress``: a layer over the decoded bytes of the
         compression stream that starts at ``offset`` of ``parent``, which becomes the
@@ -1852,7 +1858,7 @@ class _PluginBackend(ReadBackend):
         )
 
 
-def _prefix_probe(probe: object) -> ContentProbe:
+def prefix_probe(probe: object) -> ContentProbe:
     """Adapt a plugin's ``probe(prefix)`` to the registry's probe shape.
 
     The plugin gets the peeked prefix only: no ``read_at`` and no decode allowance, so
@@ -2085,7 +2091,7 @@ def _backend_class(
         "EXTENSIONS": dict.fromkeys(plugin.extensions, fmt),
         "MAGIC": magic,
         "INNER_MAGIC": magic if sequential else (),
-        "CONTENT_PROBES": (((fmt, _prefix_probe(probe)),) if probe is not None else ()),
+        "CONTENT_PROBES": (((fmt, prefix_probe(probe)),) if probe is not None else ()),
         "USES_ENCODING": bool(plugin.uses_encoding),
         "NON_SEEKABLE_REASON": "its reader needs random access to the archive",
         # A sequential format reads a pipe in a streaming pass.

@@ -329,7 +329,8 @@ class ForwardStream:
         self,
         read: Callable[[int], bytes],
         skip: Callable[[int, int], None],
-        decompress: Callable[[int, StreamFormat], ForwardStream] | None = None,
+        decompress: Callable[[int, StreamFormat | PluginStream], ForwardStream]
+        | None = None,
     ) -> None:
         self._read_fn = read
         self._skip_fn = skip
@@ -380,10 +381,11 @@ class ForwardStream:
         self._skip_fn(self._offset, n)
         self._offset += n
 
-    def decompress(self, stream_format: StreamFormat) -> ForwardStream:
+    def decompress(self, stream_format: StreamFormat | PluginStream) -> ForwardStream:
         """The rest of the archive, from :attr:`offset` on, decoded as a
         ``stream_format`` compression stream (``StreamFormat.GZIP``, ``XZ``, ``ZSTD``,
-        …): the payload of an RPM after its headers, say.
+        …, or the :class:`~archivey.PluginStream` of a codec added with
+        :func:`register_codec`): the payload of an RPM after its headers, say.
 
         Read the archive from the returned stream after this call: this one refuses
         further reads. Its :attr:`offset` counts decoded bytes from 0, and the members

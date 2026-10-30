@@ -169,12 +169,15 @@ def _accepted_stream_formats() -> str:
     ``UNKNOWN`` are left out above. The list is built from ``_FORMAT_NAMES``, so the
     three compressed tars with no named constant — ``(TAR, LZIP)``, ``(TAR, ZLIB)``,
     ``(TAR, BROTLI)`` — are not in it: they have no spelling, and ``open_stream``
-    takes them only as the ``ArchiveFormat`` object.
+    takes them only as the ``ArchiveFormat`` object. A registered codec's spellings
+    are listed too, as :func:`_accepted_archive_formats` lists a plugin's.
     """
     spellings = sorted(
-        fmt.file_extension().lower()
-        for fmt in _FORMAT_NAMES
-        if outer_stream_format(fmt) is not None and fmt.file_extension()
+        {
+            fmt.file_extension().lower()
+            for fmt in (*_FORMAT_NAMES, *_plugin_spellings.values())
+            if outer_stream_format(fmt) is not None and fmt.file_extension()
+        }
     )
     return ", ".join(repr(s) for s in spellings)
 

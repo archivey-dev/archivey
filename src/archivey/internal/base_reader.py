@@ -395,8 +395,8 @@ class ReadBackend(ABC):
     # codec registered later reaches them too; ``FORMATS`` does not list them.
     STREAM_PAIRS: ClassVar[bool] = False
     # The extensions a stream's own is appended to for those pairs: ``.tar`` gives
-    # ``.tar.gz``, ``.tar.xz``, and so on. Other pair spellings (``.tgz``) go in
-    # ``EXTENSIONS``.
+    # ``.tar.gz``, ``.tar.xz``, and so on. Each must also be an ``EXTENSIONS`` key,
+    # which names the container. Other pair spellings (``.tgz``) go in ``EXTENSIONS``.
     PAIR_EXTENSIONS: ClassVar[tuple[str, ...]] = ()
     # Whether this is the backend for a single compressed file, with no container:
     # ``ArchiveFormat(RAW_STREAM, <stream>)`` for every single-file codec, made when

@@ -51,8 +51,8 @@ def _coerce_entries(values: object, *, param: str) -> frozenset[_FormatEntry]:
     """
     if isinstance(values, (str, bytes)) or not isinstance(values, Iterable):
         raise _UsageTypeError(
-            f"{_CALL} takes a collection of ContainerFormat, PluginContainer and "
-            f"StreamFormat members for {param}, got {values!r}."
+            f"{_CALL} takes a collection of ContainerFormat, PluginContainer, "
+            f"StreamFormat and PluginStream members for {param}, got {values!r}."
         )
     entries: set[_FormatEntry] = set()
     for value in values:
@@ -66,8 +66,9 @@ def _coerce_entries(values: object, *, param: str) -> frozenset[_FormatEntry]:
             value, (ContainerFormat, PluginContainer, StreamFormat, PluginStream)
         ):
             raise _UsageTypeError(
-                f"{_CALL} takes ContainerFormat, PluginContainer and StreamFormat "
-                f"members for {param}, got {value!r} ({type(value).__name__})."
+                f"{_CALL} takes ContainerFormat, PluginContainer, StreamFormat and "
+                f"PluginStream members for {param}, got {value!r} "
+                f"({type(value).__name__})."
             )
         if value is ContainerFormat.UNKNOWN:
             raise _UsageValueError(

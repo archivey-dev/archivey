@@ -12,8 +12,6 @@ import os
 from collections.abc import Generator
 from contextlib import contextmanager
 
-import pytest
-
 from archivey import open_archive
 from archivey.internal.detection import DetectionConfidence, detect_format
 from archivey.internal.format_adapter import registration_scope
@@ -45,7 +43,6 @@ _FORMAT = ArchiveFormat(ContainerFormat.RAW_STREAM, _SyntheticStream.SYNTHETIC)
 
 @contextmanager
 def _install_synthetic(
-    monkeypatch: pytest.MonkeyPatch,
     *,
     requirement: MissingComponent | None,
     available: bool = True,
@@ -80,12 +77,10 @@ def _install_synthetic(
         yield _FORMAT
 
 
-def test_synthetic_descriptor_is_detectable_and_readable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_synthetic_descriptor_is_detectable_and_readable() -> None:
     payload = b"hello from a one-descriptor codec"
     data = _MAGIC + payload
-    with _install_synthetic(monkeypatch, requirement=None) as fmt:
+    with _install_synthetic(requirement=None) as fmt:
         # 1. Detected by its codec's magic, no detector edits.
         info = detect_format(io.BytesIO(data))
         assert info.format == fmt
@@ -106,15 +101,11 @@ def test_synthetic_descriptor_is_detectable_and_readable(
         assert format_availability(fmt).support is FormatSupport.FULL
 
 
-def test_synthetic_descriptor_availability_comes_from_requirement(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_synthetic_descriptor_availability_comes_from_requirement() -> None:
     requirement = MissingComponent(
         "synthlib", "pip install archivey[synth]", ("synthetic",)
     )
-    with _install_synthetic(
-        monkeypatch, requirement=requirement, available=False
-    ) as fmt:
+    with _install_synthetic(requirement=requirement, available=False) as fmt:
         # The (simulated) missing backend makes the single-codec format unreadable -> NONE,
         # with the install hint taken from the codec's requirement (no registry table).
         availability = format_availability(fmt)
