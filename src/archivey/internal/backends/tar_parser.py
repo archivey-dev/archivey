@@ -303,6 +303,10 @@ _FIELDS = (
     ("size", 124, 136),
     ("mtime", 136, 148),
 )
+# The ``mtime`` field (bytes 136-148) as a pax writer leaves it when a PAX record
+# carries the time: twelve NUL bytes, which ``HeaderBlock.mtime`` reads as ``None``.
+_MTIME_FIELD = slice(136, 148)
+_NUL_MTIME = bytes(12)
 # The five numeric fields in _FIELDS order, as raw bytes, in one C call. A test checks
 # that it cuts the same bytes as _FIELDS. The device numbers are not among them: they
 # are read only for a device (``_DEVICE_NUMBER_TYPES``).
@@ -312,7 +316,6 @@ _split_numbers = struct.Struct("100x8s8s8s12s12s364x").unpack
 # archive of distinct values costs a cache miss per field and no more memory. Measured
 # per header against a plain dict lookup: the same within noise.
 _cached_number = lru_cache(maxsize=4096)(parse_number)
-_NUL_MTIME = bytes(12)
 
 
 def _field_named(block: bytes) -> str:
@@ -356,7 +359,7 @@ def parse_header_block(
         mode, uid, gid, size, mtime = map(_cached_number, _split_numbers(block))
     except _BadNumber:
         return RejectedBlock(offset, f"the {_field_named(block)} field is not a number")
-    if not mtime and block[136:148] == _NUL_MTIME:
+    if not mtime and block[_MTIME_FIELD] == _NUL_MTIME:
         mtime = None
     if size < 0:
         return RejectedBlock(offset, f"negative size {size}")
