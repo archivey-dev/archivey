@@ -8,10 +8,12 @@ repository.
 ## 2026-10-30: what the reviewer reads, and a narrower `CONTRIBUTING.md` read
 
 The runner now keeps each review's transcript and writes `reads.json`: the characters
-every file the Read tool returned, other tools' output by tool, and the token totals.
-Two Opus runs, judge `claude-sonnet-5-5`, one on the skill as it stood and one with
-§1 asking for three sections of `CONTRIBUTING.md` (Tooling decisions, Coding
-standards, Testing standards) instead of the whole file.
+every file the Read tool (or a lone `sed`, `cat`, `head`, `tail` or `nl` command)
+returned, other tools' output by tool, and the token totals. Two Opus runs, judge
+`claude-sonnet-5-5`. The whole-file arm ran skill `2cc77b24651e`. The three-section arm
+ran from an edited tree (recorded as `2cc77b24651e-dirty`) whose §1 asked for
+§Tooling decisions, §Coding standards and §Testing standards of `CONTRIBUTING.md`
+instead of the whole file; that text is skill `748b61d70ac4` (commit `2439fb32`).
 
 | Case | PR | Whole file | Three sections |
 |---|---|---|---|
@@ -23,19 +25,23 @@ standards, Testing standards) instead of the whole file.
 | **Score** | | **1.5 of 5** | **2.5 of 5** |
 | Cost (USD) | | 39.24 | 40.74 |
 | Turns, all cases | | 262 | 278 |
-| Guide characters read | | 469 237 | 378 830 |
-| `CONTRIBUTING.md` characters read | | 138 888 | 87 568 |
+| Guide characters read | | 472 724 | 433 138 |
+| `CONTRIBUTING.md` characters read | | 138 888 | 108 107 |
 
-The guides (the skill, its references, `CONTRIBUTING.md`, design docs and specs) were
-18 to 42 percent of what a review's tools returned; the rest is Bash output (the
-largest single item), source and grep. Reading three sections cut the guide reading
-by a fifth and `CONTRIBUTING.md` by over a third. The score changed by one case and
-the cost by 4 percent, both inside the run-to-run noise, so one run each shows no
-saving and no loss; it does not show that the trim leaves the review as good. After its review the read also took
-§Cutting a release and the three-configuration paragraph of §Getting started, which
-carry review rules too (about 4 KB more); that version was not re-run. The input a review pays for is
-mostly what it runs and reads in the code, at about 150 000 tokens of context per
-turn over 45 to 60 turns.
+The guides (the paths `GUIDES` in `scripts/review_eval.py` lists: the skill, its
+references, `CONTRIBUTING.md`, the agent guides, `dev-docs/` and `openspec/`) were 18
+to 40 percent of what a review's tools returned; the rest is Bash output (the largest
+single item in every case), source and grep. A file read inside a longer shell command
+counts under Bash, so the guide figures are lower bounds. Reading three sections cut
+the guide reading by under a tenth and `CONTRIBUTING.md` by about a fifth. The score
+changed by one case and the cost by 4 percent, both inside the run-to-run noise, so
+one run each shows no saving and no loss; it does not show that the trim leaves the
+review as good. After its review §1 grew to the rule part of `CONTRIBUTING.md`: from
+the gate paragraph of §Getting started to the end of §Testing standards, plus
+§Working with the specs, which carry gate, CI, release and spec-discrepancy rules.
+That version was not re-run, and it saves less than the measured one. The input a
+review pays for is mostly what it runs and reads in the code, at about 150 000 tokens
+of context per turn over 45 to 60 turns.
 
 ## 2026-10-29: Sonnet with the project installed, and at xhigh effort
 

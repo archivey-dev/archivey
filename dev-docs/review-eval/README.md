@@ -70,7 +70,8 @@ signal. The judge reads only for the named bug; it does not count false positive
 so read the saved `review.md` files when the number of findings changes a lot. Each case
 also keeps its `transcript.jsonl` and a `reads.json` with what the reviewer read (the
 characters each file and each tool returned) and the run's token totals, to see where
-a change to the reading moves the cost.
+a change to the reading moves the cost. `summary.md` totals the turns and the guide
+reads (the paths `GUIDES` lists) across the cases.
 
 The isolation is by prompt as well as by construction. The reviewer runs with Bash,
 so if it ignored the prompt it could reach another checkout, or GitHub through a

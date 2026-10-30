@@ -54,6 +54,16 @@ REVIEW_MODEL = "claude-sonnet-5-5"  # what .github/workflows/review-loop.yml run
 REVIEW_TOOLS = "Read,Grep,Glob,Bash"
 JUDGE_MODEL = "claude-sonnet-5-5"
 TIMEOUT = 3600
+_READERS = {"sed", "cat", "head", "tail", "nl"}
+# What `summary` counts as the reviewer's guides, by path prefix.
+GUIDES = (
+    ".claude/skills/code-review-skill/",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "CONTRIBUTING.md",
+    "dev-docs/",
+    "openspec/",
+)
 
 GH_STUB = """#!/bin/sh
 echo "gh is not available in this replay: the PR is checked out here (git diff main...HEAD)." >&2
@@ -248,10 +258,19 @@ def claude(
         cmd += ["--allowedTools", tools]
     if effort:
         cmd += ["--effort", effort]
-    out = subprocess.run(
-        cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=TIMEOUT,
-        check=False,
-    )  # fmt: skip
+    try:
+        out = subprocess.run(
+            cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=TIMEOUT,
+            check=False,
+        )  # fmt: skip
+    except subprocess.TimeoutExpired as exc:
+        # Keep what a run that hit the limit read; it is the one most worth a look.
+        if transcript and exc.stdout:
+            partial = exc.stdout
+            if isinstance(partial, bytes):
+                partial = partial.decode("utf-8", "replace")
+            transcript.write_text(partial, encoding="utf-8")
+        raise
     if transcript:
         transcript.write_text(out.stdout, encoding="utf-8")
     if out.returncode != 0:
@@ -262,17 +281,30 @@ def claude(
     return next(e for e in reversed(events) if e.get("type") == "result")
 
 
+def _shell_read(command: str) -> str | None:
+    """The file a lone `sed`/`cat`/`head`/`tail`/`nl` command prints, or None."""
+    words = command.split()
+    if not words or words[0] not in _READERS or any(c in command for c in ";|&<>`$"):
+        return None
+    return words[-1].strip("'\"")
+
+
 def reads(transcript: Path) -> dict:
-    """What a review read: each file the Read tool opened, with the characters it
-    returned, other tools' output by tool, and the run's token totals. Kept to judge
-    what the reviewer's guides cost; a file read twice counts twice."""
+    """What a review read: each file the Read tool opened, or a lone shell command
+    printed, with the characters it returned; other tools' output by tool; and the
+    run's token totals from its result event. Kept to judge what the reviewer's
+    guides cost; a file read twice counts twice. A file read inside a longer shell
+    command counts under `(Bash)`, so a per-file figure is a lower bound."""
     files: dict[str, int] = {}
     pending: dict[str, str] = {}
-    calls: dict[object, dict] = {}
+    totals: dict = {}
     for line in transcript.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         event = json.loads(line)
+        if event.get("type") == "result":
+            # The streamed assistant events carry only partial output counts.
+            totals = event.get("usage") or {}
         message = event.get("message") or {}
         content = message.get("content")
         if not isinstance(content, list):
@@ -280,8 +312,14 @@ def reads(transcript: Path) -> dict:
         for part in content:
             if part.get("type") == "tool_use":
                 name = part.get("name", "?")
+                args = part.get("input", {})
                 # Other tools' output is pooled under the tool's name.
-                key = part.get("input", {}).get("file_path") if name == "Read" else None
+                if name == "Read":
+                    key = args.get("file_path")
+                elif name == "Bash":
+                    key = _shell_read(args.get("command", ""))
+                else:
+                    key = None
                 pending[part["id"]] = key or f"({name})"
             elif (
                 part.get("type") == "tool_result" and part.get("tool_use_id") in pending
@@ -291,12 +329,8 @@ def reads(transcript: Path) -> dict:
                     body = "".join(b.get("text", "") for b in body)
                 path = pending.pop(part["tool_use_id"])
                 files[path] = files.get(path, 0) + len(body or "")
-        # One API call can arrive as several events, one per content block; the
-        # last one carries the call's final counts. An event with no id is its own call.
-        if event.get("type") == "assistant":
-            calls[message.get("id") or object()] = message.get("usage") or {}
     usage = {
-        key: sum(u.get(field, 0) for u in calls.values())
+        key: totals.get(field, 0)
         for key, field in (
             ("input", "input_tokens"),
             ("cache_read", "cache_read_input_tokens"),
@@ -388,9 +422,15 @@ def summary(cases: list[Case], out: Path) -> str:
     ]
     score = 0.0
     unscored = []
+    turns = guides = contributing = 0
     for case in cases:
         work = out / case.id
         meta = json.loads((work / "meta.json").read_text())
+        turns += meta.get("turns") or 0
+        if (work / "reads.json").exists():
+            files = json.loads((work / "reads.json").read_text())["files"]
+            guides += sum(n for f, n in files.items() if f.startswith(GUIDES))
+            contributing += files.get("CONTRIBUTING.md", 0)
         verdict = json.loads((work / "judge.json").read_text())
         if verdict["caught"] not in ("yes", "partial", "no"):
             unscored.append(case.id)
@@ -406,6 +446,10 @@ def summary(cases: list[Case], out: Path) -> str:
         )
     lines.append("")
     lines.append(f"Score: {score:g} of {len(cases)} (yes = 1, partial = 0.5).")
+    lines.append(
+        f"Turns: {turns}. Guide characters read: {guides}, of them "
+        f"`CONTRIBUTING.md`: {contributing}."
+    )
     if unscored:
         lines.append(
             f"Not scored (judge reply unreadable; rerun `judge`): {', '.join(unscored)}."

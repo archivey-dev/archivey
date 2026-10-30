@@ -91,32 +91,65 @@ def _have_in(repo: Path, sha: str) -> bool:
     return probe.returncode == 0
 
 
-def test_reads_counts_each_file_tool_output_and_api_call_once(tmp_path: Path) -> None:
-    early = {"input_tokens": 1, "cache_read_input_tokens": 100, "output_tokens": 2}
-    usage = {"input_tokens": 1, "cache_read_input_tokens": 100, "output_tokens": 5}
+def test_reads_counts_each_file_and_tool_output_and_takes_the_result_totals(
+    tmp_path: Path,
+) -> None:
+    partial = {"input_tokens": 1, "cache_read_input_tokens": 100, "output_tokens": 2}
     events = [
-        # One API call arrives as one event per content block; the last has its totals.
-        {"type": "assistant", "message": {"id": "m1", "usage": early, "content": [
+        {"type": "assistant", "message": {"id": "m1", "usage": partial, "content": [
             {"type": "tool_use", "id": "t1", "name": "Read",
-             "input": {"file_path": "/r/SKILL.md"}}]}},
-        {"type": "assistant", "message": {"id": "m1", "usage": usage, "content": [
-            {"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "ls"}}]}},
+             "input": {"file_path": "/r/SKILL.md"}},
+            {"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "ls"}},
+            # A lone shell read counts for its file; one inside a longer command does not.
+            {"type": "tool_use", "id": "t3", "name": "Bash",
+             "input": {"command": "sed -n '161,437p' CONTRIBUTING.md"}},
+            {"type": "tool_use", "id": "t4", "name": "Bash",
+             "input": {"command": "cat CONTRIBUTING.md | head"}}]}},
         {"type": "user", "message": {"content": [
             {"type": "tool_result", "tool_use_id": "t1", "content": "abcd"},
             {"type": "tool_result", "tool_use_id": "t2",
-             "content": [{"type": "text", "text": "xy"}]}]}},
-        # An event with no id counts as a call of its own.
-        {"type": "assistant", "message": {"usage": {"output_tokens": 3}, "content": [
-            {"type": "text", "text": "done"}]}},
-        {"type": "result", "result": "review"},
+             "content": [{"type": "text", "text": "xy"}]},
+            {"type": "tool_result", "tool_use_id": "t3", "content": "rules"},
+            {"type": "tool_result", "tool_use_id": "t4", "content": "z"}]}},
+        # The streamed events undercount output; the result event has the run's totals.
+        {"type": "result", "result": "review", "usage": {
+            "input_tokens": 1, "cache_read_input_tokens": 100,
+            "cache_creation_input_tokens": 7, "output_tokens": 900}},
     ]  # fmt: skip
     transcript = tmp_path / "transcript.jsonl"
     transcript.write_text("\n".join(json.dumps(e) for e in events), encoding="utf-8")
     read = review_eval.reads(transcript)
-    assert read["files"] == {"/r/SKILL.md": 4, "(Bash)": 2}
+    assert read["files"] == {"/r/SKILL.md": 4, "(Bash)": 3, "CONTRIBUTING.md": 5}
     assert read["usage"] == {
         "input": 1,
         "cache_read": 100,
-        "cache_write": 0,
-        "output": 8,
+        "cache_write": 7,
+        "output": 900,
     }
+
+
+def test_claude_keeps_the_transcript_of_a_run_that_timed_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs["timeout"], output="partial\n")
+
+    monkeypatch.setattr(review_eval.subprocess, "run", run)
+    transcript = tmp_path / "transcript.jsonl"
+    with pytest.raises(subprocess.TimeoutExpired):
+        review_eval.claude(
+            "p", model="m", cwd=tmp_path, tools="", env={}, transcript=transcript
+        )
+    assert transcript.read_text(encoding="utf-8") == "partial\n"
+
+
+def test_summary_totals_turns_and_guide_reads(tmp_path: Path) -> None:
+    case = CASES[0]
+    work = tmp_path / case.id
+    work.mkdir()
+    (work / "meta.json").write_text(json.dumps({"turns": 9, "seconds": 60}))
+    (work / "judge.json").write_text(json.dumps({"caught": "yes"}))
+    files = {"CONTRIBUTING.md": 5, "dev-docs/x.md": 2, "src/a.py": 40, "(Bash)": 70}
+    (work / "reads.json").write_text(json.dumps({"files": files}))
+    text = review_eval.summary([case], tmp_path)
+    assert "Turns: 9. Guide characters read: 7, of them `CONTRIBUTING.md`: 5." in text
