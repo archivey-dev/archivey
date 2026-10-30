@@ -1,9 +1,15 @@
 """What :class:`StreamCodec` gives a codec that decodes through :meth:`decompressor`,
 a plugin's included: how a further stream starts, the stream's name, and the package
-an exclusion names."""
+an exclusion names, and where the library check runs."""
 
 from __future__ import annotations
 
+import io
+from dataclasses import replace
+
+import pytest
+
+from archivey.exceptions import PackageNotInstalledError
 from archivey.formats import CodecCall, CodecHandler, Decompressor, Magic
 from archivey.internal.codec_adapter import codec_class
 from archivey.internal.config import DEFAULT_STREAM_CONFIG, StreamConfig
@@ -82,6 +88,24 @@ def test_an_exclusion_names_the_package_in_use() -> None:
     requirement = codec.requirement_under(excluded)
     assert requirement is not None and requirement.name == "compression.zstd"
     assert not codec.excluded_by(frozenset({OptionalLibrary.BACKPORTS_ZSTD}))
+
+
+def test_the_plain_decode_checks_the_library_itself() -> None:
+    # An accelerated open() falls back through open_framed(), so the check is there,
+    # not only in open().
+    class Excluded(PlainCodec):
+        requirement = MissingComponent(
+            OptionalLibrary.BACKPORTS_ZSTD, "pip install it", ("zstd",)
+        )
+
+    codec = Excluded()
+    config = replace(
+        DEFAULT_STREAM_CONFIG,
+        excluded_libraries=frozenset({OptionalLibrary.BACKPORTS_ZSTD}),
+    )
+    for open_ in (codec.open, codec.open_framed):
+        with pytest.raises(PackageNotInstalledError):
+            open_(io.BytesIO(b"AB"), CodecParams(), config)
 
 
 def test_a_plugin_codec_starts_a_further_stream_by_the_same_rule() -> None:

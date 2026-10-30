@@ -208,7 +208,10 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         super().__init__(inner)
         self._views = views
         self._config = config
-        # The standard library's decode of a source (``Bzip2Codec.open_framed``).
+        # The standard library's decode of a source (``Bzip2Codec.open_framed``). It
+        # must use the same ``single_stream`` as this check: every engine that decodes
+        # a coder's data, the fallbacks too, must agree on what follows its stream
+        # (DR-5).
         self._open_stdlib = open_stdlib
         # A container coder's data is one stream (CodecParams.single_stream): a stream
         # after it is not decoded at the end, as the standard library would not.
@@ -837,12 +840,13 @@ class Bzip2Codec(StreamCodec):
         if child is None:
             return None
 
-        # A data error hands the read to the standard library, which delivers what it
-        # delivers with the accelerator off and raises its error; see
-        # _StdlibOnAcceleratorError.
+        # Both fallbacks below decode with the accelerator off.
         def open_stdlib(fallback: CodecSource) -> BinaryIO:
             return self.open_framed(fallback, params, config)
 
+        # A data error hands the read to the standard library, which delivers what it
+        # delivers with the accelerator off and raises its error; see
+        # _StdlibOnAcceleratorError.
         takeover = _StdlibOnAcceleratorError(
             child,
             views=views,
