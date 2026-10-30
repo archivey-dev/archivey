@@ -75,6 +75,7 @@ class ToysContainer(PluginContainer):
     RPMISH = "toys-rpmish"
     DECODED = "toys-decoded"
     SIZED_EMPTY_DIRECTORY = "toys-sized-empty-directory"
+    PROBED = "toys-probed"
 
 
 TOYS = ArchiveFormat(ToysContainer.TOYS, StreamFormat.UNCOMPRESSED)
@@ -679,6 +680,32 @@ def test_compressed_extensions_and_spellings(
     # open_stream peels the compression layer, as for a compressed tar.
     with archivey.open_stream(io.BytesIO(data), format=_TOYS_GZ) as stream:
         assert stream.read() == build_toys(_ENTRIES)
+
+
+def test_a_probe_only_format_is_found_inside_a_compression_stream(
+    tmp_path: Path,
+) -> None:
+    """A format with no magic is found by its probe on the decoded prefix, where the
+    name or the config lets the probe run, as on an uncompressed source."""
+    fmt = ArchiveFormat(ToysContainer.PROBED, StreamFormat.UNCOMPRESSED)
+
+    class Probed(SequentialFormatHandler):
+        format = fmt
+        extensions = (".ptoys",)
+        probe = staticmethod(lambda prefix: prefix.startswith(_MAGIC))
+
+        def open_sequential(self, context: ReaderContext) -> ToysReader:
+            return ToysReader(context)
+
+    pair = ArchiveFormat(ToysContainer.PROBED, StreamFormat.GZIP)
+    data = _gz(build_toys(_ENTRIES))
+    with registration_scope():
+        register_format(Probed)
+        assert detect_format(_write(tmp_path, data, "t.ptoys.gz")).format == pair
+        assert detect_format(_write(tmp_path, data, "t.gz")).format == ArchiveFormat.GZ
+        assert detect_format(io.BytesIO(data)).format == ArchiveFormat.GZ
+        probing = archivey.ArchiveyConfig(always_probe_content=True)
+        assert detect_format(io.BytesIO(data), config=probing).format == pair
 
 
 def test_compressed_bytes_that_are_not_the_format_stay_a_compressed_file(

@@ -101,7 +101,10 @@ members in the same order.
 Detection SHALL check registered sequential plugins' magic inside any single-file
 compression stream archivey decodes (gzip, bzip2, xz, zstd and the rest, the set a
 compressed TAR has) after TAR, within the prefix and budget the inner-TAR probe uses
-today.
+today. A plugin with no magic SHALL be found there by its probe, run on the same decoded
+prefix under the rule its probe follows on an uncompressed source: where the extension
+names the plugin's format inside the compressor (`x.lha.gz`), or `always_probe_content`
+is set.
 
 #### Scenario: compressed plugin format
 
@@ -109,6 +112,8 @@ today.
 | --- | --- |
 | `x.lha.gz` from a file, a sequential plugin for LHA registered; `detect_format` | `ArchiveFormat(LhaContainer.LHA, StreamFormat.GZIP)` |
 | No plugin registered; `x.lha.gz` | Detects as `GZ`, as today |
+| A sequential LHA plugin with a probe and no magic; gzip of an archive it matches, named `x.lha.gz` | `ArchiveFormat(LhaContainer.LHA, StreamFormat.GZIP)` |
+| The same bytes named `x.gz`, default config | `GZ`: the name does not let the probe run |
 
 ### Requirement: FormatInfo marks plugin formats
 

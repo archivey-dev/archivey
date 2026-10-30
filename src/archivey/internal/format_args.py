@@ -152,7 +152,7 @@ def outer_stream_format(fmt: ArchiveFormat) -> StreamFormat | None:
     compressed stream, and the pair's stream half is that outer codec (detection
     builds the pair from it): ``open_stream`` peels that layer only and returns the
     tar bytes, as ``gzip.open`` does for a ``.tar.gz``. The compressed pair of every
-    other container read in one pass (``.a.gz``, a sequential plugin's ``.cpio.gz``)
+    other container read in one pass (``.a.gz``, ``.cpio.gz``, a sequential plugin's ``.lha.gz``)
     is the same. One rule for an explicit ``format=``, a detected format and the
     accepted-spellings message, so the three cannot disagree. Every other container,
     an uncompressed tar included, has no compression layer to remove.

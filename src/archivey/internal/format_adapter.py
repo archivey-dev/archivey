@@ -445,8 +445,9 @@ class _PluginAdapter(BaseArchiveReader):
         with self._translated_errors(), self._handle_guard():
             info = self._reader.archive_info()
         cost = self._cost(info)
-        # A plugin's keys are its own, namespaced by its format (``"cpio.variant"``),
-        # so they are not in the inventory of built-in keys and are copied in as data.
+        # A plugin's keys are its own, namespaced by its format (``"lha.method"``), so
+        # they are not in the inventory of built-in keys and are copied in as data. A
+        # built-in format-API reader's keys (``"cpio.variant"``) are in that inventory.
         extra = ArchiveInfoExtra()
         extra.update(info.extra)
         return ArchiveInfo(
