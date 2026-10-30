@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import bz2
+import dataclasses
 import functools
 import io
 import os
@@ -152,10 +153,10 @@ def test_the_default_ratio_is_below_deflates_ceiling() -> None:
 def test_a_deprecated_extraction_ratio_warns_and_still_applies(tmp_path: Path) -> None:
     path = _zip(tmp_path / "bomb.zip", [("zeros", bytes(24 * _MIB))])
     with pytest.warns(DeprecationWarning, match="DecoderLimits"):
-        off = ExtractionLimits(max_ratio=None)
+        off = ExtractionLimits(max_ratio=1e9)
     # In the reader's config it holds every decode, as decoder_limits would.
     with pytest.warns(DeprecationWarning):
-        config = ArchiveyConfig(extraction_limits=ExtractionLimits(max_ratio=None))
+        config = ArchiveyConfig(extraction_limits=ExtractionLimits(max_ratio=1e9))
     with open_archive(path, config=config) as reader:
         assert len(reader.read("zeros")) == 24 * _MIB
     # Per call, it governs that extraction only.
@@ -173,3 +174,14 @@ def test_extraction_limits_left_unset_do_not_warn(
     ExtractionLimits(max_extracted_bytes=1)
     _ = ExtractionLimits.UNLIMITED
     assert not [w for w in recwarn if issubclass(w.category, DeprecationWarning)]
+
+
+def test_a_copy_of_unlimited_does_not_warn_and_keeps_the_ratio_off(
+    tmp_path: Path, recwarn: pytest.WarningsRecorder
+) -> None:
+    capped = dataclasses.replace(ExtractionLimits.UNLIMITED, max_entries=5)
+    assert not [w for w in recwarn if issubclass(w.category, DeprecationWarning)]
+    path = _zip(tmp_path / "bomb.zip", [("zeros", bytes(24 * _MIB))])
+    with open_archive(path) as reader:
+        reader.extract_all(tmp_path / "out", limits=capped)
+    assert (tmp_path / "out" / "zeros").stat().st_size == 24 * _MIB

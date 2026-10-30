@@ -260,10 +260,6 @@ _DEPRECATED_RATIO_FIELDS = (
 )
 
 
-# True only while ``ExtractionLimits.UNLIMITED`` is built (below).
-_building_unlimited = False
-
-
 @dataclass(frozen=True)
 class ExtractionLimits:
     """Decompression-bomb limits for extraction.
@@ -326,9 +322,16 @@ class ExtractionLimits:
     def __post_init__(self) -> None:
         # allow_none and allow_float come from the field annotations.
         check_limit_fields(self, cls="ExtractionLimits")
-        if not _building_unlimited and any(
-            ratio_field_is_set(getattr(self, name)) for name in _DEPRECATED_RATIO_FIELDS
-        ):
+        set_fields = [
+            name
+            for name in _DEPRECATED_RATIO_FIELDS
+            if ratio_field_is_set(getattr(self, name))
+        ]
+        # ``max_ratio=None`` alone is what ``UNLIMITED`` holds, and a copy of it made
+        # with ``dataclasses.replace`` passes the value on as if the caller had set
+        # it. It stays silent, so ``replace(UNLIMITED, max_entries=...)`` does not
+        # warn about a field the caller never wrote; written by hand, it still works.
+        if set_fields and not (set_fields == ["max_ratio"] and self.max_ratio is None):
             warnings.warn(
                 "The ratio fields of ExtractionLimits (max_ratio, "
                 "ratio_activation_threshold, live_ratio_activation_threshold) are "
@@ -340,14 +343,12 @@ class ExtractionLimits:
 
 
 # ``UNLIMITED`` keeps turning the ratio off for an extraction until the deprecated
-# fields go, without the warning a caller's own value raises.
-_building_unlimited = True
+# fields go.
 ExtractionLimits.UNLIMITED = ExtractionLimits(
     max_extracted_bytes=None,
     max_ratio=None,
     max_entries=None,
 )
-_building_unlimited = False
 
 
 @dataclass(frozen=True)
