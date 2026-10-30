@@ -76,7 +76,7 @@ Gates: [green | CI pending | what is red and whether it is in scope] — glanced
 re-run.
 
 Security pass: [deep PRs only, one line per property or file: what you tried → what
-happened, with the finding ID if any; a fix round covers what its fixes reach]
+happened, with the finding ID if any; a fix round covers what its fixes change and reach]
 
 **Pass 1 (cold).** [What the code alone did not explain, each with its finding ID] | nothing
 ```

@@ -120,8 +120,9 @@ each path is on its list, live in that script.
   finding that breaks a §3 property or the library guarantee starts at 🔴, and comes
   down only with a measured reason the input cannot reach the code or the harm is
   bounded, said in the finding. A finding on the loop's or the release's files is rated
-  on its impact like any other, with the reason stated. A fix round runs the pass only
-  over code its fixes changed, with lines for what they reach. A reviewer new to the
+  on its impact like any other, with the reason stated. A fix round runs the pass over
+  what its fixes changed and what they reach (`fix-round.md` §Check what each fix
+  reaches), and writes lines for those alone. A reviewer new to the
   pull request after an earlier pass reads its lines and runs its own on whatever they
   left untried or did not trace through.
 
@@ -268,7 +269,8 @@ For the maintainer skimming without the code open. Half a screen unless the chan
   Snapshot does not restate it.
 - **Security pass** — every round on a deep PR (§1): one short line per property or
   file, `Security pass: <property or file>: <what you tried> → <what happened>`, with the
-  finding ID where it found one. A fix round's lines cover only what its fixes reach.
+  finding ID where it found one. A fix round's lines cover what its fixes change and
+  reach.
 - **Pass 1 (cold)** — first look at a code PR only: one line naming what the code alone did
   not explain before you opened the PR body or the design, each with its finding ID, or
   `nothing`. It makes the cold read checkable; the rule and why it exists are in

@@ -84,15 +84,14 @@ was reviewed. `OUTCOME_LABELS` in the gate holds the mapping.
 from `python3 scripts/review_prep.py tier` (the review skill's §1 says what each tier
 asks of a reviewer). It runs the base branch's copy of the script, so a pull request
 cannot lower its own tier by editing the path lists. It only reports, like the outcome
-labels.
+labels. A deep pull request's rounds end with a security pass (skill §1).
 
 **The reviewer is Sonnet, with the project installed.** The round installs the project
 at the pull request's own lockfile (`uv sync --frozen --group dev --extra all`, what
 `scripts/setup-dev-env.sh` installs) and runs `claude-sonnet-5-5`, so it can measure
 with the optional accelerators and codecs a change is about. Opus reviewed until
 2026-10-29; on the [review-eval](review-eval/README.md) set Sonnet caught as many of
-the bugs the loop had missed at about an eighth of the cost. Every round on a deep pull
-request ends with a security pass (skill §1).
+the bugs the loop had missed at about an eighth of the cost.
 
 **Once Sonnet approves, Opus reads the pull request once.** Sonnet's rounds clear the
 straightforward findings first. When a round on a `standard` or `deep` pull request
