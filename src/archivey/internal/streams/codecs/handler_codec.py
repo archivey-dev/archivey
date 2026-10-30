@@ -218,10 +218,17 @@ class BuiltinHandlerCodec(StreamCodec):
     def _backend_present(self) -> bool:
         return self.requirement is None or self.handler._library() is not None
 
-    def excluded_by(self, excluded: frozenset[OptionalLibrary]) -> bool:
+    def _excludable(self) -> OptionalLibrary | str | None:
+        """The package ``exclude_libraries`` turns off: the one in use, which
+        ``requirement`` (zstd's backport) may not name, or ``requirement``'s when none
+        is installed. An excluded package that is absent is reported as excluded,
+        not as one to install."""
         if self.requirement is None:
-            return False
-        library = self.handler._library()
+            return None
+        return self.handler._library() or self.requirement.name
+
+    def excluded_by(self, excluded: frozenset[OptionalLibrary]) -> bool:
+        library = self._excludable()
         return library is not None and library in excluded
 
     def requirement_under(
@@ -230,8 +237,7 @@ class BuiltinHandlerCodec(StreamCodec):
         requirement = self.requirement
         if requirement is None or not self.excluded_by(excluded):
             return requirement
-        # The package in use, which ``requirement`` (zstd's backport) may not name.
-        library = self.handler._library()
+        library = self._excludable()
         assert library is not None
         return as_excluded(dataclasses.replace(requirement, name=library))
 
