@@ -1047,7 +1047,7 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   archivey's own LZW decoder). Zstandard is in core on Python 3.14 and later, and needs
   `[recommended]` before. LZ4 and Brotli need `[recommended]`. `.lzo`, the format `lzop` writes,
   decodes LZO1X with liblzo2 when the `python-lzo` package is installed, and otherwise in Python,
-  about 20 times slower on text. `python-lzo` is not in an extra: it is GPL, and has no Linux
+  more than 25 times slower on text. `python-lzo` is not in an extra: it is GPL, and has no Linux
   wheels, so installing it needs the liblzo2 headers.
 - **Listing:** one synthetic member, named from the source path, or `data` for a source with no
   name. `encoding=` has no effect, and passing it reports `ENCODING_ARGUMENT_UNUSED`.

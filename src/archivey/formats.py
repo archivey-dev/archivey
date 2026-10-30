@@ -558,8 +558,8 @@ class ReaderContext:
         dictionary size), ``LZMA2`` (raw; ``properties`` is its 1-byte dictionary
         size), ``XZ`` (``.xz`` data kept inside a member, as ZIP method 95 keeps
         it) and ``LZO`` (raw LZO1X, as SquashFS stores a block; it needs ``size``, the
-        most the data may decode to). As a stream format, the data is a whole stream with its own framing,
-        decoded as a file of that format is: ``ZLIB`` (deflate with the zlib header and
+        most the data may decode to). As a stream format, the data is a whole stream
+        with its own framing, decoded as a file of that format is: ``ZLIB`` (deflate with the zlib header and
         Adler-32), ``GZIP``, ``XZ``, ``LZMA_ALONE``, ``LZIP`` and the others
         ``StreamFormat`` names, or a registered codec's :class:`~archivey.PluginStream`
         member. Any other method raises ``UnsupportedFeatureError``,

@@ -8,6 +8,7 @@ import datetime
 import io
 import random
 import struct
+import tracemalloc
 import zlib
 from pathlib import Path
 
@@ -19,9 +20,11 @@ from archivey import (
     CompressionAlgorithm,
     ContainerFormat,
     CorruptionError,
+    DecoderLimits,
     DiagnosticCode,
     FormatPolicy,
     ProcessIsolation,
+    ResourceLimitError,
     StreamFormat,
     TruncatedError,
     UnsupportedFeatureError,
@@ -33,6 +36,7 @@ from archivey.formats import register_format
 from archivey.internal.format_adapter import registration_scope
 from archivey.internal.streams.codecs import lzo_decoder
 from archivey.internal.streams.codecs.decoder_child import POOL
+from tests.lzop_build import make_lzop
 from tests.streams_util import NonSeekableBytesIO
 from tests.test_format_api import _compressed_archive, _compressed_plugin
 
@@ -146,6 +150,46 @@ def test_a_damaged_block_in_a_child_is_corruption() -> None:
         stream.read()
 
 
+def _expanding_lzop(size: int) -> bytes:
+    """An lzop file of one LZO1X block that decodes to about ``size`` bytes from a few
+    KiB: ``ab`` and then long matches of distance 2, LZO1X's largest expansion."""
+    block = bytearray([19]) + b"ab"
+    decoded = 2
+    while decoded + 51_233 <= size:
+        # An M3 match: 200 zero length bytes and 200 more give 51 231 bytes.
+        block += b"\x20" + bytes(200) + bytes([200, 4, 0])
+        decoded += 51_233
+    block += b"\x11\x00\x00"
+    plain = lzo_decoder.lzo1x_decompress_python(bytes(block), decoded)
+    head = make_lzop(b"")[:-4]  # the header, without the end block
+    blocks = struct.pack(">III", decoded, len(block), zlib.adler32(plain))
+    return head + blocks + bytes(block) + bytes(4)
+
+
+def test_a_block_over_max_decoder_memory_is_refused() -> None:
+    data = _expanding_lzop(4 << 20)
+    with open_stream(io.BytesIO(data)) as stream:
+        assert len(stream.read()) > 4_000_000
+    config = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=1 << 20))
+    with (
+        open_stream(io.BytesIO(data), config=config) as stream,
+        pytest.raises(ResourceLimitError, match="an lzop block declares"),
+    ):
+        stream.read(10)
+
+
+def test_detection_does_not_decode_a_large_block() -> None:
+    data = _expanding_lzop(48 << 20)
+    tracemalloc.start()
+    try:
+        assert detect_format(io.BytesIO(data)).format == ArchiveFormat.LZOP
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    # The inner-TAR probe would decode the whole 48 MiB block to read 512 bytes.
+    assert peak < 8 << 20
+
+
 def _blocks_start(data: bytes) -> int:
     """The offset of the first block: past the 9-byte magic and the header."""
     header = lzo_decoder.parse_lzop_header(data)
@@ -216,25 +260,33 @@ def test_trailing_bytes_are_reported() -> None:
 # --- raw LZO1X ------------------------------------------------------------------------
 
 
+def _literal_lzo1x(plain: bytes) -> bytes:
+    """``plain`` (at most 238 bytes) as one LZO1X literal run and the end marker: no
+    compressor needed."""
+    assert len(plain) <= 238
+    return bytes([17 + len(plain)]) + plain + b"\x11\x00\x00"
+
+
+_PLAIN = b"plugin member data " * 10
+
+
 def test_reader_context_decompress_reads_raw_lzo1x(
     decoder: str, tmp_path: Path
 ) -> None:
-    lzo = pytest.importorskip("lzo")
-    plain = b"plugin member data " * 200
+    plain = _PLAIN
     with registration_scope():
         register_format(_compressed_plugin(CompressionAlgorithm.LZO))
-        path = _compressed_archive(tmp_path, lzo.compress(plain, 1, False), plain)
+        path = _compressed_archive(tmp_path, _literal_lzo1x(plain), plain)
         with open_archive(path) as reader:
             assert reader.read(reader.members()[0]) == plain
 
 
-def test_raw_lzo1x_past_its_size_is_refused(tmp_path: Path) -> None:
-    lzo = pytest.importorskip("lzo")
-    plain = b"plugin member data " * 200
+def test_raw_lzo1x_past_its_size_is_refused(decoder: str, tmp_path: Path) -> None:
+    plain = _PLAIN
     with registration_scope():
         register_format(_compressed_plugin(CompressionAlgorithm.LZO))
         # The archive says the member is shorter than what the data decodes to.
-        path = _compressed_archive(tmp_path, lzo.compress(plain, 1, False), plain[:-10])
+        path = _compressed_archive(tmp_path, _literal_lzo1x(plain), plain[:-10])
         with open_archive(path) as reader, pytest.raises(CorruptionError):
             reader.read(reader.members()[0])
 

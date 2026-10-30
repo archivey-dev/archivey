@@ -8,9 +8,9 @@ proxy forwards each call with its arguments unchanged, so a codec's per-library 
 (zlib's ``max_length=0`` meaning "no limit", the others' ``-1``) stay where they are.
 
 The libraries that re-enable the GIL on a free-threaded build (brotli, inflate64,
-pyppmd) are never imported here when isolated: their exception types have stand-ins
-(:class:`BrotliChildError`, :class:`PpmdChildError`) that the codecs catch and
-translate alongside the real ones.
+pyppmd, python-lzo) are never imported here when isolated: their exception types have
+stand-ins (:class:`BrotliChildError`, :class:`PpmdChildError`, :class:`LzoChildError`)
+that the codecs catch and translate alongside the real ones.
 """
 
 from __future__ import annotations
@@ -75,6 +75,10 @@ class PpmdChildError(ValueError):
     """
 
 
+class LzoChildError(ValueError):
+    """Stand-in for ``lzo.error`` raised by liblzo2 in a child process."""
+
+
 def _known(*classes: type[Exception] | None) -> dict[tuple[str, str], type[Exception]]:
     return {
         (cls.__module__, cls.__qualname__): cls for cls in classes if cls is not None
@@ -86,10 +90,6 @@ _LZMA_ERRORS = _known(lzma.LZMAError)
 
 
 # Matched by type name alone ("*"): the modules that raise them differ by build.
-class LzoChildError(ValueError):
-    """Stand-in for ``lzo.error`` raised by liblzo2 in a child process."""
-
-
 _LZO_ERRORS: dict[tuple[str, str], type[Exception]] = {("*", "error"): LzoChildError}
 _BROTLI_ERRORS: dict[tuple[str, str], type[Exception]] = {
     ("*", "error"): BrotliChildError

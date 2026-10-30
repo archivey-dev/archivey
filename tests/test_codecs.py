@@ -3259,7 +3259,8 @@ def _imported_modules(path: Path) -> Iterator[tuple[int, str]]:
                 and isinstance(first.value, ast.Name)
                 and first.value.id == "OptionalLibrary"
             ):
-                # ``LazyOptional(OptionalLibrary.LZO)``
+                # ``LazyOptional(OptionalLibrary.BROTLI)``: how ``deps.py`` names
+                # every optional library it loads lazily.
                 modules = [OptionalLibrary[first.attr].value]
         for module in modules:
             if module.split(".")[0] != "archivey":

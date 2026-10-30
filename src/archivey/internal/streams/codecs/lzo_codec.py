@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import stat
+from collections.abc import Callable
 from typing import BinaryIO
 
-from archivey.exceptions import ArchiveyError, CorruptionError, UnsupportedFeatureError
-from archivey.internal.config import StreamConfig
+from archivey.exceptions import (
+    ArchiveyError,
+    CorruptionError,
+    ResourceLimitError,
+    UnsupportedFeatureError,
+)
+from archivey.internal.config import StreamConfig, check_decoder_memory
 from archivey.internal.streams.codecs.base import (
     Codec,
     CodecParams,
@@ -20,6 +26,7 @@ from archivey.internal.streams.codecs.framed_decoder import (
 )
 from archivey.internal.streams.codecs.isolated import natives_for
 from archivey.internal.streams.codecs.lzo_decoder import (
+    LZOP_BLOCK_SIZE,
     LZOP_MAGIC,
     Lzo1xDecoder,
     LzopDecompressor,
@@ -27,11 +34,42 @@ from archivey.internal.streams.codecs.lzo_decoder import (
     parse_lzop_header,
 )
 from archivey.internal.streams.decompressor_stream import DecompressorStream
-from archivey.internal.timestamps import unix32_to_datetime
+from archivey.internal.timestamps import unix_to_datetime
 from archivey.types import ArchiveFormat, ArchiveMember, MagicSignature, StreamFormat
 
+# lzop's F_CS_MASK and F_CS_LATIN1.
+_F_CS_MASK = 0x00F00000
+_F_CS_LATIN1 = 0x00100000
 # The longest header lzop writes: the fixed fields, a 255-byte name and the checksum.
 _HEADER_PEEK = 512
+
+
+def _block_check(config: StreamConfig) -> Callable[[int], None]:
+    """What refuses an lzop block's declared size before it is decoded whole.
+
+    A read checks it against ``DecoderLimits.max_decoder_memory``, as other codecs
+    check a declared dictionary or window. A detection probe reads a few hundred bytes
+    (``probe_read_bound``) and decodes uncapped (``codecs/base.py``), so it allows the
+    block size lzop writes, 256 KiB, and a block over that is "can't tell".
+    """
+    bound = config.probe_read_bound
+    if bound is not None:
+        ceiling = max(bound, LZOP_BLOCK_SIZE)
+
+        def check_probe(size: int) -> None:
+            if size > ceiling:
+                raise ResourceLimitError(
+                    f"an lzop block declares {size} bytes, over the {ceiling} a "
+                    "detection probe decodes"
+                )
+
+        return check_probe
+    limits, usage = config.decoder_limits, config.usage
+
+    def check(size: int) -> None:
+        check_decoder_memory(size, limits=limits, what="an lzop block", usage=usage)
+
+    return check
 
 
 class LzopCodec(StreamCodec):
@@ -51,9 +89,10 @@ class LzopCodec(StreamCodec):
         decode_block = lzo1x_decompressor(
             config.excluded_libraries, natives_for(config.process_isolation)
         )
+        check_block = _block_check(config)
         return FramedDecompressorStream(
             source,
-            lambda: LzopDecompressor(decode_block),
+            lambda: LzopDecompressor(decode_block, check_block),
             codec_name="lzop",
             # ``lzop -d`` reads a further file after the first's end block.
             magic=stream_magic(tuple(bytes([b]) for b in LZOP_MAGIC)),
@@ -79,11 +118,21 @@ class LzopCodec(StreamCodec):
             return
         if header.name:
             member.raw_name = header.name
-            member.extra["lzop.original_filename"] = header.name.decode(
-                "utf-8", "surrogateescape"
+            # lzop's flags name the name's character set (F_CS_MASK). lzop itself
+            # never sets them, so the name is in whatever encoding the system that
+            # wrote it used: UTF-8 is read as UTF-8, and other bytes are kept as
+            # surrogates. A file that says Latin-1 is read as Latin-1.
+            encoding = (
+                "latin-1" if header.flags & _F_CS_MASK == _F_CS_LATIN1 else "utf-8"
             )
-        if 0 < header.mtime < 2**32:
-            member.modified = unix32_to_datetime(header.mtime)
+            member.extra["lzop.original_filename"] = header.name.decode(
+                encoding, "surrogateescape"
+            )
+        # 0 is what lzop writes for standard input. lzop 0x0940 and later store 64 bits.
+        if header.mtime > 0:
+            modified = unix_to_datetime(header.mtime)
+            if modified is not None:
+                member.modified = modified
         if header.mode and stat.S_ISREG(header.mode):
             member.mode = stat.S_IMODE(header.mode)
 
@@ -106,6 +155,12 @@ class Lzo1xCodec(StreamCodec):
             raise UnsupportedFeatureError(
                 "raw LZO1X data cannot be read without its decoded size"
             )
+        check_decoder_memory(
+            size,
+            limits=config.decoder_limits,
+            what="a raw LZO1X block's size",
+            usage=config.usage,
+        )
         decode_block = lzo1x_decompressor(
             config.excluded_libraries, natives_for(config.process_isolation)
         )

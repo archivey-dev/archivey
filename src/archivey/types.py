@@ -150,7 +150,7 @@ class StreamFormat(StrEnum):
     LZOP = "lzo"
     """The ``.lzo`` file format ``lzop`` writes: LZO1X blocks behind a header.
     archivey decodes LZO1X with ``python-lzo`` when it is installed, else in Python,
-    about 20 times slower."""
+    more than 25 times slower on text."""
 
 
 @dataclass(frozen=True)
@@ -1003,6 +1003,9 @@ class ArchiveMember:
       source has no file name); ``raw_name`` holds the original file name from the
       gzip header (``FNAME``), and ``extra["gzip.original_filename"]`` holds those
       bytes decoded as Latin-1.
+    - A ``.lzo`` file's member is named after the archive source in the same way;
+      ``raw_name`` holds the name the lzop header stores, and
+      ``extra["lzop.original_filename"]`` holds those bytes decoded.
     - A 7z member stored with no name is named after the archive source, and
       ``raw_name`` is ``b""``.
     - A RAR5 file-version-history member gets a ``;n`` suffix in ``name`` (as

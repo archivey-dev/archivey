@@ -115,7 +115,8 @@ def test_damaged_blocks_raise_only_lzo_error() -> None:
 def test_an_over_long_match_is_refused_before_it_is_copied() -> None:
     # Two literals, then a match whose length field is 2000 zero bytes long: it asks
     # for ~510 000 bytes. The limit refuses it before the copy, so the decoder never
-    # holds more than the limit (shown to fail with the check in ``match`` removed).
+    # holds more than the limit (shown to fail with
+    # ``if len(out) + length > limit`` removed from ``lzo_decoder.py``).
     stream = (
         b"\x13ab" + b"\x20" + bytes(2000) + b"\x01" + (1 << 2).to_bytes(2, "little")
     )

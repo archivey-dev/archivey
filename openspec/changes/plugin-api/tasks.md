@@ -194,8 +194,7 @@ more indexed plugin, 2026-10-27).
       `ReaderContext.decompress`. The pair, extension and codec tables become
       computed on demand instead of at import.
 - [x] 5.2 LZO as a built-in codec (the lzop stream and raw LZO1X as a member method),
-      python-lzo optional with the pure-Python decoder as the fallback, when SquashFS
-      becomes built-in.
+      python-lzo optional with the pure-Python decoder as the fallback.
 
 ## 6. Names
 

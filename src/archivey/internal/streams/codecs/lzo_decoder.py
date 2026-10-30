@@ -201,7 +201,11 @@ _F_H_CRC32 = 0x1000
 _F_KNOWN = 0x3FFF | 0xFF000000 | 0x00F00000
 # M_LZO1X_1, M_LZO1X_1_15 and M_LZO1X_999 all write LZO1X.
 _LZO1X_METHODS = frozenset({1, 2, 3})
-# lzop's MAX_BLOCK_SIZE: it writes 256 KiB blocks and reads up to 64 MiB.
+# lzop's MAX_BLOCK_SIZE: it writes 256 KiB blocks (BLOCK_SIZE) and reads up to 64 MiB.
+# A block is decoded whole, so a block's declared size is what it allocates: above
+# 64 MiB lzop itself refuses the file, and archivey does too (CorruptionError). Below
+# it, the codec checks the size against the caller's limits (``LzopCodec.open``).
+LZOP_BLOCK_SIZE = 256 * 1024
 _MAX_BLOCK = 64 * 1024 * 1024
 
 _U16 = struct.Struct(">H")
@@ -333,11 +337,17 @@ class LzopDecompressor:
     """One lzop file, with the ``bz2.BZ2Decompressor`` interface (``FramedDecoder``).
 
     Holds at most one block of input and its output, each at most 64 MiB, the most
-    lzop reads.
+    lzop reads. ``check_block`` is given each block's declared decoded size before
+    anything is allocated for it, and raises to refuse it.
     """
 
-    def __init__(self, decode_block: Callable[[bytes, int], bytes]) -> None:
+    def __init__(
+        self,
+        decode_block: Callable[[bytes, int], bytes],
+        check_block: Callable[[int], None] | None = None,
+    ) -> None:
         self._decode_block = decode_block
+        self._check_block = check_block
         self._in = bytearray()
         self._out = bytearray()
         self._header: LzopHeader | None = None
@@ -397,6 +407,8 @@ class LzopDecompressor:
             raise CorruptionError(
                 f"lzop block of {dst_len} bytes is over the 64 MiB lzop reads"
             )
+        if self._check_block is not None:
+            self._check_block(dst_len)
         if len(buf) < 8:
             return False
         src_len = _U32.unpack_from(buf, 4)[0]

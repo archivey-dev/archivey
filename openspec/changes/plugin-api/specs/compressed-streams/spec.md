@@ -22,3 +22,6 @@ An lzop method other than LZO1X (1 to 3), or a filter, SHALL raise
 | The file cut short | `TruncatedError` |
 | A changed byte under the header checksum | `CorruptionError` |
 | `ReaderContext.decompress(data, CompressionAlgorithm.LZO)` with no `size` | `UnsupportedFeatureError` |
+| An lzop block that declares more than 64 MiB | `CorruptionError` |
+| An lzop block over `DecoderLimits.max_decoder_memory` | `ResourceLimitError` |
+| Detection meeting an lzop block larger than its probe decodes | Not decoded; the probe can't tell |
