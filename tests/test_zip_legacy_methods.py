@@ -432,22 +432,46 @@ def test_a_run_of_partial_clears_costs_little() -> None:
     )
 
 
-def test_long_shrink_entries_are_stored_not_walked() -> None:
-    """Each code names the entry it adds (KwKwK), so entries grow by a byte per code,
-    to 3,838 bytes at 12 bits: 7.4 MB of zeros from 6 KB. Long strings stored as links
-    keep a code to one lookup (walking each entry's parents took about 0.6 s here) and
-    the table small (stored flat they would hold about the whole output)."""
+def test_long_shrink_entries_are_stored_not_walked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Long entries are looked up, not rebuilt by walking their parents.
+
+    KwKwK codes grow a chain of zeros to 1,791 bytes at 11 bits; then two of its longest
+    codes alternate until the table is full, 6,144 codes of about 1,790 bytes each: 11
+    MB from 11 KB. Each of those is a stored link, rebuilt by ``_expand`` (the count
+    below; restoring the parent walk makes it 0). Stored flat, the strings would hold
+    the whole output; as links the table stays small.
+    """
+    from archivey.internal.streams.codecs import zip_legacy_decoder
+
+    expands = 0
+    real_expand = zip_legacy_decoder._expand
+
+    def counting_expand(*args: object) -> bytes:
+        nonlocal expands
+        expands += 1
+        return real_expand(*args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(zip_legacy_decoder, "_expand", counting_expand)
     out = BitWriter()
-    out.write(0, 9)
     width = 9
-    total = 1
-    for code in range(257, 4096):
+    total = 0
+
+    def write(code: int, length: int) -> None:
+        nonlocal width, total
         if code >= 1 << width:
             out.write(256, width)
             out.write(1, width)
             width += 1
         out.write(code, width)
-        total += code - 255
+        total += length
+
+    write(0, 1)
+    for code in range(257, 2048):
+        write(code, code - 255)
+    for i in range(8192 - 2048):
+        write(2046 + i % 2, 2047 - 255 - 1 + i % 2)
     data = out.getvalue()
 
     def decode() -> None:
@@ -461,8 +485,7 @@ def test_long_shrink_entries_are_stored_not_walked() -> None:
         assert got == total
         assert not decoder.flush().data
 
-    start = time.perf_counter()
     decode()
-    elapsed = time.perf_counter() - start
-    assert elapsed < 0.2, f"7.4 MB of long entries took {elapsed:.2f}s: walking again?"
-    assert traced_peak(decode) < 2 << 20
+    assert expands >= 8192 - 2048 - 1, "long entries were walked, not looked up"
+    # About 2.3 MB measured; stored flat, about 13 MB.
+    assert traced_peak(decode) < 4 << 20
