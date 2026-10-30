@@ -295,7 +295,8 @@ _STORED_COMPRESSION: tuple[CompressionMethod, ...] = (
 
 def _pax_text(entry: TarEntry, key: bytes) -> str | None:
     """The PAX record ``key`` in force for ``entry`` as text, or ``None`` when it is
-    absent or empty (an empty value in a member's own header cancels the keyword)."""
+    absent or empty (the walker keeps an empty value only for the keywords it clears,
+    ``parse_pax_records``)."""
     value = entry.pax.get(key)
     if value is None or not value.value:
         return None
