@@ -1,6 +1,6 @@
 # Tasks — format policy
 
-Design approved 2026-10-27. Implemented in three pull requests, one per part below; the
+Design approved 2026-10-27. Implemented in four pull requests, one per part below; the
 last one archives the change.
 
 ## 1. Policy, refusals and detection (part 1)
@@ -50,39 +50,45 @@ last one archives the change.
       `FormatHandler.format`, `extensions`, `magic` and `probe` docstrings in
       `plugins.py`, which today describe registration only; the `format-plugins` delta.
 
-## 3. Optional libraries and availability (part 3)
+## 3. Optional library names and `PackageNotInstalledError.missing` (part 3)
 
-- [ ] 3.1 `OptionalLibrary` and `OptionalLibraryStr`, exported at the root, with a test
-      that pins the `Literal` against the enum. Every place inside archivey that names
+- [x] 3.1 `OptionalLibrary`, exported at the root, and `OptionalLibraryStr` beside it in
+      `archivey.types` (as `ExtractionPolicyStr` is), with the `Literal` pinned against
+      the enum (`tests/test_enum_arguments.py`). Every place inside archivey that names
       one of archivey's own optional packages uses the member: the codec requirements,
-      `LazyOptional`, backend `OPTIONAL_DEPENDENCY` / `REQUIRED_MODULES`, the
-      availability checks. `MissingComponent.name` stays `str` and holds the member for
-      those packages.
-- [ ] 3.2 `FormatPolicy(exclude_libraries=)` takes `OptionalLibrary | OptionalLibraryStr`
+      `LazyOptional`, the PyPy unused-package table, backend `OPTIONAL_DEPENDENCY`, the
+      AES requirement. `MissingComponent.name` stays `str` and holds the member for
+      those packages; a source scan refuses a string there.
+- [x] 3.2 `PackageNotInstalledError.missing` (the components the raise is about), set on
+      every raise; the unrar sites fill it with the same component
+      `rarlab_unrar_missing()` returns, the `CliToolFinder.find` refusal from the
+      finder's `display_name` and its refusal text, and it is empty only for a program
+      that is found but cannot start. Messages keep naming the package. A source scan
+      checks every raise site.
+
+## 4. Excluded libraries and availability (part 4)
+
+- [ ] 4.1 `FormatPolicy(exclude_libraries=)` takes `OptionalLibrary | OptionalLibraryStr`
       and stores `frozenset[OptionalLibrary]`, refusing any other entry; a named plugin
       whose `requires` holds an excluded package is refused. The cross-field check in
       `ArchiveyConfig.__post_init__`: an excluded `rapidgzip` with `use_rapidgzip=ON`
       or `use_indexed_bzip2=ON`.
-- [ ] 3.3 Carry the excluded names from `ArchiveyConfig.formats` on the reader config
+- [ ] 4.2 Carry the excluded names from `ArchiveyConfig.formats` on the reader config
       and the stream config, and pass them to every place that answers "is this package
       available": `LazyOptional`, `registry._optional` / `_missing_dependency`,
       `codecs.registry.is_codec_available`, `StreamCodec.available` /
       `_backend_present`, backend `REQUIRED_MODULES`. An excluded name answers "absent"
       first; no module global changes per call. Build the `MissingComponent` per call
       with `reason` naming `config.formats`.
-- [ ] 3.4 `format_availability(fmt, config=None)` and `list_supported_formats(config=None)`
+- [ ] 4.3 `format_availability(fmt, config=None)` and `list_supported_formats(config=None)`
       count excluded libraries as absent; the list does not filter by `allows()`. Update
       both docstrings in `registry.py`, which today say the answer does not change with
       `ArchiveyConfig`. Under `replace=` answer for the replacement's backend and its
       `requires`. Also update the `config.py` RAR docstring ("the `format_availability()`
       query takes no config") and the comment on `RarReader.missing_programs`.
-- [ ] 3.5 Widen the `UnsupportedFeatureError` and `PackageNotInstalledError` docstrings
-      to cover policy refusals, and add `PackageNotInstalledError.missing` (the
-      components the raise is about), set on every raise; the unrar sites fill it from
-      `rarlab_unrar_missing()`, the `CliToolFinder.find` refusal from the finder's
-      `display_name` and `install_hint`, and it is empty only for a program that is
-      found but cannot start. Messages keep naming the package.
-- [ ] 3.6 Tests: an excluded `pyppmd` makes a PPMd 7z member raise
+- [ ] 4.4 Widen the `PackageNotInstalledError` docstring to cover a package the policy
+      excludes.
+- [ ] 4.5 Tests: an excluded `pyppmd` makes a PPMd 7z member raise
       `PackageNotInstalledError` while the other members read; an excluded `rapidgzip`
       under `AUTO` falls back and under `ON` is refused; an excluded lazy package is
       never imported; two threads, one excluding `pyppmd` and one not, each get their
@@ -90,11 +96,10 @@ last one archives the change.
       `pyppmd` installed and excluded; availability answers for the replacement (NONE,
       `P.open` not called); `list_supported_formats(config=...)` does not filter by
       `allows()`; excluding `compression.zstd` falls through to `backports.zstd`; a
-      misspelled library name is refused; a missing `unrar` and a missing `unar` each
-      fill `exc.missing`; a registered plugin the policy does not name, whose
+      misspelled library name is refused; a registered plugin the policy does not name, whose
       `requires` holds an excluded package, reads as NONE and refuses at open.
-- [ ] 3.7 Docs: excluded libraries on the config and security pages.
+- [ ] 4.6 Docs: excluded libraries on the config and security pages.
 
-## 4. Archive
+## 5. Archive
 
-- [ ] 4.1 `openspec archive format-policy --yes`, in the pull request for part 3.
+- [ ] 5.1 `openspec archive format-policy --yes`, in the pull request for part 4.
