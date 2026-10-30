@@ -3050,15 +3050,15 @@ class RarReader(BaseArchiveReader):
                 self._check_dictionary_memory(source, cost)
             return sources.open(id(source), advance_past)
 
-        return self._register_public_stream(
-            self._wrap_member_stream(
-                member.name,
-                lambda: self._open_file_copy(member, kept),
-                size=member.size,
-                # ``_open_file_copy`` returns parts; see _lazy_member_stream.
-                track_output=False,
-                seekable=self._seek_declared(),
-            )
+        # Not registered: the pass holds the live-stream slot for all of its streams
+        # (``_iter_stream_members``).
+        return self._wrap_member_stream(
+            member.name,
+            lambda: self._open_file_copy(member, kept),
+            size=member.size,
+            # ``_open_file_copy`` returns parts; see _lazy_member_stream.
+            track_output=False,
+            seekable=self._seek_declared(),
         )
 
     @staticmethod
@@ -3222,7 +3222,9 @@ class RarReader(BaseArchiveReader):
                 # as ``open()`` serves it: sliced from the archive when stored and
                 # unencrypted, refused on the first read otherwise.
                 return (
-                    self._lazy_member_stream(member) if pass_has_data(member) else None
+                    self._lazy_member_stream(member, register=False)
+                    if pass_has_data(member)
+                    else None
                 )
             if not raw.is_payload_file() or not member.is_file:
                 return None
@@ -3243,7 +3245,7 @@ class RarReader(BaseArchiveReader):
             else:
                 planned = plan(member, raw, size, bool(hashes))
                 if planned is None:
-                    return self._lazy_member_stream(member)
+                    return self._lazy_member_stream(member, register=False)
                 slot = planned
                 # The pass has no native-decrypt or unsettled-plaintext branch: every
                 # member it does not slice directly and ``plan`` does not hand back
@@ -3282,20 +3284,18 @@ class RarReader(BaseArchiveReader):
 
             else:
                 open_fn = slot
-            # Registered like the base class's lazy pass streams, so the pass takes
-            # the one live-stream slot and is refused beside a live ``open()``.
-            return self._register_public_stream(
-                self._wrap_member_stream(
-                    member.name,
-                    open_fn,
-                    size=member.size,
-                    track_output=False,
-                    seekable=False,
-                    expected_hashes=hashes,
-                    expected_size=vsize,
-                    digest_transforms=transforms,
-                    verify_member=verify_member,
-                )
+            # Not registered, as the base class's pass streams are not: the pass holds
+            # the live-stream slot for all of them (``_iter_stream_members``).
+            return self._wrap_member_stream(
+                member.name,
+                open_fn,
+                size=member.size,
+                track_output=False,
+                seekable=False,
+                expected_hashes=hashes,
+                expected_size=vsize,
+                digest_transforms=transforms,
+                verify_member=verify_member,
             )
 
         def _cleanup() -> None:
