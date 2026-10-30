@@ -394,17 +394,18 @@ class EndlessDecompressor(ToyDecompressor):
     """A TOY stream with no end record: it ends where its input does, between two
     records (``flush``)."""
 
-    def flush(self) -> bytes:
+    def flush(self) -> None:
         if self._in:
             raise ToyError("the input ends inside a record")
         self._ended = self._started
-        return b""
 
 
 class EndlessHandler(ToyHandler):
     stream_format = EndlessStream.ENDLESS
     extension_aliases = ()
     concatenated = False
+    # The stream has no CRC-32 to check.
+    checks_content = False
 
     def decompressor(self, call: CodecCall) -> EndlessDecompressor:
         return EndlessDecompressor()
@@ -435,6 +436,25 @@ def test_an_error_from_flush_is_raised_after_the_output() -> None:
             with pytest.raises(CorruptionError, match="inside a record"):
                 stream.read()
     assert _TEXT.startswith(got)
+
+
+class _FlushingOutput(EndlessDecompressor):
+    def flush(self) -> bytes:  # type: ignore[override]
+        return b"late"
+
+
+def test_a_flush_that_returns_output_is_refused() -> None:
+    class Handler(EndlessHandler):
+        def decompressor(self, call: CodecCall) -> EndlessDecompressor:
+            return _FlushingOutput()
+
+    with registration_scope():
+        register_codec(Handler)
+        with (
+            open_stream(io.BytesIO(_endless(b"x")), format=EndlessStream.ENDLESS) as s,
+            pytest.raises(TypeError, match="returns no output"),
+        ):
+            s.read()
 
 
 def test_a_stream_flush_leaves_unended_is_truncated() -> None:

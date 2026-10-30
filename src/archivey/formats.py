@@ -778,12 +778,12 @@ class Decompressor(Protocol):
     3.14's ``compression.zstd.ZstdDecompressor`` share, so a decoder from such a
     library is returned as it is.
 
-    A decompressor may also have a ``flush()`` method, as ``zlib``'s does. archivey
-    calls it once the input has ended, and again while it returns bytes: it returns
-    the output still held. A stream with no end mark ends there by setting
-    :attr:`eof`; when the stream cannot end at that point, ``flush()`` raises (or
-    leaves :attr:`eof` false, which archivey reports as a truncated stream). Without
-    ``flush()``, a stream must reach :attr:`eof` on its own.
+    A decompressor for a format with no end mark may also have a ``flush()`` method.
+    archivey calls it once, when the input has ended and every byte of output has
+    been returned (:attr:`needs_input` is true). It returns nothing: it sets
+    :attr:`eof` when the stream can end at that point, and raises when it cannot.
+    When :attr:`eof` is still false after it, or there is no ``flush()``, the stream
+    is truncated.
     """
 
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:

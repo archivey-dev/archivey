@@ -162,19 +162,20 @@ class _BitDecompressor:
             self._run()
         return self._hand_out(max_length)
 
-    def flush(self) -> bytes:
-        """The input ended: the output still held, then (on the next call) the
-        truncation, when the stream cannot end here."""
+    def flush(self) -> None:
+        """The input ended: raise when the stream cannot end here.
+
+        Called once every byte of output has been returned, so the generator waits
+        for input; told there is none, it stops without output.
+        """
         self._eof = True
         self._limit = -1
         self._run()
-        if self._out:
-            return self._hand_out(-1)
+        assert not self._out, "the generator decodes nothing once its input has ended"
         if self._truncation is not None:
             raise TruncatedError(
                 f"{truncated_message(self.label)} ({self._truncation})"
             )
-        return b""
 
     @property
     def eof(self) -> bool:

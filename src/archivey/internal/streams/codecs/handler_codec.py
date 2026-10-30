@@ -259,6 +259,8 @@ def builtin_codec(handler: type[BuiltinCodecHandler]) -> type[StreamCodec]:
     if stream_format is not None:
         fmt = ArchiveFormat(ContainerFormat.RAW_STREAM, stream_format)
         magic = tuple(MagicSignature(m.offset, m.data, fmt) for m in handler.magic)
+    else:
+        assert not handler.magic, "a container-only codec has no magic"
     instance = handler()
     # Only what the handler overrides: the detector skips a codec whose
     # ``magic_behind_prefix`` or ``content_probe`` is the base's.

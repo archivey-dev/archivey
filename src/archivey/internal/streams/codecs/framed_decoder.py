@@ -161,8 +161,7 @@ class FramedDecoder(BaseDecoder):
     codec at all fails with the library's own error. An empty source, or one that ends
     inside a stream, is truncated. A decompressor with a ``flush()`` is told where the
     input ends, which lets a stream with no end mark (legacy LZ4, Shrink with no size)
-    end there: it returns the output it held, and sets ``eof`` when the stream may end
-    at that point. It may raise instead, after returning that output.
+    end there: it sets ``eof`` when the stream may end at that point, or raises.
     """
 
     def __init__(
@@ -340,40 +339,33 @@ class FramedDecoder(BaseDecoder):
             self._held = b""
             self._done = True
             return DecodeOut(b"")
-        out = self._flush_decompressor()
-        if self._between:
-            # The stream ended with its input; what it did not use follows it.
-            self._held = self._decomp.unused_data or b""
-            self.flush()
-            return out
-        if self._pending_error is None:
+        self._flush_decompressor()
+        if self._decomp.eof:
+            # A stream with no end mark ended with its input, so no stream follows
+            # it: any byte it did not use is after its end.
+            self._past_end(self._decomp.unused_data or b"")
+            self._done = True
+        elif self._pending_error is None:
             self._pending_error = TruncatedError(
                 "File is truncated" if self._fed else "File is empty"
             )
-        return out
+        return DecodeOut(b"")
 
-    def _flush_decompressor(self) -> DecodeOut:
+    def _flush_decompressor(self) -> None:
         """Tell the decompressor, when it has a ``flush()``, that the input ended.
 
-        It returns output until it has none left, or raises: an error is raised after
-        that output, as the decoder's pending error.
+        Every byte of its output has been returned by then (the stream flushes only
+        once the decoder needs input), so ``flush()`` returns nothing: it sets ``eof``
+        or raises. Its error is the decoder's pending error.
         """
         flush = getattr(self._decomp, "flush", None)
-        output = bytearray()
         if flush is None:
-            return DecodeOut(b"")
+            return
         try:
-            while chunk := flush():
-                output += chunk
+            if flush():
+                raise TypeError("a decompressor's flush() returns no output")
         except Exception as exc:  # noqa: BLE001 - the codec's error, raised later
             self._pending_error = exc
-        points = []
-        if output and self._pending_point is not None:
-            points.append(self._pending_point)
-            self._pending_point = None
-        self._produced += len(output)
-        self._between = self._pending_error is None and self._decomp.eof
-        return DecodeOut(bytes(output), points)
 
     @property
     def finished(self) -> bool:

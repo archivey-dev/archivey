@@ -129,7 +129,7 @@ class Lz4LegacyDecompressor:
         end = self._block_end()
         return end is None or (end != _STREAM_END and len(self._input) < end)
 
-    def flush(self) -> bytes:
+    def flush(self) -> None:
         """The input ended: the stream is complete when that is between blocks, or in
         zeros after one.
 
@@ -145,7 +145,6 @@ class Lz4LegacyDecompressor:
         ):
             self.eof = True
             self._input.clear()
-        return b""
 
 
 class Lz4Decompressor:
@@ -198,7 +197,6 @@ class Lz4Decompressor:
             return True
         return self._inner.needs_input
 
-    def flush(self) -> bytes:
+    def flush(self) -> None:
         if isinstance(self._inner, Lz4LegacyDecompressor):
-            return self._inner.flush()
-        return b""
+            self._inner.flush()

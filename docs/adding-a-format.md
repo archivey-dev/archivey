@@ -751,10 +751,10 @@ at the top of the module, not in `decompressor()`: archivey calls it for every s
 and a failed import costs more than decoding a small one.
 
 A format with no end mark, whose stream ends where its input does, gives its decoder a
-`flush()` method as well. archivey calls it when the input ends, and again while it
-returns bytes: it returns the output still held, and sets `eof` when the stream can end
-there. When it cannot, `flush()` raises `TruncatedError`, or leaves `eof` false and
-archivey raises it.
+`flush()` method as well. archivey calls it once, when the input has ended and the
+decoder has returned all its output. It returns nothing: it sets `eof` when the stream
+can end there, and raises (for example `TruncatedError`) when it cannot. If `eof` is
+still false after it, archivey raises `TruncatedError`.
 
 `call` is a `CodecCall`: what archivey knows about the data beyond its bytes:
 
