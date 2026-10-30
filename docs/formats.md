@@ -218,9 +218,9 @@ Inside a ZIP or 7z member, bytes after the compressed stream are corruption, not
 ### Device files, FIFOs and sockets
 
 A ZIP, 7z, RAR, ISO or CPIO entry whose mode is a device, FIFO or socket, or a TAR entry whose
-typeflag is a device or FIFO (TAR has no socket type), lists as `MemberType.OTHER` when it stores
-no data. Extraction does not create it: its result is
-`BLOCKED`, and the other members are extracted. `extra["special_file_type"]` names the kind. In ZIP, 7z, RAR, ISO and CPIO, such
+typeflag is a device or FIFO (TAR has no socket type), lists as `MemberType.OTHER` when it
+stores no data. Extraction does not create it: its result is `BLOCKED`, and the other members
+are extracted. `extra["special_file_type"]` names the kind. In ZIP, 7z, RAR, ISO and CPIO, such
 an entry that does store data is a `FILE`, with `MEMBER_SPECIAL_FILE_HAS_DATA` reported. Each
 section for ZIP, 7z, RAR and ISO says when its mode is trusted; TAR reads the typeflag instead
 ([TAR](#tar-and-compressed-tar)).
