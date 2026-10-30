@@ -190,7 +190,7 @@ function, which can rename, skip or change each member ([Extracting all or some
 members](extracting.md#extracting-all-or-some-members)).
 
 zipfile and tarfile write as much as the archive holds. Archivey stops at 2 GiB written, 262,144
-members, or a member that expands more than 1000 times, and all three can be changed ([Archives you
+members, or a member that expands more than 800 times, and all three can be changed ([Archives you
 trust](extracting.md#archives-you-trust)). `extract_all` returns an `ExtractionReport` saying what
 happened to each member, where `extractall` returns `None`.
 

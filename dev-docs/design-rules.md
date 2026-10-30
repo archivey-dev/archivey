@@ -647,8 +647,20 @@ field would be false for most members of an ordinary read.
   its whole decode to the archive-wide `max_ratio` in every use, listing included
   (`DecodeRatioGuard`): listing one decodes everything, and extraction would refuse the
   same archive anyway (davi, 2026-10-29, PR 1138). Cost: an honest archive over 1000:1
-  past the first 5 MiB no longer lists by default. Reopen if a real archive class
+  past the first 5 MiB no longer lists by default (800:1 since 2026-10-30). Reopen if a real archive class
   (not a test of zeros) is refused there.
+- `max_ratio` holds every member read (`open()`, `read()`, `stream_members()`), by the
+  per-member and archive-wide rules extraction applies (`MemberRatioGuard`): scanning
+  or hashing members pays for the decode as extracting does, and holding only the
+  compressed-tar spelling of a bzip2 bomb left the ZIP, 7z and bare `.bz2` spellings
+  open (davi, 2026-10-30, after PR 1138). Cost: an honest member over 1000:1 past
+  5 MiB no longer reads by default. Extraction's passes keep their own tracker.
+- The ratio fields move from `ExtractionLimits` to `DecoderLimits`, since they now hold
+  every decode; the `ExtractionLimits` fields stay one minor, deprecated, and override
+  when set (davi, 2026-10-30). Default `max_ratio` 800, below Deflate's ceiling of about
+  1032:1, so a gzip of zeros (about 1003 to 1032:1) is refused every time rather than
+  by chance, as zeros are in every other codec (davi, 2026-10-30). Raising it so gzip
+  of zeros passes was weighed: bzip2, xz and zstd of zeros would still be refused.
 - Default numbers (decided 2026-10-07): `max_members` and `max_entries` 262,144;
   `max_key_derivation_rounds` 2**25. These replace the 2026-10-01 decision to keep
   1,048,576 and 2**27, after measuring per-member listing cost.

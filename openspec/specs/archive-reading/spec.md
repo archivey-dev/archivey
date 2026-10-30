@@ -1230,10 +1230,10 @@ The system SHALL define these complete frozen schemas:
 @dataclass(frozen=True)
 class ExtractionLimits:
     max_extracted_bytes: int | None = 2 * 2**30
-    max_ratio: float | None = 1000.0
-    ratio_activation_threshold: int = 5 * 2**20
+    max_ratio: float | None = <unset>  # deprecated: DecoderLimits.max_ratio
+    ratio_activation_threshold: int = <unset>  # deprecated
     max_entries: int | None = 262_144
-    live_ratio_activation_threshold: int = 256 * 2**20
+    live_ratio_activation_threshold: int = <unset>  # deprecated
     UNLIMITED: ClassVar["ExtractionLimits"]
 
 @dataclass(frozen=True)
@@ -1247,6 +1247,9 @@ class DecoderLimits:
     max_decoder_memory: int | None = 2 * 2**30
     max_key_derivation_rounds: int | None = 2**25
     max_ppmd_held_input: int | None = 16 * 2**20
+    max_ratio: float | None = 800.0
+    ratio_activation_threshold: int = 5 * 2**20
+    live_ratio_activation_threshold: int = 256 * 2**20
     UNLIMITED: ClassVar["DecoderLimits"]
 
 @dataclass(frozen=True)
@@ -1357,7 +1360,8 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 | Case | Expected |
 | --- | --- |
 | `ArchiveyConfig()` | AUTO accelerators; documented extraction, listing and spool defaults (spool 1 GiB); COLLECT; budget 256; no callback |
-| `open_archive(..., config=ArchiveyConfig(extraction_limits=ExtractionLimits(max_ratio=100)))` then `extract_all(dest)` | 100:1 per-member ratio enforced (`safe-extraction`) |
+| `open_archive(..., config=ArchiveyConfig(decoder_limits=DecoderLimits(max_ratio=100)))` then `extract_all(dest)` | 100:1 per-member ratio enforced (`safe-extraction`), and on member reads |
+| `ExtractionLimits(max_ratio=100)` | `DeprecationWarning`; in `extraction_limits` it overrides `decoder_limits.max_ratio` for the reader, in `extract_all(limits=...)` for that extraction; an `<unset>` ratio field reads as the `DecoderLimits` default and warns nothing |
 | Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime; `extract_all()` has no `config=` to change them |
 | `detect_format(BytesIO(zlib_bytes))`, then with `always_probe_content=True` | `FormatDetectionError`, then `ZLIB` / `content_probe` |
 | Reader opened with `read_link_targets=False` | No data-stored link target is read by listing or a pass for the reader lifetime |

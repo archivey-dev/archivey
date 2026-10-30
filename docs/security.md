@@ -74,14 +74,20 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
     except subprocess.CalledProcessError:
         ...  # archivey refused the archive or stopped part-way; it said why on stderr
     ```
-- **Reading a member has no size limit.** `read()` returns the whole decompressed member as bytes in
+- **Reading a member has no byte cap.** `read()` returns the whole decompressed member as bytes in
   memory. A stream from `open()` decodes only as much as you ask for, so `stream.read(n)` holds
   about `n` bytes however large the member is, but a `stream.read()` with no size returns the rest
   of the member. `DecoderLimits` is the main limit that applies to a read. It caps the decoder's own
-  memory, so the data you read takes additional memory on top. `ExtractionLimits` covers what
-  `extract_all` writes to disk, with one exception: a container inside a compression stream (a
-  `.tar.gz`, a format handler's `.cpio.xz`) is held to its `max_ratio` whenever it's decoded, so
-  listing it or reading from it can raise `ResourceLimitError` too. A RAR archive opened from a
+  memory, so the data you read takes additional memory on top. The byte and entry caps in
+  `ExtractionLimits` cover only what `extract_all` writes to disk, but `decoder_limits.max_ratio` holds
+  every read too: a member that decodes to more than 800 times its compressed size raises
+  `ResourceLimitError` from the read that crosses the limit, and so do the reads of one reader
+  together past 800 times the archive's size. That second check needs the archive's size, or a
+  count of its compressed bytes, so it doesn't apply to a ZIP, TAR or 7z read from a pipe: there each
+  member is still held on its own, but nothing bounds many small members together. A `read()` stops there rather than first holding the
+  whole member in memory. A container inside a compression stream (a `.tar.gz`, a format handler's
+  `.cpio.xz`) is held to it whenever it's decoded, listing included, since listing one decodes all
+  of it. A RAR archive opened from a
   file object rather than a path is copied to a temporary file the first time a member needs
   `unrar` or `unar`. `spool_limits.max_bytes` caps that copy, along with the few other temporary
   files archivey makes for RAR archives, listed in the table below. When the archive records a
@@ -229,11 +235,14 @@ in the repository measures what each limit costs in time and memory on your mach
   It costs disk space, plus 5-10 ms per MiB written, 10-20 s at the default.
 - **`extraction_limits.max_entries`**, default 262,144, caps the members one extraction writes. It
   costs about 0.6 ms per file written, under 3 minutes at the default.
-- **`extraction_limits.max_ratio`**, default 1000, caps how much a member, or the whole archive,
-  expands. It's checked as data is written, and for a member whose size and compressed size the
-  archive records, before any of it is written. Outputs under 5 MiB, or 256 MiB for a whole archive
-  read from a pipe, aren't checked. It has no cost of its own. A compressed tar is held to it
-  whenever archivey decodes it, listing included, since listing one decodes all of it.
+- **`decoder_limits.max_ratio`**, default 800, caps how much a member, or the whole archive,
+  expands. It's checked as data is written or read, and for a member whose size and compressed size
+  the archive records, before any of it is written. Outputs under 5 MiB, or 256 MiB for a whole
+  archive read from a pipe, aren't checked. It has no cost of its own. A compressed tar is held to it
+  whenever archivey decodes it, listing included, since listing one decodes all of it. The default
+  sits below DEFLATE's ceiling of about 1032:1, so a gzip of zeros (1003 to 1032:1) is refused every
+  time rather than by a few bytes. It used to be `extraction_limits.max_ratio`; that field still
+  works, deprecated, and set there it overrides this one.
 - **`listing_limits.max_members`**, default 262,144, caps the members an archive can list. It costs
   about 25-50 µs and 1.5 KiB of memory per member, under 15 s and 384 MiB at the default.
 - **`listing_limits.max_metadata_bytes`**, default 64 MiB, caps the text kept for names, comments

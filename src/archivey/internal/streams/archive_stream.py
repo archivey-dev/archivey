@@ -328,6 +328,8 @@ class ArchiveStreamImpl(ArchiveStream):
     _seekable_hint: bool | None = False
     _verifier: MemberVerifier | None = None
     _on_close: CloseHook | None = None
+    # Set by ``_hold_inner``: wraps the inner stream when a lazy handle opens it.
+    _inner_wrap: Callable[[BinaryIO], BinaryIO] | None = None
 
     def __init__(
         self,
@@ -588,7 +590,8 @@ class ArchiveStreamImpl(ArchiveStream):
                 except Exception:  # noqa: BLE001, S110 - best-effort; stream already closing
                     pass
                 raise ValueError("I/O operation on closed file.")
-            self._inner = opened
+            wrap = self._inner_wrap
+            self._inner = opened if wrap is None else wrap(opened)
             return self._inner
 
     def _adopt(self, parts: MemberStreamParts) -> BinaryIO:
@@ -1125,6 +1128,17 @@ class ArchiveStreamImpl(ArchiveStream):
         if self._verifier is not None:
             return self._verifier.tell(self._inner)
         return self._inner.tell()
+
+    def _hold_inner(self, wrap: Callable[[BinaryIO], BinaryIO]) -> None:
+        """Serve the member through ``wrap(inner)`` (a ratio guard), before any read.
+
+        A lazy handle wraps the inner stream when it opens it; an open one wraps it now.
+        """
+        assert self._inner_wrap is None, "the inner stream is already held"
+        if self._inner is not None:
+            self._inner = wrap(self._inner)
+        else:
+            self._inner_wrap = wrap
 
     def _make_forward_only(self) -> None:
         """Refuse ``seek()`` on this handle from now on, whatever it was built with.

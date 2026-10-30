@@ -23,7 +23,13 @@ from pathlib import Path
 
 import pytest
 
-from archivey import AcceleratorMode, ArchiveyConfig, DiagnosticPolicy, open_archive
+from archivey import (
+    AcceleratorMode,
+    ArchiveyConfig,
+    DecoderLimits,
+    DiagnosticPolicy,
+    open_archive,
+)
 from archivey.diagnostics import ArchiveEofContext, DiagnosticCode
 from archivey.exceptions import CorruptionError, DiagnosticRaisedError, TruncatedError
 from archivey.internal.streams.codecs.base import _SKIPPABLE_FRAME
@@ -253,7 +259,10 @@ def test_brotli_replay_keeps_output_the_library_held_back(
     import brotli
 
     path = _write(tmp_path, ".br", brotli.compress(payload, quality=5) + _JUNK)
-    with open_archive(path, format=_format(".br")) as reader:
+    # Without the ratio guard, whose steps would hand the decoder bounded reads in
+    # place of the completing read(-1) this test is about.
+    config = ArchiveyConfig(decoder_limits=DecoderLimits(max_ratio=None))
+    with open_archive(path, format=_format(".br"), config=config) as reader:
         with reader.open(reader.members()[0]) as stream:
             collected = bytearray()
             while data := stream.read(chunk):
