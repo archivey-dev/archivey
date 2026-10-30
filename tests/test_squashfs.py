@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.util
 import io
 import random
@@ -27,6 +28,7 @@ from archivey import (
 from archivey.internal.backends import squashfs_lzo as lzo, squashfs_reader
 from archivey.internal.backends.squashfs_reader import SquashfsReader
 from archivey.internal.excluded_libraries import EXCLUDED_REASON
+from archivey.internal.streams.codecs import deps
 from tests.public_names import assert_only_public_archivey
 
 SQUASHFS = archivey.ArchiveFormat.SQUASHFS
@@ -340,12 +342,8 @@ def test_a_symlink_target_longer_than_the_kernel_allows(tmp_path: Path) -> None:
 # ── The package ────────────────────────────────────────────────────────────────────
 
 
-def test_the_reader_uses_only_public_archivey() -> None:
-    """Written as a format added from outside would be, apart from its own LZO
-    decoder."""
-    assert_only_public_archivey(
-        squashfs_reader.__file__, own=("archivey.internal.backends.squashfs_lzo",)
-    )
+def test_the_lzo_decoder_uses_only_public_archivey() -> None:
+    """The reader itself uses archivey's lz4 handling; its LZO decoder needs nothing."""
     assert_only_public_archivey(lzo.__file__)
 
 
@@ -365,7 +363,6 @@ def test_lz4_turned_off_by_the_policy_reads_as_not_installed() -> None:
         archive.read("a.txt")
     (component,) = e.value.missing
     assert component.name is OptionalLibrary.LZ4
-    # The reader's copy of archivey's wording: a reword of either fails here.
     assert component.reason == EXCLUDED_REASON
 
 
@@ -373,7 +370,10 @@ def test_lz4_under_pypy_gives_the_reason_not_install_advice(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reason = "archivey does not use lz4 under PyPy, for the test"
-    monkeypatch.setattr(squashfs_reader, "_LZ4_UNUSED_REASON", reason)
+    # What deps does under PyPy: no lz4.block, and the reason on the requirement.
+    monkeypatch.setattr(deps, "lz4_block", None)
+    requirement = dataclasses.replace(squashfs_reader._LZ4_REQUIREMENT, reason=reason)
+    monkeypatch.setattr(squashfs_reader, "_LZ4_REQUIREMENT", requirement)
     with (
         pytest.raises(PackageNotInstalledError, match="for the test") as exc_info,
         open_archive(DATA / "lz4.sqfs") as archive,

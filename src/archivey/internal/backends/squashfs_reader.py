@@ -14,20 +14,19 @@ compressed block goes through ``ReaderContext.decompress``, so archivey's decode
 apply, or through a decoder capped at the block's size: ``lz4.block`` for LZ4, and
 :mod:`.squashfs_lzo` for LZO.
 
-The reader uses only ``archivey.formats`` and archivey's public names, as a format added
-from outside would; ``register_builtin_format`` is the one internal name it uses
-(``tests/test_squashfs.py`` checks). Handbook page: ``dev-docs/formats/squashfs.md``.
+The reader is written against ``archivey.formats``. Beyond it, it uses archivey's own
+handling of the ``lz4`` package (the PyPy rule, ``exclude_libraries`` and process
+isolation) rather than a copy of it. Handbook page: ``dev-docs/formats/squashfs.md``.
 """
 
 from __future__ import annotations
 
 import io
 import struct
-import sys
 from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
-from typing import Any, BinaryIO, NamedTuple
+from typing import Any, BinaryIO, NamedTuple, cast
 
 from archivey.exceptions import (
     CorruptionError,
@@ -47,7 +46,11 @@ from archivey.formats import (
     block_stream,
 )
 from archivey.internal.backends import squashfs_lzo as lzo
+from archivey.internal.excluded_libraries import as_reported
 from archivey.internal.format_adapter import register_builtin_format
+from archivey.internal.streams.codecs import deps
+from archivey.internal.streams.codecs.isolated import Natives, natives_for
+from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfoExtra,
@@ -75,14 +78,13 @@ _SYMLINK_MAX = 65535
 # follows the superblock. It is not read: zlib, xz, LZMA Alone and Zstandard streams
 # carry their own parameters, and the LZ4 and LZO options only name a compression
 # level or variant that the same decoder reads.
-# archivey does not use python-lz4 under PyPy, where its frame decoder crashes the
-# interpreter (dev-docs/known-issues.md). Only the block decoder is used here, but no one
-# has shown it safe there, so this reader does the same and says why in place of the
-# install advice.
-_LZ4_UNUSED_REASON = (
-    "archivey does not use lz4 under PyPy, where python-lz4 crashes the interpreter"
-    if sys.implementation.name == "pypy"
-    else ""
+# LZ4 blocks need lz4 (``[recommended]``). Under PyPy archivey does not use it, and
+# says why in place of the install advice (``deps.unused_reason``).
+_LZ4_REQUIREMENT = MissingComponent(
+    OptionalLibrary.LZ4,
+    "pip install archivey[recommended]",
+    ("lz4",),
+    reason=deps.unused_reason(OptionalLibrary.LZ4),
 )
 _COMPRESSORS = {1: "gzip", 2: "lzma", 3: "lzo", 4: "xz", 5: "lz4", 6: "zstd"}
 _DECODED_AS: dict[str, CompressionAlgorithm | StreamFormat] = {
@@ -115,6 +117,11 @@ _DIR_COUNT = 256
 # every small file in one fragment shares it.
 _METADATA_CACHE = 64
 _FRAGMENT_CACHE = 4
+
+
+def _shown(raw: bytes) -> str:
+    """A stored name for a message: the error escapes what is not printable."""
+    return quoted(raw.decode("utf-8", "surrogateescape"))
 
 
 class FileLocation(NamedTuple):
@@ -226,33 +233,19 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
 
     # ── Decoding ─────────────────────────────────────────────────────────────────────
 
-    def _lz4_block_module(self) -> Any:
-        """``lz4.block``, unless it is missing, unused on this interpreter, or turned
-        off by the caller's policy."""
-        reason = _LZ4_UNUSED_REASON
-        if OptionalLibrary.LZ4 in self._context.config.formats.exclude_libraries:
-            # Turned off for this call: it reads as not installed, and installing it
-            # would not help. The same words as archivey's own refusals
-            # (archivey.internal.excluded_libraries.EXCLUDED_REASON), which a format
-            # written against the public API cannot import; a test compares the two.
-            reason = "ArchiveyConfig.formats.exclude_libraries turns it off"
-        if not reason:
-            try:
-                import lz4.block
-            except ImportError:
-                pass
-            else:
-                return lz4.block
-        requirement = MissingComponent(
-            OptionalLibrary.LZ4,
-            "pip install archivey[recommended]",
-            ("lz4",),
-            reason=reason,
-        )
-        raise PackageNotInstalledError(
-            requirement.message("an LZ4-compressed SquashFS image"),
-            missing=(requirement,),
-        )
+    def _lz4_natives(self) -> Natives:
+        """Where LZ4 blocks decode (a child process unless ``process_isolation`` is
+        ``NONE``), or ``PackageNotInstalledError`` when lz4 is missing, unused on this
+        interpreter, or turned off by the caller's policy."""
+        config = self._context.config
+        excluded = config.formats.exclude_libraries
+        if deps.lz4_block is None or OptionalLibrary.LZ4 in excluded:
+            requirement = as_reported(_LZ4_REQUIREMENT, excluded)
+            raise PackageNotInstalledError(
+                requirement.message("an LZ4-compressed SquashFS image"),
+                missing=(requirement,),
+            )
+        return natives_for(config.process_isolation)
 
     def _block_decoder(self, compressor: str) -> Callable[[int, int, int], bytes]:
         """A function that decodes ``length`` bytes at ``start`` to at most ``limit``."""
@@ -275,13 +268,14 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
 
             return through_archivey
         if compressor == "lz4":
-            lz4_block_module = self._lz4_block_module()
+            natives = self._lz4_natives()
+            block_error = cast("Any", deps.lz4_block).LZ4BlockError
 
             def lz4_block(start: int, length: int, limit: int) -> bytes:
                 raw = self._read_exact(start, length, "an LZ4 block")
                 try:
-                    return lz4_block_module.decompress(raw, uncompressed_size=limit)
-                except lz4_block_module.LZ4BlockError as exc:
+                    return natives.lz4_block_decompress(raw, uncompressed_size=limit)
+                except block_error as exc:
                     raise CorruptionError(f"the LZ4 block at {start}: {exc}") from None
 
             return lz4_block
@@ -509,10 +503,10 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
                 )
                 name = cursor.read(name_size + 1)
                 if b"/" in name or name in (b".", b".."):
-                    raise CorruptionError(f"a directory entry is named {name!r}")
+                    raise CorruptionError(f"a directory entry is named {_shown(name)}")
                 if not 1 <= kind <= 7 or inode_offset >= _METADATA_SIZE:
                     raise CorruptionError(
-                        f"a directory entry for {name!r} is not valid"
+                        f"a directory entry for {_shown(name)} is not valid"
                     )
                 yield name, inode_block, inode_offset, kind
         if cursor.consumed != size:
@@ -544,7 +538,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
             inode = self._inode(*ref)
             if inode.type != kind:
                 raise CorruptionError(
-                    f"{raw_name!r} is listed as type {kind}, its inode is {inode.type}"
+                    f"{_shown(raw_name)} is listed as type {kind}, its inode is {inode.type}"
                 )
             path = self._context.decode_name(raw_name)
             member = ArchiveMember(
@@ -559,7 +553,9 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
             location: FileLocation | None = None
             if kind == _DIR:
                 if ref in seen_dirs:
-                    raise CorruptionError(f"directory {raw_name!r} is listed twice")
+                    raise CorruptionError(
+                        f"directory {_shown(raw_name)} is listed twice"
+                    )
                 seen_dirs.add(ref)
                 member.type = MemberType.DIRECTORY
                 stack.append((raw_name + b"/", self._entries(_listing(inode))))

@@ -17,10 +17,7 @@ NO_EXCLUSIONS: frozenset[OptionalLibrary] = frozenset()
 """The excluded set of a call whose policy excludes nothing: every check as without one."""
 
 EXCLUDED_REASON = "ArchiveyConfig.formats.exclude_libraries turns it off"
-"""``MissingComponent.reason`` for an excluded package: installing it would not help.
-
-The SquashFS reader keeps a copy, since it is written against the public API only;
-``tests/test_squashfs.py`` compares the two, so a reword here must reach it."""
+"""``MissingComponent.reason`` for an excluded package: installing it would not help."""
 
 
 def as_excluded(component: MissingComponent) -> MissingComponent:

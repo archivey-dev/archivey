@@ -3227,6 +3227,8 @@ _NOT_OPTIONAL_LIBRARIES = {
     "__pypy__": "PyPy's own module, for memory pressure",
     "_typeshed": "type-checking stubs, imported only under TYPE_CHECKING",
     "tqdm": "the CLI's progress bar, a dependency of archivey-cli, not a decoder",
+    "lzo": "python-lzo, GPL and never a dependency: only a faster stand-in for the "
+    "SquashFS reader's own LZO decoder, used when the caller installed it",
 }
 
 

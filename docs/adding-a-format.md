@@ -699,7 +699,7 @@ probe is not handed the policy, so it must not import anything `requires` does n
 name. A plugin that imports an optional package only for some files, outside
 `requires`, checks `context.config.formats.exclude_libraries` itself before it imports
 the package, and raises `PackageNotInstalledError` with a `MissingComponent` whose
-`reason` says the policy turned it off. The SquashFS reader does this for `lz4`.
+`reason` says the policy turned it off.
 
 A library that needs a file name rather than a stream can use `ReaderSource.path`, which is
 the path the archive was opened from, or `None` when it was opened from a stream.

@@ -57,7 +57,8 @@ def test_the_scans_cover_every_package_with_code() -> None:
         if "tests" not in path.relative_to(ROOT).parts
     }
     scanned = {tree.parent.name for tree in SOURCE_TREES[1:]}
-    assert with_code, "no plugin package found, so this guards nothing"
+    # No package in packages/ holds code today (the format readers are built in); the
+    # check still catches one added later outside packages/*/src.
     assert with_code == scanned
 
 

@@ -196,4 +196,4 @@ and any other name is refused, so a typo can't leave a package on. The setting o
 made with that config: other calls in the same program, on any thread, still use the package.
 `format_availability(fmt, config=...)` and `list_supported_formats(config=...)` answer with the
 excluded packages counted as missing. A plugin reader that imports a package itself honours the setting
-only if it checks `config.formats.exclude_libraries`, as the SquashFS reader does for `lz4`.
+only if it checks `config.formats.exclude_libraries` itself.
