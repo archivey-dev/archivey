@@ -1971,6 +1971,11 @@ _AMBIGUOUS = {
         "f",
         ("leading_zero", "size"),
     ),
+    "sparse realsize with a leading zero": (
+        _pax_1_0_member("1", "0", {"GNU.sparse.realsize": "020"})[: -len(_END)],
+        "real",
+        ("leading_zero", "GNU.sparse.realsize"),
+    ),
 }
 
 
@@ -2122,6 +2127,10 @@ def _ordinary_archives() -> dict[str, bytes]:
         + _END
     )
     archives["x size 0"] = _pax({"size": "0"}) + _block(b"empty") + _END
+    # GNU tar 1.35 --xattrs writes this for an empty extended attribute.
+    archives["empty xattr"] = (
+        _pax_body(_rec(b"SCHILY.xattr.user.empty", b"")) + _file() + _END
+    )
     return archives
 
 
@@ -2134,19 +2143,31 @@ def test_ordinary_archives_report_no_ambiguity(label: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("body", "emptied"),
+    ("body", "expected"),
     [
-        (_rec(b"path", b"") + _rec(b"path", b"foo"), []),
-        (_rec(b"path", b"foo") + _rec(b"path", b""), [b"path"]),
+        (_rec(b"path", b"") + _rec(b"path", b"foo"), [("repeated", "path")]),
+        (
+            _rec(b"path", b"foo") + _rec(b"path", b""),
+            [("repeated", "path"), ("empty_value", "path")],
+        ),
+        (_rec(b"mtime", b"") + _rec(b"mtime", b"2"), [("repeated", "mtime")]),
     ],
-    ids=["set after the empty record", "set before it"],
+    ids=["set after the empty record", "set before it", "number set after it"],
 )
-def test_an_empty_record_counts_only_when_it_leaves_an_earlier_value(
-    body: bytes, emptied: list[bytes]
+def test_an_empty_record_and_another_of_its_key_are_reported(
+    body: bytes, expected: list[tuple[str, str]]
 ) -> None:
-    records = parse_pax_records(body, binary_default=False)
-    assert records.values[b"path"].value == b"foo"
-    assert list(records.emptied) == emptied
+    """One key set twice in one header is repeated, an empty record too; the empty
+    one is empty_value only when it is the last, as the earlier value then stays."""
+    data = _pax_body(body) + _file(b"foo") + _END
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        (member,) = ar.members()
+        shapes = [
+            (d.context.ambiguity, d.context.field)
+            for d in member.diagnostics
+            if isinstance(d.context, HeaderAmbiguityContext)
+        ]
+    assert shapes == expected
 
 
 def test_pax_records_list_repeated_keys_once() -> None:

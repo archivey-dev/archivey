@@ -658,10 +658,12 @@ class HeaderAmbiguityContext(_JsonSafeContext):
       ``size`` too) to the long name header instead.
     - ``"global_in_chain"``: a global header comes between an ``x`` or long name
       header and its member. The extended header applies to the member.
-    - ``"empty_value"``: an ``x`` header record with an empty value that is skipped,
-      ``path`` or a number: the value in force before it stays.
-    - ``"leading_zero"``: a PAX ``size`` with a leading zero, read as decimal (a
-      reader that takes it as octal frames the member differently).
+    - ``"empty_value"``: the last ``x`` header record of ``path``, ``mtime``,
+      ``atime``, ``ctime``, ``uid`` or ``gid`` has an empty value, which is skipped:
+      the value in force before it stays.
+    - ``"leading_zero"``: a PAX ``size``, ``GNU.sparse.size`` or
+      ``GNU.sparse.realsize`` with a leading zero, read as decimal (a reader that
+      takes it as octal frames or sizes the member differently).
 
     ``field`` is the PAX keyword, with ``"path"`` and ``"linkpath"`` standing for GNU
     long name and long link headers, ``"x"`` for a repeated ``x`` header and for

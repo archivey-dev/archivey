@@ -399,10 +399,17 @@ not reported.
 - `empty_value`: an `x` record whose empty value the rule above skips: `path` (a reader
   that follows POSIX's "delete" literally can drop the header name too) or a number (GNU
   tar reports it as invalid and exits 2). Not in a `g` header, where an empty value is
-  how POSIX unsets a global record (tar-minefield N22).
-- `leading_zero` (field `size`): an `x` header `size` such as `0777`. It is decimal (777),
-  as GNU tar and POSIX read it; a reader using `strtoul(s, NULL, 0)` reads 511
-  (tar-minefield F26).
+  how POSIX unsets a global record (tar-minefield N22). Only `path`, `mtime`, `atime`,
+  `ctime`, `uid` and `gid` count (`_EMPTY_VALUE_REPORTED`): GNU tar writes an empty
+  `SCHILY.xattr.<name>` record for an empty extended attribute with `--xattrs`, and
+  other keywords name and frame nothing. Only the key's last record in the header
+  counts: `path=` then `path=foo` names the member `foo` and is `repeated`.
+- `leading_zero` (field `size`, `GNU.sparse.size` or `GNU.sparse.realsize`): an `x`
+  header number such as `0777`. It is decimal (777), as GNU tar and POSIX read it; a
+  reader using `strtoul(s, NULL, 0)` reads 511 (tar-minefield F26). These are the
+  numbers that frame a member or give its listed size. A sparse map's offsets and
+  lengths are not checked: the walk requires the chunks to sum to the stored size, so a
+  map read as octal frames nothing differently.
 
 The empty-value rule is not reported for `uname`, `gname` or `linkpath`, which it
 stores as empty: an empty `uname` or `linkpath` is how a writer clears a global value

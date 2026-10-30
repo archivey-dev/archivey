@@ -502,6 +502,13 @@ _PAX_LENGTH = re.compile(rb"([0-9]{1,20}) ")
 # The keywords an empty value sets to empty, as GNU tar 1.35's decoders store any
 # string. Another keyword's empty value leaves the value in force before it.
 _EMPTY_VALUE_STORED = frozenset((b"linkpath", b"uname", b"gname"))
+# The skipped empty values EMPTY_VALUE reports: a name, or a number GNU tar 1.35 calls
+# invalid. Any other keyword is left out: GNU tar writes an empty
+# SCHILY.xattr.<name> for an empty extended attribute (tar --xattrs), and a comment or
+# vendor record names and frames nothing.
+_EMPTY_VALUE_REPORTED = frozenset(
+    (b"path", b"mtime", b"atime", b"ctime", b"uid", b"gid")
+)
 # The keywords whose value is a C string to GNU tar 1.35, cut at its first NUL as an
 # ``L`` or ``K`` payload and a header field are. The cut comes before the empty-value
 # rule, so a ``path`` that is empty after it is skipped and the value in force stays.
@@ -537,12 +544,18 @@ class PaxRecords:
     repeated: dict[bytes, None]
     # Keys of _C_STRING_KEYS whose value held a NUL and was cut there, each once.
     nul_cut: dict[bytes, None]
-    # Keys whose empty value was skipped (not stored), each once.
+    # Keys of _EMPTY_VALUE_REPORTED whose empty value was skipped and is the
+    # block's last record of that key, each once.
     emptied: dict[bytes, None]
 
 
 # The PAX sparse 0.0 map repeats these two keys by design.
 _SPARSE_MAP_KEYS = frozenset((b"GNU.sparse.offset", b"GNU.sparse.numbytes"))
+# The PAX numbers LEADING_ZERO reports: the ones that frame a member or give its listed
+# size. A sparse map's offsets and lengths are left out: the walk checks that the
+# chunks sum to the stored size, so a map read as octal cannot frame anything, and no
+# case of tar-minefield (whose F26 is about size) covers them.
+_LEADING_ZERO_KEYS = (b"size", b"GNU.sparse.size", b"GNU.sparse.realsize")
 # Keys that name or frame one member, which a global header applies to every member.
 _MEMBER_KEYS = (b"path", b"linkpath", b"size")
 
@@ -577,12 +590,14 @@ class Ambiguity(Enum):
     # applies the x or L header to the member; a reader can apply it to the global
     # header instead, and the member keeps its header's name.
     GLOBAL_IN_CHAIN = "global_in_chain"
-    # An x header record with an empty value that is skipped (path, a number): POSIX
-    # has it delete a field, and readers disagree on which. GNU tar keeps the value in
-    # force before it (and reports an empty number as invalid).
+    # An x header's last record of path or a number (_EMPTY_VALUE_REPORTED) with an
+    # empty value, which is skipped: POSIX has it delete a field, and readers disagree
+    # on which. GNU tar keeps the value in force before it (and reports an empty
+    # number as invalid).
     EMPTY_VALUE = "empty_value"
-    # A PAX size with a leading zero, such as 0777: 777 to GNU tar and POSIX, 511 to a
-    # reader that takes it as octal, as the header's numbers are.
+    # A PAX size or sparse size (_LEADING_ZERO_KEYS) with a leading zero, such as 0777:
+    # 777 to GNU tar and POSIX, 511 to a reader that takes it as octal, as the
+    # header's numbers are.
     LEADING_ZERO = "leading_zero"
 
 
@@ -603,9 +618,10 @@ def _record_ambiguities(
     # In a global header an empty value is how POSIX unsets a global record, and a
     # global size is GLOBAL_MEMBER_FIELD already.
     found += [(Ambiguity.EMPTY_VALUE, key) for key in records.emptied]
-    size = values.get(b"size")
-    if size is not None and len(size.value) > 1 and size.value[:1] == b"0":
-        found.append((Ambiguity.LEADING_ZERO, b"size"))
+    for key in _LEADING_ZERO_KEYS:
+        number = values.get(key)
+        if number is not None and len(number.value) > 1 and number.value[:1] == b"0":
+            found.append((Ambiguity.LEADING_ZERO, key))
 
 
 def parse_pax_records(
@@ -638,6 +654,7 @@ def parse_pax_records(
     repeated: dict[bytes, None] = {}
     nul_cut: dict[bytes, None] = {}
     emptied: dict[bytes, None] = {}
+    seen: set[bytes] = set()
     pos = 0
     end = len(data)
     while pos < end and data[pos] != 0:
@@ -667,6 +684,11 @@ def parse_pax_records(
         elif key == b"GNU.sparse.numbytes":
             numbytes.append(value)
         pos = record_end
+        # Every record of a key after its first counts, an empty one too: one key
+        # set twice in one header is REPEATED whichever value wins.
+        if key in seen and key not in _SPARSE_MAP_KEYS:
+            repeated[key] = None
+        seen.add(key)
         if not value and key not in _EMPTY_VALUE_STORED:
             if key == b"size":
                 raise CorruptionError(
@@ -674,15 +696,13 @@ def parse_pax_records(
                     f"{pos - length}: the size frames the member's data"
                 )
             if not key.startswith(b"GNU.sparse."):
-                emptied[key] = None
+                if key in _EMPTY_VALUE_REPORTED:
+                    emptied[key] = None
                 continue
-        if key in raw:
-            # The sparse 0.0 map repeats its keys by design: not reported, but the
-            # value kept still follows first_wins like any other key.
-            if key not in _SPARSE_MAP_KEYS:
-                repeated[key] = None
-            if first_wins:
-                continue
+        # The sparse 0.0 map repeats its keys by design: not reported above, but the
+        # value kept still follows first_wins like any other key.
+        if key in raw and first_wins:
+            continue
         # A value stored after an empty record of its key is the one in force, so the
         # empty record no longer kept an earlier value.
         emptied.pop(key, None)
