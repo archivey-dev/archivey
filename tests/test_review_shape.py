@@ -179,3 +179,53 @@ def test_the_script_reads_and_writes_json():
     assert json.loads(result.stdout) == {
         "misses": ["inline finding 10 does not end with the attribution footer"]
     }
+
+
+API_ERROR = '{"message": "Validation Failed", "errors": [], "status": "422"}'
+
+
+@pytest.mark.parametrize(
+    "pasted",
+    [
+        API_ERROR,
+        f"```\n{API_ERROR}\n```",
+        '{\n  "message": "Validation Failed",\n  "errors": []\n}',
+    ],
+    ids=["plain", "fenced", "pretty-printed"],
+)
+def test_an_api_error_is_found_fenced_or_not(pasted: str):
+    body = BODY.replace("It reads.", pasted)
+    assert shape.check(event(body=body)) == [
+        "the review body carries a GitHub API error message"
+    ]
+
+
+def test_an_unclosed_fence_does_not_hide_a_table():
+    body = BODY.replace("It reads.", "```\nstray\n\n| a | b |\n|---|---|")
+    assert shape.check(event(body=body)) == ["the review body has a table"]
+
+
+@pytest.mark.parametrize("gap", ["\n", " "])
+def test_the_measured_list_may_split_its_tags(gap: str):
+    body = BODY.replace("<details><summary>", f"<details>{gap}<summary>")
+    assert shape.check(event(body=body)) == []
+
+
+def test_another_answer_by_the_bot_is_not_a_review_post():
+    """The `@claude` assistant posts under the reviewer's login, by its own rules."""
+    e = event()
+    e["issue_comments"].append(
+        {
+            "id": 50,
+            "user": BOT,
+            "created_at": "2026-10-30T11:00:02Z",
+            "body": "Here is the table you asked for:\n\n| a | b |\n|---|---|",
+        }
+    )
+    assert shape.check(e) == []
+    # A finding posted top-level, after an inline post failed, is still checked.
+    e["issue_comments"][-1]["body"] = "### K9 · 🟢 `[nit]`\n\n| a | b |\n|---|---|"
+    assert shape.check(e) == [
+        "top-level post 50 does not end with the attribution footer",
+        "top-level post 50 has a table",
+    ]

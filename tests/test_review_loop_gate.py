@@ -455,6 +455,7 @@ def test_posting_shape_misses_are_listed_and_counted() -> None:
     assert " shape=2 " in first
     assert "shape=" not in plain.comment.splitlines()[0]
     assert "**Posting shape.**" in shaped.comment
+    assert "a reviewer defect" in shaped.comment
     assert all(f"- {miss}" in shaped.comment for miss in misses)
     assert (shaped.verdict, shaped.stop, shaped.label) == (
         plain.verdict,
@@ -849,7 +850,8 @@ def test_the_close_script_checks_the_posting_shape(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the step runs on ubuntu-latest")
 def test_a_failed_fetch_is_no_posting_shape_miss(tmp_path: Path) -> None:
-    """Empty lists from a failed call would read as a round that posted nothing."""
+    """Empty lists from a failed call would read as a round that posted nothing, so
+    the check is skipped, and the skip is named rather than read as a pass."""
     bash, jq = shutil.which("bash"), shutil.which("jq")
     if bash is None or jq is None:  # pragma: no cover - minimal runners
         pytest.skip("needs bash and jq")
@@ -883,8 +885,11 @@ def test_a_failed_fetch_is_no_posting_shape_miss(tmp_path: Path) -> None:
     }
     subprocess.run([bash, "-c", script], cwd=ROOT, env=env, check=True)
     posted = (work / "comment.md").read_text(encoding="utf-8")
-    assert "shape=" not in posted.splitlines()[0]
-    assert "Posting shape" not in posted
+    assert " shape=skipped " in posted.splitlines()[0]
+    assert "**Posting shape.** Not checked" in posted
+    assert "- " not in posted.split("**Posting shape.**", 1)[1]
+    summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+    assert "Posting shape: not checked" in summary
 
 
 def _step(name: str) -> str:

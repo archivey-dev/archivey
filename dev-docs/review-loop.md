@@ -118,7 +118,9 @@ line, the collapsed `Measured this round` list, a `### K<n> ·` heading on every
 finding and reply, the footer on every post, no tables, and no GitHub API error pasted
 in. The closing comment lists any miss under **Posting shape**, and the round marker
 carries their count (`shape=N`) for the weekly tally. A miss is a reviewer defect to
-fix in the skill or the prompt; it never changes the verdict or the next step.
+fix in the skill or the prompt; it never changes the verdict or the next step. When
+the close cannot read the pull request's comments, it says so instead and the marker
+carries `shape=skipped`, which the tally counts apart from the rounds that passed.
 
 ## Counting rounds
 
