@@ -32,6 +32,7 @@ from archivey.internal.excluded_libraries import (
     as_reported,
 )
 from archivey.internal.streams.archive_stream import RewindWarning
+from archivey.internal.streams.child_process import mark_no_verdict
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.base import (
     CodecParams,
@@ -404,7 +405,10 @@ def _require_rapidgzip_child(label: str) -> None:
     (:func:`rapidgzip_child_unavailable_reason`). Starts nothing."""
     unavailable = rapidgzip_child_unavailable_reason()
     if unavailable is not None:
-        raise ResourceUnavailableError(f"{_no_child_reason(label)} ({unavailable}).")
+        # A child that cannot start is no verdict on the data (process-isolation §2.5).
+        raise mark_no_verdict(
+            ResourceUnavailableError(f"{_no_child_reason(label)} ({unavailable}).")
+        )
 
 
 def _open_rapidgzip(
@@ -448,7 +452,9 @@ def _open_rapidgzip(
         )
     except RapidgzipChildStartError as exc:
         if getattr(config, field_name) is not AcceleratorMode.AUTO:
-            raise ResourceUnavailableError(f"{reason} ({exc}).") from exc
+            raise mark_no_verdict(
+                ResourceUnavailableError(f"{reason} ({exc}).")
+            ) from exc
         _warn_child_fallback(str(exc), field_name)
         return None
 
