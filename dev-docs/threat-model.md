@@ -1174,7 +1174,11 @@ consumes the stream once, and the entries its directory places in the bytes kept
 its members consume those at most twice more, however many it names there
 ([Resource use is bounded](#resource-use-is-bounded)). A "work per output byte" limit
 for BCJ2 was considered and not added: no other codec has one, and `ExtractionLimits`
-still bounds the amount, only the rate is lower. Callers who need a time bound run
+still bounds the amount, only the rate is lower. Detection of an unrecognised file with
+no known extension scans up to 2 MiB for an archive behind leading bytes, and 2 MiB of
+back-to-back ZIP local-header signatures costs about 2.4 s to reject, one validation each
+([prefixed archives §3](topics/prefixed-archives.md#3-cost-is-what-tiers-this-not-false-positives)).
+Callers who need a time bound run
 archivey in a worker they can kill. Public:
 [where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 

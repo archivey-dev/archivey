@@ -1200,7 +1200,8 @@ file; with `format=`, a `.bz2` opens at once. Close the sending side when the fi
   never pays for), then the 512-byte `koly` block at the end of a seekable source
   ([Disk images](#disk-images)), then a TAR header with no magic
   ([TAR](#tar-and-compressed-tar)), then content probes for the formats with no magic (next
-  item), then the extension. A bzip2 or xz header that is the first block of a disk image loses
+  item), then the same 2 MiB scan for a ZIP, 7z or RAR behind leading bytes of any kind, then the
+  extension. A bzip2 or xz header that is the first block of a disk image loses
   to its `koly` block. A step that matches nothing falls through to the next; nothing is rejected for
   failing an earlier one. When only the extension matched and the decode then fails, the error has
   `format_unconfirmed=True`, and archivey reports `EXTENSION_FORMAT_UNCONFIRMED`.
@@ -1246,6 +1247,15 @@ file; with `format=`, a `.bz2` opens at once. Close the sending side when the fi
   as `payload_offset`. A launcher is text, so behind `#!` only formats with a structural check
   (ZIP, 7z, RAR) are searched for. Among several 7z candidates, one that ends exactly at the end of
   the file is preferred over an earlier one that ends short of it.
+- **An archive behind any leading bytes** (an image, zeros, text) is found too, as 7-Zip, `unrar`
+  and `unzip` find it: when no other step matched, the same 2 MiB scan runs without an executable
+  cue, for ZIP, 7z and RAR, each with its structural check. It is the last content step, so a file
+  archivey recognizes pays nothing for it; a file it does not recognize pays a read of up to 2 MiB.
+  On a source that cannot seek and whose length is not known yet, such as a pipe, the scan covers
+  only the bytes detection has already read, and `sfx_scan` is listed in `unavailable_tiers` as
+  `CAPABILITY_UNAVAILABLE`.
+  A file whose name has a known extension skips it and gets the extension's guess; the ZIP, 7z and
+  RAR readers find an archive behind leading bytes themselves.
 - **Ties go to the earlier step, then to registration order.** Detection stops at the first step
   that matches, and within a step the first backend registered wins. A file that is two formats at
   once (a polyglot) gets one fixed answer; pass `format=` to read it as the other.
