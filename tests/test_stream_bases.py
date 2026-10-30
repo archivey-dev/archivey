@@ -461,6 +461,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         codecs.rapidgzip_select._StdlibSeekContract,
         counting.OutputCountingStream,
         bomb_tracker.DecodeRatioGuard,  # the codec's offsets
+        bomb_tracker.MemberRatioGuard,  # the member stream's offsets
         readahead.ReadAheadStream,  # the inner's offsets
         decompressor_stream.DecompressorStream,
         crypto.AesDecryptStream,  # dense CBC restart; compose with inner
@@ -562,6 +563,8 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         # A 7z pass's member stream, forward-only like the folder decode under it:
         # nothing seeks it, so nothing asks it for a resume offset.
         sevenzip_reader._ReadAheadStream,
+        # The ratio guards' base: never on a chain itself; each guard answers.
+        bomb_tracker._RatioGuard,
     }
 
     found = _readonly_stream_subclasses()
@@ -698,7 +701,9 @@ def test_delegating_stream_close_inventory() -> None:
         counting.CountingReader,
         counting.OutputCountingStream,
         counting.SeekCountingStream,
+        bomb_tracker._RatioGuard,
         bomb_tracker.DecodeRatioGuard,
+        bomb_tracker.MemberRatioGuard,
         codecs.zlib_codec._DeflateEndCheckStream,
         codecs.gzip_codec._GzipTruncationCheckStream,
         codecs.zlib_codec._ZlibAdlerCheckStream,
@@ -853,7 +858,9 @@ def test_delegating_stream_peel_inventory() -> None:
     peels = {cls for cls in found if cls.peel_for_source_size is True}
     assert peels == {
         counting.SeekCountingStream,
+        bomb_tracker._RatioGuard,
         bomb_tracker.DecodeRatioGuard,
+        bomb_tracker.MemberRatioGuard,
     }, (
         "DelegatingStream subclass peel_for_source_size does not match "
         "the inventory (only a pass-through wrapper whose size is the "

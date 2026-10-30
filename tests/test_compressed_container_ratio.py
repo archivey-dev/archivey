@@ -12,7 +12,7 @@ import pytest
 
 from archivey import (
     ArchiveyConfig,
-    ExtractionLimits,
+    DecoderLimits,
     ResourceLimitError,
     TruncatedError,
     open_archive,
@@ -54,14 +54,14 @@ def test_listing_a_compressed_tar_past_the_ratio_is_refused() -> None:
     assert len(data) < 1024
     with (
         open_archive(io.BytesIO(data)) as reader,
-        pytest.raises(ResourceLimitError, match="max_ratio=1000:1"),
+        pytest.raises(ResourceLimitError, match="max_ratio=800:1"),
     ):
         reader.members()
 
 
 def test_a_piped_compressed_tar_is_refused_past_the_live_floor() -> None:
-    limits = ExtractionLimits(live_ratio_activation_threshold=8 * 2**20)
-    config = ArchiveyConfig(extraction_limits=limits)
+    limits = DecoderLimits(live_ratio_activation_threshold=8 * 2**20)
+    config = ArchiveyConfig(decoder_limits=limits)
     with (
         open_archive(
             NonSeekableBytesIO(_bomb()), streaming=True, config=config
@@ -103,7 +103,7 @@ class _Decoder(io.RawIOBase):
 
 def _guarded(decoder: _Decoder) -> DecodeRatioGuard:
     return DecodeRatioGuard(
-        decoder, limits=ExtractionLimits(), static_size=100, consumed=None
+        decoder, limits=DecoderLimits(), static_size=100, consumed=None
     )
 
 
@@ -122,7 +122,7 @@ def test_the_decoder_stops_within_a_step_of_the_limit(move: str) -> None:
             if move == "seek_end_sized":
                 decoder.size = _ZEROS  # type: ignore[attr-defined]  # a cheap size
             guard.seek(0, io.SEEK_END)
-    floor = ExtractionLimits().ratio_activation_threshold
+    floor = DecoderLimits().ratio_activation_threshold
     assert decoder.furthest <= floor + 2**20
 
 
@@ -135,7 +135,7 @@ def test_a_backward_seek_does_not_count_again() -> None:
 
 
 def test_the_ratio_switched_off_lists_as_before() -> None:
-    config = ArchiveyConfig(extraction_limits=ExtractionLimits(max_ratio=None))
+    config = ArchiveyConfig(decoder_limits=DecoderLimits(max_ratio=None))
     with open_archive(io.BytesIO(_bomb()), config=config) as reader:
         assert [m.name for m in reader.members()] == ["zeros.bin", "after.txt"]
 
@@ -199,7 +199,7 @@ class _ForwardOnly(_Decoder):
 def test_a_seek_to_the_end_of_a_forward_only_decoder_decodes_nothing() -> None:
     decoder = _ForwardOnly(bytes(8 * 2**20))
     guard = DecodeRatioGuard(
-        decoder, limits=ExtractionLimits(), static_size=None, consumed=None
+        decoder, limits=DecoderLimits(), static_size=None, consumed=None
     )
     with pytest.raises(io.UnsupportedOperation):
         guard.seek(0, io.SEEK_END)

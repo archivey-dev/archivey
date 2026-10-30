@@ -740,8 +740,9 @@ the pass, and declined rather than refused when the cap has no room.
 
 **Property.** `extract` stops a decompression bomb before it fills the disk.
 
-**Mechanism.** `internal/bomb_tracker.py` `BombTracker` enforces `ExtractionLimits`: total
-bytes (2 GiB), per-member ratio and archive-wide ratio (1000, active after 5 MiB), a
+**Mechanism.** `internal/bomb_tracker.py` `BombTracker` enforces `ExtractionLimits` and the
+ratio fields of `DecoderLimits`: total
+bytes (2 GiB), per-member ratio and archive-wide ratio (800, active after 5 MiB), a
 live ratio for sources of unknown size (active after 256 MiB, so an honest blank start
 read from a pipe is not judged before the data after it arrives), and an entry cap
 (262,144). Where a member records its size and compressed size, `check_recorded_size()`
@@ -1299,9 +1300,12 @@ budget one level at a time. The caller bounds depth and total size. Public:
 
 ### Reads have no output bound
 
-`read()` and `open()` return whatever the member decodes to; `ExtractionLimits` apply to
-`extract` only. The one exception is a container inside a compression stream (a
-`.tar.gz`): its whole decode, listing included, is held to the archive-wide `max_ratio`
+`read()` and `open()` have no byte cap: `max_extracted_bytes` and `max_entries` apply to
+`extract` only, and a `read()` of an honest 1 GiB member holds 1 GiB. `max_ratio` does hold
+reads: each member stream is held to the per-member and archive-wide ratios
+(`bomb_tracker.MemberRatioGuard`, one `ReadRatioTally` per reader), so a scan or hash of
+a bzip2 or xz bomb stops within a step past 5 MiB. A container inside a compression
+stream (a `.tar.gz`) holds its whole decode, listing included, to the archive-wide ratio
 (`bomb_tracker.DecodeRatioGuard`), since listing it decodes everything. Chunk untrusted
 payloads. Public:
 [security.md §Where the guarantees stop](../docs/security.md#where-the-guarantees-stop).

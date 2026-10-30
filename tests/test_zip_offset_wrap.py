@@ -18,7 +18,7 @@ from dataclasses import dataclass
 import pytest
 
 from archivey import open_archive
-from archivey.config import ArchiveyConfig
+from archivey.config import ArchiveyConfig, DecoderLimits
 from archivey.diagnostics import (
     DiagnosticCode,
     DiagnosticPolicy,
@@ -649,7 +649,11 @@ def test_a_mac_member_size_is_unknown_until_a_read_counts_it() -> None:
     # What the test rests on: deflate's ratio lets the stream reach 2³² + 100.
     assert 1032 * len(stream) >= _HUGE_ZEROS_SIZE
     member = _Deflated(stream, _HUGE_ZEROS_SIZE, _HUGE_ZEROS_CRC)
-    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    # Zeros decode past max_ratio, which a read holds too.
+    config = ArchiveyConfig(
+        diagnostic_policy=DiagnosticPolicy.STRICT,
+        decoder_limits=DecoderLimits(max_ratio=None),
+    )
     layout = _mac_layout([("zeros.bin", member), ("b.txt", b"bee")])
     with _open(layout, config=config) as reader:
         listed, after = reader.members()

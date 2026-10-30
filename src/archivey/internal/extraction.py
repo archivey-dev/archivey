@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Protocol, assert_never, cast
 
-from archivey.config import ExtractionLimits
+from archivey.config import DecoderLimits, ExtractionLimits
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -50,6 +50,7 @@ from archivey.exceptions import (
 from archivey.internal.bomb_tracker import (
     AlwaysStopResourceLimitError,
     BombTracker,
+    ratio_limits,
 )
 from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.dry_run import DryRun, scratch_for
@@ -686,6 +687,7 @@ class ExtractionCoordinator:
         selector: Callable[[ArchiveMember], bool] | None = None,
         filter: MemberFilter | None = None,
         limits: ExtractionLimits | None = None,
+        ratio: DecoderLimits | None = None,
         abort_on: Collection[AbortOn] = (),
         dry_run: bool = False,
     ) -> None:
@@ -701,6 +703,11 @@ class ExtractionCoordinator:
         self._selector = selector
         self._filter = filter
         self._limits = limits if limits is not None else ExtractionLimits()
+        # The ratio fields this extraction applies (``ratio_limits``): the reader's
+        # ``DecoderLimits``, or what a deprecated ``ExtractionLimits`` field sets.
+        self._ratio = ratio_limits(
+            ratio if ratio is not None else DecoderLimits(), self._limits
+        )
         # Built by each ``run()``. A test that drives a helper directly installs its
         # own.
         self._state: _RunState
@@ -834,15 +841,14 @@ class ExtractionCoordinator:
             self._dry.rebase_os_error(exc, resolved=True)
 
     def _run(self, reader: BaseArchiveReader, dest: Path) -> list[ExtractionResult]:
+        ratio = self._ratio
         tracker = BombTracker(
             self._limits.max_extracted_bytes,
-            self._limits.max_ratio,
-            self._limits.ratio_activation_threshold,
+            ratio.max_ratio,
+            ratio.ratio_activation_threshold,
             self._limits.max_entries,
             source=reader,
-            live_ratio_activation_threshold=(
-                self._limits.live_ratio_activation_threshold
-            ),
+            live_ratio_activation_threshold=ratio.live_ratio_activation_threshold,
         )
 
         selector = self._selector

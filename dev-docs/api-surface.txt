@@ -243,10 +243,13 @@ value archivey.CreateSystem.OS_X_DARWIN = 19
 value archivey.CreateSystem.UNKNOWN = 255
 constant archivey.DEFAULT_ARCHIVEY_CONFIG = ArchiveyConfig(...)
 class archivey.DecoderLimits()
-init archivey.DecoderLimits(max_decoder_memory: int | None = 2147483648, max_key_derivation_rounds: int | None = 33554432, max_ppmd_held_input: int | None = 16777216) -> None
+init archivey.DecoderLimits(max_decoder_memory: int | None = 2147483648, max_key_derivation_rounds: int | None = 33554432, max_ppmd_held_input: int | None = 16777216, max_ratio: float | None = 800.0, ratio_activation_threshold: int = 5242880, live_ratio_activation_threshold: int = 268435456) -> None
+field archivey.DecoderLimits.live_ratio_activation_threshold: int = 268435456
 field archivey.DecoderLimits.max_decoder_memory: int | None = 2147483648
 field archivey.DecoderLimits.max_key_derivation_rounds: int | None = 33554432
 field archivey.DecoderLimits.max_ppmd_held_input: int | None = 16777216
+field archivey.DecoderLimits.max_ratio: float | None = 800.0
+field archivey.DecoderLimits.ratio_activation_threshold: int = 5242880
 attribute archivey.DecoderLimits.UNLIMITED = DecoderLimits(...)
 class archivey.DetectionConfidence(Enum)
 enum archivey.DetectionConfidence
@@ -317,11 +320,11 @@ init archivey.EncryptionError(message: str, *, source_format: ArchiveFormat | No
 class archivey.ExtractionError(ArchiveyError)
 init archivey.ExtractionError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
 class archivey.ExtractionLimits()
-init archivey.ExtractionLimits(max_extracted_bytes: int | None = 2147483648, max_ratio: float | None = 1000.0, ratio_activation_threshold: int = 5242880, max_entries: int | None = 262144, live_ratio_activation_threshold: int = 268435456) -> None
+init archivey.ExtractionLimits(max_extracted_bytes: int | None = 2147483648, max_ratio: float | None = 800.0, ratio_activation_threshold: int = 5242880, max_entries: int | None = 262144, live_ratio_activation_threshold: int = 268435456) -> None
 field archivey.ExtractionLimits.live_ratio_activation_threshold: int = 268435456
 field archivey.ExtractionLimits.max_entries: int | None = 262144
 field archivey.ExtractionLimits.max_extracted_bytes: int | None = 2147483648
-field archivey.ExtractionLimits.max_ratio: float | None = 1000.0
+field archivey.ExtractionLimits.max_ratio: float | None = 800.0
 field archivey.ExtractionLimits.ratio_activation_threshold: int = 5242880
 attribute archivey.ExtractionLimits.UNLIMITED = ExtractionLimits(...)
 class archivey.ExtractionPolicy(Enum)

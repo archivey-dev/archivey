@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -233,18 +234,54 @@ INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE: int = 1024 * 1024
 REWIND_REDECODE_WARN_BYTES: int = 1 * 1024 * 1024
 
 
+class _InheritedFloat(float):
+    """The default of a deprecated ``ExtractionLimits`` ratio field: not set, so
+    :class:`DecoderLimits` decides. A ``float`` of the default value, so it reads as
+    one; told apart by type."""
+
+    __slots__ = ()
+
+
+class _InheritedInt(int):
+    """:class:`_InheritedFloat` for the integer ratio fields."""
+
+    __slots__ = ()
+
+
+def ratio_field_is_set(value: object) -> bool:
+    """Whether a deprecated ``ExtractionLimits`` ratio field was given a value."""
+    return not isinstance(value, (_InheritedFloat, _InheritedInt))
+
+
+_DEPRECATED_RATIO_FIELDS = (
+    "max_ratio",
+    "ratio_activation_threshold",
+    "live_ratio_activation_threshold",
+)
+
+
+# True only while ``ExtractionLimits.UNLIMITED`` is built (below).
+_building_unlimited = False
+
+
 @dataclass(frozen=True)
 class ExtractionLimits:
     """Decompression-bomb limits for extraction.
 
-    Applied by :meth:`~archivey.ForwardArchiveReader.extract_all`, and :attr:`max_ratio`
-    also to every decode of a container inside a compression stream (a ``.tar.gz``, a
-    format handler's ``.cpio.xz``), listing included.
+    Applied by :meth:`~archivey.ForwardArchiveReader.extract_all`.
 
-    ``None`` on a guard field disables that guard. :attr:`UNLIMITED` sets the three
-    guard fields to ``None``; :attr:`ratio_activation_threshold` and
-    :attr:`live_ratio_activation_threshold` are parameters of the ratio guard rather than
-    guards of their own, and are moot once ``max_ratio`` is ``None``.
+    ``None`` on a guard field disables that guard. :attr:`UNLIMITED` sets the guard
+    fields to ``None``.
+
+    The ratio fields (:attr:`max_ratio`, :attr:`ratio_activation_threshold`,
+    :attr:`live_ratio_activation_threshold`) are deprecated: the ratio holds every
+    decode, reads and listing included, so it lives on :class:`DecoderLimits`. A ratio
+    field set here still overrides the :class:`DecoderLimits` one, with a
+    ``DeprecationWarning``: in :attr:`ArchiveyConfig.extraction_limits` for every
+    decode of the reader, and in ``extract_all(limits=...)`` for that extraction.
+    Left unset, they read as the :class:`DecoderLimits` defaults. :attr:`UNLIMITED`
+    still turns the ratio off for the extraction it is passed to, until these fields
+    go.
     """
 
     max_extracted_bytes: int | None = 2 * 2**30
@@ -257,37 +294,16 @@ class ExtractionLimits:
     Crossing it stops the whole extraction, even under ``on_error="continue"``.
     """
 
-    max_ratio: float | None = 1000.0
-    """Largest decompressed-to-compressed ratio allowed. ``1000.0``.
+    max_ratio: float | None = _InheritedFloat(800.0)
+    """Deprecated: use :attr:`DecoderLimits.max_ratio`, which holds reads too.
 
-    Checked per member (a member over it fails on its own, and ``on_error="continue"``
-    moves on) and across the archive (which stops the extraction). The per-member check
-    needs the member's compressed size; where the format or access mode does not give
-    one, only the archive-wide check applies. Neither check starts before
-    :attr:`ratio_activation_threshold` bytes of output, and the archive-wide check on a
-    source of unknown size, such as a pipe, not before
-    :attr:`live_ratio_activation_threshold`. The archive-wide check also
-    counts the copies written when a file runs out of hard-link slots (1024 names on
-    NTFS), since the archive's declared link count drives them.
-
-    A member's output never passes the size the archive records for it. Where both
-    sizes are recorded, a member over the per-member ratio is refused before any of it
-    is written.
-
-    The archive-wide check also holds while a reader decodes a compressed tar (or
-    another container inside a compression stream) for any reason, listing included,
-    since listing one decodes all of it.
+    Set here, it overrides that field: in :attr:`ArchiveyConfig.extraction_limits` for
+    the reader, in ``extract_all(limits=...)`` for that extraction only.
     """
 
-    ratio_activation_threshold: int = 5 * 2**20
-    """Output bytes before :attr:`max_ratio` is checked. 5 MiB.
-
-    Small members compress extremely well without being bombs, so the ratio is only
-    judged once a member (or the archive, for the archive-wide check) has produced this
-    much. The archive-wide check on a source of unknown size, such as a pipe, waits for
-    :attr:`live_ratio_activation_threshold` as well. It cannot be ``None``; set
-    :attr:`max_ratio` to ``None`` to turn the ratio guard off.
-    """
+    ratio_activation_threshold: int = _InheritedInt(5 * 2**20)
+    """Deprecated: use :attr:`DecoderLimits.ratio_activation_threshold`. Set here, it
+    overrides that field as :attr:`max_ratio` does."""
 
     max_entries: int | None = 262_144
     """Most entries one extraction may create: files, directories and links.
@@ -301,37 +317,37 @@ class ExtractionLimits:
     quadratic in its size.
     """
 
-    live_ratio_activation_threshold: int = 256 * 2**20
-    """Output bytes before the archive-wide ratio is checked on a source of unknown size. 256 MiB.
-
-    When the archive's size is not known up front, as for a ``.tar.gz`` read from a
-    pipe, the archive-wide check divides the output by the compressed bytes read so
-    far. An honest archive whose data starts with a long blank run, such as a disk
-    image, looks like a bomb until the data after that run arrives: blank data
-    compresses past 1000:1. The same archive read from a file passes, because there
-    the check divides by the whole file. So from such a source the archive-wide check
-    waits for this much output, and a blank start shorter than this passes as it does
-    from a file. Past it, the check still divides by the bytes read so far, so a longer
-    blank start can still be refused; once a pipe has been read to its end, the two
-    checks agree. A bomb read this way can write this much before the check stops it;
-    :attr:`max_extracted_bytes` still bounds the total.
-    Lower it to stop such a bomb sooner; raise it for piped archives with longer blank
-    starts. A value below :attr:`ratio_activation_threshold` has no effect. It cannot be
-    ``None``; set :attr:`max_ratio` to ``None`` to turn the ratio guard off.
-    """
+    live_ratio_activation_threshold: int = _InheritedInt(256 * 2**20)
+    """Deprecated: use :attr:`DecoderLimits.live_ratio_activation_threshold`. Set
+    here, it overrides that field as :attr:`max_ratio` does."""
 
     UNLIMITED: ClassVar[ExtractionLimits]
 
     def __post_init__(self) -> None:
         # allow_none and allow_float come from the field annotations.
         check_limit_fields(self, cls="ExtractionLimits")
+        if not _building_unlimited and any(
+            ratio_field_is_set(getattr(self, name)) for name in _DEPRECATED_RATIO_FIELDS
+        ):
+            warnings.warn(
+                "The ratio fields of ExtractionLimits (max_ratio, "
+                "ratio_activation_threshold, live_ratio_activation_threshold) are "
+                "deprecated and will be removed in a future release; set them on "
+                "DecoderLimits, which holds reads and listing as well as extraction.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
 
 
+# ``UNLIMITED`` keeps turning the ratio off for an extraction until the deprecated
+# fields go, without the warning a caller's own value raises.
+_building_unlimited = True
 ExtractionLimits.UNLIMITED = ExtractionLimits(
     max_extracted_bytes=None,
     max_ratio=None,
     max_entries=None,
 )
+_building_unlimited = False
 
 
 @dataclass(frozen=True)
@@ -454,13 +470,10 @@ class DecoderLimits:
     RAR5 and 7z headers say how many hashing rounds turn a password into a key,
     and :attr:`max_key_derivation_rounds` caps their total over one open archive.
 
-    This is not an :class:`ExtractionLimits` field, and the difference is not
-    cosmetic. The bomb guards there measure *output*: they count bytes as an
-    extraction produces them and stop when the total or the ratio says the
-    archive is lying about its size. A decoder's working memory is neither
-    output nor proportional to it, it is claimed up front, and it is claimed on
-    ``open()`` and ``read()`` as much as on ``extract_all()`` — paths
-    ``ExtractionLimits`` does not cover at all.
+    The decompression ratio (:attr:`max_ratio`) is here for the same reason: the
+    work a few compressed bytes can make a decoder do is paid on ``open()`` and
+    ``read()`` as much as on ``extract_all()``. :class:`ExtractionLimits` keeps the
+    caps on what an extraction writes, which only an extraction pays.
 
     Applied from the reader's open :attr:`ArchiveyConfig.decoder_limits` for its
     lifetime, as :class:`ListingLimits` is: the codec-layer view is built once
@@ -601,6 +614,68 @@ class DecoderLimits:
     stored after its data, is fed in pieces. ``None`` holds every member whose size is
     known, at a memory cost that grows with the member."""
 
+    max_ratio: float | None = 800.0
+    """Largest decompressed-to-compressed ratio allowed. ``800.0``.
+
+    Below Deflate's ceiling of about 1032:1 on purpose: zero-filled data deflates to
+    between about 1003 and 1032:1, so with the limit there a gzip of zeros would pass
+    or fail by a few bytes. At 800 it fails every time, as it does in every codec.
+
+    Every decode of member data is held to it: ``open()``, ``read()``,
+    ``stream_members()`` and ``extract_all``, and for a container inside a compression
+    stream (a ``.tar.gz``, a format handler's ``.cpio.xz``) listing too, since listing
+    one decodes all of it. Two checks, each from the decoded output:
+
+    - **Per member**, against the member's recorded compressed size. A member over it
+      fails on its own: a read of it raises
+      :class:`~archivey.exceptions.ResourceLimitError`, and an extraction under
+      ``on_error="continue"`` moves on. Where the format or access mode gives no
+      compressed size, only the archive-wide check applies. Where the archive records
+      both sizes, extraction refuses a member over it before writing any of it; a
+      member's output never passes the size the archive records for it.
+    - **Across the archive**, against the archive's size. Crossing it stops the
+      extraction, or the reader's reads. Member reads count each member once, at the
+      furthest any read of it reached. An extraction also counts the copies written
+      when a file runs out of hard-link slots (1024 names on NTFS), since the archive's
+      declared link count drives them.
+
+    Neither check starts before :attr:`ratio_activation_threshold` bytes of output, and
+    the archive-wide check on a source of unknown size, such as a pipe, not before
+    :attr:`live_ratio_activation_threshold`. A read that crosses it raises without
+    returning the bytes it decoded, and a ``read()`` of a whole member stops within a
+    MiB of the limit instead of first holding all of it in memory.
+    """
+
+    ratio_activation_threshold: int = 5 * 2**20
+    """Output bytes before :attr:`max_ratio` is checked. 5 MiB.
+
+    Small members compress extremely well without being bombs, so the ratio is only
+    judged once a member (or the archive, for the archive-wide check) has produced this
+    much. The archive-wide check on a source of unknown size, such as a pipe, waits for
+    :attr:`live_ratio_activation_threshold` as well. It cannot be ``None``; set
+    :attr:`max_ratio` to ``None`` to turn the ratio guard off.
+    """
+
+    live_ratio_activation_threshold: int = 256 * 2**20
+    """Output bytes before the archive-wide ratio is checked on a source of unknown size. 256 MiB.
+
+    When the archive's size is not known up front, as for a ``.tar.gz`` read from a
+    pipe, the archive-wide check divides the output by the compressed bytes read so
+    far. An honest archive whose data starts with a long blank run, such as a disk
+    image, looks like a bomb until the data after that run arrives: blank data
+    compresses past 800:1. The same archive read from a file passes, because there
+    the check divides by the whole file. So from such a source the archive-wide check
+    waits for this much output, and a blank start shorter than this passes as it does
+    from a file. Past it, the check still divides by the bytes read so far, so a longer
+    blank start can still be refused; once a pipe has been read to its end, the two
+    checks agree. A bomb read this way can produce this much before the check stops
+    it; in an extraction, :attr:`ExtractionLimits.max_extracted_bytes` still bounds the
+    total.
+    Lower it to stop such a bomb sooner; raise it for piped archives with longer blank
+    starts. A value below :attr:`ratio_activation_threshold` has no effect. It cannot be
+    ``None``; set :attr:`max_ratio` to ``None`` to turn the ratio guard off.
+    """
+
     UNLIMITED: ClassVar[DecoderLimits]
 
     def __post_init__(self) -> None:
@@ -611,6 +686,7 @@ DecoderLimits.UNLIMITED = DecoderLimits(
     max_decoder_memory=None,
     max_key_derivation_rounds=None,
     max_ppmd_held_input=None,
+    max_ratio=None,
 )
 
 
