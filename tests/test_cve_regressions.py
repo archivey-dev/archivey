@@ -447,6 +447,29 @@ _LINK_CASES: dict[str, _Case] = {
         ],
         (("a", MemberType.SYMLINK),),
     ),
+    # Rust zip GHSA-4v9h-p7m9-rh26: a lone symlink to a file outside, which the
+    # caller then reads or writes through.
+    "symlink-to-a-file-outside": (
+        [("sym", "outside-link", "{outside}/victim")],
+        ("outside-link",),
+    ),
+    # Rust zip GHSA-x2x8-gq67-9mq6: a link out to a path that does not exist yet,
+    # which the crate checked by spelling when it could not resolve it.
+    "symlink-dangling-out": (
+        [("sym", "l", "../outside/missing")],
+        ("l",),
+    ),
+    # The same advisory's ordering bypass: ``x/../outside`` stays inside while ``x``
+    # does not exist, and a later ``x -> .`` makes it lead out. The later link
+    # changes what the earlier one resolves through, so the earlier one is removed.
+    "symlink-redirected-by-a-later-link": (
+        [
+            ("sym", "l", "x/../outside"),
+            ("sym", "x", "."),
+            ("file", "l/victim", b"overwritten"),
+        ],
+        ("l",),
+    ),
     # tarfile CVE-2026-19672 goes up through a link with a ``..`` in a member name.
     # archivey refuses any name with a ``..`` before it resolves anything, so the
     # difference between a lexical and the kernel's resolution never arises.
