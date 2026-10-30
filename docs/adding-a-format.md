@@ -690,6 +690,15 @@ When a module is missing, `format_availability()` reports the format as
 `FormatSupport.NONE` with the hint, and opening a file of that format raises
 `PackageNotInstalledError`, as for a built-in format whose extra is not installed.
 
+A caller can turn an optional package off with `FormatPolicy(exclude_libraries=)`.
+archivey checks `requires` against it, so a plugin that names the package there needs
+nothing more: the format reads as not available, and its content probe does not run. A
+probe is not handed the policy, so it must not import anything `requires` does not
+name. A plugin that imports an optional package only for some files, outside
+`requires`, checks `context.config.formats.exclude_libraries` itself before it imports
+the package, and raises `PackageNotInstalledError` with a `MissingComponent` whose
+`reason` says the policy turned it off. `archivey-squashfs` does this for `lz4`.
+
 A library that needs a file name rather than a stream can use `ReaderSource.path`, which is
 the path the archive was opened from, or `None` when it was opened from a stream.
 

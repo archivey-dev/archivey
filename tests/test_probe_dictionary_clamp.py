@@ -283,7 +283,9 @@ def test_inner_tar_probe_without_a_backend_is_cant_tell(
 
     from archivey.internal.streams import codecs
 
-    monkeypatch.setattr(codecs, "is_codec_available", lambda codec: False)
+    monkeypatch.setattr(
+        codecs, "is_codec_available", lambda codec, excluded=frozenset(): False
+    )
     info = detect_format(io.BytesIO(gzip.compress(_TARBALL)))
     assert info.format == ArchiveFormat.GZ
     assert info.unavailable_tiers == (

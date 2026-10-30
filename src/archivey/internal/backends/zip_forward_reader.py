@@ -774,18 +774,21 @@ class _PassData:
             ends_with_data = not self._runs_on()
         aes = loc.aes
         if aes is not None:
+            excluded = self._reader._stream_config.excluded_libraries
             if not deferred:
                 return open_winzip_aes_member(
                     raw,
                     aes=aes,
                     password=password,
                     compress_size=header.compressed_size,
+                    excluded=excluded,
                 )
             forward = open_winzip_aes_forward(
                 raw,
                 aes=aes,
                 password=password,
                 hold_back=None if ends_with_data else _AES_HOLD_BACK,
+                excluded=excluded,
             )
             if not ends_with_data and not probe:
                 self._aes_pass = forward

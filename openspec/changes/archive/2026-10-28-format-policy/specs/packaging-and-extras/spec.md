@@ -42,13 +42,14 @@ package, SHALL read as NONE under that config, and opening one of its files SHAL
 - **AND** `format_availability(ArchiveFormat.SEVEN_Z, config=...)` with the same config
   reports `PARTIAL` with `pyppmd` in `missing`
 
-#### Scenario: Excluding one zstd module falls through to the other
+#### Scenario: Excluding the zstd module in use turns zstd off
 
-- **WHEN** both `compression.zstd` and `backports.zstd` import, and a caller opens a
-  `.zst` file with `FormatPolicy(exclude_libraries={"compression.zstd"})`
-- **THEN** the file decodes with `backports.zstd`
-- **AND** with both names excluded the open raises `PackageNotInstalledError` that names
-  the policy
+- **WHEN** a caller opens a `.zst` file with `FormatPolicy(exclude_libraries=)` naming
+  the zstd module archivey uses (`compression.zstd` where it imports, else
+  `backports.zstd`)
+- **THEN** the open raises `PackageNotInstalledError` whose `missing` names that module
+  with the policy as its `reason`
+- **AND** with only the other module's name excluded the file decodes
 
 #### Scenario: A misspelled library name is refused
 

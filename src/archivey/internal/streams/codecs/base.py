@@ -30,6 +30,7 @@ from archivey.internal.config import (
     StreamConfig,
 )
 from archivey.internal.detection_workspace import DETECTION_LIMIT
+from archivey.internal.excluded_libraries import NO_EXCLUSIONS, as_excluded
 from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
@@ -43,6 +44,7 @@ from archivey.types import (
     ContainerFormat,
     MagicSignature,
     MissingComponent,
+    OptionalLibrary,
     StreamFormat,
 )
 
@@ -485,26 +487,53 @@ class StreamCodec:
 
     # --- availability ---
 
-    @property
-    def available(self) -> bool:
-        """Whether this codec's decompression backend is importable right now."""
-        return self.requirement is None or self._backend_present()
+    def available(self, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS) -> bool:
+        """Whether this codec's decompression backend is importable right now, and
+        ``excluded`` (a call's ``FormatPolicy.exclude_libraries``) does not turn it
+        off."""
+        return self.requirement is None or (
+            not self.excluded_by(excluded) and self._backend_present()
+        )
 
     def _backend_present(self) -> bool:
         """Whether the optional backing package is importable (optional codecs override)."""
         return True
 
-    def _missing(self, purpose: str, *, note: str = "") -> PackageNotInstalledError:
-        """The error to raise from ``open()`` when this codec's backend is absent.
+    def excluded_by(self, excluded: frozenset[OptionalLibrary]) -> bool:
+        """Whether ``excluded`` names the package this codec decodes with."""
+        return self.requirement is not None and self.requirement.name in excluded
+
+    def requirement_under(
+        self, excluded: frozenset[OptionalLibrary]
+    ) -> MissingComponent | None:
+        """The ``requirement`` as a call with ``excluded`` reports it: with the policy as
+        its ``reason`` when ``excluded`` turns the package off."""
+        if self.requirement is None or not self.excluded_by(excluded):
+            return self.requirement
+        return as_excluded(self.requirement)
+
+    def _missing(
+        self,
+        purpose: str,
+        *,
+        note: str = "",
+        excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
+    ) -> PackageNotInstalledError:
+        """The error to raise from ``open()`` when this codec's backend is absent, or
+        ``excluded`` turns it off.
 
         Built from the declared ``requirement`` so the install advice matches what
-        ``format_availability()`` reports for the same codec.
+        ``format_availability()`` reports for the same codec. ``note`` is install
+        advice, so it is left out for an excluded package.
         """
-        assert self.requirement is not None, (
+        requirement = self.requirement_under(excluded)
+        assert requirement is not None, (
             f"{type(self).__name__} raises PackageNotInstalledError but declares no requirement"
         )
+        if self.excluded_by(excluded):
+            note = ""
         return PackageNotInstalledError(
-            self.requirement.message(purpose, note=note), missing=(self.requirement,)
+            requirement.message(purpose, note=note), missing=(requirement,)
         )
 
     @property
@@ -550,7 +579,7 @@ class StreamCodec:
         # The registry imports every codec module, and so this one: import it here.
         from archivey.internal.streams.codecs.registry import open_codec_stream
 
-        if not self.available:
+        if not self.available():
             return False
         fully_visible = source_length is not None and source_length <= len(prefix)
         # Feed the whole source when it is fully visible so "needs more input" means

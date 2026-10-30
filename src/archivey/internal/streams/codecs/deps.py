@@ -27,14 +27,15 @@ def _optional(name: str) -> ModuleType | None:
         return None
 
 
-def _optional_zstd() -> ModuleType | None:
-    """Stdlib ``compression.zstd`` (3.14+) or ``backports.zstd`` (older Pythons)."""
+def _optional_zstd() -> tuple[ModuleType | None, OptionalLibrary | None]:
+    """Stdlib ``compression.zstd`` (3.14+) or ``backports.zstd`` (older Pythons), and
+    which of the two it is."""
     for name in (OptionalLibrary.COMPRESSION_ZSTD, OptionalLibrary.BACKPORTS_ZSTD):
         try:
-            return importlib.import_module(name)
+            return importlib.import_module(name), name
         except ImportError:
             continue
-    return None
+    return None, None
 
 
 class LazyOptional:
@@ -102,7 +103,10 @@ class LazyOptional:
         return self._module
 
 
-zstd = _optional_zstd()
+# One zstd module per process: excluding it (``FormatPolicy.exclude_libraries``) turns
+# zstd off, and excluding the other name changes nothing. backports.zstd does not
+# install on 3.14 and later, so the two are not found together.
+zstd, zstd_library = _optional_zstd()
 # Packages archivey does not use under PyPy, with why. It reads as if they were absent, and
 # the reason replaces the install advice wherever a missing package is reported
 # (``MissingComponent.reason``). dev-docs/known-issues.md has the symptoms, the versions

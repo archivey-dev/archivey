@@ -63,7 +63,7 @@ def test_header_decrypt_tell_is_ciphertext_cursor_not_plaintext() -> None:
     iv = b"\x01" * 16
     plaintext = b"0123456789abcdef" * 2  # two AES blocks
     ciphertext = _aes_cbc_encrypt(key, iv, plaintext)
-    stream = _HeaderDecryptStream(io.BytesIO(ciphertext), key, iv)
+    stream = _HeaderDecryptStream(io.BytesIO(ciphertext), key, iv, excluded=frozenset())
 
     first = stream.read(7)
     assert first == plaintext[:7]
@@ -89,7 +89,7 @@ def test_header_decrypt_read_is_bounded_by_caller_not_8kib() -> None:
     iv = b"\x01" * 16
     plaintext = b"0123456789abcdef" * ((9 * 1024) // 16)  # 9 KiB, 16-aligned
     ciphertext = _aes_cbc_encrypt(key, iv, plaintext)
-    stream = _HeaderDecryptStream(io.BytesIO(ciphertext), key, iv)
+    stream = _HeaderDecryptStream(io.BytesIO(ciphertext), key, iv, excluded=frozenset())
     got = stream.read(len(plaintext))
     assert got == plaintext
 
