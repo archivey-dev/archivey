@@ -264,8 +264,8 @@ def claude(
 
 def reads(transcript: Path) -> dict:
     """What a review read: each file the Read tool opened, with the characters it
-    returned, other tools' output by tool, and the run's token totals. Kept to judge what the reviewer's guides
-    cost; a file read twice counts twice."""
+    returned, other tools' output by tool, and the run's token totals. Kept to judge
+    what the reviewer's guides cost; a file read twice counts twice."""
     files: dict[str, int] = {}
     pending: dict[str, str] = {}
     usage = {"input": 0, "cache_read": 0, "cache_write": 0, "output": 0}

@@ -32,7 +32,9 @@ largest single item), source and grep. Reading three sections cut the guide read
 by a fifth and `CONTRIBUTING.md` by over a third. Neither the score (a change of one
 case, inside the noise) nor the cost moved: 16 more turns across the five cases cost
 more than the shorter reads saved. The trim keeps the review no worse; it does not
-make it cheaper by an amount one run can show. The input a review pays for is
+make it cheaper by an amount one run can show. After its review the read also took
+§Cutting a release and the three-configuration paragraph of §Getting started, which
+carry review rules too (about 4 KB more); that version was not re-run. The input a review pays for is
 mostly what it runs and reads in the code, at about 150 000 tokens of context per
 turn over 45 to 60 turns.
 
