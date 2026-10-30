@@ -52,7 +52,7 @@ COPIED = (SKILL, Path("scripts/review_prep.py"))
 REVIEW_MODEL = "claude-opus-5"
 # The loop's tools less WebFetch: a fetch of the PR's page on GitHub would show the
 # later rounds and the fix.
-REVIEW_TOOLS = "Read,Grep,Glob,Bash,Task"
+REVIEW_TOOLS = "Read,Grep,Glob,Bash,Task,Agent"
 JUDGE_MODEL = "claude-sonnet-5-5"
 TIMEOUT = 3600
 
@@ -75,9 +75,10 @@ How to work, which decides what the review costs (the loop's prompt says the sam
 every turn re-sends the whole context. Send independent tool calls together in one
 turn (a diff stat, a grep and two file reads whose outputs do not depend on each other
 go out as one message); make a call alone only when its output decides the next one.
-Send reading of files the diff does not touch to `Task` subagents with
-`model: "sonnet"`, several in parallel, and read yourself only the diff and the lines
-a finding cites.
+Send reading of source and tests the diff does not touch to `Task` subagents with
+`model: "sonnet"`, several in parallel. Read yourself the diff, the lines a finding
+cites, and the review's own instructions and contracts (the skill, its reference doc,
+`CONTRIBUTING.md`, the specs and design notes).
 
 This replay differs from a real round in four ways:
 

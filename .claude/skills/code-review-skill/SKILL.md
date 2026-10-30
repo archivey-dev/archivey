@@ -59,17 +59,20 @@ this list and §6 disagree, §6 wins; edit both together.
 
 Each tool call that ends a turn re-sends the whole context, and a review's cost is mostly
 that: the eval reviews of 2026-10-30 made one call per turn, and re-reading the cached
-context was about half the bill. Stated in the loop's prompt, these two habits cut
-the cost of a first look by about a third with the same catches
-(`dev-docs/review-eval/results.md`). Two habits cut it without
-reading less:
+context was about half the bill. Two habits cut it without reading less. Stated in
+the loop's prompt, they cut the cost of a first look by about a third; important
+findings held and fewer nits came back, in one run of each arm
+(`dev-docs/review-eval/results.md`):
 
 - **Batch.** When the next calls do not depend on each other's output (the diff stat, a
   grep, two files, the tier command), send them in one turn. One call per turn only
   when its output decides the next call.
-- **Delegate reading outside the diff** to subagents on Sonnet (the `Task` tool, called
-  `Agent` in newer versions; `reference/code-pr.md` §Reading outside the diff says
-  how). Read the diff and the lines a finding cites yourself.
+- **Delegate reading code outside the diff** (callers, sibling codecs, shared state,
+  tests of a touched function) to subagents on Sonnet (the `Task` tool, called `Agent`
+  in newer versions; `reference/code-pr.md` §Reading outside the diff says how). Read
+  the diff, the lines a finding cites, and the review's own instructions and contracts
+  yourself: this skill, the §1 reference doc, `CONTRIBUTING.md`, the deep-tier docs,
+  and what pass 2 opens.
 
 ## 1. What are you reviewing?
 

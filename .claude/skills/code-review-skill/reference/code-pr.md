@@ -71,10 +71,11 @@ says `nothing` — that is an answer, not an omission.
 The bugs a review misses sit mostly where the diff meets code it did not change: a
 caller, a sibling codec, shared state, the tests of a touched function. Look there, in
 both passes. But every file you read stays in your context for every later turn, so a
-file read at turn 5 is paid for some 50 times. **So you do not open files the diff does
-not touch: subagents do.** Read the diff yourself, and the lines a finding will cite;
-everything else goes through the subagent tool (`Task`, called `Agent` in newer
-versions):
+file read at turn 5 is paid for some 50 times. **So source and tests the diff does not
+touch go to subagents.** Read yourself the diff, the lines a finding will cite, and
+the review's own instructions and contracts: this skill and this doc, `CONTRIBUTING.md`,
+the deep-tier docs, and the narrative and contracts pass 2 opens. Code reading goes
+through the subagent tool (`Task`, called `Agent` in newer versions):
 
 - Pass `model: "sonnet"` and `subagent_type: "Explore"` (or `general-purpose` when the
   question needs a command run). One narrow question per agent; send independent

@@ -263,9 +263,11 @@ jobs:
           # Opus for a standard or deep pull request's first round, which finds most
           # of what matters; Sonnet, at about an eighth of the cost, for a light pull
           # request and for every round that re-reads fixes (`OPUS_PASS_TIERS`).
+          # `Task` (`Agent` in newer CLIs) lets the reviewer start subagents. They get
+          # this same allowlist and environment, so narrowing `Bash` here narrows them too.
           claude_args: |
             --model ${{ steps.gate.outputs.opus_pass == 'true' && 'claude-opus-5' || 'claude-sonnet-5-5' }}
-            --allowedTools Read,Grep,Glob,WebFetch,Bash,Task
+            --allowedTools Read,Grep,Glob,WebFetch,Bash,Task,Agent
           prompt: ${{ steps.prompt.outputs.prompt }}
 
       # `always()` so that a review that died still says so, rather than leaving a pull
