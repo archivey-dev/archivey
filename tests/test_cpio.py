@@ -211,6 +211,39 @@ def test_detection() -> None:
 
 
 @pytest.mark.parametrize(
+    ("stream", "compress", "suffix"),
+    [
+        (archivey.StreamFormat.GZIP, lambda d: gzip.compress(d, mtime=0), ".gz"),
+        (archivey.StreamFormat.XZ, lzma.compress, ".xz"),
+    ],
+    ids=["gz", "xz"],
+)
+def test_a_compressed_binary_archive_is_found_by_its_probe(
+    tmp_path: Path,
+    stream: archivey.StreamFormat,
+    compress: Callable[[bytes], bytes],
+    suffix: str,
+) -> None:
+    """GNU cpio's default output, compressed: the binary probe runs on the decoded
+    bytes where the name says ``.cpio.gz`` or the config asks for every probe, and
+    nowhere else, as on an uncompressed source."""
+    data = compress((DATA / "gnu-bin.cpio").read_bytes())
+    fmt = archivey.ArchiveFormat(CPIO.container, stream)
+    named = tmp_path / f"t.cpio{suffix}"
+    named.write_bytes(data)
+    with open_archive(named) as reader:
+        assert reader.format == fmt
+        _check_listing(reader.members(), "bin")
+    probing = archivey.ArchiveyConfig(always_probe_content=True)
+    assert detect_format(io.BytesIO(data), config=probing).format == fmt
+    bare = archivey.ArchiveFormat(archivey.ContainerFormat.RAW_STREAM, stream)
+    assert detect_format(io.BytesIO(data)).format == bare
+    other = tmp_path / f"t.tar{suffix}"
+    other.write_bytes(data)
+    assert detect_format(other).format == bare
+
+
+@pytest.mark.parametrize(
     ("stream", "compress"),
     [
         (archivey.StreamFormat.GZIP, lambda data: gzip.compress(data, mtime=0)),

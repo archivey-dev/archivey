@@ -46,7 +46,10 @@ mid-archive is `CorruptionError`.
 The ASCII variants are found by their 6-byte magic. The binary variant's 2-byte magic is
 too weak alone, so it has a content probe instead: the header must also hold a name of
 the size it declares, ending in a NUL. Like every container's probe, it runs only when the
-extension names CPIO (`.cpio`) or the config sets `always_probe_content`.
+extension names CPIO (`.cpio`) or the config sets `always_probe_content`. Inside a
+compressor it runs on the first 512 decoded bytes, the bytes the inner-container probe
+already decodes for TAR's `ustar`, under the same rule: where the name is `.cpio.gz` (or
+another compressed spelling), or the config sets `always_probe_content`.
 
 ## 2. Member types and hard links
 
