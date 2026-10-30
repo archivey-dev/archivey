@@ -23,6 +23,7 @@ from archivey.internal.excluded_libraries import (
 )
 from archivey.internal.format_adapter import prefix_probe
 from archivey.internal.format_args import add_plugin_spellings, plugin_spelling_clash
+from archivey.internal.overrides import override
 from archivey.internal.registry import _optional, get_registry
 from archivey.internal.streams.archive_stream import RewindWarning
 from archivey.internal.streams.codecs.base import (
@@ -59,6 +60,7 @@ class HandlerCodec(StreamCodec):
     # A static method: a plain function here would be bound, and called with the codec.
     starts: StreamStart = staticmethod(never_starts)
 
+    @override
     def requirement_under(
         self, excluded: frozenset[OptionalLibrary]
     ) -> MissingComponent | None:
@@ -81,15 +83,19 @@ class HandlerCodec(StreamCodec):
             as_excluded(component) if is_excluded_module(name, excluded) else component
         )
 
+    @override
     def _backend_present(self) -> bool:
         return all(_optional(name) is not None for name in self.handler.requires)
 
+    @override
     def excluded_by(self, excluded: frozenset[OptionalLibrary]) -> bool:
         return any(is_excluded_module(n, excluded) for n in self.handler.requires)
 
+    @override
     def available(self, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS) -> bool:
         return not self.excluded_by(excluded) and self._backend_present()
 
+    @override
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
@@ -109,12 +115,14 @@ class HandlerCodec(StreamCodec):
             refuse_input_after_end=config.refuse_input_after_end,
         )
 
+    @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
         translated = self.handler.translate_exception(exc)
         if translated is not None:
             return translated
         return self._eof_truncation(exc, self.handler.stream_format.value)
 
+    @override
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         return RewindWarning(self.handler.stream_format.value, suggest_install=False)
 

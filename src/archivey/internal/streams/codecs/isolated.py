@@ -165,15 +165,17 @@ class _ChildProxy:
 
 
 class ChildDecompressor(_ChildProxy):
-    """A ``bz2``, ``lzma``, zstd, ``lz4.frame`` or zlib decompressor in a child."""
+    """A ``bz2``, ``lzma``, zstd or ``lz4.frame`` decompressor in a child.
+
+    No ``flush``: those libraries' decompressors have none, so a proxy ``flush`` would
+    fail in the child, and ``FramedDecoder`` calls ``flush`` on any decompressor that
+    has one. Only :class:`ChildZlibDecompressor` defines it.
+    """
 
     def decompress(
         self, data: bytes | bytearray | memoryview, *args: Any, **kwargs: Any
     ) -> bytes:
         return self._child.call("decompress", data, args, kwargs)
-
-    def flush(self, *args: Any) -> bytes:
-        return self._child.call("flush", None, args)
 
     @property
     def eof(self) -> bool:
@@ -186,6 +188,13 @@ class ChildDecompressor(_ChildProxy):
     @property
     def unused_data(self) -> bytes:
         return self._child.unused_data()
+
+
+class ChildZlibDecompressor(ChildDecompressor):
+    """A zlib decompressor in a child."""
+
+    def flush(self, *args: Any) -> bytes:
+        return self._child.call("flush", None, args)
 
     @property
     def unconsumed_tail(self) -> bytes:
@@ -285,7 +294,7 @@ class Natives:
                 return zlib.decompressobj(wbits)
             return zlib.decompressobj(wbits, zdict=zdict)
         kwargs: dict[str, object] = {} if zdict is None else {"zdict": bytes(zdict)}
-        return ChildDecompressor(
+        return ChildZlibDecompressor(
             self._child("zlib", (wbits,), kwargs, known=_ZLIB_ERRORS)
         )
 

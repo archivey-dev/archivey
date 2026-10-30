@@ -32,6 +32,7 @@ from archivey.exceptions import ArchiveyError
 from archivey.formats import CodecCall, CodecHandler
 from archivey.internal.config import DEFAULT_STREAM_CONFIG, StreamConfig
 from archivey.internal.excluded_libraries import NO_EXCLUSIONS, as_excluded
+from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
@@ -89,6 +90,12 @@ def config_of(call: CodecCall) -> StreamConfig:
     """The stream config of a built-in codec's ``call``."""
     assert isinstance(call, BuiltinCall), "a built-in codec is given a BuiltinCall"
     return call.config
+
+
+def params_of(call: CodecCall) -> CodecParams:
+    """The container's parameters in a built-in codec's ``call``."""
+    assert isinstance(call, BuiltinCall), "a built-in codec is given a BuiltinCall"
+    return call.params
 
 
 class BuiltinCodecHandler(CodecHandler):
@@ -182,6 +189,7 @@ class BuiltinHandlerCodec(StreamCodec):
 
     handler: BuiltinCodecHandler
 
+    @override
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
@@ -208,21 +216,27 @@ class BuiltinHandlerCodec(StreamCodec):
             refuse_input_after_end=config.refuse_input_after_end,
         )
 
+    @override
     def check_accelerator(self, source: CodecSource, config: StreamConfig) -> None:
         self.handler._check_accelerator(source, config)
 
+    @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
         return self.handler.translate_exception(exc)
 
+    @override
     def translator(self, config: StreamConfig) -> ExceptionTranslator:
         return self.handler._translator(config)
 
+    @override
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         return self.handler._rewind_warning(config)
 
+    @override
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
         self.handler._extract_metadata(ctx, member)
 
+    @override
     def _backend_present(self) -> bool:
         return self.requirement is None or self.handler._library() is not None
 
@@ -235,10 +249,12 @@ class BuiltinHandlerCodec(StreamCodec):
             return None
         return self.handler._library() or self.requirement.name
 
+    @override
     def excluded_by(self, excluded: frozenset[OptionalLibrary]) -> bool:
         library = self._excludable()
         return library is not None and library in excluded
 
+    @override
     def requirement_under(
         self, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
     ) -> MissingComponent | None:
@@ -275,21 +291,31 @@ def _content_probe(
 
 def builtin_codec(handler: type[BuiltinCodecHandler]) -> type[StreamCodec]:
     """The registry entry's class for ``handler``, named like the module's alias for
-    it (``Bzip2Handler`` gives ``Bzip2Codec``)."""
+    it (``Bzip2Handler`` gives ``Bzip2Codec``).
+
+    A container-only codec (Shrink, Implode) leaves ``stream_format`` unset, and has no
+    ``magic``.
+    """
     for field in ("requires", "install_hint", "probe"):
         assert getattr(handler, field) == getattr(CodecHandler, field), (
             f"{handler.__name__}.{field} is a plugin's; a built-in uses "
             "requirement, missing_note and _content_probe"
         )
-    fmt = ArchiveFormat(ContainerFormat.RAW_STREAM, handler.stream_format)
+    stream_format = getattr(handler, "stream_format", None)
+    magic: tuple[MagicSignature, ...] = ()
+    if stream_format is not None:
+        fmt = ArchiveFormat(ContainerFormat.RAW_STREAM, stream_format)
+        magic = tuple(MagicSignature(m.offset, m.data, fmt) for m in handler.magic)
+    else:
+        assert not handler.magic, "a container-only codec has no magic"
     name = handler.__name__.removesuffix("Handler") + "Codec"
     attrs: dict[str, Any] = {
         "__module__": handler.__module__,
         "__qualname__": name,
         "handler": handler(),
         "codec": handler.codec,
-        "stream_format": handler.stream_format,
-        "magic": tuple(MagicSignature(m.offset, m.data, fmt) for m in handler.magic),
+        "stream_format": stream_format,
+        "magic": magic,
         "requirement": handler.requirement,
         "extension_aliases": tuple(handler.extension_aliases),
         "checks_content": bool(handler.checks_content),
@@ -310,4 +336,5 @@ __all__ = [
     "builtin_call",
     "builtin_codec",
     "config_of",
+    "params_of",
 ]
