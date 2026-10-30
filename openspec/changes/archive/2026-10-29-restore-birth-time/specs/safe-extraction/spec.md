@@ -7,14 +7,13 @@ When extraction sets a file's or a folder's modification time from
 pass of "Policy-Specific Metadata Transforms"), it SHALL also set its birth time from
 `ArchiveMember.created` on systems that let a program set one: Windows (`SetFileTime`)
 and macOS (`setattrlist`). The birth time SHALL be set after the modification time,
-because macOS moves a birth time later than a new modification time back to it. On
-Windows a file's birth time SHALL be set again on its final name after the rename that
-lands it, since file-system tunnelling can give that name the creation time of the file
-it replaced. `ArchiveMember.ctime` SHALL NOT be used for either.
+because macOS moves a birth time later than a new modification time back to it. A file's
+birth time SHALL be set on the temporary file before the rename that lands it, which
+keeps it (measured on Windows, where tunnelling does not apply to a rename).
+`ArchiveMember.ctime` SHALL NOT be used for either.
 Both SHALL be best effort, under every extraction policy: a member with no stored time
-keeps the time it was written (on Windows, a name whose previous file was removed or
-replaced in the last 15 seconds can instead keep that file's creation time), and a time
-the system refuses or cannot represent SHALL NOT fail the member.
+keeps the time it was written, and a time the system refuses or cannot represent SHALL
+NOT fail the member.
 
 #### Scenario: member time matrix
 

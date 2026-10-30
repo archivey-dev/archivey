@@ -98,12 +98,8 @@ def test_extraction_sets_the_birth_time_after_the_modified_time(
     monkeypatch.setattr(extraction_module, "set_birth_time", set_birth)
     _extract_with_times(tmp_path)
     kinds = [kind for kind, _ in calls]
-    # The file first, then the folder in the deferred pass. On Windows the file's birth
-    # time is set again on its final name after the rename (tunnelling).
-    file_calls = (
-        ["utime", "birth", "birth"] if sys.platform == "win32" else ["utime", "birth"]
-    )
-    assert kinds == [*file_calls, "utime", "birth"]
+    # The file first, then the folder in the deferred pass.
+    assert kinds == ["utime", "birth", "utime", "birth"]
     assert {when for kind, when in calls if kind == "birth"} == {_BORN}
 
 
@@ -133,7 +129,7 @@ def test_a_refused_birth_time_does_not_fail_the_extraction(
 @_CAN_SET
 def test_extraction_over_an_existing_file_sets_the_birth_time(tmp_path: Path) -> None:
     """Replacing a file just written under the same name keeps the member's birth
-    time: on Windows, file-system tunnelling would hand the new file the old one's."""
+    time, not the replaced file's."""
     (tmp_path / "d").mkdir()
     (tmp_path / "d" / "a.txt").write_bytes(b"old")
     with open_archive(_zip()) as archive:
@@ -148,12 +144,12 @@ def test_extraction_over_an_existing_file_sets_the_birth_time(tmp_path: Path) ->
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="NTFS tunnelling")
-def test_on_windows_a_rename_onto_a_name_takes_its_old_birth_time(
+def test_on_windows_a_rename_onto_a_taken_name_keeps_its_own_birth_time(
     tmp_path: Path,
 ) -> None:
-    """Why ``_swap_into_place`` sets the birth time again after the rename: a file
-    renamed onto a name taken in the last 15 seconds gets that file's creation time,
-    not its own. If the runner stops tunnelling this fails, and the second set can go."""
+    """Why setting the birth time on the temp file is enough: file-system tunnelling,
+    which hands a name's old creation time to a file created under it, does not apply
+    to ``os.replace`` onto that name."""
     old = tmp_path / "a.txt"
     old.write_bytes(b"old")
     assert birth_time.set_birth_time(str(old), _MODIFIED)
@@ -161,7 +157,7 @@ def test_on_windows_a_rename_onto_a_name_takes_its_old_birth_time(
     new.write_bytes(b"new")
     assert birth_time.set_birth_time(str(new), _BORN)
     os.replace(new, old)
-    assert _stat_birth_time(old) == pytest.approx(_MODIFIED.timestamp(), abs=1)
+    assert _stat_birth_time(old) == pytest.approx(_BORN.timestamp(), abs=1)
 
 
 def test_the_tick_arithmetic_is_exact() -> None:
