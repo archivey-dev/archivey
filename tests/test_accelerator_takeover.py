@@ -430,3 +430,44 @@ def test_a_seek_to_the_end_refuses_input_after_a_container_streams_end(
             outcome.append(type(exc))
         outcomes.append(outcome)
     assert outcomes == [[DataAfterEndError], [DataAfterEndError]]
+
+
+def test_bzip2_accelerator_stops_at_the_declared_pack_size() -> None:
+    """The accelerator reads a bzip2 source only up to ``CodecParams.pack_size``.
+
+    A 7z AES stage decrypts whole blocks, so up to 15 bytes of pad can follow the
+    coder's data. The 7z reader cuts the coder's source at its packed size before
+    the codec sees it; ``_bound_rapidgzip_source`` is the codec's own guard for a
+    source that is not cut. Without it, the end check under
+    ``refuse_input_after_end`` finds the pad and raises ``DataAfterEndError``.
+
+    The standard library engine has no such clip, so on this uncut source the two
+    modes differ: OFF refuses the pad, ON reads through. No reader hands a codec an
+    uncut source with ``pack_size`` declared (the 7z reader cuts it), so the
+    divergence is recorded in ``dev-docs/formats/bzip2.md`` §5 and pinned here.
+    """
+    payload = random.Random(1).randbytes(300_000)
+    packed = bz2.compress(payload)
+    params = CodecParams(pack_size=len(packed), unpack_size=len(payload))
+
+    def config(mode: AcceleratorMode) -> StreamConfig:
+        return StreamConfig(
+            seekable=True, use_indexed_bzip2=mode, refuse_input_after_end=True
+        )
+
+    def source() -> io.BytesIO:
+        return io.BytesIO(packed + bytes(range(1, 14)))
+
+    with open_codec_stream(
+        Codec.BZIP2, source(), params=params, config=config(AcceleratorMode.ON)
+    ) as s:
+        assert s.read() == payload
+        s.seek(1000)
+        assert s.read() == payload[1000:]
+    with (
+        open_codec_stream(
+            Codec.BZIP2, source(), params=params, config=config(AcceleratorMode.OFF)
+        ) as s,
+        pytest.raises(DataAfterEndError),
+    ):
+        s.read()

@@ -69,6 +69,8 @@ def _print_identity(archive: str, detected: FormatInfo, out: TextIO) -> None:
     _line("confidence", detected.confidence.value, out)
     _line("detected_by", detected.detected_by, out)
     if detected.payload_offset:
+        # Printed under its older name, which output parsers may match on: any
+        # prefix, not only a self-extractor's stub (FormatInfo.payload_offset).
         _line("sfx_offset", detected.payload_offset, out)
 
 

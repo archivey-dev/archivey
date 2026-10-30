@@ -30,6 +30,8 @@ A format reader reads one of two kinds of format:
 
 A format read in one pass can also be read inside a compressor, such as a `.cpio.gz`,
 with no extra code; see [Inside a compression stream](#inside-a-compression-stream).
+A compressor archivey does not decode is added the same way, with one class; see
+[Adding a compression format](#adding-a-compression-format).
 [What is not supported yet](#what-is-not-supported-yet) lists what a format reader cannot
 do.
 
@@ -493,7 +495,8 @@ def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
 
 The returned stream holds the decoded bytes, and its `offset` counts them from 0. The
 members the walk yields after the call are read from those bytes, from a pipe too, with
-random access to them on a file. archivey decodes with its own codecs, under the
+random access to them on a file. archivey decodes with its own codecs, a codec added
+with `register_codec()` included (pass its `PluginStream` member), under the
 caller's decoder limits and the decompression-ratio guard. The stream the walk called
 `decompress()` on refuses further reads. archivey cannot know the archive holds a
 compression stream before the walk reaches it, so have `archive_info()` return
@@ -728,7 +731,8 @@ there, before any open.
 
 The replacement gets what any indexed plugin gets: a source that can seek, from the
 start of the archive. archivey refuses, before `open()` runs, a multi-volume set and an
-archive behind a self-extracting stub with `UnsupportedFeatureError`, a source that
+archive behind a prefix (a self-extracting stub or other leading bytes) with
+`UnsupportedFeatureError`, a source that
 cannot seek with `StreamNotSeekableError`, and a raw CD sector image detected as ISO as
 the built-in reader refuses it, since its bytes are not an ISO 9660 image. The format's own config options, such as
 `zip_unflagged_fallback_encoding` or `rar_decompressor`, reach the plugin through
@@ -738,10 +742,98 @@ member; `encoding=` reaches it when the plugin sets `uses_encoding`. A missing m
 `requires` raises `PackageNotInstalledError` naming the plugin, without falling back to
 the built-in reader.
 
+## Adding a compression format
+
+A compression format, such as one that a library outside archivey decodes, is one
+`CodecHandler` subclass, registered with `register_codec()`. Its `decompressor(call)`
+returns a new decoder for one stream, with the interface of the standard library's
+`bz2.BZ2Decompressor`: `decompress(data, max_length)`, `eof`, `unused_data` and
+`needs_input`. Decoders from `lz4.frame` and Python 3.14's `compression.zstd` have this
+interface already, so `decompressor()` can return one as it is. Import the library once,
+at the top of the module, not in `decompressor()`: archivey calls it for every stream,
+and a failed import costs more than decoding a small one.
+
+`call` is a `CodecCall`: what archivey knows about the data beyond its bytes:
+
+- `size` and `properties`: what a format reader passed to `ReaderContext.decompress`.
+  `size` is the most the data may decode to. Both are `None` for a file of the format.
+- `limits`: the caller's `DecoderLimits`. When the data declares a working set (a window,
+  a dictionary, a block size), refuse one over `limits.max_decoder_memory` with
+  `ResourceLimitError` before allocating it. archivey applies the ratio limits itself.
+- `probe_bound`: set while detection decodes the start of the data, as the most output
+  it reads. A decoder that would reserve much more than that may raise
+  `ResourceLimitError`, which detection reads as "can't tell".
+
+```python
+import lzham  # a stand-in for the library that decodes the format
+
+from archivey import CorruptionError, PluginStream
+from archivey.formats import CodecHandler, Magic, register_codec
+
+
+class LzhamStream(PluginStream):
+    LZHAM = "lzham"  # the file extension, without the dot
+
+
+class LzhamHandler(CodecHandler):
+    stream_format = LzhamStream.LZHAM
+    magic = (Magic(0, b"LZH0"),)
+    requires = ("lzham",)
+    install_hint = "pip install lzham"
+
+    def decompressor(self, call):
+        return lzham.Decompressor()
+
+    def translate_exception(self, exc):
+        if isinstance(exc, lzham.Error):
+            return CorruptionError(f"bad LZHAM stream: {exc}")
+        return None
+
+
+register_codec(LzhamHandler)
+```
+
+After the call, archivey reads the format everywhere it reads its own compressors:
+
+- a single compressed file, `ArchiveFormat(ContainerFormat.RAW_STREAM,
+  LzhamStream.LZHAM)`, from `.lzham` and from its magic;
+- a TAR inside it (`.tar.lzham`), found by the TAR header in the decoded bytes too;
+- each [format read in one pass](#inside-a-compression-stream) inside it, whether that
+  format is registered before the codec or after it;
+- `open_stream()`, and `ReaderContext.decompress(data, LzhamStream.LZHAM)` in a format
+  reader;
+- `detect_format`, `format_availability`, the format lists and `format="lzham"`.
+
+archivey reads the decoder's output under the caller's decoder limits and the
+decompression-ratio guard, and a backward seek decodes again from the start. The end of
+the data follows the rules of archivey's own codecs:
+
+- Input that ends inside a stream raises `TruncatedError`, and so does an empty file.
+- After a stream's end, zeros are padding.
+- When `concatenated` is true (the default), bytes that start with a `magic` at offset 0
+  begin a further stream, and its output follows the first's, as for `cat a.gz b.gz`. A
+  codec with no magic at offset 0 reads one stream.
+- Any other byte after the end ends the data. A file of the format reports it as
+  `ARCHIVE_TRAILING_DATA`.
+
+`eof` must become true only once the decoder has returned all its output: while a
+`max_length` holds output back, it stays false, as in the standard library's
+decoders. A decoder that checks every byte against a checksum the format requires sets
+`checks_content`, which a stream's verification level reads. The decoder's own errors go
+through `translate_exception`; an `EOFError` that it leaves untranslated becomes
+`TruncatedError`.
+
+`extension_aliases` adds other file extensions, and `probe` recognises a format that
+has no exact signature, as a format reader's `probe` does. A missing module in
+`requires` makes each format the codec is part of report `FormatSupport.NONE`.
+Registration refuses a `stream_format` that is not a `PluginStream` member, a value
+that a built-in or another codec uses, and an extension that is already claimed,
+`.tar.<value>` included.
+
 ## Registration and trust
 
-`register_format()` is the only way to add a format: nothing is loaded automatically
-because a package is installed. The program that calls it chooses which parsers read its
+`register_format()` and `register_codec()` are the only ways to add a format: nothing is
+loaded automatically because a package is installed. The program that calls it chooses which parsers read its
 input.
 
 A plugin's code runs in your process like any other import. archivey's limits cover what
@@ -749,8 +841,9 @@ the plugin hands over: listing limits, member names, extraction limits, and the 
 checksum checks on member data. They cannot cover the plugin's own parser, which could use
 unbounded memory or crash on a crafted file; [Reading untrusted bytes](#reading-untrusted-bytes)
 lists what a plugin's author can do about that. A program that reads untrusted archives
-can turn plugin formats off for a call with `ArchiveyConfig(formats=FormatPolicy(plugins=False))`;
-a plugin format turned off is not detected either, so its code does not run. A
+can turn plugin formats and plugin codecs off for a call with
+`ArchiveyConfig(formats=FormatPolicy(plugins=False))`; a format turned off is not detected
+either, so its code does not run. A
 [replacement](#replacing-a-built-in-reader) is not a plugin format, so `plugins=False` does not
 turn it off: a replacement runs only in a call whose config names it in `replace=`.
 

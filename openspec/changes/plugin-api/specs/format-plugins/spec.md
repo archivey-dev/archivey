@@ -126,3 +126,33 @@ and false for every built-in format.
 | --- | --- |
 | `format_availability` / `FormatInfo` for a registered plugin | `from_plugin` is `True` |
 | The same for `ArchiveFormat.ZIP` | `from_plugin` is `False` |
+
+### Requirement: A package adds a compression format through register_codec
+
+`archivey.formats` SHALL provide `CodecHandler`, `PluginStream` and `register_codec()`.
+A handler declares a `PluginStream` member as its `stream_format`, and its
+`decompressor(call)` returns a decoder with the interface of `bz2.BZ2Decompressor`.
+The `CodecCall` it is given SHALL carry the `size` and `properties` a format reader
+passed to `ReaderContext.decompress()`, the caller's `DecoderLimits`, and, during a
+detection probe only, the probe's output bound.
+After `register_codec()`, archivey SHALL read the format as a single compressed file,
+around a TAR, around each sequential plugin format registered before or after it, in
+`open_stream()` and in `ReaderContext.decompress()`, and `detect_format`,
+`format_availability`, the format lists and `format=` SHALL know it. The decoder's
+output SHALL be held to the decoder limits and the ratio guard, and its end of data
+SHALL follow the rules of the built-in one-stream codecs (truncation, zero padding,
+further streams by magic, trailing data). `FormatPolicy(plugins=False)` SHALL turn the
+codec off, and `FormatInfo.from_plugin` SHALL be true for a format that uses it.
+
+#### Scenario: a registered codec
+
+| Case | Expected |
+| --- | --- |
+| `x.toy` with the codec's magic; `open_archive` | `ArchiveFormat(RAW_STREAM, ToyStream.TOY)`, one member, decoded bytes |
+| A TAR inside the codec, no name | `ArchiveFormat(TAR, ToyStream.TOY)` by the inner probe |
+| A sequential plugin registered after the codec; `x.cpio.toy` | `ArchiveFormat(CpioContainer.CPIO, ToyStream.TOY)` |
+| The stream cut short | `TruncatedError` |
+| `ReaderContext.decompress(data, ToyStream.TOY, size=n, properties=p)` | the decoder's `CodecCall` has `size=n`, `properties=p` and the caller's limits |
+| The inner-TAR probe decodes the codec | `CodecCall.probe_bound` set; `None` on a read |
+| A module in `requires` missing | `FormatSupport.NONE` with the handler's install hint |
+| `stream_format = StreamFormat.GZIP`, or a value a built-in uses | `ArchiveyUsageError` at registration |

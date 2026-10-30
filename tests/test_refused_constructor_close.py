@@ -22,7 +22,6 @@ import pytest
 
 from archivey.diagnostics import DiagnosticPolicy
 from archivey.exceptions import (
-    ArchiveyError,
     ArchiveyUsageError,
     DiagnosticRaisedError,
     OpenError,
@@ -66,7 +65,9 @@ def _assert_closes_cleanly(obj: io.IOBase) -> None:
     ("sources", "error"),
     [
         pytest.param(lambda _tmp: [], ArchiveyUsageError, id="no-volumes"),
-        pytest.param(lambda tmp: [tmp / "gone.bin"], OpenError, id="missing-path"),
+        pytest.param(
+            lambda tmp: [tmp / "gone.bin"], FileNotFoundError, id="missing-path"
+        ),
         pytest.param(lambda tmp: [tmp], OpenError, id="directory"),
         pytest.param(
             lambda _tmp: [ShortReadNonSeekable(b"abc", 1)],
@@ -76,7 +77,7 @@ def _assert_closes_cleanly(obj: io.IOBase) -> None:
     ],
 )
 def test_concatenated_file_refusal_closes_cleanly(
-    tmp_path: Path, sources: object, error: type[ArchiveyError]
+    tmp_path: Path, sources: object, error: type[Exception]
 ) -> None:
     with pytest.raises(error) as caught:
         ConcatenatedFile(sources(tmp_path))  # type: ignore[operator]
