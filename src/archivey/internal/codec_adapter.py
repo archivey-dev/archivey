@@ -59,7 +59,8 @@ class HandlerCodec(StreamCodec):
 
     handler: CodecHandler
     # How a further stream starts (``CodecHandler.concatenated``).
-    starts: StreamStart = _never
+    # A static method: a plain function here would be bound, and called with the codec.
+    starts: StreamStart = staticmethod(_never)
 
     def requirement_under(
         self, excluded: frozenset[OptionalLibrary]
