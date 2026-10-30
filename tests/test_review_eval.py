@@ -100,6 +100,8 @@ def test_reads_counts_each_file_and_tool_output_and_takes_the_result_totals(
             {"type": "tool_use", "id": "t1", "name": "Read",
              "input": {"file_path": "/r/SKILL.md"}},
             {"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "ls"}},
+            {"type": "tool_use", "id": "t5", "name": "Read",
+             "input": {"file_path": "/r/CONTRIBUTING.md"}},
             # A lone shell read counts for its file; one inside a longer command does not.
             {"type": "tool_use", "id": "t3", "name": "Bash",
              "input": {"command": "sed -n '161,437p' CONTRIBUTING.md"}},
@@ -110,7 +112,8 @@ def test_reads_counts_each_file_and_tool_output_and_takes_the_result_totals(
             {"type": "tool_result", "tool_use_id": "t2",
              "content": [{"type": "text", "text": "xy"}]},
             {"type": "tool_result", "tool_use_id": "t3", "content": "rules"},
-            {"type": "tool_result", "tool_use_id": "t4", "content": "z"}]}},
+            {"type": "tool_result", "tool_use_id": "t4", "content": "z"},
+            {"type": "tool_result", "tool_use_id": "t5", "content": "whole"}]}},
         # The streamed events undercount output; the result event has the run's totals.
         {"type": "result", "result": "review", "usage": {
             "input_tokens": 1, "cache_read_input_tokens": 100,
@@ -118,8 +121,9 @@ def test_reads_counts_each_file_and_tool_output_and_takes_the_result_totals(
     ]  # fmt: skip
     transcript = tmp_path / "transcript.jsonl"
     transcript.write_text("\n".join(json.dumps(e) for e in events), encoding="utf-8")
-    read = review_eval.reads(transcript)
-    assert read["files"] == {"/r/SKILL.md": 4, "(Bash)": 3, "CONTRIBUTING.md": 5}
+    # Under the root, a Read (absolute) and a shell read (relative) of one file add up.
+    read = review_eval.reads(transcript, Path("/r"))
+    assert read["files"] == {"SKILL.md": 4, "(Bash)": 3, "CONTRIBUTING.md": 10}
     assert read["usage"] == {
         "input": 1,
         "cache_read": 100,

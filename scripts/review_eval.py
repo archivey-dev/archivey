@@ -289,12 +289,13 @@ def _shell_read(command: str) -> str | None:
     return words[-1].strip("'\"")
 
 
-def reads(transcript: Path) -> dict:
+def reads(transcript: Path, root: Path | None = None) -> dict:
     """What a review read: each file the Read tool opened, or a lone shell command
     printed, with the characters it returned; other tools' output by tool; and the
     run's token totals from its result event. Kept to judge what the reviewer's
     guides cost; a file read twice counts twice. A file read inside a longer shell
-    command counts under `(Bash)`, so a per-file figure is a lower bound."""
+    command counts under `(Bash)`, so a per-file figure is a lower bound. Paths under
+    `root` are made relative to it, so a Read and a shell read of a file add up."""
     files: dict[str, int] = {}
     pending: dict[str, str] = {}
     totals: dict = {}
@@ -328,6 +329,8 @@ def reads(transcript: Path) -> dict:
                 if isinstance(body, list):
                     body = "".join(b.get("text", "") for b in body)
                 path = pending.pop(part["tool_use_id"])
+                if root and Path(path).is_relative_to(root):
+                    path = str(Path(path).relative_to(root))
                 files[path] = files.get(path, 0) + len(body or "")
     usage = {
         key: totals.get(field, 0)
@@ -364,11 +367,7 @@ def review(
         model=model, cwd=repo, tools=REVIEW_TOOLS, env=env, effort=effort,
         transcript=work / "transcript.jsonl",
     )  # fmt: skip
-    read = reads(work / "transcript.jsonl")
-    read["files"] = {
-        str(Path(k).relative_to(repo)) if Path(k).is_relative_to(repo) else k: v
-        for k, v in read["files"].items()
-    }
+    read = reads(work / "transcript.jsonl", repo)
     (work / "reads.json").write_text(json.dumps(read, indent=2) + "\n")
     (work / "review.md").write_text(result.get("result", ""), encoding="utf-8")
     meta = {
