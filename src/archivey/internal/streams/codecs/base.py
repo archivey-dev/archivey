@@ -349,15 +349,16 @@ _PROBE_STREAM_CONFIG = replace(
 class StreamCodec:
     """One single-stream codec: its behavior, detection signals, and requirement.
 
-    Subclasses override the behavior methods (:meth:`open`, :meth:`translate`, optionally
-    :meth:`translator` / :meth:`extract_metadata` / :meth:`content_probe`) and declare the
+    Subclasses override the behavior methods (:meth:`decompressor` or :meth:`open`,
+    :meth:`translate`, optionally :meth:`translator` / :meth:`extract_metadata` /
+    :meth:`content_probe`) and declare the
     detection data as class attributes (``stream_format`` / ``magic``) plus an
     optional-dependency ``requirement``. The standalone single-file ``ArchiveFormat`` and its
     file extension are *derived* from ``stream_format`` (see the properties below). Instances
     are collected in :data:`STREAM_CODECS`, which the detector, the single-file reader, and
     the registry read directly — so a new standalone codec is a single subclass, with no edits
     to those consumers (see ``compressed-streams``). Container-only / filter-only codecs
-    override just ``open`` + ``translate``.
+    override just :meth:`decompressor`, or ``open`` + ``translate``.
 
     A codec whose library decodes one stream at a time, with the interface of
     ``bz2.BZ2Decompressor`` (:class:`~archivey.formats.Decompressor`), overrides
@@ -464,7 +465,8 @@ class StreamCodec:
 
     def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
         """A new decoder for one stream, for the default :meth:`open`. Called for each
-        stream, so the library is imported once, at module level."""
+        stream: reach the library through ``codecs.deps``, which imports it once and
+        lazily, rather than importing it here."""
         raise NotImplementedError
 
     def stream_start(self, params: CodecParams) -> StreamStart:
@@ -602,7 +604,7 @@ class StreamCodec:
     def _library(self) -> OptionalLibrary | str | None:
         """The package the decoder uses, when ``requirement`` may not name it (zstd: the
         standard library's module on 3.14+, else the backport), or ``None`` to go by
-        ``requirement``."""
+        ``requirement``, which is also what an absent package's error names."""
         return None
 
     def _excludable(self) -> OptionalLibrary | str | None:

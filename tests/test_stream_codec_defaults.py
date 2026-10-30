@@ -1,6 +1,7 @@
 """What :class:`StreamCodec` gives a codec that decodes through :meth:`decompressor`,
 a plugin's included: how a further stream starts, the stream's name, and the package
-an exclusion names, and where the library check runs."""
+an exclusion names, and where the library check runs; and that every registered
+codec's magic names its own format."""
 
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ from archivey.formats import CodecCall, CodecHandler, Decompressor, Magic
 from archivey.internal.codec_adapter import codec_class
 from archivey.internal.config import DEFAULT_STREAM_CONFIG, StreamConfig
 from archivey.internal.streams.codecs.base import Codec, CodecParams, StreamCodec
+from archivey.internal.streams.codecs.registry import stream_codecs
 from archivey.types import (
     ArchiveFormat,
     MagicSignature,
@@ -130,3 +132,13 @@ def test_a_plugin_codec_starts_a_further_stream_by_the_same_rule() -> None:
         concatenated = False
 
     assert codec_class(Once)().stream_start(CodecParams())(b"AB") is False
+
+
+def test_every_codec_magic_names_the_codec_own_format() -> None:
+    # Each codec writes its magic's format by hand: a wrong one would make the detector
+    # report another format for the file.
+    for codec in stream_codecs():
+        if codec.stream_format is None:
+            assert not codec.magic, codec
+        for signature in codec.magic:
+            assert signature.format == codec.single_file_format, codec
