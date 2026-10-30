@@ -105,6 +105,7 @@ from archivey.internal.streams.codecs.rapidgzip_worker import (
 from archivey.internal.streams.decompressor_stream import SeekPoint, truncated_message
 from archivey.internal.streams.streamtools import ReadOnlyIOStream
 from archivey.internal.streams.streamtools.slice import file_region
+from archivey.types import OptionalLibrary
 
 _WORKER = Path(__file__).with_name("decoder_worker.py")
 
@@ -196,7 +197,7 @@ def rapidgzip_child_unavailable_reason() -> str | None:
     ``deps.rapidgzip`` already reads as absent, so this arm is the backstop for a
     ``deps.rapidgzip`` that reads as present.
     """
-    pypy_reason = deps.unused_reason("rapidgzip")
+    pypy_reason = deps.unused_reason(OptionalLibrary.RAPIDGZIP)
     if pypy_reason:
         return pypy_reason
     return unavailable_reason(_WORKER, "rapidgzip")
