@@ -75,6 +75,9 @@ under the index, still with its ID.
 guarantees checked]. Gates: [green | CI pending | what is red and whether it is in
 scope] — glanced, not re-run.
 
+Security pass: [deep first look only, one line per defended property: what you tried →
+what happened, with the finding ID if any]
+
 **Pass 1 (cold).** [What the code alone did not explain, each with its finding ID] | nothing
 ```
 

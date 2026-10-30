@@ -105,12 +105,21 @@ each path is on its list, live in that script.
   file, the attacker is whoever can open a pull request or write a branch name, title,
   label or comment: their text must not reach a `run:` line, a token with more scope
   than the job needs, or a step that runs code from the pull request with secrets. Run
-  the attempt where you can, and add the `tests/test_cve_regressions*.py` case closest to
-  the change to what you run. In the Snapshot, write one `Security pass:` line per
-  property: what you tried and what happened. Its findings are ordinary findings with
-  the next IDs, and they are **🔴 by default**: lower one only with a measured reason the
-  input cannot reach the code or the harm is bounded, and say which. A fix round on a
-  deep pull request runs the pass again only over code its fixes changed.
+  the attempt where you can: that is a check of a claim, not a re-run of the gates (§6).
+  Read the `tests/test_cve_regressions*.py` case closest to the change for the shape of
+  a known attack, and take its result from CI. Under the Snapshot, write one
+  `Security pass:` line per property (§3): what you tried and what happened. Its
+  findings are ordinary findings with the next IDs, and they are **🔴 by default**:
+  lower one only with a measured reason the input cannot reach the code or the harm is
+  bounded, and say which. Some deep paths
+  carry no §3 property: an agent's instructions (skills, commands, `AGENTS.md`,
+  `CONTRIBUTING.md`, the design rules). There the attacker is whoever writes text an
+  agent reads, a pull request body, a comment or an archive member name, and the attempt
+  is whether that text can steer the agent into a command, a token or a write it should
+  not make; write `Security pass: no §3 property carried` and name what you tried. A
+  fix round on a deep pull request runs the pass again only over code its fixes changed.
+  A reviewer new to the pull request after an earlier pass reads its `Security pass:`
+  lines and runs its own on whatever they left untried or did not trace through.
 
 The Snapshot line names the tier. Check the PR body's Risk section against the script: a
 public API change the body does not declare is 🟡, and a wrong tier line is 🟢.
@@ -253,6 +262,9 @@ For the maintainer skimming without the code open. Half a screen unless the chan
 - **Snapshot** — one line: size (approx. lines / small|medium|large), the tier (§1), the
   scope you reviewed, and gates (CI status, §6). The verdict is already in the header, so the
   Snapshot does not restate it.
+- **Security pass** — first look at a deep PR only (§1): one short line per defended
+  property the change carries, `Security pass: <property>: <what you tried> → <what
+  happened>`, with the finding ID where it found one.
 - **Pass 1 (cold)** — first look at a code PR only: one line naming what the code alone did
   not explain before you opened the PR body or the design, each with its finding ID, or
   `nothing`. It makes the cold read checkable; the rule and why it exists are in
