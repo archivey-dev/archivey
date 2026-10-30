@@ -82,7 +82,7 @@ DISPOSITIONS: tuple[tuple[str, re.Pattern[str]], ...] = (
         "fixed",
         re.compile(
             r"\b(fixed|fix(?:es)? in|done|taken|applied|now uses|removed|renamed|added|rewrapped|re-?wrote|rewritten|"
-            r"reworded|moved|changed|updated|dropped|replaced|agreed|confirmed and)\b",
+            r"reworded|moved|changed|updated|dropped|replaced)\b",
             re.IGNORECASE,
         ),
     ),
@@ -283,9 +283,11 @@ def report(prs: list[PullRequest], since: datetime) -> str:
         before = Counter()
         during = Counter()
         after = Counter()
+        unplaced = 0
         for p in with_pass:
             for f in p.findings:
                 if f.round is None:
+                    unplaced += 1
                     continue
                 bucket = (
                     during
@@ -308,6 +310,8 @@ def report(prs: list[PullRequest], since: datetime) -> str:
                     or "none"
                 )
             )
+        if unplaced:
+            out.append(f"  - with no round on them, so left out above: {unplaced}")
 
     disp = Counter(f.disposition for f in findings)
     out.append(
@@ -350,14 +354,19 @@ def _gh(path: str) -> list:
     return [item for page in json.loads(result.stdout) for item in page]
 
 
+#: How many pages of 100 closed pull requests `merged_since` reads at most.
+MAX_PAGES = 50
+
+
 def merged_since(repo: str, since: datetime) -> list[tuple[int, str]]:
     """Pull requests merged at or after ``since``, newest update first.
 
     Repository-scoped on purpose: a Claude session's token can read ``repos/...`` but
-    not the search API.
+    not the search API. Raises `SystemExit` if the window is longer than `MAX_PAGES`
+    pages reach, rather than report on part of it.
     """
     found = []
-    for page in range(1, 50):
+    for page in range(1, MAX_PAGES + 1):
         batch = _gh_one(
             f"repos/{repo}/pulls?state=closed&sort=updated&direction=desc"
             f"&per_page=100&page={page}"
@@ -370,8 +379,11 @@ def merged_since(repo: str, since: datetime) -> list[tuple[int, str]]:
         # Merging updates a pull request, so once updates are older than the window
         # no later page can hold a merge inside it.
         if not last or datetime.fromisoformat(last) < since:
-            break
-    return found
+            return found
+    raise SystemExit(
+        f"{MAX_PAGES * 100} closed pull requests read and the window is not covered; "
+        "shorten it with --days or --since"
+    )
 
 
 def fetch(repo: str, since: datetime, numbers: list[int]) -> list[PullRequest]:
