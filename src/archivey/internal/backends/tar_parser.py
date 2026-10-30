@@ -170,7 +170,9 @@ class HeaderBlock:
     uid: int
     gid: int
     size: int
-    mtime: int
+    # ``None`` when the field holds no octal digit (only NULs and blanks): no time is
+    # recorded, and reading it as 1970 would be a guess (DR-1).
+    mtime: int | None
     typeflag: bytes
     linkname: bytes
     uname: bytes
@@ -239,11 +241,13 @@ def parse_number(field: bytes) -> int:
     Every field, the checksum included, is read this way: GNU tar reads the checksum
     with the same function, and the checksum itself is what guards the header.
 
-    The base-256 form is ``tarfile``'s, on purpose: GNU tar takes any first byte with
-    the high bit set and counts its low seven bits in the value, so a field starting
-    with ``0x81`` is a number to GNU tar and :class:`_BadNumber` here. Such a value
-    is at least 2**56 in magnitude, past any id, mode, size or time a real archive
-    holds, and every answer stays what ``tarfile`` gave.
+    The base-256 form is ``tarfile``'s: a field starting with any other byte that has
+    the high bit set, ``0x81`` for one, is :class:`_BadNumber` here. GNU tar 1.35 flags
+    base-256 by ``0x80`` and ``0xFF`` alone too, so any other high-bit byte is not a
+    number to it either: it reports "where numeric ... value expected" and skips the
+    header for a ``size``, or lists -1 for an id or a time (measured 2026-10-30).
+    Refusing the header here keeps one answer for every field. No real archive loses
+    anything by it: such a field would hold a value of at least 2**56 in magnitude.
     """
     if not field:
         return 0
@@ -299,6 +303,10 @@ _FIELDS = (
     ("size", 124, 136),
     ("mtime", 136, 148),
 )
+# The ``mtime`` field. Its bytes are checked again when it reads as 0: with no octal
+# digit in it, only NULs and blanks, ``HeaderBlock.mtime`` is ``None``.
+_MTIME_FIELD = slice(*_FIELDS[-1][1:])
+_NO_DIGIT = b"\x00" + _BLANKS
 # The five numeric fields in _FIELDS order, as raw bytes, in one C call. A test checks
 # that it cuts the same bytes as _FIELDS. The device numbers are not among them: they
 # are read only for a device (``_DEVICE_NUMBER_TYPES``).
@@ -351,6 +359,8 @@ def parse_header_block(
         mode, uid, gid, size, mtime = map(_cached_number, _split_numbers(block))
     except _BadNumber:
         return RejectedBlock(offset, f"the {_field_named(block)} field is not a number")
+    if not mtime and not block[_MTIME_FIELD].strip(_NO_DIGIT):
+        mtime = None
     if size < 0:
         return RejectedBlock(offset, f"negative size {size}")
     if size > MAX_OFFSET:

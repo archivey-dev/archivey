@@ -1452,6 +1452,25 @@ def test_each_bad_numeric_field_is_named(field: str, start: int, end: int) -> No
     assert parsed.reason == f"the {field} field is not a number"
 
 
+@pytest.mark.parametrize(
+    ("field", "expected"),
+    [
+        (bytes(12), None),
+        (b" " * 12, None),
+        (b"\x00" + b" " * 10 + b"\x00", None),
+        (b"00000000000\x00", 0),
+        (b"          0\x00", 0),
+    ],
+)
+def test_a_mtime_field_with_no_digit_is_none(
+    field: bytes, expected: int | None
+) -> None:
+    """A field of NULs and blanks only means "no time"; an octal zero is the epoch."""
+    parsed = parse_header_block(_block(patch=_field(136, 148, field)), 0)
+    assert isinstance(parsed, HeaderBlock)
+    assert parsed.mtime == expected
+
+
 def test_number_cache_is_bounded_and_agrees_with_the_parse() -> None:
     from archivey.internal.backends import tar_parser
 

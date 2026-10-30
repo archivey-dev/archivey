@@ -54,7 +54,7 @@ long names in force applied) to `ArchiveMember` with these field rules:
 | Field | Mapping |
 | --- | --- |
 | `mode` | The header's `mode`, lower 12 bits |
-| `modified` | The header's `mtime` as timezone-aware UTC |
+| `modified` | The header's `mtime` as timezone-aware UTC. A field of only NUL bytes and blanks records no time: `modified` SHALL be `None`, with no diagnostic, where GNU tar and `tarfile` read 0 (maintainer ruling 2026-10-30) |
 | PAX `mtime` | Overrides the header's `mtime`, preserving sub-second precision / timezone information |
 | `uname`, `gname`, `uid`, `gid` | From the header; a PAX record of the same name overrides it (a PAX `uid` or `gid` that is not a number, or is past 2**32 - 1, the range of `uid_t` and `gid_t`, is ignored and the header's value kept, as GNU tar 1.35 keeps it; GNU tar also reports such an id, and archivey keeps the header's value silently) |
 | `type` | TAR type byte (`REGTYPE`, `DIRTYPE`, `SYMTYPE`, `LNKTYPE`, etc.) to `MemberType`. GNU's dumpdir `D` is a `DIRECTORY` whose contents list, structure GNU tar defines and reads, is skipped with no `size` and no report |
@@ -81,7 +81,7 @@ in every format; the record name appears only in the message.
 | Case | Expected |
 | --- | --- |
 | PAX `mtime` present | `member.modified` derives from PAX value, overriding the header's `mtime` |
-| No PAX `mtime` | `member.modified` is timezone-aware UTC from the header's `mtime` |
+| No PAX `mtime` | `member.modified` is timezone-aware UTC from the header's `mtime`, or `None` when that field holds only NULs and blanks |
 | PAX `ctime` present | `ctime` is timezone-aware UTC; it never fills `created` |
 | PAX `LIBARCHIVE.creationtime` present (bsdtar, where the OS has a birth time) | `created` is timezone-aware UTC |
 | Neither PAX record | `created is None` and `ctime is None` |
