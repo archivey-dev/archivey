@@ -3,12 +3,11 @@
 
 from __future__ import annotations
 
-import ast
 import gzip
 import io
 import lzma
 import random
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -26,6 +25,7 @@ from archivey import (
 from archivey.formats import SequentialReader
 from archivey.internal.backends import ar_reader
 from archivey.internal.backends.ar_reader import ArReader
+from tests.public_names import assert_only_public_archivey
 
 AR = archivey.ArchiveFormat.AR
 DATA = Path(__file__).parent / "fixtures" / "ar"
@@ -367,26 +367,9 @@ def test_a_time_past_the_datetime_range(tmp_path: Path) -> None:
         assert reader.members()[0].modified is None
 
 
-def _imported_names(path: Path) -> Iterator[tuple[str, str]]:
-    for node in ast.walk(ast.parse(path.read_text())):
-        if isinstance(node, ast.Import):
-            yield from ((alias.name, "") for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            yield from ((node.module, alias.name) for alias in node.names)
-
-
 def test_the_reader_uses_only_public_archivey() -> None:
-    """Written as a format added from outside would be: every archivey name it imports
-    is public, apart from the call that registers it as a built-in."""
-    for module, name in _imported_names(Path(ar_reader.__file__)):
-        if module.split(".")[0] != "archivey":
-            continue
-        if module == "archivey.internal.format_adapter":
-            assert name == "register_builtin_format"
-        elif module == "archivey.formats":
-            assert name in archivey.formats.__all__, name
-        else:
-            assert name in archivey.__all__, (module, name)
+    """Written as a format added from outside would be."""
+    assert_only_public_archivey(ar_reader.__file__)
 
 
 def test_the_reader_is_a_sequential_reader() -> None:

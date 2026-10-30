@@ -58,14 +58,13 @@ uv run ty check                    # type-check (ty)
 uv run pre-commit run --all-files  # optional: framework hooks over the whole tree
 ```
 
-Pyrefly and ty are scoped to `src/`, `packages/archivey-squashfs/src/` and
-`packages/archivey-cpio/src/` (the library and the in-repo plugin packages), so every command above runs clean with no extra path
+Pyrefly and ty are scoped to `src/` and `packages/archivey-squashfs/src/` (the library
+and the in-repo plugin package), so every command above runs clean with no extra path
 arguments. **Both type checkers must stay green** — `ruff` passing is not the gate,
 and running it alone is the most common self-inflicted CI failure here.
 
 **Format before you commit.** CI runs `ruff format --check` (and `ruff check`) over
-`src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/ packages/archivey-cpio/`
-and will fail on drift. Installing the git hook
+`src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/` and will fail on drift. Installing the git hook
 (`./scripts/install-git-hooks.sh`) makes this automatic: staged `*.py` under those
 paths are `ruff check --fix`'d and `ruff format`'d on commit. If you skip the hook,
 run `uv run ruff format` yourself before committing — `ruff format --check` only

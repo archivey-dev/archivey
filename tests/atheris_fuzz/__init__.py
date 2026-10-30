@@ -21,6 +21,7 @@ DEFAULT_BUDGETS: dict[str, int] = {
     "tar": 10,
     "iso": 8,
     "ar": 6,
+    "cpio": 8,
     "rar_header": 30,
     "rar": 15,
     # Auto-detect open: SFX payload offset, single-file reader, compressed tar, UDIF.

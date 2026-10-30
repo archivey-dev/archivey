@@ -16,9 +16,9 @@ the ``LIBARCHIVE`` variable names, so a build of the clone can be used without
 installing it (``cmake -S libarchive -B build -DENABLE_TEST=OFF``, then
 ``LIBARCHIVE=build/libarchive/libarchive.so``).
 
-The format plugins in ``packages/`` (CPIO, SquashFS) are registered when they
-are installed (``uv pip install -e packages/archivey-cpio``), so their fixtures are
-compared too; without them those fixtures are skipped as unknown formats.
+The SquashFS plugin in ``packages/`` is registered when it is installed
+(``uv pip install -e packages/archivey-squashfs``), so its fixtures are compared too;
+without it they are skipped as unknown formats.
 
 Reference ``.uu`` blobs are decoded into ``ARCHIVEY_TEST_CACHE`` on first use.
 Skips archives libarchive cannot open, non-primary split volumes, libarchive
@@ -54,7 +54,7 @@ Triage (2026-07, rerun 2026-10-28 against libarchive 3.9.0dev with the plugins)
 * **GAP** some RAR5 extra-field / crypt-only headers; multi-volume sets need
   sibling volumes (skipped like other split volumes).
 
-**CPIO** (with archivey-cpio installed)
+**CPIO**
 * **POLICY** in a newc or crc link group the data comes with the last name: Archivey
   lists that member as the file and the earlier names as hard links to it, where
   libarchive lists the first name as the file.
@@ -226,7 +226,7 @@ _XFAIL: dict[str, tuple[bool, str]] = {
         True,
         "POLICY: repeated separators in names are normalized",
     ),
-    # --- CPIO (the archivey-cpio plugin) ---
+    # --- CPIO ---
     **dict.fromkeys(
         (
             "test_gcpio_compat_ref.newc",

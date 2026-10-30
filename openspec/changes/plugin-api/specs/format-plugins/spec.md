@@ -13,10 +13,10 @@ The system SHALL let a package outside archivey add a read-only format by subcla
 
 | Case | Expected |
 | --- | --- |
-| A CPIO plugin is registered; `open_archive("a.cpio")` | Reader with `format.container` the plugin's `PluginContainer` member; `members()`, `open()`, `stream_members()`, `extract_all()` work |
-| Same, `detect_format("a.cpio")` | The plugin format |
-| Same, `format_availability("cpio")` | `FULL` |
-| No plugin registered, `open_archive("a.cpio")` | `FormatDetectionError`, as today |
+| An LHA plugin is registered; `open_archive("a.lha")` | Reader with `format.container` the plugin's `PluginContainer` member; `members()`, `open()`, `stream_members()`, `extract_all()` work |
+| Same, `detect_format("a.lha")` | The plugin format |
+| Same, `format_availability("lha")` | `FULL` |
+| No plugin registered, `open_archive("a.lha")` | `FormatDetectionError`, as today |
 
 ### Requirement: Plugin containers subclass PluginContainer
 
@@ -71,8 +71,8 @@ without an `open_member` from the plugin.
 
 | Case | Expected |
 | --- | --- |
-| A CPIO archive piped to `open_archive(stream, streaming=True)`; `stream_members()` | Every member with its data, in one pass |
-| `x.cpio.gz` from a file; `open(member)` on the third member | Its data |
+| An archive of a sequential plugin format piped to `open_archive(stream, streaming=True)`; `stream_members()` | Every member with its data, in one pass |
+| `x.lha.gz` from a file; `open(member)` on the third member | Its data |
 | A caller reads half of a member's stream and advances | The next member's header and data are read correctly |
 
 ### Requirement: Sequential plugins may hand over decoded member data
@@ -107,8 +107,8 @@ today.
 
 | Case | Expected |
 | --- | --- |
-| `x.cpio.gz` from a file; `detect_format` | `ArchiveFormat(CpioContainer.CPIO, StreamFormat.GZIP)` |
-| No plugin registered; `x.cpio.gz` | Detects as `GZ`, as today |
+| `x.lha.gz` from a file, a sequential plugin for LHA registered; `detect_format` | `ArchiveFormat(LhaContainer.LHA, StreamFormat.GZIP)` |
+| No plugin registered; `x.lha.gz` | Detects as `GZ`, as today |
 
 ### Requirement: FormatInfo marks plugin formats
 
@@ -119,5 +119,5 @@ and false for every built-in format.
 
 | Case | Expected |
 | --- | --- |
-| `format_availability` / `FormatInfo` for the registered CPIO plugin | `from_plugin` is `True` |
+| `format_availability` / `FormatInfo` for a registered plugin | `from_plugin` is `True` |
 | The same for `ArchiveFormat.ZIP` | `from_plugin` is `False` |

@@ -1,22 +1,19 @@
-"""archivey-cpio against archives written by GNU cpio and bsdcpio
-(``data/make-archives.sh``), read from a file and from a pipe."""
+"""The CPIO reader against archives written by GNU cpio and bsdcpio
+(``fixtures/cpio/make-archives.sh``), read from a file and from a pipe."""
 
 from __future__ import annotations
 
-import ast
 import gzip
 import io
 import lzma
 import os
 import random
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from archivey_cpio import CPIO, CpioHandler, CpioReader
-from archivey_cpio.reader import MAX_NAME_BYTES
 
 import archivey
 from archivey import (
@@ -29,10 +26,13 @@ from archivey import (
     open_archive,
 )
 from archivey.diagnostics import DiagnosticCode
-from archivey.formats import SequentialReader, register_format
+from archivey.formats import SequentialReader
+from archivey.internal.backends import cpio_reader
+from archivey.internal.backends.cpio_reader import MAX_NAME_BYTES, CpioReader
+from tests.public_names import assert_only_public_archivey
 
-DATA = Path(__file__).parent / "data"
-PACKAGE = Path(__file__).parents[1] / "src" / "archivey_cpio"
+CPIO = archivey.ArchiveFormat.CPIO
+DATA = Path(__file__).parent / "fixtures" / "cpio"
 
 # The tree make-archives.sh writes, as archivey lists it.
 CONTENT = {
@@ -70,11 +70,6 @@ ARCHIVES = {
     "bsd-odc": "odc",
     "bsd-newc": "newc",
 }
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _registered() -> None:
-    register_format(CpioHandler)
 
 
 class _Pipe(io.RawIOBase):
@@ -203,7 +198,7 @@ def test_detection() -> None:
         info = detect_format(io.BytesIO((DATA / f"{name}.cpio").read_bytes()))
         assert info.format == CPIO, name
         assert info.detected_by == "magic"
-        assert info.from_plugin
+        assert not info.from_plugin
     # The binary variant has no ASCII magic: the probe finds it where probes run.
     probing = archivey.ArchiveyConfig(always_probe_content=True)
     data = (DATA / "gnu-bin.cpio").read_bytes()
@@ -472,19 +467,9 @@ def test_afio_large_header_damage(tmp_path: Path) -> None:
         opened(extra)
 
 
-def _imports(path: Path) -> Iterator[str]:
-    for node in ast.walk(ast.parse(path.read_text())):
-        if isinstance(node, ast.Import):
-            yield from (alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            yield node.module
-
-
-def test_the_package_uses_only_public_archivey() -> None:
-    """The point of the package: a format added from outside, through the plugin API."""
-    used = {name for path in PACKAGE.rglob("*.py") for name in _imports(path)}
-    archivey_modules = {name for name in used if name.split(".")[0] == "archivey"}
-    assert archivey_modules == {"archivey", "archivey.diagnostics", "archivey.formats"}
+def test_the_reader_uses_only_public_archivey() -> None:
+    """Written as a format added from outside would be."""
+    assert_only_public_archivey(cpio_reader.__file__)
 
 
 def test_the_reader_is_a_sequential_reader() -> None:

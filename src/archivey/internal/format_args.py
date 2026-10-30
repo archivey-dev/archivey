@@ -86,7 +86,9 @@ _plugin_spellings: dict[str, ArchiveFormat] = {}
 
 # The built-in containers read in one forward pass, so also inside any single-file
 # compression stream. ``cli/common.py`` keeps a copy of the rule that uses this.
-SEQUENTIAL_CONTAINERS = frozenset({ContainerFormat.TAR, ContainerFormat.AR})
+SEQUENTIAL_CONTAINERS = frozenset(
+    {ContainerFormat.TAR, ContainerFormat.AR, ContainerFormat.CPIO}
+)
 
 
 def _plugin_format_spellings(fmt: ArchiveFormat) -> tuple[str, str]:

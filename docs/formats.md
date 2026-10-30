@@ -7,6 +7,7 @@ the same order: what it needs, how it lists and reads, and its quirks.
 The maintainer handbook has more depth on
 [7z](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/7z.md),
 [ISO](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/iso.md),
+[CPIO](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/cpio.md),
 [ar](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/ar.md),
 [RAR](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/rar.md),
 [TAR](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/tar.md) and
@@ -44,6 +45,8 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
   solid, otherwise direct. Needs a source that can seek.
 - **ISO 9660:** `[recommended]` (`pycdlib`). Listing: from its index. Members: direct. Needs a
   source that can seek.
+- **CPIO** (`.cpio`, initramfs, RPM payloads): core. Listing: header by header. Members:
+  direct. Reads from a pipe, and inside any compressor TAR reads inside (`.cpio.gz`, …).
 - **ar** (`.a`, `.lib`, the outer layer of a `.deb`): core. Listing: header by header. Members:
   direct. Reads from a pipe, and inside any compressor TAR reads inside (`.a.gz`, …).
 - **Directory:** core. Listing: walks the tree. Members: direct.
@@ -127,7 +130,7 @@ The fields that change, by format:
   after its data, until the pass gets past its data. Also from a pipe, until the pass reads the
   index, every field only the index holds: `type`, `name` (where a DOS host makes `\` a separator),
   `mode`, `create_system`, `comment`, and the times and owner ids from its extra fields.
-- **TAR, 7z, RAR, ISO:** `is_current` and `link_target_member`.
+- **TAR, 7z, RAR, ISO, CPIO:** `is_current` and `link_target_member`.
 - **Directory:** `link_target_member`. Names never repeat, so `is_current` never changes.
 - **Single compressed files:** `size`, when the format records none. A full read fills it in, and
   the flag stays `False` until then ([Single-file compressors](#single-file-compressors)).
@@ -164,6 +167,8 @@ A CRC-32 is four big-endian bytes, so a CRC you computed compares as
 - **RAR5:** `crc32`, `blake2sp`, or both, for files that store them.
 - **`.lz`:** `crc32`, from a source that can seek. A file of several lzip members gets one value,
   combined from each member's CRC, equal to the CRC-32 of the whole payload.
+- **CPIO:** none. A crc archive stores a 32-bit sum of each file's data, which a full read
+  checks, but it is not a digest `hashes` can hold.
 - **TAR, ar, directory, and every other single compressed file:** none.
 
 When a format stores none, compute a digest while reading. A first-pass dedupe index can take the
@@ -201,10 +206,10 @@ far to trust each.
 
 ### Bytes after the end of an archive
 
-TAR, ZIP, 7z, RAR and ISO archives, and single compressed files, all check for bytes after the
-archive's end. A non-zero byte there is reported as `ARCHIVE_TRAILING_DATA`, with the format in
+TAR, ZIP, 7z, RAR, ISO and CPIO archives, and single compressed files, all check for bytes after
+the archive's end. A non-zero byte there is reported as `ARCHIVE_TRAILING_DATA`, with the format in
 `format`: a warning under the default policy, raised under `DiagnosticPolicy.STRICT`. Zero bytes
-are padding and pass. ZIP, TAR, 7z, RAR and ISO look at most 1 MiB past the end, so a byte
+are padding and pass. ZIP, TAR, 7z, RAR, ISO and CPIO look at most 1 MiB past the end, so a byte
 further out goes unseen. Each format section says where its end is.
 
 Inside a ZIP or 7z member, bytes after the compressed stream are corruption, not trailing bytes
@@ -212,9 +217,10 @@ Inside a ZIP or 7z member, bytes after the compressed stream are corruption, not
 
 ### Device files, FIFOs and sockets
 
-A ZIP, 7z, RAR or ISO entry whose mode is a device, FIFO or socket, or a TAR entry whose typeflag
-is a device or FIFO (TAR has no socket type), lists as `MemberType.OTHER` when it stores no data. Extraction does not create it: its result is
-`BLOCKED`, and the other members are extracted. `extra["special_file_type"]` names the kind. In ZIP, 7z, RAR and ISO, such
+A ZIP, 7z, RAR, ISO or CPIO entry whose mode is a device, FIFO or socket, or a TAR entry whose
+typeflag is a device or FIFO (TAR has no socket type), lists as `MemberType.OTHER` when it stores
+no data. Extraction does not create it: its result is
+`BLOCKED`, and the other members are extracted. `extra["special_file_type"]` names the kind. In ZIP, 7z, RAR, ISO and CPIO, such
 an entry that does store data is a `FILE`, with `MEMBER_SPECIAL_FILE_HAS_DATA` reported. Each
 section for ZIP, 7z, RAR and ISO says when its mode is trusted; TAR reads the typeflag instead
 ([TAR](#tar-and-compressed-tar)).
@@ -1012,6 +1018,30 @@ misread the archive.
 - Raw CD sector images (the `.bin` of a `.bin`/`.cue` pair) are recognised and refused with
   `UnsupportedFeatureError` naming the sector layout. Convert one to a plain `.iso` first (for
   example with `bchunk` or `bin2iso`).
+
+## CPIO
+
+- **Needs:** nothing.
+- **Listing:** header by header, in one pass, up to the `TRAILER!!!` member.
+- **Reading members:** direct; inside a compressor, solid, as in a compressed TAR.
+- **From a pipe:** yes, with `streaming=True`.
+- All four header variants read: binary (either byte order), odc, newc and crc, and afio's
+  large header in an odc archive. `ArchiveInfo.format_version` names the variant as GNU
+  cpio's `-H` option does (`bin`, `odc`, `newc`, `crc`), with `bin-be` for a binary archive
+  in the other byte order.
+- A binary archive has only a 2-byte magic, so it is detected only when its name ends in
+  `.cpio`, or with `always_probe_content=True`, or when you pass `format=`.
+- A symlink's target is its data. Devices, FIFOs and sockets are `OTHER`, as in every
+  format.
+- In crc, each file's checksum is checked as its data is read.
+- **Hard links.** Names that share a device and inode number are one file. The first name
+  listed is a `FILE`, the others `HARDLINK` members to it. newc and crc store the data with
+  the **last** name only, so archivey lists that name first and the earlier, empty names
+  right after it: the member order is then not quite the archive's. A file whose names are
+  all empty is listed at the trailer.
+- An archive that ends before its trailer raises `TruncatedError`. Non-zero bytes after the
+  trailer are `ARCHIVE_TRAILING_DATA`, as for TAR; a second archive appended after the first
+  is not listed.
 
 ## ar
 

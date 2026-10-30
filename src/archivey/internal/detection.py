@@ -671,11 +671,12 @@ def _probe_named(
 ) -> bool:
     """Whether the source's extension allows ``fmt``'s content probe to run.
 
-    A built-in probe is keyed by its stream, so ``.tlz`` can name two. Every plugin
-    format shares the ``UNCOMPRESSED`` stream with ZIP, TAR and the rest, so its probe
-    runs only when the extension names that format itself.
+    A single-file codec's probe is keyed by its stream, so ``.tlz`` can name two. A
+    container's probe (binary CPIO, or a plugin's) shares the ``UNCOMPRESSED`` stream
+    with ZIP, TAR and the rest, so it runs only when the extension names that format
+    itself.
     """
-    if isinstance(fmt.container, PluginContainer):
+    if fmt.container is not ContainerFormat.RAW_STREAM:
         return ext_match is not None and ext_match[0] == fmt
     return fmt.stream in _streams_named_by(ext_match)
 

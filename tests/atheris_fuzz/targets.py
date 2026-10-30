@@ -58,6 +58,7 @@ from tests.atheris_fuzz.seeds import (
     ar_seeds,
     brotli_seeds,
     bzip2_seeds,
+    cpio_seeds,
     deflate64_seeds,
     detect_format_seeds,
     filter_seeds,
@@ -253,9 +254,19 @@ def iso_open_one(data: bytes) -> None:
 def ar_open_one(data: bytes) -> None:
     """Walk an ar archive, plain or inside a compression stream, and read the first
     members' data."""
+    _sequential_open_one(data, ContainerFormat.AR)
+
+
+def cpio_open_one(data: bytes) -> None:
+    """Walk a CPIO archive of any variant, plain or inside a compression stream, and
+    read the first members' data, held hard links included."""
+    _sequential_open_one(data, ContainerFormat.CPIO)
+
+
+def _sequential_open_one(data: bytes, container: ContainerFormat) -> None:
     try:
         with open_archive(io.BytesIO(data), config=_FUZZ_CONFIG) as arc:
-            if arc.format.container is not ContainerFormat.AR:
+            if arc.format.container is not container:
                 return
             for i, (member, stream) in enumerate(arc.stream_members()):
                 if i >= _MAX_MEMBERS:
@@ -852,6 +863,13 @@ def iter_target_specs() -> list[dict]:
             "name": "ar",
             "fn": ar_open_one,
             "seeds": ar_seeds,
+            "fixup": None,
+            "per_input_timeout": stream_timeout,
+        },
+        {
+            "name": "cpio",
+            "fn": cpio_open_one,
+            "seeds": cpio_seeds,
             "fixup": None,
             "per_input_timeout": stream_timeout,
         },

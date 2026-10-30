@@ -158,12 +158,21 @@ def ar_seeds() -> list[bytes]:
     """Tiny magics, the GNU, BSD and macOS archives in tests/fixtures/ar, and each
     of them gzip-compressed, so the walk also runs inside a decoded stream."""
     tiny = [b"", b"!<arch>\n", b"!<thin>\n", b"!<arch>\n//" + b" " * 46 + b"`\n"]
-    fixtures = [
-        path.read_bytes()
-        for path in sorted((_REPO_ROOT / "tests" / "fixtures" / "ar").glob("*.a"))
-    ]
-    compressed = [gzip.compress(data, mtime=0) for data in fixtures]
-    return tiny + fixtures + compressed
+    return tiny + _fixture_seeds("ar", "*.a")
+
+
+def cpio_seeds() -> list[bytes]:
+    """Tiny magics, one archive of each variant in tests/fixtures/cpio (GNU cpio and
+    bsdcpio), and each of them gzip-compressed."""
+    tiny = [b"", b"070707", b"070701", b"070702", b"070727", b"\xc7\x71" + bytes(24)]
+    return tiny + _fixture_seeds("cpio", "*.cpio")
+
+
+def _fixture_seeds(folder: str, pattern: str) -> list[bytes]:
+    """The fixtures in tests/fixtures/<folder>, plain and gzip-compressed."""
+    paths = sorted((_REPO_ROOT / "tests" / "fixtures" / folder).glob(pattern))
+    fixtures = [path.read_bytes() for path in paths]
+    return fixtures + [gzip.compress(data, mtime=0) for data in fixtures]
 
 
 def rar_seeds() -> list[bytes]:

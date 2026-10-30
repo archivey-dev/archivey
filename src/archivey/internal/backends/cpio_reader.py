@@ -29,6 +29,11 @@ data arrives, yields that one as the ``FILE``, then the held ones as ``HARDLINK`
 members to it. The member order is then not quite the archive's. A group whose data
 never arrives (all its links empty, as for an empty file) is yielded at the trailer:
 the first as an empty ``FILE``, the rest as links to it.
+
+The reader is written against ``archivey.formats`` and archivey's public names only,
+as a format added from outside would be; ``register_builtin_format`` is the one
+internal name it uses (``tests/test_cpio.py`` checks). Handbook page:
+``dev-docs/formats/cpio.md``.
 """
 
 from __future__ import annotations
@@ -39,28 +44,30 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 
-from archivey import (
-    ArchiveMember,
-    CorruptionError,
-    MemberType,
-    ResourceLimitError,
-    TruncatedError,
-    UnsupportedFeatureError,
-)
 from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
     SpecialFileDataContext,
     UnknownMemberTypeContext,
 )
+from archivey.exceptions import (
+    CorruptionError,
+    ResourceLimitError,
+    TruncatedError,
+    UnsupportedFeatureError,
+)
 from archivey.formats import (
     ForwardStream,
+    Magic,
     MemberDigest,
     MemberSpan,
     ReaderArchiveInfo,
     ReaderContext,
+    SequentialFormatHandler,
     SequentialReader,
 )
+from archivey.internal.format_adapter import register_builtin_format
+from archivey.types import ArchiveFormat, ArchiveMember, MemberType
 
 TRAILER = b"TRAILER!!!"
 # A stored name longer than this is damage: no file system takes a path this long, and
@@ -521,3 +528,39 @@ class CpioReader(SequentialReader):
                 )
                 return
             scanned += len(chunk)
+
+
+def _binary_probe(prefix: bytes) -> bool:
+    """A binary CPIO header: the two-byte magic alone is too weak a signature, so the
+    header must also hold a name of the size it declares, ending in a NUL."""
+    if len(prefix) < 26:
+        return False
+    for order, magic in (("<", _BINARY_LE), (">", _BINARY_BE)):
+        if prefix[:2] != magic:
+            continue
+        name_size = struct.unpack_from(f"{order}H", prefix, 20)[0]
+        end = 26 + name_size
+        return 1 < name_size and end <= len(prefix) and prefix[end - 1] == 0
+    return False
+
+
+class CpioHandler(SequentialFormatHandler):
+    """CPIO archives in the binary, odc, newc and crc variants: ``.cpio``."""
+
+    format = ArchiveFormat.CPIO
+    extensions = (".cpio",)
+    magic = (
+        Magic(0, _ODC),
+        Magic(0, _NEWC),
+        Magic(0, _CRC),
+        # afio's large header, on an archive whose first member needs it.
+        Magic(0, _AFIO_LARGE),
+    )
+    probe = staticmethod(_binary_probe)
+    uses_encoding = True
+
+    def open_sequential(self, context: ReaderContext) -> CpioReader:
+        return CpioReader(context)
+
+
+CpioReadBackend = register_builtin_format(CpioHandler)
