@@ -1960,6 +1960,12 @@ _AMBIGUOUS = {
         "hdr",
         ("empty_value", "path"),
     ),
+    # Empty only after the NUL cut: the record is not empty, so no empty_value.
+    "x path empty after the NUL cut": (
+        _pax_body(_rec(b"path", b"\x00rest")) + _file(b"hdr"),
+        "hdr",
+        ("nul_in_value", "path"),
+    ),
     "empty x mtime": (
         _pax_body(_rec(b"mtime", b"")) + _file(),
         "f",
@@ -1967,7 +1973,8 @@ _AMBIGUOUS = {
     ),
     # tar-minefield F26: 0777 is 777 bytes, as GNU tar reads it.
     "x size with a leading zero": (
-        _pax({"size": "01"}) + _block(b"f") + _data(b"x"),
+        # 010 is 10 bytes, where octal would read 8.
+        _pax({"size": "010"}) + _block(b"f") + _data(b"0123456789"),
         "f",
         ("leading_zero", "size"),
     ),

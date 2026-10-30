@@ -390,7 +390,8 @@ not reported.
 - `global_member_field`: a `g` header carrying `path`, `linkpath` or `size`, which then
   names or frames every later member.
 - `mixed_chain` (field `x`): `L` or `K` headers and an `x` header in one member's chain,
-  in either order, when `both_families` is not reported. GNU tar applies both to the
+  in either order, when `both_families` (on `path` or `linkpath`) is not reported, which
+  already names the mix. GNU tar applies both to the
   member. To a reader that knows only PAX an `L` header is a member of an unknown type,
   so an `x` header before it, and its `size`, applies to the `L` header (tar-minefield F10 and N23).
 - `global_in_chain` (field `g`): a `g` header between an `x` or `L` header and its
@@ -403,7 +404,8 @@ not reported.
   `ctime`, `uid` and `gid` count (`_EMPTY_VALUE_REPORTED`): GNU tar writes an empty
   `SCHILY.xattr.<name>` record for an empty extended attribute with `--xattrs`, and
   other keywords name and frame nothing. Only the key's last record in the header
-  counts: `path=` then `path=foo` names the member `foo` and is `repeated`.
+  counts: `path=` then `path=foo` names the member `foo` and is `repeated`. A value
+  empty only after the NUL cut is `nul_in_value` alone.
 - `leading_zero` (field `size`, `GNU.sparse.size` or `GNU.sparse.realsize`): an `x`
   header number such as `0777`. It is decimal (777), as GNU tar and POSIX read it; a
   reader using `strtoul(s, NULL, 0)` reads 511 (tar-minefield F26). These are the

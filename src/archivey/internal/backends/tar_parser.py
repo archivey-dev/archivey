@@ -582,7 +582,8 @@ class Ambiguity(Enum):
     # GNU tar replaces the global records, tarfile and POSIX merge them.
     GLOBAL_REPLACED = "global_replaced"
     # GNU long headers (L or K) and an x header in one member's chain, in either
-    # order, when no PAX record overrode the long name (that is BOTH_FAMILIES). To a
+    # order, when BOTH_FAMILIES is not reported on the member: any BOTH_FAMILIES,
+    # on path or linkpath, already names the mix and stands in for this one. To a
     # reader that knows only PAX, an L header is a member of an unknown type, so the
     # x header's records (a size among them) apply to it, not to the member.
     MIXED_CHAIN = "mixed_chain"
@@ -617,7 +618,12 @@ def _record_ambiguities(
         return
     # In a global header an empty value is how POSIX unsets a global record, and a
     # global size is GLOBAL_MEMBER_FIELD already.
-    found += [(Ambiguity.EMPTY_VALUE, key) for key in records.emptied]
+    # A value empty only after the NUL cut is NUL_IN_VALUE: the record is not empty.
+    found += [
+        (Ambiguity.EMPTY_VALUE, key)
+        for key in records.emptied
+        if key not in records.nul_cut
+    ]
     for key in _LEADING_ZERO_KEYS:
         number = values.get(key)
         if number is not None and len(number.value) > 1 and number.value[:1] == b"0":
@@ -1343,7 +1349,6 @@ class TarWalker:
         long_link: bytes | None = None
         ambiguities: list[tuple[Ambiguity, bytes]] = []
         x_seen = False
-        gnu_long_seen = False
         # Where the last x or L header of this member's chain starts, once there is
         # one: the chain must end in a member header. A global header describes no
         # member, so it starts no chain.
@@ -1412,8 +1417,6 @@ class TarWalker:
                         f"offset {header_at}"
                     )
                 offset += BLOCKSIZE + _round_up(parsed.size)
-                if parsed.typeflag in (LONG_NAME_TYPE, LONG_LINK_TYPE):
-                    gnu_long_seen = True
                 if parsed.typeflag == LONG_NAME_TYPE:
                     if long_name is not None:
                         ambiguities.append((Ambiguity.REPEATED, b"path"))
@@ -1473,7 +1476,7 @@ class TarWalker:
             if long_link is not None and entry.linkname_source is NameSource.PAX:
                 ambiguities.append((Ambiguity.BOTH_FAMILIES, b"linkpath"))
             if (
-                gnu_long_seen
+                (long_name is not None or long_link is not None)
                 and x_seen
                 and not any(a is Ambiguity.BOTH_FAMILIES for a, _ in ambiguities)
             ):
