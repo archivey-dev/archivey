@@ -24,6 +24,7 @@ from archivey.exceptions import (
     CorruptionError,
     FormatDetectionError,
     OpenError,
+    ResourceUnavailableError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -1492,7 +1493,7 @@ def test_concatenated_file_mixed_path_and_stream(
     assert tracker.current == 0
 
 
-def test_concatenated_file_path_open_error_surfaces_on_read(
+def test_concatenated_file_path_oserror_surfaces_on_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     first = tmp_path / "ok.bin"
@@ -1503,24 +1504,34 @@ def test_concatenated_file_path_open_error_surfaces_on_read(
 
     def denying_open(file: Any, *args: Any, **kwargs: Any) -> Any:
         if Path(file).resolve() == denied.resolve():
-            raise PermissionError("denied")
+            raise PermissionError(errno.EACCES, "denied", str(file))
         return real_open(file, *args, **kwargs)
 
     monkeypatch.setattr(volumes_mod, "open", denying_open, raising=False)
     with ConcatenatedFile([first, denied]) as joined:
         assert joined.read(3) == b"aaa"
-        with pytest.raises(OpenError, match="Cannot open volume") as caught:
+        with pytest.raises(PermissionError) as caught:
             joined.read()
-    assert isinstance(caught.value.__cause__, PermissionError)
-    assert caught.value.archive_name == denied.as_posix()
+    assert caught.value.filename == str(denied)
 
 
 def test_concatenated_file_missing_path_fails_at_construction(tmp_path: Path) -> None:
     missing = tmp_path / "gone.bin"
-    with pytest.raises(OpenError, match="Cannot open volume") as caught:
+    with pytest.raises(FileNotFoundError) as caught:
         ConcatenatedFile([missing])
-    assert isinstance(caught.value.__cause__, FileNotFoundError)
-    assert caught.value.archive_name == missing.as_posix()
+    assert caught.value.filename == str(missing)
+
+
+def test_a_missing_listed_volume_raises_file_not_found_as_the_first_does(
+    tmp_path: Path,
+) -> None:
+    """A missing path is not about the archive, wherever it sits in the list."""
+    present = tmp_path / "x.zip.001"
+    present.write_bytes(b"PK\x03\x04" + bytes(60))
+    for paths in ([tmp_path / "x.zip.000"], [present, tmp_path / "x.zip.002"]):
+        with pytest.raises(FileNotFoundError) as caught:
+            open_archive(paths)
+        assert caught.value.filename == str(paths[-1])
 
 
 def test_concatenated_file_close_with_no_open_path(tmp_path: Path) -> None:
@@ -1649,7 +1660,9 @@ def test_concatenated_file_emfile_is_translated(
     monkeypatch.setattr(volumes_mod, "open", emfile_open, raising=False)
     with (
         ConcatenatedFile([path]) as joined,
-        pytest.raises(OpenError, match="file-descriptor limit") as caught,
+        pytest.raises(
+            ResourceUnavailableError, match="file-descriptor limit"
+        ) as caught,
     ):
         joined.read()
     cause = caught.value.__cause__
@@ -1966,7 +1979,8 @@ def test_numbered_part_number_too_long_to_parse_is_not_a_volume_name(
     assert volumes_mod._rar_part_number("x.part0001000000.rar") == 0
 
     # The explicit sequence: name validation used to raise before the open did.
-    with pytest.raises(OpenError, match="Cannot open volume"):
+    # The stat's own error, as for a first path (here the name is too long).
+    with pytest.raises(OSError):
         join_volumes([tmp_path / f"x.zip.{digits}", tmp_path / "x.zip.002"])
 
 
