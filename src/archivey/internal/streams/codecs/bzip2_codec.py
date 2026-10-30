@@ -4,7 +4,6 @@ results, stream gaps, resume points).
 
 from __future__ import annotations
 
-import bz2
 import io
 import itertools
 import re
@@ -19,7 +18,7 @@ from archivey.exceptions import (
     TruncatedError,
     exception_detail,
 )
-from archivey.formats import CodecCall, Decompressor
+from archivey.formats import CodecCall, Decompressor, Magic
 from archivey.internal.config import (
     AcceleratorMode,
     StreamConfig,
@@ -43,8 +42,10 @@ from archivey.internal.streams.codecs.framed_decoder import (
     stream_magic,
 )
 from archivey.internal.streams.codecs.handler_codec import (
+    BuiltinCall,
     BuiltinCodecHandler,
     builtin_codec,
+    config_of,
 )
 from archivey.internal.streams.codecs.isolated import natives_for
 from archivey.internal.streams.codecs.rapidgzip_child import (
@@ -81,8 +82,6 @@ from archivey.internal.streams.decompressor_stream import (
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.types import (
-    ArchiveFormat,
-    MagicSignature,
     StreamFormat,
 )
 
@@ -797,27 +796,23 @@ class Bzip2Handler(BuiltinCodecHandler):
     codec = Codec.BZIP2
     checks_content = True
     stream_format = StreamFormat.BZIP2
-    signatures = (MagicSignature(0, b"BZh", ArchiveFormat.BZ2),)
+    magic = (Magic(0, b"BZh"),)
 
     def decompressor(self, call: CodecCall) -> Decompressor:
-        return bz2.BZ2Decompressor()
+        return natives_for(config_of(call).process_isolation).bz2_decompressor()
 
-    def _decompressor(self, call: CodecCall, config: StreamConfig) -> Decompressor:
-        return natives_for(config.process_isolation).bz2_decompressor()
-
-    def _stream_start(self, params: CodecParams) -> StreamStart:
+    def _stream_start(self, call: BuiltinCall) -> StreamStart:
+        # The whole stream header, block-size digit included, not ``magic`` alone.
         # Every engine that decodes a coder's data, the accelerator's fallbacks too,
         # must agree on what follows its stream (DR-5): see ``_stdlib_bzip2``.
-        return _NO_FURTHER_STREAM if params.single_stream else _BZIP2_STREAMS
+        return _NO_FURTHER_STREAM if call.params.single_stream else _BZIP2_STREAMS
 
-    def _open(
-        self, source: CodecSource, params: CodecParams, config: StreamConfig
-    ) -> BinaryIO | None:
+    def _open(self, source: CodecSource, call: BuiltinCall) -> BinaryIO | None:
         # Without the accelerator, a rewind re-decompresses from the start; the outer
         # ArchiveStream warns about that (see _rewind_warning). The [seekable]
         # accelerator gives real random access.
-        if self._use_accelerator(config):
-            return self._open_accelerated(source, params, config)
+        if self._use_accelerator(call.config):
+            return self._open_accelerated(source, call.params, call.config)
         return None
 
     def _check_accelerator(self, source: CodecSource, config: StreamConfig) -> None:
