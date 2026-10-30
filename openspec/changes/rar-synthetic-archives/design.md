@@ -134,6 +134,37 @@ unrar p -inul -cfg- -ver (-p | -p-) [-n./m<k>] -- <synthetic>.rar
   demultiplexed by unpacked size. Every member in a batch is a regular file with data,
   so the sizes are exact.
 
+### Solid streams: one file per stream, grown as reads go further
+
+A solid member needs its chain, so a member deep in a large solid stream needs most of
+the stream. Building a new chain file for each read would copy the stream again for
+every member: quadratic in disk writes. Instead the reader keeps **one synthetic file
+per solid stream** for its lifetime:
+
+- The first read in a stream writes the chain from the stream start to the target, then
+  ENDARC.
+- A read further into the stream overwrites the ENDARC with the members between the last
+  one written and the new target (headers and packed bytes), then writes ENDARC again.
+  Nothing already in the file is copied again.
+- A read of a member already in the file copies nothing. `unrar` gets the placeholder
+  mask and decodes from the stream start. It also decodes the members after the target
+  that are in the file, up to the furthest member read so far, because `unrar` keeps
+  going after a match. That is never more than today, where the masked read decodes the
+  whole archive.
+
+So the copy is paid **once per solid stream in total**, and only as far as reads have
+reached, never once per member. For a single-group `rar -s` archive read to its end, the
+total copy is the archive's packed data, the same as today's stream-source spool, but
+spread over the reads, and a path source pays it where today it pays nothing. The
+decode per read is what the format needs: from the stream start to the target. That is
+what `unrar` with a positional name does, and what a solid format costs any reader.
+
+The file counts against `SpoolLimits.max_bytes` as it grows. For a path source, when the
+next extension would pass the limit or the threshold of D1, the reader drops back to the
+original archive with the mask for that stream (the plain-name test permitting), as
+today. A pass over a solid archive writes the same per-stream file once and reads it
+with one `unrar` run, with no mask.
+
 ### Where the file lives
 
 A temporary file from `tempfile.mkstemp(suffix=".rar")`, mode 0600, in the system
@@ -346,8 +377,9 @@ full header walk per read, and all the name modelling.
   member on a path source pays a copy of its packed bytes, and a member over the spool
   limit (1 GiB by default) is refused where it reads today.
 - **B. Every `unrar` read, except a large member of a path source whose name is plain
-  (recommended).** "Large" is packed bytes (the whole chain for a solid member) over an
-  implementation threshold, starting at 64 MiB. "Plain" has two parts. Once per reader: every
+  (recommended).** "Large" is packed bytes over an implementation threshold, starting at
+  64 MiB. For a solid member it is the total size of its stream's file (§"Solid
+  streams"), which grows once per stream, not the chain copied again for each read. "Plain" has two parts. Once per reader: every
   name in the archive decodes cleanly (valid UTF-8 for RAR5, ASCII for an 8-bit RAR3
   name) and has no `\`, NUL, leading `/`, or empty, `.` or `..` component, so `unrar`
   reads each name as archivey does. Per member: the name is ASCII (no locale question),

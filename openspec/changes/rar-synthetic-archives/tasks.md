@@ -23,7 +23,7 @@
 
 - [ ] 4.1 `_open_member_with_program`: route per D1; spool budget per copy; temp file lifetime tied to the member stream and respawn
 - [ ] 4.2 Solid chains: chain start from the per-member solid flag; dictionary cost and `_solid_prefix` per chain
-- [ ] 4.3 Solid pass: one synthetic file and one `unrar` run per solid stream
+- [ ] 4.3 Solid streams: one synthetic file per stream for the reader's lifetime, extended by appending (rewrite ENDARC); a solid pass reads it with one `unrar` run
 - [ ] 4.4 Nonsolid pass batching (D3) with the per-member fallback
 - [ ] 4.5 Remove `_ensure_archive_path`'s whole-archive copy where no route needs it any more; keep it for `unar`
 - [ ] 4.6 Under D1 = A or B: remove the mask model, the dot-rule probe, the glob refusal and the `unar` fallback for unaddressable names; deprecate the config flag (D4)

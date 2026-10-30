@@ -79,6 +79,21 @@ the reader closes. A synthetic read SHALL NOT copy a stream source whole.
 | `seekable_members=True`, backward seek | `unrar` runs again on the same file; nothing is copied again |
 | Member stream closed | The file is removed |
 
+### Requirement: Keep one growing synthetic file per solid stream
+
+For a solid archive the reader SHALL keep one synthetic file per solid stream for its
+lifetime. A read past the last member in the file SHALL append the missing members and a
+new ENDARC; a read of a member already in the file SHALL copy nothing. Every byte of the
+stream SHALL be copied at most once per reader.
+
+#### Scenario: solid stream file matrix
+
+| Case | Expected |
+| --- | --- |
+| `open()` of members 1, 2, … n of one solid stream in order | Total bytes written = the packed bytes up to member n, once |
+| `open()` of member 5 after member 50 | Nothing written; `unrar` decodes from the stream start, at most to member 50 |
+| Members in two `rar -s<N>` groups | Two files, one per group |
+
 ### Requirement: Keep the original archive for a large plainly named member of a path source
 
 For an archive opened from a path, the system SHALL keep the `-n` include-mask read of
