@@ -5,6 +5,7 @@ pair, ``open_stream``, ``ReaderContext.decompress``), under the same rules."""
 from __future__ import annotations
 
 import io
+import logging
 import tarfile
 import zlib
 from collections.abc import Iterator
@@ -40,7 +41,17 @@ from archivey.formats import CodecHandler, Magic, register_codec, register_forma
 from archivey.internal.format_adapter import registration_scope
 from tests.streams_util import NonSeekableBytesIO
 from tests.test_format_api import _compressed_archive, _compressed_plugin
-from tests.test_format_api_sequential import _ENTRIES, ToysHandler, build_toys
+from tests.test_format_api_sequential import (
+    _DATA,
+    _ENTRIES,
+    _RPM_NAMES,
+    ToysContainer,
+    ToysHandler,
+    _RpmishReader,
+    _variant,
+    build_rpmish,
+    build_toys,
+)
 
 _MAGIC = b"TOY1"
 
@@ -198,6 +209,11 @@ def test_open_stream_takes_the_codec(toy: ArchiveFormat, fmt: object) -> None:
         assert stream.read() == _TEXT
 
 
+def test_a_misspelled_format_lists_the_codec(toy: ArchiveFormat) -> None:
+    with pytest.raises(ArchiveyUsageError, match="'toy'"):
+        open_stream(io.BytesIO(toy_compress(_TEXT)), format="toi")
+
+
 def test_open_stream_detects_the_codec_and_reads_a_pipe(toy: ArchiveFormat) -> None:
     with open_stream(NonSeekableBytesIO(toy_compress(_TEXT))) as stream:
         assert stream.read() == _TEXT
@@ -324,7 +340,7 @@ def test_a_probe_finds_a_codec_with_no_magic(tmp_path: Path) -> None:
             assert stream.read() == _TEXT
 
 
-def test_a_probe_that_raises_is_no_match() -> None:
+def test_a_probe_that_raises_is_no_match(caplog: pytest.LogCaptureFixture) -> None:
     def probe(prefix: bytes) -> bool:
         raise RuntimeError("broken probe")
 
@@ -335,8 +351,14 @@ def test_a_probe_that_raises_is_no_match() -> None:
     config = ArchiveyConfig(always_probe_content=True)
     with registration_scope():
         register_codec(RaisingHandler)
-        with pytest.raises(FormatDetectionError):
-            detect_format(io.BytesIO(_probed(_TEXT)), config=config)
+        with caplog.at_level(logging.DEBUG, logger="archivey.detection"):
+            with pytest.raises(FormatDetectionError):
+                detect_format(io.BytesIO(_probed(_TEXT)), config=config)
+            with pytest.raises(FormatDetectionError):
+                detect_format(io.BytesIO(_probed(_TEXT)), config=config)
+    # Logged as a format plugin's probe is: WARNING once, then DEBUG.
+    levels = [r.levelno for r in caplog.records if "plugin probe" in r.getMessage()]
+    assert levels == [logging.WARNING, logging.DEBUG]
 
 
 def test_a_cut_stream_is_truncated(toy: ArchiveFormat) -> None:
@@ -429,6 +451,24 @@ def test_a_sequential_plugin_reads_inside_the_codec(
         assert pair in list_supported_formats()
 
 
+def test_forward_stream_decompress_takes_the_codec(
+    toy: ArchiveFormat, tmp_path: Path
+) -> None:
+    """A sequential plugin hands the rest of its archive to a registered codec."""
+
+    class ToyRpmishReader(_RpmishReader):
+        stream_formats = ToyStream
+
+    with registration_scope():
+        rpmish = _variant(ToyRpmishReader, ToysContainer.RPMISH)
+        path = tmp_path / "a.toys"
+        path.write_bytes(build_rpmish(ToyStream.TOY, toy_compress))
+        with open_archive(path, format=rpmish) as reader:
+            assert [m.name for m in reader.members()] == _RPM_NAMES
+            assert reader.read("b.bin") == _DATA["b.bin"]
+            assert reader.read("docs/a.txt") == b"alpha\n"
+
+
 def test_reader_context_decompress_takes_the_codec(
     toy: ArchiveFormat, tmp_path: Path
 ) -> None:
@@ -508,9 +548,28 @@ class _ClaimedAlias(ToyHandler):
     extension_aliases = (".gz",)
 
 
+class _BadValues(PluginStream):
+    EMPTY = ""
+    DOTTED = "a.b"
+    SLASHED = "a/b"
+
+
+def _with_value(value: PluginStream) -> type[CodecHandler]:
+    return type("BadValue", (ToyHandler,), {"stream_format": value})
+
+
+class _DottedAlias(ToyHandler):
+    stream_format = _TarExtension.TGZ2
+    extension_aliases = (".x.y",)
+
+
 @pytest.mark.parametrize(
     ("handler", "match"),
     [
+        (_with_value(_BadValues.EMPTY), "extension '.' must be"),
+        (_with_value(_BadValues.DOTTED), "extension '.a.b' must be"),
+        (_with_value(_BadValues.SLASHED), "extension '.a/b' must be"),
+        (_DottedAlias, "extension '.x.y' must be"),
         (_Builtin, "must be a PluginStream member"),
         (_BuiltinValue, "is a built-in format's"),
         (_ClaimedAlias, "already claimed"),

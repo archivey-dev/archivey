@@ -950,8 +950,8 @@ method archivey.formats.FormatReader.archive_info(self) -> ReaderArchiveInfo
 method archivey.formats.FormatReader.close(self) -> None
 method archivey.formats.FormatReader.translate_exception(self, exc: Exception) -> ArchiveyError | None
 class archivey.formats.ForwardStream()
-init archivey.formats.ForwardStream(read: Callable[[int], bytes], skip: Callable[[int, int], None], decompress: Callable[[int, StreamFormat], ForwardStream] | None = None) -> None
-method archivey.formats.ForwardStream.decompress(self, stream_format: StreamFormat) -> ForwardStream
+init archivey.formats.ForwardStream(read: Callable[[int], bytes], skip: Callable[[int, int], None], decompress: Callable[[int, StreamFormat | PluginStream], ForwardStream] | None = None) -> None
+method archivey.formats.ForwardStream.decompress(self, stream_format: StreamFormat | PluginStream) -> ForwardStream
 property archivey.formats.ForwardStream.offset: int
 method archivey.formats.ForwardStream.read(self, n: int) -> bytes
 method archivey.formats.ForwardStream.read_exact(self, n: int) -> bytes

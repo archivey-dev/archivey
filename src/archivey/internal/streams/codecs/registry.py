@@ -111,10 +111,10 @@ def single_file_codecs() -> tuple[StreamCodec, ...]:
     return tuple(c for c in _STREAM_CODECS if c.single_file_format is not None)
 
 
-def single_file_codec(stream_format: object) -> StreamCodec | None:
+def single_file_codec(stream_format: AnyStreamFormat) -> StreamCodec | None:
     """The single-file codec for ``stream_format``, or ``None`` when no codec decodes
     it as a standalone stream (``UNCOMPRESSED`` included)."""
-    sc = _BY_STREAM_FORMAT.get(stream_format)  # type: ignore[call-overload]
+    sc = _BY_STREAM_FORMAT.get(stream_format)
     return sc if sc is not None and sc.single_file_format is not None else None
 
 

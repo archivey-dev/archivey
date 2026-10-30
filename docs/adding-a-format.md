@@ -493,7 +493,8 @@ def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
 
 The returned stream holds the decoded bytes, and its `offset` counts them from 0. The
 members the walk yields after the call are read from those bytes, from a pipe too, with
-random access to them on a file. archivey decodes with its own codecs, under the
+random access to them on a file. archivey decodes with its own codecs, a codec added
+with `register_codec()` included (pass its `PluginStream` member), under the
 caller's decoder limits and the decompression-ratio guard. The stream the walk called
 `decompress()` on refuses further reads. archivey cannot know the archive holds a
 compression stream before the walk reaches it, so have `archive_info()` return

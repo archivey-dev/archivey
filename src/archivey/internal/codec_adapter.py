@@ -20,6 +20,7 @@ from archivey.internal.excluded_libraries import (
     as_excluded,
     is_excluded_module,
 )
+from archivey.internal.format_adapter import prefix_probe
 from archivey.internal.format_args import add_plugin_spellings, plugin_spelling_clash
 from archivey.internal.registry import _optional, get_registry
 from archivey.internal.streams.archive_stream import RewindWarning
@@ -125,9 +126,10 @@ class HandlerCodec(StreamCodec):
 def _content_probe(probe: Callable[[bytes], bool]) -> Callable[..., bool]:
     """A handler's ``probe(prefix)`` as :meth:`StreamCodec.content_probe`.
 
-    Like a format plugin's probe (``format_adapter._prefix_probe``) it gets the peeked
-    prefix only, and one that raises is no match.
+    A format plugin's probe wrapper (``format_adapter.prefix_probe``) does the work:
+    the probe gets the peeked prefix only, and one that raises is no match, logged.
     """
+    check = prefix_probe(probe)
 
     def content_probe(
         self: StreamCodec,
@@ -139,12 +141,7 @@ def _content_probe(probe: Callable[[bytes], bool]) -> Callable[..., bool]:
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
     ) -> bool:
         del self, source_length, read_at, charge_decode, isolation
-        try:
-            return bool(probe(prefix))
-        except (MemoryError, OSError):
-            raise
-        except Exception:  # noqa: BLE001 - a probe that fails is no match
-            return False
+        return check(prefix)
 
     return content_probe
 
@@ -218,11 +215,11 @@ def _check_handler(handler: type[CodecHandler]) -> PluginStream:
                 "format uses"
             )
     extensions = [f".{stream.value}", *handler.extension_aliases]
-    for ext in handler.extension_aliases:
-        if not ext.startswith(".") or len(ext) < 2:
+    for ext in extensions:
+        if not ext.startswith(".") or len(ext) < 2 or any(c in ext[1:] for c in "./\\"):
             raise ArchiveyUsageError(
                 f"{name}: extension {ext!r} must be a dot followed by at least one "
-                "character"
+                "character, with no further dot or path separator"
             )
     claimed = {ext.lower(): owner for ext, owner in registry.extension_map().items()}
     for base_ext in ("", *registry.stream_pair_extensions()):
