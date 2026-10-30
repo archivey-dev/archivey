@@ -176,13 +176,18 @@ def _refuse_unjoined_volume_names(
     resolved: ResolvedSource,
     format: ArchiveFormat | None,
     archive_name: str | None,
+    *,
+    discover_volumes: bool = True,
 ) -> None:
     if resolved.volume_count != 1:
         return
     # Numbered parts are joined for ZIP and 7z. An explicit other format= (P8)
     # must be honoured or refused as a format conflict, not rewritten as a
-    # missing-volume error.
-    if format is None or format in (ArchiveFormat.ZIP, ArchiveFormat.SEVEN_Z):
+    # missing-volume error. With discovery off nothing looked for the other parts,
+    # so the part is read as the one file it is, and its reader says what it finds.
+    if discover_volumes and (
+        format is None or format in (ArchiveFormat.ZIP, ArchiveFormat.SEVEN_Z)
+    ):
         error = incomplete_lone_numbered_volume_error(archive_name)
         if error is not None:
             raise error
@@ -203,11 +208,12 @@ def _follow_stub_volume(
 
     Returns the resolved first volume, or ``None`` when no split volume sits beside
     the stub (``slot`` is then unchanged). Raises :class:`ArchiveyUsageError` when
-    ``format`` names a different container than the volume's, and the volume-name
-    refusals of :func:`_refuse_unjoined_volume_names`.
+    ``format`` names a different container than the volume's, :class:`OpenError` when
+    the volume found is a symbolic link, and the volume-name refusals of
+    :func:`_refuse_unjoined_volume_names`.
     """
     stub = slot.current.path
-    if stub is None:
+    if stub is None or (config is not None and not config.discover_volumes):
         return None
     alt = first_volume_for_stub(stub)
     if alt is None:
@@ -465,7 +471,9 @@ def open_archive(
     # Collector is created before detection so open + detect share one budget /
     # occurrence order, and reader.diagnostics covers both.
     collector = collector_from_config(effective_config)
-    resolved = resolve_source(source)
+    resolved = resolve_source(
+        source, discover_volumes=effective_config.discover_volumes
+    )
     slot = _SourceSlot(resolved.source)
     try:
         return _open_resolved(
@@ -637,7 +645,9 @@ def _open_resolved(
     # A lone numbered part names the missing siblings (``TruncatedError``). Info-ZIP
     # ``.zNN`` stays the ZIP rejoin-first ``UnsupportedFeatureError`` — those are
     # never concatenated.
-    _refuse_unjoined_volume_names(resolved, format, archive_name)
+    _refuse_unjoined_volume_names(
+        resolved, format, archive_name, discover_volumes=config.discover_volumes
+    )
 
     # --- Resolve format: a directory path is DIRECTORY (and a conflicting explicit
     # format= is rejected, not ignored); else caller format, else magic detect. ---
@@ -818,7 +828,11 @@ def _open_resolved(
             archive_name=archive_name,
         )
 
-    backend_cls = registry.reader_for_format(resolved_format, replacement=replacement)
+    backend_cls = registry.reader_for_format(
+        resolved_format,
+        replacement=replacement,
+        excluded=config.formats.exclude_libraries,
+    )
 
     # The capability half above emits these too, so either refusal half reports them.
     _note_unused_arguments(

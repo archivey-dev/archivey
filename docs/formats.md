@@ -256,7 +256,8 @@ in a real folder named `__MACOSX`.
 
 ## ZIP
 
-- **Needs:** nothing for stored, Deflate, BZip2, LZMA and XZ members, or for ZipCrypto. `[recommended]`
+- **Needs:** nothing for stored, Deflate, BZip2, LZMA and XZ members, the PKZIP 1.x methods Shrink
+  and Implode, or ZipCrypto. `[recommended]`
   adds Deflate64 and PPMd (`inflate64`, `pyppmd`, the packages the 7z reader uses too), WinZip AES
   (`cryptography`), and Zstandard before Python 3.14 (`backports.zstd`). A missing package raises
   `PackageNotInstalledError` when you read such a member.
@@ -596,10 +597,11 @@ On a compressed tar, the stream's own checksum adds three cases:
   holes filled with zeros, so it takes its full size on disk. The zeros count as output for the
   [ratio limit](security.md#hardening), which a TAR checks across the whole archive because a
   member has no compressed size. A 10 MiB sparse file packs into a 10 KiB tar, 1024:1, and
-  `extract_all` raises `ResourceLimitError` against the default `max_ratio` of 1000.
+  `extract_all`, or reading the member, raises `ResourceLimitError` against the default
+  `max_ratio` of 800.
   `member.is_sparse` tells you which members are sparse before you extract. For a sparse archive
   you trust, raise the limit with
-  `reader.extract_all(dest, limits=ExtractionLimits(max_ratio=...))`, or `max_ratio=None`.
+  `ArchiveyConfig(decoder_limits=DecoderLimits(max_ratio=...))`, or `max_ratio=None`.
 - A PAX time record that does not parse leaves that time unset, and `MEMBER_TIMESTAMP_INVALID`
   reports it.
 

@@ -15,6 +15,7 @@ from archivey.internal.config import (
     StreamConfig,
 )
 from archivey.internal.dataclass_copy import copy_with
+from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.streams.archive_stream import (
     ArchiveStreamImpl,
     ExceptionTranslator,
@@ -43,6 +44,7 @@ from archivey.internal.streams.codecs.lzma_codec import (
 from archivey.internal.streams.codecs.ppmd_codec import PpmdCodec
 from archivey.internal.streams.codecs.stored_codec import StoredCodec
 from archivey.internal.streams.codecs.unix_compress_codec import UnixCompressCodec
+from archivey.internal.streams.codecs.zip_legacy_codec import ImplodeCodec, ShrinkCodec
 from archivey.internal.streams.codecs.zlib_codec import (
     DeflateCodec,
     ZlibCodec,
@@ -55,6 +57,7 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.types import (
     MissingComponent,
+    OptionalLibrary,
     StreamFormat,
 )
 
@@ -83,6 +86,8 @@ STREAM_CODECS: tuple[StreamCodec, ...] = (
     UnixCompressCodec(),
     PpmdCodec(),
     Deflate64Codec(),
+    ShrinkCodec(),
+    ImplodeCodec(),
 )
 
 # The codecs presented as standalone single-file formats (a subset of STREAM_CODECS).
@@ -111,14 +116,20 @@ def codec_for_stream_format(stream_format: StreamFormat) -> Codec:
     return _BY_STREAM_FORMAT[stream_format].codec
 
 
-def codec_requirement(codec: Codec) -> MissingComponent | None:
-    """The optional-dependency requirement declared by ``codec``, if any."""
+def codec_requirement(
+    codec: Codec, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
+) -> MissingComponent | None:
+    """The optional-dependency requirement declared by ``codec``, if any, as a call
+    with ``excluded`` reports it (:meth:`StreamCodec.requirement_under`)."""
     sc = _BY_CODEC.get(codec)
-    return sc.requirement if sc is not None else None
+    return sc.requirement_under(excluded) if sc is not None else None
 
 
-def is_codec_available(codec: Codec) -> bool:
-    """Whether ``codec``'s decompression backend is importable right now.
+def is_codec_available(
+    codec: Codec, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
+) -> bool:
+    """Whether ``codec``'s decompression backend is importable right now, and
+    ``excluded`` (a call's ``FormatPolicy.exclude_libraries``) does not turn it off.
 
     A codec with no ``requirement`` is stdlib-backed and always available; an optional codec
     reports on its backing package's live sentinel. Used by the registry to compute a
@@ -126,7 +137,7 @@ def is_codec_available(codec: Codec) -> bool:
     sentinels live, so it reflects test monkeypatching.
     """
     sc = _BY_CODEC.get(codec)
-    return sc is None or sc.available
+    return sc is None or sc.available(excluded)
 
 
 @dataclass(frozen=True)

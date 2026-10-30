@@ -883,6 +883,9 @@ One PR each, in order; every PR goes through the review label.
    others (DR-20: no native code). Only DOS-era archives use them, so speed does not
    matter. They need `CompressionAlgorithm` members, which are public names and go to
    the maintainer. Format-zip spec, `docs/formats.md`, handbook §2.3.
+   Picked up 2026-10-30: `codecs/zip_legacy_decoder.py` and `zip_legacy_codec.py`,
+   built-in `StreamCodec`s, so the public `register_codec()` the plugin API plans
+   (plugin-api tasks group 5) can hand them to plugin formats later.
 
 Stage 6 is independent of 3 to 5 and can run beside them; stage 7 is deferred.
 

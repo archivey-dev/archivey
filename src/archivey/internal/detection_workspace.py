@@ -31,6 +31,7 @@ from archivey.detection_cost import (
     TierSkipReason,
 )
 from archivey.internal.detection_cost_receipt import MutableDetectionCostReceipt
+from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.source import ArchiveSource, seek_is_expensive
 from archivey.internal.streams.streamtools import (
     is_seekable,
@@ -38,6 +39,7 @@ from archivey.internal.streams.streamtools import (
     read_exact,
     source_byte_size,
 )
+from archivey.types import OptionalLibrary
 
 # Default amount detection peeks (``format-detection``'s DETECTION_LIMIT). A peek grows
 # past it on demand — 32 774 bytes when the ISO probe is triggered — so this is the
@@ -77,10 +79,14 @@ class PrefixWorkspace:
         receipt: MutableDetectionCostReceipt | None = None,
         *,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
+        excluded_libraries: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
     ) -> None:
         self._budget = budget
         # The caller's ``process_isolation``: where the probes' trial decodes run.
         self.isolation = isolation
+        # The caller's ``FormatPolicy.exclude_libraries``: a probe does not decode with
+        # a package it names.
+        self.excluded_libraries = excluded_libraries
         # A caller-supplied receipt accumulates across workspaces: ``detect_format``
         # passes one to both the stub pass and the sibling-volume pass.
         self._receipt = (

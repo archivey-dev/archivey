@@ -39,7 +39,10 @@ The ZIP backend SHALL expose these properties for every opened ZIP archive:
 member map without extra archive I/O. Unencrypted ZIP member data SHALL decode
 through the shared `compressed-streams` codec layer (bounded local-header parse
 + slice + method-id dispatch), including XZ (method 95, `.xz` data, decoded in core
-with stdlib `lzma`), and extended codecs when their backends are
+with stdlib `lzma`), the PKZIP 1.x methods Shrink (method 1) and Implode (method 6,
+its window size and tree count from general-purpose bits 1 and 2), decoded in core in
+pure Python and ended at the member's declared size since neither has an end marker,
+and extended codecs when their backends are
 installed: Deflate64 (method 9, via `[recommended]`/`inflate64`), ZSTD (method 93), PPMD
 (method 98, ZIP PPMd8 framing via `[recommended]`/`pyppmd`). A missing optional backend
 SHALL raise `PackageNotInstalledError`. An unknown/unsupported method id SHALL
@@ -55,6 +58,9 @@ methods through the same codec layer, after a decrypt stage.
 | Open valid ZIP | `cost.listing_cost=INDEXED`, `cost.access_cost=DIRECT`, `cost.stream_capability=SEEKABLE` |
 | `reader.get("some/member.txt")` | Satisfied from the in-memory central-directory name map; no additional archive I/O |
 | Member uses unknown method id | Listing succeeds; reading raises `UnsupportedFeatureError` |
+| Shrink (1) or Implode (6) member | Decodes in core; `compression` is `SHRINK` or `IMPLODE` |
+| Shrink or Implode member from a pipe whose size is only in a data descriptor (bit 3) | `UnsupportedFeatureError`: neither method marks its end |
+| Shrink stream whose code table fills with no partial clear | `CorruptionError` (`unzip` and 7-Zip 26.05 refuse it too) |
 | Deflate64/Zstd/PPMd member, backend present | Decodes via the shared codec layer |
 | Deflate64/Zstd/PPMd member, backend absent | `PackageNotInstalledError` |
 | Optional ZIP codecs all installed | `format_availability(ZIP)` is FULL |

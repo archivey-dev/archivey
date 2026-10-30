@@ -41,7 +41,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import codecs as codecs_module
-from archivey.internal.streams.child_process import outside_death
+from archivey.internal.streams.child_process import is_no_verdict, outside_death
 from archivey.internal.streams.codecs import Codec, open_codec_stream, rapidgzip_child
 from archivey.internal.streams.codecs.rapidgzip_child import (
     RapidgzipChildReportedError,
@@ -673,11 +673,15 @@ def test_a_child_death_is_reported_by_how_it_ended(
         assert rapidgzip_child.crashed_on_data(first.value) is (
             expected is CorruptionError
         )
+        # An end from outside the decoder is no verdict on the data, so a stream
+        # that resumed from an index point keeps that index.
+        assert is_no_verdict(first.value) is (expected is not CorruptionError)
         # Every later call raises the same error again.
         with pytest.raises(expected) as second:
             child.read(1)
         assert type(second.value) is expected
         assert str(second.value) == str(first.value)
+        assert is_no_verdict(second.value) is is_no_verdict(first.value)
 
 
 @_POSIX
@@ -700,9 +704,11 @@ def test_a_child_killed_from_outside_ends_the_stream(
         with pytest.raises(expected) as first:
             stream.seek(0)
         assert type(first.value) is expected
+        assert is_no_verdict(first.value)
         with pytest.raises(expected) as second:
             stream.read(1)
         assert str(second.value) == str(first.value)
+        assert is_no_verdict(second.value)
 
 
 @pytest.mark.parametrize("returncode", [-9, -15, 1])
@@ -1141,11 +1147,13 @@ def _break_child_start(
 def test_a_child_that_cannot_start_is_a_resource_limit_under_on(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, how: str
 ) -> None:
-    """ON asked for rapidgzip, so a refused child is an error, not a quiet fallback."""
+    """ON asked for rapidgzip, so a refused child is an error, not a quiet fallback,
+    and one that says nothing about the data."""
     path = _write(tmp_path, "valid.gz", gzip.compress(_payload()))
     _break_child_start(monkeypatch, tmp_path, how)
-    with pytest.raises(ResourceUnavailableError, match="cannot start"):
+    with pytest.raises(ResourceUnavailableError, match="cannot start") as caught:
         open_codec_stream(Codec.GZIP, str(path), config=_ON)
+    assert is_no_verdict(caught.value)
 
 
 @pytest.mark.parametrize("mode", ["path", "bytesio"])

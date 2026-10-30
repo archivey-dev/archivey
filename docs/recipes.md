@@ -48,22 +48,26 @@ stops the extraction with an exception. Without it, that member is skipped and t
 as `ExtractionStatus.BLOCKED`. [Extracting](extracting.md#options) explains both options.
 
 By default, an extraction raises `ResourceLimitError` once it has written 2 GiB or 262,144 entries,
-or when data expands more than 1000 times. A sparse TAR member, such as a disk image, can expand
-that much on its own. Listing an archive also raises `ResourceLimitError` past 262,144 members, or
-past 64 MiB of text kept for names, comments and link targets. A larger dataset from a source you
-trust needs higher limits:
+or when data expands more than 800 times. A sparse TAR member, such as a disk image, can expand
+that much on its own, and so can a large zero-filled file in any format. Reading a member raises it
+past 800 times too, and listing an archive raises it past 262,144 members, past 64 MiB of text kept
+for names, comments and link targets, or when a compressed tar expands more than 800 times. A larger dataset from a source you trust needs higher limits:
 
 ```python
 import archivey
 
-config = archivey.ArchiveyConfig(listing_limits=archivey.ListingLimits.UNLIMITED)
+config = archivey.ArchiveyConfig(
+    listing_limits=archivey.ListingLimits.UNLIMITED,
+    decoder_limits=archivey.DecoderLimits(max_ratio=None),
+)
 
 with archivey.open_archive("dataset.tar.gz", config=config) as archive:
     archive.extract_all("data/", limits=archivey.ExtractionLimits.UNLIMITED)
 ```
 
-`ExtractionLimits.UNLIMITED` turns off all three extraction limits, the expansion check included,
-and `ListingLimits.UNLIMITED` turns off both listing limits. Listing still costs about 1.5 KiB of
+`ExtractionLimits.UNLIMITED` turns off the extraction limits, `DecoderLimits(max_ratio=None)` the
+expansion check for reads, listing and extraction, and `ListingLimits.UNLIMITED` both listing
+limits. Listing still costs about 1.5 KiB of
 memory per member. To keep some protection, raise single fields instead, such as
 `ListingLimits(max_members=5_000_000, max_metadata_bytes=2**30)`.
 [Hardening](security.md#hardening) lists each limit with its default and what it costs.
@@ -237,9 +241,11 @@ Each setting in `CONFIG` does one job:
   without its end marker
   ([Raising or quieting a diagnostic](errors-and-diagnostics.md#raising-or-quieting-a-diagnostic)).
 
-`ExtractionLimits` covers only what `extract_all` writes, so a loop that reads member data keeps
-its own count. [Where the guarantees stop](security.md#where-the-guarantees-stop) says which limits
-apply to a read, and [Hardening](security.md#hardening) lists every limit.
+`max_extracted_bytes` and `max_entries` cover only what `extract_all` writes, so a loop that reads
+member data keeps its own count of bytes. `max_ratio` holds the reads too, so a member that expands
+past it raises `ResourceLimitError` from the read.
+[Where the guarantees stop](security.md#where-the-guarantees-stop) says which limits apply to a
+read, and [Hardening](security.md#hardening) lists every limit.
 
 ### Refuse an upload with a reason
 

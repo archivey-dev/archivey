@@ -22,7 +22,6 @@ import pytest
 
 from archivey.diagnostics import DiagnosticPolicy
 from archivey.exceptions import (
-    ArchiveyError,
     ArchiveyUsageError,
     DiagnosticRaisedError,
     OpenError,
@@ -66,7 +65,9 @@ def _assert_closes_cleanly(obj: io.IOBase) -> None:
     ("sources", "error"),
     [
         pytest.param(lambda _tmp: [], ArchiveyUsageError, id="no-volumes"),
-        pytest.param(lambda tmp: [tmp / "gone.bin"], OpenError, id="missing-path"),
+        pytest.param(
+            lambda tmp: [tmp / "gone.bin"], FileNotFoundError, id="missing-path"
+        ),
         pytest.param(lambda tmp: [tmp], OpenError, id="directory"),
         pytest.param(
             lambda _tmp: [ShortReadNonSeekable(b"abc", 1)],
@@ -76,7 +77,7 @@ def _assert_closes_cleanly(obj: io.IOBase) -> None:
     ],
 )
 def test_concatenated_file_refusal_closes_cleanly(
-    tmp_path: Path, sources: object, error: type[ArchiveyError]
+    tmp_path: Path, sources: object, error: type[Exception]
 ) -> None:
     with pytest.raises(error) as caught:
         ConcatenatedFile(sources(tmp_path))  # type: ignore[operator]
@@ -273,6 +274,9 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.streams.streamtools.sparse.SparseStream": (
         "DelegatingStream.__init__ first; close() reads nothing assigned after it"
     ),
+    "archivey.internal.bomb_tracker.DecodeRatioGuard": "plain assignments only",
+    "archivey.internal.bomb_tracker.MemberRatioGuard": "plain assignments only",
+    "archivey.internal.bomb_tracker._RatioGuard": "plain assignments only",
     "archivey.internal.streams.counting.CountingReader": "plain assignments only",
     "archivey.internal.streams.counting.OutputCountingStream": "plain assignments only",
     "archivey.internal.streams.counting.SeekCountingStream": "plain assignments only",

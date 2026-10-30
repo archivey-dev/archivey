@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 from typing import BinaryIO
 
@@ -16,6 +17,7 @@ from archivey.internal.config import (
     DecoderLimits,
     StreamConfig,
 )
+from archivey.internal.excluded_libraries import as_excluded
 from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
@@ -135,15 +137,31 @@ class ZstdCodec(StreamCodec):
     def _backend_present(self) -> bool:
         return deps.zstd is not None
 
+    def excluded_by(self, excluded: frozenset[OptionalLibrary]) -> bool:
+        # The module in use, which ``requirement`` (the backport) may not name.
+        return deps.zstd_library is not None and deps.zstd_library in excluded
+
+    def requirement_under(
+        self, excluded: frozenset[OptionalLibrary]
+    ) -> MissingComponent | None:
+        if not self.excluded_by(excluded):
+            return self.requirement
+        assert deps.zstd_library is not None and self.requirement is not None
+        return as_excluded(
+            dataclasses.replace(self.requirement, name=deps.zstd_library)
+        )
+
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        if deps.zstd is None:
+        excluded = config.excluded_libraries
+        if deps.zstd is None or self.excluded_by(excluded):
             # The backport is only relevant below 3.14; on 3.14+ the stdlib module is used,
             # so the bare hint alone would send such a caller installing a no-op.
             raise self._missing(
                 "zstd streams",
                 note="On Python 3.14+ the stdlib compression.zstd module is used instead.",
+                excluded=excluded,
             )
         zstd = deps.zstd
         window_log_max, _ = _zstd_window_log_max(config.decoder_limits)

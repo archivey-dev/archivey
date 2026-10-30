@@ -19,7 +19,7 @@ rounds are there to find. The current skill and ``scripts/review_prep.py`` are c
 over the old ones. ``gh`` is replaced by a stub, and the prompt says to post nothing and
 edit nothing: the review is the reviewer's final answer, saved as ``review.md``.
 
-Each review is a full Opus round, so a run of every case costs real quota: run one case
+Each review is a full review round, so a run of every case costs real quota: run one case
 first when trying a change, and the whole set when the change is done.
 
 Needs the ``claude`` CLI on PATH; nothing from the project's environment.
@@ -36,6 +36,7 @@ import subprocess
 import sys
 import time
 import tomllib
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -47,7 +48,7 @@ SKILL = Path(".claude/skills/code-review-skill")
 # Copied with the skill: its §1 tells the reviewer to run the tier command.
 COPIED = (SKILL, Path("scripts/review_prep.py"))
 
-REVIEW_MODEL = "claude-opus-5"  # what .github/workflows/review-loop.yml runs
+REVIEW_MODEL = "claude-sonnet-5-5"  # what .github/workflows/review-loop.yml runs
 # The loop's tools less WebFetch: a fetch of the PR's page on GitHub would show the
 # later rounds and the fix.
 REVIEW_TOOLS = "Read,Grep,Glob,Bash"
@@ -181,7 +182,7 @@ def ensure_commits(case: Case) -> None:
             )
 
 
-def prepare(case: Case, work: Path) -> Path:
+def prepare(case: Case, work: Path, install: bool = False) -> Path:
     """A repository holding history up to ``case.head`` only, ``main`` at its base."""
     ensure_commits(case)
     repo = work / "repo"
@@ -189,7 +190,8 @@ def prepare(case: Case, work: Path) -> Path:
         shutil.rmtree(repo)
     repo.mkdir(parents=True)
     # Fetch through a temporary ref: a local fetch by bare SHA is not always allowed.
-    ref = f"refs/review-eval/{case.id}"
+    # Unique, so runs of the same case at once do not share it.
+    ref = f"refs/review-eval/{case.id}-{uuid.uuid4().hex[:8]}"
     git("update-ref", ref, case.head)
     try:
         git("init", "-q", cwd=repo)
@@ -209,6 +211,12 @@ def prepare(case: Case, work: Path) -> Path:
         else:
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / path, dest)
+    if install:
+        # What `scripts/setup-dev-env.sh` installs, at the PR's own lockfile.
+        subprocess.run(
+            ["uv", "sync", "-q", "--frozen", "--group", "dev", "--extra", "all"],
+            cwd=repo, check=True, capture_output=True, text=True,
+        )  # fmt: skip
     stub = work / "bin"
     stub.mkdir(exist_ok=True)
     (stub / "gh").write_text(GH_STUB)
@@ -217,7 +225,13 @@ def prepare(case: Case, work: Path) -> Path:
 
 
 def claude(
-    prompt: str, *, model: str, cwd: Path, tools: str, env: dict[str, str]
+    prompt: str,
+    *,
+    model: str,
+    cwd: Path,
+    tools: str,
+    env: dict[str, str],
+    effort: str | None = None,
 ) -> dict:
     cmd = [
         "claude", "-p", prompt,
@@ -230,6 +244,8 @@ def claude(
     ]  # fmt: skip
     if tools:
         cmd += ["--allowedTools", tools]
+    if effort:
+        cmd += ["--effort", effort]
     out = subprocess.run(
         cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=TIMEOUT,
         check=False,
@@ -239,12 +255,17 @@ def claude(
     return json.loads(out.stdout)
 
 
-def review(case: Case, out: Path, model: str) -> None:
+def review(
+    case: Case, out: Path, model: str, effort: str | None = None, install: bool = False
+) -> None:
     work = out / case.id
     work.mkdir(parents=True, exist_ok=True)
-    repo = prepare(case, work)
+    repo = prepare(case, work, install)
     env = dict(os.environ)
     env["PATH"] = f"{work / 'bin'}{os.pathsep}{env['PATH']}"
+    if install:
+        env["PATH"] = f"{repo / '.venv' / 'bin'}{os.pathsep}{env['PATH']}"
+        env["VIRTUAL_ENV"] = str(repo / ".venv")
     # `--setting-sources ""` already keeps the old head's SessionStart hook from
     # loading; this keeps it a no-op should a run load project settings again.
     env["CLAUDE_CODE_REMOTE"] = "false"
@@ -254,7 +275,7 @@ def review(case: Case, out: Path, model: str) -> None:
     started = time.monotonic()
     result = claude(
         REVIEW_PROMPT.format(pr=case.pr, body=case.body),
-        model=model, cwd=repo, tools=REVIEW_TOOLS, env=env,
+        model=model, cwd=repo, tools=REVIEW_TOOLS, env=env, effort=effort,
     )  # fmt: skip
     (work / "review.md").write_text(result.get("result", ""), encoding="utf-8")
     meta = {
@@ -262,6 +283,8 @@ def review(case: Case, out: Path, model: str) -> None:
         "pr": case.pr,
         "head": case.head,
         "model": model,
+        "effort": effort,
+        "installed": install,
         "tools": REVIEW_TOOLS,
         "skill": skill_version(),
         "seconds": round(time.monotonic() - started),
@@ -344,6 +367,11 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--judge-model", default=JUDGE_MODEL)
         if name == "run":
             p.add_argument("--model", default=REVIEW_MODEL)
+            p.add_argument("--effort", help="the reviewer's effort level")
+            p.add_argument(
+                "--install", action="store_true",
+                help="install the project's environment at the PR's lockfile first",
+            )  # fmt: skip
             p.add_argument("--jobs", type=int, default=1, help="reviews at a time")
     args = parser.parse_args(argv)
 
@@ -362,7 +390,7 @@ def main(argv: list[str] | None = None) -> int:
 
     def one(case: Case) -> None:
         if args.command == "run":
-            review(case, out, args.model)
+            review(case, out, args.model, args.effort, args.install)
         verdict = judge(case, out, args.judge_model)
         print(f"{case.id}: {verdict['caught']}", flush=True)
 

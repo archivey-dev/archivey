@@ -68,38 +68,38 @@ last one archives the change.
 
 ## 4. Excluded libraries and availability (part 4)
 
-- [ ] 4.1 `FormatPolicy(exclude_libraries=)` takes `OptionalLibrary | OptionalLibraryStr`
+- [x] 4.1 `FormatPolicy(exclude_libraries=)` takes `OptionalLibrary | OptionalLibraryStr`
       and stores `frozenset[OptionalLibrary]`, refusing any other entry; a named plugin
       whose `requires` holds an excluded package is refused. The cross-field check in
       `ArchiveyConfig.__post_init__`: an excluded `rapidgzip` with `use_rapidgzip=ON`
       or `use_indexed_bzip2=ON`.
-- [ ] 4.2 Carry the excluded names from `ArchiveyConfig.formats` on the reader config
+- [x] 4.2 Carry the excluded names from `ArchiveyConfig.formats` on the reader config
       and the stream config, and pass them to every place that answers "is this package
       available": `LazyOptional`, `registry._optional` / `_missing_dependency`,
       `codecs.registry.is_codec_available`, `StreamCodec.available` /
       `_backend_present`, backend `REQUIRED_MODULES`. An excluded name answers "absent"
       first; no module global changes per call. Build the `MissingComponent` per call
       with `reason` naming `config.formats`.
-- [ ] 4.3 `format_availability(fmt, config=None)` and `list_supported_formats(config=None)`
+- [x] 4.3 `format_availability(fmt, config=None)` and `list_supported_formats(config=None)`
       count excluded libraries as absent; the list does not filter by `allows()`. Update
       both docstrings in `registry.py`, which today say the answer does not change with
       `ArchiveyConfig`. Under `replace=` answer for the replacement's backend and its
       `requires`. Also update the `config.py` RAR docstring ("the `format_availability()`
       query takes no config") and the comment on `RarReader.missing_programs`.
-- [ ] 4.4 Widen the `PackageNotInstalledError` docstring to cover a package the policy
+- [x] 4.4 Widen the `PackageNotInstalledError` docstring to cover a package the policy
       excludes.
-- [ ] 4.5 Tests: an excluded `pyppmd` makes a PPMd 7z member raise
+- [x] 4.5 Tests: an excluded `pyppmd` makes a PPMd 7z member raise
       `PackageNotInstalledError` while the other members read; an excluded `rapidgzip`
       under `AUTO` falls back and under `ON` is refused; an excluded lazy package is
       never imported; two threads, one excluding `pyppmd` and one not, each get their
       own answer; `format_availability(SEVEN_Z, config=...)` answers `PARTIAL` with
       `pyppmd` installed and excluded; availability answers for the replacement (NONE,
       `P.open` not called); `list_supported_formats(config=...)` does not filter by
-      `allows()`; excluding `compression.zstd` falls through to `backports.zstd`; a
+      `allows()`; excluding the zstd module in use turns zstd off and the other changes nothing; a
       misspelled library name is refused; a registered plugin the policy does not name, whose
       `requires` holds an excluded package, reads as NONE and refuses at open.
-- [ ] 4.6 Docs: excluded libraries on the config and security pages.
+- [x] 4.6 Docs: excluded libraries on the config and security pages.
 
 ## 5. Archive
 
-- [ ] 5.1 `openspec archive format-policy --yes`, in the pull request for part 4.
+- [x] 5.1 `openspec archive format-policy --yes`, in the pull request for part 4.

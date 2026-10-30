@@ -974,6 +974,14 @@ def test_sparse_member_extracts_dense_and_counts_toward_ratio(tmp_path: Path) ->
         assert f.read(1024 * 1024).count(0) == 1024 * 1024
 
 
+def test_sparse_member_read_counts_toward_ratio(tmp_path: Path) -> None:
+    # docs/formats.md: reading the member is refused as extracting it is.
+    archive = tmp_path / "sparse.tar"
+    archive.write_bytes(_tar_sparse_gnu(10 * 1024 * 1024))
+    with open_archive(archive) as ar, pytest.raises(ResourceLimitError):
+        ar.read("sparse.bin")
+
+
 def _tar_sparse_pax_1_0() -> bytes:
     """A PAX 1.0 sparse member, the encoding GNU tar writes under ``--format=pax``.
 

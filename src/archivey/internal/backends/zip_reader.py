@@ -249,6 +249,10 @@ _ZIP_MASK_ENCRYPTED = 0x1
 # end-of-stream marker. When it is clear there is no marker, and APPNOTE 4.4.4 says the
 # decoder stops at the declared uncompressed size.
 _ZIP_MASK_LZMA_EOS_MARKER = 0x2
+# ZIP general-purpose bits 1 and 2 on an Implode (method 6) member: an 8 KiB window
+# (else 4 KiB), and three Shannon-Fano trees (else two, with literals stored as bytes).
+_ZIP_MASK_IMPLODE_8K_WINDOW = 0x2
+_ZIP_MASK_IMPLODE_3_TREES = 0x4
 # ZIP general-purpose bit 5: the body is PKWARE "compressed patched data", a patch
 # against some other file rather than the file itself. Nothing implements it; stdlib
 # zipfile refuses it too.
@@ -272,6 +276,8 @@ _STRONG_ENCRYPTION_MSG = (
 # raising, matching the open-ended CompressionAlgorithm contract.
 _ZIP_COMPRESSION_ALGOS: dict[int, CompressionAlgorithm] = {
     0: CompressionAlgorithm.STORED,
+    1: CompressionAlgorithm.SHRINK,
+    6: CompressionAlgorithm.IMPLODE,
     8: CompressionAlgorithm.DEFLATE,
     9: CompressionAlgorithm.DEFLATE64,
     12: CompressionAlgorithm.BZIP2,
@@ -293,6 +299,8 @@ _UNKNOWN_COMPRESSION = (CompressionMethod(algo=CompressionAlgorithm.UNKNOWN),)
 # ZIP method id -> shared codec-layer Codec for member decode, after any decrypt stage.
 _ZIP_METHOD_CODECS: dict[int, Codec] = {
     0: Codec.STORED,
+    1: Codec.SHRINK,
+    6: Codec.IMPLODE,  # settings from general-purpose bits 1 and 2
     8: Codec.DEFLATE,
     9: Codec.DEFLATE64,
     12: Codec.BZIP2,
@@ -3457,6 +3465,15 @@ class ZipReader(BaseArchiveReader):
             # (93) reads every frame instead, as a .zst file and a 7z coder do: RFC
             # 8878 defines Zstd data as one or more frames.
             return CodecParams(single_stream=True)
+        if method in (1, 6):  # Shrink, Implode: no end marker, so the size ends them
+            known = size if size is not None and size >= 0 else None
+            if method == 1:
+                return CodecParams(unpack_size=known)
+            return CodecParams(
+                unpack_size=known,
+                implode_large_window=bool(loc.flags & _ZIP_MASK_IMPLODE_8K_WINDOW),
+                implode_literal_tree=bool(loc.flags & _ZIP_MASK_IMPLODE_3_TREES),
+            )
         return CodecParams()
 
     def _verified_member_parts(
@@ -3615,6 +3632,7 @@ class ZipReader(BaseArchiveReader):
                     aes=aes,
                     password=password,
                     compress_size=loc.compressed_size,
+                    excluded=self._stream_config.excluded_libraries,
                 )
             except ArchiveyError as exc:
                 raw.close()
