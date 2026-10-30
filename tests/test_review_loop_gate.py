@@ -952,8 +952,19 @@ def test_the_reviewer_may_send_subagents_and_is_told_to_batch() -> None:
     prompt = (ROOT / ".github" / "review-loop-prompt.md").read_text(encoding="utf-8")
     assert "Send independent tool calls together in one turn" in prompt
     assert '`model: "sonnet"`' in prompt
+    # The pull request's tree cannot swap in its own `Explore`.
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "rm -rf .claude/agents" in _step("Use only the built-in subagents")
+    assert workflow.index("- name: Use only the built-in subagents") < workflow.index(
+        "- name: Claude review"
+    )
     # The eval's copy of the paragraph keeps the same guards on a subagent's answer.
     eval_script = (ROOT / "scripts" / "review_eval.py").read_text(encoding="utf-8")
     for text in (" ".join(prompt.split()), " ".join(eval_script.split())):
+        assert '`subagent_type: "Explore"`' in text
+        assert (
+            "Read yourself the diff and the review's own instructions and contracts"
+            in text
+        )
         assert "Re-read the lines a finding cites before you file it" in text
         assert "not to confirm a suspicion" in text
