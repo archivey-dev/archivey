@@ -199,6 +199,24 @@ def test_inside_a_compression_stream(
         _check_content("gnu", seen[member_name], member_name)
 
 
+@pytest.mark.parametrize("compressed", [False, True], ids=["plain", "gz"])
+def test_seeks_inside_a_member(tmp_path: Path, compressed: bool) -> None:
+    """With ``seekable_members=True`` a member stream seeks, plain and inside a
+    compression stream (the shared seek matrix has no ar row)."""
+    data = (DATA / "gnu.a").read_bytes()
+    path = _archive(tmp_path, gzip.compress(data, mtime=0) if compressed else data)
+    content = CONTENT["odd.bin"]
+    with (
+        open_archive(path, seekable_members=True) as reader,
+        reader.open("odd.bin") as stream,
+    ):
+        assert stream.seekable()
+        stream.seek(500)
+        assert stream.read(100) == content[500:600]
+        stream.seek(10)
+        assert stream.read() == content[10:]
+
+
 def test_a_thin_archive_is_refused() -> None:
     with pytest.raises(UnsupportedFeatureError, match="thin"):
         open_archive(DATA / "thin.a")
