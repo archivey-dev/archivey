@@ -563,9 +563,40 @@ class _DottedAlias(ToyHandler):
     extension_aliases = (".x.y",)
 
 
+class _NoDotAlias(ToyHandler):
+    extension_aliases = ("toyz",)
+
+
+class _NoMagicBytes(ToyHandler):
+    magic = (Magic(0, b""),)
+
+
+class _NegativeMagic(ToyHandler):
+    magic = (Magic(-1, b"T"),)
+
+
+class _ProbeNotCallable(ToyHandler):
+    probe = "yes"  # type: ignore[assignment]
+
+
+class _RequiresString(ToyHandler):
+    requires = "toylib"  # type: ignore[assignment]
+
+
+class _NameClash(PluginStream):
+    # The member name is a format= spelling already: ``Z``, unix compress.
+    Z = "toyclash"
+
+
 @pytest.mark.parametrize(
     ("handler", "match"),
     [
+        (_NoDotAlias, "extension 'toyz' must be"),
+        (_NoMagicBytes, "needs a non-negative offset"),
+        (_NegativeMagic, "needs a non-negative offset"),
+        (_ProbeNotCallable, "probe must be callable or None"),
+        (_RequiresString, "requires must be a tuple of module names"),
+        (_with_value(_NameClash.Z), "spelling 'Z' already names"),
         (_with_value(_BadValues.EMPTY), "extension '.' must be"),
         (_with_value(_BadValues.DOTTED), "extension '.a.b' must be"),
         (_with_value(_BadValues.SLASHED), "extension '.a/b' must be"),
@@ -579,6 +610,28 @@ class _DottedAlias(ToyHandler):
 def test_registration_refuses(handler: type, match: str) -> None:
     with registration_scope(), pytest.raises(ArchiveyUsageError, match=match):
         register_codec(handler)
+
+
+def test_an_extension_a_pair_would_take_is_refused() -> None:
+    """``.toys.qq`` is another plugin's, so a codec ``qq`` cannot make that pair."""
+
+    class Qq(PluginStream):
+        QQ = "qq"
+
+    class QqHandler(ToyHandler):
+        stream_format = Qq.QQ
+        extension_aliases = ()
+
+    class ToysQqHandler(ToysHandler):
+        format = ArchiveFormat(ToysContainer.SUM16, StreamFormat.UNCOMPRESSED)
+        extensions = (".toys.qq",)
+        magic = ()
+
+    with registration_scope():
+        register_format(ToysHandler)
+        register_format(ToysQqHandler)
+        with pytest.raises(ArchiveyUsageError, match="'.toys.qq' is already claimed"):
+            register_codec(QqHandler)
 
 
 def test_a_value_is_registered_once() -> None:

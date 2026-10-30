@@ -157,13 +157,6 @@ def codec_class(handler: type[CodecHandler]) -> type[HandlerCodec]:
         "magic": tuple(MagicSignature(m.offset, m.data, fmt) for m in handler.magic),
         "extension_aliases": tuple(handler.extension_aliases),
         "checks_content": bool(handler.checks_content),
-        # What ``StreamCodec._missing`` asserts on; the report names the module that
-        # is missing (``requirement_under``).
-        "requirement": (
-            MissingComponent(handler.requires[0], handler.install_hint or "")
-            if handler.requires
-            else None
-        ),
     }
     starts = [m.data for m in handler.magic if m.offset == 0]
     if handler.concatenated and starts:
@@ -227,7 +220,7 @@ def _check_handler(handler: type[CodecHandler]) -> PluginStream:
             owner = claimed.get(f"{base_ext}{ext}".lower())
             if owner is not None:
                 raise ArchiveyUsageError(
-                    f"{name}: extension {base_ext}{ext!r} is already claimed by "
+                    f"{name}: extension {base_ext + ext!r} is already claimed by "
                     f"{owner.display_name}"
                 )
     for magic in handler.magic:

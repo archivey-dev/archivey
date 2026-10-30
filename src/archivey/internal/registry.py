@@ -425,7 +425,11 @@ class BackendRegistry:
             return dict(backend.EXTENSIONS)
         extensions: dict[str, ArchiveFormat] = {}
         for ext in backend.PAIR_EXTENSIONS:
-            fmt = backend.EXTENSIONS[ext]
+            fmt = backend.EXTENSIONS.get(ext)
+            assert fmt is not None, (
+                f"{backend.__name__}.PAIR_EXTENSIONS has {ext!r}, which is not an "
+                "EXTENSIONS key"
+            )
             for codec in codecs:
                 if codec.stream_format is None:
                     continue
