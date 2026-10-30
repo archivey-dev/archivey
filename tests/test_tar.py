@@ -4656,27 +4656,35 @@ def test_a_rewind_in_a_compressed_tar_logs_at_info(
 # size is no member to GNU tar, so it must be none to archivey either.
 
 
-def _pax_framed(typeflag: bytes, *, linkname: bytes = b"") -> bytes:
-    """``[x size=1024][typeflag header][hidden: header + data][after]``, after a
-    link's target when ``linkname`` names one."""
+def _pax_framed(
+    typeflag: bytes, *, header_type: bytes = b"x", linkname: bytes = b""
+) -> bytes:
+    """``[size=1024 in an x or g header][typeflag header][hidden: header + data]
+    [after]``, after a link's target when ``linkname`` names one. A global size also
+    applies to ``after``, so ``after`` then carries its own ``x`` size."""
     tb = tar_build
     hidden = tb.block(b"hidden", size=1) + tb.data(b"S")
     name = b"d/" if typeflag == b"5" else b"lnk"
     target = tb.block(linkname, size=1) + tb.data(b"T") if linkname else b""
+    after = tb.pax({"size": "1"}) if header_type == b"g" else b""
     return (
         target
-        + tb.pax({"size": str(len(hidden))})
+        + tb.pax({"size": str(len(hidden))}, typeflag=header_type)
         + tb.block(name, typeflag=typeflag, linkname=linkname)
         + hidden
+        + after
         + tb.block(b"after", size=1)
         + tb.data(b"Z")
         + tb.END
     )
 
 
+@pytest.mark.parametrize("header_type", [b"x", b"g"])
 @pytest.mark.parametrize("streaming", [False, True])
-def test_dirtype_with_a_pax_size_holds_its_blocks_as_data(streaming: bool) -> None:
-    data = _pax_framed(b"5")
+def test_dirtype_with_a_pax_size_holds_its_blocks_as_data(
+    streaming: bool, header_type: bytes
+) -> None:
+    data = _pax_framed(b"5", header_type=header_type)
     with open_archive(
         NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
         format=ArchiveFormat.TAR,
@@ -4695,15 +4703,16 @@ def test_dirtype_with_a_pax_size_holds_its_blocks_as_data(streaming: bool) -> No
     assert listed[1][3] == b"Z"
 
 
+@pytest.mark.parametrize("header_type", [b"x", b"g"])
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("typeflag", [b"1", b"2"])
 def test_link_with_a_pax_size_skips_its_blocks(
-    typeflag: bytes, streaming: bool
+    typeflag: bytes, streaming: bool, header_type: bytes
 ) -> None:
     """GNU tar skips the blocks whatever the block after the header is; a link's
     header size, which GNU tar does not skip, still lets a member header there be
     read (the 2026-10-17 ruling)."""
-    data = _pax_framed(typeflag, linkname=b"t")
+    data = _pax_framed(typeflag, header_type=header_type, linkname=b"t")
     with open_archive(
         NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
         format=ArchiveFormat.TAR,
@@ -4712,3 +4721,26 @@ def test_link_with_a_pax_size_skips_its_blocks(
         names = [m.name for m, _ in ar.stream_members()]
         assert ar.diagnostics.counts[DiagnosticCode.MEMBER_LINK_DATA_IGNORED] == 1
     assert names == ["t", "lnk", "after"]
+
+
+@pytest.mark.parametrize("header_type", [b"x", b"g"])
+@pytest.mark.parametrize(
+    ("typeflag", "linkname", "expected"),
+    [
+        (b"5", b"", ["after", "d"]),
+        (b"2", b"t", ["after", "lnk", "t"]),
+        (b"1", b"t", ["after", "lnk", "t"]),
+    ],
+)
+def test_a_pax_framed_member_is_not_extracted(
+    tmp_path: Path,
+    typeflag: bytes,
+    linkname: bytes,
+    expected: list[str],
+    header_type: bytes,
+) -> None:
+    """The directory or link is created and the member stored in its PAX-sized
+    bytes is written nowhere, as GNU tar extracts the archive."""
+    data = _pax_framed(typeflag, header_type=header_type, linkname=linkname)
+    open_and_extract(io.BytesIO(data), tmp_path, format=ArchiveFormat.TAR)
+    assert sorted(os.listdir(tmp_path)) == expected
