@@ -50,6 +50,7 @@ from archivey.internal.backends.tar_parser import DATA_READ_STEP, TarWalker
 from archivey.internal.backends.tar_reader import _WALK_BUFFER
 from archivey.internal.streams.archive_stream import MemberStreamParts
 from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
+from tests import tar_build
 from tests.conftest import CPYTHON, requires_zstd, zstd_backend
 from tests.corruption_util import (
     is_corruption_not_truncation,
@@ -3976,6 +3977,49 @@ def test_pax_mtime_zero_is_the_epoch(tmp_path: Path) -> None:
     with open_archive(path) as ar:
         assert ar.get("t.txt").modified == datetime(1970, 1, 1, tzinfo=UTC)
         assert DiagnosticCode.MEMBER_TIMESTAMP_INVALID not in ar.diagnostics.counts
+
+
+def _tar_with_mtime_field(field: bytes, pax_mtime: str | None = None) -> bytes:
+    tb = tar_build
+    pax = tb.pax({"mtime": pax_mtime}) if pax_mtime is not None else b""
+    return (
+        pax
+        + tb.block(b"f", size=1, patch=tb.field(136, 148, field))
+        + tb.data(b"x")
+        + tb.END
+    )
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_an_all_nul_mtime_is_unknown(streaming: bool, tmp_path: Path) -> None:
+    """An all-NUL ``mtime`` field records no time. GNU tar 1.35 and tarfile read it
+    as 0; archivey lists no ``modified`` rather than guess 1970, and says nothing."""
+    data = _tar_with_mtime_field(bytes(12))
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    ) as ar:
+        (member,) = [m for m, _ in ar.stream_members()]
+        assert member.modified is None
+        assert DiagnosticCode.MEMBER_TIMESTAMP_INVALID not in ar.diagnostics.counts
+    open_and_extract(io.BytesIO(data), tmp_path, format=ArchiveFormat.TAR)
+    assert (tmp_path / "f").read_bytes() == b"x"
+
+
+def test_an_octal_zero_mtime_is_the_epoch() -> None:
+    data = _tar_with_mtime_field(b"00000000000\0")
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        assert ar.get("f").modified == datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def test_a_pax_mtime_fills_an_all_nul_header_mtime() -> None:
+    """The shape pax writers produce: the header field left NUL, the time in PAX."""
+    data = _tar_with_mtime_field(bytes(12), pax_mtime="1700000000.5")
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        assert ar.get("f").modified == datetime(
+            2023, 11, 14, 22, 13, 20, 500000, tzinfo=UTC
+        )
 
 
 def _tar_hardlink_then_target() -> bytes:

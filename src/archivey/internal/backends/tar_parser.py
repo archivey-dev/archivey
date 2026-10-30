@@ -170,7 +170,9 @@ class HeaderBlock:
     uid: int
     gid: int
     size: int
-    mtime: int
+    # ``None`` when the field is all NUL: a pax writer leaves it so when a PAX ``mtime``
+    # record carries the time, and with no such record the time is unknown, not 1970.
+    mtime: int | None
     typeflag: bytes
     linkname: bytes
     uname: bytes
@@ -239,11 +241,13 @@ def parse_number(field: bytes) -> int:
     Every field, the checksum included, is read this way: GNU tar reads the checksum
     with the same function, and the checksum itself is what guards the header.
 
-    The base-256 form is ``tarfile``'s, on purpose: GNU tar takes any first byte with
-    the high bit set and counts its low seven bits in the value, so a field starting
-    with ``0x81`` is a number to GNU tar and :class:`_BadNumber` here. Such a value
-    is at least 2**56 in magnitude, past any id, mode, size or time a real archive
-    holds, and every answer stays what ``tarfile`` gave.
+    The base-256 form is ``tarfile``'s: a field starting with any other byte that has
+    the high bit set, ``0x81`` for one, is :class:`_BadNumber` here. GNU tar 1.35 does
+    not read it as a number either: such a value is at least 2**56 in magnitude, past
+    its ``off_t``, ``uid_t`` and ``time_t`` range, so it reports "where numeric ...
+    value expected" and skips the header for a ``size``, or lists -1 for an id or a
+    time (measured 2026-10-30). Refusing the header here keeps one answer for every
+    field; no real archive holds such a value.
     """
     if not field:
         return 0
@@ -308,6 +312,7 @@ _split_numbers = struct.Struct("100x8s8s8s12s12s364x").unpack
 # archive of distinct values costs a cache miss per field and no more memory. Measured
 # per header against a plain dict lookup: the same within noise.
 _cached_number = lru_cache(maxsize=4096)(parse_number)
+_NUL_MTIME = bytes(12)
 
 
 def _field_named(block: bytes) -> str:
@@ -351,6 +356,8 @@ def parse_header_block(
         mode, uid, gid, size, mtime = map(_cached_number, _split_numbers(block))
     except _BadNumber:
         return RejectedBlock(offset, f"the {_field_named(block)} field is not a number")
+    if not mtime and block[136:148] == _NUL_MTIME:
+        mtime = None
     if size < 0:
         return RejectedBlock(offset, f"negative size {size}")
     if size > MAX_OFFSET:

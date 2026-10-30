@@ -307,7 +307,7 @@ pass.
 | `raw_name` | The stored bytes of whatever supplied the name, always. Never `None` |
 | `link_target` | The link name as stored (a PAX `linkpath`, else a GNU long link name, else the header's `linkname`), decoded as below, for symlinks and hardlinks; the walker drops a link name on any other type before keeping it. A hardlink stores an archive path, so a tar made from `./d` stores `./d/b` while the member it names is listed as `d/b`. `link_target_member` is the resolved one |
 | `size` | The logical size for a file, which for a sparse member is the size its sparse records declare, not the bytes stored. `None` for everything else. `compressed_size` is never set |
-| `modified` | The PAX `mtime` record when there is one, parsed once with its fraction, else the header's `mtime`. A value `datetime` cannot hold is `None` plus `MEMBER_TIMESTAMP_INVALID`. So is a PAX `mtime` that is not a number: it lists as `None`, not as the Unix epoch |
+| `modified` | The PAX `mtime` record when there is one, parsed once with its fraction, else the header's `mtime`. A value `datetime` cannot hold is `None` plus `MEMBER_TIMESTAMP_INVALID`. So is a PAX `mtime` that is not a number: it lists as `None`, not as the Unix epoch. A header `mtime` field of twelve NUL bytes is `None` with no report (`HeaderBlock.mtime`): pax writers leave it so when a PAX `mtime` carries the time, and GNU tar 1.35 and `tarfile` reading it as 0 would be a guess (DR-1; maintainer ruling 2026-10-30). An octal zero stays the epoch |
 | `accessed` | PAX `atime` only. A record that is not a number, or out of range, is `None` plus `MEMBER_TIMESTAMP_INVALID`, as for `modified`; the same holds for `created` and `ctime`. A number is what GNU tar 1.35 reads, `-?digits(.digits*)?`; Python float syntax beyond that (`+1000`, `1e3`, `1_000`, blanks, `.5`, `inf`) is not one, and the report quotes the first 40 characters of the value |
 | `created` | The PAX `LIBARCHIVE.creationtime` keyword, which libarchive writes when the source OS has a birth time. No other TAR writer is known to store one, so it is `None` for most archives |
 | `ctime` | PAX `ctime` only. It is the inode-change time (`st_ctime`), so it never fills `created`. A libarchive tar can carry both |
@@ -670,6 +670,7 @@ ours.
 | ustar and GNU names, link targets, `uname` and `gname` are UTF-8 by default, not the locale's codec; `encoding=` decodes only bytes that are not valid UTF-8; a PAX record that is not UTF-8 falls back to that same codec |
 | Out-of-range `mtime` degrades |
 | A bad PAX `mtime`, `atime`, `ctime` or `LIBARCHIVE.creationtime` is `None` and reported, each once; a PAX `mtime` of `0` stays the epoch |
+| An all-NUL header `mtime` is `None` with no report, an octal zero the epoch, and a PAX `mtime` fills an all-NUL field |
 | Old GNU and PAX 0.0, 0.1 and 1.0 sparse members list as sparse and read back logically |
 | A sparse member cut in its stored data, inside a chunk or at a chunk's first byte, delivers its prefix, then raises `TruncatedError`, in every encoding and both modes |
 | A PAX size past `int()`'s digit limit is `CorruptionError`, not `ValueError`; such a `uid` or `gid` is ignored |
