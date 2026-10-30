@@ -76,6 +76,9 @@ compressor; `format="cpio.gz"` opens it.
 and is absent until the walk reads the first header. A variant that changes mid-archive
 is `CorruptionError`.
 
+A modification time past what `datetime` holds, which only afio's 16-digit field can
+reach, lists as `modified=None`.
+
 Device nodes, FIFOs and sockets are `OTHER` members, with `extra["special_file_type"]`,
 as in every format; one that stores data reports `MEMBER_SPECIAL_FILE_HAS_DATA`.
 

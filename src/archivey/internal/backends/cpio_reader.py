@@ -465,7 +465,7 @@ class CpioReader(SequentialReader):
             name=context.normalize_name(stored, member_type),
             raw_name=raw,
             size=size if member_type is MemberType.FILE else None,
-            modified=datetime.fromtimestamp(header.mtime, UTC),
+            modified=_time(header.mtime),
             mode=header.mode & 0o7777,
             uid=header.uid,
             gid=header.gid,
@@ -530,6 +530,16 @@ class CpioReader(SequentialReader):
                 )
                 return
             scanned += len(chunk)
+
+
+def _time(mtime: int) -> datetime | None:
+    """The modification time, or None past what a ``datetime`` holds: afio's large
+    header has 16 hexadecimal digits for it. The other variants' fields stop at the
+    year 2242 (odc's 11 octal digits) or before."""
+    try:
+        return datetime.fromtimestamp(mtime, UTC)
+    except (OverflowError, ValueError, OSError):
+        return None
 
 
 def _binary_probe(prefix: bytes) -> bool:

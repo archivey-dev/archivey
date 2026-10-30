@@ -508,7 +508,13 @@ def _odc_member(name: bytes, data: bytes, *, ino: int, uid: int = 0) -> bytes:
 
 
 def _afio_large_member(
-    name: bytes, data: bytes, *, ino: int, uid: int, xsize: int = 0
+    name: bytes,
+    data: bytes,
+    *,
+    ino: int,
+    uid: int,
+    xsize: int = 0,
+    mtime: int = 0x4B694A10,
 ) -> bytes:
     """A member under afio's large header, its fields laid out as libarchive reads
     them: dev, ino, 'm', mode (octal), uid, gid, nlink, rdev, mtime, 'n', namesize,
@@ -522,7 +528,7 @@ def _afio_large_member(
         0,
         1,
         0,
-        0x4B694A10,
+        mtime,
         len(stored),
         0,
         xsize,
@@ -564,6 +570,15 @@ def test_afio_large_headers(tmp_path: Path) -> None:
     assert detect_format(io.BytesIO(first_large)).format == CPIO
     with open_archive(io.BytesIO(first_large)) as reader:
         assert [(m.name, m.uid) for m in reader.members()] == [("big", 1 << 20)]
+
+
+@pytest.mark.parametrize("mtime", [0xFFFFFFFFFFFFFFFF, 10**12, 2**40])
+def test_an_afio_time_past_the_datetime_range(mtime: int) -> None:
+    """16 hexadecimal digits reach past what a datetime holds: no time, not a raw
+    OverflowError or ValueError."""
+    data = _afio_large_member(b"f", b"x", ino=1, uid=0, mtime=mtime) + _odc_trailer()
+    with open_archive(io.BytesIO(data)) as reader:
+        assert [m.modified for m in reader.members()] == [None]
 
 
 def test_afio_large_header_damage(tmp_path: Path) -> None:
