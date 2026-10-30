@@ -30,9 +30,9 @@ session needs and points at the rest.
 ## What this repo is
 
 This repo (`archivey`) is the clean-slate **v2** of the Archivey archive library: read,
-stream, and safely extract ZIP / TAR / RAR / 7z / ISO / SquashFS / CPIO / ar / directory / single-file-compressed
-archives behind one uniform interface. The previous v1 tree is
-[`davitf/archivey-old`](https://github.com/davitf/archivey-old).
+stream, and safely extract ZIP / TAR / RAR / 7z / ISO / SquashFS / CPIO / ar /
+directory / single-file-compressed archives behind one uniform interface. The previous
+v1 tree is [`davitf/archivey-old`](https://github.com/davitf/archivey-old).
 
 It is a **pure Python library** — no server and no web UI. It does ship a CLI
 (`archivey list|test|extract|info`, `openspec/specs/cli/spec.md`), but "running the

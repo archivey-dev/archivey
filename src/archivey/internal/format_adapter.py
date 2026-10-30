@@ -68,7 +68,11 @@ from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.detection import INNER_CONTAINER_PROBE_BYTES
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.format_args import add_plugin_spellings, plugin_spelling_clash
+from archivey.internal.format_args import (
+    add_plugin_spellings,
+    add_sequential_container,
+    plugin_spelling_clash,
+)
 from archivey.internal.logs import detection as detection_logger
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
 from archivey.internal.open_site import OpenSite
@@ -2123,6 +2127,12 @@ def register_builtin_format(
     """
     backend = _backend_class(plugin, plugin.format, overrides)
     get_registry().register_reader(backend)
+    if issubclass(plugin, SequentialFormatHandler):
+        container = plugin.format.container
+        assert isinstance(container, ContainerFormat), (
+            "a built-in has a named container"
+        )
+        add_sequential_container(container)
     # A sequential format's compressed pairs (``ar.gz``) have no named constant.
     for each in backend.FORMATS[1:]:
         add_plugin_spellings(each)
