@@ -277,6 +277,18 @@ def test_a_name_with_a_slash(tmp_path: Path) -> None:
         archive.members()
 
 
+def test_a_name_that_is_not_utf8_follows_encoding(tmp_path: Path) -> None:
+    """SquashFS declares no name encoding, so ``encoding=`` replaces the escape fallback."""
+    data = _uncompressed()
+    entry = _entry_offset(data, b"a.txt")
+    data[entry + 8 : entry + 13] = b"\xe9.txt"
+    path = _image(tmp_path, bytes(data))
+    with open_archive(path) as archive:
+        assert "\udce9.txt" in {m.name.rpartition("/")[2] for m in archive.members()}
+    with open_archive(path, encoding="latin-1") as archive:
+        assert "\xe9.txt" in {m.name.rpartition("/")[2] for m in archive.members()}
+
+
 def test_an_entry_whose_inode_has_another_type(tmp_path: Path) -> None:
     data = _uncompressed()
     entry = _entry_offset(data, b"a.txt")
