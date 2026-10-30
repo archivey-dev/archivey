@@ -76,6 +76,9 @@ def test_rounds_come_from_the_workflow_markers_only():
         ("Disproven: the bound is checked first.", "disproven"),
         ("Escalated to the maintainer.", "escalated"),
         ("Split into its own PR, #1200.", "split"),
+        # Agreement is not a fix, and the earliest word decides.
+        ("Agreed, but kept as is.", "disproven"),
+        ("Agreed, will do.", "other"),
         ("Hmm.", "other"),
     ],
 )
@@ -123,6 +126,7 @@ def test_the_report_splits_findings_around_the_opus_pass():
             tally.Finding(1, "K2", "blocking", 2, False, "fixed"),
             tally.Finding(1, "K3", "important", 2, False, "disproven"),
             tally.Finding(1, "K4", "nit", 3, True, "fixed"),
+            tally.Finding(1, "K5", "nit", None, False, "fixed"),
         ],
     )
     out = tally.report([pr], datetime(2026, 10, 30, tzinfo=UTC))
@@ -131,7 +135,8 @@ def test_the_report_splits_findings_around_the_opus_pass():
     assert "  - before the pass: 1 important" in out
     assert "  - the pass: 1 blocking, 1 important" in out
     assert "  - after the pass: 1 nit" in out
-    assert "- **Dispositions:** 3 fixed, 1 disproven" in out
+    assert "  - with no round on them, so left out above: 1" in out
+    assert "- **Dispositions:** 4 fixed, 1 disproven" in out
     assert "- **Raised by an earlier fix:** 1: #1 K4" in out
     assert "conditional → findings (Opus pass) → approved" in out
 
@@ -141,3 +146,19 @@ def test_an_empty_window_says_so():
         [tally.PullRequest(1, "No review")], datetime(2026, 10, 30, tzinfo=UTC)
     )
     assert "No merged pull request in the window had a review round." in out
+
+
+def test_a_window_the_pages_do_not_cover_fails_rather_than_report_part(monkeypatch):
+    page = [
+        {
+            "number": 1,
+            "title": "t",
+            "merged_at": None,
+            "updated_at": "2026-10-30T00:00:00Z",
+        }
+    ]
+    monkeypatch.setattr(tally, "_gh_one", lambda path: page)
+    with pytest.raises(SystemExit, match="window is not covered"):
+        tally.merged_since("o/r", datetime(2026, 1, 1, tzinfo=UTC))
+    # Once updates are older than the window, the pages stop there.
+    assert tally.merged_since("o/r", datetime(2026, 10, 31, tzinfo=UTC)) == []

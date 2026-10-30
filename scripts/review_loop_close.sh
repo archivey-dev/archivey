@@ -30,12 +30,17 @@ live="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
 # as far as a verdict. A failure to check is no miss: it must not fail a round that
 # already posted.
 echo '[]' > /tmp/shape.json
+fetched=false
 if [ "$verdict" != null ]; then
+  fetched=true
   for what in issues/comments pulls/reviews pulls/comments; do
     gh api --paginate --slurp \
       "repos/$GITHUB_REPOSITORY/${what%%/*}/$PR/${what#*/}?per_page=100" \
-      > "/tmp/shape-${what//\//-}.json" || true
+      > "/tmp/shape-${what//\//-}.json" || fetched=false
   done
+fi
+# Only with all three lists: empty ones would read as a round that posted nothing.
+if [ "$fetched" = true ]; then
   jq -n --argjson round "$ROUND" \
     --slurpfile ic /tmp/shape-issues-comments.json \
     --slurpfile rv /tmp/shape-pulls-reviews.json \
