@@ -33,7 +33,8 @@ from archivey.internal.streams.codecs.base import (
 from archivey.internal.streams.codecs.framed_decoder import (
     FramedDecompressorStream,
     StreamStart,
-    stream_magic,
+    never_starts,
+    offset0_start,
 )
 from archivey.internal.streams.codecs.registry import add_stream_codec, stream_codecs
 from archivey.types import (
@@ -50,19 +51,13 @@ if TYPE_CHECKING:
     from archivey.formats import CodecCall, CodecHandler
 
 
-def _never(data: bytes) -> bool:
-    """The :data:`StreamStart` of a codec that reads one stream: nothing starts another."""
-    del data
-    return False
-
-
 class HandlerCodec(StreamCodec):
     """The base of the codec class :func:`codec_class` builds for each handler."""
 
     handler: CodecHandler
     # How a further stream starts (``CodecHandler.concatenated``).
     # A static method: a plain function here would be bound, and called with the codec.
-    starts: StreamStart = staticmethod(_never)
+    starts: StreamStart = staticmethod(never_starts)
 
     def requirement_under(
         self, excluded: frozenset[OptionalLibrary]
@@ -173,11 +168,7 @@ def codec_class(handler: type[CodecHandler]) -> type[HandlerCodec]:
         "extension_aliases": tuple(handler.extension_aliases),
         "checks_content": bool(handler.checks_content),
     }
-    starts = [m.data for m in handler.magic if m.offset == 0]
-    if handler.concatenated and starts:
-        attrs["starts"] = staticmethod(
-            stream_magic(*(tuple(bytes([b]) for b in data) for data in starts))
-        )
+    attrs["starts"] = staticmethod(offset0_start(handler.magic, handler.concatenated))
     if handler.probe is not None:
         attrs["content_probe"] = _content_probe(handler.probe)
     return type(f"{handler.__name__}Codec", (HandlerCodec,), attrs)

@@ -369,7 +369,7 @@ def _refuse_forward_only_accelerator(
     forward-only stream (a pipe, or a member stream of an outer archive opened without
     ``seekable_members``) cannot answer. This check covers the open, before a child
     process starts or a byte is read, and names the setting. The two translators
-    (``_translate_rapidgzip`` and ``Bzip2Codec._translate_accelerator``, both through
+    (``_translate_rapidgzip`` and ``Bzip2Handler._translate_accelerator``, both through
     ``_translate_rapidgzip_shared``) cover the late case, a source that refuses ``seek``
     or ``tell`` after it said it could seek; keep both.
     ``AUTO`` never gets here for such a source: :func:`open_codec_stream` clears its

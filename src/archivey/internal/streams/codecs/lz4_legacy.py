@@ -184,10 +184,11 @@ class Lz4Decompressor:
         return self._inner is not None and self._inner.eof
 
     @property
-    def unused_data(self) -> bytes | None:
+    def unused_data(self) -> bytes:
         if self._inner is None:
             return b""
-        return self._inner.unused_data
+        # lz4.frame reports no leftover as None.
+        return self._inner.unused_data or b""
 
     @property
     def needs_input(self) -> bool:
