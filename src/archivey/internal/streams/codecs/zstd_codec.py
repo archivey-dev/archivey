@@ -44,6 +44,7 @@ from archivey.types import (
     ArchiveFormat,
     MagicSignature,
     MissingComponent,
+    OptionalLibrary,
     StreamFormat,
 )
 
@@ -128,7 +129,7 @@ class ZstdCodec(StreamCodec):
     stream_format = StreamFormat.ZSTD
     magic = (MagicSignature(0, ZSTD_FRAME_MAGIC, ArchiveFormat.ZST),)
     requirement = MissingComponent(
-        "backports.zstd", "pip install archivey[recommended]", ("zstd",)
+        OptionalLibrary.BACKPORTS_ZSTD, "pip install archivey[recommended]", ("zstd",)
     )
 
     def _backend_present(self) -> bool:

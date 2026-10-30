@@ -124,10 +124,11 @@ from archivey.types import (
     MemberExtra,
     MemberType,
     MissingComponent,
+    OptionalLibrary,
 )
 
 _PYCDLIB_REQUIREMENT = MissingComponent(
-    "pycdlib", "pip install archivey[recommended]", ("iso",)
+    OptionalLibrary.PYCDLIB, "pip install archivey[recommended]", ("iso",)
 )
 
 
@@ -144,7 +145,7 @@ def _optional(name: str) -> ModuleType | None:
         return None
 
 
-pycdlib = _optional("pycdlib")
+pycdlib = _optional(OptionalLibrary.PYCDLIB)
 _pycdlib_exc = _optional("pycdlib.pycdlibexception")
 _pycdlib_core = _optional("pycdlib.pycdlib")
 _pycdlib_dr = _optional("pycdlib.dr")
@@ -1438,6 +1439,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         if pycdlib is None:
             raise PackageNotInstalledError(
                 _PYCDLIB_REQUIREMENT.message("reading ISO images"),
+                missing=(_PYCDLIB_REQUIREMENT,),
                 archive_name=self._archive_name,
             )
 
@@ -2715,6 +2717,6 @@ IsoReadBackend = register_builtin_format(
         "its volume descriptors and directory records are at absolute offsets in "
         "the image"
     ),
-    OPTIONAL_DEPENDENCY=_PYCDLIB_REQUIREMENT.name,
+    OPTIONAL_DEPENDENCY=OptionalLibrary.PYCDLIB,
     INSTALL_HINT=_PYCDLIB_REQUIREMENT.install_hint,
 )

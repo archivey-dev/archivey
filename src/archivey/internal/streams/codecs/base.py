@@ -503,7 +503,9 @@ class StreamCodec:
         assert self.requirement is not None, (
             f"{type(self).__name__} raises PackageNotInstalledError but declares no requirement"
         )
-        return PackageNotInstalledError(self.requirement.message(purpose, note=note))
+        return PackageNotInstalledError(
+            self.requirement.message(purpose, note=note), missing=(self.requirement,)
+        )
 
     @property
     def probes_content(self) -> bool:

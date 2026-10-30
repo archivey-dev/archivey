@@ -294,6 +294,48 @@ _FORMAT_NAMES: dict[ArchiveFormat, str] = {
 }
 
 
+class OptionalLibrary(StrEnum):
+    """An optional package archivey can decode with, by its import name.
+
+    :attr:`MissingComponent.name` holds one of these when the missing component is
+    one of archivey's own packages. A program (``unrar``) or a plugin's own module is
+    not a member.
+    """
+
+    PYPPMD = "pyppmd"
+    """PPMd members in 7z and ZIP."""
+    INFLATE64 = "inflate64"
+    """Deflate64 members in ZIP and 7z."""
+    BROTLI = "brotli"
+    """Brotli streams and 7z members."""
+    LZ4 = "lz4"
+    """LZ4 streams and 7z members."""
+    BACKPORTS_ZSTD = "backports.zstd"
+    """Zstandard before Python 3.14."""
+    COMPRESSION_ZSTD = "compression.zstd"
+    """Zstandard from Python 3.14, part of the standard library when the build has it."""
+    RAPIDGZIP = "rapidgzip"
+    """The gzip, zlib, Deflate and bzip2 accelerator."""
+    PYCDLIB = "pycdlib"
+    """ISO 9660 images."""
+    CRYPTOGRAPHY = "cryptography"
+    """AES decryption in ZIP, 7z and RAR."""
+
+
+OptionalLibraryStr = Literal[
+    "pyppmd",
+    "inflate64",
+    "brotli",
+    "lz4",
+    "backports.zstd",
+    "compression.zstd",
+    "rapidgzip",
+    "pycdlib",
+    "cryptography",
+]
+"""The values of :class:`OptionalLibrary`, for an argument that takes either spelling."""
+
+
 @dataclass(frozen=True)
 class MissingComponent:
     """A package, extra, or external tool required for a format (or a codec inside it).
@@ -305,7 +347,9 @@ class MissingComponent:
     """
 
     name: str
-    """The package or program, such as ``"pycdlib"``, ``"brotli"`` or ``"unrar"``."""
+    """The package or program, such as ``"pycdlib"``, ``"brotli"`` or ``"unrar"``. For
+    one of archivey's own packages it is the :class:`OptionalLibrary` member, which is
+    a ``str``."""
 
     install_hint: str
     """For a package, the command that installs it, such as
@@ -343,11 +387,32 @@ class MissingComponent:
         For package entries only: a program entry's ``install_hint`` is already a
         complete message.
         """
+        # ``str()`` first: the repr of an OptionalLibrary member is the enum's.
+        name = str(self.name)
         if self.reason:
-            text = f"The {self.name!r} package is required for {purpose}, but {self.reason}."
+            text = f"The {name!r} package is required for {purpose}, but {self.reason}."
         else:
-            text = f"The {self.name!r} package is required for {purpose} ({self.install_hint})."
+            text = (
+                f"The {name!r} package is required for {purpose} ({self.install_hint})."
+            )
         return f"{text} {note}" if note else text
+
+
+def _bind_exception_hint() -> None:
+    """Bind ``MissingComponent`` where the exceptions are defined.
+
+    ``PackageNotInstalledError.missing`` is annotated with it, but that module cannot
+    import this one (this module imports the exceptions), so it names it only under
+    ``TYPE_CHECKING``. Binding it here lets ``typing.get_type_hints`` resolve the
+    error's hints.
+    """
+    from archivey import exceptions
+
+    exceptions.MissingComponent = MissingComponent
+
+
+_bind_exception_hint()
+del _bind_exception_hint
 
 
 class FormatSupport(Enum):

@@ -172,10 +172,12 @@ class DiagnosticCode(StrEnum):
     Utility writes a member over 4 GiB without ZIP64. archivey corrects them, or
     lists ``size`` as ``None`` until a read can tell."""
     MEMBER_TYPE_UNKNOWN = "member_type_unknown"
-    """A member's stored type is one archivey does not know: a TAR typeflag, or the
-    file-type bits of another format's mode (a format plugin may report it). One that
-    declares data is listed as a ``FILE``, as GNU tar extracts it; one that declares
-    none stays ``OTHER``."""
+    """A member's stored type is one archivey does not know: a TAR typeflag, a RAR5
+    redirect type, or the file-type bits of another format's mode (a format plugin may
+    report it). One that declares data is listed as a ``FILE``, as GNU tar extracts it;
+    one that declares none stays ``OTHER``. A RAR5 redirect of an unknown type is
+    ``OTHER`` with or without the directory flag, as ``unrar`` writes nothing for
+    it."""
     # No per-member extraction outcome has a code here. Extraction returns a structured
     # per-item report, so ``ExtractionResult`` is the sole carrier of those facts — see
     # the placement clause in ``openspec/specs/diagnostics``.
@@ -827,8 +829,8 @@ class SizeWrapContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class UnknownMemberTypeContext(_JsonSafeContext):
-    """A member header has a type archivey does not know: a TAR typeflag, or the
-    file-type bits of another format's mode, from a format plugin.
+    """A member header has a type archivey does not know: a TAR typeflag, a RAR5
+    redirect type, or the file-type bits of another format's mode, from a format plugin.
 
     For TAR, POSIX reserves ``A`` to ``Z`` for vendors and leaves the rest undefined; GNU tar
     extracts any typeflag it does not know as a regular file and warns ("Unknown file
@@ -836,10 +838,13 @@ class UnknownMemberTypeContext(_JsonSafeContext):
     readable and extracted (design rule DR-25); one that declares none stays ``OTHER``.
     ``stored_type`` is the format's own spelling of the type: for TAR the typeflag byte
     as a one-character string (the byte as Latin-1), the same byte as
-    ``extra["tar.type"]``; a plugin chooses its own (CPIO's is the mode's file-type
-    bits in octal, ``"0o130000"``). ``size`` is the member's
-    ``size``, ``None`` for an ``OTHER`` member. Advisory: the bytes are delivered and
-    nothing is hidden, so it is not in :data:`ARCHIVE_INTEGRITY_CODES`.
+    ``extra["tar.type"]``; for a RAR5 redirect the type number in decimal (``"6"``);
+    a plugin chooses its own (CPIO's is the mode's file-type bits in octal,
+    ``"0o130000"``). ``size`` is the member's
+    ``size``, ``None`` for an ``OTHER`` member. Advisory, so it is not in
+    :data:`ARCHIVE_INTEGRITY_CODES`: a TAR member's bytes are delivered and nothing is
+    hidden, and a RAR5 redirect of an unknown type holds no bytes, while its stored
+    target, which names nothing ``unrar`` creates, is not kept.
     """
 
     kind: Literal["unknown_member_type"] = "unknown_member_type"
@@ -998,6 +1003,8 @@ and the reasons are part of the contract rather than an oversight:
 - ``MEMBER_TYPE_UNKNOWN`` — a TAR typeflag archivey does not know. GNU tar extracts
   such a member as a regular file with a warning, and archivey lists its data as a
   ``FILE``, so nothing is hidden. ``STRICT`` would refuse an archive GNU tar extracts.
+  The same holds for a RAR5 redirect of an unknown type: it holds no data, and
+  ``unrar`` warns, skips it and extracts the rest with exit code 0.
 """
 
 

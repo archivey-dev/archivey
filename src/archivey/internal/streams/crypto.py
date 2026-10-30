@@ -41,11 +41,11 @@ from archivey.internal.streams.streamtools import (
     resolve_seek,
     source_byte_size,
 )
-from archivey.types import MissingComponent
+from archivey.types import MissingComponent, OptionalLibrary
 
 # The package name surfaced to users, and the single install hint every AES raise site
 # (here and in zip_aes) formats its message from.
-CRYPTO_PACKAGE = "cryptography"
+CRYPTO_PACKAGE = OptionalLibrary.CRYPTOGRAPHY
 CRYPTO_REQUIREMENT = MissingComponent(
     CRYPTO_PACKAGE, "pip install archivey[recommended]", ("aes",)
 )
@@ -256,7 +256,9 @@ def get_crypto_backend() -> CryptoBackend:
     rather than importing any crypto library themselves.
     """
     if not _crypto_available():
-        raise PackageNotInstalledError(CRYPTO_REQUIREMENT.message("AES decryption"))
+        raise PackageNotInstalledError(
+            CRYPTO_REQUIREMENT.message("AES decryption"), missing=(CRYPTO_REQUIREMENT,)
+        )
     return _CryptographyBackend()
 
 
