@@ -3991,7 +3991,7 @@ def _tar_with_mtime_field(field: bytes, pax_mtime: str | None = None) -> bytes:
 
 @pytest.mark.parametrize("field", [bytes(12), b" " * 12], ids=["nul", "blanks"])
 @pytest.mark.parametrize("streaming", [False, True])
-def test_an_all_nul_mtime_is_unknown(
+def test_an_mtime_field_with_no_digit_is_unknown(
     streaming: bool, field: bytes, tmp_path: Path
 ) -> None:
     """An ``mtime`` field of NULs or blanks records no time. GNU tar 1.35 and tarfile

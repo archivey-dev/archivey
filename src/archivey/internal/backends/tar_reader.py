@@ -1201,8 +1201,9 @@ class TarReader(BaseArchiveReader):
             if issue is not None:
                 timestamp_issues.append(issue)
         elif entry.header.mtime is None:
-            # An all-NUL field records no time; GNU tar and tarfile read it as 0, but
-            # 1970 would be a guess (DR-1), so the member has no ``modified``.
+            # A field of only NULs and blanks records no time; GNU tar and tarfile
+            # read all NULs as 0, but 1970 would be a guess (DR-1), so the member
+            # has no ``modified``.
             modified = None
         else:
             # A hostile out-of-range value (a base-256 mtime beyond datetime's range)
