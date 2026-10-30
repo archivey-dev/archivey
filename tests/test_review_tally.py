@@ -89,6 +89,7 @@ def test_rounds_come_from_the_workflow_markers_only():
         ("Hmm.", "other"),
         ("Agreed, and I took the second direction in this PR.", "fixed"),
         ("I've left this as is.", "disproven"),
+        ("Stays as is.", "disproven"),
         # A half-open fix is not a fix.
         ("Reproduced, and partly fixed in e83f9441.", "other"),
         ("Not fixed: the bound is the maintainer's call.", "other"),
@@ -204,7 +205,9 @@ def test_raising_shapes_status_lines_and_summary_clauses():
             "user": BOT,
             "body": "## Round 1 · 🔄 Request Changes\n\n"
             "**K6 · 🟢 `[nit]` · `CONFIRMED` — a stale comment\n\n"
-            "- 🟡 `[important]` · `CONFIRMED` · **K8** the cap is unchecked\n",
+            "- 🟡 `[important]` · `CONFIRMED` · **K8** the cap is unchecked\n"
+            # A gist that starts with a fix word is still a finding.
+            "- 🟢 `[nit]` · `CONFIRMED` · **K9** removed the old name\n",
         },
         {
             "id": 902,
@@ -233,4 +236,5 @@ def test_raising_shapes_status_lines_and_summary_clauses():
         ("K6", "nit", 1, "fixed"),
         # A reply that names it and states nothing does not hide the status line.
         ("K8", "important", 1, "disproven"),
+        ("K9", "nit", 1, "no reply"),
     ]
