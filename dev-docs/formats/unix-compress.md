@@ -152,14 +152,14 @@ both ways and looks for a code that layout could not have written. In compress 4
 layout that is a 10-bit code with bit 9 set, since no value reaches 512. In either, a
 CLEAR sends the stream back to 9-bit codes with a near-empty table, so after it a first
 code that is not a literal, or any code past the next free one, rules the reading out.
-The layout that holds wins; if both break, the one that held out longer. If both hold,
-a CLEAR inside the 64 bytes decides: the reading that went through one and then met at
+The layout that holds wins; if both break, the one that held out longer. If both hold, a
+CLEAR inside the 64 bytes decides: the reading that went through one and then met at
 least four codes above 256, all within the growing table, and more of them than the
 other reading, wins. Literals are no evidence there: on low-variety data a reading one
 byte off from where the CLEAR's padding ends turns literals into other literals and
 holds. Otherwise compress 4.0's layout wins. Every ncompress-layout stream measured
-without a CLEAR broke the 10-bit reading within the first seven codes. The layout found at the first fill holds for the rest of
-the stream, a seek included.
+without a CLEAR broke the 10-bit reading within the first seven codes. The layout found
+at the first fill holds for the rest of the stream, a seek included.
 
 One case is known to go wrong, on ncompress-layout files, ending on compress 4.0's
 layout. A source that ends inside the 64 bytes is decided on what it has: a whole byte
@@ -167,9 +167,9 @@ left over after the last 10-bit code, or padding cut short, means 9 bits, and ot
 both readings hold. So a file that ends fewer than about 32 codes after its table filled
 can return wrong bytes. A CLEAR so late in the 64 bytes that fewer than four codes above
 256 follow it inside them is also a tie, but then the reading without the CLEAR has had
-the rest of the window to break, and no measured ncompress-layout stream reached the tie that way.
-Before this, archivey read only the ncompress layout: a compress
-4.0 `-b9` file raised `CorruptionError`, or decoded with no error to wrong bytes.
+the rest of the window to break, and no measured ncompress-layout stream reached the tie
+that way. Before this, archivey read only the ncompress layout: a compress 4.0 `-b9`
+file raised `CorruptionError`, or decoded with no error to wrong bytes.
 
 The test encoder writes both layouts. In block mode its compress 4.0 layout matched
 compress 4.0's output byte for byte; without block mode it differs only in the padding
@@ -260,7 +260,7 @@ The truncation gap is the format's, not an open question;
 | compress 4.0's 9-bit layout decodes like GNU gzip, and like 7-Zip where it is 26.05 or later |
 | ncompress's 9-bit layout decodes like `7z` where it is 26.04 or earlier |
 | A source that ends soon after a 9-bit table fills still reads compress 4.0's layout |
-| A CLEAR anywhere inside the layout probe leaves both layouts readable, on low-variety payloads too |
+| A CLEAR inside the layout probe that leaves four or more codes above 256 after it leaves both layouts readable, on low-variety payloads too |
 | In compress 4.0's 10-bit era, code 512 is corrupt; a seek back keeps the layout |
 | A 9-bit file with ncompress 5.0's damage reads with no error to wrong bytes; the same as `7z` where it is 26.04 or earlier |
 | 7-Zip 26.05 or later refuses a 9-bit file that keeps 9-bit codes, and reads a 16-bit one |

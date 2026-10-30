@@ -1426,9 +1426,9 @@ def test_unix_compress_nine_bit_clear_inside_the_probe(
     payload: str, widens: bool
 ) -> None:
     """A CLEAR soon after a 9-bit table fills sends both layouts back to 9-bit codes
-    inside the probe. Both are still told apart for a CLEAR anywhere in it, the very
-    first code after the fill included, where an ncompress CLEAR reads as a CLEAR in the
-    10-bit layout too."""
+    inside the probe. Both are still told apart for every CLEAR position measured here,
+    the very first code after the fill included, where an ncompress CLEAR reads as a
+    CLEAR in the 10-bit layout too."""
     data = _LOW_VARIETY_PAYLOADS.get(payload) or _NON_BLOCK_PAYLOADS[payload][:30_000]
     for clear_every in range(250, 320):
         compressed = _lzw_compress(
