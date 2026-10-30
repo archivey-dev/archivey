@@ -77,8 +77,10 @@ the review's own instructions and contracts: this skill and this doc, `CONTRIBUT
 the deep-tier docs, and the narrative and contracts pass 2 opens. Code reading goes
 through the subagent tool (`Task`, called `Agent` in newer versions):
 
-- Pass `model: "sonnet"` and `subagent_type: "Explore"` (or `general-purpose` when the
-  question needs a command run). One narrow question per agent; send independent
+- Pass `model: "sonnet"` and `subagent_type: "Explore"`, which cannot edit files. When
+  the question needs a command run, use `general-purpose` and say in its task text not
+  to edit files, run the gates or post anything: a subagent sees only the text you give
+  it, not this review's rules. One narrow question per agent; send independent
   questions in one message so they run in parallel. Expect to send several per review.
 - Ask what the code does, not whether your suspicion holds: "which callers of `X` can
   pass `size=None`, and what do they do with the result?", not "confirm that `X` breaks
