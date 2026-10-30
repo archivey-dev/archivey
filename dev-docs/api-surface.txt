@@ -104,6 +104,9 @@ field archivey.ArchiveMember.type: MemberType
 field archivey.ArchiveMember.uid: int | None = None
 field archivey.ArchiveMember.uname: str | None = None
 field archivey.ArchiveMember.windows_attrs: int | None = None
+method archivey.ArchiveMember.accessed_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None
+method archivey.ArchiveMember.created_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None
+method archivey.ArchiveMember.ctime_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None
 property archivey.ArchiveMember.diagnostics: tuple[Diagnostic, ...]
 property archivey.ArchiveMember.is_anti: bool
 property archivey.ArchiveMember.is_dir: bool

@@ -750,9 +750,9 @@ them wrong, sometimes with a success exit:
 - encrypted data in a RAR 2.x-4.x archive, except an uncompressed encrypted member in one part,
   which archivey decrypts itself. RAR5 encryption is read.
 - in a solid RAR 2.x-4.x archive, every compressed member after an encrypted one in the same solid
-  stream, when opened on its own. A `stream_members()` pass over a solid RAR 2.x-4.x archive with
-  encrypted headers or any encrypted member refuses every member it reaches, even those before the
-  encrypted one;
+  stream. A `stream_members()` pass refuses the encrypted member and the compressed members its
+  solid stream carries into, and reads the rest, those before the encrypted one included. With
+  encrypted headers it refuses every member;
 - a password that is not ASCII;
 - a multi-volume RAR5 set with encrypted headers (Homebrew's `unar` 1.10.8 returns nothing for it);
 - in a solid RAR5 archive, a member with data after an empty file, a directory or a link;

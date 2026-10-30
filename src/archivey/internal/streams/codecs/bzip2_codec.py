@@ -845,8 +845,8 @@ class Bzip2Handler(BuiltinCodecHandler):
         (:func:`_open_rapidgzip`)."""
         _refuse_forward_only_accelerator(source, "use_indexed_bzip2", "bzip2")
         # rapidgzip's bundled bzip2 decoder, not the separate indexed_bzip2 package
-        # (ADR 0008). Bound the input: an AES pad after the end-of-stream marker is
-        # trailing garbage, which rapidgzip would read as such.
+        # (ADR 0008). Bound the input at pack_size: an AES pad after the coder's data
+        # would otherwise meet the end check as input after the end.
         accel_source, views = _accelerator_backstop_source(
             _bound_rapidgzip_source(source, params, config)
         )

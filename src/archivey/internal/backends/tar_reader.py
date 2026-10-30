@@ -1302,7 +1302,7 @@ class TarReader(BaseArchiveReader):
             MemberType.HARDLINK,
         ):
             member.link_target = link_target
-        # All four GNU encodings: the old ``S`` typeflag and PAX sparse 0.0 / 0.1 /
+        # All four GNU encodings: an ``S`` in an old GNU header and PAX sparse 0.0 / 0.1 /
         # 1.0, which GNU tar writes under ``--format=pax`` with a plain ``0`` typeflag.
         if entry.sparse_format is not None:
             member.is_sparse = True

@@ -241,7 +241,7 @@ Where resume points come from, per codec:
 | Codec | Resume points |
 | --- | --- |
 | xz | Every block, and every stream in a multi-stream file. Default `xz` writes one block; `xz -T0` and `--block-size` write many |
-| lzip | Every member. Default `lzip` writes one; `plzip` one per data block, many with a small `-B` |
+| lzip | Every member from the trailer walk; every member with output from a forward read (an empty member's output offset is the next member's, or the end of the output). Default `lzip` writes one; `plzip` one per data block, many with a small `-B` |
 | `.Z` | Every CLEAR code, which `compress` emits when the dictionary stops paying |
 | gzip | On declared seek demand: every member after the first, recorded as a forward read reaches it, and every BGZF member, walked without decoding ([`gzip.md`](gzip.md) §2.3). With `rapidgzip` engaged, its own index, built as it decodes |
 | zlib, raw DEFLATE, bzip2 | None natively. With `rapidgzip` engaged, its own index, built as it decodes |
@@ -375,7 +375,7 @@ codecs' own tools disagree; archivey treats every codec with an end marker the s
 | --- | --- | --- |
 | gzip, zlib, bzip2, xz, lzip, LZMA Alone, zstd, LZ4, Brotli | The whole payload, then `ARCHIVE_TRAILING_DATA` at the junk's offset; `DiagnosticRaisedError` under `STRICT`. xz and lzip keep `size` and seeks | — |
 | gzip | as above | `gzip -t`: "trailing garbage ignored", exit 2 |
-| bzip2 | as above; the accelerator also prints a warning to standard error | `bzip2 -t`: "trailing garbage after EOF ignored", exit 0 |
+| bzip2 | as above; the accelerator's own warning goes to its process's temporary standard error file, not the caller's | `bzip2 -t`: "trailing garbage after EOF ignored", exit 0 |
 | xz | as above | `xz -t`: "Unexpected end of input", exit 1 |
 | lzip | as above | `plzip -t`: exit 0; the lzip manual allows trailing data |
 | zstd | as above | `zstd -t`: "unsupported format", exit 1 |
