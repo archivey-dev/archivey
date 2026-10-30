@@ -81,7 +81,8 @@ def test_list_and_read(name: str) -> None:
     dialect, symbols, mode = ARCHIVES[name]
     with open_archive(DATA / f"{name}.a") as reader:
         assert reader.format == AR
-        assert reader.info.format_version == dialect
+        assert reader.info.format_version is None
+        assert reader.info.extra["ar.dialect"] == dialect
         assert reader.info.extra["ar.symbol_table"] is symbols
         members = reader.members()
         assert [m.name for m in members] == NAMES
@@ -199,6 +200,35 @@ def test_inside_a_compression_stream(
         _check_content("gnu", seen[member_name], member_name)
 
 
+@pytest.mark.parametrize(
+    ("spelling", "stream", "compress"),
+    [
+        (
+            "ar.gz",
+            archivey.StreamFormat.GZIP,
+            lambda data: gzip.compress(data, mtime=0),
+        ),
+        ("ar.xz", archivey.StreamFormat.XZ, lzma.compress),
+    ],
+    ids=["gz", "xz"],
+)
+def test_a_compressed_pair_is_spelled_like_a_plugins(
+    tmp_path: Path,
+    spelling: str,
+    stream: archivey.StreamFormat,
+    compress: Callable[[bytes], bytes],
+) -> None:
+    """``format="ar.gz"`` names the pair, which has no named constant; ``format="ar"``
+    on the same bytes reads them as plain ar and refuses them."""
+    path = tmp_path / "t.bin"
+    path.write_bytes(compress((DATA / "gnu.a").read_bytes()))
+    with open_archive(path, format=spelling) as reader:
+        assert reader.format == archivey.ArchiveFormat(AR.container, stream)
+        assert [m.name for m in reader.members()] == NAMES
+    with pytest.raises(CorruptionError, match="No ar magic"):
+        open_archive(path, format="ar").close()
+
+
 @pytest.mark.parametrize("compressed", [False, True], ids=["plain", "gz"])
 def test_seeks_inside_a_member(tmp_path: Path, compressed: bool) -> None:
     """With ``seekable_members=True`` a member stream seeks, plain and inside a
@@ -254,7 +284,7 @@ def test_blank_fields(tmp_path: Path) -> None:
 def test_an_empty_archive(tmp_path: Path) -> None:
     with open_archive(_archive(tmp_path, b"!<arch>\n")) as reader:
         assert reader.members() == []
-        assert reader.info.format_version is None
+        assert "ar.dialect" not in reader.info.extra
 
 
 # Every symbol-table spelling, as a name field and, for the BSD ones, as a #1/ name in
@@ -286,7 +316,7 @@ def test_a_symbol_table_is_skipped_and_names_the_dialect(
     with open_archive(_archive(tmp_path, data)) as reader:
         assert [m.name for m in reader.members()] == ["x.txt"]
         assert reader.info.extra["ar.symbol_table"] is True
-        assert reader.info.format_version == dialect
+        assert reader.info.extra["ar.dialect"] == dialect
 
 
 def test_fields_padded_on_the_left(tmp_path: Path) -> None:
@@ -353,6 +383,8 @@ def test_damaged_headers(tmp_path: Path) -> None:
         opened(_ar((b"//", b"a/\n"), (b"//", b"b/\n")))
     with pytest.raises(CorruptionError, match="a name of 99 bytes"):
         opened(_ar((b"#1/99", b"short")))
+    with pytest.raises(CorruptionError, match="a name of 65537 bytes"):
+        opened(_ar((b"#1/65537", b"x" * 70_000)))
     with pytest.raises(CorruptionError, match="the name length is blank"):
         opened(_ar((b"#1/", b"short")))
     with pytest.raises(CorruptionError, match="mode field"):

@@ -1048,9 +1048,9 @@ misread the archive.
 - **Reading members:** direct; inside a compressor, solid, as in a compressed TAR.
 - **From a pipe:** yes, with `streaming=True`.
 - All four header variants read: binary (either byte order), odc, newc and crc, and afio's
-  large header in an odc archive. `ArchiveInfo.format_version` names the variant as GNU
-  cpio's `-H` option does (`bin`, `odc`, `newc`, `crc`), with `bin-be` for a binary archive
-  in the other byte order.
+  large header in an odc archive. `ArchiveInfo.extra["cpio.variant"]` names the variant as
+  GNU cpio's `-H` option does (`bin`, `odc`, `newc`, `crc`), with `bin-be` for a binary
+  archive in the other byte order. `ArchiveInfo.format_version` is `None`.
 - A binary archive has only a 2-byte magic, so it is detected only when its name ends in
   `.cpio`, or with `always_probe_content=True`, or when you pass `format=`.
 - A symlink's target is its data. Devices, FIFOs and sockets are `OTHER`, as in every
@@ -1074,9 +1074,11 @@ misread the archive.
 - **From a pipe:** yes, with `streaming=True`.
 - Both dialects read. GNU (System V, also Windows `.lib`) keeps long names in a `//` member;
   BSD and macOS keep a long name at the start of the member's data (`#1/N`).
-  `ArchiveInfo.format_version` is `"gnu"` or `"bsd"`, and `None` for an archive with no members.
+  `ArchiveInfo.extra["ar.dialect"]` is `"gnu"` or `"bsd"`, and absent for an archive with no
+  members. `ArchiveInfo.format_version` is `None`: ar has no versions.
 - The symbol table (`/`, `/SYM64/`, `__.SYMDEF`) is the linker's index, not a file. It is not
-  listed, and `ArchiveInfo.extra["ar.symbol_table"]` says whether there was one.
+  listed, and `ArchiveInfo.extra["ar.symbol_table"]` says whether there was one. During a
+  streaming pass both keys say what the walk has seen so far, and are final once it ends.
 - macOS ar pads each member with newlines so the next header starts on 8 bytes, and counts the
   padding in the member's size. The padding is then part of the member, as llvm-ar and bsdtar
   extract it.

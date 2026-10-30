@@ -212,9 +212,8 @@ class CpioReader(SequentialReader):
         extra = ArchiveInfoExtra({})
         if variant is not None:
             extra["cpio.variant"] = variant.value
-        return ReaderArchiveInfo(
-            format_version=None if variant is None else variant.value, extra=extra
-        )
+        # A header variant is not a version: like TAR's, it is not in format_version.
+        return ReaderArchiveInfo(extra=extra)
 
     # The walk ---------------------------------------------------------------------
 
