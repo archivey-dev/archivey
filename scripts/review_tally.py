@@ -12,7 +12,7 @@ merged pull requests and reports what a retrospective would otherwise count by h
 - findings that name an earlier finding's fix as their cause.
 
     python3 scripts/review_tally.py --days 7
-    python3 scripts/review_tally.py --since 2026-10-30 --pr 1141 --pr 1143
+    python3 scripts/review_tally.py --pr 1141 --pr 1143   # these, whenever merged
 
 It reads GitHub with ``gh api`` (REST only) and prints Markdown, which
 `.github/workflows/review-tally.yml` writes to its job summary each week. The parsing
@@ -20,7 +20,7 @@ is in pure functions, so `tests/test_review_tally.py` runs without GitHub.
 
 The counts are as good as the posted shapes they read. A finding is a ``### K<n> ·``
 heading by ``claude[bot]``, in an inline comment or a review body. Its disposition is
-the first disposition word in a reply on its thread, or on a line that names its ID in a
+the first disposition word in the last reply on its thread that states one, or on a line that names its ID in a
 comment by anyone else; a finding with neither counts as ``no reply``.
 """
 
@@ -44,11 +44,28 @@ ROUND_MARKER = "<!-- archivey-review-round"
 #: Verdicts that approve, so a round with one of these passed (`review_loop_gate`).
 APPROVING = frozenset({"clean", "approved", "conditional"})
 
-SEVERITIES = {"🔴": "blocking", "🟡": "important", "🟢": "nit", "💡": "suggestion"}
+SEVERITIES = {
+    "🔴": "blocking",
+    "🟡": "important",
+    "🟢": "nit",
+    "💡": "suggestion",
+    "📚": "learning",
+    "🎉": "praise",
+}
+#: Every severity a breakdown lists; `other` is a heading the parser could not read.
+BREAKDOWN = [*SEVERITIES.values(), "other"]
 
 #: A finding's heading, ``### K3 · 🟡 `[important]` · `CONFIRMED` ``, or its line in a
-#: review body's findings list, ``- K3 · 🟡 · CONFIRMED · ...``.
-_FINDING = re.compile(r"^(?:#{2,4} |- )(K\d+) · (\S+)", re.MULTILINE)
+#: review body's findings list: ``- K3 · 🟡 · CONFIRMED · ...``, or the template's
+#: ``- **K6** 🔴 `CONFIRMED` — ...``. In a list line the severity must be one of
+#: `SEVERITIES`, so a later round's status line (``- **K7** fixed in ...``) is not
+#: read as a finding with the severity "fixed".
+_FINDING = re.compile(
+    r"^(?:#{2,4} (K\d+) · (\S+)|\s*- \*{0,2}(K\d+)\*{0,2}(?: ·)? ("
+    + "|".join(SEVERITIES)
+    + r"))",
+    re.MULTILINE,
+)
 #: The attribution line under it names the round: ``· round 2 ·``.
 _ROUND = re.compile(r"· round (\d+) ·")
 _FIELD = re.compile(r"(\w+)=(\S+)")
@@ -94,6 +111,8 @@ class Round:
     n: int
     verdict: str
     opus_pass: bool
+    #: A conditional approval the Opus pass follows (``next=opus``): the loop went on.
+    opus_next: bool = False
 
 
 @dataclass
@@ -115,9 +134,9 @@ class PullRequest:
 
     @property
     def passed_at(self) -> int | None:
-        """The first round whose verdict approved, or ``None``."""
+        """The first round whose verdict approved and stopped the loop, or ``None``."""
         for r in self.rounds:
-            if r.verdict in APPROVING:
+            if r.verdict in APPROVING and not r.opus_next:
                 return r.n
         return None
 
@@ -140,7 +159,12 @@ def read_rounds(issue_comments: list[dict]) -> list[Round]:
             n = int(fields.get("n", ""))
         except ValueError:
             continue
-        rounds[n] = Round(n, fields.get("verdict", "").rstrip("-> "), "pass" in fields)
+        rounds[n] = Round(
+            n,
+            fields.get("verdict", "").rstrip("-> "),
+            "pass" in fields,
+            fields.get("next", "").rstrip("-> ") == "opus",
+        )
     return [rounds[n] for n in sorted(rounds)]
 
 
@@ -158,14 +182,14 @@ def _finding(pr: int, heading: re.Match[str], body: str) -> Finding:
     rest = body[heading.end() :]
     text = (
         rest.split("\n", 1)[0]
-        if heading.group(0).startswith("-")
+        if heading.group(0).lstrip().startswith("-")
         else rest.split("\n### ", 1)[0]
     )
     round_match = _ROUND.search(text[:400])
     return Finding(
         pr=pr,
-        id=heading.group(1),
-        severity=SEVERITIES.get(heading.group(2), "other"),
+        id=heading.group(1) or heading.group(3),
+        severity=SEVERITIES.get(heading.group(2) or heading.group(4), "other"),
         round=int(round_match.group(1)) if round_match else None,
         from_fix=bool(_FROM_FIX.search(text)),
     )
@@ -211,12 +235,12 @@ def read_findings(
 
     for c in review_comments:
         target = thread_of.get(c.get("in_reply_to_id") or -1)
-        if (
-            target
-            and c.get("user", {}).get("login") != REVIEWER
-            and found[target].disposition == "no reply"
-        ):
-            found[target].disposition = classify(_strip_heading(c.get("body") or ""))
+        if target and c.get("user", {}).get("login") != REVIEWER:
+            # The last stated disposition stands (escalated, answered, then fixed);
+            # a reply that states none does not undo an earlier one.
+            kind = classify(_strip_heading(c.get("body") or ""))
+            if kind != "other" or found[target].disposition == "no reply":
+                found[target].disposition = kind
 
     # Top-level disposition comments: one line per finding, keyed by its ID.
     others = [
@@ -243,10 +267,15 @@ def _strip_heading(body: str) -> str:
     return re.sub(r"^#+\s*K\d+\s*·\s*", "", body.strip())
 
 
-def report(prs: list[PullRequest], since: datetime) -> str:
+def _count(n: int, noun: str) -> str:
+    return f"{n} {noun}{'s' * (n != 1)}"
+
+
+def report(prs: list[PullRequest], scope: str) -> str:
+    """The tally as markdown; ``scope`` names what it covers, for its heading."""
     reviewed = [p for p in prs if p.rounds]
     findings = [f for p in reviewed for f in p.findings]
-    out = [f"# Review tally since {since:%Y-%m-%d}", ""]
+    out = [f"# Review tally: {scope}", ""]
     if not reviewed:
         return "\n".join(
             [*out, "No merged pull request in the window had a review round."]
@@ -257,7 +286,8 @@ def report(prs: list[PullRequest], since: datetime) -> str:
     conditional = [p for p in reviewed if p.rounds[-1].verdict == "conditional"]
     total_rounds = sum(len(p.rounds) for p in reviewed)
     out += [
-        f"- **{len(reviewed)} reviewed pull requests**, {total_rounds} rounds "
+        f"- **{_count(len(reviewed), 'reviewed pull request')}**, "
+        f"{_count(total_rounds, 'round')} "
         f"({total_rounds / len(reviewed):.1f} each); "
         + ", ".join(
             f"{k} round{'s' * (k != 1)}: {v}" for k, v in sorted(rounds.items())
@@ -273,9 +303,7 @@ def report(prs: list[PullRequest], since: datetime) -> str:
     by_sev = Counter(f.severity for f in findings)
     out.append(
         f"- **{len(findings)} findings:** "
-        + ", ".join(
-            f"{by_sev[s]} {s}" for s in [*SEVERITIES.values(), "other"] if by_sev[s]
-        )
+        + ", ".join(f"{by_sev[s]} {s}" for s in BREAKDOWN if by_sev[s])
     )
 
     with_pass = [p for p in reviewed if p.opus_round is not None]
@@ -297,7 +325,7 @@ def report(prs: list[PullRequest], since: datetime) -> str:
                     else after
                 )
                 bucket[f.severity] += 1
-        out.append(f"- **Opus pass, on {len(with_pass)} pull requests:**")
+        out.append(f"- **Opus pass, on {_count(len(with_pass), 'pull request')}:**")
         for name, c in (
             ("before the pass", before),
             ("the pass", during),
@@ -305,10 +333,7 @@ def report(prs: list[PullRequest], since: datetime) -> str:
         ):
             out.append(
                 f"  - {name}: "
-                + (
-                    ", ".join(f"{c[s]} {s}" for s in SEVERITIES.values() if c[s])
-                    or "none"
-                )
+                + (", ".join(f"{c[s]} {s}" for s in BREAKDOWN if c[s]) or "none")
             )
         if unplaced:
             out.append(f"  - with no round on them, so left out above: {unplaced}")
@@ -336,10 +361,7 @@ def report(prs: list[PullRequest], since: datetime) -> str:
         sev = Counter(f.severity for f in p.findings)
         out.append(
             f"- #{p.number} {p.title}: {verdicts}; "
-            + (
-                ", ".join(f"{sev[s]} {s}" for s in SEVERITIES.values() if sev[s])
-                or "no findings"
-            )
+            + (", ".join(f"{sev[s]} {s}" for s in BREAKDOWN if sev[s]) or "no findings")
         )
     return "\n".join(out)
 
@@ -421,7 +443,11 @@ def main(argv: list[str] | None = None) -> int:
     window.add_argument("--days", type=int, default=7, help="merged in the last N days")
     window.add_argument("--since", help="merged on or after this date (YYYY-MM-DD)")
     parser.add_argument(
-        "--pr", type=int, action="append", default=[], help="these pull requests only"
+        "--pr",
+        type=int,
+        action="append",
+        default=[],
+        help="these pull requests only, whenever merged (the window is ignored)",
     )
     args = parser.parse_args(argv)
     since = (
@@ -429,7 +455,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.since
         else datetime.now(UTC) - timedelta(days=args.days)
     )
-    print(report(fetch(args.repo, since, args.pr), since))
+    scope = (
+        ", ".join(f"#{n}" for n in args.pr) if args.pr else f"since {since:%Y-%m-%d}"
+    )
+    print(report(fetch(args.repo, since, args.pr), scope))
     return 0
 
 
