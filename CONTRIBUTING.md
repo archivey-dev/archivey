@@ -60,16 +60,16 @@ uv run pre-commit run --all-files  # optional: framework hooks over the whole tr
 
 Pyrefly and ty are scoped to `src/` and `packages/archivey-squashfs/src/` (the library
 and the in-repo plugin package), so every command above runs clean with no extra path
-arguments. **Both type checkers must stay green** — `ruff` passing is not the gate,
-and running it alone is the most common self-inflicted CI failure here.
+arguments. **Both type checkers must stay green** — `ruff` passing is not the gate, and
+running it alone is the most common self-inflicted CI failure here.
 
 **Format before you commit.** CI runs `ruff format --check` (and `ruff check`) over
-`src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/` and will fail on drift. Installing the git hook
-(`./scripts/install-git-hooks.sh`) makes this automatic: staged `*.py` under those
-paths are `ruff check --fix`'d and `ruff format`'d on commit. If you skip the hook,
-run `uv run ruff format` yourself before committing — `ruff format --check` only
-reports problems; it does not rewrite files. Prefer the script over
-`uv run pre-commit install`: Cursor remaps `core.hooksPath`, and the script installs into
+`src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/` and will fail on drift.
+Installing the git hook (`./scripts/install-git-hooks.sh`) makes this automatic: staged
+`*.py` under those paths are `ruff check --fix`'d and `ruff format`'d on commit. If you
+skip the hook, run `uv run ruff format` yourself before committing — `ruff format
+--check` only reports problems; it does not rewrite files. Prefer the script over `uv
+run pre-commit install`: Cursor remaps `core.hooksPath`, and the script installs into
 the chained original hooks directory so the hook still runs.
 
 **From a `git worktree`,** both scripts work unchanged. A worktree starts without a
