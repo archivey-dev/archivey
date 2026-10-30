@@ -82,6 +82,11 @@ def test_rounds_come_from_the_workflow_markers_only():
         ("Agreed, but kept as is.", "disproven"),
         ("Agreed, will do.", "other"),
         ("Hmm.", "other"),
+        ("Agreed, and I took the second direction in this PR.", "fixed"),
+        ("I've left this as is.", "disproven"),
+        # A half-open fix is not a fix.
+        ("Reproduced, and partly fixed in e83f9441.", "other"),
+        ("Not fixed: the bound is the maintainer's call.", "other"),
     ],
 )
 def test_a_reply_states_its_disposition(text, expected):
@@ -185,3 +190,42 @@ def test_a_window_the_pages_do_not_cover_fails_rather_than_report_part(monkeypat
         tally.merged_since("o/r", datetime(2026, 1, 1, tzinfo=UTC))
     # Once updates are older than the window, the pages stop there.
     assert tally.merged_since("o/r", datetime(2026, 10, 31, tzinfo=UTC)) == []
+
+
+def test_raising_shapes_status_lines_and_summary_clauses():
+    reviews = [
+        {
+            "id": 901,
+            "user": BOT,
+            "body": "## Round 1 · 🔄 Request Changes\n\n"
+            "**K6 · 🟢 `[nit]` · `CONFIRMED` — a stale comment\n\n"
+            "- 🟡 `[important]` · `CONFIRMED` · **K8** the cap is unchecked\n",
+        },
+        {
+            "id": 902,
+            "user": BOT,
+            # A later round's status line keeps its emoji; it is a disposition.
+            "body": "## Round 2 · ✅ Approve\n\n- **K6** 🟢 fixed in `005ea01c` — ok\n"
+            "- **K8** 🟡 declined — the cap is the caller's\n",
+        },
+        {
+            "id": 903,
+            "user": {"login": "cursor[bot]"},
+            "body": "## Round 2 · 🔄 Request Changes\n\n- C1 · 🟡 · CONFIRMED · reads twice\n",
+        },
+    ]
+    issue_comments = [
+        {
+            "user": DAVI,
+            "body": "- **K8:** the PR body now describes what the module checks.\n"
+            "Summary: K1 is moot. C1: fixed in `abc`.",
+        }
+    ]
+    found = tally.read_findings(7, reviews, [], issue_comments)
+    assert [(f.id, f.severity, f.round, f.disposition) for f in found] == [
+        ("C1", "important", 2, "fixed"),
+        # Raised in round 1 and closed by round 2's status line.
+        ("K6", "nit", 1, "fixed"),
+        # A reply that names it and states nothing does not hide the status line.
+        ("K8", "important", 1, "disproven"),
+    ]

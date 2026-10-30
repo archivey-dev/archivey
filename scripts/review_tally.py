@@ -19,9 +19,11 @@ It reads GitHub with ``gh api`` (REST only) and prints Markdown, which
 is in pure functions, so `tests/test_review_tally.py` runs without GitHub.
 
 The counts are as good as the posted shapes they read. A finding is a ``### K<n> ·``
-heading by ``claude[bot]``, in an inline comment or a review body. Its disposition is
-the first disposition word in the last reply on its thread that states one, or on a line that names its ID in a
-comment by anyone else; a finding with neither counts as ``no reply``.
+heading by ``claude[bot]`` (``C<n>`` by ``cursor[bot]``), in an inline comment or a
+review body. Its disposition is the first disposition word in the last reply on its
+thread that states one, in the clause after its ID on a line of a comment by anyone
+else, or in a later round's status line (``- **K7** 🟢 fixed in ...``); a finding with
+none of these counts as ``no reply``.
 """
 
 from __future__ import annotations
@@ -36,8 +38,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-#: Who posts reviews, and who posts the round markers (`review_loop_gate.ROUND_MARKER`).
-REVIEWER = "claude[bot]"
+#: Who posts reviews, with the letter their finding IDs start with, and who posts the
+#: round markers (`review_loop_gate.ROUND_MARKER`). The deep tier's Opus pass also asks
+#: Cursor for a review (`review_loop_gate.OPUS_PASS_TIERS`); its IDs never clash.
+REVIEWERS = {"claude[bot]": "K", "cursor[bot]": "C"}
 WORKFLOW = "github-actions[bot]"
 ROUND_MARKER = "<!-- archivey-review-round"
 
@@ -55,25 +59,29 @@ SEVERITIES = {
 #: Every severity a breakdown lists; `other` is a heading the parser could not read.
 BREAKDOWN = [*SEVERITIES.values(), "other"]
 
-#: A finding's heading, ``### K3 · 🟡 `[important]` · `CONFIRMED` ``, or its line in a
-#: review body's findings list: ``- K3 · 🟡 · CONFIRMED · ...``, or the template's
-#: ``- **K6** 🔴 `CONFIRMED` — ...``. In a list line the severity must be one of
-#: `SEVERITIES`, so a later round's status line (``- **K7** fixed in ...``) is not
-#: read as a finding with the severity "fixed".
-_FINDING = re.compile(
-    r"^(?:#{2,4} (K\d+) · (\S+)|\s*- \*{0,2}(K\d+)\*{0,2}(?: ·)? ("
-    + "|".join(SEVERITIES)
-    + r"))",
-    re.MULTILINE,
+_SEV = "(?P<sev>" + "|".join(SEVERITIES) + ")"
+#: The shapes a finding is raised in: its heading, ``### K3 · 🟡 `[important]` ``, the
+#: same without the ``#``s (``**K6 · 🟢 ...``), or its line in a review body's findings
+#: list: ``- K3 · 🟡 · CONFIRMED · ...``, the template's ``- **K6** 🔴 `CONFIRMED` — ...``,
+#: or ``- 🟢 `[nit]` · `CONFIRMED` · **K6** ...``. In a list line the severity must be
+#: one of `SEVERITIES`; a list line whose next word is a disposition is a later round's
+#: status line, not a finding (`_status`).
+_FINDING_SHAPES = (
+    re.compile(r"^#{2,4} (?P<id>[KC]\d+) · (?P<sev>\S+)", re.MULTILINE),
+    re.compile(r"^\*\*(?P<id>[KC]\d+) · " + _SEV, re.MULTILINE),
+    re.compile(r"^\s*- \*{0,2}(?P<id>[KC]\d+)\*{0,2}(?: ·)? " + _SEV, re.MULTILINE),
+    re.compile(r"^\s*- " + _SEV + r"[^\n]*?\*\*(?P<id>[KC]\d+)\*\*", re.MULTILINE),
 )
 #: The attribution line under it names the round: ``· round 2 ·``.
 _ROUND = re.compile(r"· round (\d+) ·")
 _FIELD = re.compile(r"(\w+)=(\S+)")
-_ID = re.compile(r"\bK(\d+)\b")
+_ID = re.compile(r"\b[KC]\d+\b")
 
 #: A finding raised by an earlier fix: "The K4 fix ...", "the K10 re-wrap ...". Not
 #: "K3's fix", which reviewers write about a fix still to come.
-_FROM_FIX = re.compile(r"\bthe K\d+ (?:fix|re-?wr\w*|rewrite|change)\b", re.IGNORECASE)
+_FROM_FIX = re.compile(
+    r"\bthe [KC]\d+ (?:fix|re-?wr\w*|rewrite|change)\b", re.IGNORECASE
+)
 
 #: Disposition words, looked for on the first line of a reply (`classify`). The skill's
 #: four (§2) plus the verbs implementers write instead of "fixed".
@@ -91,14 +99,14 @@ DISPOSITIONS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "disproven",
         re.compile(
-            r"\b(disproven|not a bug|kept|keeping|stays as is|no change|declined|intentional|by design|won't fix)\b",
+            r"\b(disproven|not a bug|kept|keeping|(?:stays|left (?:it |this )?)as is|no change|declined|intentional|by design|won't fix)\b",
             re.IGNORECASE,
         ),
     ),
     (
         "fixed",
         re.compile(
-            r"\b(fixed|fix(?:es)? in|done|taken|applied|now uses|removed|renamed|added|rewrapped|re-?wrote|rewritten|"
+            r"(?<!partly )(?<!not )\b(fixed|fix(?:es)? in|done|taken|took|applied|now uses|removed|renamed|added|rewrapped|re-?wrote|rewritten|"
             r"reworded|moved|changed|updated|dropped|replaced)\b",
             re.IGNORECASE,
         ),
@@ -123,6 +131,8 @@ class Finding:
     round: int | None
     from_fix: bool
     disposition: str = "no reply"
+    #: What a later round's status line says happened, used if no reply says.
+    status: str | None = None
 
 
 @dataclass
@@ -134,7 +144,9 @@ class PullRequest:
 
     @property
     def passed_at(self) -> int | None:
-        """The first round whose verdict approved and stopped the loop, or ``None``."""
+        """The first round whose verdict approved, other than a conditional approval
+        the Opus pass follows (``next=opus``), or ``None``. A later round can follow it
+        too, when the implementer asked for one."""
         for r in self.rounds:
             if r.verdict in APPROVING and not r.opus_next:
                 return r.n
@@ -178,6 +190,21 @@ def classify(text: str) -> str:
     return min(hits)[1] if hits else "other"
 
 
+def _findings(body: str) -> list[re.Match[str]]:
+    """Every finding shape in ``body``, in order."""
+    hits = [m for p in _FINDING_SHAPES for m in p.finditer(body)]
+    return sorted(hits, key=lambda m: m.start())
+
+
+def _status(heading: re.Match[str], body: str) -> str | None:
+    """The disposition a list line states right after its severity, or ``None``."""
+    if not heading.group(0).lstrip().startswith("-"):
+        return None
+    word = body[heading.end() :].split("\n", 1)[0].strip().split(" ", 1)[0]
+    kind = classify(word)
+    return None if kind == "other" else kind
+
+
 def _finding(pr: int, heading: re.Match[str], body: str) -> Finding:
     rest = body[heading.end() :]
     text = (
@@ -188,8 +215,8 @@ def _finding(pr: int, heading: re.Match[str], body: str) -> Finding:
     round_match = _ROUND.search(text[:400])
     return Finding(
         pr=pr,
-        id=heading.group(1) or heading.group(3),
-        severity=SEVERITIES.get(heading.group(2) or heading.group(4), "other"),
+        id=heading.group("id"),
+        severity=SEVERITIES.get(heading.group("sev"), "other"),
         round=int(round_match.group(1)) if round_match else None,
         from_fix=bool(_FROM_FIX.search(text)),
     )
@@ -207,24 +234,30 @@ def read_findings(
     rounds_by_review: dict[int, int] = {}
 
     for r in reviews:
-        if r.get("user", {}).get("login") != REVIEWER:
+        if r.get("user", {}).get("login") not in REVIEWERS:
             continue
         body = r.get("body") or ""
         head = re.match(r"## Round (\d+)", body)
         if head:
             rounds_by_review[r["id"]] = int(head.group(1))
-        for m in _FINDING.finditer(body):
+        for m in _findings(body):
+            status = _status(m, body)
+            if status:
+                # A later round's status line: the finding was raised before it.
+                if m.group("id") in found:
+                    found[m.group("id")].status = status
+                continue
             f = _finding(pr, m, body)
             if f.round is None and head:
                 f.round = int(head.group(1))
             found.setdefault(f.id, f)
 
     for c in review_comments:
-        if c.get("in_reply_to_id") or c.get("user", {}).get("login") != REVIEWER:
+        if c.get("in_reply_to_id") or c.get("user", {}).get("login") not in REVIEWERS:
             continue
         body = c.get("body") or ""
-        m = _FINDING.match(body)
-        if not m:
+        m = next(iter(_findings(body)), None)
+        if not m or m.start() != 0:
             continue
         f = _finding(pr, m, body)
         if f.round is None:
@@ -235,29 +268,35 @@ def read_findings(
 
     for c in review_comments:
         target = thread_of.get(c.get("in_reply_to_id") or -1)
-        if target and c.get("user", {}).get("login") != REVIEWER:
+        if target and c.get("user", {}).get("login") not in REVIEWERS:
             # The last stated disposition stands (escalated, answered, then fixed);
             # a reply that states none does not undo an earlier one.
             kind = classify(_strip_heading(c.get("body") or ""))
             if kind != "other" or found[target].disposition == "no reply":
                 found[target].disposition = kind
 
-    # Top-level disposition comments: one line per finding, keyed by its ID.
+    # Top-level disposition comments: each ID on a line, with the clause after it up
+    # to the next ID. A clause that names a finding and states nothing is `other`.
     others = [
         c.get("body") or ""
         for c in [*issue_comments, *reviews]
-        if c.get("user", {}).get("login") not in (REVIEWER, WORKFLOW)
+        if c.get("user", {}).get("login") not in (*REVIEWERS, WORKFLOW)
     ]
     for body in others:
         for line in body.splitlines():
-            ids = _ID.findall(line[:40])
+            ids = list(_ID.finditer(line))
             if not ids:
                 continue
-            f = found.get(f"K{ids[0]}")
-            if f and f.disposition == "no reply":
-                kind = classify(_ID.sub("", line, count=1))
-                if kind != "other":
-                    f.disposition = kind
+            for m, nxt in zip(ids, [*ids[1:], None], strict=True):
+                f = found.get(m.group(0))
+                if f and f.disposition in ("no reply", "other"):
+                    kind = classify(line[m.end() : nxt.start() if nxt else None])
+                    if kind != "other" or f.disposition == "no reply":
+                        f.disposition = kind
+
+    for f in found.values():
+        if f.disposition in ("no reply", "other") and f.status:
+            f.disposition = f.status
 
     return sorted(found.values(), key=lambda f: int(f.id[1:]))
 
@@ -305,6 +344,10 @@ def report(prs: list[PullRequest], scope: str) -> str:
         f"- **{len(findings)} findings:** "
         + ", ".join(f"{by_sev[s]} {s}" for s in BREAKDOWN if by_sev[s])
     )
+
+    cursor = [f for f in findings if f.id.startswith("C")]
+    if cursor:
+        out.append(f"- **Of them from Cursor:** {len(cursor)}")
 
     with_pass = [p for p in reviewed if p.opus_round is not None]
     if with_pass:
