@@ -38,6 +38,7 @@ from tests.zip_legacy_build import (
     implode_entry,
     shrink,
     shrink_entry,
+    unshrink_reference,
 )
 from tests.zipcrypto import build_zipcrypto_zip
 
@@ -241,6 +242,13 @@ _A, _B, _X = ord("a"), ord("b"), ord("x")
             "links to a free code or loops",
             id="loop",
         ),
+        # The clear frees 258 and 259; the next code takes 258 back with the freed 258
+        # (the previous code) as its parent, and names it: a KwKwK code on a loop.
+        pytest.param(
+            _codes((_A, 9), (_B, 9), (257, 9), (258, 9), (256, 9), (2, 9), (258, 9)),
+            "links to a free code or loops",
+            id="loop-kwkwk",
+        ),
     ],
 )
 def test_bad_shrink_codes_are_refused(compressed: bytes, message: str) -> None:
@@ -409,7 +417,9 @@ def test_a_huge_declared_size_allocates_nothing(
                 assert stream is not None
                 stream.read()
 
-    # About 1.5 MB measured.
+    # Once first, so lazy imports and their bytecode (about 8 MB on a cold cache) stay
+    # out of the window. About 1.5 MB measured.
+    reads()
     assert traced_peak(reads) < 4 << 20
 
 
@@ -489,3 +499,121 @@ def test_long_shrink_entries_are_stored_not_walked(
     assert expands >= 8192 - 2048 - 1, "long entries were walked, not looked up"
     # About 2.3 MB measured; stored flat, about 13 MB.
     assert traced_peak(decode) < 4 << 20
+
+
+def _clears_among_long_links(
+    top: int = 2048, rounds: int = 6, codes: int = 300
+) -> bytes:
+    """A zero chain up to code ``top - 1`` (11 bits by default), then ``rounds`` of a
+    literal, a partial clear, and ``codes`` codes alternating between two of the
+    chain's longest live codes: every lookup is a stored link, and each clear frees
+    slots while links are live. By default 4.8 KB, decoding to 4.8 MB."""
+    out = BitWriter()
+    width = 9
+
+    def write(code: int) -> None:
+        nonlocal width
+        while code >= 1 << width:
+            out.write(256, width)
+            out.write(1, width)
+            width += 1
+        out.write(code, width)
+
+    write(0)
+    for code in range(257, top):
+        write(code)
+    for r in range(rounds):
+        write(1 + r)  # so the clear frees none of the long codes just read
+        out.write(256, width)
+        out.write(2, width)
+        for i in range(codes):
+            write(top - 1 - r - i % 2)
+    return out.getvalue()
+
+
+def _decode_or_error(data: bytes, chunk: int, budget: int) -> bytes | None:
+    """``ShrinkDecoder`` output with no declared size, or None if it refused it."""
+    decoder = ShrinkDecoder(None)
+    out = bytearray()
+    try:
+        for i in range(0, len(data), chunk):
+            out += decoder.feed(data[i : i + chunk], budget).data
+            while not decoder.needs_input:
+                out += decoder.feed(b"", budget).data
+        out += decoder.flush().data
+    except CorruptionError:
+        return None
+    return bytes(out)
+
+
+def _reference_or_error(data: bytes) -> bytes | None:
+    try:
+        return unshrink_reference(data, 2**62)
+    except ValueError:
+        return None
+
+
+def test_partial_clears_among_long_links_match_a_plain_decoder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A clear never frees a stored link's base (it is an ancestor of a live slot),
+    so the lookups after each clear give what a decoder that walks every code gives."""
+    from archivey.internal.streams.codecs import zip_legacy_decoder
+
+    expands = 0
+    real_expand = zip_legacy_decoder._expand
+
+    def counting_expand(*args: object) -> bytes:
+        nonlocal expands
+        expands += 1
+        return real_expand(*args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(zip_legacy_decoder, "_expand", counting_expand)
+    data = _clears_among_long_links()
+    expected = unshrink_reference(data, 2**62)
+    assert _decode_or_error(data, 1 << 20, -1) == expected
+    assert expands == 6 * 300
+
+
+def test_mutated_shrink_streams_match_a_plain_decoder() -> None:
+    """Bit flips and cuts in streams with long links, clears and orphans: the decoder's
+    stored strings, heap and leaf set give what the plain decoder's walks and scans
+    give, or both refuse, whatever the chunk and read sizes."""
+    rng = random.Random(1144)
+    bases = [
+        _clears_among_long_links(top=1024, rounds=3, codes=60),
+        shrink(_DATA["letters"])[0],
+        shrink(bytes(20_000) + _DATA["letters"][:10_000] + bytes(20_000))[0],
+    ]
+    for _ in range(60):
+        data = bytearray(rng.choice(bases))
+        for _ in range(rng.randint(1, 4)):
+            data[rng.randrange(len(data))] ^= 1 << rng.randrange(8)
+        if rng.random() < 0.2:
+            data = data[: rng.randrange(1, len(data))]
+        expected = _reference_or_error(bytes(data))
+        chunk = rng.choice([1, 100, 1 << 20])
+        budget = rng.choice([-1, 997, 1 << 16])
+        got = _decode_or_error(bytes(data), chunk, budget)
+        if expected is None or got is None:
+            assert got is None and expected is None
+        else:
+            # The plain decoder has no end checks: a cut stream ends where it ends.
+            assert got == expected
+
+
+def test_an_orphan_reads_its_parent_slot_as_it_is_now() -> None:
+    """An orphan's string is its parent slot's string when it is read, not when it was
+    added, so the decoder walks it instead of storing it.
+
+    a, b, c, 257 ("ab", adds 259 "ca"), 259 ("ca", adds 260 "abc"); the clear frees
+    258, 259 and 260, the previous code 259 among them. x adds the orphan 258 under
+    the free 259; y takes 259 back as "xy"; 258 then reads "xyx", where a string
+    stored when 258 was added would read "cax". ``unzip`` and 7-Zip 26.05 read "xyx".
+    """
+    data = _codes(
+        (_A, 9), (_B, 9), (ord("c"), 9), (257, 9), (259, 9), (256, 9), (2, 9),
+        (_X, 9), (ord("y"), 9), (258, 9),
+    )  # fmt: skip
+    assert _decode_or_error(data, 1 << 20, -1) == b"abcabcaxyxyx"
+    assert unshrink_reference(data, 2**62) == b"abcabcaxyxyx"

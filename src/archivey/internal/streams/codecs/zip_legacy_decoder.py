@@ -27,12 +27,13 @@ from __future__ import annotations
 
 import heapq
 from collections.abc import Generator
-from typing import Any, BinaryIO
+from typing import BinaryIO
 
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.streams.codecs.unix_compress_decoder import (
     _MAX_ENTRY_TAIL,
     _MAX_FLAT_ENTRY,
+    _Entry,
     _expand,
 )
 from archivey.internal.streams.decompressor_stream import (
@@ -58,6 +59,14 @@ class _BitDecoder(BaseDecoder):
     its output in ``self._out``, and calls ``yield from self._budget()`` after each
     symbol so a read with a ``max_length`` stops near it. The generator returning
     means the stream ended.
+
+    A hot decoder may do all three inline over locals instead, as Shrink does. It then
+    owes the rest of the class three things: write ``_data_pos`` and ``_produced``
+    back before every yield and return (and before raising :class:`_InputEnded`);
+    read ``_data``, ``_data_pos`` and ``_limit`` again after every yield, since
+    :meth:`feed` replaces the data and sets the budget; and append to ``_out``
+    without rebinding it, since :meth:`_hand_out` empties it in place. ``_bits`` and
+    ``_nbits`` then go unused.
     """
 
     label = ""
@@ -218,10 +227,9 @@ class ShrinkDecoder(_BitDecoder):
         # parent was free when it was added (an orphan, and every slot below it). Those
         # walk the parents on each use, since the slot that becomes the parent can
         # change. A stored string never goes stale: a slot with children is never
-        # freed, so the parents it was built from stay as they were.
-        # Typed Any: a link's base is always a stored string, never None, which
-        # ``_expand``'s signature cannot say.
-        strings: list[Any] = [bytes([i]) for i in range(256)]
+        # freed, so its parent, and every ancestor a link's base can name, stay as
+        # they were while it lives.
+        strings: list[_Entry | None] = [bytes([i]) for i in range(256)]
         strings += [None] * (_SHRINK_TABLE - 256)
         # The free slots: freed ones in a heap, all below ``fresh``, then the slots
         # never used from ``fresh`` up. The lowest free slot is the heap's top if
@@ -243,11 +251,13 @@ class ShrinkDecoder(_BitDecoder):
         out = self._out
         produced = self._produced
         limit = self._limit
-        # The bit reader, in locals: synced back to self before each yield.
+        # The bit reader, in locals (see :class:`_BitDecoder`): only ``_data_pos``
+        # goes back to self before a yield, and ``self._bits`` / ``_nbits`` stay
+        # unused.
         data = self._data
         pos = self._data_pos
-        bits = self._bits
-        nbits = self._nbits
+        bits = 0
+        nbits = 0
         control = False
 
         while size is None or produced < size:
@@ -365,7 +375,7 @@ class ShrinkDecoder(_BitDecoder):
                     pass
                 elif len(prev_str) < _MAX_FLAT_ENTRY:
                     strings[new] = prev_str + entry[:1]
-                elif isinstance(base, tuple) and len(base[1]) < _MAX_ENTRY_TAIL:
+                elif not isinstance(base, bytes) and len(base[1]) < _MAX_ENTRY_TAIL:
                     strings[new] = (base[0], base[1] + entry[:1])
                 else:
                     strings[new] = (prev, entry[:1])

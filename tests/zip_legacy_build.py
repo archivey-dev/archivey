@@ -343,3 +343,88 @@ def build_zip(entries: list[LegacyEntry], *, descriptor: bool = False) -> bytes:
         "<HHHHIIH", 0, 0, len(entries), len(entries), len(central), len(body), 0
     )
     return bytes(body + central + eocd)
+
+
+def unshrink_reference(data: bytes, size: int) -> bytes:
+    """A plain Shrink decoder to check ``ShrinkDecoder`` against: every code walks its
+    parents, slots come from a scan for the lowest free one, and a partial clear scans
+    the table. Same semantics as the decoder (7-Zip's); raises ``ValueError`` where it
+    raises ``CorruptionError``, and returns what it decoded when the input runs out.
+    """
+    parent = [-1] * _TABLE
+    suffix = bytearray(_TABLE)
+    used = [True] * 257 + [False] * (_TABLE - 257)
+    out = bytearray()
+    bits = nbits = pos = 0
+    width = 9
+    prev = -1
+    prev_first = 0
+    low = 257  # no free slot below it
+
+    def read() -> int | None:
+        nonlocal bits, nbits, pos
+        while nbits < width:
+            if pos == len(data):
+                return None
+            bits |= data[pos] << nbits
+            pos += 1
+            nbits += 8
+        code = bits & ((1 << width) - 1)
+        bits >>= width
+        nbits -= width
+        return code
+
+    while len(out) < size:
+        code = read()
+        if code is None:
+            break
+        if code == 256:
+            if prev < 0:
+                raise ValueError("control code first")
+            sub = read()
+            if sub is None:
+                break
+            if sub == 1 and width < 13:
+                width += 1
+            elif sub == 2:
+                # A used slot's pointer counts even to a free parent (an orphan's).
+                pointed = [False] * _TABLE
+                for slot in range(257, _TABLE):
+                    if used[slot]:
+                        pointed[parent[slot]] = True
+                for slot in range(257, _TABLE):
+                    if used[slot] and not pointed[slot]:
+                        used[slot] = False
+                low = 257
+            else:
+                raise ValueError("bad control code")
+            continue
+        new = -1
+        if prev >= 0:
+            while low < _TABLE and used[low]:
+                low += 1
+            if low == _TABLE:
+                raise ValueError("table full")
+            new = low
+            used[new] = True
+            parent[new] = prev
+            suffix[new] = prev_first
+        elif code > 255:
+            raise ValueError("undefined code first")
+        if not used[code]:
+            raise ValueError("free code")
+        entry = bytearray()
+        walk = code
+        while walk > 255:
+            if not used[walk] or len(entry) >= _TABLE:
+                raise ValueError("free code or loop")
+            entry.append(suffix[walk])
+            walk = parent[walk]
+        entry.append(walk)
+        entry.reverse()
+        if new >= 0:
+            suffix[new] = entry[0]
+        prev = code
+        prev_first = entry[0]
+        out += entry
+    return bytes(out)

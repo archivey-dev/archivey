@@ -847,7 +847,11 @@ bytes, then links with 128-byte tails, its `_expand`), so a code is one lookup, 
 walk up its parents; only a slot added under a free parent (an orphan) and the slots
 below it walk, since that parent slot can be taken over. That and an inline bit loop
 made it 1.5 to 1.9x faster on text and about 36x on long runs (3 to 6 MB/s on text, about
-half the unix-compress decoder's speed).
+half the unix-compress decoder's speed). The caps bound the memory: a full 13-bit table
+of long entries peaks at about 1.8 MiB (0.7 MiB when every code walked), where flat
+strings would hold about 32 MiB. `unshrink_reference` in `tests/zip_legacy_build.py`
+walks every code and scans the table at each clear; the tests check the decoder against
+it on mutated streams with long links, clears and orphans.
 The 7z handbook (§ coders, *Input after the stream*) has how each codec finds
 its end, and what it cannot see; `inflate64` drops input after a Deflate64 stream's end
 and has no `unused_data`, so `Deflate64Decoder` holds back the last byte it is given,
