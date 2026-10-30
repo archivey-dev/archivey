@@ -237,7 +237,9 @@ REWIND_REDECODE_WARN_BYTES: int = 1 * 1024 * 1024
 class ExtractionLimits:
     """Decompression-bomb limits for extraction.
 
-    Applied by :meth:`~archivey.ForwardArchiveReader.extract_all`.
+    Applied by :meth:`~archivey.ForwardArchiveReader.extract_all`, and :attr:`max_ratio`
+    also to every decode of a container inside a compression stream (a ``.tar.gz``, a
+    format handler's ``.cpio.xz``), listing included.
 
     ``None`` on a guard field disables that guard. :attr:`UNLIMITED` sets the three
     guard fields to ``None``; :attr:`ratio_activation_threshold` and
@@ -271,6 +273,10 @@ class ExtractionLimits:
     A member's output never passes the size the archive records for it. Where both
     sizes are recorded, a member over the per-member ratio is refused before any of it
     is written.
+
+    The archive-wide check also holds while a reader decodes a compressed tar (or
+    another container inside a compression stream) for any reason, listing included,
+    since listing one decodes all of it.
     """
 
     ratio_activation_threshold: int = 5 * 2**20

@@ -1300,7 +1300,10 @@ budget one level at a time. The caller bounds depth and total size. Public:
 ### Reads have no output bound
 
 `read()` and `open()` return whatever the member decodes to; `ExtractionLimits` apply to
-`extract` only. Chunk untrusted payloads. Public:
+`extract` only. The one exception is a container inside a compression stream (a
+`.tar.gz`): its whole decode, listing included, is held to the archive-wide `max_ratio`
+(`bomb_tracker.DecodeRatioGuard`), since listing it decodes everything. Chunk untrusted
+payloads. Public:
 [security.md §Where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 
 ### A probe can fabricate a member

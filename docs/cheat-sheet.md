@@ -135,7 +135,8 @@ outside the destination, and device files. Going over a limit raises `ResourceLi
 [Archives you trust](extracting.md#archives-you-trust) shows how to relax them.
 
 Reading has limits too, with the same `ResourceLimitError`: a listing stops at 262,144 members,
-and an archive can ask a decoder for at most 2 GiB of memory. [Hardening](security.md#hardening) lists them, and
+a compressed tar may expand at most 1000 times, and an archive can ask a decoder for at most 2 GiB
+of memory. [Hardening](security.md#hardening) lists them, and
 `config=archivey.ArchiveyConfig(...)` changes them.
 
 ## From zipfile and tarfile

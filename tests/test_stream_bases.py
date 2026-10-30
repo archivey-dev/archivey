@@ -408,6 +408,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.streams.codecs.bcj2_filter as bcj2
     import archivey.internal.streams.streamtools.slice as slice_mod
     from archivey.internal import (
+        bomb_tracker,
         detection,
         format_adapter,
         password_confirm,
@@ -459,6 +460,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         codecs.stdlib_takeover._StdlibOnAcceleratorError,
         codecs.rapidgzip_select._StdlibSeekContract,
         counting.OutputCountingStream,
+        bomb_tracker.DecodeRatioGuard,  # the codec's offsets
         readahead.ReadAheadStream,  # the inner's offsets
         decompressor_stream.DecompressorStream,
         crypto.AesDecryptStream,  # dense CBC restart; compose with inner
@@ -674,7 +676,7 @@ def test_delegating_stream_close_inventory() -> None:
     """
     _import_all_archivey_modules()
 
-    from archivey.internal import password_confirm, walk_handoff
+    from archivey.internal import bomb_tracker, password_confirm, walk_handoff
     from archivey.internal.backends import (
         rar_copy_sources,
         rar_reader,
@@ -696,6 +698,7 @@ def test_delegating_stream_close_inventory() -> None:
         counting.CountingReader,
         counting.OutputCountingStream,
         counting.SeekCountingStream,
+        bomb_tracker.DecodeRatioGuard,
         codecs.zlib_codec._DeflateEndCheckStream,
         codecs.gzip_codec._GzipTruncationCheckStream,
         codecs.zlib_codec._ZlibAdlerCheckStream,
@@ -843,12 +846,14 @@ def test_delegating_stream_peel_inventory() -> None:
     ``source_byte_size`` from its own ``size`` rather than by being peeled.
     """
     _import_all_archivey_modules()
+    from archivey.internal import bomb_tracker
     from archivey.internal.streams import counting
 
     found = _delegating_stream_subclasses()
     peels = {cls for cls in found if cls.peel_for_source_size is True}
     assert peels == {
         counting.SeekCountingStream,
+        bomb_tracker.DecodeRatioGuard,
     }, (
         "DelegatingStream subclass peel_for_source_size does not match "
         "the inventory (only a pass-through wrapper whose size is the "

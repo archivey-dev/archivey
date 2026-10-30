@@ -877,7 +877,10 @@ earlier check would save little. Members without a recorded `size` or
 ### Requirement: Bomb Protection Scope Limited to Extraction Paths
 
 The system SHALL apply `ExtractionLimits` bomb guards only during
-`ArchiveReader.extract_all()`. `ArchiveReader.read()`
+`ArchiveReader.extract_all()`, with one exception: when the archive is a container
+inside a compression stream, its archive-wide `max_ratio` reaches every decode of that
+stream, listing and member reads included (Requirement: A compressed container's
+decode is held to the archive-wide ratio). Otherwise `ArchiveReader.read()`
 and `ArchiveReader.open()` return decompressed data/streams without byte, ratio,
 or entry-count enforcement; callers are responsible for guarding direct reads.
 Listing materialization caps are separate (`ListingLimits` in `archive-reading`)
@@ -887,9 +890,10 @@ and do not apply to `read()` / `open()` either.
 
 | Case | Expected |
 | --- | --- |
-| `reader.read(member)` on extreme-ratio data | Raw decompressed bytes returned or normal read error; no extraction bomb guard |
-| `reader.open(member)` | Stream delivers decompressed data without extraction limits |
+| `reader.read(member)` on extreme-ratio data | Raw decompressed bytes returned or normal read error; no extraction bomb guard (in a container inside a compression stream, the archive-wide `max_ratio` still applies) |
+| `reader.open(member)` | Stream delivers decompressed data without extraction limits, with the same exception |
 | `reader.members()` on a metadata bomb | `ListingLimits` / `ResourceLimitError` per `archive-reading`, not `ExtractionLimits` |
+| `reader.members()` on a container inside a compression stream past `max_ratio` | `ResourceLimitError` from the archive-wide ratio |
 
 ### Requirement: Progress Reporting via on_progress Callback
 
@@ -1370,6 +1374,34 @@ SHALL raise `ResourceLimitError`.
 | Plain tar from a non-seekable stream, with or without a `size` attribute | No archive-wide denominator; the cumulative byte limit applies |
 | ZIP member has known `compressed_size` | Per-member ratio applies; archive-wide ratio does not replace it |
 | Nested archive opened from an Archivey member/codec stream with cheap size | Cheap source size may serve as archive-wide denominator; it is the container's unchecked declaration, so `max_extracted_bytes` is the bound that holds |
+
+### Requirement: A compressed container's decode is held to the archive-wide ratio
+
+Listing a container inside a compression stream (a `.tar.gz`, or a sequential format
+handler's `.cpio.xz`) decodes the whole stream, member data included, before
+extraction writes a byte. The system SHALL hold that decoded stream to the
+archive-wide ratio of the reader's `extraction_limits` in every use (listing, a
+member read, a pass, `extract_all`): once the furthest offset decoded passes
+`ratio_activation_threshold`, and its ratio to the archive's size (the static
+denominator), or to the compressed bytes read so far past
+`live_ratio_activation_threshold` (the live one), passes `max_ratio`, the read or
+seek that crosses it SHALL raise `ResourceLimitError`, the same type an extraction's
+archive-wide check raises, and SHALL NOT return the bytes it decoded. The rule is the
+one that check applies (`archive_ratio_refusal`). A backward seek that decodes again
+does not count again. Reads and forward seeks, a seek to the end included, reach the
+decoder in steps of at most 1 MiB, so the decode stops within a step of the limit. A
+decoder error after a read already returned bytes in the same call is held for the
+next read, so the prefix of a cut stream is kept; a seek, even a refused one, drops
+it. `max_ratio=None` turns it off.
+
+#### Scenario: compressed container decode matrix
+
+| Case | Expected |
+| --- | --- |
+| 868-byte `.tar.bz2` holding 1 GiB of zeros, from a path | `members()` raises `ResourceLimitError` after about 5 MiB decoded |
+| The same archive from a pipe | Refused once 256 MiB are decoded (the live floor) |
+| The same archive with `ExtractionLimits(max_ratio=None)` | Lists, as before |
+| A `.tar.gz` under the ratio | Lists, reads and extracts unchanged |
 
 ### Requirement: Enforce Maximum Entry Count
 

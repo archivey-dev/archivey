@@ -3358,8 +3358,13 @@ class BaseArchiveReader(ArchiveReader):
         (:meth:`_codec_input`), so the live decompression-ratio guard can see the
         compressed bytes consumed. The codec stream is the whole file, so bytes after
         its end are reported, as bytes after an archive's own end are.
+
+        Listing such an archive decodes all of it, so the decoded stream is held to
+        ``extraction_limits.max_ratio`` of the archive's size (:class:`DecodeRatioGuard`)
+        in every use, not only in ``extract_all``.
         """
         # Imported here: the codec layer imports reader-side modules at load.
+        from archivey.internal.bomb_tracker import DecodeRatioGuard
         from archivey.internal.config import stream_config_from_archivey
         from archivey.internal.streams.codecs import (
             codec_for_stream_format,
@@ -3372,7 +3377,7 @@ class BaseArchiveReader(ArchiveReader):
             codec_source = str(source.path)
         else:
             codec_source = self._codec_input(source, track_seeks=True)
-        return open_codec_stream(
+        decoded = open_codec_stream(
             codec,
             codec_source,
             config=replace(
@@ -3391,6 +3396,16 @@ class BaseArchiveReader(ArchiveReader):
             # mark the stream rewound. A repeated verdict would drop the prefix of the
             # read that reaches the damage; each member stream repeats its own.
             repeat_verdict=streaming,
+        )
+        limits = self._config.extraction_limits
+        if limits.max_ratio is None:
+            return decoded
+        counter = self._compressed_input_counter
+        return DecodeRatioGuard(
+            decoded,
+            limits=limits,
+            static_size=self._trusted_source_size(),
+            consumed=None if counter is None else lambda: counter.bytes_read,
         )
 
     def __iter__(self) -> MemberPass[ArchiveMember]:

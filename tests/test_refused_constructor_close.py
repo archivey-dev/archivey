@@ -273,6 +273,7 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.streams.streamtools.sparse.SparseStream": (
         "DelegatingStream.__init__ first; close() reads nothing assigned after it"
     ),
+    "archivey.internal.bomb_tracker.DecodeRatioGuard": "plain assignments only",
     "archivey.internal.streams.counting.CountingReader": "plain assignments only",
     "archivey.internal.streams.counting.OutputCountingStream": "plain assignments only",
     "archivey.internal.streams.counting.SeekCountingStream": "plain assignments only",

@@ -78,13 +78,15 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   memory. A stream from `open()` decodes only as much as you ask for, so `stream.read(n)` holds
   about `n` bytes however large the member is, but a `stream.read()` with no size returns the rest
   of the member. `DecoderLimits` is the main limit that applies to a read. It caps the decoder's own
-  memory, so the data you read takes additional memory on top. `ExtractionLimits` doesn't apply,
-  because it covers only what `extract_all` writes to disk. A RAR archive opened from a file object
-  rather than a path is copied to a temporary file the first time a member needs `unrar` or `unar`.
-  `spool_limits.max_bytes` caps that copy, along with the few other temporary files archivey makes
-  for RAR archives, listed in the table below. When the archive records a member's size in
-  `member.size`, archivey never decodes more than that, and a member holding more raises
-  `CorruptionError`.
+  memory, so the data you read takes additional memory on top. `ExtractionLimits` covers what
+  `extract_all` writes to disk, with one exception: a container inside a compression stream (a
+  `.tar.gz`, a format handler's `.cpio.xz`) is held to its `max_ratio` whenever it's decoded, so
+  listing it or reading from it can raise `ResourceLimitError` too. A RAR archive opened from a
+  file object rather than a path is copied to a temporary file the first time a member needs
+  `unrar` or `unar`. `spool_limits.max_bytes` caps that copy, along with the few other temporary
+  files archivey makes for RAR archives, listed in the table below. When the archive records a
+  member's size in `member.size`, archivey never decodes more than that, and a member holding
+  more raises `CorruptionError`.
 - **A pass that reads members as it goes checks the listing limits as it goes.** On a TAR,
   `stream_members()` yields members up to the limit and then raises, and `extract_all` leaves the
   files it wrote before then on disk. 7z, RAR and ISO archives check the limits before they give you
@@ -230,7 +232,8 @@ in the repository measures what each limit costs in time and memory on your mach
 - **`extraction_limits.max_ratio`**, default 1000, caps how much a member, or the whole archive,
   expands. It's checked as data is written, and for a member whose size and compressed size the
   archive records, before any of it is written. Outputs under 5 MiB, or 256 MiB for a whole archive
-  read from a pipe, aren't checked. It has no cost of its own.
+  read from a pipe, aren't checked. It has no cost of its own. A compressed tar is held to it
+  whenever archivey decodes it, listing included, since listing one decodes all of it.
 - **`listing_limits.max_members`**, default 262,144, caps the members an archive can list. It costs
   about 25-50 µs and 1.5 KiB of memory per member, under 15 s and 384 MiB at the default.
 - **`listing_limits.max_metadata_bytes`**, default 64 MiB, caps the text kept for names, comments

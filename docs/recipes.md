@@ -49,9 +49,9 @@ as `ExtractionStatus.BLOCKED`. [Extracting](extracting.md#options) explains both
 
 By default, an extraction raises `ResourceLimitError` once it has written 2 GiB or 262,144 entries,
 or when data expands more than 1000 times. A sparse TAR member, such as a disk image, can expand
-that much on its own. Listing an archive also raises `ResourceLimitError` past 262,144 members, or
-past 64 MiB of text kept for names, comments and link targets. A larger dataset from a source you
-trust needs higher limits:
+that much on its own. Listing an archive also raises `ResourceLimitError` past 262,144 members,
+past 64 MiB of text kept for names, comments and link targets, or when a compressed tar expands
+more than 1000 times. A larger dataset from a source you trust needs higher limits:
 
 ```python
 import archivey
@@ -238,8 +238,10 @@ Each setting in `CONFIG` does one job:
   ([Raising or quieting a diagnostic](errors-and-diagnostics.md#raising-or-quieting-a-diagnostic)).
 
 `ExtractionLimits` covers only what `extract_all` writes, so a loop that reads member data keeps
-its own count. [Where the guarantees stop](security.md#where-the-guarantees-stop) says which limits
-apply to a read, and [Hardening](security.md#hardening) lists every limit.
+its own count. The exception is a container inside a compression stream (a `.tar.gz`), whose
+`max_ratio` holds every decode of it.
+[Where the guarantees stop](security.md#where-the-guarantees-stop) says which limits apply to a
+read, and [Hardening](security.md#hardening) lists every limit.
 
 ### Refuse an upload with a reason
 

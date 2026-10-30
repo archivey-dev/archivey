@@ -643,6 +643,12 @@ field would be false for most members of an ordinary read.
 - ISO path-table entries count against `max_members` (2026-10-06, PR 612).
 - Hard-link copies at the link-count limit count toward `max_ratio`; cross-device copies
   count only toward bytes (2026-10-07, PR 623).
+- A container inside a compression stream (a `.tar.gz`, a handler's `.cpio.xz`) holds
+  its whole decode to the archive-wide `max_ratio` in every use, listing included
+  (`DecodeRatioGuard`): listing one decodes everything, and extraction would refuse the
+  same archive anyway (davi, 2026-10-29, PR 1138). Cost: an honest archive over 1000:1
+  past the first 5 MiB no longer lists by default. Reopen if a real archive class
+  (not a test of zeros) is refused there.
 - Default numbers (decided 2026-10-07): `max_members` and `max_entries` 262,144;
   `max_key_derivation_rounds` 2**25. These replace the 2026-10-01 decision to keep
   1,048,576 and 2**27, after measuring per-member listing cost.
