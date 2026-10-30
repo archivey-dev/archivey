@@ -1026,9 +1026,9 @@ misread the archive.
 - **Reading members:** direct; inside a compressor, solid, as in a compressed TAR.
 - **From a pipe:** yes, with `streaming=True`.
 - All four header variants read: binary (either byte order), odc, newc and crc, and afio's
-  large header in an odc archive. `ArchiveInfo.format_version` names the variant as GNU
-  cpio's `-H` option does (`bin`, `odc`, `newc`, `crc`), with `bin-be` for a binary archive
-  in the other byte order.
+  large header in an odc archive. `ArchiveInfo.extra["cpio.variant"]` names the variant as
+  GNU cpio's `-H` option does (`bin`, `odc`, `newc`, `crc`), with `bin-be` for a binary
+  archive in the other byte order. `ArchiveInfo.format_version` is `None`.
 - A binary archive has only a 2-byte magic, so it is detected only when its name ends in
   `.cpio`, or with `always_probe_content=True`, or when you pass `format=`.
 - A symlink's target is its data. Devices, FIFOs and sockets are `OTHER`, as in every

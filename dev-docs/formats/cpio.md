@@ -19,6 +19,7 @@ a format added from outside uses, and is registered as a built-in the way ISO an
 | Encryption | None |
 | Name encoding | Bytes. UTF-8 first, then `encoding=`, then escaped, as in every format |
 | Checksums | crc only: the header's 32-bit sum of the data bytes, checked as the data is read |
+| Spec | `openspec/specs/format-cpio/spec.md` |
 
 ## 1. Variants and detection
 
@@ -36,9 +37,11 @@ variants differ only in the header and the padding:
 - **newc** (`-H newc`, SVR4) and **crc** (`-H crc`): 110 bytes of hexadecimal ASCII fields
   after `070701` or `070702`. Name and data are padded to 4 bytes.
 
-`ArchiveInfo.format_version` names the variant as GNU cpio's `-H` option does (`bin`,
-`odc`, `newc`, `crc`), with `bin-be` for a binary archive in the other byte order. A
-variant that changes mid-archive is `CorruptionError`.
+`ArchiveInfo.extra["cpio.variant"]` names the variant as GNU cpio's `-H` option does
+(`bin`, `odc`, `newc`, `crc`), with `bin-be` for a binary archive in the other byte order,
+and is absent until the walk reads the first header. `ArchiveInfo.format_version` is
+`None`, as for TAR and ar: a header variant is not a version. A variant that changes
+mid-archive is `CorruptionError`.
 
 The ASCII variants are found by their 6-byte magic. The binary variant's 2-byte magic is
 too weak alone, so it has a content probe instead: the header must also hold a name of

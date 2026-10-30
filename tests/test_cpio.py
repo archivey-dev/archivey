@@ -118,7 +118,8 @@ def test_list_and_read(name: str) -> None:
     variant = ARCHIVES[name]
     with open_archive(DATA / f"{name}.cpio") as reader:
         assert reader.format == CPIO
-        assert reader.info.format_version == variant
+        assert reader.info.format_version is None
+        assert reader.info.extra["cpio.variant"] == variant
         members = reader.members()
         _check_listing(members, variant)
         for member_name, data in CONTENT.items():
@@ -235,6 +236,31 @@ def test_inside_a_compression_stream(
             if member.name in CONTENT and member_stream is not None:
                 assert member_stream.read() == CONTENT[member.name], member.name
     _check_listing(members, "newc")
+
+
+@pytest.mark.parametrize(
+    ("spelling", "stream", "compress"),
+    [
+        ("cpio.gz", archivey.StreamFormat.GZIP, lambda d: gzip.compress(d, mtime=0)),
+        ("cpio.xz", archivey.StreamFormat.XZ, lzma.compress),
+    ],
+    ids=["gz", "xz"],
+)
+def test_a_compressed_pair_is_spelled_like_a_plugins(
+    tmp_path: Path,
+    spelling: str,
+    stream: archivey.StreamFormat,
+    compress: Callable[[bytes], bytes],
+) -> None:
+    """``format="cpio.gz"`` names the pair, which has no named constant;
+    ``format="cpio"`` on the same bytes reads them as plain CPIO and refuses them."""
+    path = tmp_path / "t.bin"
+    path.write_bytes(compress((DATA / "gnu-newc.cpio").read_bytes()))
+    with open_archive(path, format=spelling) as reader:
+        assert reader.format == archivey.ArchiveFormat(CPIO.container, stream)
+        _check_listing(reader.members(), "newc")
+    with pytest.raises(CorruptionError, match="No CPIO header"):
+        open_archive(path, format="cpio").close()
 
 
 @pytest.mark.parametrize("compressed", [False, True], ids=["plain", "gz"])
@@ -452,7 +478,7 @@ def test_afio_large_headers(tmp_path: Path) -> None:
             got = [
                 (m.name, m.uid, m.size, s.read()) for m, s in reader.stream_members()
             ]
-            assert reader.info.format_version == "odc"
+            assert reader.info.extra["cpio.variant"] == "odc"
         assert got == [
             ("file1", 0, 17, b"0123456789abcdef\n"),
             ("file2", 65536, 17, b"0123456789abcdef\n"),

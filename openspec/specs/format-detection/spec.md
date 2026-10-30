@@ -232,6 +232,7 @@ Exact matches only (no fuzzy/weak magic). Recognised:
 | UDIF | `6B 6F 6C 79 00 00 00 04 00 00 02 00` (`koly`, version 4, header size 512) at offset 0, or at the start of the last 512 bytes |
 | TAR | `ustar` at 257 |
 | ar | `!<arch>\n` at 0; `!<thin>\n` at 0 (claimed so `format-ar` can refuse it by name) |
+| CPIO | `070707`, `070701`, `070702` or `070727` at 0 (odc, newc, crc, afio's large header). The binary variant's 2-byte magic `C7 71` / `71 C7` is too weak: a content probe that also checks the name, run only when the extension names CPIO |
 | LZ4 | `04 22 4D 18` (frame); `02 21 4C 18` (legacy stream, `lz4 -l`) |
 | lzip | `LZIP` |
 | unix-compress | `1F 9D` |
