@@ -346,9 +346,9 @@ def build_zip(entries: list[LegacyEntry], *, descriptor: bool = False) -> bytes:
 
 
 def unshrink_reference(data: bytes, size: int) -> bytes:
-    """A plain Shrink decoder to check ``ShrinkDecompressor`` against: every code walks its
-    parents, slots come from a scan for the lowest free one, and a partial clear scans
-    the table. Same semantics as the decoder (7-Zip's); raises ``ValueError`` where it
+    """A plain Shrink decoder to check ``ShrinkDecompressor`` against: every code
+    walks its parents, slots come from a scan for the lowest free one, and a partial
+    clear scans the table. Same semantics as the decoder (7-Zip's); raises ``ValueError`` where it
     raises ``CorruptionError``, and returns what it decoded when the input runs out.
     """
     parent = [-1] * _TABLE
