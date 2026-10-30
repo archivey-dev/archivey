@@ -1174,7 +1174,11 @@ consumes the stream once, and the entries its directory places in the bytes kept
 its members consume those at most twice more, however many it names there
 ([Resource use is bounded](#resource-use-is-bounded)). A "work per output byte" limit
 for BCJ2 was considered and not added: no other codec has one, and `ExtractionLimits`
-still bounds the amount, only the rate is lower. Callers who need a time bound run
+still bounds the amount, only the rate is lower. Detection of an unrecognised file with
+no known extension scans up to 2 MiB for an archive behind leading bytes, and 2 MiB of
+back-to-back ZIP local-header signatures costs about 2.4 s to reject, one validation each
+([prefixed archives §3](topics/prefixed-archives.md#3-cost-is-what-tiers-this-not-false-positives)).
+Callers who need a time bound run
 archivey in a worker they can kill. Public:
 [where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 
@@ -1286,9 +1290,7 @@ parent's scan and its own lists the target's entries. Reads are still refused wh
 listing recorded an identity. For an identity-less member the reparse check covers only
 the leaf and runs after the open, so a junction swapped in above it, or a swap racing
 the check, reads a same-size file outside the root. Both inferred from the code, not
-measured. On Python 3.11, `DirEntry.is_junction()` does not exist, so a junction may be
-walked ([`formats/directory.md`](formats/directory.md) §7). Public:
-[where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
+measured. Public: [where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 
 ### Nested-archive amplification
 

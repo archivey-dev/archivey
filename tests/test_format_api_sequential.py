@@ -35,6 +35,7 @@ from archivey import (
     ExtractionLimits,
     MemberType,
     PluginContainer,
+    PluginStream,
     ResourceLimitError,
     StreamFormat,
     TruncatedError,
@@ -986,6 +987,9 @@ class _RpmishReader(ToysReader):
     """TOYS with one more header type: ``Z``, whose name is a ``StreamFormat`` value.
     Everything after it is that compression stream, holding more TOYS headers."""
 
+    # Where the ``Z`` header's name is looked up (a PluginStream class for a codec).
+    stream_formats: Callable[[str], StreamFormat | PluginStream] = StreamFormat
+
     def archive_info(self) -> ReaderArchiveInfo:
         # The walk decompresses part-way, so the archive says it is solid up front.
         return ReaderArchiveInfo(is_solid=True)
@@ -1000,7 +1004,7 @@ class _RpmishReader(ToysReader):
                 return
             raw = stream.read_exact(name_len)
             if code == b"Z":
-                stream = stream.decompress(StreamFormat(raw.decode()))
+                stream = stream.decompress(type(self).stream_formats(raw.decode()))
                 continue
             member = ArchiveMember(
                 type=_TYPES[code], name=self._context.decode_name(raw), raw_name=raw
@@ -1016,7 +1020,7 @@ class _RpmishReader(ToysReader):
 
 
 def build_rpmish(
-    stream: StreamFormat = StreamFormat.GZIP,
+    stream: StreamFormat | PluginStream = StreamFormat.GZIP,
     compress: Callable[[bytes], bytes] = lambda data: gzip.compress(data, mtime=0),
     *,
     after: bytes = b"",

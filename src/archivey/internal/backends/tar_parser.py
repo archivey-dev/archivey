@@ -390,9 +390,11 @@ def parse_header_block(
                     break
             else:
                 devmajor, devminor = numbers
-    if typeflag == SPARSE_TYPE:
-        # The old GNU sparse slots. Read whatever the magic says, as tarfile reads
-        # them; GNU tar writes them only in old GNU headers.
+    if typeflag == SPARSE_TYPE and header_format is HeaderFormat.GNU:
+        # The old GNU sparse slots, which only an old GNU header holds. GNU tar 1.35
+        # reads an "S" under ustar or v7 magic as a regular file: in a ustar header
+        # bytes 345.. are the name prefix. (tarfile reads the slots whatever the
+        # magic says.)
         try:
             sparse_slots = _sparse_slots(block, 386, 4)
             sparse_realsize = parse_number(block[483:495])
@@ -1461,7 +1463,7 @@ class TarWalker:
         size = stored_size
         sparse_format: SparseFormat | None = None
         sparse: SparseMap | None = None
-        if typeflag == SPARSE_TYPE:  # always carries data
+        if typeflag == SPARSE_TYPE and header.format is HeaderFormat.GNU:
             sparse_format = SparseFormat.OLD_GNU
             sparse, data_offset = self._old_gnu_map(
                 header, data_offset, charge.name, charge
@@ -1480,7 +1482,14 @@ class TarWalker:
             _sparse_major_1_or_more(merged.get(b"GNU.sparse.major"))
         ):
             sparse_format = SparseFormat.PAX_1_0
-            size = _pax_int(merged, b"GNU.sparse.realsize", charge.name) or 0
+            realsize_record = merged.get(b"GNU.sparse.realsize")
+            if realsize_record is not None and not realsize_record.value:
+                # Present and empty is damage, as for the 0.x records below; GNU
+                # tar 1.35 and tarfile both refuse it.
+                raise CorruptionError(
+                    f"TAR PAX record GNU.sparse.realsize of {charge.name} is empty"
+                )
+            realsize = _pax_int(merged, b"GNU.sparse.realsize", charge.name)
             # The map is the first blocks of the data area. It is read here, as
             # tarfile and GNU tar read it, so a bad map fails the listing as in the
             # other encodings and its entries count against this member's budget.
@@ -1488,8 +1497,30 @@ class TarWalker:
             sparse, used = read_sparse_map_1_0(
                 self._read, stored_size, charge.name, charge
             )
+            whole_size = stored_size
             data_offset += used
             stored_size -= used
+            if realsize is None:
+                # No realsize record: GNU tar 1.35 takes the stored size (the header
+                # or a PAX `size` record, map blocks included) as the bound, extracts
+                # up to the greatest chunk end, and calls the member malformed when a
+                # chunk ends past that size. A realsize of 0 stays 0, and a chunk past
+                # it fails as in GNU tar.
+                size = max(
+                    (
+                        o + n
+                        for o, n in zip(sparse.offsets, sparse.lengths, strict=True)
+                    ),
+                    default=0,
+                )
+                if size > whole_size:
+                    raise CorruptionError(
+                        f"TAR sparse map of {charge.name} has a chunk ending at "
+                        f"{size}, past the member's stored size (header or PAX "
+                        f"size) of {whole_size} bytes and with no GNU.sparse.realsize"
+                    )
+            else:
+                size = realsize
         # The 0.x encodings are chosen by the presence of the records that define
         # their map, not by pax(), which drops an empty value: a sparse record whose
         # value is empty is damage, and reading the member as a plain file would serve

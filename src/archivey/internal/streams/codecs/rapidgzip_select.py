@@ -32,6 +32,7 @@ from archivey.internal.excluded_libraries import (
     as_reported,
 )
 from archivey.internal.streams.archive_stream import RewindWarning
+from archivey.internal.streams.child_process import mark_no_verdict
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.base import (
     CodecParams,
@@ -339,9 +340,10 @@ def _bound_rapidgzip_source(
     """Clip a stream source to the known compressed length before rapidgzip.
 
     rapidgzip over-reads past EOS looking for a concatenated member (raw
-    deflate) or prints trailing-garbage to stderr (bzip2). A 7z AES stage
-    decrypts a padded block, so the next coder's ``pack_size`` (AES
-    unpack_size) is the bound that drops those pad bytes. Only
+    deflate); for bzip2, input past the coder's data would meet the end check
+    under ``refuse_input_after_end``. A 7z AES stage decrypts a padded block,
+    so the next coder's ``pack_size`` (AES unpack_size) is the bound that drops
+    those pad bytes. Only
     ``pack_size`` is pad-free; the two fallbacks assume a non-AES source
     (an AES stream's ``.size`` is the padded plaintext length). Paths stay
     paths: rapidgzip opens its own fd.
@@ -404,7 +406,10 @@ def _require_rapidgzip_child(label: str) -> None:
     (:func:`rapidgzip_child_unavailable_reason`). Starts nothing."""
     unavailable = rapidgzip_child_unavailable_reason()
     if unavailable is not None:
-        raise ResourceUnavailableError(f"{_no_child_reason(label)} ({unavailable}).")
+        # A child that cannot start is no verdict on the data (process-isolation §2.5).
+        raise mark_no_verdict(
+            ResourceUnavailableError(f"{_no_child_reason(label)} ({unavailable}).")
+        )
 
 
 def _open_rapidgzip(
@@ -448,7 +453,9 @@ def _open_rapidgzip(
         )
     except RapidgzipChildStartError as exc:
         if getattr(config, field_name) is not AcceleratorMode.AUTO:
-            raise ResourceUnavailableError(f"{reason} ({exc}).") from exc
+            raise mark_no_verdict(
+                ResourceUnavailableError(f"{reason} ({exc}).")
+            ) from exc
         _warn_child_fallback(str(exc), field_name)
         return None
 

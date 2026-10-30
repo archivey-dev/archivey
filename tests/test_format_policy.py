@@ -592,7 +592,7 @@ def test_a_replacement_is_not_given_an_archive_behind_a_stub(tmp_path: Path) -> 
     path = tmp_path / "a.exe"
     path.write_bytes(_pe_stub() + _zip_bytes())
     assert detect_format(path).payload_offset > 0
-    with pytest.raises(UnsupportedFeatureError, match="self-extracting stub"):
+    with pytest.raises(UnsupportedFeatureError, match="behind a prefix"):
         open_archive(path, config=_REPLACE_ZIP)
     assert _opened == []
 

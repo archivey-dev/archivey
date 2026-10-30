@@ -121,6 +121,7 @@ from archivey.types import (
     OptionalLibrary,
     OverwritePolicy,
     PluginContainer,
+    PluginStream,
     StreamFormat,
     Verification,
 )
@@ -194,6 +195,7 @@ __all__ = [
     "PasswordProvider",
     "PasswordRequest",
     "PluginContainer",
+    "PluginStream",
     "ProcessIsolation",
     "RarDecompressor",
     "ReadError",

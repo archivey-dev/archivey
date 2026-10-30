@@ -14,9 +14,13 @@ would have stayed green through that, so the cases below assert the *members*.
 from __future__ import annotations
 
 import io
+import os
+import random
 import shutil
 import struct
 import subprocess
+import threading
+import time
 import zipapp
 import zipfile
 import zlib
@@ -31,6 +35,8 @@ from archivey.detection_cost import (
     BALANCED_BUDGET,
     FAST_BUDGET,
     DetectionBudget,
+    TierSkip,
+    TierSkipReason,
 )
 from archivey.exceptions import (
     CorruptionError,
@@ -1645,12 +1651,147 @@ def test_shebang_plus_concatenated_zip_detects_and_lists_members(
     assert members == _FILES
 
 
-def test_jpeg_plus_appended_zip_stays_undetected_under_balanced(tmp_path: Path) -> None:
-    """No prefix cue and no tail under BALANCED — JPEG+ZIP is a later-block case."""
+def test_jpeg_plus_appended_zip_is_found_by_the_last_step_scan(tmp_path: Path) -> None:
+    """No prefix cue, so no SFX scan up front; the scan that runs when every other step
+    declined finds the ZIP, as 7-Zip and unzip do."""
     path = tmp_path / "photo.jpg"
     path.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 100 + _zip_bytes())
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.ZIP
+    assert info.payload_offset == 104
+
+
+_LEADING_BYTES = {
+    "random": random.Random(7).randbytes(8192),
+    "zeros": bytes(8192),
+    "text": b"hello, this is not an archive\n" * 300,
+}
+
+
+@pytest.mark.parametrize("prefix", sorted(_LEADING_BYTES))
+@pytest.mark.parametrize("fmt", ["zip", "7z", "rar"])
+def test_an_archive_behind_leading_bytes_is_found(
+    tmp_path: Path, prefix: str, fmt: str
+) -> None:
+    """Leading bytes with no executable cue: the last-step scan finds the archive and
+    the reader opens it there, as 7-Zip, unrar and unzip do."""
+    payloads = {
+        "zip": (ArchiveFormat.ZIP, _zip_bytes),
+        "7z": (ArchiveFormat.SEVEN_Z, lambda: _7z_bytes(tmp_path)),
+        "rar": (
+            ArchiveFormat.RAR,
+            lambda: (_RAR_FIXTURES / "basic_nonsolid__.rar").read_bytes(),
+        ),
+    }
+    expected, build = payloads[fmt]
+    lead = _LEADING_BYTES[prefix]
+    path = tmp_path / "upload.bin"
+    path.write_bytes(lead + build())
+    info = detect_format(path)
+    assert (info.format, info.payload_offset) == (expected, len(lead))
+    assert info.detected_by == "sfx_scan"
+    with open_archive(path) as archive:
+        assert any(m.is_file for m in archive.members())
+
+
+def test_the_last_step_scan_leaves_a_known_extension_alone(tmp_path: Path) -> None:
+    """A name with a known extension keeps its guess, and the ZIP reader finds the
+    archive behind the leading bytes itself."""
+    lzma = tmp_path / "data.lzma"
+    lzma.write_bytes(_LEADING_BYTES["random"] + _zip_bytes())
+    info = detect_format(lzma)
+    assert (info.detected_by, info.format) == ("extension", ArchiveFormat.LZMA_ALONE)
+    named = tmp_path / "data.zip"
+    named.write_bytes(_LEADING_BYTES["random"] + _zip_bytes())
+    info = detect_format(named)
+    assert (info.detected_by, info.format) == ("extension", ArchiveFormat.ZIP)
+    with open_archive(named) as archive:
+        assert any(m.is_file for m in archive.members())
+
+
+def test_the_last_step_scan_finds_an_archive_on_a_non_seekable_source() -> None:
+    """A forward-only source that ends inside the bytes detection reads first has a
+    known length, so the scan covers all of it, as on a seekable source. (A stream
+    still arriving is scanned only over what it delivered: the held-open pipe test.)"""
+    lead = _LEADING_BYTES["random"]
+    source = io.BufferedReader(NonSeekableBytesIO(lead + _zip_bytes()))
+    info = detect_format(source)
+    assert (info.format, info.payload_offset) == (ArchiveFormat.ZIP, len(lead))
+    assert info.detected_by == "sfx_scan"
+
+
+def test_the_last_step_scan_does_not_wait_on_a_held_open_pipe() -> None:
+    """An unrecognised stream whose writer keeps the pipe open fails at once: the scan
+    does not wait for its 2 MiB window to arrive."""
+    r_fd, w_fd = os.pipe()
+    data = b"hello, this is not an archive\n" * 2500  # more than the pipe buffer
+    done = threading.Event()
+
+    def write() -> None:
+        with os.fdopen(w_fd, "wb") as w:
+            w.write(data)
+            w.flush()
+            done.wait(30)  # hold the pipe open until the test is over
+
+    writer = threading.Thread(target=write, daemon=True)
+    writer.start()
+    try:
+        with os.fdopen(r_fd, "rb") as r:
+            started = time.monotonic()
+            with pytest.raises(FormatDetectionError):
+                detect_format(r)
+            assert time.monotonic() - started < 10
+    finally:
+        done.set()
+        writer.join()
+
+
+def test_the_last_step_scan_stops_at_the_fast_window(tmp_path: Path) -> None:
+    """Under ``FAST`` the window is 256 KiB: an archive past it is not found, one
+    inside it is, and the scan reads no further than the window: the source is three
+    windows long, so a scan past the window would fetch bytes beyond the bound."""
+    fast = ArchiveyConfig(detection_budget=FAST_BUDGET)
+    window = FAST_BUDGET.max_scan_bytes
+    rng = random.Random(11)
+    far = rng.randbytes(3 * window) + _zip_bytes()
+    src = InstrumentedBytesIO(far)
     with pytest.raises(FormatDetectionError):
-        detect_format(path)
+        detect_format(src, config=fast)
+    assert src.unique_bytes <= window + trailer_allowance()
+    near = tmp_path / "near.bin"
+    near.write_bytes(rng.randbytes(8192) + _zip_bytes())
+    info = detect_format(near, config=fast)
+    assert (info.format, info.payload_offset) == (ArchiveFormat.ZIP, 8192)
+
+
+def test_the_last_step_scan_skips_a_known_non_archive_signature() -> None:
+    """An OLE compound file is not a prefix: no scan, so a ZIP behind it is not found."""
+    ole = bytes.fromhex("d0cf11e0a1b11ae1") + bytes(8184)
+    src = InstrumentedBytesIO(ole + _zip_bytes())
+    with pytest.raises(FormatDetectionError, match="OLE compound file"):
+        detect_format(src)
+    assert src.unique_bytes < len(ole)
+
+
+def test_archives_and_named_files_pay_nothing_for_the_last_step_scan(
+    tmp_path: Path,
+) -> None:
+    """The scan runs last and only for an unnamed source: an archive another step
+    identifies, and a name that names a format, scan nothing. A name that keeps the
+    step from running is recorded as a policy skip."""
+    plain = tmp_path / "plain.bin"
+    plain.write_bytes(_zip_bytes())
+    receipt = detect_format(plain).cost_receipt
+    assert receipt is not None
+    assert receipt.scanned_bytes == 0
+    named = tmp_path / "data.lzma"
+    named.write_bytes(_LEADING_BYTES["random"] + _zip_bytes())
+    info = detect_format(named)
+    assert info.cost_receipt is not None
+    assert info.cost_receipt.scanned_bytes == 0
+    assert TierSkip("sfx_scan", TierSkipReason.NOT_ENABLED_BY_POLICY) in (
+        info.unavailable_tiers
+    )
 
 
 def test_shebang_non_archive_reads_at_most_min_size_sfx_max() -> None:
@@ -1752,19 +1893,19 @@ def test_sfx_hit_validator_is_not_bound_on_instance(cls: type, decoy: bytes) -> 
     assert validator(_peek_view(decoy), None) is HitOutcome.NOT_THIS_FORMAT
 
 
-def test_class_file_does_not_enter_the_sfx_scan() -> None:
-    """``ca fe ba be`` without a fat arch table must not pay ``SFX_MAX``."""
+def test_class_file_is_not_an_executable_stub() -> None:
+    """``ca fe ba be`` without a fat arch table is no executable cue, so the scan runs
+    only as the last step, and finds nothing in a class file."""
     payload = _minimal_class_file(padding=100_000)
     assert executable_cue(payload[:4096]) is ExecutableCue.NONE
     src = InstrumentedBytesIO(payload)
-    try:
-        info = detect_format(src)
-    except FormatDetectionError:
-        info = None
-    # Far magic may peek ~32 KiB on a large source; the SFX scan would read ~100 KiB.
-    assert src.unique_bytes < 50_000
-    if info is not None:
-        assert info.detected_by != "sfx_scan"
+    with pytest.raises(FormatDetectionError):
+        detect_format(src)
+    # The file is shorter than the window, so the last-step scan reads all of it, once:
+    # a scan that re-read the window, or the near and far peeks fetched again, reads
+    # more than the file plus the one tail block.
+    assert src.unique_bytes == len(payload)
+    assert src.bytes_read <= len(payload) + trailer_allowance()
 
 
 @requires("py7zr")
