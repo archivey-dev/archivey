@@ -273,8 +273,10 @@ def coerce_stream_or_archive_format(
         stream = _lookup(StreamFormat).get(spelling)
         if stream is not None:
             return stream
+        # A registered codec, or a compressed pair a sequential format reads through
+        # (``ar.gz``): the same rule as the accepted list below.
         plugin = _plugin_spellings.get(spelling)
-        if plugin is not None and plugin.container is ContainerFormat.RAW_STREAM:
+        if plugin is not None and outer_stream_format(plugin) is not None:
             return plugin
     raise _usage_error_for(value)(
         f"{call} takes a StreamFormat or an ArchiveFormat (or either spelled as a "

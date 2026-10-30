@@ -2142,8 +2142,9 @@ def register_builtin_format(
         )
         add_sequential_container(container)
     # A sequential format's compressed pairs (``ar.gz``) have no named constant.
-    for each in backend.FORMATS[1:]:
-        add_plugin_spellings(each)
+    if backend.STREAM_PAIRS:
+        for each in compressed_formats(plugin.format):
+            add_plugin_spellings(each)
     return backend
 
 
