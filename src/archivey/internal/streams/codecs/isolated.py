@@ -167,7 +167,9 @@ class _ChildProxy:
 class ChildDecompressor(_ChildProxy):
     """A ``bz2``, ``lzma``, zstd or ``lz4.frame`` decompressor in a child.
 
-    No ``flush``: ``FramedDecoder`` calls one where a decompressor has it.
+    No ``flush``: those libraries' decompressors have none, so a proxy ``flush`` would
+    fail in the child, and ``FramedDecoder`` calls ``flush`` on any decompressor that
+    has one. Only :class:`ChildZlibDecompressor` defines it.
     """
 
     def decompress(
