@@ -44,6 +44,11 @@ from tests.conftest import requires_binary
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 _UNRAR_ONLY = ArchiveyConfig(rar_decompressor="unrar")
+# A name that selects earlier members too is refused by default; these tests read
+# through the shared mask on purpose.
+_UNRAR_SHARED = ArchiveyConfig(
+    rar_decompressor="unrar", rar_allow_glob_member_concatenation=True
+)
 
 
 def _fixture(name: str) -> Path:
@@ -284,7 +289,7 @@ def test_duplicate_named_compressed_rar5_members_read_their_own_bytes(
     path = tmp_path / "dup.rar"
     path.write_bytes(_rar5_build(blocks))
 
-    with open_archive(path, config=_UNRAR_ONLY) as archive:
+    with open_archive(path, config=_UNRAR_SHARED) as archive:
         members = archive.members()
         assert [m.name for m in members] == ["canary.txt", "-inul", "-inul"]
         assert archive.read(members[2]) == payloads["@atfile"]
@@ -914,7 +919,7 @@ def test_unrar_counts_an_earlier_member_its_shared_mask_decodes(
     path = tmp_path / "dup_dict.rar"
     path.write_bytes(_rar5_build(blocks))
 
-    with open_archive(path, config=_UNRAR_ONLY) as archive:
+    with open_archive(path, config=_UNRAR_SHARED) as archive:
         members = archive.members()
         assert [m.name for m in members] == ["canary.txt", "-inul", "-inul"]
         assert members[2].size == 1216

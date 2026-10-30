@@ -2,21 +2,19 @@
 
 from __future__ import annotations
 
-from typing import BinaryIO
+from typing import TYPE_CHECKING
 
-from archivey.exceptions import ArchiveyError, UnsupportedFeatureError
+from archivey.exceptions import UnsupportedFeatureError
 from archivey.internal.config import StreamConfig
-from archivey.internal.streams.codecs.base import (
-    Codec,
-    CodecParams,
-    CodecSource,
-    StreamCodec,
-)
+from archivey.internal.overrides import override
+from archivey.internal.streams.codecs.base import Codec, CodecParams, StreamCodec
 from archivey.internal.streams.codecs.zip_legacy_decoder import (
-    ImplodeDecoder,
-    ShrinkDecoder,
+    ImplodeDecompressor,
+    ShrinkDecompressor,
 )
-from archivey.internal.streams.decompressor_stream import DecompressorStream
+
+if TYPE_CHECKING:
+    from archivey.formats import Decompressor
 
 
 class ShrinkCodec(StreamCodec):
@@ -28,26 +26,14 @@ class ShrinkCodec(StreamCodec):
 
     codec = Codec.SHRINK
 
-    def open(
-        self, source: CodecSource, params: CodecParams, config: StreamConfig
-    ) -> BinaryIO:
-        size = params.unpack_size
-        if size is None and params.input_runs_on:
+    @override
+    def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
+        if params.unpack_size is None and params.input_runs_on:
             raise UnsupportedFeatureError(
                 "Shrink data has no end marker: it cannot be read without its size "
                 "from a source that goes on after it"
             )
-        return DecompressorStream(
-            source,
-            make_decoder=lambda _p, _i: ShrinkDecoder(size),
-            codec_name="shrink",
-            collector=config.collector,
-            refuse_input_after_end=config.refuse_input_after_end,
-        )
-
-    def translate(self, exc: Exception) -> ArchiveyError | None:
-        # The decoder raises CorruptionError / TruncatedError itself.
-        return None
+        return ShrinkDecompressor(params.unpack_size)
 
 
 class ImplodeCodec(StreamCodec):
@@ -60,25 +46,14 @@ class ImplodeCodec(StreamCodec):
 
     codec = Codec.IMPLODE
 
-    def open(
-        self, source: CodecSource, params: CodecParams, config: StreamConfig
-    ) -> BinaryIO:
-        size = params.unpack_size
-        if size is None:
+    @override
+    def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
+        if params.unpack_size is None:
             raise UnsupportedFeatureError(
                 "Implode data has no end marker: it cannot be read without its size"
             )
-        large = params.implode_large_window
-        literal = params.implode_literal_tree
-        return DecompressorStream(
-            source,
-            make_decoder=lambda _p, _i: ImplodeDecoder(
-                size, large_window=large, literal_tree=literal
-            ),
-            codec_name="implode",
-            collector=config.collector,
-            refuse_input_after_end=config.refuse_input_after_end,
+        return ImplodeDecompressor(
+            params.unpack_size,
+            large_window=params.implode_large_window,
+            literal_tree=params.implode_literal_tree,
         )
-
-    def translate(self, exc: Exception) -> ArchiveyError | None:
-        return None

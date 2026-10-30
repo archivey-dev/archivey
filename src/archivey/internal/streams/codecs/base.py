@@ -15,7 +15,7 @@ from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import BinaryIO, ClassVar
+from typing import TYPE_CHECKING, BinaryIO, ClassVar
 
 from archivey.config import ProcessIsolation
 from archivey.exceptions import (
@@ -36,6 +36,13 @@ from archivey.internal.streams.archive_stream import (
     RewindWarning,
 )
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64
+from archivey.internal.streams.codecs.framed_decoder import (
+    FramedDecompressorStream,
+    StreamIndex,
+    StreamStart,
+    never_starts,
+    offset0_start,
+)
 from archivey.internal.streams.codecs.riscv_filter import FILTER_RISCV
 from archivey.internal.streams.decompressor_stream import truncated_message
 from archivey.types import (
@@ -48,6 +55,9 @@ from archivey.types import (
     PluginStream,
     StreamFormat,
 )
+
+if TYPE_CHECKING:
+    from archivey.formats import Decompressor
 
 CodecSource = str | os.PathLike[str] | BinaryIO
 
@@ -341,15 +351,25 @@ _PROBE_STREAM_CONFIG = replace(
 class StreamCodec:
     """One single-stream codec: its behavior, detection signals, and requirement.
 
-    Subclasses override the behavior methods (:meth:`open`, :meth:`translate`, optionally
-    :meth:`translator` / :meth:`extract_metadata` / :meth:`content_probe`) and declare the
+    Subclasses override the behavior methods (:meth:`decompressor` or :meth:`open`,
+    :meth:`translate`, optionally :meth:`translator` / :meth:`extract_metadata` /
+    :meth:`content_probe`) and declare the
     detection data as class attributes (``stream_format`` / ``magic``) plus an
     optional-dependency ``requirement``. The standalone single-file ``ArchiveFormat`` and its
     file extension are *derived* from ``stream_format`` (see the properties below). Instances
     are collected in :data:`STREAM_CODECS`, which the detector, the single-file reader, and
     the registry read directly — so a new standalone codec is a single subclass, with no edits
     to those consumers (see ``compressed-streams``). Container-only / filter-only codecs
-    override just ``open`` + ``translate``.
+    override just :meth:`decompressor`, or ``open`` + ``translate``.
+
+    A codec whose library decodes one stream at a time, with the interface of
+    ``bz2.BZ2Decompressor`` (:class:`~archivey.formats.Decompressor`), overrides
+    :meth:`decompressor` instead of :meth:`open`: the default :meth:`open` decodes
+    through :class:`FramedDecoder`, which applies the same rules for padding, further
+    streams, trailing data and truncation to every such codec, a plugin's
+    (:class:`~archivey.formats.CodecHandler`) included. :meth:`stream_start` and
+    :meth:`stream_index` tune those rules, and an override of :meth:`open` that decodes
+    another way (an accelerator) still calls the default for the plain decode.
     """
 
     codec: ClassVar[CodecId]
@@ -372,6 +392,19 @@ class StreamCodec:
     # frame (xz, zstd, LZ4) leave it False until their decoders report, per frame,
     # that one was present. Read by a stream's verification level.
     checks_content: ClassVar[bool] = False
+    # The name diagnostics and messages give the stream (:attr:`stream_name`), when not
+    # ``codec.value``.
+    codec_name: ClassVar[str | None] = None
+    # More install advice for the error a missing ``requirement`` raises.
+    missing_note: ClassVar[str] = ""
+    # Whether a further stream after the first one continues the output, for the
+    # default :meth:`stream_start`.
+    concatenated: ClassVar[bool] = True
+
+    @property
+    def stream_name(self) -> str:
+        """The stream's name in messages and diagnostics."""
+        return self.codec_name or self.codec.value
 
     # --- derived single-file identity ---
 
@@ -402,7 +435,48 @@ class StreamCodec:
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
+        """Decode ``source``. Default: through :meth:`decompressor`, one stream at a
+        time (:class:`FramedDecoder`)."""
+        excluded = config.excluded_libraries
+        if not self.available(excluded):
+            raise self._missing(
+                f"{self.stream_name} streams", note=self.missing_note, excluded=excluded
+            )
+        return FramedDecompressorStream(
+            source,
+            lambda: self.decompressor(params, config),
+            codec_name=self.stream_name,
+            magic=self.stream_start(params),
+            index=self.stream_index(params, config),
+            collector=config.collector,
+            report_trailing_data=config.report_trailing_data,
+            refuse_input_after_end=config.refuse_input_after_end,
+        )
+
+    def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
+        """A new decoder for one stream, for the default :meth:`open`. Called for each
+        stream: reach the library through ``codecs.deps``, which imports it once and
+        lazily, rather than importing it here."""
         raise NotImplementedError
+
+    def stream_start(self, params: CodecParams) -> StreamStart:
+        """How a further stream starts, for the default :meth:`open`: one of ``magic``
+        at offset 0, or nothing for a coder that is one stream
+        (``params.single_stream``) or a codec that is not ``concatenated``. Override
+        for a test stricter than ``magic``."""
+        if params.single_stream:
+            return never_starts
+        return offset0_start(
+            ((m.offset, m.magic) for m in self.magic), self.concatenated
+        )
+
+    def stream_index(
+        self, params: CodecParams, config: StreamConfig
+    ) -> StreamIndex | None:
+        """Further streams as seek points, for the default :meth:`open`. Default:
+        none."""
+        del params, config
+        return None
 
     def check_accelerator(self, source: CodecSource, config: StreamConfig) -> None:
         """For an accelerator set to ``ON``, raise what :meth:`open` raises before
@@ -492,7 +566,7 @@ class StreamCodec:
         ``STORED``. The default names the codec and no accelerator; ``suggest_install``
         is meaningless without one.
         """
-        return RewindWarning(self.codec.value, suggest_install=False)
+        return RewindWarning(self.stream_name, suggest_install=False)
 
     def prepare_config(self, source: CodecSource, config: StreamConfig) -> StreamConfig:
         """Fill in what this codec can learn from ``source`` before it is resolved.
@@ -517,18 +591,37 @@ class StreamCodec:
         """Whether the optional backing package is importable (optional codecs override)."""
         return True
 
+    def _library(self) -> OptionalLibrary | str | None:
+        """The package the decoder uses, when ``requirement`` may not name it (zstd: the
+        standard library's module on 3.14+, else the backport), or ``None`` to go by
+        ``requirement``, which is also what an absent package's error names."""
+        return None
+
+    def _excludable(self) -> OptionalLibrary | str | None:
+        """The package ``exclude_libraries`` turns off: the one in use, or
+        ``requirement``'s when none is installed, so an excluded package that is
+        absent is reported as excluded, not as one to install."""
+        if self.requirement is None:
+            return None
+        return self._library() or self.requirement.name
+
     def excluded_by(self, excluded: frozenset[OptionalLibrary]) -> bool:
         """Whether ``excluded`` names the package this codec decodes with."""
-        return self.requirement is not None and self.requirement.name in excluded
+        library = self._excludable()
+        return library is not None and library in excluded
 
     def requirement_under(
         self, excluded: frozenset[OptionalLibrary]
     ) -> MissingComponent | None:
         """The ``requirement`` as a call with ``excluded`` reports it: with the policy as
-        its ``reason`` when ``excluded`` turns the package off."""
-        if self.requirement is None or not self.excluded_by(excluded):
-            return self.requirement
-        return as_excluded(self.requirement)
+        its ``reason``, and the package in use as its name, when ``excluded`` turns the
+        package off."""
+        requirement = self.requirement
+        if requirement is None or not self.excluded_by(excluded):
+            return requirement
+        library = self._excludable()
+        assert library is not None
+        return as_excluded(replace(requirement, name=library))
 
     def _missing(
         self,

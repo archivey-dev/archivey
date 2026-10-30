@@ -16,13 +16,15 @@ Three other pages own parts of this, and this page links them rather than repeat
 
 ## At a glance
 
-- **Seven steps, strongest evidence first, and the first match wins.** Near magic → SFX
-  scan → far magic → trailer magic → self-checking header → content probes → extension. The whole order is one
-  function, `_detect_format_body` in `internal/detection.py`.
+- **Eight steps, strongest evidence first, and the first match wins.** Near magic → SFX
+  scan → far magic → trailer magic → self-checking header → content probes →
+  leading-bytes scan → extension. The whole order is one function,
+  `_detect_format_body` in `internal/detection.py`.
 - **Detection reads the front of the source, and one fixed block at the end.** The block
   is the last 512 bytes, and only to look for a UDIF `koly` signature on a cheap seek
-  (§2.4). No ZIP tail probe is shipped, and the budget has no field for one. An archive
-  that is found only from its end, such as a ZIP appended to a JPEG, is not detected.
+  (§2.4). No ZIP tail probe is shipped, and the budget has no field for one. A ZIP
+  appended to a JPEG is found from the front by the leading-bytes scan (step 7) when it
+  starts within the 2 MiB window; one that starts further in is not detected, and
   `format=ZIP` still opens it.
 - **Detection never consumes bytes the backend needs.** A path gets its own handle. A
   seekable stream is put back where the caller left it. A non-seekable stream is peeked
@@ -88,7 +90,8 @@ extension is the last step, and it is used only when every content signal declin
 | 4. Trailer magic | Exact magic at the start of a fixed block at EOF (UDIF `koly`, 512 bytes) | `CERTAIN` | `magic` | 512 bytes, on a cheap seek |
 | 5. Self-checking header | A first block that proves its format with no magic (a v7 TAR header's checksum) | `PROBABLE` | `content_probe` | nothing more read |
 | 6. Content probes | LZMA Alone, zlib, Brotli decoders accept the bytes; by default only the probe the extension names runs | `PROBABLE`, or `GUESS` for weak Brotli | `content_probe` | 1 MiB of decode input for the call |
-| 7. Extension | Longest matching suffix in the aggregated map | `GUESS` | `extension` | nothing read |
+| 7. Leading-bytes scan | Step 2's window, needles and validators, with no prefix cue: run only when steps 1-6 declined, the prefix has no executable cue and no non-archive signature, and the name has no known extension (the readers find a prefixed archive under a name that names them). Every needle needs its validator | `PROBABLE` | `sfx_scan` | `min(size, 2 MiB)` read |
+| 8. Extension | Longest matching suffix in the aggregated map | `GUESS` | `extension` | nothing read |
 
 A near-magic or content-probe match on a single-file compressor is then offered to the
 **inner-TAR probe**, which decodes up to 512 bytes and looks for `ustar` at offset 257, or
@@ -189,8 +192,8 @@ A hit is `DMG` / `CERTAIN` / `magic`. Nothing reads the image. `open_archive` ra
 empty `missing`: there is nothing to install. The `.dmg` suffix is not registered, so a
 zip with that name stays a zip.
 
-The step is not a ZIP tail probe. It looks at one fixed block for one signature, and a
-ZIP appended to a JPEG is still not found (§5).
+The step is not a ZIP tail probe. It looks at one fixed block for one signature. A ZIP
+appended to a JPEG is found from the front by step 7, within its window (§5).
 
 ### 2.5 Self-checking headers
 
@@ -538,7 +541,7 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | What you see | Where | More |
 | --- | --- | --- |
 | A two-byte file `1f 8b` detects as `GZ` / `CERTAIN`, then fails at open with `TruncatedError` | **archivey** | Magic hits are not graded by length (§2.1, §3.2). The open still fails loudly |
-| A ZIP appended to a JPEG, or behind any prefix that raises no cue, is not detected | **archivey** | The one tail read is the 512-byte `koly` block (§2.4), not a ZIP trailer. `format=ZIP` reads it. [`prefixed-archives.md`](prefixed-archives.md) §6 |
+| A ZIP appended to a JPEG, or behind any prefix that raises no cue, is detected only when it starts within the 2 MiB window (256 KiB under `FAST`), and only for a source with no known extension | **archivey** | Step 7 scans from the front; there is no ZIP tail probe (§2.4). On a pipe it scans only the bytes already read. `format=ZIP` reads one further in. [`prefixed-archives.md`](prefixed-archives.md) §6 |
 | An uncompressed `.dmg` whose disk is ISO 9660 opens as `ISO` | **archivey** | Far magic runs before the trailer (§2.4). [`formats/dmg.md`](../formats/dmg.md) §2.1 |
 | Some binary files (COFF) detect as LZMA Alone or Brotli and list one `.uncompressed` member | **format** | Three formats have no usable magic (§1). A failed read is stamped `format_unconfirmed` (§2.6). Threat-model O10 |
 | A zero-filled `backup.gz` detects as `GZ` / `GUESS`; the read raises `CorruptionError` with `format_unconfirmed=True` | **format** | Extension was the only evidence (§2.7) |
@@ -555,7 +558,7 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 
 | Choice | Why | Rejected |
 | --- | --- | --- |
-| A fixed sequence of seven steps, first match wins | Every defect that motivated a scheduler had a fix of a few lines in the existing order. What a scheduler adds beyond that (graded evidence classes, a stopping proof, a per-candidate evidence record) had no measured demand, and it would regrade confidence and add a new failure on files that open today | An evidence ledger: graded evidence classes per candidate, a branch-and-bound scheduler, and `AmbiguousFormatError` on ties. The OpenSpec change is archived as decided against |
+| A fixed sequence of eight steps, first match wins | Every defect that motivated a scheduler had a fix of a few lines in the existing order. What a scheduler adds beyond that (graded evidence classes, a stopping proof, a per-candidate evidence record) had no measured demand, and it would regrade confidence and add a new failure on files that open today | An evidence ledger: graded evidence classes per candidate, a branch-and-bound scheduler, and `AmbiguousFormatError` on ties. The OpenSpec change is archived as decided against |
 | Ties go to the earlier step, then registry order | A deterministic answer, and `format=` for the other reading. An ambiguity error would fail files that open today, for a case not seen in a 33 947-file sweep | `AmbiguousFormatError` |
 | Exact magic, then SFX scan, then far magic, then the `koly` trailer, then self-checking headers, then probes | Strongest evidence first. A self-checking header is arithmetic, not a decode, and passes no arbitrary bytes, so it runs on every source ahead of the probes (§2.5). Far magic goes ahead of the probes because a bootable ISO's system area is the kind of data a probe accepts. The trailer goes ahead of the probes for the same reason a zlib-first disk image must not open as its first block | Probes before far magic; a general ZIP tail scan |
 | Probes decode the full 4 KiB window | A shorter sample lets text through (7 of 800 Perl modules with 256 bytes) | A 256-byte sample |

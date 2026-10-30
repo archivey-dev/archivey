@@ -746,7 +746,8 @@ def _open_resolved(
         if detected is not None and detected.payload_offset > 0:
             _refuse_for_replacement(
                 replacement,
-                "an archive behind a self-extracting stub",
+                "an archive behind a prefix (a self-extracting stub or other leading "
+                "bytes)",
                 resolved_format,
                 archive_name,
             )

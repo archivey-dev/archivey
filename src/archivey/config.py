@@ -168,8 +168,8 @@ class RarDecompressor(Enum):
 
     The choice is made once per opened archive, when it is opened, and holds for every
     read of it: a read that ``unar`` refuses is not retried with ``unrar``. One exception
-    goes the other way: a member whose name ``unrar`` cannot be given, or whose glob name
-    also matches earlier members (``rar_allow_glob_member_concatenation``), is read with
+    goes the other way: a member whose name ``unrar`` cannot be given, or whose name also
+    selects earlier members (``rar_allow_glob_member_concatenation``), is read with
     ``unar`` when an accepted one is installed, because ``unar`` selects members by
     index. That applies only to a read that needs no password, from a file with nothing
     before the RAR (so ``unar`` gets no password and no copy), and to a member ``unar``
@@ -818,15 +818,17 @@ class ArchiveyConfig:
     """
 
     rar_allow_glob_member_concatenation: bool = False
-    """Read a RAR member whose stored name contains ``*`` or ``?`` even when that name
-    also matches other members.
+    """Read a RAR member whose name also selects earlier members, through ``unrar``.
 
-    ``unrar`` selects members by an include mask, so such a name can match other
-    members as well. Names like this are almost always constructed, so the read is
-    refused by default. On a nonsolid archive the extra decode is also unbounded and not
-    reported (:class:`ExtractionLimits` does not cover ``open()`` or ``read()``); on a
-    solid archive those bytes are already inside ``AccessCost.SOLID``. Set ``True`` to
-    read it anyway. A glob name that matches no other member is unaffected either way.
+    ``unrar`` selects members by an include mask, so a name with ``*`` or ``?`` can
+    match other members as well, and so does a name shared with an earlier member (a
+    duplicate, or two names ``unrar`` reads as the same text). ``unrar`` then decodes
+    every earlier match before the member. Names like this are almost always
+    constructed, so the read is refused by default. On a nonsolid archive the extra
+    decode is also unbounded and not reported (:class:`ExtractionLimits` does not cover
+    ``open()`` or ``read()``); on a solid archive those bytes are already inside
+    ``AccessCost.SOLID``. Set ``True`` to read it anyway. A name that selects no earlier
+    member with data is unaffected either way.
     Under ``rar_decompressor=AUTO``, an installed ``unar`` reads such a member by index
     instead of the refusal (see :class:`RarDecompressor`), so this flag matters only
     when ``unrar`` must read it.
