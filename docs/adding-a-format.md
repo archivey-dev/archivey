@@ -729,7 +729,8 @@ there, before any open.
 
 The replacement gets what any indexed plugin gets: a source that can seek, from the
 start of the archive. archivey refuses, before `open()` runs, a multi-volume set and an
-archive behind a self-extracting stub with `UnsupportedFeatureError`, a source that
+archive behind a prefix (a self-extracting stub or other leading bytes) with
+`UnsupportedFeatureError`, a source that
 cannot seek with `StreamNotSeekableError`, and a raw CD sector image detected as ISO as
 the built-in reader refuses it, since its bytes are not an ISO 9660 image. The format's own config options, such as
 `zip_unflagged_fallback_encoding` or `rar_decompressor`, reach the plugin through
@@ -750,7 +751,7 @@ interface already, so `decompressor()` can return one as it is. Import the libra
 at the top of the module, not in `decompressor()`: archivey calls it for every stream,
 and a failed import costs more than decoding a small one.
 
-A format with no end mark, whose stream ends where its input does, gives its decoder a
+A format with no end mark, whose stream ends where its input does, gives its decoder an
 `end_input()` method as well. archivey calls it once, when the input has ended and the
 decoder asks for more (`needs_input`). It returns nothing, and raises (for example
 `TruncatedError`) when the stream cannot end there. A decoder that held output back

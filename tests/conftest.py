@@ -62,6 +62,19 @@ for _blocked in UNUSED_UNDER_PYPY - {"pyppmd", "inflate64"}:
     sys.modules[_blocked] = None  # type: ignore[assignment]
 
 
+def assert_raised_again(again: BaseException, first: BaseException) -> None:
+    """``again`` is ``first`` raised again by a stream that kept it: a fresh copy of the
+    same type, arguments and stamped attributes, caused by the first raise
+    (``kept_errors``)."""
+    from archivey.internal.streams.kept_errors import EarlierRaise
+
+    assert again is not first
+    assert type(again) is type(first)
+    assert again.args == first.args
+    assert again.__dict__ == first.__dict__
+    assert isinstance(again.__cause__, EarlierRaise)
+
+
 def has_package(name: str) -> bool:
     """Whether optional package ``name`` is installed and archivey uses it here."""
     return name not in UNUSED_UNDER_PYPY and importlib.util.find_spec(name) is not None

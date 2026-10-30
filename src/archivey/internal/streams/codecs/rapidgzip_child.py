@@ -56,6 +56,7 @@ from archivey.internal.streams.child_process import (
     REAP_TIMEOUT,
     describe_exit,
     is_crash,
+    mark_no_verdict,
     outside_death,
     python_argv,
     reap,
@@ -521,6 +522,9 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._served = 0
         # Whether the child's death was a crash on the data (``crashed_on_data``).
         self._crashed = False
+        # Whether something outside the decoder ended the child (``outside_death``):
+        # every error built from ``_death`` is then marked as no verdict on the data.
+        self._outside_death = False
         # Where a standard-library decoder can take over (``resume_point``): index
         # points the child reported, each with the output before it from what it sent,
         # by decompressed offset, oldest capture first.
@@ -776,6 +780,8 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         exc = cls(message)
         if self._crashed:
             setattr(exc, _CRASHED, True)
+        if self._outside_death and isinstance(exc, ArchiveyError):
+            mark_no_verdict(exc)
         return exc
 
     def _abandon(self) -> None:
@@ -917,6 +923,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
                 returncode,
                 f"the rapidgzip decoder process for this {label} stream ended ({how})",
             )
+            self._outside_death = True
         self._death = (cls, message)
         self._crashed = caused_by_source is None and (
             is_crash(returncode) or returncode == MEMORY_LIMIT_EXIT
