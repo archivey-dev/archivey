@@ -426,8 +426,8 @@ argument. It MUST NOT raise.
 
 | Condition | Code | `reason` |
 | --- | --- | --- |
-| Caller passed `encoding=` and `ReadBackend.USES_ENCODING` is `False` | `ENCODING_ARGUMENT_UNUSED` | why the backend decodes names another way |
-| Caller passed a concrete `password=` (a single value or a sequence) and `ReadBackend.SUPPORTS_PASSWORD` is `False` | `PASSWORD_ARGUMENT_UNUSED` | that the format carries no encryption |
+| Caller passed `encoding=` and `ReadBackend.USES_ENCODING` is `False` | `ENCODING_ARGUMENT_UNUSED` | why the backend decodes names another way, or that a replacement reader (`FormatPolicy(replace=)`) does not apply one |
+| Caller passed a concrete `password=` (a single value or a sequence) and `ReadBackend.SUPPORTS_PASSWORD` is `False` | `PASSWORD_ARGUMENT_UNUSED` | that the format carries no encryption, or that a replacement reader takes no password |
 
 Each SHALL be emitted **at most once per `open_archive()` call**, before the reader is
 returned, so a caller can inspect `reader.diagnostics` without listing anything.
@@ -449,6 +449,7 @@ wrong password on an *encrypted* archive is unaffected and still raises.
 | Auto-detected open with no `encoding=` on a backend that ignores encoding | No diagnostic |
 | `open_archive(tar, password="p")` / `password=["a","b"]` | Both open; one `PASSWORD_ARGUMENT_UNUSED` each; no `ArchiveyUsageError` |
 | `open_archive(tar \| gz \| directory, password=lambda r: "p")` | Opens; no `PASSWORD_ARGUMENT_UNUSED`; the provider is never called |
+| `open_archive(zip, password="p")` with ZIP replaced by a plugin | Opens; one `PASSWORD_ARGUMENT_UNUSED` whose message and `reason` name the replacement reader, not the format |
 | Wrong password on an encrypted ZIP | Unchanged: `EncryptionError` |
 
 ### Requirement: Report an empty listing as a diagnostic

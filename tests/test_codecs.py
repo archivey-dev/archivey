@@ -3113,6 +3113,30 @@ def test_rewind_report_gives_the_reason_rapidgzip_is_unused(
         ), message
 
 
+@pytest.mark.parametrize("present", [False, True], ids=["absent", "installed"])
+def test_rewind_report_gives_the_policy_when_rapidgzip_is_excluded(
+    monkeypatch: pytest.MonkeyPatch, present: bool
+) -> None:
+    """Excluded, rapidgzip is reported like a rapidgzip archivey does not use: the
+    report gives the policy, not install advice or the index."""
+    deps = codecs_module.deps
+    monkeypatch.setattr(deps, "UNDER_PYPY", False)
+    monkeypatch.setattr(
+        deps, "rapidgzip", deps.LazyOptional("rapidgzip", present=present)
+    )
+    messages = _rapidgzip_rewind_messages(
+        StreamConfig(
+            seekable=True, excluded_libraries=frozenset({OptionalLibrary.RAPIDGZIP})
+        )
+    )
+    assert len(messages) == 2
+    for message in messages:
+        assert message.endswith(
+            "The 'rapidgzip' accelerator is not available: "
+            "ArchiveyConfig.formats.exclude_libraries turns it off."
+        ), message
+
+
 def test_absent_crypto_hint_is_installable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(crypto, "_crypto_available", lambda: False)
     with pytest.raises(PackageNotInstalledError) as ei:

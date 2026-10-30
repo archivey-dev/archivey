@@ -58,6 +58,7 @@ from archivey.exceptions import (
     raw_message_of,
 )
 from archivey.internal.config import KeyDerivationBudget
+from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.listing_limits import metadata_limit_error, text_bytes
 from archivey.internal.password import wrong_password_error
 from archivey.internal.sfx import SFX_MAX, describe_scan_miss, scan_for_magic
@@ -71,6 +72,7 @@ from archivey.internal.timestamps import (
 from archivey.internal.trailing_scan import first_nonzero_offset
 from archivey.internal.windows_reparse import normalize_windows_link_target
 from archivey.terminal import quoted
+from archivey.types import OptionalLibrary
 
 
 class _Readable(Protocol):
@@ -716,6 +718,7 @@ def parse_rar_archive(
     max_members: int | None = _DEFAULT_MAX_MEMBERS,
     max_metadata_bytes: int | None = _DEFAULT_MAX_METADATA_BYTES,
     kdf_cache: RarKdfCache | None = None,
+    excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
     name_encoding: str | None = None,
 ) -> RarArchive:
     """Parse from current position (archive start). Source must be seekable.
@@ -741,6 +744,7 @@ def parse_rar_archive(
         source,
         password=password,
         kdf_cache=kdf_cache if kdf_cache is not None else RarKdfCache(),
+        excluded=excluded,
         volume_index=0,
         use_qo=use_qo,
         max_members=max_members,
@@ -757,6 +761,7 @@ def parse_rar_volumes(
     max_members: int | None = _DEFAULT_MAX_MEMBERS,
     max_metadata_bytes: int | None = _DEFAULT_MAX_METADATA_BYTES,
     kdf_cache: RarKdfCache | None = None,
+    excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
     name_encoding: str | None = None,
     volume_numbers: Sequence[int] | None = None,
 ) -> RarArchive:
@@ -822,6 +827,7 @@ def parse_rar_volumes(
                 volume,
                 password=password,
                 kdf_cache=kdf_cache,
+                excluded=excluded,
                 volume_index=number - 1,
                 use_qo=use_qo,
                 max_members=max_members,
@@ -1118,6 +1124,7 @@ def _parse_rar_volume(
     *,
     password: str | bytes | None,
     kdf_cache: RarKdfCache,
+    excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
     volume_index: int,
     use_qo: bool = True,
     max_members: int | None,
@@ -1145,6 +1152,7 @@ def _parse_rar_volume(
                 source,
                 password=password,
                 kdf_cache=kdf_cache,
+                excluded=excluded,
                 sfx_offset=sfx_offset,
                 volume_index=volume_index,
                 use_qo=use_qo,
@@ -1156,6 +1164,7 @@ def _parse_rar_volume(
                 source,
                 password=password,
                 kdf_cache=kdf_cache,
+                excluded=excluded,
                 sfx_offset=sfx_offset,
                 volume_index=volume_index,
                 max_members=max_members,
@@ -1983,9 +1992,18 @@ class _HeaderDecryptStream:
     header as ``wrong password?``.
     """
 
-    def __init__(self, source: BinaryIO, key: bytes, iv: bytes) -> None:
+    def __init__(
+        self,
+        source: BinaryIO,
+        key: bytes,
+        iv: bytes,
+        *,
+        excluded: frozenset[OptionalLibrary],
+    ) -> None:
         self._source = source
-        self._stage = open_aes_decrypt_stage(AesParams(key=key, iv=iv))
+        self._stage = open_aes_decrypt_stage(
+            AesParams(key=key, iv=iv), excluded=excluded
+        )
         self._buf = bytearray()
         #: Set once a read found fewer than 16 ciphertext bytes left. Whether that
         #: means the file was cut inside this header is the caller's to judge: an
@@ -2450,6 +2468,7 @@ def _parse_rar3(
     *,
     password: str | bytes | None,
     kdf_cache: RarKdfCache,
+    excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
     sfx_offset: int,
     volume_index: int = 0,
     max_members: int | None,
@@ -2496,7 +2515,9 @@ def _parse_rar3(
             if len(salt) < 8:
                 truncated = _no_header(source, header_start, encrypted_cut=bool(salt))
                 break
-            header_fd = _rar3_decrypt_header(source, salt, password, kdf_cache)
+            header_fd = _rar3_decrypt_header(
+                source, salt, password, kdf_cache, excluded=excluded
+            )
 
         try:
             header_offset = header_fd.tell()
@@ -2792,10 +2813,15 @@ def _parse_rar3(
 
 
 def _rar3_decrypt_header(
-    source: BinaryIO, salt: bytes, password: str | bytes, kdf_cache: RarKdfCache
+    source: BinaryIO,
+    salt: bytes,
+    password: str | bytes,
+    kdf_cache: RarKdfCache,
+    *,
+    excluded: frozenset[OptionalLibrary],
 ) -> _HeaderDecryptStream:
     key, iv = kdf_cache.rar3(password, salt)
-    return _HeaderDecryptStream(source, key, iv)
+    return _HeaderDecryptStream(source, key, iv, excluded=excluded)
 
 
 def _parse_rar3_file_header(
@@ -3466,6 +3492,7 @@ def _parse_rar5(
     *,
     password: str | bytes | None,
     kdf_cache: RarKdfCache,
+    excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
     sfx_offset: int,
     volume_index: int = 0,
     use_qo: bool = True,
@@ -3511,7 +3538,9 @@ def _parse_rar5(
             if len(iv) < 16:
                 truncated = _no_header(source, header_start, encrypted_cut=bool(iv))
                 break
-            header_fd = _rar5_decrypt_header(source, iv, hdr_enc, password, kdf_cache)
+            header_fd = _rar5_decrypt_header(
+                source, iv, hdr_enc, password, kdf_cache, excluded=excluded
+            )
 
         skipped = _emit_and_skip_qo_run(
             source,
@@ -3833,11 +3862,13 @@ def _rar5_decrypt_header(
     hdr_enc: _Rar5HdrEnc,
     password: str | bytes,
     kdf_cache: RarKdfCache,
+    *,
+    excluded: frozenset[OptionalLibrary],
 ) -> _HeaderDecryptStream:
     if hdr_enc.kdf_count > _RAR_MAX_KDF_SHIFT:
         raise CorruptionError(f"RAR5 kdf_count too large: {hdr_enc.kdf_count}")
     key = kdf_cache.rar5(password, hdr_enc.salt, 1 << hdr_enc.kdf_count)
-    return _HeaderDecryptStream(source, key, iv)
+    return _HeaderDecryptStream(source, key, iv, excluded=excluded)
 
 
 def _check_rar5_password(

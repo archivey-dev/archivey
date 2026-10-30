@@ -271,6 +271,15 @@ release adds and plugin formats that another library registers. An `exclude=` li
 what it names, so a format added later opens. The policy decides which reader runs, not what
 detection reads: detection still looks for every built-in format, within `detection_budget`.
 
+An optional package that's installed is used whenever a file needs it, even one installed system-wide
+that your program doesn't depend on. If you'd rather a package didn't parse your input, for
+example because of a bug reported against it, list it in the policy's
+[`exclude_libraries=`](opening.md#configuration). archivey then decodes nothing with it in calls
+made with that config. It doesn't import `brotli`, `pyppmd`, `inflate64` or `rapidgzip` for them;
+`lz4`, `zstd` and `pycdlib` are imported when archivey loads, but not used. The standard library's
+`zlib`, `bz2` and `lzma` can't be excluded; refuse the formats that carry them with `only=` or
+`exclude=` instead.
+
 Opening one part of a multi-volume set by path, such as `x.part1.rar` or `x.7z.001`, also reads
 the other parts in the same folder. A part found that way that is a symbolic link is refused with
 `OpenError`, so someone who can only add files to a shared folder can't link a planted part to a

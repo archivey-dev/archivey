@@ -387,8 +387,9 @@ field archivey.FormatInfo.payload_offset: int = 0
 field archivey.FormatInfo.unavailable_tiers: tuple[TierSkip, ...] = ()
 property archivey.FormatInfo.from_plugin: bool
 class archivey.FormatPolicy()
-init archivey.FormatPolicy(*, only: Iterable[ContainerFormat | PluginContainer | StreamFormat] | None = None, exclude: Iterable[ContainerFormat | PluginContainer | StreamFormat] = (), plugins: bool = True, replace: Mapping[ContainerFormat, type[FormatHandler]] | None = None) -> None
+init archivey.FormatPolicy(*, only: Iterable[ContainerFormat | PluginContainer | StreamFormat] | None = None, exclude: Iterable[ContainerFormat | PluginContainer | StreamFormat] = (), plugins: bool = True, replace: Mapping[ContainerFormat, type[FormatHandler]] | None = None, exclude_libraries: Iterable[OptionalLibrary | OptionalLibraryStr] = ()) -> None
 field archivey.FormatPolicy.exclude: frozenset[ContainerFormat | PluginContainer | StreamFormat]
+field archivey.FormatPolicy.exclude_libraries: frozenset[OptionalLibrary]
 field archivey.FormatPolicy.only: frozenset[ContainerFormat | PluginContainer | StreamFormat] | None
 field archivey.FormatPolicy.plugins: bool
 field archivey.FormatPolicy.replace: Mapping[ContainerFormat, type[FormatHandler]]
@@ -551,9 +552,9 @@ value archivey.Verification.KEY = 1
 value archivey.Verification.STRUCTURE = 2
 value archivey.Verification.CONTENT = 3
 function archivey.detect_format(source: str | Path | BinaryIO, *, config: ArchiveyConfig | None = None, follow_stub_volumes: bool = True) -> FormatInfo
-function archivey.format_availability(fmt: ArchiveFormat | str, *, check_programs: bool = True) -> FormatAvailability
+function archivey.format_availability(fmt: ArchiveFormat | str, *, check_programs: bool = True, config: ArchiveyConfig | None = None) -> FormatAvailability
 function archivey.list_known_formats() -> list[ArchiveFormat]
-function archivey.list_supported_formats() -> list[ArchiveFormat]
+function archivey.list_supported_formats(*, config: ArchiveyConfig | None = None) -> list[ArchiveFormat]
 function archivey.open_archive(source: OpenSourceInput, *, format: ArchiveFormat | str | None = None, streaming: bool = False, seekable_members: bool = False, concurrent_operations: bool = False, password: PasswordInput = None, encoding: str | None = None, config: ArchiveyConfig | None = None) -> ForwardArchiveReader
 function archivey.open_stream(source: str | Path | BinaryIO, *, format: StreamFormat | ArchiveFormat | str | None = None, seekable: bool = False, config: ArchiveyConfig | None = None) -> ArchiveStream
 function archivey.sanitize_names(member: ArchiveMember) -> ArchiveMember

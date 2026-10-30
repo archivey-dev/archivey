@@ -133,6 +133,7 @@ from archivey.internal.base_reader import (
 )
 from archivey.internal.config import KeyDerivationBudget, check_decoder_memory
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.excluded_libraries import as_reported
 from archivey.internal.external.cli import ProcessOutputStream, signal_exit_error
 from archivey.internal.external.unar import (
     UnarOutputStream,
@@ -176,9 +177,11 @@ from archivey.internal.streams.archive_stream import (
 )
 from archivey.internal.streams.crypto import (
     AES_BLOCK_SIZE,
+    CRYPTO_PACKAGE,
     CRYPTO_REQUIREMENT,
     AesParams,
     _crypto_available,
+    crypto_missing,
     open_aes_decrypt_stage,
     open_aes_decrypt_stream,
 )
@@ -1071,6 +1074,9 @@ class RarReader(BaseArchiveReader):
         kdf_budget = KeyDerivationBudget(self._config.decoder_limits)
         self._usage.watch_key_derivation(kdf_budget)
         self._kdf_cache = RarKdfCache(budget=kdf_budget)
+        # The call's ``FormatPolicy.exclude_libraries``: ``cryptography`` there reads
+        # as not installed for this reader.
+        self._excluded = self._config.formats.exclude_libraries
         # The first member whose PswCheck can judge a candidate, found once on first
         # use; ``False`` until looked for, ``None`` when there is none.
         self._archive_check_member: ArchiveMember | None | Literal[False] = False
@@ -1247,7 +1253,7 @@ class RarReader(BaseArchiveReader):
                 not self._is_directly_sliceable(info)
                 or (
                     info.is_encrypted
-                    and not (self._natively_decryptable(info) and _crypto_available())
+                    and not (self._natively_decryptable(info) and self._crypto_usable())
                 )
             )
             for member, info in zip(self._members, self._archive.members, strict=True)
@@ -1685,6 +1691,7 @@ class RarReader(BaseArchiveReader):
                         max_members=max_members,
                         max_metadata_bytes=max_metadata_bytes,
                         kdf_cache=self._kdf_cache,
+                        excluded=self._excluded,
                         name_encoding=self._encoding,
                         volume_numbers=self._volume_numbers,
                     )
@@ -1711,6 +1718,7 @@ class RarReader(BaseArchiveReader):
                         max_members=max_members,
                         max_metadata_bytes=max_metadata_bytes,
                         kdf_cache=self._kdf_cache,
+                        excluded=self._excluded,
                         name_encoding=self._encoding,
                     )
                 finally:
@@ -1730,6 +1738,7 @@ class RarReader(BaseArchiveReader):
                             max_members=max_members,
                             max_metadata_bytes=max_metadata_bytes,
                             kdf_cache=self._kdf_cache,
+                            excluded=self._excluded,
                             name_encoding=self._encoding,
                         )
                     except UnsupportedFeatureError:
@@ -1745,6 +1754,7 @@ class RarReader(BaseArchiveReader):
                             max_members=max_members,
                             max_metadata_bytes=max_metadata_bytes,
                             kdf_cache=self._kdf_cache,
+                            excluded=self._excluded,
                             name_encoding=self._encoding,
                             volume_numbers=self._volume_numbers,
                         )
@@ -1759,6 +1769,7 @@ class RarReader(BaseArchiveReader):
                     max_members=max_members,
                     max_metadata_bytes=max_metadata_bytes,
                     kdf_cache=self._kdf_cache,
+                    excluded=self._excluded,
                     name_encoding=self._encoding,
                 )
                 if archive.is_volume and not archive.needs_next_volume:
@@ -2138,6 +2149,11 @@ class RarReader(BaseArchiveReader):
             else (lambda password: decode_check(password, full_plan)),
         )
 
+    def _crypto_usable(self) -> bool:
+        """Whether ``cryptography`` can decrypt here: installed, and not turned off by
+        the call's ``FormatPolicy.exclude_libraries``."""
+        return CRYPTO_PACKAGE not in self._excluded and _crypto_available()
+
     def _natively_decryptable(self, raw: RarMemberInfo) -> bool:
         """Whether this is a stored, encrypted member archivey can decrypt itself.
 
@@ -2182,7 +2198,7 @@ class RarReader(BaseArchiveReader):
         ``PackageNotInstalledError`` naming ``cryptography``.
         """
         return self._natively_decryptable(raw) and (
-            _crypto_available() or self._decompressor is RarDecompressor.NONE
+            self._crypto_usable() or self._decompressor is RarDecompressor.NONE
         )
 
     def _stored_data_cipher(
@@ -2209,7 +2225,7 @@ class RarReader(BaseArchiveReader):
         """
         return (
             self._natively_decryptable(raw)
-            and _crypto_available()
+            and self._crypto_usable()
             and raw.crc32 is not None
         )
 
@@ -2235,7 +2251,9 @@ class RarReader(BaseArchiveReader):
     def _stored_crc_matches(self, raw: RarMemberInfo, password: str | bytes) -> bool:
         """Whether ``password`` decrypts a stored member to bytes its CRC32 matches."""
         assert raw.crc32 is not None
-        stage = open_aes_decrypt_stage(self._stored_data_cipher(raw, password))
+        stage = open_aes_decrypt_stage(
+            self._stored_data_cipher(raw, password), excluded=self._excluded
+        )
         view = self._direct_view(raw, raw.compress_size)
         crc = 0
         remaining = raw.file_size
@@ -3808,7 +3826,11 @@ class RarReader(BaseArchiveReader):
                 )
             member.link_target = data.decode("utf-8", errors="surrogateescape")
             return
-        if raw.is_encrypted and self._natively_decryptable(raw) and _crypto_available():
+        if (
+            raw.is_encrypted
+            and self._natively_decryptable(raw)
+            and self._crypto_usable()
+        ):
             # Stored and encrypted: decrypted here as ``open()`` would, so with the
             # password the target lists as it does from a plain archive, and without
             # it the link is reported as locked (``password_required``), as in ZIP and
@@ -4323,11 +4345,20 @@ class RarReader(BaseArchiveReader):
         try:
             return self._open_member_with_program(member, raw)
         except PackageNotInstalledError as exc:
+            crypto = as_reported(CRYPTO_REQUIREMENT, self._excluded)
+            if crypto.reason:
+                also = (
+                    f"{crypto.name} would decrypt this stored member, but "
+                    f"{crypto.reason}."
+                )
+            else:
+                also = (
+                    f"Or install {crypto.name} ({crypto.install_hint}): archivey "
+                    "then decrypts this stored member itself."
+                )
             raise PackageNotInstalledError(
-                f"{raw_message_of(exc)} Or install {CRYPTO_REQUIREMENT.name} "
-                f"({CRYPTO_REQUIREMENT.install_hint}): archivey then decrypts this "
-                "stored member itself.",
-                missing=(*exc.missing, CRYPTO_REQUIREMENT),
+                f"{raw_message_of(exc)} {also}",
+                missing=(*exc.missing, crypto),
                 archive_name=self._archive_name,
                 member_name=member.name,
                 source_format=ArchiveFormat.RAR,
@@ -4345,10 +4376,10 @@ class RarReader(BaseArchiveReader):
         and :meth:`_watch_unverified` reports a read abandoned before it. The stream
         seeks: CBC restarts from any block, given the block before it.
         """
-        if not _crypto_available():
-            raise PackageNotInstalledError(
-                CRYPTO_REQUIREMENT.message("decrypting a stored RAR member"),
-                missing=(CRYPTO_REQUIREMENT,),
+        if not self._crypto_usable():
+            raise crypto_missing(
+                "decrypting a stored RAR member",
+                self._excluded,
                 archive_name=self._archive_name,
                 member_name=member.name,
                 source_format=ArchiveFormat.RAR,
@@ -4356,7 +4387,9 @@ class RarReader(BaseArchiveReader):
         params = self._stored_data_cipher(raw, self._stored_data_password(member, raw))
         view = self._direct_view(raw, raw.compress_size)
         with _close_on_error(view):
-            plain = open_aes_decrypt_stream(view, params, owns_inner=True)
+            plain = open_aes_decrypt_stream(
+                view, params, owns_inner=True, excluded=self._excluded
+            )
         with _close_on_error(plain):
             # The ciphertext is padded to whole blocks; the member ends at its
             # unpacked size, and the padding after it is not content.
@@ -4987,8 +5020,9 @@ class RarReadBackend(ReadBackend):
 
     @classmethod
     def missing_programs(cls) -> tuple[MissingComponent, ...]:
-        # Independent of ``rar_decompressor``: the query takes no config, so it answers
-        # for the default ``AUTO``, which uses unrar when one is usable.
+        # Independent of ``rar_decompressor``: the query reads only the format policy
+        # from a config, so it answers for the default ``AUTO``, which uses unrar when
+        # one is usable.
         return rarlab_unrar_missing()
 
     def open_read(
