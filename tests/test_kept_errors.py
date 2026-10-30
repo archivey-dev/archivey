@@ -18,11 +18,15 @@ from archivey import open_archive
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.streams.decompressor_stream import DecompressorStream
 from archivey.internal.streams.kept_errors import EarlierRaise, KeptError
+from tests.conftest import CPYTHON
 from tests.test_decompressor_stream_read import _FailsOnFeed
 
 
 @pytest.fixture
 def no_gc() -> Iterator[None]:
+    if not CPYTHON:
+        # PyPy has no reference counting: nothing is freed until its collector runs.
+        pytest.skip("only reference counting frees an object without the collector")
     gc.collect()
     gc.disable()
     try:
