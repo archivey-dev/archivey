@@ -310,6 +310,7 @@ def _rar_info(redirect_type: int) -> SimpleNamespace:
         file_redir=(redirect_type, 0, "target"),
         is_file_version_history=lambda: False,
         is_file_copy=lambda: redirect_type == 5,
+        has_unknown_redirect=lambda: not 1 <= redirect_type <= 5,
         file_version=None,
         extract_version=None,
         file_encryption=None,

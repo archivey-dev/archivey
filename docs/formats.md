@@ -904,7 +904,11 @@ misread the archive.
   gives the source's bytes, and extraction writes an independent file, as `unrar` does, by copying
   the source's file when it has just written it. A copy whose source is not an earlier file member
   raises `LinkTargetNotFoundError` when read. `stream_members(file_copy_streams=False)` yields `None`
-  for each copy; its bytes and digests are its source's.
+  for each copy; its bytes and digests are its source's. A RAR5 redirect of a type archivey does
+  not know (no RAR version writes one) is `OTHER` with no `size`, even with the directory
+  flag, holds no data and is not extracted, as `unrar` skips it with "Unknown extra field".
+  It is reported with `MEMBER_TYPE_UNKNOWN`. A redirect record of type 0 names no redirect,
+  and the member is an ordinary file, as in `unrar`.
 - **RAR 2.9-4 symlinks** store their target as member data. When that data is uncompressed and
   encrypted, archivey decrypts it while listing if you gave the password and `cryptography` is
   installed, and checks it against its CRC. Without either, `link_target` is unset, and a

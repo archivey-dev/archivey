@@ -77,6 +77,8 @@ _REFUSED: dict[tuple[str, str], str] = {
         for name in ("a*.txt", "aX.txt", "b?.txt", "b1.txt", "only*.dat")
     },
     ("rar15-comment.rar", "FILE1.TXT"): "RAR 1.5",
+    # Follows a link in a RAR5 solid run, which unar 1.10 reads wrongly.
+    ("redirect_unknown_solid__.rar", "b.txt"): "RAR5 solid",
 }
 # Members unar 1.10.1 drops, and the members after them in a solid run, whose bytes
 # then go missing or are stale: ``scripts/gen_rar_fixtures.py`` ``_build_unar_drop``.
@@ -546,8 +548,13 @@ def test_selected_unar_missing_does_not_fall_back_to_unrar(
     unar.clear_unar_cache()
     with open_archive(_CORPUS / "compressed.rar", config=_UNAR) as archive:
         member = next(m for m in archive.members() if m.is_file)
-        with pytest.raises(PackageNotInstalledError, match="unar 1.10 or later"):
+        with pytest.raises(
+            PackageNotInstalledError, match="unar 1.10 or later"
+        ) as exc_info:
             archive.read(member)
+    (component,) = exc_info.value.missing
+    assert component.name == "unar"
+    assert component.install_hint == exc_info.value.raw_message
 
 
 def test_config_accepts_the_name() -> None:

@@ -100,8 +100,9 @@ class _DeflateFamilyCodec(StreamCodec):
         if not _rapidgzip_enabled(config, available=deps.rapidgzip.available()):
             return False
         if not deps.rapidgzip.available():
+            requirement = _rapidgzip_requirement()
             raise PackageNotInstalledError(
-                _rapidgzip_requirement().message(f"{label} random access")
+                requirement.message(f"{label} random access"), missing=(requirement,)
             )
         _refuse_forward_only_accelerator(source, "use_rapidgzip", label)
         return True

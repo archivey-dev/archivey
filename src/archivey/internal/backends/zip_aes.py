@@ -258,7 +258,8 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
             raise ValueError("cipher_len must be non-negative")
         if not _crypto_available():
             raise PackageNotInstalledError(
-                CRYPTO_REQUIREMENT.message("WinZip AES decryption")
+                CRYPTO_REQUIREMENT.message("WinZip AES decryption"),
+                missing=(CRYPTO_REQUIREMENT,),
             )
         self._enc_key = enc_key
         self._ctr = self._ctr_stage_at(0)
@@ -433,7 +434,8 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
         super().__init__()
         if not _crypto_available():
             raise PackageNotInstalledError(
-                CRYPTO_REQUIREMENT.message("WinZip AES decryption")
+                CRYPTO_REQUIREMENT.message("WinZip AES decryption"),
+                missing=(CRYPTO_REQUIREMENT,),
             )
         self._ctr = open_aes_ctr_stage(
             AesCtrParams(enc_key, initial_counter=1, counter_byteorder="little")
@@ -564,7 +566,8 @@ def open_winzip_aes_forward(
         )
     if not _crypto_available():
         raise PackageNotInstalledError(
-            CRYPTO_REQUIREMENT.message("WinZip AES decryption")
+            CRYPTO_REQUIREMENT.message("WinZip AES decryption"),
+            missing=(CRYPTO_REQUIREMENT,),
         )
     if len(head) < header_len:
         raise TruncatedError("Truncated WinZip AES salt or password-verification value")
@@ -610,7 +613,8 @@ def open_winzip_aes_member(
         )
     if not _crypto_available():
         raise PackageNotInstalledError(
-            CRYPTO_REQUIREMENT.message("WinZip AES decryption")
+            CRYPTO_REQUIREMENT.message("WinZip AES decryption"),
+            missing=(CRYPTO_REQUIREMENT,),
         )
     salt = read_exact(raw, salt_len)
     if len(salt) != salt_len:

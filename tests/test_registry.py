@@ -34,7 +34,7 @@ from archivey.exceptions import PackageNotInstalledError, UnsupportedFeatureErro
 from archivey.internal.base_reader import ReadBackend
 from archivey.internal.registry import BackendRegistry, get_registry
 from archivey.internal.streams import codecs as codecs_module
-from archivey.types import ContainerFormat, MagicSignature
+from archivey.types import ContainerFormat, MagicSignature, MissingComponent
 from tests.sample_archives import (
     CORPUS,
     FORMAT_KEYS,
@@ -735,7 +735,9 @@ def _hide_rarlab_unrar(monkeypatch: pytest.MonkeyPatch) -> None:
     from archivey.internal.backends import rar_unrar
 
     def _missing() -> str:
-        raise PackageNotInstalledError("no unrar here")
+        # As the real finder raises: the refusal text and the component it names.
+        component = MissingComponent("unrar", "no unrar here")
+        raise PackageNotInstalledError("no unrar here", missing=(component,))
 
     monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", _missing)
 
