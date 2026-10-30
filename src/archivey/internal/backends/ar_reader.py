@@ -22,8 +22,8 @@ The dialects differ in how a name longer than 15 bytes is stored:
   its data starts after the name rather than after the header. macOS pads that name
   with NULs, and pads each member with ``\n`` so the next header starts on 8 bytes,
   counting that padding in the member's size: the padding is then part of the member,
-  as llvm-ar and bsdtar extract it. The symbol table is a member named ``__.SYMDEF`` (or ``__.SYMDEF
-  SORTED``, ``__.SYMDEF_64``).
+  as llvm-ar and bsdtar extract it. The symbol table is a member named ``__.SYMDEF``
+  (or ``__.SYMDEF SORTED``, ``__.SYMDEF_64``).
 
 Symbol tables are the linker's index, not files: the walk skips them, and the archive
 info says one was there. A *thin* archive (``!<thin>\\n``) stores only the names of
