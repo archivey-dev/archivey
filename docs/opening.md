@@ -9,7 +9,10 @@ open file objects, you can pass a list of them, in order. A ZIP split by 7-Zip i
 `.zip.002` and so on opens the same way. If a part of a numbered set like that (`.7z.001`,
 `.zip.001`) is missing, opening raises `TruncatedError` naming it, rather than reading a shorter
 archive. A RAR set with a volume missing still opens, as `unrar` would, but `members()` raises
-`TruncatedError` naming the missing volume, and so does reading a member with data in it.
+`TruncatedError` naming the missing volume, and so does reading a member with data in it. A part
+archivey finds on its own that is a symbolic link is refused with `OpenError`; pass the parts as a
+list to read it. `ArchiveyConfig(discover_volumes=False)` turns the search off, so a path opens
+only the file it names ([Security](security.md#hardening) says when that is worth it).
 
 A file object is read from its current position to its end, so an archive that starts partway
 through a larger file opens as is. Bytes after the archive don't stop it opening. Any that aren't

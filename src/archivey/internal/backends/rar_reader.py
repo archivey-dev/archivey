@@ -1283,7 +1283,11 @@ class RarReader(BaseArchiveReader):
         wrap = self._seek_handle_wrapper()
         path = source.path
         if path is not None:
-            siblings = discover_volume_siblings(path)
+            siblings = (
+                discover_volume_siblings(path)
+                if self._config.discover_volumes
+                else None
+            )
             if siblings is not None and len(siblings) > 1:
                 # The source reads volume 1 only; ``unrar`` walks the set on disk, and
                 # the header walk reads across it through a join this reader builds.

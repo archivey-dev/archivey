@@ -219,6 +219,29 @@ logical `ArchiveReader`:
   different container than the sibling, raise `ArchiveyUsageError`.
 - **Explicit ordered `source` sequence**: use that order as volumes
 
+A part found by discovery (a sibling, or the set a stub leads to) that is a symbolic
+link SHALL raise `OpenError` naming it: archivey does not follow a link it found on
+its own. The path the caller named and its directory may be links, and a sequence
+that names a link reads it. `ArchiveyConfig(discover_volumes=False)` SHALL turn
+discovery off for `open_archive()` and `detect_format()` alike: a path is read as
+the one file it names, a stub does not lead to its set, the RAR reader does not
+look for volumes beside the path either, and a lone numbered part is not refused as
+a set with parts missing. The link check runs once, at discovery; a part swapped for
+a link afterwards is not caught.
+
+#### Scenario: discovery matrix
+
+| Case | Expected |
+| --- | --- |
+| `x.zip.001` beside `x.zip.002`, a symlink to another file | `OpenError` naming `x.zip.002`; the same two passed as a list read |
+| A set in a directory reached through a symlink | Read as before |
+| `tinyvol.part1.rar` with `discover_volumes=False` | `TruncatedError` (volume 2 is missing); the set passed as a list reads |
+| A stub `vol.exe` beside `vol.zip.001` with `discover_volumes=False` | `FormatDetectionError` from `open_archive()` and `detect_format()` |
+| A stub `vol.exe` beside `vol.zip.001`, a symlink | `OpenError` naming `vol.zip.001` |
+| `l.zip.001`, a symlink the caller named, beside a regular `l.zip.002` | Read as before |
+| `x.zip.001` with `discover_volumes=False`, `x.zip.002` beside it | Refused by its name as a ZIP split segment (`UnsupportedFeatureError`) with nothing opened, not "part 2 missing" |
+| `x.7z.001` with `discover_volumes=False`, `x.7z.002` beside it | Opened alone; the 7z reader refuses what it finds (`TruncatedError`), not "part 2 missing" |
+
 Joining is format-specific (`format-7z` / `format-rar`): 7z concatenates a split
 byte stream; RAR parses self-describing volumes in order and stitches
 boundary-spanning members. Incomplete/out-of-order sets SHALL raise

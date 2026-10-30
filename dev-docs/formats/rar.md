@@ -560,7 +560,11 @@ part 10 is `q.part10.rar`, not a stray `q.part010.rar`), so measured on unrar 7.
 `unrar t q.part1.rar` is All OK beside the stray and never opens it, and from `q.part02.rar`
 it looks for `q.part03.rar`. It took the first match in directory listing order before, which
 read the stray as volume 2. A set renamed to mixed widths (`q.part1`, `q.part02`, `q.part03`)
-still joins, where unrar stops at "Cannot find volume q.part2.rar". Headers are then read across the volumes
+still joins, where unrar stops at "Cannot find volume q.part2.rar". A discovered volume that is
+a symlink is refused (`OpenError`), and `ArchiveyConfig.discover_volumes=False` reads only the
+named file, in `resolve_source` and in the reader's own `_open_shared_source` walk; `unrar`,
+run on volume 1's path, can still open later volumes by name (threat model "Volume discovery
+trusts the folder"). Headers are then read across the volumes
 in order with split members stitched into one logical member.
 `ArchiveInfo.is_multivolume` is `True` and `ArchiveInfo.extra["rar.volume_count"]`
 carries the count. A set whose last volume present says another follows — a lone
