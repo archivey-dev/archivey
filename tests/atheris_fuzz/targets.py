@@ -90,6 +90,14 @@ _FUZZ_CONFIG = ArchiveyConfig(
     use_indexed_bzip2=AcceleratorMode.OFF,
     decoder_limits=_FUZZ_DECODER_LIMITS,
 )
+# The sequential targets run every content probe: a binary CPIO has no reliable magic,
+# and a fuzzed input has no name to let its probe run.
+_PROBING_FUZZ_CONFIG = ArchiveyConfig(
+    use_rapidgzip=AcceleratorMode.OFF,
+    use_indexed_bzip2=AcceleratorMode.OFF,
+    decoder_limits=_FUZZ_DECODER_LIMITS,
+    always_probe_content=True,
+)
 
 # Seekable indexing on (interesting crash class); accelerators forced off.
 _STREAM_CONFIG = StreamConfig(
@@ -280,7 +288,7 @@ def cpio_open_one(data: bytes) -> None:
 
 def _sequential_open_one(data: bytes, container: ContainerFormat) -> None:
     try:
-        with open_archive(io.BytesIO(data), config=_FUZZ_CONFIG) as arc:
+        with open_archive(io.BytesIO(data), config=_PROBING_FUZZ_CONFIG) as arc:
             if arc.format.container is not container:
                 return
             for i, (member, stream) in enumerate(arc.stream_members()):

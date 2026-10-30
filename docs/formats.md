@@ -1051,8 +1051,9 @@ misread the archive.
   large header in an odc archive. `ArchiveInfo.extra["cpio.variant"]` names the variant as
   GNU cpio's `-H` option does (`bin`, `odc`, `newc`, `crc`), with `bin-be` for a binary
   archive in the other byte order. `ArchiveInfo.format_version` is `None`.
-- A binary archive has only a 2-byte magic, so it is detected only when its name ends in
-  `.cpio`, or with `always_probe_content=True`, or when you pass `format=`.
+- A binary archive (GNU cpio's default) has only a 2-byte magic, so it is detected only when
+  its name ends in `.cpio` or a compressed spelling of it (`.cpio.gz`, …), or with
+  `always_probe_content=True`, or when you pass `format=` (`"cpio"`, `"cpio.gz"`, …).
 - A symlink's target is its data. Devices, FIFOs and sockets are `OTHER`, as in every
   format.
 - In crc, each file's checksum is checked as its data is read.

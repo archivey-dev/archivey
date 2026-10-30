@@ -393,6 +393,8 @@ def _probe_inner_container(
     workspace: PrefixWorkspace | None = None,
     *,
     view_arrived: bool = False,
+    named: ArchiveFormat | None = None,
+    always_probe: bool = False,
 ) -> ArchiveFormat | None:
     """The container decompressing the source yields, as its uncompressed format, or
     ``None``.
@@ -402,9 +404,12 @@ def _probe_inner_container(
     TAR's ``ustar`` at offset 257 first, then the magic of each registered sequential
     plugin, which registration keeps within those 512 bytes. A v7 tar has no magic, so
     when none matches, a first TAR header that checks itself
-    (``ReadBackend.HEADER_CHECKS``) still finds it. So a tarball, or a plugin's
-    sequential archive, wrapped in the compressor is found the same way, and a plugin
-    cannot make the probe decode more. The decoder reads from a bounded, non-consuming
+    (``ReadBackend.HEADER_CHECKS``) still finds it. A container with no reliable magic
+    (binary CPIO) is found by its content probe on those bytes, run only when ``named``,
+    the uncompressed format the extension names inside the compressor (``.cpio.gz``),
+    is that container, or when ``always_probe`` is set: the same rule
+    :func:`_probe_named` keeps for an uncompressed source. So a tarball, or a plugin's sequential archive, wrapped in the compressor is
+    found the same way, and a plugin cannot make the probe decode more. The decoder reads from a bounded, non-consuming
     view of the source (:class:`_BoundedPeekReader` over ``peek_more``), so it pulls
     exactly as much compressed input as it needs to decode those 512 bytes and no
     more.
@@ -531,21 +536,37 @@ def _probe_inner_container(
         # Not decodable as this codec, or truncated before a full block: no inner
         # container.
         pass
-    found = next(
-        (
-            sig.format
-            for sig in get_registry().inner_magic_entries()
-            if head[sig.offset : sig.offset + len(sig.magic)] == sig.magic
-        ),
-        None,
-    ) or next(
-        # A first header that checks itself: a v7 tar has no magic.
-        (
-            fmt
-            for fmt, check in get_registry().header_checks()
-            if fmt.container is ContainerFormat.TAR and check(head)
-        ),
-        None,
+    found = (
+        next(
+            (
+                sig.format
+                for sig in get_registry().inner_magic_entries()
+                if head[sig.offset : sig.offset + len(sig.magic)] == sig.magic
+            ),
+            None,
+        )
+        or next(
+            # A first header that checks itself: a v7 tar has no magic.
+            (
+                fmt
+                for fmt, check in get_registry().header_checks()
+                if fmt.container is ContainerFormat.TAR and check(head)
+            ),
+            None,
+        )
+        or next(
+            # A container with no reliable magic, found by its own probe where the name says
+            # it is that container. Prefix only: the decoded head is all there is.
+            (
+                fmt
+                for fmt, probe in get_registry().content_probes()
+                if fmt.container is not ContainerFormat.RAW_STREAM
+                and (always_probe or fmt == named)
+                and head
+                and probe(head)
+            ),
+            None,
+        )
     )
     if workspace is not None:
         # Charged on every path: a decode that ran and then failed did the work too.
@@ -708,6 +729,7 @@ def _resolve_single_file_or_tar(
     ext_match: tuple[ArchiveFormat, str] | None = None,
     workspace: PrefixWorkspace | None = None,
     view_arrived: bool = False,
+    always_probe: bool = False,
 ) -> FormatInfo:
     """Upgrade a single-file-compressor match to its container combo when the payload
     is a tarball or a sequential plugin's archive.
@@ -722,9 +744,17 @@ def _resolve_single_file_or_tar(
     non-consuming view of the source to decode from; ``view_arrived`` says it is a
     view that returns what has arrived (:class:`_BoundedPeekReader`).
     """
+    named = None
+    if ext_match is not None and ext_match[0].stream is fmt.stream:
+        named = ArchiveFormat(ext_match[0].container, StreamFormat.UNCOMPRESSED)
     inner = (
         _probe_inner_container(
-            fmt.stream, peek_more, workspace, view_arrived=view_arrived
+            fmt.stream,
+            peek_more,
+            workspace,
+            view_arrived=view_arrived,
+            named=named,
+            always_probe=always_probe,
         )
         if fmt.container == ContainerFormat.RAW_STREAM
         and fmt.stream != StreamFormat.UNCOMPRESSED
@@ -1324,6 +1354,7 @@ def _detect_format_body(
                 ext_match=ext_match,
                 workspace=workspace,
                 view_arrived=arrived,
+                always_probe=always_probe,
             )
             return conclude(info, _ConflictEvidence.MAGIC)
 
@@ -1489,6 +1520,7 @@ def _detect_format_body(
                         peek_more,
                         ext_match=ext_match,
                         workspace=workspace,
+                        always_probe=always_probe,
                     )
                     return conclude(info, _ConflictEvidence.CONTENT_PROBE)
 
