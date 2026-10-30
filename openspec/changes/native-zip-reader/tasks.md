@@ -382,5 +382,6 @@ each lands with nothing half-done reachable:
 - [x] 7.1 Pure-Python decoders for methods 1 and 6, registered with the codec layer.
 - [x] 7.2 Fixtures from a real writer (Info-ZIP `zip` 1.x / PKZIP 1.x output or the
       scan's archives, if their licence allows), checked against `unzip`.
-- [ ] 7.3 The new `CompressionAlgorithm` members go to the maintainer before merging.
+- [x] 7.3 The new `CompressionAlgorithm` members go to the maintainer before merging.
+      `SHRINK` and `IMPLODE`, in a minor release (maintainer, 2026-10-30).
 - [x] 7.4 Format-zip spec, `docs/formats.md`, handbook §2.3.
