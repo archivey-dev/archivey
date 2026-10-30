@@ -1301,16 +1301,16 @@ budget one level at a time. The caller bounds depth and total size. Public:
 ### Reads have no output bound
 
 `read()` and `open()` have no byte cap: `max_extracted_bytes` and `max_entries` apply to
-`extract` only, and a `read()` of an honest 1 GiB member holds 1 GiB. `max_ratio` does hold
-reads: each member stream is held to the per-member and archive-wide ratios
-(`bomb_tracker.MemberRatioGuard`, one `ReadRatioTally` per reader), so a scan or hash of
-a bzip2 or xz bomb stops within a step past 5 MiB. The archive-wide rule needs a
+`extract` only, and a `read()` of an honest 1 GiB member holds 1 GiB. `max_ratio` does
+hold reads: each member stream is held to the per-member and archive-wide ratios
+(`bomb_tracker.MemberRatioGuard`, one `ReadRatioTally` per reader), so a scan or hash of a
+bzip2 or xz bomb stops within a step past 5 MiB. The archive-wide rule needs a
 denominator, so a ZIP, TAR or 7z read from a non-seekable stream (no trusted size, no live
 counter) has only the per-member rule for reads: many members each under 5 MiB are not
-bounded together, where extraction still has `max_extracted_bytes`. A container inside a compression
-stream (a `.tar.gz`) holds its whole decode, listing included, to the archive-wide ratio
-(`bomb_tracker.DecodeRatioGuard`), since listing it decodes everything. Chunk untrusted
-payloads. Public:
+bounded together, where extraction still has `max_extracted_bytes`. A container inside a
+compression stream (a `.tar.gz`) holds its whole decode, listing included, to the
+archive-wide ratio (`bomb_tracker.DecodeRatioGuard`), since listing it decodes everything.
+Chunk untrusted payloads. Public:
 [security.md §Where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 
 ### Volume discovery trusts the folder
