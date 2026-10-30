@@ -20,6 +20,7 @@ from archivey import (
     MemberType,
     OptionalLibrary,
     PackageNotInstalledError,
+    StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
     detect_format,
@@ -206,6 +207,27 @@ def _inode_offset(data: bytes, name: bytes) -> int:
     (offset,) = struct.unpack_from("<H", data, entry)
     table = _superblock_field(data, _INODE_TABLE, "<Q")
     return table + 2 + offset  # one block: its 2-byte header, then the inodes
+
+
+class _Pipe(io.RawIOBase):
+    """A source that cannot seek, as a pipe."""
+
+    def __init__(self, data: bytes) -> None:
+        self._inner = io.BytesIO(data)
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b) -> int:  # type: ignore[override]
+        return self._inner.readinto(b)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_pipe_is_refused_with_the_reason(streaming: bool) -> None:
+    """The tables come after the data, so not even a streaming pass reads a pipe."""
+    data = (DATA / "gzip.sqfs").read_bytes()
+    with pytest.raises(StreamNotSeekableError, match="inode tables come after"):
+        open_archive(_Pipe(data), streaming=streaming)
 
 
 def test_a_truncated_image(tmp_path: Path) -> None:

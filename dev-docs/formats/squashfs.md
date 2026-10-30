@@ -20,6 +20,7 @@ registered as a built-in the way ISO, CPIO and ar are.
 | Name encoding | Bytes. UTF-8 first, then `encoding=`, then escaped, as in every format |
 | Checksums | None. A damaged block is found only when it does not decode to its length |
 | Refuses | Big-endian images (SquashFS 3 and older, magic `sqsh`), with `UnsupportedFeatureError` |
+| Spec | `openspec/specs/format-squashfs/spec.md` |
 
 ## 1. Layout
 
