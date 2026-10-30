@@ -742,11 +742,24 @@ the built-in reader.
 ## Adding a compression format
 
 A compression format, such as one that a library outside archivey decodes, is one
-`CodecHandler` subclass, registered with `register_codec()`. Its `decompressor()`
+`CodecHandler` subclass, registered with `register_codec()`. Its `decompressor(call)`
 returns a new decoder for one stream, with the interface of the standard library's
 `bz2.BZ2Decompressor`: `decompress(data, max_length)`, `eof`, `unused_data` and
 `needs_input`. Decoders from `lz4.frame` and Python 3.14's `compression.zstd` have this
-interface already, so `decompressor()` can return one as it is.
+interface already, so `decompressor()` can return one as it is. Import the library once,
+at the top of the module, not in `decompressor()`: archivey calls it for every stream,
+and a failed import costs more than decoding a small one.
+
+`call` is a `CodecCall`: what archivey knows about the data beyond its bytes:
+
+- `size` and `properties`: what a format reader passed to `ReaderContext.decompress`.
+  `size` is the most the data may decode to. Both are `None` for a file of the format.
+- `limits`: the caller's `DecoderLimits`. When the data declares a working set (a window,
+  a dictionary, a block size), refuse one over `limits.max_decoder_memory` with
+  `ResourceLimitError` before allocating it. archivey applies the ratio limits itself.
+- `probe_bound`: set while detection decodes the start of the data, as the most output
+  it reads. A decoder that would reserve much more than that may raise
+  `ResourceLimitError`, which detection reads as "can't tell".
 
 ```python
 import lzham  # a stand-in for the library that decodes the format
@@ -765,7 +778,7 @@ class LzhamHandler(CodecHandler):
     requires = ("lzham",)
     install_hint = "pip install lzham"
 
-    def decompressor(self):
+    def decompressor(self, call):
         return lzham.Decompressor()
 
     def translate_exception(self, exc):

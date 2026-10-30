@@ -126,7 +126,10 @@ and false for every built-in format.
 
 `archivey.formats` SHALL provide `CodecHandler`, `PluginStream` and `register_codec()`.
 A handler declares a `PluginStream` member as its `stream_format`, and its
-`decompressor()` returns a decoder with the interface of `bz2.BZ2Decompressor`.
+`decompressor(call)` returns a decoder with the interface of `bz2.BZ2Decompressor`.
+The `CodecCall` it is given SHALL carry the `size` and `properties` a format reader
+passed to `ReaderContext.decompress()`, the caller's `DecoderLimits`, and, during a
+detection probe only, the probe's output bound.
 After `register_codec()`, archivey SHALL read the format as a single compressed file,
 around a TAR, around each sequential plugin format registered before or after it, in
 `open_stream()` and in `ReaderContext.decompress()`, and `detect_format`,
@@ -144,5 +147,7 @@ codec off, and `FormatInfo.from_plugin` SHALL be true for a format that uses it.
 | A TAR inside the codec, no name | `ArchiveFormat(TAR, ToyStream.TOY)` by the inner probe |
 | A sequential plugin registered after the codec; `x.cpio.toy` | `ArchiveFormat(CpioContainer.CPIO, ToyStream.TOY)` |
 | The stream cut short | `TruncatedError` |
+| `ReaderContext.decompress(data, ToyStream.TOY, size=n, properties=p)` | the decoder's `CodecCall` has `size=n`, `properties=p` and the caller's limits |
+| The inner-TAR probe decodes the codec | `CodecCall.probe_bound` set; `None` on a read |
 | A module in `requires` missing | `FormatSupport.NONE` with the handler's install hint |
 | `stream_format = StreamFormat.GZIP`, or a value a built-in uses | `ArchiveyUsageError` at registration |

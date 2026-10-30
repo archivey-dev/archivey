@@ -40,10 +40,11 @@ import struct
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO, ClassVar, Generic, NamedTuple, Protocol, TypeVar, cast
 
-from archivey.config import ArchiveyConfig
+from archivey.config import ArchiveyConfig, DecoderLimits
 from archivey.diagnostics import DiagnosticCode, DiagnosticContext
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError, TruncatedError
 from archivey.internal.naming import normalize_member_name
@@ -60,6 +61,7 @@ from archivey.types import (
 )
 
 __all__ = [
+    "CodecCall",
     "CodecHandler",
     "Decompressor",
     "FormatHandler",
@@ -802,6 +804,34 @@ class Decompressor(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class CodecCall:
+    """What archivey knows about the data one :meth:`CodecHandler.decompressor` call
+    decodes, beyond its bytes. Built by archivey; a handler only reads it."""
+
+    size: int | None = None
+    """The decoded size a format reader passed to :meth:`ReaderContext.decompress`:
+    the most the data may decode to. ``None`` for a file of the format, and when the
+    reader passed none."""
+
+    properties: bytes | None = None
+    """The coder properties a format reader passed to
+    :meth:`ReaderContext.decompress`, as the container stores them, for the codec to
+    parse. ``None`` for a file of the format, and when the reader passed none."""
+
+    limits: DecoderLimits = field(default_factory=DecoderLimits)
+    """The caller's decoder limits. A decoder whose data declares a working set (a
+    window, a dictionary, a block size) refuses one over
+    :attr:`DecoderLimits.max_decoder_memory` with ``ResourceLimitError`` before it
+    allocates it. archivey applies the ratio limits to the output itself."""
+
+    probe_bound: int | None = None
+    """Set while detection decodes the start of the data to look inside it: the most
+    output it reads. A decoder that would reserve much more than this for a size the
+    data declares may raise ``ResourceLimitError`` instead, which detection reads as
+    "can't tell". ``None`` for every other read."""
+
+
 class CodecHandler(ABC):
     """One compression stream format: what identifies it, and its decoder. Never
     instantiated by a caller; archivey makes one instance at registration.
@@ -849,9 +879,9 @@ class CodecHandler(ABC):
     """What to install when a module in ``requires`` is missing."""
 
     @abstractmethod
-    def decompressor(self) -> Decompressor:
-        """A new decoder for one stream. archivey calls it for each stream, and again
-        when a backward seek starts the decode over."""
+    def decompressor(self, call: CodecCall) -> Decompressor:
+        """A new decoder for one stream of the data ``call`` describes. archivey calls
+        it for each stream, and again when a backward seek starts the decode over."""
 
     def translate_exception(self, exc: Exception) -> ArchiveyError | None:
         """Map an exception the decoder raises to an archivey exception, usually
