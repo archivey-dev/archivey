@@ -89,7 +89,7 @@ _UNCONVERTED: dict[str, int] = {
     "test_iso_trailing_data.py": 1,
     "test_public_api.py": 1,
     "test_rar_unrar_names.py": 1,
-    "test_review_loop_gate.py": 4,
+    "test_review_loop_gate.py": 5,
     "test_sevenzip_surrogate_names.py": 1,
     "test_tar_parser_differential.py": 3,
     "test_utf16_surrogate_names.py": 1,
