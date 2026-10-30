@@ -58,9 +58,6 @@ TYPES = {
 }
 
 _LZ4 = importlib.util.find_spec("lz4") is not None
-_PYTHON_LZO = pytest.mark.skipif(
-    importlib.util.find_spec("lzo") is None, reason="needs python-lzo"
-)
 _ZSTD = archivey.format_availability(archivey.ArchiveFormat.ZST).support is not (
     archivey.FormatSupport.NONE
 )
@@ -107,22 +104,14 @@ def test_lists_and_reads_every_member(image: str) -> None:
         assert archive.info.extra["squashfs.block_size"] == 4096
 
 
-@pytest.fixture(params=["python", pytest.param("python-lzo", marks=_PYTHON_LZO)])
-def lzo_decoder(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
-    """Each LZO decoder in turn: the package's own, and liblzo through python-lzo."""
-    if request.param == "python":
-        monkeypatch.setattr(lzo, "_python_lzo", lambda: None)
-    return request.param
-
-
 @pytest.mark.parametrize("image", ["lzo", "lzo1x-1"])
-def test_lzo_images_with_each_decoder(lzo_decoder: str, image: str) -> None:
+def test_lzo_images(image: str) -> None:
     with open_archive(DATA / f"{image}.sqfs") as archive:
         for name, data in CONTENT.items():
             assert archive.read(name) == data
 
 
-def test_a_damaged_lzo_block(tmp_path: Path, lzo_decoder: str) -> None:
+def test_a_damaged_lzo_block(tmp_path: Path) -> None:
     data = bytearray((DATA / "lzo.sqfs").read_bytes())
     # The inode table's one metadata block, which LZO compresses: a changed first
     # byte changes its first instruction.

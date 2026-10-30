@@ -15,7 +15,7 @@ registered as a built-in the way ISO, CPIO and ar are.
 | Source | A file or a stream that can seek. Not a pipe: the directory and inode tables come after the data |
 | Listing cost | From the index (the inode and directory tables) |
 | Access cost | `DIRECT`. Small files share a fragment block, which is decoded once and kept (four at a time) |
-| Core dependencies | None for gzip, xz, LZMA and LZO images. Zstandard images need what a `.zst` file needs; LZ4 images need `lz4` (`[recommended]`). `python-lzo` is used when installed (GPL, never a dependency) |
+| Core dependencies | None for gzip, xz, LZMA and LZO images. Zstandard images need what a `.zst` file needs; LZ4 images need `lz4` (`[recommended]`). LZO is decoded in Python |
 | Encryption | None |
 | Name encoding | Bytes. UTF-8 first, then `encoding=`, then escaped, as in every format |
 | Checksums | None. A damaged block is found only when it does not decode to its length |
@@ -71,8 +71,8 @@ level or variant the same decoder reads.
 Every compressed block goes through `ReaderContext.decompress`, so archivey's decoder
 limits apply, or through a decoder capped at the block's size: `lz4.block` for LZ4, and
 `squashfs_lzo` for LZO. `squashfs_lzo` follows the Linux kernel's
-`lzo1x_decompress_safe`, without LZO-RLE, which SquashFS does not write; `python-lzo` is
-used instead when it is installed.
+`lzo1x_decompress_safe`, without LZO-RLE, which SquashFS does not write. `python-lzo`
+(liblzo2) is not used, even when installed (§6).
 
 `FormatPolicy(exclude_libraries={OptionalLibrary.LZ4})` makes an LZ4 image read as if
 `lz4` were missing. Under PyPy the reader does not use `lz4`, as the rest of archivey
@@ -114,7 +114,7 @@ offsets the image declares:
 - The directory walk is a loop, not a recursion, and refuses a directory reached twice,
   so a directory listed inside itself does not walk forever.
 - Every decoder is bounded by the block size, so a block cannot expand past it. The LZO
-  decoders refuse a stream that would read past its input, write past the block size, or
+  decoder refuses a stream that would read past its input, write past the block size, or
   copy from before the start of the output.
 - Decoded blocks are kept in two bounded caches: 64 metadata blocks and four fragment
   blocks.
@@ -136,8 +136,12 @@ offsets the image declares:
   `register_builtin_format` and its own LZO module).
 - **SquashFS 4 only.** Big-endian images from SquashFS 3 and older have another layout;
   they are claimed by magic so the refusal names them.
-- **A pure-Python LZO decoder in archivey, `python-lzo` when installed.** `python-lzo` is
-  GPL, so it is never a dependency, and an LZO image should open without it.
+- **LZO is decoded in Python only.** `python-lzo` is GPL, so it is never a dependency,
+  and an LZO image should open without it. Using it when installed would put a native
+  decoder in the caller's process that neither `exclude_libraries` nor process
+  isolation reaches; the tests still use it, when present, to check the Python decoder.
+  A shared LZO codec that declares `python-lzo` as an optional library, under both
+  controls, is separate work.
 - **The reader keeps its own copy of the "turned off" reason for LZ4,** because it
   imports only public names; a test compares the two.
 - **Extended attributes are not read.** archivey's members have no field for them.

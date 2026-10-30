@@ -1027,7 +1027,7 @@ misread the archive.
 
 - **Needs:** nothing for gzip, xz, LZMA and LZO images. A Zstandard image needs what a `.zst`
   file needs ([below](#single-file-compressors)), and an LZ4 image needs `[recommended]`
-  (`lz4`). LZO is decoded in Python, or by liblzo2 when `python-lzo` is installed.
+  (`lz4`). LZO is decoded in Python.
 - **Listing:** from the image's inode and directory tables.
 - **Reading members:** direct. Small files share a fragment block, which is decoded once for
   all of them.

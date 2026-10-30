@@ -9,19 +9,19 @@ from pathlib import Path
 
 import pytest
 
-from archivey.internal.backends.squashfs_lzo import LzoError, decompress_python
+from archivey.internal.backends.squashfs_lzo import LzoError, decompress
 
 # Each written by python-lzo (liblzo2 2.10): ``lzo.compress(data, level, False)``.
 _END = b"\x11\x00\x00"
 
 
 def test_only_the_end_marker_is_empty() -> None:
-    assert decompress_python(_END, 0) == b""
+    assert decompress(_END, 0) == b""
 
 
 def test_a_first_literal_run() -> None:
     # 17 + 6: six literals, then the end marker.
-    assert decompress_python(b"\x17hello\n" + _END, 6) == b"hello\n"
+    assert decompress(b"\x17hello\n" + _END, 6) == b"hello\n"
 
 
 def test_an_overlapping_match_repeats_its_bytes() -> None:
@@ -29,7 +29,7 @@ def test_an_overlapping_match_repeats_its_bytes() -> None:
     # the length - 33, and the distance - 1 shifted left 2.
     stream = b"\x13ab" + bytes([32, 98 - 33]) + ((2 - 1) << 2).to_bytes(2, "little")
     data = b"ab" * 50
-    assert decompress_python(stream + _END, len(data)) == data
+    assert decompress(stream + _END, len(data)) == data
 
 
 @pytest.mark.parametrize(
@@ -45,12 +45,12 @@ def test_an_overlapping_match_repeats_its_bytes() -> None:
 )
 def test_damage_raises(stream: bytes, match: str) -> None:
     with pytest.raises(LzoError, match=match):
-        decompress_python(stream, 1 << 16)
+        decompress(stream, 1 << 16)
 
 
 def test_the_limit_is_kept() -> None:
     with pytest.raises(LzoError, match="more than 5 bytes"):
-        decompress_python(b"\x17hello\n" + _END, 5)
+        decompress(b"\x17hello\n" + _END, 5)
 
 
 def test_matches_liblzo() -> None:
@@ -61,7 +61,7 @@ def test_matches_liblzo() -> None:
         data = bytes(rng.choice(alphabet) for _ in range(rng.randrange(20000)))
         for level in (1, 9):
             stream = lzo.compress(data, level, False)
-            assert decompress_python(stream, len(data)) == data
+            assert decompress(stream, len(data)) == data
 
 
 def _metadata_blocks(name: str) -> list[bytes]:
@@ -99,7 +99,7 @@ def test_damaged_blocks_raise_only_lzo_error() -> None:
                 stream[at:at] = bytes([rng.randrange(256)])
         limit = rng.choice([64, 512, 8192])
         try:
-            decoded = decompress_python(bytes(stream), limit)
+            decoded = decompress(bytes(stream), limit)
         except LzoError:
             continue
         assert len(decoded) <= limit
@@ -115,7 +115,7 @@ def test_an_over_long_match_is_refused_before_it_is_copied() -> None:
     tracemalloc.start()
     try:
         with pytest.raises(LzoError, match="more than 4096 bytes"):
-            decompress_python(stream + _END, 4096)
+            decompress(stream + _END, 4096)
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()

@@ -1,7 +1,8 @@
 """LZO1X decompression, for the blocks of an LZO-compressed SquashFS image.
 
-``python-lzo`` binds liblzo2 and is used when it is installed, but it is GPL and has no
-Linux wheels, so archivey also carries this decoder in Python. It follows
+archivey does not use ``python-lzo`` (liblzo2) here: it is GPL with no Linux wheels, and
+as a native decoder it would sit outside ``FormatPolicy(exclude_libraries=)`` and process
+isolation. This decoder is in Python, so it is memory-safe. It follows
 ``lzo1x_decompress_safe`` in the Linux kernel (``lib/lzo/lzo1x_decompress_safe.c``),
 without the LZO-RLE extension, which SquashFS does not write. A SquashFS block decodes to
 at most its block size (1 MiB), so a decoder in Python is slow but bounded.
@@ -13,40 +14,13 @@ input, write past ``limit`` or copy from before the start of the output raises
 
 from __future__ import annotations
 
-import importlib
-from collections.abc import Callable
-
 
 class LzoError(ValueError):
     """The data is not a valid LZO1X stream, or decodes to more than the limit."""
 
 
-def _python_lzo() -> Callable[[bytes, int], bytes] | None:
-    try:
-        # By name: python-lzo is optional and untyped, so the checkers see ``Any``.
-        lzo = importlib.import_module("lzo")
-    except ImportError:
-        return None
-
-    def decompress(data: bytes, limit: int) -> bytes:
-        try:
-            return lzo.decompress(data, False, limit)
-        except lzo.error as exc:
-            raise LzoError(str(exc)) from None
-
-    return decompress
-
-
 def decompress(data: bytes, limit: int) -> bytes:
     """Decode the LZO1X stream ``data`` (no header) to at most ``limit`` bytes."""
-    native = _python_lzo()
-    if native is not None:
-        return native(data, limit)
-    return decompress_python(data, limit)
-
-
-def decompress_python(data: bytes, limit: int) -> bytes:
-    """Decode ``data`` in Python; :func:`decompress` without ``python-lzo``."""
     out = bytearray()
     end = len(data)
     ip = 0
