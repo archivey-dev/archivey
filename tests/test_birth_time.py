@@ -147,6 +147,23 @@ def test_extraction_over_an_existing_file_sets_the_birth_time(tmp_path: Path) ->
     assert _stat_birth_time(path) == pytest.approx(_BORN.timestamp(), abs=1)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="NTFS tunnelling")
+def test_on_windows_a_rename_onto_a_name_takes_its_old_birth_time(
+    tmp_path: Path,
+) -> None:
+    """Why ``_swap_into_place`` sets the birth time again after the rename: a file
+    renamed onto a name taken in the last 15 seconds gets that file's creation time,
+    not its own. If the runner stops tunnelling this fails, and the second set can go."""
+    old = tmp_path / "a.txt"
+    old.write_bytes(b"old")
+    assert birth_time.set_birth_time(str(old), _MODIFIED)
+    new = tmp_path / "tmp"
+    new.write_bytes(b"new")
+    assert birth_time.set_birth_time(str(new), _BORN)
+    os.replace(new, old)
+    assert _stat_birth_time(old) == pytest.approx(_MODIFIED.timestamp(), abs=1)
+
+
 def test_the_tick_arithmetic_is_exact() -> None:
     """A ``timestamp()`` float times 10**7 is past the integers a float holds."""
     when = datetime(2038, 1, 19, 3, 14, 7, 1, tzinfo=UTC)

@@ -4022,7 +4022,7 @@ class ExtractionCoordinator:
                     emit_progress=self._current.emit_progress,
                 )
             self._apply_metadata(tmp, member)
-            self._swap_into_place(tmp, dest_path, member, fresh=True)
+            self._swap_into_place(tmp, dest_path, member, fresh=True, stamped=True)
         except BaseException:
             # os.replace consumes the temp on success; on any earlier failure remove it so
             # no .archivey-tmp-* file is left behind (the existing destination is untouched).
@@ -4046,7 +4046,7 @@ class ExtractionCoordinator:
         """Land the staged file ``staged`` on ``dest_path`` (``_write_file_atomic``)."""
         self._apply_metadata(staged, member)
         try:
-            self._swap_into_place(staged, dest_path, member)
+            self._swap_into_place(staged, dest_path, member, stamped=True)
         except OSError as exc:
             if exc.errno != errno.EXDEV:
                 raise
@@ -4064,7 +4064,7 @@ class ExtractionCoordinator:
                 os.chmod(
                     long_path(tmp), stat.S_IMODE(os.stat(long_path(staged)).st_mode)
                 )
-            self._swap_into_place(tmp, dest_path, member)
+            self._swap_into_place(tmp, dest_path, member, stamped=True)
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(long_path(tmp))
@@ -4249,7 +4249,7 @@ class ExtractionCoordinator:
         member: ArchiveMember,
         *,
         fresh: bool = False,
-        stamped: bool = True,
+        stamped: bool = False,
     ) -> None:
         """Move the staged temp ``tmp`` onto ``dest`` with ``os.replace``, the last step
         of every atomic write (``_write_file_atomic``, ``_place_link``).
@@ -4264,9 +4264,13 @@ class ExtractionCoordinator:
         no other name can share, so on POSIX the rename always takes the temp name and
         the unlink is skipped.
 
-        ``stamped`` says ``tmp`` carries this member's metadata (``_apply_metadata``).
-        On Windows its birth time is then set again on ``dest`` after the rename, which
-        file-system tunnelling can overwrite with the time of the name's previous file.
+        ``stamped`` says ``tmp`` carries this member's metadata (``_apply_metadata``);
+        a caller that did not stamp ``tmp`` leaves it False, so nothing is written to a
+        file it does not own. On Windows the birth time is then set again on ``dest``
+        after the rename, which file-system tunnelling overwrites with the time of the
+        name's previous file (``test_birth_time`` measures it on the runner). The set on
+        ``tmp`` stays: it is the shared metadata pass, and the time a member keeps when
+        the second set is refused.
 
         Any error from the unlink is ignored: ``os.replace`` has already put the member
         in place, and a temp name left behind is a stray the docs call safe to delete,

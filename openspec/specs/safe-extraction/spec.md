@@ -1752,8 +1752,9 @@ Windows a file's birth time SHALL be set again on its final name after the renam
 lands it, since file-system tunnelling can give that name the creation time of the file
 it replaced. `ArchiveMember.ctime` SHALL NOT be used for either.
 Both SHALL be best effort, under every extraction policy: a member with no stored time
-keeps the time it was written, and a time the system refuses or cannot represent SHALL
-NOT fail the member.
+keeps the time it was written (on Windows, a name whose previous file was removed or
+replaced in the last 15 seconds can instead keep that file's creation time), and a time
+the system refuses or cannot represent SHALL NOT fail the member.
 
 #### Scenario: member time matrix
 
@@ -1762,4 +1763,5 @@ NOT fail the member.
 | A file and a folder with `created` and `modified`, on Windows or macOS | Both times on disk |
 | The same on Linux | The modification time; the birth time is when it was written |
 | A member with `created = None` | No birth time call |
+| On Windows, a file with `created` extracted over an existing file | The member's birth time, not the replaced file's |
 | The system refuses the birth time | The member is extracted; no error |
