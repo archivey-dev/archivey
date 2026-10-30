@@ -13,10 +13,11 @@ from collections import Counter, OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, TypeGuard
+from typing import TYPE_CHECKING, BinaryIO, NoReturn, TypeGuard
 
 from archivey.exceptions import (
     OpenError,
+    ResourceUnavailableError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -607,16 +608,17 @@ def _fd_limit_text() -> str:
     return f"the process file-descriptor limit is {soft}"
 
 
-def _volume_open_error(path: Path, exc: OSError) -> OpenError:
+def _raise_volume_open_error(path: Path, exc: OSError) -> NoReturn:
+    """Raise for a failed ``stat`` or ``open`` of the volume at ``path``: the
+    ``OSError`` itself, as a missing or unreadable first path does, except when the
+    process is out of file descriptors. That is the system running short, not the
+    file, so it is :class:`ResourceUnavailableError`, with ``exc`` as its cause."""
     if exc.errno in (errno.EMFILE, errno.ENFILE):
-        return OpenError(
+        raise ResourceUnavailableError(
             f"Too many open files to open volume; {_fd_limit_text()}",
             archive_name=path.as_posix(),
-        )
-    return OpenError(
-        "Cannot open volume",
-        archive_name=path.as_posix(),
-    )
+        ) from exc
+    raise exc
 
 
 @dataclass
@@ -672,11 +674,12 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
                 try:
                     st = os.stat(source)
                 except OSError as exc:
-                    # A path the caller listed is an open failure. A numbering
-                    # gap among paths that exist is TruncatedError in
+                    # A path the caller listed that is missing or unreadable raises
+                    # its OSError, as the first path does. A numbering gap among
+                    # paths that exist is TruncatedError in
                     # _validate_numbered_volume_completeness — discovery expected a
                     # part that is not in the set.
-                    raise _volume_open_error(source, exc) from exc
+                    _raise_volume_open_error(source, exc)
                 if not stat.S_ISREG(st.st_mode):
                     raise OpenError(
                         "volume is not a regular file",
@@ -767,7 +770,7 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
         try:
             return open(path, "rb")
         except OSError as exc:
-            raise _volume_open_error(path, exc) from exc
+            _raise_volume_open_error(path, exc)
 
     def _recompute_cursor(self) -> None:
         """Set volume index/offset from ``_pos``. Sequential ``read`` advances instead."""
