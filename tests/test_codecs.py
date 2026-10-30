@@ -1329,11 +1329,14 @@ def test_unix_compress_nine_bit_streams_decode_exactly(
     compressed = _lzw_compress(
         data, 9, block_mode=block_mode, clear_every=clear_every, nine_bit_widens=widens
     )
-    for chunk in (1 << 20, 4097, 7, 1):
-        if chunk == 1 and len(compressed) > 50_000:
-            compressed = compressed[:50_000]
-            data = _lzw_decode_in_chunks(compressed, 1 << 20)
+    for chunk in (1 << 20, 4097, 7):
         assert _lzw_decode_in_chunks(compressed, chunk) == data
+    # A byte at a time is slow, so that pass reads the first 20 000 input bytes.
+    short = data[:20_000]
+    short_compressed = _lzw_compress(
+        short, 9, block_mode=block_mode, clear_every=clear_every, nine_bit_widens=widens
+    )
+    assert _lzw_decode_in_chunks(short_compressed, 1) == short
 
 
 @pytest.mark.parametrize(("block_mode", "clear_every"), _NINE_BIT_LAYOUTS)
