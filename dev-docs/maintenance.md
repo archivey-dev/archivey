@@ -20,12 +20,12 @@ those use the AI plan's quota.
 | `review-loop.yml` | each time the `review` label is added | **yes**, one Sonnet session per round, plus one Opus pass once Sonnet approves a standard or deep PR (and an `@cursoragent` request on a deep one): up to 5 rounds an agent can ask for (the Opus pass can be a sixth), 8 if a person keeps adding the label ([Review loop](review-loop.md)) | the review itself failed to post; re-add the label once |
 | `risk-label.yml` | each PR opened, pushed or retargeted (same-repository branches only) | no | the tier script failed; the `risk:` label stays as it was ([Review loop](review-loop.md)) |
 | `claude.yml` | an `@claude` mention by a person on an issue or PR | **yes**, one session per mention | nothing, unless you asked for something |
-| `ci.yml` | each PR push (except documentation-only PRs), each merge-queue group and each push to `main`; its `CI gate` job is the queue's required check; PyPy's core-only suite runs only on pushes to `main` and dispatched runs | no | see [CI is red](#ci-is-red-on-main-or-on-a-pr); it also holds a release until a dispatched run is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
+| `ci.yml` | each PR push (except documentation-only PRs) with a reduced set of jobs, and every job on each merge-queue group, daily on `main` (the README badge) and on a dispatched run; not on pushes to `main`, since the queue already tested each commit there; its `CI gate` job is the queue's required check; in the queue it also calls `atheris-fuzz.yml`'s short fuzz; PyPy's core-only suite runs only on the daily and dispatched runs | no | see [CI is red](#ci-is-red-on-main-or-on-a-pr); it also holds a release until a dispatched run is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
 | `docs-checks.yml` | each PR, each merge-queue group and each push to `main` | no | a docs build or OpenSpec gate broke |
 | `pr-gate.yml` | each PR | no | never red: it reports `CI gate` as passed so any PR can join the merge queue, where the real `CI gate` in `ci.yml` runs |
 | `docs-deploy.yml` | each push to `main` | no | the Pages deploy failed; the site keeps the previous version |
 | `ppmd-native-stress.yml` | weekly (Wednesday 05:29 UTC), on demand, and on PRs that change the PPMd code, its child process, its tests or the dependency pins | no | not a required check; see [Known issues](known-issues.md), pyppmd sections |
-| `atheris-fuzz.yml` | each PR except documentation-only PRs (short), nightly when `main` moved in the last 3 days | no | a fuzz target found an input; see [A fuzz job found a crash](#a-fuzz-job-found-a-crash); it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
+| `atheris-fuzz.yml` | each merge-queue group (short, called from `ci.yml`), nightly when `main` moved in the last 3 days | no | a fuzz target found an input; see [A fuzz job found a crash](#a-fuzz-job-found-a-crash); it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
 | `benchmark-wall.yml` | daily, with a change guard | no | a wall-time ratio moved; see [The benchmark went red](#the-benchmark-went-red) |
 | `accelerator-crash-search.yml` | monthly (the 1st) | no | a new rapidgzip crash signature; it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
 | `accelerator-fuzz-soak.yml` | weekly (Tuesday) | no | accelerated and plain decode disagree; it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
@@ -48,7 +48,8 @@ whoever asks. Then read the diff yourself.
      job once. If it fails again on another PR in the same week, record it in the internal
      tracker and let it wait for a batch. Do not skip or quarantine the test to get green.
    - **A dependency changed** (a new release of a library, a runner image, a Python
-     build). Check whether `main` fails the same way. If it does, see
+     build). Check whether `main` fails the same way: read the latest daily `ci.yml` run on
+     `main`, or dispatch one (`gh workflow run ci.yml --ref main`). If it does, see
      [A dependency broke](#a-dependency-broke-or-stopped-shipping-wheels).
    - **The `3.15` prerelease leg or `3.15t`** (allowed to fail). Read it, but it blocks
      nothing; see [A new CPython](#a-new-cpython-release).

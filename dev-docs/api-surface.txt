@@ -471,6 +471,17 @@ value archivey.OnError.STOP = 'stop'
 value archivey.OnError.CONTINUE = 'continue'
 class archivey.OpenError(ArchiveyError)
 init archivey.OpenError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+class archivey.OptionalLibrary(StrEnum)
+enum archivey.OptionalLibrary
+value archivey.OptionalLibrary.PYPPMD = 'pyppmd'
+value archivey.OptionalLibrary.INFLATE64 = 'inflate64'
+value archivey.OptionalLibrary.BROTLI = 'brotli'
+value archivey.OptionalLibrary.LZ4 = 'lz4'
+value archivey.OptionalLibrary.BACKPORTS_ZSTD = 'backports.zstd'
+value archivey.OptionalLibrary.COMPRESSION_ZSTD = 'compression.zstd'
+value archivey.OptionalLibrary.RAPIDGZIP = 'rapidgzip'
+value archivey.OptionalLibrary.PYCDLIB = 'pycdlib'
+value archivey.OptionalLibrary.CRYPTOGRAPHY = 'cryptography'
 class archivey.OverwritePolicy(Enum)
 enum archivey.OverwritePolicy
 value archivey.OverwritePolicy.ERROR = 'error'
@@ -478,7 +489,8 @@ value archivey.OverwritePolicy.SKIP = 'skip'
 value archivey.OverwritePolicy.REPLACE = 'replace'
 value archivey.OverwritePolicy.RENAME = 'rename'
 class archivey.PackageNotInstalledError(ArchiveyError)
-init archivey.PackageNotInstalledError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+init archivey.PackageNotInstalledError(message: str, *, missing: tuple[MissingComponent, ...] = (), source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+field archivey.PackageNotInstalledError.missing: tuple[MissingComponent, ...]
 alias archivey.PasswordInput = str | bytes | Sequence[str | bytes] | Callable[[PasswordRequest], str | bytes | None] | None
 alias archivey.PasswordProvider = Callable[[PasswordRequest], str | bytes | None]
 class archivey.PasswordRequest()

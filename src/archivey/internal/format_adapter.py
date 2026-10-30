@@ -102,6 +102,7 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.internal.streams.streamtools.binaryio import read_blocking
 from archivey.internal.streams.verify import CustomDigests, hasher_factory
+from archivey.internal.walk_handoff import MemberDataView
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -814,13 +815,20 @@ class _ForwardInput(ReadOnlyIOStream):
 
 class _SpanWindow(ReadOnlyIOStream):
     """A streaming pass's member data: the next bytes of the walk's own stream, good
-    while the walk is at them. A short read is the end; the member wrapper raises
-    ``TruncatedError`` against the listed size."""
+    while the walk is at them. The walk's stream ends early only where the archive
+    does, so a read that ends before the span keeps the full-count rule (ADR 0014),
+    as :class:`MemberDataView` does for a view: a sized read returns the bytes before
+    the cut and the next read raises ``TruncatedError``, and a read with no size
+    raises. For a member the walk sizes the span is its whole data, so no read goes
+    past it and the member needs no size check of its own; a directory that lists a
+    size it does not store is checked above the window (``_span_parts``). ``what``
+    names the archive in the error."""
 
-    def __init__(self, forward: ForwardStream, span: _Span) -> None:
+    def __init__(self, forward: ForwardStream, span: _Span, what: str) -> None:
         super().__init__()
         self._forward = forward
         self._span = span
+        self._what = what
         self._done = 0
 
     def tell(self) -> int:
@@ -837,9 +845,18 @@ class _SpanWindow(ReadOnlyIOStream):
             raise ArchiveyUsageError(
                 "member data is no longer readable: the pass has moved on"
             )
+        whole = n < 0
         left = span.length - self._done
-        data = self._forward.read(left if n < 0 else min(n, left))
+        want = left if whole else min(n, left)
+        if want <= 0:
+            return b""
+        data = self._forward.read(want)
         self._done += len(data)
+        if len(data) < want and (whole or not data):
+            raise TruncatedError(
+                f"{self._what} is truncated inside a member's data at offset "
+                f"{span.offset + self._done}"
+            )
         return data
 
 
@@ -1357,7 +1374,7 @@ class SequentialReaderAdapter(_PluginAdapter):
         assert shared is not None
 
         def reopen(start: int) -> BinaryIO:
-            return shared.view(record.offset + start, record.length - start)
+            return self._span_view(record, start)
 
         # Stored data: _walk_lock, not _handle_guard: the window reads the walk's own
         # stream (not the plugin's, as decoded data above does), which
@@ -1374,7 +1391,8 @@ class SequentialReaderAdapter(_PluginAdapter):
                 and forward.offset == record.offset
             )
             stream = self._walk_handoff_locked(
-                _SpanWindow(forward, record) if in_place else None, reopen
+                _SpanWindow(forward, record, self._archive_what) if in_place else None,
+                reopen,
             )
         return self._span_parts(member, record, stream)
 
@@ -1418,14 +1436,35 @@ class SequentialReaderAdapter(_PluginAdapter):
                     f"the data of {quoted(member.name)} is no longer readable: the "
                     "pass has moved on"
                 )
-            stream = _SpanWindow(forward, record)
+            stream = _SpanWindow(forward, record, self._archive_what)
             assert self._handle_lock is not None
             stream = LockedStream(stream, self._handle_lock)
         else:
             shared = record.layer.shared
             assert shared is not None
+            # ``open()``: a plain view, and the listed size checked above it (a
+            # MemberDataView here measured slower than the size check).
             stream = shared.view(record.offset, record.length)
+            return self._span_parts(member, record, stream, check_size=True)
         return self._span_parts(member, record, stream)
+
+    @functools.cached_property
+    def _archive_what(self) -> str:
+        # Built once: it is read on every member open, and the format never changes.
+        return f"{self._format.display_name} archive"
+
+    def _span_view(self, record: _Span, start: int) -> BinaryIO:
+        """``record``'s data from ``start`` for a pass the walk has left: a view that
+        raises ``TruncatedError`` at a cut (:class:`MemberDataView`), as the window it
+        takes over from does."""
+        shared = record.layer.shared
+        assert shared is not None
+        view = shared.view(record.offset, record.length)
+        if start:
+            view.seek(start)
+        return MemberDataView(
+            view, record.offset, record.length, what=self._archive_what
+        )
 
     def _decoded_in_place(self, decoded: _Decoded) -> bool:
         """Whether the listing walk is at the start of ``decoded``: it is the data of
@@ -1611,15 +1650,32 @@ class SequentialReaderAdapter(_PluginAdapter):
         )
 
     def _span_parts(
-        self, member: ArchiveMember, record: _Span, stream: BinaryIO
+        self,
+        member: ArchiveMember,
+        record: _Span,
+        stream: BinaryIO,
+        *,
+        check_size: bool = False,
     ) -> MemberStreamParts:
-        """``member``'s parts over ``stream``, its data window or view."""
+        """``member``'s parts over ``stream``, its data window or view.
+
+        A pass's window (:class:`_SpanWindow`, or the :class:`MemberDataView` a
+        handoff falls back to) raises ``TruncatedError`` at a cut itself, so with no
+        digest the member gets no verifier to read through, when its listed size is
+        its data length. The walk makes them equal for a file and for a directory
+        that stores data: it refuses a span whose listed size differs and fills an
+        unset size from it (:meth:`_take_span_checked`). A directory that lists a
+        size and stores nothing also gets a stream (``pass_has_data``), and its size
+        is checked above the window, as it is for a plain view (``check_size``,
+        ``open()``), which ends short at a cut."""
         expected = record.expected if record.expected is not None else member.hashes
         return self._member_parts(
             stream,
             member.name,
             size=member.size,
-            expected_size=member.size,
+            expected_size=(
+                member.size if check_size or member.size != record.length else None
+            ),
             expected_hashes=expected or None,
             verify_member=member,
             # A window and a view both stop at the data's end.

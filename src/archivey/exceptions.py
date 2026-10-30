@@ -38,7 +38,7 @@ from archivey.terminal import escape_control_chars
 
 if TYPE_CHECKING:
     from archivey.diagnostics import Diagnostic
-    from archivey.types import ArchiveFormat, MemberType
+    from archivey.types import ArchiveFormat, MemberType, MissingComponent
 
 
 def _restore_exception(
@@ -354,7 +354,42 @@ class PackageNotInstalledError(ArchiveyError):
     Raised both when a whole format needs it (opening an ISO without ``pycdlib``) and
     when one member does (a PPMd member without ``pyppmd``). The message names what to
     install.
+
+    :attr:`missing` holds what is absent as data, so a caller can act on a refusal
+    without parsing its message.
     """
+
+    missing: tuple[MissingComponent, ...]
+    """The packages and programs this raise is about, a
+    :class:`~archivey.MissingComponent` each: the type
+    :attr:`FormatAvailability.missing <archivey.FormatAvailability.missing>` is made of,
+    though a refusal can name a component no availability query reports, such as a
+    program a member read needs or a package a plugin imports for some files only.
+    Usually one. When there are more, each is an alternative the message names,
+    and any one of them lets the read go ahead: a stored, encrypted RAR member reads
+    with a RARLAB program or with ``cryptography``. Empty only when a program was found
+    but could not start, where nothing is missing to name."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        missing: tuple[MissingComponent, ...] = (),
+        source_format: ArchiveFormat | None = None,
+        archive_name: str | None = None,
+        member_name: str | None = None,
+        link_target: str | None = None,
+        format_unconfirmed: bool = False,
+    ) -> None:
+        super().__init__(
+            message,
+            source_format=source_format,
+            archive_name=archive_name,
+            member_name=member_name,
+            link_target=link_target,
+            format_unconfirmed=format_unconfirmed,
+        )
+        self.missing = missing
 
 
 class ArchiveyUsageError(Exception):

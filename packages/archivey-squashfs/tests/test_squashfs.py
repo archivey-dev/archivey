@@ -18,6 +18,8 @@ import archivey
 from archivey import (
     CorruptionError,
     MemberType,
+    OptionalLibrary,
+    PackageNotInstalledError,
     TruncatedError,
     UnsupportedFeatureError,
     detect_format,
@@ -358,3 +360,21 @@ def test_the_package_uses_only_public_archivey() -> None:
 
 def test_the_reader_is_an_indexed_reader() -> None:
     assert issubclass(SquashfsReader, archivey.formats.IndexedReader)
+
+
+def test_lz4_under_pypy_gives_the_reason_not_install_advice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from archivey_squashfs import reader as reader_module
+
+    reason = "archivey-squashfs does not use lz4 under PyPy, for the test"
+    monkeypatch.setattr(reader_module, "_LZ4_UNUSED_REASON", reason)
+    with (
+        pytest.raises(PackageNotInstalledError, match="for the test") as exc_info,
+        open_archive(DATA / "lz4.sqfs") as archive,
+    ):
+        archive.read("a.txt")
+    (component,) = exc_info.value.missing
+    assert component.name is OptionalLibrary.LZ4
+    assert component.reason == reason
+    assert "pip install" not in str(exc_info.value)
