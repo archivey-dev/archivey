@@ -304,7 +304,8 @@ Archivey's test suite replays published vulnerabilities of other archive readers
 apply to it: path traversal, link and hard link escapes, header parsing bugs, decompression bombs,
 structures built to make a reader hang, member names that drive the terminal, and permissions that
 leave extracted files writable by others. They come from GNU tar, libarchive, Info-ZIP, 7-Zip,
-unrar and WinRAR, py7zr, rarfile, Apache Commons Compress, and Python's `tarfile` and `zipfile`.
+unrar and WinRAR, py7zr, rarfile, Apache Commons Compress, the Rust `zip` crate, and Python's
+`tarfile` and `zipfile`.
 Each test builds the archive the advisory describes and checks that archivey refuses it, keeps it
 inside the destination, ends it with a typed error rather than a hang, or reads it as the format
 defines without allocating more than the archive's size pays for. The decompression libraries
@@ -318,6 +319,7 @@ it replays:
 - [`tests/test_cve_regressions_7z_rar.py`](https://github.com/archivey-dev/archivey/blob/main/tests/test_cve_regressions_7z_rar.py)
 - [`tests/test_cve_regressions_libarchive.py`](https://github.com/archivey-dev/archivey/blob/main/tests/test_cve_regressions_libarchive.py)
 - [`tests/test_cve_regressions_codecs.py`](https://github.com/archivey-dev/archivey/blob/main/tests/test_cve_regressions_codecs.py)
+- [`tests/test_cve_regressions_zip2.py`](https://github.com/archivey-dev/archivey/blob/main/tests/test_cve_regressions_zip2.py)
 - [`tests/test_cve_parsing.py`](https://github.com/archivey-dev/archivey/blob/main/tests/test_cve_parsing.py)
 
 ## Reporting a vulnerability
