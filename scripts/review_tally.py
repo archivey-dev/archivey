@@ -100,7 +100,7 @@ DISPOSITIONS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "disproven",
         re.compile(
-            r"\b(disproven|not a bug|kept|keeping|(?:stays|left (?:it |this )?)as is|no change|declined|intentional|by design|won't fix)\b",
+            r"\b(disproven|not a bug|kept|keeping|(?:stays |left (?:it |this )?)as is|no change|declined|intentional|by design|won't fix)\b",
             re.IGNORECASE,
         ),
     ),
@@ -203,8 +203,15 @@ def _findings(body: str) -> list[re.Match[str]]:
 
 
 def _status(heading: re.Match[str], body: str) -> str | None:
-    """The disposition a list line states right after its severity, or ``None``."""
-    if not heading.group(0).lstrip().startswith("-"):
+    """The disposition a list line states right after its severity, or ``None``.
+
+    Only a line whose match ends at the severity: in the emoji-first shape the match
+    ends at the ID, and the next word starts the gist (``**K6** removed the old name``).
+    """
+    if (
+        not heading.group(0).lstrip().startswith("-")
+        or heading.end("sev") != heading.end()
+    ):
         return None
     word = body[heading.end() :].split("\n", 1)[0].strip().split(" ", 1)[0]
     kind = classify(word)
