@@ -1861,6 +1861,18 @@ _AMBIGUOUS = {
         "cut",
         ("nul_in_value", "path"),
     ),
+    "L and GNU.sparse.name": (
+        _long(b"L", b"gnu") + _pax({"GNU.sparse.name": "real"}) + _file(),
+        "real",
+        ("both_families", "path"),
+    ),
+    "g replaced by g": (
+        _pax({"mtime": "100"}, typeflag=b"g")
+        + _pax({"uname": "bob"}, typeflag=b"g")
+        + _file(),
+        "f",
+        ("global_replaced", "mtime"),
+    ),
     "NUL in x uname": (
         _pax_body(_rec(b"uname", b"u\x00v")) + _file(),
         "f",
@@ -1894,6 +1906,60 @@ def test_a_header_shape_no_writer_produces_is_reported(
     assert isinstance(found.context, HeaderAmbiguityContext)
     assert (found.context.ambiguity, found.context.field) == expected
     assert found.context.member_name == name
+
+
+def test_a_long_name_a_global_path_overrides_is_reported() -> None:
+    """The global path names ``m2`` too, over its L header; tarfile lists the L."""
+    data = (
+        _pax({"path": "glob"}, typeflag=b"g")
+        + _file(b"m1")
+        + _long(b"L", b"long-m2")
+        + _file(b"m2")
+        + _END
+    )
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        found = [
+            [
+                (d.context.ambiguity, d.context.field)
+                for d in m.diagnostics
+                if isinstance(d.context, HeaderAmbiguityContext)
+            ]
+            for m in ar.members()
+        ]
+    assert found == [
+        [("global_member_field", "path")],
+        [("both_families", "path")],
+    ]
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        # The PAX path is empty after the NUL cut: the L name stands, as in tarfile.
+        _long(b"L", b"gnu") + _pax_body(_rec(b"path", b"\x00x")) + _file(),
+        # A linkpath on a regular file overrides nothing.
+        _long(b"K", b"gnu") + _pax({"linkpath": "pax"}) + _file(),
+    ],
+    ids=["path cut to empty", "linkpath on a file"],
+)
+def test_a_pax_value_that_overrides_nothing_is_not_both_families(data: bytes) -> None:
+    with open_archive(io.BytesIO(data + _END), format=ArchiveFormat.TAR) as ar:
+        (member,) = ar.members()
+        shapes = [
+            d.context.ambiguity
+            for d in member.diagnostics
+            if isinstance(d.context, HeaderAmbiguityContext)
+        ]
+    assert "both_families" not in shapes
+
+
+def test_a_global_header_keeps_the_first_repeated_sparse_key() -> None:
+    """The sparse map keys are not reported as repeated, but a global header still
+    keeps their first value, as it does every key's."""
+    body = _rec(b"GNU.sparse.offset", b"111") + _rec(b"GNU.sparse.offset", b"222")
+    records = parse_pax_records(body, binary_default=False, first_wins=True)
+    assert records.values[b"GNU.sparse.offset"].value == b"111"
+    assert not records.repeated
 
 
 def test_a_global_shape_is_reported_on_the_next_member_only() -> None:

@@ -1381,8 +1381,8 @@ class TarReader(BaseArchiveReader):
         if ambiguity is Ambiguity.BOTH_FAMILIES:
             gnu = "long name" if key == b"path" else "long link name"
             what = (
-                f"both a GNU {gnu} header and a PAX {field} record; the PAX record "
-                "is used"
+                f"a GNU {gnu} header that a PAX record overrides; the PAX record is "
+                "used"
             )
         elif ambiguity is Ambiguity.REPEATED:
             what = (
@@ -1394,8 +1394,13 @@ class TarReader(BaseArchiveReader):
                 f"a global PAX header setting {field}, which then applies to every "
                 "member after it"
             )
-        else:
+        elif ambiguity is Ambiguity.NUL_IN_VALUE:
             what = f"a PAX {field} record holding a NUL byte; the value ends there"
+        else:
+            what = (
+                f"a global PAX header that drops the {field} an earlier global header "
+                "set; it no longer applies"
+            )
         self._diagnostics_collector.emit(
             code=DiagnosticCode.MEMBER_HEADER_AMBIGUOUS,
             message=(

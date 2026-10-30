@@ -537,8 +537,9 @@ class Ambiguity(Enum):
     reads each as GNU tar 1.35 does; the reader reports it (``MEMBER_HEADER_AMBIGUOUS``).
     """
 
-    # A GNU long name (or link name) and a PAX path (or linkpath) for one member.
-    # GNU tar uses the PAX record, tarfile the one that comes first.
+    # A GNU long name (or link name) read for a member whose name (or link target)
+    # came from a PAX record after all: its own or a global path, its GNU.sparse.name,
+    # or a linkpath. GNU tar uses the PAX record, tarfile the one that comes first.
     BOTH_FAMILIES = "both_families"
     # One field set twice for one member: two L or two K headers, a PAX key twice in
     # one block, or two x headers (field b"x"; GNU tar drops all but the last, tarfile
@@ -549,6 +550,9 @@ class Ambiguity(Enum):
     GLOBAL_MEMBER_FIELD = "global_member_field"
     # A PAX string value holding a NUL byte: GNU tar cuts it there, tarfile does not.
     NUL_IN_VALUE = "nul_in_value"
+    # A global header that drops a key an earlier global header set (one per key):
+    # GNU tar replaces the global records, tarfile and POSIX merge them.
+    GLOBAL_REPLACED = "global_replaced"
 
 
 def _record_ambiguities(
@@ -632,8 +636,11 @@ def parse_pax_records(
                 )
             if not key.startswith(b"GNU.sparse."):
                 continue
-        if key in raw and key not in _SPARSE_MAP_KEYS:
-            repeated[key] = None
+        if key in raw:
+            # The sparse 0.0 map repeats its keys by design: not reported, but the
+            # value kept still follows first_wins like any other key.
+            if key not in _SPARSE_MAP_KEYS:
+                repeated[key] = None
             if first_wins:
                 continue
         raw[key] = value
@@ -1358,6 +1365,11 @@ class TarWalker:
                     is_global = parsed.typeflag == PAX_GLOBAL_TYPE
                     _record_ambiguities(records, ambiguities, is_global=is_global)
                     if is_global:
+                        ambiguities += [
+                            (Ambiguity.GLOBAL_REPLACED, key)
+                            for key in self._global
+                            if key not in records.values and key != b"hdrcharset"
+                        ]
                         self._apply_global(records.values)
                     else:
                         # A later x header replaces an earlier one for the same
@@ -1383,9 +1395,11 @@ class TarWalker:
                 )
             except _RejectedHeader as exc:
                 return self._reject(offset, exc.reason)
-            if long_name is not None and b"path" in own:
+            # Asked of _resolve's answer, so only a long name a PAX record overrode
+            # counts, and a field the typeflag does not use never does.
+            if long_name is not None and entry.name_source is NameSource.PAX:
                 ambiguities.append((Ambiguity.BOTH_FAMILIES, b"path"))
-            if long_link is not None and b"linkpath" in own:
+            if long_link is not None and entry.linkname_source is NameSource.PAX:
                 ambiguities.append((Ambiguity.BOTH_FAMILIES, b"linkpath"))
             if ambiguities:
                 entry.ambiguities = tuple(dict.fromkeys(ambiguities))

@@ -505,7 +505,7 @@ sending side when the ZIP is done.
 - **Headers are read as GNU tar reads them.** Where tools disagree on a member's name, link target
   or size, archivey gives GNU tar's answer. When the headers take a shape no known writer produces
   (a GNU long name and a PAX `path` for one member, a field set twice, a global header setting a
-  name or size, a NUL inside a PAX name), the member is also reported with
+  name or size or dropping an earlier one's values, a NUL inside a PAX name), the member is also reported with
   `MEMBER_HEADER_AMBIGUOUS`, because another tool may list it under another name or size.
   `STRICT` refuses the archive.
 - A tar from macOS `tar` can hold `._name` sidecar files
