@@ -9,8 +9,8 @@ Each member is yielded with what its local header says, and its data is read thr
 the walk as the caller reads it. The fields only the central directory holds (mode,
 host, comment, the types those decide) arrive after the last member, so the members
 already yielded are updated in place then, before the pass ends; until then each has
-``member_state_final`` false. ``openspec/changes/native-zip-reader/design.md``
-§"Streaming: a forward walk over local headers" is the contract.
+``member_state_final`` false.
+``openspec/changes/archive/2026-10-30-native-zip-reader/design.md`` §"Streaming: a forward walk over local headers" is the contract.
 
 A seekable source never comes here: :class:`~archivey.internal.backends.zip_reader.ZipReader`
 reads its directory first.
