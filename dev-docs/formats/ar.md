@@ -19,6 +19,7 @@ format added from outside uses, and is registered as a built-in the way ISO is.
 | Encryption | None |
 | Name encoding | Bytes. UTF-8 first, then `encoding=`, then escaped, as in every format |
 | Refuses | A thin archive (`!<thin>\n`), with `UnsupportedFeatureError` |
+| Spec | `openspec/specs/format-ar/spec.md` |
 
 ## 1. Layout
 

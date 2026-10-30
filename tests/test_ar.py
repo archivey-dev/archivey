@@ -383,6 +383,8 @@ def test_damaged_headers(tmp_path: Path) -> None:
         opened(_ar((b"//", b"a/\n"), (b"//", b"b/\n")))
     with pytest.raises(CorruptionError, match="a name of 99 bytes"):
         opened(_ar((b"#1/99", b"short")))
+    with pytest.raises(CorruptionError, match="a name of 65537 bytes"):
+        opened(_ar((b"#1/65537", b"x" * 70_000)))
     with pytest.raises(CorruptionError, match="the name length is blank"):
         opened(_ar((b"#1/", b"short")))
     with pytest.raises(CorruptionError, match="mode field"):
