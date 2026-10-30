@@ -37,14 +37,18 @@ The two dialects store a name longer than 15 bytes in different places:
 - **BSD** (and macOS): a short name is stored as it is. A member named `#1/20` has a
   20-byte name at the start of its data area, which the header's size counts.
 
-`ArchiveInfo.format_version` is `"gnu"` or `"bsd"`, from the first name or symbol table
-spelled in one dialect's own way, and `None` for an archive with no members.
+`ArchiveInfo.extra["ar.dialect"]` is `"gnu"` or `"bsd"`, from the first name or symbol
+table spelled in one dialect's own way, and absent for an archive with no members.
+`ArchiveInfo.format_version` is `None`, as for TAR, whose dialects are not versions either.
 
 ## 2. What archivey does with the oddities
 
 - **Symbol tables** (`/`, `/SYM64/`, `__.SYMDEF` and its `SORTED` and `_64` forms) are the
   linker's index, not files. The walk skips them, and
-  `ArchiveInfo.extra["ar.symbol_table"]` says whether one was there.
+  `ArchiveInfo.extra["ar.symbol_table"]` says whether one was there. Like `ar.dialect`, it
+  says what the walk has seen so far: in a streaming pass over an archive with the table
+  after a file, it turns true when the walk reaches the table. GNU ar and llvm-ar write
+  it first.
 - **macOS padding.** macOS ar pads each member with `\n` so the next header starts on 8
   bytes, and counts that padding in the member's size. The padding is then part of the
   member, as llvm-ar and bsdtar extract it.

@@ -1022,9 +1022,11 @@ misread the archive.
 - **From a pipe:** yes, with `streaming=True`.
 - Both dialects read. GNU (System V, also Windows `.lib`) keeps long names in a `//` member;
   BSD and macOS keep a long name at the start of the member's data (`#1/N`).
-  `ArchiveInfo.format_version` is `"gnu"` or `"bsd"`, and `None` for an archive with no members.
+  `ArchiveInfo.extra["ar.dialect"]` is `"gnu"` or `"bsd"`, and absent for an archive with no
+  members. `ArchiveInfo.format_version` is `None`: ar has no versions.
 - The symbol table (`/`, `/SYM64/`, `__.SYMDEF`) is the linker's index, not a file. It is not
-  listed, and `ArchiveInfo.extra["ar.symbol_table"]` says whether there was one.
+  listed, and `ArchiveInfo.extra["ar.symbol_table"]` says whether there was one. During a
+  streaming pass both keys say what the walk has seen so far, and are final once it ends.
 - macOS ar pads each member with newlines so the next header starts on 8 bytes, and counts the
   padding in the member's size. The padding is then part of the member, as llvm-ar and bsdtar
   extract it.
