@@ -1071,6 +1071,7 @@ def _lzw_compress(
     block_mode: bool = False,
     clear_every: int = 0,
     table_limit: int | None = None,
+    nine_bit_widens: bool = False,
 ) -> bytes:
     """An LZW encoder for ``compress`` streams, without block mode by default.
 
@@ -1094,6 +1095,12 @@ def _lzw_compress(
     ``table_limit`` is the last free code the table may take, ``2 ** max_bits - 1`` by
     default. ncompress 5.0's ``-b9`` bug is ``table_limit=512``: a code that does not
     fit in 9 bits, written anyway.
+
+    ``nine_bit_widens`` writes a 9-bit stream the way compress 4.0 (1985) does: once the
+    table is full, the code after the one written with the table full starts a padded
+    10-bit era, though no value reaches 512. Its output matched a build of compress 4.0
+    (ncompress repository commit ``6235344``) byte for byte at ``-b9`` on inputs short
+    enough that compress 4.0 writes no CLEAR.
     """
     out = bytearray(b"\x1f\x9d" + bytes([max_bits | (0x80 if block_mode else 0)]))
     width, in_group, bits, nbits = 9, 0, 0, 0
@@ -1102,6 +1109,7 @@ def _lzw_compress(
     last_free = (1 << max_bits) - 1 if table_limit is None else table_limit
     table = {bytes([i]): i for i in range(256)}
     codes = 0
+    codes_with_full_table = 0
 
     def put(code: int) -> None:
         nonlocal bits, nbits, in_group
@@ -1114,8 +1122,12 @@ def _lzw_compress(
             nbits -= 8
 
     def emit(code: int) -> None:
-        nonlocal width, codes
-        if free_code > 1 << width and width < max_bits:
+        nonlocal width, codes, codes_with_full_table
+        widen = free_code > 1 << width and width < max_bits
+        if nine_bit_widens and width == max_bits == 9 and free_code > last_free:
+            codes_with_full_table += 1
+            widen = codes_with_full_table == 2
+        if widen:
             while in_group:
                 put(0)
             width += 1
@@ -1139,6 +1151,7 @@ def _lzw_compress(
                 put(0)
             width = 9
             free_code = first_free
+            codes_with_full_table = 0
             table = {bytes([i]): i for i in range(256)}
     if prefix:
         emit(table[prefix])
@@ -1213,10 +1226,9 @@ def _seven_zip_decompress(
 
 # 7-Zip 26.05 added a 9-bit path "compatible with the original Z decoder": once a 9-bit
 # table fills, it skips the code-group padding and reads codes 10 bits wide (values stay
-# below 512). Upstream says 26.04 and earlier misread some old 9-bit files. archivey
-# keeps 9-bit codes, as ncompress since commit 3303f31 writes and reads them and as unar
-# and 7-Zip up to 26.04 read them, so only those 7-Zip versions can check archivey's
-# 9-bit output (``unix-compress.md`` §3 and §7).
+# below 512), as compress 4.0 writes them. 7-Zip up to 26.04 keeps 9-bit codes, the
+# layout ncompress 4.2 to 5.0 writes. archivey reads both (``unix-compress.md`` §3), so
+# each 7-Zip checks the layout it reads.
 _SEVEN_ZIP_WIDENS_NINE_BITS = (26, 5)
 
 
@@ -1303,19 +1315,58 @@ def test_sevenzip_version_probe_that_does_not_finish_is_reported(
 _NINE_BIT_LAYOUTS = [(False, 0), (True, 0), (True, 300)]
 
 
+@pytest.mark.parametrize("widens", [True, False], ids=["compress-4.0", "ncompress"])
 @pytest.mark.parametrize(("block_mode", "clear_every"), _NINE_BIT_LAYOUTS)
 @pytest.mark.parametrize("payload", sorted(_NON_BLOCK_PAYLOADS))
 def test_unix_compress_nine_bit_streams_decode_exactly(
+    payload: str, block_mode: bool, clear_every: int, widens: bool
+) -> None:
+    """At 9 bits the table fills. compress 4.0 then writes 10-bit codes, ncompress keeps
+    9-bit ones; after a CLEAR the table restarts at 9 bits. Both layouts decode to their
+    input whatever the feed size, down to one byte, which feeds the layout probe a
+    byte at a time. See ``dev-docs/formats/unix-compress.md`` §3."""
+    data = _NON_BLOCK_PAYLOADS[payload]
+    compressed = _lzw_compress(
+        data, 9, block_mode=block_mode, clear_every=clear_every, nine_bit_widens=widens
+    )
+    for chunk in (1 << 20, 4097, 7, 1):
+        if chunk == 1 and len(compressed) > 50_000:
+            compressed = compressed[:50_000]
+            data = _lzw_decode_in_chunks(compressed, 1 << 20)
+        assert _lzw_decode_in_chunks(compressed, chunk) == data
+
+
+@pytest.mark.parametrize(("block_mode", "clear_every"), _NINE_BIT_LAYOUTS)
+@pytest.mark.parametrize("payload", sorted(_NON_BLOCK_PAYLOADS))
+def test_unix_compress_nine_bit_compress_4_0_layout_matches_gzip(
     payload: str, block_mode: bool, clear_every: int
 ) -> None:
-    """At 9 bits the table fills and codes stay 9 bits wide; after a CLEAR the table
-    restarts at 9 bits. GNU gzip is no reference here: it moves to 10-bit codes when
-    the table fills even at 9 bits, and refuses these streams, as 7-Zip 26.05 does.
-    See ``dev-docs/formats/unix-compress.md`` §3."""
+    """GNU gzip reads compress 4.0's 9-bit layout, as archivey does."""
     data = _NON_BLOCK_PAYLOADS[payload]
-    compressed = _lzw_compress(data, 9, block_mode=block_mode, clear_every=clear_every)
-    for chunk in (1 << 20, 4097, 7):
-        assert _lzw_decode_in_chunks(compressed, chunk) == data
+    compressed = _lzw_compress(
+        data, 9, block_mode=block_mode, clear_every=clear_every, nine_bit_widens=True
+    )
+    reference = _gnu_gzip_decompress(compressed)
+    if reference is None:
+        pytest.skip("needs GNU gzip as the .Z reference")
+    assert reference == data
+
+
+@pytest.mark.skipif(
+    _seven_zip_widening_nine_bits() is None, reason="needs 7-Zip 26.05 or later"
+)
+@pytest.mark.parametrize(("block_mode", "clear_every"), _NINE_BIT_LAYOUTS)
+def test_unix_compress_nine_bit_compress_4_0_layout_matches_7zip_26_05(
+    block_mode: bool, clear_every: int, tmp_path: Path
+) -> None:
+    """7-Zip 26.05 reads compress 4.0's 9-bit layout, as archivey does."""
+    program = _seven_zip_widening_nine_bits()
+    assert program is not None
+    data = _NON_BLOCK_PAYLOADS["random"]
+    compressed = _lzw_compress(
+        data, 9, block_mode=block_mode, clear_every=clear_every, nine_bit_widens=True
+    )
+    assert _seven_zip_decompress(compressed, tmp_path, program) == data
 
 
 @requires_binary("7z")
@@ -1325,10 +1376,67 @@ def test_unix_compress_nine_bit_streams_decode_exactly(
 def test_unix_compress_nine_bit_streams_match_7zip_up_to_26_04(
     payload: str, block_mode: bool, clear_every: int, tmp_path: Path
 ) -> None:
-    """``7z`` up to 26.04 reads the 9-bit streams to their input, as archivey does."""
+    """``7z`` up to 26.04 reads ncompress's 9-bit layout, as archivey does."""
     data = _NON_BLOCK_PAYLOADS[payload]
     compressed = _lzw_compress(data, 9, block_mode=block_mode, clear_every=clear_every)
     assert _seven_zip_decompress(compressed, tmp_path) == data
+
+
+def _nine_bit_fill_offset(block_mode: bool) -> int:
+    """Where the first 9-bit era ends: the header, then 256 codes (257 without block
+    mode, padded to 264) of 9 bits."""
+    codes = 256 if block_mode else 264
+    return 3 + codes * 9 // 8
+
+
+@pytest.mark.parametrize("block_mode", [True, False])
+def test_unix_compress_nine_bit_short_tail_after_the_fill(block_mode: bool) -> None:
+    """A source that ends inside the layout probe is decided on what it has, and the
+    original layout wins a tie. So compress 4.0's layout reads back from every end
+    point near the fill. ncompress's reads back once a probe's worth of codes follows
+    the fill; with only a few codes after it, it can be read as the 10-bit layout."""
+    data = random.Random(1).randbytes(400)  # one code per byte until the table fills
+    probe_codes = 32
+    for end in range(250, len(data)):
+        prefix = data[:end]
+        for widens in (True, False):
+            encoded = _lzw_compress(
+                prefix, 9, block_mode=block_mode, nine_bit_widens=widens
+            )
+            if not widens and end < 257 + 3 + probe_codes:
+                continue
+            for chunk in (1 << 20, 1):
+                assert _lzw_decode_in_chunks(encoded, chunk) == prefix, (end, widens)
+
+
+def test_unix_compress_nine_bit_ten_bit_era_refuses_code_512() -> None:
+    """In compress 4.0's 10-bit era the table stays at 511 entries, so code 512 has no
+    entry to stand for and is corrupt."""
+    data = _NON_BLOCK_PAYLOADS["random"][:2000]
+    compressed = bytearray(
+        _lzw_compress(data, 9, block_mode=True, nine_bit_widens=True)
+    )
+    fill = _nine_bit_fill_offset(True)
+    # The probe must still see the 10-bit layout, so the bad code goes after it.
+    at = fill + 50
+    value = int.from_bytes(compressed[at : at + 10], "little")
+    value = (value & ~((1 << 10) - 1)) | 512
+    compressed[at : at + 10] = value.to_bytes(10, "little")
+    with pytest.raises(CorruptionError, match="invalid code 512"):
+        _lzw_decode_in_chunks(bytes(compressed), 1 << 20)
+
+
+def test_unix_compress_nine_bit_layout_survives_a_seek_back() -> None:
+    """A decoder recreated at a CLEAR point keeps the layout the stream was read with."""
+    data = _NON_BLOCK_PAYLOADS["text"][:60_000]
+    compressed = _lzw_compress(
+        data, 9, block_mode=True, clear_every=2000, nine_bit_widens=True
+    )
+    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(compressed)) as stream:
+        assert stream.read() == data
+        for offset in (len(data) - 1000, 40_000, 5, 0):
+            stream.seek(offset)
+            assert stream.read(500) == data[offset : offset + 500]
 
 
 @pytest.mark.skipif(
