@@ -21,8 +21,9 @@ optional ``until`` timestamp ends the window too, to check a past round after th
 set it to that round's closing comment and the later rounds are left out.
 
 `scripts/review_loop_close.sh` passes the misses to the gate, which lists them in the
-closing comment, and the round marker carries their count for `scripts/review_tally.py`. A miss is a reviewer defect to fix
-in the skill or the prompt; it never changes the verdict.
+closing comment, and the round marker carries their count for `scripts/review_tally.py`.
+A miss is a reviewer defect to fix in the skill or the prompt; it never changes the
+verdict.
 """
 
 from __future__ import annotations
