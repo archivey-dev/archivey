@@ -434,7 +434,19 @@ class StreamCodec:
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
         """Decode ``source``. Default: through :meth:`decompressor`, one stream at a
-        time (:class:`FramedDecoder`)."""
+        time (:meth:`open_framed`)."""
+        return self.open_framed(source, params, config)
+
+    def open_framed(
+        self, source: CodecSource, params: CodecParams, config: StreamConfig
+    ) -> BinaryIO:
+        """Decode ``source`` through :meth:`decompressor` (:class:`FramedDecoder`),
+        after checking that the codec's library is installed and not excluded.
+
+        A codec whose plain decode is this one and whose :meth:`open` tries another
+        engine first (bzip2's accelerator) opens its fallback here too, so both agree
+        on the stream rule (DR-5). They agree on where the data ends only when the
+        caller hands both engines the same extent of ``source``."""
         excluded = config.excluded_libraries
         if not self.available(excluded):
             raise self._missing(
