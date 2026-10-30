@@ -486,6 +486,9 @@ def _sparse_slots(block: bytes, start: int, count: int) -> tuple[tuple[int, int]
 
 
 _PAX_LENGTH = re.compile(rb"([0-9]{1,20}) ")
+# The keywords an empty value sets to empty, as GNU tar 1.35's decoders store any
+# string. Another keyword's empty value leaves the value in force before it.
+_EMPTY_VALUE_KEPT = frozenset((b"linkpath", b"uname", b"gname"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -511,7 +514,9 @@ class PaxRecords:
     sparse_numbytes: list[bytes]
 
 
-def parse_pax_records(data: bytes, *, binary_default: bool) -> PaxRecords:
+def parse_pax_records(
+    data: bytes, *, binary_default: bool, first_wins: bool = False
+) -> PaxRecords:
     """Parse ``"<length> <key>=<value>\\n"`` records.
 
     ``length`` is decimal and counts the whole record, itself and the newline
@@ -521,7 +526,15 @@ def parse_pax_records(data: bytes, *, binary_default: bool) -> PaxRecords:
     Raises :class:`CorruptionError` on a record that does not parse.
 
     A repeated key keeps one value, so a block of many records of one key holds no
-    object per record.
+    object per record: the last one, as GNU tar 1.35 applies a member's records in
+    order, or the first with ``first_wins``, as it applies a global header's (it
+    keeps them in a list it prepends to). An empty value is read as GNU tar reads it:
+    ``linkpath``, ``uname`` and ``gname`` become empty, a ``GNU.sparse.*`` record is
+    kept for the sparse checks to judge, an empty ``size`` is
+    :class:`CorruptionError` (GNU tar reports it as "invalid size=", and the size
+    frames the member), and any other keyword is left out, so the value in force
+    before it stays (GNU tar skips an empty ``path`` and reports an empty number as
+    invalid).
     """
     raw: dict[bytes, bytes] = {}
     offsets: list[bytes] = []
@@ -554,8 +567,18 @@ def parse_pax_records(data: bytes, *, binary_default: bool) -> PaxRecords:
             offsets.append(value)
         elif key == b"GNU.sparse.numbytes":
             numbytes.append(value)
-        raw[key] = value
         pos = record_end
+        if not value and key not in _EMPTY_VALUE_KEPT:
+            if key == b"size":
+                raise CorruptionError(
+                    f"TAR PAX header has an empty size record at byte "
+                    f"{pos - length}: the size frames the member's data"
+                )
+            if not key.startswith(b"GNU.sparse."):
+                continue
+        if first_wins and key in raw:
+            continue
+        raw[key] = value
     # Each value is replaced in place, so the dict is never held twice.
     values = cast("dict[bytes, PaxValue]", raw)
     for key, value in raw.items():
@@ -616,6 +639,14 @@ def _pax_int(records: Mapping[bytes, PaxValue], key: bytes, name: str) -> int | 
             "file's size"
         )
     return value
+
+
+def _c_string(value: PaxValue | None) -> PaxValue | None:
+    """A PAX name, link target or owner name as GNU tar 1.35 reads it: a C string,
+    so cut at its first NUL, as an ``L`` or ``K`` payload and a header field are."""
+    if value is None or 0 not in value.value:
+        return value
+    return PaxValue(_cut_nul(value.value), value.binary)
 
 
 def _sparse_major_1_or_more(major: PaxValue | None) -> bool:
@@ -1253,7 +1284,9 @@ class TarWalker:
                 else:
                     try:
                         records = parse_pax_records(
-                            data, binary_default=self._global_binary
+                            data,
+                            binary_default=self._global_binary,
+                            first_wins=parsed.typeflag == PAX_GLOBAL_TYPE,
                         )
                     except CorruptionError as exc:
                         # Records that do not parse make a header that does not parse,
@@ -1370,14 +1403,19 @@ class TarWalker:
         return self.end
 
     def _apply_global(self, records: dict[bytes, PaxValue]) -> None:
-        for key, value in records.items():
-            if key == b"hdrcharset":
-                self._global_binary = value.value == b"BINARY"
-            if value.value:
-                self._global[key] = value
-            else:
-                # POSIX: an empty value in a global header removes the keyword.
-                self._global.pop(key, None)
+        """Make a global header's records the ones in force.
+
+        They replace the records of any earlier global header, as GNU tar 1.35 reads
+        them (``xheader_decode_global`` empties its list first). POSIX and ``tarfile``
+        merge them instead, and so did this walker; the two readings frame a member
+        differently when an earlier global header set ``size`` and a later one does
+        not, which would hide a member from one tool or the other (DR-6). Only
+        ``hdrcharset`` carries over: it says how to decode names, not what they are.
+        """
+        hdrcharset = records.get(b"hdrcharset")
+        if hdrcharset is not None:
+            self._global_binary = hdrcharset.value == b"BINARY"
+        self._global = dict(records)
         self._global_view = _ReadOnly(self._global)
 
     def _resolve(
@@ -1398,7 +1436,8 @@ class TarWalker:
 
         def pax(key: bytes) -> PaxValue | None:
             value = merged.get(key)
-            # An empty value in a member's own header cancels the keyword for it.
+            # Only a GNU.sparse.* record, or a keyword an empty value clears, can
+            # be empty here (parse_pax_records); for those this means "not set".
             return value if value is not None and value.value else None
 
         name, name_source, name_binary = header.name, NameSource.HEADER, False
@@ -1409,9 +1448,11 @@ class TarWalker:
         # GNUSparseFile.N placeholder), so it wins over path.
         # Most archives have no PAX records at all; each lookup is skipped for them.
         has_pax = bool(merged)
+        # A name is a C string to GNU tar, cut at its first NUL as an L payload is,
+        # and one that is empty after the cut is skipped like an empty value.
         for key in (b"path", b"GNU.sparse.name") if has_pax else ():
-            value = pax(key)
-            if value is not None:
+            value = _c_string(pax(key))
+            if value is not None and value.value:
                 name, name_source, name_binary = (
                     value.value,
                     NameSource.PAX,
@@ -1427,7 +1468,8 @@ class TarWalker:
             linkname, linkname_source = header.linkname, NameSource.HEADER
             if long_link is not None:
                 linkname, linkname_source = long_link, NameSource.GNU_LONG
-            value = pax(b"linkpath") if has_pax else None
+            # An empty linkpath clears the target, as GNU tar 1.35 reads it.
+            value = _c_string(merged.get(b"linkpath")) if has_pax else None
             if value is not None:
                 linkname, linkname_source, linkname_binary = (
                     value.value,
@@ -1574,9 +1616,9 @@ class TarWalker:
             linkname_source=linkname_source,
             linkname_binary=linkname_binary,
             uname=header.uname,
-            uname_pax=pax(b"uname") if has_pax else None,
+            uname_pax=_c_string(merged.get(b"uname")) if has_pax else None,
             gname=header.gname,
-            gname_pax=pax(b"gname") if has_pax else None,
+            gname_pax=_c_string(merged.get(b"gname")) if has_pax else None,
             uid=uid,
             gid=gid,
             pax=merged,

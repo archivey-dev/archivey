@@ -51,6 +51,7 @@ from tests.tar_build import (
     field as _field,
     octal as _octal,
     pax as _pax,
+    pax_body as _pax_body,
     pax_record as _rec,
 )
 
@@ -663,7 +664,9 @@ def test_pax_path_wins_over_a_gnu_long_name_in_either_order(pax_first: bool) -> 
     assert entry.name == b"pax-n"
 
 
-def test_empty_pax_value_cancels_a_global() -> None:
+def test_empty_pax_uname_clears_a_global() -> None:
+    """GNU tar 1.35 stores an empty ``uname`` as it is: the member has no user name,
+    neither the global one nor the header's."""
     data = (
         _pax({"uname": "global"}, typeflag=b"g")
         + _block(b"a")
@@ -673,7 +676,7 @@ def test_empty_pax_value_cancels_a_global() -> None:
     )
     a, b = _walk(data)[0]
     assert a.uname_pax is not None and a.uname_pax.value == b"global"
-    assert b.uname_pax is None
+    assert b.uname_pax is not None and b.uname_pax.value == b""
 
 
 def test_global_records_are_shared_until_a_global_header_changes_them() -> None:
@@ -703,6 +706,205 @@ def test_global_empty_value_deletes_the_key() -> None:
     )
     (entry,), _ = _walk(data)
     assert b"comment" not in entry.pax
+
+
+# How PAX records combine follows GNU tar 1.35, measured 2026-10-30 against crafted
+# archives; tarfile and POSIX read several of these shapes differently, and each
+# difference frames or names a member differently from GNU tar.
+
+
+def _member(name: bytes, payload: bytes, **kwargs) -> bytes:
+    return _block(name, size=len(payload), **kwargs) + _data(payload)
+
+
+def test_a_global_header_replaces_the_earlier_global_records() -> None:
+    """``[g size=1024][g mtime=5][hdr size 0][hidden][after]``: GNU tar lists
+    ``hdr`` empty, then ``hidden``; merging the global headers (POSIX, tarfile) would
+    read ``hidden`` as 1024 bytes of ``hdr``."""
+    data = (
+        _pax({"size": "1024"}, typeflag=b"g")
+        + _pax({"mtime": "5"}, typeflag=b"g")
+        + _block(b"hdr")
+        + _member(b"hidden", b"S")
+        + _member(b"after", b"Z")
+        + _END
+    )
+    entries, end = _walk(data)
+    assert [(e.name, e.stored_size) for e in entries] == [
+        (b"hdr", 0),
+        (b"hidden", 1),
+        (b"after", 1),
+    ]
+    assert end.kind is TarEndKind.ZERO_BLOCK
+    assert b"size" not in entries[0].pax
+
+
+def test_a_global_hdrcharset_outlives_a_later_global_header() -> None:
+    data = (
+        _pax({"hdrcharset": "BINARY"}, typeflag=b"g")
+        + _pax({"comment": "c"}, typeflag=b"g")
+        + _pax({"path": "p"})
+        + _block(b"a")
+        + _END
+    )
+    (entry,), _ = _walk(data)
+    assert entry.name_binary
+
+
+@pytest.mark.parametrize(
+    ("typeflag", "expected"), [(b"x", b"second"), (b"g", b"first")]
+)
+def test_a_repeated_key_keeps_the_value_gnu_tar_applies(
+    typeflag: bytes, expected: bytes
+) -> None:
+    """GNU tar applies a member's records in order and a global header's in reverse
+    (it prepends them to a list), so the last wins in ``x`` and the first in ``g``."""
+    data = (
+        _pax([("path", "first"), ("path", "second")], typeflag=typeflag)
+        + _block(b"hdr")
+        + _END
+    )
+    (entry,), _ = _walk(data)
+    assert entry.name == expected
+
+
+def test_a_global_header_frames_by_its_first_size() -> None:
+    data = (
+        _pax([("size", "512"), ("size", "0")], typeflag=b"g")
+        + _block(b"hdr")
+        + _member(b"inner", b"I")[:BLOCKSIZE]
+        + _END
+    )
+    (entry,), end = _walk(data)
+    assert (entry.name, entry.stored_size) == (b"hdr", 512)
+    assert end.kind is TarEndKind.ZERO_BLOCK
+
+
+@pytest.mark.parametrize("typeflag", [b"x", b"g"])
+def test_an_empty_size_record_is_damage(typeflag: bytes) -> None:
+    """GNU tar reports ``size=`` as malformed ("invalid size=") and frames the member
+    by the size in force before it; POSIX would delete the header's size too. The
+    size frames the next header, so archivey refuses it, as it refuses ``size=abc``."""
+    data = (
+        _pax({"size": "1024"}, typeflag=b"g")
+        + _pax({"size": ""}, typeflag=typeflag)
+        + _block(b"hdr")
+        + _END
+    )
+    entries, end = _walk(data)
+    assert entries == []
+    assert (end.kind, end.offset) == (TarEndKind.REJECTED, 2 * BLOCKSIZE)
+    assert "empty size record" in end.reason
+
+
+@pytest.mark.parametrize("key", ["path", "mtime", "uid", "gid"])
+def test_an_empty_member_value_keeps_the_global_one(key: str) -> None:
+    """GNU tar skips an empty ``path`` and reports an empty number as invalid: the
+    global record stays in force. POSIX would fall back to the header field."""
+    data = _pax({key: "7"}, typeflag=b"g") + _pax({key: ""}) + _block(b"hdr") + _END
+    (entry,), _ = _walk(data)
+    assert entry.pax[key.encode()].value == b"7"
+    if key == "path":
+        assert entry.name == b"7"
+
+
+def test_an_empty_member_path_keeps_the_header_name() -> None:
+    (entry,), _ = _walk(_pax({"path": ""}) + _block(b"hdr") + _END)
+    assert (entry.name, entry.name_source) == (b"hdr", NameSource.HEADER)
+
+
+def test_an_empty_path_does_not_undo_an_earlier_one_in_the_same_header() -> None:
+    data = _pax([("path", "a"), ("path", "")]) + _block(b"hdr") + _END
+    (entry,), _ = _walk(data)
+    assert entry.name == b"a"
+
+
+def test_an_empty_linkpath_clears_the_target() -> None:
+    """GNU tar 1.35 lists ``lnk ->`` and creates nothing, over the global record,
+    the GNU long link and the header's link name alike."""
+    long_link = _block(b"././@LongLink", size=4, typeflag=b"K") + _data(b"tgt\x00")
+    data = (
+        _pax({"linkpath": "global"}, typeflag=b"g")
+        + long_link
+        + _pax({"linkpath": ""})
+        + _block(b"lnk", typeflag=b"2", linkname=b"header")
+        + _END
+    )
+    (entry,), _ = _walk(data)
+    assert (entry.linkname, entry.linkname_source) == (b"", NameSource.PAX)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(b"a\x00b", b"a"), (b"\x00abc", b"hdr")],
+)
+def test_a_pax_path_ends_at_its_first_nul(value: bytes, expected: bytes) -> None:
+    """GNU tar reads the value as a C string, as it reads an ``L`` payload; a value
+    that is empty after the cut is skipped like an empty one."""
+    data = _pax_body(_rec(b"path", value)) + _block(b"hdr") + _END
+    (entry,), _ = _walk(data)
+    assert entry.name == expected
+
+
+def test_pax_link_and_owner_names_end_at_their_first_nul() -> None:
+    records = (
+        _rec(b"linkpath", b"t\x00evil")
+        + _rec(b"uname", b"u\x00x")
+        + _rec(b"gname", b"g\x00x")
+    )
+    data = _pax_body(records) + _block(b"lnk", typeflag=b"2", linkname=b"h") + _END
+    (entry,), _ = _walk(data)
+    assert entry.linkname == b"t"
+    assert entry.uname_pax is not None and entry.uname_pax.value == b"u"
+    assert entry.gname_pax is not None and entry.gname_pax.value == b"g"
+
+
+# Shapes from the parser-differential classes Astral's tar-codec write-up names
+# (2026-10), where the walker already reads as GNU tar 1.35 does.
+
+
+@pytest.mark.parametrize(("typeflag", "field"), [(b"L", "name"), (b"K", "linkname")])
+def test_a_repeated_gnu_long_header_keeps_the_last(typeflag: bytes, field: str) -> None:
+    """GNU tar lists the second; tarfile lists the first."""
+
+    def long(text: bytes) -> bytes:
+        return _block(b"././@LongLink", size=len(text) + 1, typeflag=typeflag) + _data(
+            text + b"\x00"
+        )
+
+    data = (
+        long(b"first")
+        + long(b"second")
+        + _block(b"hdr", typeflag=b"2", linkname=b"tgt")
+        + _END
+    )
+    (entry,), _ = _walk(data)
+    assert getattr(entry, field) == b"second"
+
+
+def test_a_pax_value_may_hold_a_newline() -> None:
+    """The length prefix frames a record, not the newline: splitting on newlines
+    would read ``b`` as a record and fail, or worse."""
+    (entry,), _ = _walk(_pax({"path": "a\nb"}) + _block(b"hdr") + _END)
+    assert entry.name == b"a\nb"
+
+
+@pytest.mark.parametrize("value", [" 3", "3 ", "+3", "1_0", "\u0663", "0x3", "-3"])
+def test_a_pax_size_python_would_parse_is_not_a_number(value: str) -> None:
+    """Python's ``int()`` accepts blanks, a sign, underscores and non-ASCII digits;
+    GNU tar reports each of these as an invalid size, and archivey refuses them."""
+    data = _pax({"size": value}) + _block(b"hdr") + _data(b"abc") + _END
+    with pytest.raises(CorruptionError, match="not a number"):
+        _walk(data)
+
+
+def test_a_32_byte_owner_name_with_no_nul_is_read_whole() -> None:
+    def owners(h: bytearray) -> None:
+        h[265:297] = b"u" * 32
+        h[297:329] = b"g" * 32
+
+    (entry,), _ = _walk(_block(b"hdr", patch=owners) + _END)
+    assert (entry.uname, entry.gname) == (b"u" * 32, b"g" * 32)
 
 
 def test_global_hdrcharset_binary_applies_to_later_members() -> None:

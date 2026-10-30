@@ -341,6 +341,22 @@ tried before the codec for ASCII too, so an ASCII name never reaches it: `cp037`
 UTF-8 (`utf-16` on an odd byte count, `utf-7` on a bad `+` shift, `idna`) gives way to
 the UTF-8 escape decode, as in ZIP, RAR and ISO, and nothing is reported. `extra["tar.pax_headers"]` decodes each value by the same rule.
 
+PAX records combine as GNU tar 1.35 combines them, which is not quite what POSIX says or
+what `tarfile` does; each difference below would frame or name a member differently from
+GNU tar (DR-6, measured 2026-10-30):
+
+- A global (`g`) header replaces the global records of any earlier one; it does not merge
+  with them. `hdrcharset` alone carries over.
+- A key repeated in one header keeps its last value in an `x` header and its first in a
+  `g` header.
+- An empty value sets `linkpath`, `uname` and `gname` to empty: a symlink with an empty
+  `linkpath` has no target (`SYMLINK_TARGET_UNAVAILABLE`). An empty `size` is
+  `CorruptionError`, as GNU tar calls it malformed. Any other empty value is skipped, so
+  the global record or the header field stays: POSIX would delete both, and GNU tar
+  keeps an empty `path` from naming anything.
+- A `path`, `linkpath`, `uname` or `gname` value ends at its first NUL, as a header field
+  and an `L` or `K` name do.
+
 ### 2.3 Member data
 
 **A member's stream is a view of its data area.** In random access it is a `SharedView`
