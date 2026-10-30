@@ -268,8 +268,7 @@ def reads(transcript: Path) -> dict:
     what the reviewer's guides cost; a file read twice counts twice."""
     files: dict[str, int] = {}
     pending: dict[str, str] = {}
-    usage = {"input": 0, "cache_read": 0, "cache_write": 0, "output": 0}
-    counted: set[str] = set()
+    calls: dict[object, dict] = {}
     for line in transcript.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
@@ -292,14 +291,19 @@ def reads(transcript: Path) -> dict:
                     body = "".join(b.get("text", "") for b in body)
                 path = pending.pop(part["tool_use_id"])
                 files[path] = files.get(path, 0) + len(body or "")
-        # One API call can arrive as several events, one per content block.
-        if event.get("type") == "assistant" and message.get("id") not in counted:
-            counted.add(message.get("id", ""))
-            u = message.get("usage") or {}
-            usage["input"] += u.get("input_tokens", 0)
-            usage["cache_read"] += u.get("cache_read_input_tokens", 0)
-            usage["cache_write"] += u.get("cache_creation_input_tokens", 0)
-            usage["output"] += u.get("output_tokens", 0)
+        # One API call can arrive as several events, one per content block; the
+        # last one carries the call's final counts. An event with no id is its own call.
+        if event.get("type") == "assistant":
+            calls[message.get("id") or object()] = message.get("usage") or {}
+    usage = {
+        key: sum(u.get(field, 0) for u in calls.values())
+        for key, field in (
+            ("input", "input_tokens"),
+            ("cache_read", "cache_read_input_tokens"),
+            ("cache_write", "cache_creation_input_tokens"),
+            ("output", "output_tokens"),
+        )
+    }
     return {"files": files, "usage": usage}
 
 

@@ -92,10 +92,11 @@ def _have_in(repo: Path, sha: str) -> bool:
 
 
 def test_reads_counts_each_file_tool_output_and_api_call_once(tmp_path: Path) -> None:
+    early = {"input_tokens": 1, "cache_read_input_tokens": 100, "output_tokens": 2}
     usage = {"input_tokens": 1, "cache_read_input_tokens": 100, "output_tokens": 5}
     events = [
-        # One API call arrives as one event per content block, with the same usage.
-        {"type": "assistant", "message": {"id": "m1", "usage": usage, "content": [
+        # One API call arrives as one event per content block; the last has its totals.
+        {"type": "assistant", "message": {"id": "m1", "usage": early, "content": [
             {"type": "tool_use", "id": "t1", "name": "Read",
              "input": {"file_path": "/r/SKILL.md"}}]}},
         {"type": "assistant", "message": {"id": "m1", "usage": usage, "content": [
@@ -104,6 +105,9 @@ def test_reads_counts_each_file_tool_output_and_api_call_once(tmp_path: Path) ->
             {"type": "tool_result", "tool_use_id": "t1", "content": "abcd"},
             {"type": "tool_result", "tool_use_id": "t2",
              "content": [{"type": "text", "text": "xy"}]}]}},
+        # An event with no id counts as a call of its own.
+        {"type": "assistant", "message": {"usage": {"output_tokens": 3}, "content": [
+            {"type": "text", "text": "done"}]}},
         {"type": "result", "result": "review"},
     ]  # fmt: skip
     transcript = tmp_path / "transcript.jsonl"
@@ -114,5 +118,5 @@ def test_reads_counts_each_file_tool_output_and_api_call_once(tmp_path: Path) ->
         "input": 1,
         "cache_read": 100,
         "cache_write": 0,
-        "output": 5,
+        "output": 8,
     }

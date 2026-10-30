@@ -29,10 +29,9 @@ standards, Testing standards) instead of the whole file.
 The guides (the skill, its references, `CONTRIBUTING.md`, design docs and specs) were
 18 to 42 percent of what a review's tools returned; the rest is Bash output (the
 largest single item), source and grep. Reading three sections cut the guide reading
-by a fifth and `CONTRIBUTING.md` by over a third. Neither the score (a change of one
-case, inside the noise) nor the cost moved: 16 more turns across the five cases cost
-more than the shorter reads saved. The trim keeps the review no worse; it does not
-make it cheaper by an amount one run can show. After its review the read also took
+by a fifth and `CONTRIBUTING.md` by over a third. The score changed by one case and
+the cost by 4 percent, both inside the run-to-run noise, so one run each shows no
+saving and no loss; it does not show that the trim leaves the review as good. After its review the read also took
 §Cutting a release and the three-configuration paragraph of §Getting started, which
 carry review rules too (about 4 KB more); that version was not re-run. The input a review pays for is
 mostly what it runs and reads in the code, at about 150 000 tokens of context per
