@@ -938,6 +938,7 @@ class archivey.formats.ForwardStream()
 init archivey.formats.ForwardStream(read: Callable[[int], bytes], skip: Callable[[int, int], None], decompress: Callable[[int, StreamFormat], ForwardStream] | None = None) -> None
 method archivey.formats.ForwardStream.decompress(self, stream_format: StreamFormat) -> ForwardStream
 property archivey.formats.ForwardStream.offset: int
+method archivey.formats.ForwardStream.peek(self, n: int) -> bytes
 method archivey.formats.ForwardStream.read(self, n: int) -> bytes
 method archivey.formats.ForwardStream.read_exact(self, n: int) -> bytes
 method archivey.formats.ForwardStream.read_struct(self, fmt: str | struct.Struct) -> tuple[Any, ...]
@@ -973,8 +974,10 @@ class archivey.formats.MemberSpan(tuple)
 field archivey.formats.MemberSpan.checked: bool
 field archivey.formats.MemberSpan.data: BinaryIO | io.RawIOBase | None
 field archivey.formats.MemberSpan.data_length: int
+field archivey.formats.MemberSpan.decode: Callable[[BinaryIO], BinaryIO | io.RawIOBase] | None
 field archivey.formats.MemberSpan.digests: tuple[MemberDigest, ...]
 field archivey.formats.MemberSpan.member: ArchiveMember
+field archivey.formats.MemberSpan.retained_bytes: int
 field archivey.formats.MemberSpan.stored_name: str | None
 reexport archivey.formats.PluginContainer = archivey.PluginContainer
 class archivey.formats.ReaderArchiveInfo(tuple)
@@ -989,8 +992,10 @@ method archivey.formats.ReaderContext.decode_name(self, raw: bytes) -> str
 method archivey.formats.ReaderContext.decompress(self, data: BinaryIO, method: CompressionAlgorithm | StreamFormat, *, size: int | None = None, properties: bytes | None = None) -> BinaryIO
 property archivey.formats.ReaderContext.encoding: str | None
 method archivey.formats.ReaderContext.link_target_unavailable(self, member: ArchiveMember, *, reason: str, message: str, target_in_archive: bool) -> None
+method archivey.formats.ReaderContext.metadata_bytes_left(self) -> int | None
 method archivey.formats.ReaderContext.normalize_name(self, name: str, member_type: MemberType) -> str
-method archivey.formats.ReaderContext.report(self, code: DiagnosticCode, message: str, details: DiagnosticContext, *, member: ArchiveMember | None = None) -> None
+method archivey.formats.ReaderContext.report(self, code: DiagnosticCode, message: str, details: DiagnosticContext, *, member: ArchiveMember | None = None, fatal: bool = False) -> None
+property archivey.formats.ReaderContext.stream_format: StreamFormat
 class archivey.formats.ReaderSource()
 property archivey.formats.ReaderSource.path: Path | None
 method archivey.formats.ReaderSource.read_at(self, offset: int, n: int) -> bytes

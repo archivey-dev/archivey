@@ -69,7 +69,10 @@ from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.detection import INNER_CONTAINER_PROBE_BYTES
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.format_args import add_plugin_spellings, plugin_spelling_clash
-from archivey.internal.logs import detection as detection_logger
+from archivey.internal.logs import (
+    backends as backends_logger,
+    detection as detection_logger,
+)
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
@@ -102,7 +105,7 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.internal.streams.streamtools.binaryio import read_blocking
 from archivey.internal.streams.verify import CustomDigests, hasher_factory
-from archivey.internal.walk_handoff import MemberDataView
+from archivey.internal.walk_handoff import MemberDataView, read_stepped
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -220,6 +223,8 @@ class _PluginAdapter(BaseArchiveReader):
             decompress=self._decompress,
             report=self._report,
             link_target_unavailable=self._link_target_unavailable,
+            stream_format=format.stream,
+            metadata_bytes_left=self._metadata_bytes_left,
         )
         self._reader = self._open_reader(context)
         self._reader_open = True
@@ -316,9 +321,10 @@ class _PluginAdapter(BaseArchiveReader):
         message: str,
         details: DiagnosticContext,
         member: ArchiveMember | None,
+        fatal: bool,
     ) -> None:
         """``ReaderContext.report``: one diagnostic, with the archive and member filled
-        in."""
+        in; with ``fatal``, raised as ``CorruptionError`` whatever the policy."""
         if code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE:
             raise ArchiveyUsageError(
                 "report SYMLINK_TARGET_UNAVAILABLE with "
@@ -339,7 +345,23 @@ class _PluginAdapter(BaseArchiveReader):
             context=replace(details, **fill) if fill else details,  # type: ignore[type-var]
             member=member,
             attach_to_member=member is not None,
+            # What a format's reader reports, built in or plugin, as a backend's own.
+            logger=backends_logger,
+            escalate_as=CorruptionError if fatal else None,
+            escalate_kwargs=(
+                {"source_format": self._format, "archive_name": self._archive_name}
+                if fatal
+                else None
+            ),
         )
+
+    def _metadata_bytes_left(self) -> int | None:
+        """``ReaderContext.metadata_bytes_left``: the listing's running total, as the
+        tracker counts it, against the cap."""
+        cap = self._config.listing_limits.max_metadata_bytes
+        if cap is None:
+            return None
+        return max(cap - self._listing_tracker.metadata_bytes, 0)
 
     def _link_target_unavailable(
         self,
@@ -660,7 +682,15 @@ class _Span:
     ``offset`` of its layer's stream, with the digests its header stored; or, for a
     member the reader decodes itself (``MemberSpan.data``), that stream (``decoded``)."""
 
-    __slots__ = ("custom", "decoded", "expected", "layer", "length", "offset")
+    __slots__ = (
+        "custom",
+        "decode",
+        "decoded",
+        "expected",
+        "layer",
+        "length",
+        "offset",
+    )
 
     def __init__(
         self,
@@ -670,10 +700,12 @@ class _Span:
         expected: Mapping[HashAlgorithm, bytes] | None,
         custom: CustomDigests | None,
         decoded: _Decoded | None = None,
+        decode: Callable[[BinaryIO], BinaryIO | io.RawIOBase] | None = None,
     ) -> None:
         self.layer = layer
         self.offset = offset
         self.length = length
+        self.decode = decode
         self.expected = expected
         self.custom = custom
         self.decoded = decoded
@@ -781,11 +813,15 @@ class _Decoded:
         self.stream.close()
 
 
-# A forward skip up to this many bytes reads them through the walk's buffer; a longer
-# one seeks, when the stream can.
+# A forward skip over a stream that cannot seek reads this many bytes at a time; over a
+# codec, a longer one is the decoder's own seek.
 _SKIP_BY_READING = 64 * 1024
-# The walk's read buffer: headers are small reads.
-_WALK_BUFFER = 64 * 1024
+# The walk's read buffer: headers are small reads. Fixed rather than io's default,
+# which Python 3.14 raised from 8 KiB to 128 KiB, and small: a larger read-ahead reads
+# and decodes further past what the listing needs, so listing costs and source reads
+# would differ by Python version, and on a compressed archive a damaged tail would be
+# reached, and fail the read, before the walk needs it.
+_WALK_BUFFER = 8 * 1024
 
 
 class _ForwardInput(ReadOnlyIOStream):
@@ -850,7 +886,7 @@ class _SpanWindow(ReadOnlyIOStream):
         want = left if whole else min(n, left)
         if want <= 0:
             return b""
-        data = self._forward.read(want)
+        data = read_stepped(self._forward.read, want)
         self._done += len(data)
         if len(data) < want and (whole or not data):
             raise TruncatedError(
@@ -1091,8 +1127,7 @@ class SequentialReaderAdapter(_PluginAdapter):
         """A layer over ``shared`` with a view of its own for ``walk``."""
         # A plain file: a read larger than the buffer rewinds the prefetched tail and
         # returns the file's own bytes. A codec keeps the join, since rewinding it
-        # would decode the tail again; and a skip reads through it, which is what a
-        # seek of the decoder would do, and finds where the data ends.
+        # would decode the tail again; a skip there is the decoder's (_layer_forward).
         view = ReadAheadStream(
             shared.view(0, None), _WALK_BUFFER, rewind_oversize=not compressed
         )
@@ -1103,24 +1138,74 @@ class SequentialReaderAdapter(_PluginAdapter):
         """Give ``layer`` the walk's ``ForwardStream`` over its stream."""
         stream = layer.stream
         size = layer.shared.size if layer.shared is not None else None
+        skip_buffered = (
+            stream.skip_buffered if isinstance(stream, ReadAheadStream) else None
+        )
+        # A random-access layer over a codec: its seek forward decodes and discards
+        # inside the decoder, cheaper than reading the bytes out to drop them.
+        decoder_seeks = layer.shared is not None and not seekable
+
+        def cut(at: int, offset: int, n: int) -> TruncatedError:
+            error = TruncatedError(
+                f"the archive ends at offset {at}, inside the {n} bytes from offset "
+                f"{offset}"
+            )
+            setattr(error, _CUT_AT, at)
+            return error
+
+        # Where the last skip landed by seeking a stream of unknown size, until the
+        # walk reads there. A seek past the end succeeds, so a skip over data the
+        # archive cuts short is caught when that read finds nothing: the byte before
+        # it must exist (``tarfile`` makes the same check).
+        landed: int | None = None
+
+        def read(n: int) -> bytes:
+            nonlocal landed
+            data = read_blocking(stream, n)
+            if landed is not None and n:
+                at, landed = landed, None
+                if not data and at:
+                    stream.seek(at - 1)
+                    if not read_blocking(stream, 1):
+                        raise TruncatedError(
+                            f"{self._archive_what} is truncated: the data it skipped "
+                            f"runs to offset {at}, past its end"
+                        )
+            return data
 
         def skip(offset: int, n: int) -> None:
+            nonlocal landed
             end = offset + n
-            if seekable and n > _SKIP_BY_READING and (size is None or end <= size):
-                stream.seek(end)
+            # Padding and small members are usually in the walk's buffer already.
+            if skip_buffered is not None and skip_buffered(n):
                 return
+            if seekable:
+                # A seek past the buffer is a pointer move on a file, and fetches
+                # nothing on a remote one.
+                if size is not None and end > size:
+                    raise cut(size, offset, n)
+                stream.seek(end)
+                if size is None:
+                    landed = end
+                return
+            if decoder_seeks and n > _SKIP_BY_READING:
+                # The last byte read back says the data is all there; where the
+                # decoded bytes end, when it is not, is known once the read found it.
+                stream.seek(end - 1)
+                if stream.read(1):
+                    return
+                raise cut(stream.seek(0, io.SEEK_END), offset, n)
             left = n
             while left:
                 chunk = read_blocking(stream, min(left, _SKIP_BY_READING))
                 if not chunk:
-                    raise TruncatedError(
-                        f"the archive ends at offset {end - left}, inside the {n} "
-                        f"bytes from offset {offset}"
-                    )
+                    raise cut(end - left, offset, n)
                 left -= len(chunk)
 
         layer.forward = ForwardStream(
-            functools.partial(read_blocking, stream),
+            read
+            if seekable and size is None
+            else functools.partial(read_blocking, stream),
             skip,
             functools.partial(self._decompress_layer, walk, layer),
         )
@@ -1218,6 +1303,9 @@ class SequentialReaderAdapter(_PluginAdapter):
             assert layer is not None
             forward = self._forward = layer.forward
             member = self._take_span(span, layer, index)
+            if span.retained_bytes:
+                # The reader keeps them for the member (MemberSpan.retained_bytes).
+                self._listing_tracker.account_retained_bytes(span.retained_bytes)
             record = member._raw
             assert isinstance(record, _Span)
             decoded = self._listing_decoded = record.decoded
@@ -1249,8 +1337,24 @@ class SequentialReaderAdapter(_PluginAdapter):
                 # the data's end, so the walk is never past it.
                 assert left >= 0, (record.offset, record.length, forward.offset)
                 if left:
-                    forward.skip(left)
+                    self._skip_member_data(forward, left, member.name)
                 span = next(walk, None)
+
+    def _skip_member_data(self, forward: ForwardStream, n: int, name: str) -> None:
+        """Move the walk past the last ``n`` bytes of member ``name``'s data. A cut
+        there raises what a read of the member raises (``_SpanWindow``), so a pass
+        that ends on it repeats the fault its member read reported."""
+        try:
+            forward.skip(n)
+        except TruncatedError as exc:
+            cut = getattr(exc, _CUT_AT, None)
+            if cut is None:
+                raise
+            raise TruncatedError(
+                f"{self._archive_what} is truncated inside a member's data at offset "
+                f"{cut}",
+                member_name=name,
+            ) from None
 
     def _take_span(self, span: object, layer: _Layer, index: int) -> ArchiveMember:
         """The member a span describes, checked, named and placed."""
@@ -1294,13 +1398,29 @@ class SequentialReaderAdapter(_PluginAdapter):
                 f"{name}.walk() yielded {member.name!r} with checked=True and no "
                 "data: stored bytes are checked against the span's digests"
             )
+        decode = span.decode
+        if decode is not None and (data is not None or not callable(decode)):
+            raise ValueError(
+                f"{name}.walk() yielded {member.name!r} with decode={decode!r}: decode "
+                "is a callable, for stored bytes (data_length), not with data"
+            )
+        retained = span.retained_bytes
+        if not isinstance(retained, int) or retained < 0:
+            raise ValueError(
+                f"{name}.walk() yielded {member.name!r} with retained_bytes "
+                f"{retained!r}, not a whole number of bytes"
+            )
         # A directory's data is its declared size too: it stays a DIRECTORY, a read
         # delivers the bytes and the listing reports them (_report_listed). Decoded
         # data has no stored length to check the size against: its size is the one
-        # listed, enforced when read.
-        sized = data is None and (
-            member.type is MemberType.FILE
-            or (member.type is MemberType.DIRECTORY and length)
+        # listed, enforced when read. Nor do stored bytes that decode first.
+        sized = (
+            data is None
+            and decode is None
+            and (
+                member.type is MemberType.FILE
+                or (member.type is MemberType.DIRECTORY and length)
+            )
         )
         if sized:
             if member.size is None:
@@ -1320,7 +1440,9 @@ class SequentialReaderAdapter(_PluginAdapter):
             stream = self._decoded_stream(data)
             decoded = _Decoded(stream, span.checked, index, member.size, member.name)
         forward = layer.forward
-        record = _Span(layer, forward.offset, length, expected, custom or None, decoded)
+        record = _Span(
+            layer, forward.offset, length, expected, custom or None, decoded, decode
+        )
         member._raw = record
         self._report_listed(member, presented, index)
         if (
@@ -1442,16 +1564,23 @@ class SequentialReaderAdapter(_PluginAdapter):
         else:
             shared = record.layer.shared
             assert shared is not None
-            # ``open()``: a plain view, and the listed size checked above it (a
-            # MemberDataView here measured slower than the size check).
-            stream = shared.view(record.offset, record.length)
-            return self._span_parts(member, record, stream, check_size=True)
+            stream = self._span_view(record, 0)
         return self._span_parts(member, record, stream)
+
+    def _stored_view(self, shared: SharedSource, offset: int, length: int) -> BinaryIO:
+        """A random-access view of stored member data. Over decoded bytes it is
+        buffered: small reads (line iteration) copy from memory, not one decoder call
+        each, and the decoder is asked once per read, so a cut stream delivers its
+        prefix before the error."""
+        view = shared.view(offset, length)
+        if shared is self._shared and not self._compressed:
+            return view
+        return ReadAheadStream(view, _WALK_BUFFER)
 
     @functools.cached_property
     def _archive_what(self) -> str:
         # Built once: it is read on every member open, and the format never changes.
-        return f"{self._format.display_name} archive"
+        return f"{self._plugin.format.display_name} archive"
 
     def _span_view(self, record: _Span, start: int) -> BinaryIO:
         """``record``'s data from ``start`` for a pass the walk has left: a view that
@@ -1459,7 +1588,7 @@ class SequentialReaderAdapter(_PluginAdapter):
         takes over from does."""
         shared = record.layer.shared
         assert shared is not None
-        view = shared.view(record.offset, record.length)
+        view = self._stored_view(shared, record.offset, record.length)
         if start:
             view.seek(start)
         return MemberDataView(
@@ -1578,7 +1707,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                 elif span.data_length:
                     layer = walk.layer
                     assert layer is not None
-                    layer.forward.skip(span.data_length)
+                    self._skip_member_data(layer.forward, span.data_length, name)
             index += 1
 
     def _decoded_stream(self, data: BinaryIO | io.RawIOBase) -> BinaryIO:
@@ -1657,29 +1786,41 @@ class SequentialReaderAdapter(_PluginAdapter):
         *,
         check_size: bool = False,
     ) -> MemberStreamParts:
-        """``member``'s parts over ``stream``, its data window or view.
+        """``member``'s parts over ``stream``, its data window or view, decoded first
+        when the reader said how (``MemberSpan.decode``).
 
-        A pass's window (:class:`_SpanWindow`, or the :class:`MemberDataView` a
-        handoff falls back to) raises ``TruncatedError`` at a cut itself, so with no
-        digest the member gets no verifier to read through, when its listed size is
-        its data length. The walk makes them equal for a file and for a directory
-        that stores data: it refuses a span whose listed size differs and fills an
-        unset size from it (:meth:`_take_span_checked`). A directory that lists a
-        size and stores nothing also gets a stream (``pass_has_data``), and its size
-        is checked above the window, as it is for a plain view (``check_size``,
-        ``open()``), which ends short at a cut."""
+        A window (:class:`_SpanWindow`) or a view (:class:`MemberDataView`) raises
+        ``TruncatedError`` at a cut itself, so with no digest the member gets no
+        verifier to read through, when its listed size is its data length. The walk
+        makes them equal for a file and for a directory that stores data: it refuses
+        a span whose listed size differs and fills an unset size from it
+        (:meth:`_take_span_checked`). A directory that lists a size and stores
+        nothing also gets a stream (``pass_has_data``), and its size is checked above
+        the window, as decoded data's is: what a decode makes is the reader's."""
         expected = record.expected if record.expected is not None else member.hashes
+        decode = record.decode
+        if decode is not None:
+            # Through the reader's error boundary: a refusal here (a map that does
+            # not fit the size) is the reader's verdict on the archive.
+            try:
+                stream = _full_count(decode(stream))
+            except BaseException:
+                stream.close()
+                raise
         return self._member_parts(
             stream,
             member.name,
             size=member.size,
             expected_size=(
-                member.size if check_size or member.size != record.length else None
+                member.size
+                if decode is not None or member.size != record.length
+                else None
             ),
             expected_hashes=expected or None,
             verify_member=member,
-            # A window and a view both stop at the data's end.
-            bounded=True,
+            # A window and a view both stop at the data's end; what a decode makes of
+            # them is the reader's, checked for bytes past the size.
+            bounded=decode is None,
             custom_digests=record.custom,
         )
 
@@ -1779,6 +1920,10 @@ class SequentialReaderAdapter(_PluginAdapter):
 # Set on an error that reports a plugin breaking the interface, so the plugin's own
 # ``translate_exception`` is not offered it (``_PluginAdapter._translate_exception``).
 _PLUGIN_BUG = "_archivey_plugin_bug"
+
+# Set on the TruncatedError a layer's skip raises where the archive ends: the offset
+# of the cut (``_skip_member_data``).
+_CUT_AT = "_archivey_cut_at"
 
 # The compression streams ``ForwardStream.decompress`` decodes: each single-file codec.
 _STREAM_CODECS: dict[StreamFormat, Codec] = {
@@ -2077,13 +2222,16 @@ def _backend_class(
         "INNER_MAGIC": magic if sequential else (),
         "CONTENT_PROBES": (((fmt, _prefix_probe(probe)),) if probe is not None else ()),
         "USES_ENCODING": bool(plugin.uses_encoding),
-        "NON_SEEKABLE_REASON": "its reader needs random access to the archive",
         # A sequential format reads a pipe in a streaming pass.
         "SUPPORTS_STREAMING_NON_SEEKABLE": sequential,
         "INSTALL_HINT": plugin.install_hint,
         "REQUIRED_MODULES": tuple(plugin.requires),
         **overrides,
     }
+    if not sequential:
+        attrs.setdefault(
+            "NON_SEEKABLE_REASON", "its reader needs random access to the archive"
+        )
     return type(f"{plugin.__name__}Backend", (_PluginBackend,), attrs)
 
 

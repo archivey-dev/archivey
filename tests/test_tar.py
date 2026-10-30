@@ -12,6 +12,7 @@ import os
 import random
 import tarfile
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -46,10 +47,10 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.internal.backends import tar_reader as tar_reader_module
-from archivey.internal.backends.tar_parser import DATA_READ_STEP, TarWalker
-from archivey.internal.backends.tar_reader import _WALK_BUFFER
+from archivey.internal.format_adapter import _WALK_BUFFER
 from archivey.internal.streams.archive_stream import MemberStreamParts
 from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
+from archivey.internal.walk_handoff import MEMBER_READ_STEP
 from tests.conftest import CPYTHON, requires_zstd, zstd_backend
 from tests.corruption_util import (
     is_corruption_not_truncation,
@@ -1508,6 +1509,43 @@ def test_a_cut_plain_tar_member_raises_on_read_without_a_listing(
             ar.read("a")
 
 
+def test_a_whole_gzip_of_a_cut_tar_names_the_cut_in_every_pass(tmp_path: Path) -> None:
+    """A complete gzip stream holding a tar cut inside a member's data: the walk skips
+    the member by the decoder's own seek, and still names where the data ends, the
+    same offset a read of the member reports."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        for i in range(3):
+            data = random.Random(i).randbytes(200_000)
+            info = tarfile.TarInfo(f"f{i}")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    path = tmp_path / "cut.tar.gz"
+    path.write_bytes(gzip.compress(buf.getvalue()[:300_000]))
+    expected = "truncated inside a member's data at offset 300000"
+    with open_archive(path) as ar, pytest.raises(TruncatedError, match=expected) as end:
+        ar.members()
+    assert end.value.member_name == "f1"
+    with open_archive(path) as ar, pytest.raises(TruncatedError, match=expected):
+        for _member, stream in ar.stream_members():
+            assert stream is not None
+            with suppress(TruncatedError):
+                stream.read()
+
+
+@pytest.mark.parametrize("source", sorted(_CUT_SOURCES))
+def test_listing_a_plain_tar_cut_inside_member_data_raises(source: str) -> None:
+    # The walk seeks past the member's data; with no source size the seek succeeds,
+    # so the empty read where the next header should start is checked against the
+    # byte before it, and is not taken for a missing end-of-archive marker.
+    cut, _payload = _cut_plain_tar()
+    with (
+        open_archive(_CUT_SOURCES[source](cut), format=ArchiveFormat.TAR) as ar,
+        pytest.raises(TruncatedError, match="truncated"),
+    ):
+        ar.members()
+
+
 @pytest.mark.parametrize("source", sorted(_CUT_SOURCES))
 @pytest.mark.parametrize("chunk", [1024, 64 * 1024, 1024 * 1024])
 def test_a_cut_plain_tar_member_delivers_its_prefix_then_raises(
@@ -1835,25 +1873,6 @@ class _SeekRefusingBytesIO(io.BytesIO):
         return super().seek(offset, whence)
 
 
-@pytest.mark.parametrize("err", [errno.EINVAL, errno.EOVERFLOW])
-def test_refused_seek_is_truncation_naming_the_offset(err: int) -> None:
-    inner = _SeekRefusingBytesIO(b"\0" * 1024, err=err)
-    walker = TarWalker(inner, seekable=True)
-    with pytest.raises(TruncatedError, match=r"offset 4611686018427388415\b"):
-        walker._seek(2**62 + 511)
-
-
-def test_refused_seek_with_other_errno_propagates() -> None:
-    # Only the errnos lseek gives for an offset past the filesystem's limit read as
-    # the end of the data; any other OSError is an I/O failure (DR-15a).
-    inner = _SeekRefusingBytesIO(b"\0" * 1024, err=errno.EIO)
-    walker = TarWalker(inner, seekable=True)
-    with pytest.raises(OSError) as excinfo:
-        walker._seek(2**62)
-    assert excinfo.value.errno == errno.EIO
-    assert not isinstance(excinfo.value, TruncatedError)
-
-
 @pytest.mark.parametrize("typeflag", [tarfile.AREGTYPE, tarfile.REGTYPE])
 def test_refused_seek_through_open_archive_is_truncation(typeflag: bytes) -> None:
     # The ext4 arm of test_size_past_filesystem_limit_is_truncation, on any OS.
@@ -1861,7 +1880,7 @@ def test_refused_seek_through_open_archive_is_truncation(typeflag: bytes) -> Non
     data = _tar_entry_with_data(typeflag, size_field=size_field)
     source = _SeekRefusingBytesIO(data, err=errno.EINVAL)
     with (
-        pytest.raises(TruncatedError, match="past the end of the archive"),
+        pytest.raises(TruncatedError, match="inside a member.s data at offset 3072"),
         open_archive(source, format=ArchiveFormat.TAR) as ar,
     ):
         ar.members()
@@ -3188,17 +3207,18 @@ def test_extended_header_over_the_metadata_cap_is_refused_unread(
     )
 
 
-def test_plain_tar_member_past_the_walk_buffer_is_one_source_read() -> None:
-    """A plain-tar member larger than the walk buffer is one source read of its size.
+def test_plain_tar_member_past_the_walk_buffer_is_read_straight_from_the_source() -> (
+    None
+):
+    """A plain-tar member larger than the walk buffer is read in large source reads,
+    each byte once.
 
-    The file length is a fact, so the walker asks for the member once, and a read
-    larger than the walk buffer rewinds the prefetched tail instead of joining a
-    second read onto it. Leaving ``TarWalker.end`` unset reads the member in
-    ``DATA_READ_STEP`` pieces, so this size is absent from the recorded requests.
-    Turning ``rewind_oversize`` off splits the prefetched tail from the rest, so
-    the one request of this size is absent there too.
+    The verifier drains in ``MEMBER_READ_STEP`` pieces, and a read larger than the walk
+    buffer rewinds the prefetched tail and asks the source for the whole piece.
+    Turning ``rewind_oversize`` off splits each piece into the buffered tail and a
+    shorter source read, so no request of ``MEMBER_READ_STEP`` is recorded.
     """
-    payload = b"m" * (_WALK_BUFFER + DATA_READ_STEP + 100)
+    payload = b"m" * (_WALK_BUFFER + MEMBER_READ_STEP + 100)
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as tar:
         info = tarfile.TarInfo("big.bin")
@@ -3215,16 +3235,17 @@ def test_plain_tar_member_past_the_walk_buffer_is_one_source_read() -> None:
         )
 
     assert got == payload
-    assert source.requested.count(len(payload)) == 1
+    assert MEMBER_READ_STEP in source.requested
+    assert sum(source.requested) <= len(buf.getvalue()) + 2 * _WALK_BUFFER
 
 
 @pytest.mark.parametrize("streaming", [False, True])
 def test_member_data_read_with_no_known_length_is_stepped(streaming: bool) -> None:
     """A member's data read through the walk from a source of unknown length asks for
-    at most ``DATA_READ_STEP`` at a time, whatever size its header declares.
+    at most ``MEMBER_READ_STEP`` at a time, whatever size its header declares.
 
     The member declares 3 GiB over 100 KB of data. Handing the declared size to one
-    read (``_ForwardSlice`` passing ``step=want``) fails this with a 3 GiB request.
+    read (``read_stepped`` not stepping) fails this with a 3 GiB request.
     """
     info = tarfile.TarInfo("big")
     info.size = 3 << 30
@@ -3237,7 +3258,7 @@ def test_member_data_read_with_no_known_length_is_stepped(streaming: bool) -> No
         for _, stream in reader.stream_members():
             if stream is not None:
                 stream.read()
-    assert max(source.requested) <= max(DATA_READ_STEP, io.DEFAULT_BUFFER_SIZE)
+    assert max(source.requested) <= max(MEMBER_READ_STEP, io.DEFAULT_BUFFER_SIZE)
 
 
 def test_a_member_larger_than_the_read_step_still_reads_whole(tmp_path: Path) -> None:
@@ -3589,9 +3610,9 @@ def test_close_releases_the_codec_stream_when_its_buffer_close_raises(
         info.size = 1
         t.addfile(info, io.BytesIO(b"x"))
     ar: Any = open_archive(path, streaming=streaming)
-    codec = ar._owned_codec_stream
+    codec = ar._codec_stream
     # Streaming buffers the codec stream; random access buffers the walk's view.
-    buffer = ar._owned_stream if streaming else ar._walker_view
+    buffer = ar._owned_stream if streaming else ar._listing_walk.views[0]
     with (
         mock.patch.object(buffer, "close", side_effect=OSError("boom")),
         pytest.raises(OSError),
@@ -3614,7 +3635,8 @@ def test_a_retried_listing_keeps_one_walk_view() -> None:
         for _ in range(3):
             with pytest.raises(ResourceLimitError):
                 ar.members()
-            views.append(ar._walker_view)
+            (view,) = ar._listing_walk.views
+            views.append(view)
         assert len({id(view) for view in views}) == 3
         assert [view.closed for view in views] == [True, True, False]
 
@@ -3627,13 +3649,13 @@ def test_a_concurrent_reader_closes_its_streams_under_the_handle_lock(
         t.addfile(tarfile.TarInfo("a"), io.BytesIO())
     ar: Any = open_archive(path, concurrent_operations=True)
     held = []
-    release = ar._release_owned_stream
+    release = ar._release_streams
 
     def recorded() -> None:
         held.append(ar._handle_lock.locked())
         release()
 
-    ar._release_owned_stream = recorded
+    ar._release_streams = recorded
     ar.close()
     assert held == [True]
 
@@ -3665,7 +3687,8 @@ def test_small_reads_of_a_compressed_member_are_buffered(tmp_path: Path) -> None
         info.size = len(data) * 1000
         t.addfile(info, io.BytesIO(data * 1000))
     ar: Any = open_archive(path)
-    with ar, mock.patch.object(ar._stream, "read", wraps=ar._stream.read) as read:
+    codec = ar._codec_stream
+    with ar, mock.patch.object(codec, "read", wraps=codec.read) as read:
         with ar.open("lines") as stream:
             assert sum(1 for _ in stream) == 1000
         assert read.call_count < 30
@@ -3761,7 +3784,7 @@ def test_a_member_keeps_no_parsed_pax_records() -> None:
     """The member's PAX records live on as ``extra["tar.pax_headers"]``; the parsed
     entry that carried them is dropped once the member is built, and the member keeps
     only its data span."""
-    from archivey.internal.backends.tar_parser import TarSpan
+    from archivey.internal.format_adapter import _Span
 
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as t:
@@ -3771,7 +3794,7 @@ def test_a_member_keeps_no_parsed_pax_records() -> None:
     with open_archive(io.BytesIO(buf.getvalue())) as ar:
         (member,) = ar.members()
         assert member.extra["tar.pax_headers"]["comment"] == "c" * 100
-        assert type(member._raw) is TarSpan
+        assert type(member._raw) is _Span
 
 
 def test_global_pax_path_wins_over_a_gnu_long_name() -> None:
@@ -4207,12 +4230,13 @@ def test_a_pass_keeps_no_parsed_entries(streaming: bool) -> None:
 
     tarfile kept its own list of every header beside the reader's member list, so a
     listing held each header twice. Each member now keeps only its data span (a
-    ``TarSpan``), held by the member alone; the entry and its header block go once the
+    ``_Span``), held by the member alone; the entry and its header block go once the
     member is built.
     """
     import gc
 
-    from archivey.internal.backends.tar_parser import HeaderBlock, TarEntry, TarSpan
+    from archivey.internal.backends.tar_parser import HeaderBlock, TarEntry
+    from archivey.internal.format_adapter import _Span
 
     count = 2_000
     buf = io.BytesIO()
@@ -4235,7 +4259,7 @@ def test_a_pass_keeps_no_parsed_entries(streaming: bool) -> None:
             isinstance(o, HeaderBlock) and ours(o.name) for o in gc.get_objects()
         )
         span = members[-1]._raw
-        assert type(span) is TarSpan
+        assert type(span) is _Span
         holders = [type(r).__name__ for r in gc.get_referrers(span)]
     if not CPYTHON:
         # PyPy also lists this frame, which holds ``span``, and a tuple of its own:
@@ -4373,18 +4397,13 @@ def test_a_sized_fifo_header_is_corruption() -> None:
         reg = tarfile.TarInfo("reg.txt")
         reg.size = 2
         t.addfile(reg, io.BytesIO(b"hi"))
-    with (
-        open_archive(io.BytesIO(buf.getvalue())) as ar,
-        pytest.raises(CorruptionError, match="fifo.*declares 512 bytes"),
-    ):
-        ar.members()
-    with (
+    # The first member is typed at open, so the open fails.
+    with pytest.raises(CorruptionError, match="fifo.*declares 512 bytes"):
+        open_archive(io.BytesIO(buf.getvalue()))
+    with pytest.raises(CorruptionError, match="fifo.*declares 512 bytes"):
         open_archive(
             NonSeekableBytesIO(buf.getvalue()), format=ArchiveFormat.TAR, streaming=True
-        ) as ar,
-        pytest.raises(CorruptionError, match="fifo.*declares 512 bytes"),
-    ):
-        list(ar.stream_members())
+        )
 
 
 def _three_members(middle: Callable[[tarfile.TarFile], None]) -> bytearray:

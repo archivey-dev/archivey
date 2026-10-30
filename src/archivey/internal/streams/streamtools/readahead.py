@@ -153,6 +153,15 @@ class ReadAheadStream(DelegatingStream):
             return self.read(min(n, buffered) if buffered else n)
         return self._read_ahead(1, n)
 
+    def skip_buffered(self, n: int, /) -> bool:
+        """Move past the next ``n`` bytes when the buffer holds them, without a call
+        to the inner; return whether it did. A walk skips padding and small members
+        this way: a seek asks the inner where it is first."""
+        if n <= len(self._buffer) - self._offset:
+            self._offset += n
+            return True
+        return False
+
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         offset, whence = check_seek_args(offset, whence)
         if self._buffer and whence != io.SEEK_END:

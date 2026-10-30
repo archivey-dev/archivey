@@ -19,10 +19,10 @@ import shutil
 import subprocess
 import tarfile
 from pathlib import Path
-from typing import BinaryIO
 
 import pytest
 
+from archivey.formats import ForwardStream
 from archivey.internal.backends.tar_parser import (
     TarEndKind,
     TarEntry,
@@ -30,13 +30,14 @@ from archivey.internal.backends.tar_parser import (
     validate_sparse_map,
 )
 from tests.sample_archives import CORPUS, corpus_archive_path
+from tests.tar_build import forward
 
 _REGULAR = frozenset((b"0", b"\x00", b"7", b"S"))  # what tarfile.isreg() accepts
 
 
-def _member_data(stream: BinaryIO, entry: TarEntry) -> bytes:
-    """The member's logical bytes, holes as zeros, read from a seekable stream."""
-    stream.seek(entry.data_offset)
+def _member_data(stream: ForwardStream, entry: TarEntry) -> bytes:
+    """The member's logical bytes, holes as zeros, read where the walk left them."""
+    assert stream.offset == entry.data_offset
     sparse = entry.sparse
     stored = entry.stored_size
     if sparse is None:
@@ -54,8 +55,9 @@ def _text(raw: bytes) -> str:
 
 def _native_listing(path: Path) -> list[tuple[object, ...]]:
     rows = []
-    with path.open("rb") as stream:
-        walker = TarWalker(stream, seekable=True)
+    with path.open("rb") as file:
+        stream = forward(file)
+        walker = TarWalker(stream)
         while isinstance(entry := walker.next_entry(), TarEntry):
             typeflag = entry.typeflag
             name = _text(entry.name)
@@ -93,13 +95,14 @@ def _tarfile_listing(path: Path) -> list[tuple[object, ...]]:
 
 
 def _forward_only_matches(path: Path) -> None:
-    """A forward-only walk reading each member through ``open_data`` gives the same
-    stored bytes as the seekable walk."""
+    """A walk that skips by reading gives the same members, at the same offsets, as
+    one that seeks, and its stream holds their stored bytes there."""
     data = path.read_bytes()
-    seekable = TarWalker(io.BytesIO(data), seekable=True)
-    forward = TarWalker(io.BytesIO(data), seekable=False)
+    seekable = TarWalker(forward(io.BytesIO(data)))
+    stream = forward(io.BytesIO(data), seekable=False)
+    reading = TarWalker(stream)
     while isinstance(a := seekable.next_entry(), TarEntry):
-        b = forward.next_entry()
+        b = reading.next_entry()
         assert isinstance(b, TarEntry)
         assert (a.name, a.data_offset, a.stored_size) == (
             b.name,
@@ -107,10 +110,10 @@ def _forward_only_matches(path: Path) -> None:
             b.stored_size,
         )
         assert (
-            forward.open_data(b.span()).read()
+            stream.read(b.stored_size)
             == data[a.data_offset : a.data_offset + a.stored_size]
         )
-    assert forward.next_entry() == seekable.end
+    assert reading.next_entry() == seekable.end
 
 
 _TAR_ENTRIES = [entry for entry in CORPUS if "tar" in entry.formats]

@@ -366,8 +366,9 @@ above, each for a reason found while building it:
   ZIP and 7z.
 - **A random-access pass lists, then reads.** The base class's pass (materialize, then
   open each member from the offset the walk recorded) is correct for a seekable
-  uncompressed source. TAR's one-pass `_iter_with_data_random_access` matters for a
-  compressed source, and comes with outer compression.
+  uncompressed source. TAR's one-pass random-access read matters for a compressed
+  source, and came with outer compression: it is the adapter's, and TAR now uses it
+  as a sequential format (tasks 2b).
 
 `MemberSpan` is `(member, data_length, digests, stored_name)`. The decoded-data fields
 (`data`, `checked`) come with the stage that reads library-decoded data, appended so a

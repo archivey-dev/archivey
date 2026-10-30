@@ -7,7 +7,7 @@ the walk moves on before the pass has read the member to its end, the stream rea
 view of its own from where it stopped instead (``BaseArchiveReader._walk_handoff_locked``).
 
 It also holds :class:`MemberDataView`, the cut-raising view a member's data is read
-through whether or not a walk is at it: TAR's own ``open()`` uses it as well.
+through whether or not a walk is at it: a sequential format's ``open()`` uses it as well.
 """
 
 from __future__ import annotations
@@ -17,16 +17,38 @@ from collections.abc import Callable
 from typing import BinaryIO
 
 from archivey.exceptions import TruncatedError
+from archivey.internal.streams.decompressor_stream import _COMPRESSED_READ_SIZE_MAX
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     ReadOnlyIOStream,
-    SharedView,
     check_read_size,
 )
 from archivey.internal.streams.streamtools.binaryio import (
     ask_resume_offset,
     read_blocking,
 )
+
+# The most a member data read asks of the stream under it at once. The size a read
+# wants comes from a header, which may claim far more than the archive holds, and a
+# read of ``n`` bytes from a file or a buffered stream allocates ``n`` up front. It
+# matches the piece the member verifier's sized drain reads (``verify._SIZED_DRAIN_CHUNK``),
+# so one such piece is one read here.
+MEMBER_READ_STEP = _COMPRESSED_READ_SIZE_MAX
+
+
+def read_stepped(read: Callable[[int], bytes], want: int) -> bytes:
+    """Up to ``want`` bytes from the full-count ``read``, fewer only at its end, asked
+    for at most :data:`MEMBER_READ_STEP` at a time."""
+    if want <= MEMBER_READ_STEP:
+        return read(want)
+    chunks = []
+    while want:
+        chunk = read(min(want, MEMBER_READ_STEP))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        want -= len(chunk)
+    return b"".join(chunks)
 
 
 class WalkHandoffStream(ReadOnlyIOStream):
@@ -93,8 +115,8 @@ class WalkHandoffStream(ReadOnlyIOStream):
 class MemberDataView(DelegatingStream):
     """A random-access member's data area that raises at a cut, not a clean end.
 
-    TAR's own opens use it, and so does a handoff's view once the walk has moved on
-    (TAR's and the sequential adapter's ``reopen``).
+    The sequential adapter's opens use it, and so does a handoff's view once the walk
+    has moved on (its ``reopen``).
 
     The view under it returns ``b""`` where the archive ends, which reads as the end of
     the member. Here a read that ends before ``length`` keeps the full-count rule (ADR
@@ -106,7 +128,7 @@ class MemberDataView(DelegatingStream):
     readinto_passthrough = False
 
     def __init__(
-        self, view: SharedView, data_offset: int, length: int, *, what: str
+        self, view: BinaryIO, data_offset: int, length: int, *, what: str
     ) -> None:
         super().__init__(view)
         self._data_offset = data_offset
@@ -120,7 +142,8 @@ class MemberDataView(DelegatingStream):
         want = self._length - position if whole else min(n, self._length - position)
         if want <= 0:
             return b""
-        data = read_blocking(self._inner, want)
+        inner = self._inner
+        data = read_stepped(lambda size: read_blocking(inner, size), want)
         if len(data) < want and (whole or not data):
             raise TruncatedError(
                 f"{self._what} is truncated inside a member's data at offset "

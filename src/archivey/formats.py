@@ -228,6 +228,23 @@ class MemberSpan(NamedTuple):
     they do not match once read to the end. Only with ``data``: archivey refuses it on
     a span of stored bytes."""
 
+    decode: Callable[[BinaryIO], BinaryIO | io.RawIOBase] | None = None
+    """For stored bytes that are not yet the member's bytes: called with a stream of
+    the ``data_length`` stored bytes, read from their start, it returns the member's
+    bytes (``member.size`` of them). A TAR sparse file is one: its stored chunks and
+    a map of where they go. Unlike :attr:`data`, the member keeps its place in the
+    archive, so a random-access open reads a view of the stored bytes, with no walk
+    from the start. Called when the member's data is opened, so a ``decode`` that
+    raises (a map that does not fit the size, say) fails the open, not the listing.
+    The stream it returns is read as :attr:`MemberData.stream` is, and its length is
+    checked against ``member.size``: ``data_length`` is not the member's size here."""
+
+    retained_bytes: int = 0
+    """Bytes the reader keeps for the member after it is listed, beyond the member's
+    own fields: the map a :attr:`decode` holds, say. They count against
+    ``ListingLimits.max_metadata_bytes`` with the member's, so an archive of many such
+    members stops at the limit."""
+
 
 class ReaderArchiveInfo(NamedTuple):
     """What the reader knows about the archive that archivey cannot work out."""
@@ -324,6 +341,9 @@ class ForwardStream:
         self._skip_fn = skip
         self._decompress_fn = decompress
         self._offset = 0
+        # Bytes peek() read ahead, served before the stream's own: they start at
+        # ``_offset``.
+        self._peeked = b""
         # Set once decompress() has handed the rest of the bytes to a decoded stream.
         self._handed_off = False
 
@@ -338,9 +358,31 @@ class ForwardStream:
         if n < 0:
             raise ValueError(f"ForwardStream.read() takes a size of 0 or more, got {n}")
         self._check_not_handed_off()
-        data = self._read_fn(n)
+        peeked = self._peeked
+        if peeked:
+            if n <= len(peeked):
+                data, self._peeked = peeked[:n], peeked[n:]
+            else:
+                self._peeked = b""
+                data = peeked + self._read_fn(n - len(peeked))
+        else:
+            data = self._read_fn(n)
         self._offset += len(data)
         return data
+
+    def peek(self, n: int) -> bytes:
+        """The next ``n`` bytes, fewer only at the end of the archive, without moving
+        past them: the next :meth:`read` or :meth:`skip` starts at the same
+        :attr:`offset`. A format looks ahead with it, as TAR does at a block that may
+        be its end. On a pipe the bytes are read and kept until then, so keep ``n``
+        small."""
+        if n < 0:
+            raise ValueError(f"ForwardStream.peek() takes a size of 0 or more, got {n}")
+        self._check_not_handed_off()
+        peeked = self._peeked
+        if len(peeked) < n:
+            peeked = self._peeked = peeked + self._read_fn(n - len(peeked))
+        return peeked[:n]
 
     def read_exact(self, n: int) -> bytes:
         """``n`` bytes, or ``TruncatedError`` when the archive ends first."""
@@ -366,7 +408,14 @@ class ForwardStream:
         if n < 0:
             raise ValueError(f"ForwardStream.skip() takes a size of 0 or more, got {n}")
         self._check_not_handed_off()
-        self._skip_fn(self._offset, n)
+        peeked = self._peeked
+        if peeked:
+            taken = min(n, len(peeked))
+            self._peeked = peeked[taken:]
+            if n > taken:
+                self._skip_fn(self._offset + taken, n - taken)
+        else:
+            self._skip_fn(self._offset, n)
         self._offset += n
 
     def decompress(self, stream_format: StreamFormat) -> ForwardStream:
@@ -389,9 +438,14 @@ class ForwardStream:
 
         Raises ``ValueError`` for a format that is not a compression stream
         (``UNCOMPRESSED``), and ``ArchiveyUsageError`` when this stream has already
-        handed off, or was not built by archivey.
+        handed off, holds bytes :meth:`peek` read ahead, or was not built by archivey.
         """
         self._check_not_handed_off()
+        if self._peeked:
+            raise ArchiveyUsageError(
+                "decompress() starts where the stream is: read or skip the bytes "
+                "peek() looked at first"
+            )
         if self._decompress_fn is None:
             raise ArchiveyUsageError(
                 "this ForwardStream was not built by archivey and cannot decompress"
@@ -422,9 +476,11 @@ class ReaderContext:
             BinaryIO,
         ],
         report: Callable[
-            [DiagnosticCode, str, DiagnosticContext, ArchiveMember | None], None
+            [DiagnosticCode, str, DiagnosticContext, ArchiveMember | None, bool], None
         ],
         link_target_unavailable: Callable[[ArchiveMember, str, str, bool], None],
+        stream_format: StreamFormat = StreamFormat.UNCOMPRESSED,
+        metadata_bytes_left: Callable[[], int | None] = lambda: None,
     ) -> None:
         self._encoding = encoding
         self._archive_name = archive_name
@@ -432,6 +488,8 @@ class ReaderContext:
         self._decompress = decompress
         self._report = report
         self._link_target_unavailable = link_target_unavailable
+        self._stream_format = stream_format
+        self._metadata_bytes_left = metadata_bytes_left
 
     @property
     def encoding(self) -> str | None:
@@ -442,6 +500,22 @@ class ReaderContext:
     def archive_name(self) -> str | None:
         """The archive's name, for messages."""
         return self._archive_name
+
+    @property
+    def stream_format(self) -> StreamFormat:
+        """The compression stream archivey decodes the archive from before the reader
+        sees it (``StreamFormat.GZIP`` for a ``.cpio.gz``), or ``UNCOMPRESSED``. A
+        reader that reads past its end marker can say what a failure there means for
+        the stream's own checksum."""
+        return self._stream_format
+
+    def metadata_bytes_left(self) -> int | None:
+        """How much of ``config.listing_limits.max_metadata_bytes`` the listing has not
+        used yet, or ``None`` with no limit. A reader that reads a structure whose size
+        the archive declares (an extended header, a map) checks that size against this
+        before reading it, and raises ``ResourceLimitError`` past it: archivey counts
+        only what it is handed, after the reader has read it."""
+        return self._metadata_bytes_left()
 
     @property
     def config(self) -> ArchiveyConfig:
@@ -457,6 +531,7 @@ class ReaderContext:
         details: DiagnosticContext,
         *,
         member: ArchiveMember | None = None,
+        fatal: bool = False,
     ) -> None:
         """Report something the caller should know that does not stop the read.
 
@@ -468,9 +543,15 @@ class ReaderContext:
         before it is yielded, or the member being opened. The caller's
         ``DiagnosticPolicy`` applies, so a code it raises on raises here.
 
+        With ``fatal``, the finding does stop the read, whatever the caller's policy
+        says: it is recorded and counted as any report is, and then raises
+        ``CorruptionError`` with ``message``. A format whose damage also has a
+        diagnostic code (a header that does not parse where the end marker belongs)
+        uses it, so a caller sees the code on the error's way out too.
+
         For ``SYMLINK_TARGET_UNAVAILABLE`` use :meth:`link_target_unavailable`.
         """
-        self._report(code, message, details, member)
+        self._report(code, message, details, member, fatal)
 
     def link_target_unavailable(
         self,

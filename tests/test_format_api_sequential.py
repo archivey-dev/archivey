@@ -74,6 +74,7 @@ class ToysContainer(PluginContainer):
     CLOSING = "toys-closing"
     RPMISH = "toys-rpmish"
     DECODED = "toys-decoded"
+    PEEKING = "toys-peeking"
     SIZED_EMPTY_DIRECTORY = "toys-sized-empty-directory"
 
 
@@ -1863,3 +1864,83 @@ def test_decoded_seek_back_reports_the_walk_it_costs(
         assert stream.read() == b"s" * 1000
         counts = reader.diagnostics.counts
     assert counts[DiagnosticCode.STREAM_REWIND_REDECOMPRESSES] == 1
+
+
+def _forward(data: bytes) -> tuple[ForwardStream, list[tuple[int, int]]]:
+    """A ForwardStream over ``data`` read in place, and the skips it asked for."""
+    source = io.BytesIO(data)
+    skips: list[tuple[int, int]] = []
+
+    def skip(offset: int, n: int) -> None:
+        assert source.tell() == offset, (source.tell(), offset)
+        skips.append((offset, n))
+        source.seek(n, io.SEEK_CUR)
+
+    return ForwardStream(source.read, skip), skips
+
+
+def test_forward_stream_peek() -> None:
+    stream, skips = _forward(bytes(range(20)))
+    assert stream.peek(4) == bytes(range(4))
+    assert stream.offset == 0
+    # A longer peek reads on; a shorter one serves what is kept.
+    assert stream.peek(6) == bytes(range(6))
+    assert stream.peek(2) == bytes(range(2))
+    assert stream.read(3) == bytes(range(3))
+    assert stream.offset == 3
+    # A read past what was peeked carries on from the stream.
+    assert stream.read(5) == bytes(range(3, 8))
+    assert stream.peek(3) == bytes(range(8, 11))
+    # A skip consumes the peeked bytes first, then skips the stream from where it is.
+    stream.skip(5)
+    assert skips == [(11, 2)]
+    assert stream.offset == 13
+    assert stream.peek(100) == bytes(range(13, 20))
+    assert stream.read_exact(7) == bytes(range(13, 20))
+    assert stream.peek(1) == b""
+    with pytest.raises(ValueError, match="peek"):
+        stream.peek(-1)
+
+
+def test_forward_stream_peek_then_decompress_is_refused() -> None:
+    def decompress(offset: int, fmt: StreamFormat) -> ForwardStream:
+        raise AssertionError("not reached")
+
+    stream = ForwardStream(io.BytesIO(b"abc").read, lambda o, n: None, decompress)
+    stream.peek(1)
+    with pytest.raises(ArchiveyUsageError, match="peek"):
+        stream.decompress(StreamFormat.GZIP)
+
+
+class _PeekingReader(ToysReader):
+    """TOYS read with a look into each member's data before yielding it, and at the
+    next header after it."""
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        for span in super().walk(stream):
+            assert len(stream.peek(min(span.data_length, 9))) == min(
+                span.data_length, 9
+            )
+            yield span
+            # The padding, then the next header's magic.
+            pad = _pad(span.data_length)
+            assert stream.peek(pad + 2)[pad:] == _MAGIC
+
+
+@pytest.mark.parametrize("mode", ["file", "pipe", "stream_members"])
+def test_a_walk_that_peeks_reads_the_same(
+    toys: ArchiveFormat, tmp_path: Path, mode: str
+) -> None:
+    fmt = _variant(_PeekingReader, ToysContainer.PEEKING)
+    data = build_toys(_ENTRIES)
+    if mode == "pipe":
+        with open_archive(NonSeekableBytesIO(data), format=fmt, streaming=True) as r:
+            got = {m.name: s.read() for m, s in r.stream_members() if s is not None}
+    else:
+        path = _write(tmp_path, data)
+        with open_archive(path, format=fmt) as r:
+            if mode == "file":
+                got = {n: r.read(n) for n in _DATA}
+            else:
+                got = {m.name: s.read() for m, s in r.stream_members() if s}
+    assert {n: got[n] for n in _DATA} == _DATA

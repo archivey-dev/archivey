@@ -231,3 +231,13 @@ def test_rewind_oversize_reads_the_request_once() -> None:
     assert stream.read() == data[103:]
     plain = ReadAheadStream(io.BytesIO(data), 8)
     assert plain.read(3) + plain.read(100) + plain.read() == data
+
+
+def test_skip_buffered_moves_only_inside_the_buffer() -> None:
+    inner = io.BytesIO(bytes(range(100)))
+    stream = ReadAheadStream(inner, 16)
+    assert stream.read(4) == bytes(range(4))
+    assert stream.skip_buffered(10)
+    assert stream.tell() == 14
+    assert not stream.skip_buffered(3)  # two bytes left in the buffer
+    assert stream.read(2) == bytes([14, 15])

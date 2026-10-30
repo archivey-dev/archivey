@@ -3,9 +3,43 @@ write: a bad checksum, a base-256 number, a PAX record of any length."""
 
 from __future__ import annotations
 
+import io
 from collections.abc import Callable
+from typing import BinaryIO
 
-from archivey.internal.backends.tar_parser import BLOCKSIZE
+from archivey.exceptions import TruncatedError
+from archivey.formats import ForwardStream
+from archivey.internal.backends.tar_parser import BLOCKSIZE, TarWalker
+
+
+def forward(stream: BinaryIO, *, seekable: bool = True) -> ForwardStream:
+    """``stream`` as a walk reads it, as archivey's sequential adapter builds it: a
+    skip seeks when ``seekable`` and the bytes are there, and otherwise reads through,
+    raising ``TruncatedError`` where the stream ends first."""
+    size = stream.seek(0, io.SEEK_END) if seekable else None
+    if seekable:
+        stream.seek(0)
+
+    def read(n: int) -> bytes:
+        chunks = []
+        while n and (chunk := stream.read(n)):
+            chunks.append(chunk)
+            n -= len(chunk)
+        return b"".join(chunks)
+
+    def skip(offset: int, n: int) -> None:
+        if size is not None and offset + n <= size:
+            stream.seek(offset + n)
+            return
+        if len(read(n)) < n:
+            raise TruncatedError(f"the archive ends inside the {n} bytes at {offset}")
+
+    return ForwardStream(read, skip)
+
+
+def walker(data: bytes, *, seekable: bool = True) -> TarWalker:
+    """A walker over ``data`` (:func:`forward`)."""
+    return TarWalker(forward(io.BytesIO(data), seekable=seekable))
 
 
 def octal(value: int, width: int) -> bytes:

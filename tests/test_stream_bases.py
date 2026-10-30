@@ -419,7 +419,6 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         rar_reader,
         sevenzip_pipeline,
         sevenzip_reader,
-        tar_parser,
         zip_aes,
         zip_forward_reader,
         zip_local_walk,
@@ -515,18 +514,16 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         detection._BoundedPeekReader,
         # Under a solid RAR pass's SolidBlockReader, which only reads forward.
         rar_copy_sources._TeeBlock,
-        # A member's stored bytes, read forward from the walk's stream (for .tar.gz,
-        # the decompressed stream) in one pass. TAR stores member data as is, so no
-        # codec above it has a table, and a pass's member streams are forward-only.
-        tar_parser._ForwardSlice,
-        # A random-access pass's member data: the slice above (or a sequential
-        # format's span window), or a view from where it stopped once the walk moves
-        # on. Forward-only, stored bytes.
+        # A random-access pass's member data: a sequential format's span window, or
+        # a view from where it stopped once the walk moves on. Forward-only, stored
+        # bytes.
         walk_handoff.WalkHandoffStream,
         # A random-access member's data view: the view's offsets, forwarded.
         walk_handoff.MemberDataView,
-        # A sequential plugin's member data in a streaming pass: stored bytes read
-        # forward from the walk's stream, like TAR's slice; no codec above it.
+        # A sequential format's member data (TAR's too) in a streaming pass: stored
+        # bytes read forward from the walk's stream (for .tar.gz, the decompressed
+        # stream); no codec above it keeps a table, and a pass's member streams are
+        # forward-only.
         format_adapter._SpanWindow,
         # A sequential plugin's decoded member data (``MemberSpan.data``), read
         # forward through the walk that yielded it or through a walk of its own; the

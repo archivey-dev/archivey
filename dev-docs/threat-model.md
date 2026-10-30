@@ -567,9 +567,10 @@ without a bound, read with one `read(size)` as stdlib `tarfile` and pycdlib read
 size to the member's `max_metadata_bytes` budget before it reads anything
 ([Listing](#listing)), then reads it with `streams/streamtools/binaryio.py`
 `read_within_reach` in 64 KiB steps. A forward-only walk skips a member's data area in
-64 KiB steps too, and stops with `TruncatedError` at the first short read. Member data a
-caller reads through that walk is read in 1 MiB steps (`DATA_READ_STEP`): a member that
-declares 3 GiB over 100 KB of data peaks at 1 MiB. pycdlib reads
+64 KiB steps too (the sequential adapter's skip), and stops with `TruncatedError` at the
+first short read. Member data is read in 1 MiB steps (`walk_handoff.MEMBER_READ_STEP`,
+in every sequential format's window and view): a member that declares 3 GiB over 100 KB
+of data peaks at 1 MiB. pycdlib reads
 through archivey's source (`internal/source.py` `ArchiveSource`), which applies
 `read_within_reach` as well. Where the remaining length is a fact (a path's `stat`, a
 `BytesIO` buffer, a regular file's `fstat`) the read is clamped to it; otherwise it is
