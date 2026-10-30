@@ -85,10 +85,10 @@ def _archive_format_spellings() -> dict[str, ArchiveFormat]:
 _plugin_spellings: dict[str, ArchiveFormat] = {}
 
 # The built-in containers read in one forward pass, so also inside any single-file
-# compression stream. ``cli/common.py`` keeps a copy of the rule that uses this.
-SEQUENTIAL_CONTAINERS = frozenset(
-    {ContainerFormat.TAR, ContainerFormat.AR, ContainerFormat.CPIO}
-)
+# compression stream. ``register_builtin_format`` adds each sequential format-API
+# container. ``cli/common.py`` keeps a copy of the rule that uses this, and
+# ``tests/test_cli_outer.py`` pins the copy to it.
+SEQUENTIAL_CONTAINERS: set[ContainerFormat] = {ContainerFormat.TAR}
 
 
 def _plugin_format_spellings(fmt: ArchiveFormat) -> tuple[str, str]:
@@ -108,6 +108,11 @@ def plugin_spelling_clash(fmt: ArchiveFormat) -> tuple[str, ArchiveFormat] | Non
         if owner is not None:
             return spelling, owner
     return None
+
+
+def add_sequential_container(container: ContainerFormat) -> None:
+    """Read ``container`` inside a compression layer too (``open_stream`` peels it)."""
+    SEQUENTIAL_CONTAINERS.add(container)
 
 
 def add_plugin_spellings(fmt: ArchiveFormat) -> None:
