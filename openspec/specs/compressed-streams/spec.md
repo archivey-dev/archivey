@@ -371,8 +371,10 @@ the caller seeks: an error of the same type and arguments, whose `__cause__` sho
 it was first raised as text, rather than a traceback that grows per call. The raise
 SHALL NOT be the instance the stream keeps, and the stream SHALL NOT keep a traceback:
 a kept traceback holds the stream's frames, a cycle that keeps the stream and its
-decoder (a leased decoder process among them) alive until the garbage collector runs. A seek SHALL succeed and restart the decode, so the prefix
-reads again, as a truncated `DecompressorStream` does; the read that then reaches the
+decoder (a leased decoder process among them) alive until the garbage collector runs.
+The one exception is an error whose type the stream cannot copy: it is raised again as
+itself, and that stream waits for the collector. A seek SHALL succeed and restart the
+decode, so the prefix reads again, as a truncated `DecompressorStream` does; the read that then reaches the
 end SHALL raise the verdict again and return no bytes, whether or not a seek forfeited
 the digest check (a seek to 0 re-arms it, and the damage found again raises the first
 verdict again). A read reaches the end when it returns short or empty, is `read(-1)`, or
@@ -434,7 +436,7 @@ fresh stream.
 | Accelerated decoder; a read raises and the decoder moves back | `tell()` equals the bytes delivered; the stream stays usable |
 | Accelerated decoder; a read raises and the decoder cannot be moved back | That read raises its own error; every later `read` / `readinto` / `seek` / `tell()` raises `ReadError` naming the cause; `close()` succeeds |
 | Accelerated decoder; the caller's source raises during a read or a seek | That call raises the source's error; then as the row above, even if the source recovers |
-| Same, then the caller drops the stream, with the garbage collector off | The stream is freed at once |
+| Same, then the caller drops the stream, with the garbage collector off | The stream is freed at once (unless the verdict's type cannot be copied) |
 
 ### Requirement: Decompressed output digests are verified at clean EOF
 
