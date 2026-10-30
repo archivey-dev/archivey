@@ -343,7 +343,8 @@ the right weight.
 **Rule.** A valid file using a feature archivey cannot decode raises
 `UnsupportedFeatureError`. `CorruptionError` is only for data that is actually damaged.
 The truncated/corrupt split is best-effort: `TruncatedError` is a `CorruptionError`
-subclass, and callers should not branch on it.
+subclass, and the docs present it as a hint that the source was most likely cut short,
+so fetching it again or resuming a download may help.
 
 **Why.** Exception types are control flow. A caller sorting a backup corpus treats
 "corrupt" files differently from "needs a newer tool".
@@ -351,7 +352,10 @@ subclass, and callers should not branch on it.
 **Rulings.** lzip version 0 is unsupported, not corrupt (2026-10-03, PR 567). LZMA with
 `lc + lp > 4` stays unsupported because liblzma cannot decode it, and the handbook names
 the one library that could (2026-10-08, PR 621). `TruncatedError` became a
-`CorruptionError` subclass before 0.2.0 (2026-09-27, PR 508).
+`CorruptionError` subclass before 0.2.0 (2026-09-27, PR 508). `TruncatedError` is a
+resume hint, kept best effort, instead of a label not to branch on: an aborted download
+is the common cause, and a caller can act on that (davi, 2026-10-30, PR 1140); reopen if
+a common cut raises plain `CorruptionError`.
 
 ### DR-4a. The integrity guarantee is for a start-to-end read
 

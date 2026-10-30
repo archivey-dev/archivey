@@ -19,8 +19,12 @@ from tests.conftest import run_7z, sevenzip_lists_arm64
 from tests.sample_archives import CORPUS, corpus_archive_path
 
 # Small corpus entry ids that build quickly and cover common layouts.
+# ``sevenzip-ppmd`` is 7z only: the format filter keeps it out of the other targets.
+# PPMd decodes in a child process (process_isolation), so the seed covers the 7z
+# header, solid demux and child protocol, not the native decoder: Atheris gets no
+# coverage from inside pyppmd, and a pyppmd crash comes back as an ArchiveyError.
 _SEED_ENTRY_IDS = frozenset(
-    {"basic", "encoding", "large", "adversarial", "adversarial-tar"}
+    {"basic", "encoding", "large", "adversarial", "adversarial-tar", "sevenzip-ppmd"}
 )
 # Encrypted ZIP when the 7z CLI is available (AES / ZipCrypto fixtures).
 _ENC_SEED_ENTRY_IDS = frozenset({"encrypted", "encrypted-mixed", "encrypted-multi"})
