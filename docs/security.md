@@ -82,7 +82,9 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   `ExtractionLimits` cover only what `extract_all` writes to disk, but `decoder_limits.max_ratio` holds
   every read too: a member that decodes to more than 800 times its compressed size raises
   `ResourceLimitError` from the read that crosses the limit, and so do the reads of one reader
-  together past 800 times the archive's size. A `read()` stops there rather than first holding the
+  together past 800 times the archive's size. That second check needs the archive's size, or a
+  count of its compressed bytes, so it doesn't apply to a ZIP, TAR or 7z read from a pipe: there each
+  member is still held on its own, but nothing bounds many small members together. A `read()` stops there rather than first holding the
   whole member in memory. A container inside a compression stream (a `.tar.gz`, a format handler's
   `.cpio.xz`) is held to it whenever it's decoded, listing included, since listing one decodes all
   of it. A RAR archive opened from a

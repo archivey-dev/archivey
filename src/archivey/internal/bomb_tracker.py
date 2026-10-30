@@ -639,27 +639,55 @@ class MemberRatioGuard(_RatioGuard):
         # The decoder answers the seek itself, with its own clamping and end rules;
         # only a forward gap is decoded first, in steps, to the target the seek names.
         self._held = None
+        start = self._pos
         if whence == io.SEEK_SET:
             target: int | None = offset
         elif whence == io.SEEK_CUR:
             target = self._pos + offset
+        elif self._size is not None:
+            target = self._size + offset
         else:
-            size = self._size
-            target = None if size is None else size + offset
+            target = self._seek_end_unsized(offset)
         if target is not None and self._size is not None:
             # Past the member's end there is nothing to decode.
             target = min(target, self._size)
         if target is not None:
-            while target - self._pos > self._room():
-                step_to = self._pos + int(self._room())
+            while target - self._pos > (room := self._room()):
+                step_to = self._pos + int(room)
                 reached = self._inner.seek(step_to)
+                self._pos = reached
                 if reached < step_to:  # the stream ended inside the step
                     break
-                self._pos = reached
                 self._check(reached)
+        if whence == io.SEEK_CUR:
+            # The steps moved the decoder; what is left of the offset is from there.
+            offset -= self._pos - start
         self._pos = self._inner.seek(offset, whence)
         self._check(self._pos)
         return self._pos
+
+    def _seek_end_unsized(self, offset: int) -> int | None:
+        """The target of ``seek(offset, SEEK_END)`` on a member of unrecorded size.
+
+        The decoder serves that seek by decoding to its end in one call. Where a rule
+        could refuse on the way, the end is found the way ``_RatioGuard.seek`` finds
+        it: from the decoder's cheap size, else by reading to it a step at a time.
+        ``None`` leaves the seek to the decoder whole.
+        """
+        if self._room() == math.inf:
+            return None  # nothing on the way could be refused
+        size = source_byte_size(self._inner)
+        if size is not None:
+            return size + offset
+        if not self._inner.seekable():
+            # Refused before the drain, not after decoding it all.
+            raise io.UnsupportedOperation("seek")
+        while data := read_blocking(
+            self._inner, min(int(self._room()), _GUARD_STEP * 16)
+        ):
+            self._pos += len(data)
+            self._check(self._pos)
+        return self._pos + offset
 
     def _judge(self, position: int) -> None:
         limits = self._limits
@@ -677,6 +705,9 @@ class MemberRatioGuard(_RatioGuard):
                     f"max_ratio={max_ratio:.0f}:1",
                     member_name=self._member_name,
                 )
+        # Raised above before the tally counts this call's output. That leaves at most
+        # one step uncounted per refused member: every step before it was counted, and
+        # ``_room`` keeps a step within reach of the first refusable position.
         total = self._tally.advance(self._key, position)
         refusal = archive_ratio_refusal(
             total,

@@ -14,13 +14,19 @@ from pathlib import Path
 import pytest
 
 from archivey import (
+    ArchiveMember,
     ArchiveyConfig,
     DecoderLimits,
     ExtractionLimits,
     ResourceLimitError,
     open_archive,
 )
-from archivey.internal.bomb_tracker import AlwaysStopResourceLimitError
+from archivey.internal.bomb_tracker import (
+    AlwaysStopResourceLimitError,
+    MemberRatioGuard,
+    ReadRatioTally,
+)
+from archivey.types import MemberType
 
 _MIB = 2**20
 
@@ -184,4 +190,107 @@ def test_a_copy_of_unlimited_does_not_warn_and_keeps_the_ratio_off(
     path = _zip(tmp_path / "bomb.zip", [("zeros", bytes(24 * _MIB))])
     with open_archive(path) as reader:
         reader.extract_all(tmp_path / "out", limits=capped)
+    assert (tmp_path / "out" / "zeros").stat().st_size == 24 * _MIB
+
+
+class _Decoder(io.RawIOBase):
+    """Stands in for a member's decoder: records the furthest offset any call reached.
+    Not a ``BytesIO``, so its size is never cheap."""
+
+    def __init__(self, data: bytes) -> None:
+        self._data = io.BytesIO(data)
+        self.furthest = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def readinto(self, b: memoryview) -> int:  # type: ignore[override]
+        n = self._data.readinto(b)
+        self.furthest = max(self.furthest, self._data.tell())
+        return n
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        pos = self._data.seek(offset, whence)
+        self.furthest = max(self.furthest, pos)
+        return pos
+
+    def tell(self) -> int:
+        return self._data.tell()
+
+
+def _guard(
+    decoder: _Decoder,
+    *,
+    size: int | None,
+    compressed_size: int,
+    limits: DecoderLimits | None = None,
+    tally: ReadRatioTally | None = None,
+    consumed: int | None = None,
+) -> MemberRatioGuard:
+    member = ArchiveMember(
+        type=MemberType.FILE,
+        name="m",
+        size=size,
+        compressed_size=compressed_size,
+        _member_id=1,
+    )
+    return MemberRatioGuard(
+        decoder,
+        limits=limits or DecoderLimits(),
+        member=member,
+        tally=tally or ReadRatioTally(),
+        static_size=None,
+        consumed=None if consumed is None else lambda: consumed,
+    )
+
+
+def test_a_seek_to_the_end_of_an_unsized_member_stops_within_a_step() -> None:
+    # A bz2 or gzip member records no size: the end is read to a step at a time.
+    decoder = _Decoder(bytes(64 * _MIB))
+    guard = _guard(decoder, size=None, compressed_size=100)
+    with pytest.raises(ResourceLimitError, match="max_ratio=800:1"):
+        guard.seek(0, io.SEEK_END)
+    floor = DecoderLimits().ratio_activation_threshold
+    assert decoder.furthest <= floor + 16 * _MIB
+
+
+def test_a_seek_to_the_end_under_the_ratio_lands_there() -> None:
+    data = b"abc" * _MIB
+    guard = _guard(_Decoder(data), size=None, compressed_size=len(data))
+    assert guard.seek(-3, io.SEEK_END) == len(data) - 3
+    assert guard.read() == b"abc"
+
+
+def test_a_relative_seek_in_steps_lands_where_it_was_asked() -> None:
+    # The archive-wide room is one step, so the seek goes to the decoder in steps;
+    # the offset left after them is applied once.
+    data = bytearray(40 * _MIB)
+    data[6 * _MIB : 6 * _MIB + 4] = b"MARK"
+    limits = DecoderLimits(max_ratio=10.0, live_ratio_activation_threshold=_MIB)
+    guard = _guard(
+        _Decoder(bytes(data)),
+        size=len(data),
+        compressed_size=len(data),
+        limits=limits,
+        consumed=100 * _MIB,
+    )
+    assert guard.seek(6 * _MIB, io.SEEK_CUR) == 6 * _MIB
+    assert guard.read(4) == b"MARK"
+    assert guard.seek(-4, io.SEEK_CUR) == 6 * _MIB
+    assert guard.read(4) == b"MARK"
+
+
+def test_call_limits_without_a_ratio_keep_the_configs_deprecated_one(
+    tmp_path: Path,
+) -> None:
+    path = _zip(tmp_path / "bomb.zip", [("zeros", bytes(24 * _MIB))])
+    with pytest.warns(DeprecationWarning):
+        config = ArchiveyConfig(extraction_limits=ExtractionLimits(max_ratio=1e9))
+    with open_archive(path, config=config) as reader:
+        reader.extract_all(
+            tmp_path / "out", limits=ExtractionLimits(max_extracted_bytes=10**12)
+        )
     assert (tmp_path / "out" / "zeros").stat().st_size == 24 * _MIB

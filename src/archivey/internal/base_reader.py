@@ -4016,11 +4016,11 @@ class BaseArchiveReader(ArchiveReader):
                         if hold_to_ratio:
                             # A file copy decodes its source's bytes again: held, and
                             # counted once, as that source.
-                            source = m.link_target_member
+                            copied = m.link_target_member
                             self._hold_to_ratio(
                                 stream,
-                                source
-                                if source is not None
+                                copied
+                                if copied is not None
                                 and m.extra.get(EXTRA_IS_FILE_COPY)
                                 else m,
                             )
@@ -4146,7 +4146,10 @@ class BaseArchiveReader(ArchiveReader):
             selector=selector,
             filter=filter,
             limits=effective_limits,
-            ratio=self._config.decoder_limits,
+            # The reader's ratio, a deprecated field of its config's extraction limits
+            # included, under the call's: a per-call ``limits=`` that sets no ratio
+            # field keeps it.
+            ratio=self._ratio_limits(),
             dry_run=dry_run,
         )
         token = self._state.acquire_pass("extract_all")

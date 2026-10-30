@@ -915,7 +915,10 @@ rules extraction applies to what it writes:
   member counted once at the furthest offset any read of it reached, is judged by the
   archive-wide rule (`archive_ratio_refusal`: the static denominator, or the live one
   past `live_ratio_activation_threshold`). Crossing it SHALL raise the always-stop
-  `ResourceLimitError`.
+  `ResourceLimitError`. Where neither denominator exists (an archive read from a
+  non-seekable stream that is not inside a compression stream: no trusted size, and no
+  counter installed), this rule does not apply to reads, as it does not to extraction;
+  extraction keeps `max_extracted_bytes` there, and a read keeps only the per-member rule.
 
 A RAR file copy is held, and counted, as the member whose data it repeats. The read
 that crosses a limit SHALL NOT return the bytes it decoded. Reads and forward seeks
