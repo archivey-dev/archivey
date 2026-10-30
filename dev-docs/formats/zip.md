@@ -839,7 +839,10 @@ table that fills with no clear is refused, as both tools refuse it; where the tw
 does, and `unshrink` would leave it to the CRC-32. An Implode copy from before the start
 of the output reads zeros, as both read it. The test-only encoders in
 `tests/zip_legacy_build.py` make the fixtures, checked with `unzip` and 7-Zip 26.05;
-Commons Compress's five PKZIP archives match it in the corpus test. The 7z handbook (§ coders, *Input after the stream*) has how each codec finds
+Commons Compress's five PKZIP archives match it in the corpus test. A partial clear
+makes no output, so no limit sees it: the decoder keeps a child count per slot and the
+set of leaves, and a clear costs the slots it frees, not a walk over the table.
+The 7z handbook (§ coders, *Input after the stream*) has how each codec finds
 its end, and what it cannot see; `inflate64` drops input after a Deflate64 stream's end
 and has no `unused_data`, so `Deflate64Decoder` holds back the last byte it is given,
 and input follows the end when `eof` is already True as that byte goes in. The

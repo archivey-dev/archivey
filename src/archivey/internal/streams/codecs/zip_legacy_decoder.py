@@ -23,6 +23,7 @@ Both decode forward only: a seek goes back to the start and decodes again.
 
 from __future__ import annotations
 
+import heapq
 from collections.abc import Generator
 from typing import BinaryIO
 
@@ -204,7 +205,15 @@ class ShrinkDecoder(_BitDecoder):
         suffix = bytearray(_SHRINK_TABLE)
         used = bytearray(_SHRINK_TABLE)
         used[:_SHRINK_FIRST_FREE] = b"\x01" * _SHRINK_FIRST_FREE
-        free = _SHRINK_FIRST_FREE  # no slot below it is free
+        # The free slots, lowest first: "the lowest free slot" in one pop. A clear
+        # frees only slots that were added, so every push is paid for by a code.
+        free = list(range(_SHRINK_FIRST_FREE, _SHRINK_TABLE))
+        # Pointers to each slot from other slots (an orphan's parent counts too, as
+        # in 7-Zip), and the used slots above 256 that none points to: what a
+        # partial clear frees. A clear then costs the slots it frees, not the
+        # table's size, so a run of clears with no output stays cheap.
+        children = [0] * _SHRINK_TABLE
+        leaves: set[int] = set()
         width = 9
         prev = -1
         prev_first = 0
@@ -236,14 +245,17 @@ class ShrinkDecoder(_BitDecoder):
                         )
                     width += 1
                 elif sub == _SHRINK_PARTIAL_CLEAR:
-                    has_child = bytearray(_SHRINK_TABLE)
-                    for slot in range(_SHRINK_FIRST_FREE, _SHRINK_TABLE):
-                        if used[slot]:
-                            has_child[parent[slot]] = 1
-                    for slot in range(_SHRINK_FIRST_FREE, _SHRINK_TABLE):
-                        if not has_child[slot]:
-                            used[slot] = 0
-                    free = _SHRINK_FIRST_FREE
+                    freed = leaves
+                    leaves = set()
+                    for slot in freed:
+                        used[slot] = 0
+                        heapq.heappush(free, slot)
+                        up = parent[slot]
+                        if up > 255:
+                            children[up] -= 1
+                            # A parent the clear left a leaf goes at the next one.
+                            if not children[up] and used[up]:
+                                leaves.add(up)
                 else:
                     raise CorruptionError(
                         f"Shrink stream has an unknown control code {sub}"
@@ -252,18 +264,21 @@ class ShrinkDecoder(_BitDecoder):
 
             new = -1
             if prev >= 0:
-                while free < _SHRINK_TABLE and used[free]:
-                    free += 1
-                if free >= _SHRINK_TABLE:
+                if not free:
                     raise CorruptionError(
                         "Shrink stream's code table is full and was not cleared"
                     )
-                new = free
+                new = heapq.heappop(free)
                 # Its last byte is the first of this code's string: for a code that
                 # names the entry itself (KwKwK), the first of the previous string.
                 used[new] = 1
                 parent[new] = prev
                 suffix[new] = prev_first
+                if prev > 255:
+                    children[prev] += 1
+                    leaves.discard(prev)
+                if not children[new]:
+                    leaves.add(new)
             elif code > 255:
                 raise CorruptionError("Shrink stream starts with an undefined code")
             if not used[code]:

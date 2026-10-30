@@ -13,6 +13,7 @@ import random
 import shutil
 import struct
 import subprocess
+import time
 import tracemalloc
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.internal.streams.codecs.zip_legacy_decoder import ShrinkDecoder
 from tests.conftest import run_7z
 from tests.streams_util import NonSeekableBytesIO
 from tests.zip_legacy_build import (
@@ -299,3 +301,21 @@ def test_a_huge_declared_size_allocates_nothing(
     finally:
         tracemalloc.stop()
     assert peak < 32 * 2**20
+
+
+def test_a_run_of_partial_clears_costs_little() -> None:
+    """A clear makes no output, so neither the ratio guard nor a read budget sees it.
+    Each costs the slots it frees, not a walk over the 8k-slot table: 60,000 clears
+    (135 KB) took about 28 s with the walk."""
+    from tests.zip_legacy_build import BitWriter
+
+    out = BitWriter()
+    out.write(ord("A"), 9)
+    for _ in range(60_000):
+        out.write(256, 9)
+        out.write(2, 9)
+    data = out.getvalue()
+    decoder = ShrinkDecoder(10**9)
+    start = time.perf_counter()
+    assert decoder.feed(data).data == b"A"
+    assert time.perf_counter() - start < 5
