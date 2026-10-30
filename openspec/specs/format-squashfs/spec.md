@@ -41,6 +41,7 @@ other than 4.0 SHALL raise `UnsupportedFeatureError`.
 | An LZ4 image with `FormatPolicy(exclude_libraries={OptionalLibrary.LZ4})` | `PackageNotInstalledError` naming `exclude_libraries` |
 | Superblock magic `sqsh`, or version 3.0, from a stream with no name | `UnsupportedFeatureError` |
 | A file with blocks stored with size 0, under a basic inode | `is_sparse` is true; the holes read as zeros |
+| A 1 GiB file of holes at 128 KiB blocks, whose block list decodes to more than the inode table takes on disk | Lists, with `is_sparse` true |
 | An unknown compressor id | `CorruptionError` naming the id |
 
 ### Requirement: Bound every size to what the format allows
@@ -52,7 +53,8 @@ directory reached twice, a symlink target longer than 65535 bytes, and files who
 block lists add up to more than the inode table holds. These are structural bounds, not
 policy limits: 8 KiB is the format's metadata block size, the block size is in the
 superblock, 65535 is the longest target the Linux kernel reads (`squashfs_read_inode`),
-and in a valid image each file's block list lies in its own bytes of the inode table.
+and in a valid image each file's block list lies in its own bytes of the decoded inode
+table, which is at most 8 KiB per metadata block.
 An image cut short SHALL raise `TruncatedError` naming the structure the cut falls in.
 
 The backend SHALL keep at most 64 decoded metadata blocks and 4 decoded fragment blocks

@@ -30,3 +30,11 @@ mksquashfs "$tree" xz-bcj.sqfs -comp xz -Xbcj x86 "${common[@]}"
 mksquashfs "$tree" tail-ends.sqfs -tailends "${common[@]}"
 # LZO with liblzo's fast compressor; the default is lzo1x_999, which codes differently.
 mksquashfs "$tree" lzo1x-1.sqfs -comp lzo -Xalgorithm lzo1x_1 "${common[@]}"
+# A 1 GiB file of holes at the default 128 KiB blocks: its 32 KiB block list of zeros
+# decodes to more than the compressed inode table holds on disk.
+holes="$(mktemp -d)"
+trap 'rm -rf "$tree" "$holes"' EXIT
+truncate -s 1G "$holes/holes.bin"
+python3 -c "import random, sys; r = random.Random(2); sys.stdout.buffer.write(r.randbytes(5000))" > "$holes/data.bin"
+mksquashfs "$holes" large-sparse.sqfs -noappend -all-root -mkfs-time 0 -all-time 0 -nopad \
+  -no-xattrs -quiet -no-progress

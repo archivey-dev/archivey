@@ -293,6 +293,16 @@ def test_an_entry_whose_inode_has_another_type(tmp_path: Path) -> None:
         archive.members()
 
 
+def test_a_block_list_of_holes_larger_than_the_table_on_disk() -> None:
+    """A 1 GiB file of holes: its 32 KiB list of zeros compresses to far less, so the
+    bound on the lists is the decoded table, not the bytes it takes in the image."""
+    with open_archive(DATA / "large-sparse.sqfs") as archive:
+        members = {m.name: m for m in archive.members()}
+        assert members["holes.bin"].size == 1 << 30
+        assert members["holes.bin"].is_sparse
+        assert not members["data.bin"].is_sparse
+
+
 def test_a_block_list_longer_than_the_inode_table(tmp_path: Path) -> None:
     """A size that needs more blocks than the table holds is refused before the scan."""
     data = _uncompressed()

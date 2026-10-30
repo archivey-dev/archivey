@@ -228,6 +228,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         self._ids = self._ids_table()
         # Block-list bytes scanned by the listing so far (``_has_holes``).
         self._block_list_bytes = 0
+        self._inode_capacity: int | None = None
 
     # ── Decoding ─────────────────────────────────────────────────────────────────────
 
@@ -509,17 +510,35 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
                 f"a directory listing runs to {cursor.consumed} bytes, not {size}"
             )
 
+    def _inode_table_capacity(self) -> int:
+        """At most how many bytes the inode table decodes to: every metadata block
+        but the last decodes to 8 KiB, so its blocks, counted by their headers, times
+        8 KiB. The table on disk is compressed, so its own size is no bound."""
+        if self._inode_capacity is None:
+            pos, blocks = self._sb.inode_table, 0
+            while pos < self._sb.directory_table:
+                (header,) = self._read_struct(pos, "<H", "a metadata header")
+                length = header & ~_METADATA_UNCOMPRESSED
+                if not 0 < length <= _METADATA_SIZE:
+                    raise CorruptionError(
+                        f"the metadata block at {pos} declares {length} bytes"
+                    )
+                pos += 2 + length
+                blocks += 1
+            self._inode_capacity = blocks * _METADATA_SIZE
+        return self._inode_capacity
+
     def _has_holes(self, location: FileLocation) -> bool:
         """Whether a file has a block stored with size 0, which reads as zeros.
 
         Only the block list says so: mksquashfs writes a sparse file under a basic
         inode, which has no "bytes saved" field. In a valid image the files' lists
-        lie in separate bytes of the inode table, so together they fit in it; a
-        damaged image whose lists overlap would otherwise make the scan quadratic.
+        lie in separate bytes of the decoded inode table, so together they fit in it;
+        a damaged image whose lists overlap would otherwise make the scan quadratic.
         """
         remaining = location.block_count * 4
         self._block_list_bytes += remaining
-        if self._block_list_bytes > self._sb.directory_table - self._sb.inode_table:
+        if self._block_list_bytes > self._inode_table_capacity():
             raise CorruptionError(
                 "the files' block lists add up to more than the inode table holds"
             )

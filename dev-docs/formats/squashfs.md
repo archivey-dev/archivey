@@ -117,8 +117,10 @@ offsets the image declares:
 - The directory walk is a loop, not a recursion, and refuses a directory reached twice,
   so a directory listed inside itself does not walk forever.
 - The block lists the listing scans for holes are bounded together: in a valid image
-  each lies in its own bytes of the inode table, so lists that add up to more than the
-  table are `CorruptionError`, before a list longer than the table is read.
+  each lies in its own bytes of the decoded inode table, at most 8 KiB per metadata
+  block, so lists that add up to more are `CorruptionError`, before a list longer than
+  the table is read. The table's size on disk is no bound: it is compressed, and a
+  list of holes compresses to almost nothing.
 - Every decoder is bounded by the block size, so a block cannot expand past it. The LZO
   decoder refuses a stream that would read past its input, write past the block size, or
   copy from before the start of the output.
