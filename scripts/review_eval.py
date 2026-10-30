@@ -232,11 +232,13 @@ def claude(
     tools: str,
     env: dict[str, str],
     effort: str | None = None,
+    transcript: Path | None = None,
 ) -> dict:
+    fmt = ["stream-json", "--verbose"] if transcript else ["json"]
     cmd = [
         "claude", "-p", prompt,
         "--model", model,
-        "--output-format", "json",
+        "--output-format", *fmt,
         "--no-session-persistence",
         "--strict-mcp-config",
         "--setting-sources", "",
@@ -250,9 +252,55 @@ def claude(
         cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=TIMEOUT,
         check=False,
     )  # fmt: skip
+    if transcript:
+        transcript.write_text(out.stdout, encoding="utf-8")
     if out.returncode != 0:
         raise RuntimeError(f"claude exited {out.returncode}: {out.stderr[-2000:]}")
-    return json.loads(out.stdout)
+    if not transcript:
+        return json.loads(out.stdout)
+    events = [json.loads(line) for line in out.stdout.splitlines() if line.strip()]
+    return next(e for e in reversed(events) if e.get("type") == "result")
+
+
+def reads(transcript: Path) -> dict:
+    """What a review read: each file the Read tool opened, with the characters it
+    returned, other tools' output by tool, and the run's token totals. Kept to judge what the reviewer's guides
+    cost; a file read twice counts twice."""
+    files: dict[str, int] = {}
+    pending: dict[str, str] = {}
+    usage = {"input": 0, "cache_read": 0, "cache_write": 0, "output": 0}
+    counted: set[str] = set()
+    for line in transcript.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        event = json.loads(line)
+        message = event.get("message") or {}
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if part.get("type") == "tool_use":
+                name = part.get("name", "?")
+                # Other tools' output is pooled under the tool's name.
+                key = part.get("input", {}).get("file_path") if name == "Read" else None
+                pending[part["id"]] = key or f"({name})"
+            elif (
+                part.get("type") == "tool_result" and part.get("tool_use_id") in pending
+            ):
+                body = part.get("content")
+                if isinstance(body, list):
+                    body = "".join(b.get("text", "") for b in body)
+                path = pending.pop(part["tool_use_id"])
+                files[path] = files.get(path, 0) + len(body or "")
+        # One API call can arrive as several events, one per content block.
+        if event.get("type") == "assistant" and message.get("id") not in counted:
+            counted.add(message.get("id", ""))
+            u = message.get("usage") or {}
+            usage["input"] += u.get("input_tokens", 0)
+            usage["cache_read"] += u.get("cache_read_input_tokens", 0)
+            usage["cache_write"] += u.get("cache_creation_input_tokens", 0)
+            usage["output"] += u.get("output_tokens", 0)
+    return {"files": files, "usage": usage}
 
 
 def review(
@@ -276,7 +324,14 @@ def review(
     result = claude(
         REVIEW_PROMPT.format(pr=case.pr, body=case.body),
         model=model, cwd=repo, tools=REVIEW_TOOLS, env=env, effort=effort,
+        transcript=work / "transcript.jsonl",
     )  # fmt: skip
+    read = reads(work / "transcript.jsonl")
+    read["files"] = {
+        str(Path(k).relative_to(repo)) if Path(k).is_relative_to(repo) else k: v
+        for k, v in read["files"].items()
+    }
+    (work / "reads.json").write_text(json.dumps(read, indent=2) + "\n")
     (work / "review.md").write_text(result.get("result", ""), encoding="utf-8")
     meta = {
         "case": case.id,

@@ -5,6 +5,37 @@ One section per run worth keeping, newest first. `skill` is the tree hash of
 Score: `yes` = 1, `partial` = 0.5. The reviews themselves are kept outside the
 repository.
 
+## 2026-10-30: what the reviewer reads, and a narrower `CONTRIBUTING.md` read
+
+The runner now keeps each review's transcript and writes `reads.json`: the characters
+every file the Read tool returned, other tools' output by tool, and the token totals.
+Two Opus runs, judge `claude-sonnet-5-5`, one on the skill as it stood and one with
+§1 asking for three sections of `CONTRIBUTING.md` (Tooling decisions, Coding
+standards, Testing standards) instead of the whole file.
+
+| Case | PR | Whole file | Three sections |
+|---|---|---|---|
+| zstd-seek-point-in-frame | #934 | no | yes |
+| decoder-death-reraise-cycle | #904 | yes | yes |
+| rapidgzip-cut-raw-deflate | #545 | no | no |
+| rapidgzip-cut-gzip-member-then-complete | #613 | no | no |
+| pax-sparse-version-by-records | #738 | partial | partial |
+| **Score** | | **1.5 of 5** | **2.5 of 5** |
+| Cost (USD) | | 39.24 | 40.74 |
+| Turns, all cases | | 262 | 278 |
+| Guide characters read | | 469 237 | 378 830 |
+| `CONTRIBUTING.md` characters read | | 138 888 | 87 568 |
+
+The guides (the skill, its references, `CONTRIBUTING.md`, design docs and specs) were
+18 to 42 percent of what a review's tools returned; the rest is Bash output (the
+largest single item), source and grep. Reading three sections cut the guide reading
+by a fifth and `CONTRIBUTING.md` by over a third. Neither the score (a change of one
+case, inside the noise) nor the cost moved: 16 more turns across the five cases cost
+more than the shorter reads saved. The trim keeps the review no worse; it does not
+make it cheaper by an amount one run can show. The input a review pays for is
+mostly what it runs and reads in the code, at about 150 000 tokens of context per
+turn over 45 to 60 turns.
+
 ## 2026-10-29: Sonnet with the project installed, and at xhigh effort
 
 Two separate changes to the Sonnet review, two runs each: `--install` (the PR's own

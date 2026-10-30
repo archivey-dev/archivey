@@ -19,7 +19,8 @@ second, not never.
 3. Linked artifact **names** only (issue #, `openspec/changes/<name>/`, `review/` finding
    ID) — what to open in pass 2, not the prose yet. Do **not** read the OpenSpec change,
    design notes, or long PR rationale yet.
-4. `CONTRIBUTING.md`, once, for the rules the checklists below cite.
+4. `CONTRIBUTING.md`'s rule sections, once (SKILL.md §1 names them), for the rules the
+   checklists below cite.
 
 ## Pass 1 — code alone
 

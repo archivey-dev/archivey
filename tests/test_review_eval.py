@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import subprocess
 import sys
@@ -88,3 +89,30 @@ def _have_in(repo: Path, sha: str) -> bool:
         stderr=subprocess.DEVNULL,
     )
     return probe.returncode == 0
+
+
+def test_reads_counts_each_file_tool_output_and_api_call_once(tmp_path: Path) -> None:
+    usage = {"input_tokens": 1, "cache_read_input_tokens": 100, "output_tokens": 5}
+    events = [
+        # One API call arrives as one event per content block, with the same usage.
+        {"type": "assistant", "message": {"id": "m1", "usage": usage, "content": [
+            {"type": "tool_use", "id": "t1", "name": "Read",
+             "input": {"file_path": "/r/SKILL.md"}}]}},
+        {"type": "assistant", "message": {"id": "m1", "usage": usage, "content": [
+            {"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "ls"}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "abcd"},
+            {"type": "tool_result", "tool_use_id": "t2",
+             "content": [{"type": "text", "text": "xy"}]}]}},
+        {"type": "result", "result": "review"},
+    ]  # fmt: skip
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text("\n".join(json.dumps(e) for e in events), encoding="utf-8")
+    read = review_eval.reads(transcript)
+    assert read["files"] == {"/r/SKILL.md": 4, "(Bash)": 2}
+    assert read["usage"] == {
+        "input": 1,
+        "cache_read": 100,
+        "cache_write": 0,
+        "output": 5,
+    }
