@@ -73,3 +73,15 @@ def test_the_entry_has_only_the_detection_hooks_the_handler_overrides() -> None:
     assert probing.magic_behind_prefix(b"..AB")
     assert probing.content_probe(b"yes")
     assert not probing.content_probe(b"no")
+
+
+def test_a_container_only_codec_has_no_magic() -> None:
+    class Container(BuiltinCodecHandler):
+        codec = Codec.SHRINK
+
+        def decompressor(self, call: CodecCall) -> Decompressor:
+            raise NotImplementedError
+
+    entry = builtin_codec(Container)()
+    assert entry.stream_format is None
+    assert entry.magic == ()
