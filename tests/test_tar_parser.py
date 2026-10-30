@@ -2133,6 +2133,22 @@ def test_ordinary_archives_report_no_ambiguity(label: str) -> None:
         assert DiagnosticCode.MEMBER_HEADER_AMBIGUOUS not in ar.diagnostics.counts
 
 
+@pytest.mark.parametrize(
+    ("body", "emptied"),
+    [
+        (_rec(b"path", b"") + _rec(b"path", b"foo"), []),
+        (_rec(b"path", b"foo") + _rec(b"path", b""), [b"path"]),
+    ],
+    ids=["set after the empty record", "set before it"],
+)
+def test_an_empty_record_counts_only_when_it_leaves_an_earlier_value(
+    body: bytes, emptied: list[bytes]
+) -> None:
+    records = parse_pax_records(body, binary_default=False)
+    assert records.values[b"path"].value == b"foo"
+    assert list(records.emptied) == emptied
+
+
 def test_pax_records_list_repeated_keys_once() -> None:
     records = parse_pax_records(
         _rec(b"a", b"1") * 3 + _rec(b"GNU.sparse.offset", b"0") * 2,

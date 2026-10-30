@@ -683,6 +683,9 @@ def parse_pax_records(
                 repeated[key] = None
             if first_wins:
                 continue
+        # A value stored after an empty record of its key is the one in force, so the
+        # empty record no longer kept an earlier value.
+        emptied.pop(key, None)
         raw[key] = value
     # hdrcharset follows the block's own rule (last in x, first in g) like any key,
     # and an empty one is skipped like any other empty value.
