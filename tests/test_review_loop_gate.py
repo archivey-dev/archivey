@@ -926,5 +926,20 @@ def test_the_gate_gets_the_tier_and_a_failed_tier_only_makes_it_sonnet() -> None
     assert "TIER: ${{ steps.tier.outputs.tier }}" in decide_step
     assert "tier: $tier" in decide_step
     # Nothing is left of the pass that followed an approval in the same run.
-    for gone in ("opus_pass_next", "opus-after", "cursoragent"):
+    for gone in ("opus_pass_next", "opus-after"):
         assert gone not in text, gone
+
+
+def test_cursor_is_asked_on_a_deep_opus_round_with_the_person_token_only() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    cursor = _step("Ask Cursor for a full review")
+    assert "steps.gate.outputs.opus_pass == 'true'" in cursor
+    assert "steps.tier.outputs.tier == 'deep'" in cursor
+    assert "continue-on-error: true" in cursor
+    assert "GH_TOKEN: ${{ secrets.CURSOR_TRIGGER_TOKEN }}" in cursor
+    # No pull request text reaches the step that holds the token.
+    assert "github.event.pull_request" not in cursor
+    # It runs beside the review, so it comes before it.
+    assert text.index("- name: Ask Cursor") < text.index("- name: Claude review")
+    # Only this step gets the token.
+    assert text.count("secrets.CURSOR_TRIGGER_TOKEN") == 1

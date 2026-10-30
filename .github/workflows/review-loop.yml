@@ -197,6 +197,29 @@ jobs:
       # accelerators and codecs a change is about, not only the standard library. The
       # review-eval runs on 2026-10-29 found reviews of rapidgzip changes reporting
       # "rapidgzip is not installed" and reading the code instead of measuring it.
+      # A deep pull request's Opus round also asks Cursor for a first look, so the
+      # two reviews run side by side. Cursor ignores comments from bots and GitHub
+      # Apps, `github-actions[bot]` included, so this one is posted with a person's
+      # token, scoped to pull request comments on this repository. Only this step gets
+      # it, and it reads no pull request text. Best-effort: no token, no request.
+      - name: Ask Cursor for a full review
+        continue-on-error: true
+        if: >-
+          steps.gate.outputs.run == 'true' &&
+          steps.gate.outputs.opus_pass == 'true' &&
+          steps.tier.outputs.tier == 'deep'
+        env:
+          GH_TOKEN: ${{ secrets.CURSOR_TRIGGER_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "No CURSOR_TRIGGER_TOKEN secret; Cursor is not asked." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "@cursoragent please do a full code review of this pull request with this repository's \`code-review-skill\`: the whole diff against its base, as a first look. Post the findings as review comments; do not push.
+
+          ---
+          _Posted by the review workflow for the Opus round._"
+
       - name: Install uv
         if: steps.gate.outputs.run == 'true'
         uses: astral-sh/setup-uv@v5

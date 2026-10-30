@@ -245,10 +245,12 @@ the three `risk:` labels.
   request touching them is deep and the maintainer merges it, and since the tier is read
   from the base branch, the pull request cannot take itself off the list (davitf,
   2026-10-29).
-- **Cursor is asked by hand.** For a day the Opus pass asked Cursor for a full review
-  with an `@cursoragent` comment from `github-actions[bot]`; on five deep pull requests
-  it never answered, so the workflow no longer asks. Ask it with an `@cursoragent`
-  comment of your own when a review by Cursor is wanted.
+- **Cursor reviews a deep pull request's Opus round.** The workflow posts an
+  `@cursoragent` request when that round starts, with the `CURSOR_TRIGGER_TOKEN`
+  secret: a fine-grained personal token limited to pull request comments on this
+  repository. Cursor drops comments from bots and GitHub Apps, so the request posted
+  as `github-actions[bot]` went unanswered on five pull requests. Without the secret
+  the step skips and says so in the job summary; ask Cursor by hand then.
 
 ## What this replaced
 
