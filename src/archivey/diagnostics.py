@@ -637,19 +637,25 @@ class HeaderAmbiguityContext(_JsonSafeContext):
     """A member's TAR headers take a shape no known writer produces, which readers
     resolve differently. archivey reads it as GNU tar 1.35 does.
 
-    ``ambiguity`` names the shape: ``"both_families"`` (a GNU long name or link name
-    that a PAX record overrode: the member's own or a global ``path``, its
-    ``GNU.sparse.name``, or a ``linkpath``; the PAX record wins),
-    ``"repeated"`` (one field set twice: two GNU long name or long link headers, a PAX
-    keyword twice in one header, or two ``x`` headers for one member, of which only
-    the last applies; the last wins, the first in a global header), ``"global_member_field"`` (a global PAX header sets
-    ``path``, ``linkpath`` or ``size`` for every member after it) or
-    ``"nul_in_value"`` (a PAX ``path``, ``linkpath``, ``uname``, ``gname`` or
-    ``GNU.sparse.name`` holding a NUL byte; the value ends there) or
-    ``"global_replaced"`` (a global header that drops a keyword an earlier global
-    header set; GNU tar replaces the global records, ``tarfile`` merges them). ``field`` is the
-    PAX keyword, with ``"path"`` and ``"linkpath"`` standing for GNU long name and
-    long link headers and ``"x"`` for a repeated ``x`` header. A global header's shape is reported on the member after it.
+    ``ambiguity`` names the shape:
+
+    - ``"both_families"``: a PAX record overrode a GNU long name or link name. The
+      record is the member's own or a global ``path``, its ``GNU.sparse.name``, or a
+      ``linkpath``; the PAX record wins.
+    - ``"repeated"``: one field set twice. That is two GNU long name or long link
+      headers, a PAX keyword twice in one header, or two ``x`` headers for one
+      member, of which only the last applies. The last value wins, the first in a
+      global header.
+    - ``"global_member_field"``: a global PAX header sets ``path``, ``linkpath`` or
+      ``size`` for every member after it.
+    - ``"nul_in_value"``: a PAX ``path``, ``linkpath``, ``uname``, ``gname`` or
+      ``GNU.sparse.name`` holds a NUL byte; the value ends there.
+    - ``"global_replaced"``: a global header drops a keyword an earlier global header
+      set. GNU tar replaces the global records, ``tarfile`` merges them.
+
+    ``field`` is the PAX keyword, with ``"path"`` and ``"linkpath"`` standing for GNU
+    long name and long link headers and ``"x"`` for a repeated ``x`` header. A global
+    header's shape is reported on the member after it.
     """
 
     kind: Literal["header_ambiguity"] = "header_ambiguity"
