@@ -62,17 +62,20 @@ def decoder(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> 
     return request.param
 
 
-@pytest.mark.parametrize(
-    ("name", "content"),
-    [
-        ("text.txt.lzo", _TEXT),
-        ("text-9-crc32.txt.lzo", _TEXT),
-        ("random.bin.lzo", _RANDOM),
-        ("empty.lzo", b""),
-        ("two-files.lzo", b"first file\nsecond file\n"),
-    ],
-)
-def test_lzop_files(decoder: str, name: str, content: bytes) -> None:
+_FILES = {
+    "text.txt.lzo": _TEXT,
+    "text-9-crc32.txt.lzo": _TEXT,
+    "random.bin.lzo": _RANDOM,
+    "empty.lzo": b"",
+    "two-files.lzo": b"first file\nsecond file\n",
+}
+
+
+# Named by file only: the content in a test id is too long for Windows, which puts the
+# id in the PYTEST_CURRENT_TEST environment variable.
+@pytest.mark.parametrize("name", list(_FILES))
+def test_lzop_files(decoder: str, name: str) -> None:
+    content = _FILES[name]
     path = _DATA / name
     assert detect_format(path).format == ArchiveFormat.LZOP
     with open_archive(path) as reader:
