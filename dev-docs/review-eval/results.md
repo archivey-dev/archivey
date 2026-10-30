@@ -36,6 +36,26 @@ findings and 8 of 11 nits for the baseline at $27.13, 14 of 20 and 4.5 of 11 at
 $16.74. The important catches held; fewer nits came back, in one run each. (The
 judge also scored a finding the loop never raised, which is left out.)
 
+Two variants of the new arm, on the five pull requests only (the cases above were
+rerun once more for the first and scored 1 of 5):
+
+| Arm | Important | Nits | Cost (USD) |
+|---|---|---|---|
+| Baseline | 13.5 of 20 | 8 of 11 | 27.13 |
+| Subagents read all code outside the diff | 14 | 4.5 | 16.74 |
+| Same, the reviewer reading the guides and contracts itself | 13.5 | 3.5 | 17.81 |
+| Same, the reviewer also reading the immediate surroundings (kept) | 17 | 4.5 | 21.68 |
+
+"Immediate surroundings" is the rest of each changed function and its docstring, the
+helpers in the same file it calls, the code next to it that a new helper may
+duplicate, and the tests of a touched function; subagents get the wider searches
+(callers across the tree, sibling formats and codecs, other modules, history). The
+nits the cheaper arms dropped were of that near kind: a docstring narrower than its
+function, a test helper copying one in `scripts/`, a shadowed local. The kept arm
+brought back two of those and still missed the docstring and the shadowed local. One
+run each; earlier reruns of a single arm moved by a whole case, so the 17 is a good
+sign, not a measured gain.
+
 Stated only in the skill (skill `28a624c388b2-dirty`, the prompt unchanged), the two
 habits half-took: 1.04 calls per turn, 7 and 12 subagent calls in the two sets. On
 these cases it scored 2 of 5 at $33.56 (14 percent less); on the five pull requests

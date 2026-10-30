@@ -74,14 +74,17 @@ read `.claude/skills/code-review-skill/SKILL.md` first, then the one reference d
 How to work, which decides what the review costs (the loop's prompt says the same):
 every turn re-sends the whole context. Send independent tool calls together in one turn
 (a diff stat, a grep and two file reads whose outputs do not depend on each other go out
-as one message); make a call alone only when its output decides the next one. Send
-reading of source and tests the diff does not touch to `Task` subagents with `model:
-"sonnet"` and `subagent_type: "Explore"`, several in parallel. Ask a subagent what the
-code does, not to confirm a suspicion, and for `file:line` facts with the lines that
-show them and what it looked for and did not find. Re-read the lines a finding cites
-before you file it: a subagent's summary is a lead, not evidence. Read yourself the diff
-and the review's own instructions and contracts (the skill, its reference doc,
-`CONTRIBUTING.md`, the specs and design notes).
+as one message); make a call alone only when its output decides the next one. Read
+yourself the diff and its immediate surroundings: the rest of each changed function and
+its docstring, the helpers in the same file it calls, the code next to it that a new
+helper may duplicate, and the tests of a touched function. Send the wider searches
+(callers across the tree, sibling formats and codecs, shared state in other modules,
+history) to `Task` subagents with `model: "sonnet"` and `subagent_type: "Explore"`,
+several in parallel. Ask a subagent what the code does, not to confirm a suspicion, and
+for `file:line` facts with the lines that show them and what it looked for and did not
+find. Re-read the lines a finding cites before you file it: a subagent's summary is a
+lead, not evidence. Read yourself, too, the review's own instructions and contracts (the
+skill, its reference doc, `CONTRIBUTING.md`, the specs and design notes).
 
 This replay differs from a real round in four ways:
 

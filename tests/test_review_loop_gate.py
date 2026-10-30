@@ -962,9 +962,7 @@ def test_the_reviewer_may_send_subagents_and_is_told_to_batch() -> None:
     eval_script = (ROOT / "scripts" / "review_eval.py").read_text(encoding="utf-8")
     for text in (" ".join(prompt.split()), " ".join(eval_script.split())):
         assert '`subagent_type: "Explore"`' in text
-        assert (
-            "Read yourself the diff and the review's own instructions and contracts"
-            in text
-        )
+        assert "Read yourself the diff and its immediate surroundings" in text
+        assert "Read yourself, too, the review's own instructions and contracts" in text
         assert "Re-read the lines a finding cites before you file it" in text
         assert "not to confirm a suspicion" in text

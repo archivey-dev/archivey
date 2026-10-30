@@ -60,19 +60,23 @@ this list and §6 disagree, §6 wins; edit both together.
 Each tool call that ends a turn re-sends the whole context, and a review's cost is mostly
 that: the eval reviews of 2026-10-30 made one call per turn, and re-reading the cached
 context was about half the bill. Two habits cut it without reading less. Stated in
-the loop's prompt, they cut the cost of a first look by about a third; important
-findings held and fewer nits came back, in one run of each arm
-(`dev-docs/review-eval/results.md`):
+the loop's prompt, they cut the cost of a first look on five recent pull requests by
+about a fifth; important findings held and fewer nits came back, in one run of each
+arm (`dev-docs/review-eval/results.md`):
 
 - **Batch.** When the next calls do not depend on each other's output (the diff stat, a
   grep, two files, the tier command), send them in one turn. One call per turn only
   when its output decides the next call.
-- **Delegate reading code outside the diff** (callers, sibling codecs, shared state,
-  tests of a touched function) to subagents on Sonnet (the `Task` tool, called `Agent`
-  in newer versions; `reference/code-pr.md` §Reading outside the diff says how). Read
-  the diff, the lines a finding cites, and the review's own instructions and contracts
-  yourself: this skill, the §1 reference doc, `CONTRIBUTING.md`, the deep-tier docs,
-  and what pass 2 opens.
+- **Read the immediate surroundings yourself; delegate the wider search.** Read
+  yourself the diff, the immediate surroundings of each change (the rest of each
+  changed function and its docstring, the helpers in the same file it calls, the code
+  next to it that a new helper may duplicate, the tests of a touched function), the
+  lines a finding cites, and the review's own instructions and contracts (this skill,
+  the §1 reference doc, `CONTRIBUTING.md`, the deep-tier docs, what pass 2 opens).
+  Send the wider searches to subagents on Sonnet (the `Task` tool, called `Agent` in
+  newer versions): callers across the tree, sibling formats and codecs, shared state
+  in other modules, history. `reference/code-pr.md` §Reading outside the diff says
+  how.
 
 ## 1. What are you reviewing?
 

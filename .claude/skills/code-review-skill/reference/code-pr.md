@@ -71,11 +71,15 @@ says `nothing` — that is an answer, not an omission.
 The bugs a review misses sit mostly where the diff meets code it did not change: a
 caller, a sibling codec, shared state, the tests of a touched function. Look there, in
 both passes. But every file you read stays in your context for every later turn, so a
-file read at turn 5 is paid for some 50 times. **So source and tests the diff does not
-touch go to subagents.** Read yourself the diff, the lines a finding will cite, and
-the review's own instructions and contracts: this skill and this doc, `CONTRIBUTING.md`,
-the deep-tier docs, and the narrative and contracts pass 2 opens. Code reading goes
-through the subagent tool (`Task`, called `Agent` in newer versions):
+file read at turn 5 is paid for some 50 times. **So read the immediate surroundings
+yourself and send the wider search to subagents.** Read yourself the diff, the rest of
+each changed function and its docstring, the helpers in the same file it calls, the code
+next to it that a new helper may duplicate, the tests of a touched function, the lines
+a finding will cite, and the review's own instructions and contracts: this skill and
+this doc, `CONTRIBUTING.md`, the deep-tier docs, and the narrative and contracts pass 2
+opens. Callers across the tree, sibling formats and codecs, shared state in other
+modules and history go through the subagent tool (`Task`, called `Agent` in newer
+versions):
 
 - Pass `model: "sonnet"` and `subagent_type: "Explore"`, which cannot edit files. When
   the question needs a command run, use `general-purpose` and say in its task text not
