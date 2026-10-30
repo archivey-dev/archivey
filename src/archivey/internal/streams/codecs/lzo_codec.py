@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import stat
 from collections.abc import Callable
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.exceptions import (
     ArchiveyError,
@@ -13,16 +13,13 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.config import StreamConfig, check_decoder_memory
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.base import (
     Codec,
     CodecParams,
     CodecSource,
     MetadataContext,
     StreamCodec,
-)
-from archivey.internal.streams.codecs.framed_decoder import (
-    FramedDecompressorStream,
-    stream_magic,
 )
 from archivey.internal.streams.codecs.isolated import natives_for
 from archivey.internal.streams.codecs.lzo_decoder import (
@@ -36,6 +33,9 @@ from archivey.internal.streams.codecs.lzo_decoder import (
 from archivey.internal.streams.decompressor_stream import DecompressorStream
 from archivey.internal.timestamps import unix_to_datetime
 from archivey.types import ArchiveFormat, ArchiveMember, MagicSignature, StreamFormat
+
+if TYPE_CHECKING:
+    from archivey.formats import Decompressor
 
 # lzop's F_CS_MASK and F_CS_LATIN1.
 _F_CS_MASK = 0x00F00000
@@ -83,28 +83,23 @@ class LzopCodec(StreamCodec):
     stream_format = StreamFormat.LZOP
     magic = (MagicSignature(0, LZOP_MAGIC, ArchiveFormat.LZOP),)
 
-    def open(
-        self, source: CodecSource, params: CodecParams, config: StreamConfig
-    ) -> BinaryIO:
-        decode_block = lzo1x_decompressor(
-            config.excluded_libraries, natives_for(config.process_isolation)
-        )
-        check_block = _block_check(config)
-        return FramedDecompressorStream(
-            source,
-            lambda: LzopDecompressor(decode_block, check_block),
-            codec_name="lzop",
-            # ``lzop -d`` reads a further file after the first's end block.
-            magic=stream_magic(tuple(bytes([b]) for b in LZOP_MAGIC)),
-            collector=config.collector,
-            report_trailing_data=config.report_trailing_data,
-            refuse_input_after_end=config.refuse_input_after_end,
+    # The default stream_start reads a further file after the first's end block, as
+    # ``lzop -d`` does.
+    @override
+    def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
+        return LzopDecompressor(
+            lzo1x_decompressor(
+                config.excluded_libraries, natives_for(config.process_isolation)
+            ),
+            _block_check(config),
         )
 
+    @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
         # The decompressor raises CorruptionError / UnsupportedFeatureError itself.
         return self._eof_truncation(exc, "lzop")
 
+    @override
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
         """The stored name, mtime and mode from the first file's header.
 
@@ -147,6 +142,7 @@ class Lzo1xCodec(StreamCodec):
 
     codec = Codec.LZO
 
+    @override
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
@@ -172,5 +168,6 @@ class Lzo1xCodec(StreamCodec):
             refuse_input_after_end=config.refuse_input_after_end,
         )
 
+    @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
         return None
