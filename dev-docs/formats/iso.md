@@ -188,7 +188,11 @@ What is ISO-specific in turning a record into a member:
   listing quadratic. A record with Rock Ridge entries but no `NM` (RRIP allows it, and an
   area cut before its `NM` leaves one) lists under its ISO 9660 identifier, `;1` and an
   empty extension's dot removed (`_nm_name`); pycdlib's `name()` alone would return the
-  identifier with its version.
+  identifier with its version. An `NM` that spells an empty name does the same, with
+  `member_header_record_skipped` (`record="NM"`), as Linux's isofs falls back: joined
+  into a path, the empty component would list the directory's children one level up.
+  When the ISO 9660 identifier is empty too, no name is left and the empty component
+  collapses as `a//b` does in any format, with `member_name_normalized`.
   A directory with no such file under it, or a multi-byte legacy name whose trail bytes
   are ASCII (Shift-JIS), stays escaped. A relative link target that falls through is
   followed from the symlink's directory (`_decode_link_target`), and each component that
@@ -209,8 +213,9 @@ What is ISO-specific in turning a record into a member:
   filtered first (`_SystemUseNotes.filter`). An entry of a type `pycdlib` does not know
   is left out, as SUSP 1.12 §5 has a reader ignore it; a `ZF` entry is kept aside for
   zisofs. An entry whose own header is malformed (a length under 4 or past the area, a
-  version other than 1 on a type `pycdlib` parses) ends the area there, because every
-  later entry would be read at an untrusted offset. The member lists from the entries
+  version other than 1 on a type `pycdlib` parses, or an `NM` with more than one of its
+  CONTINUE, CURRENT and PARENT flags, which `pycdlib` refuses and isofs ignores) ends the
+  area there, because every later entry would be read at an untrusted offset. The member lists from the entries
   before it and carries `MEMBER_HEADER_RECORD_SKIPPED` with `list_truncated`; a symlink
   cut this way also loses its `link_target`, with `SYMLINK_TARGET_UNAVAILABLE`, because
   the target may have run on past the cut. `isoinfo` and `xorriso` stop at the same place
