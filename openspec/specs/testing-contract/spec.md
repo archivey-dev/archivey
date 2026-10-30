@@ -388,10 +388,11 @@ Full member **extract** remains out of scope for this harness (covered by the
 mutation harness). Filter-only codecs (BCJ, Delta) are not required as standalone
 stream targets.
 
-CI SHALL run a **short** partitioned harness on every pull request (same target
-set, reduced per-target budgets, and MAY shard targets across parallel jobs so
+CI SHALL run a **short** partitioned harness on every merge-queue group, and its
+failure SHALL keep the group from merging; pull request pushes need not run it (same
+target set, reduced per-target budgets, and MAY shard targets across parallel jobs so
 wall time stays on the order of a few minutes — each Atheris target pays a large
-process cold-start cost). The **full** partition SHALL run off the PR path as a
+process cold-start cost). The **full** partition SHALL run off the merge path as a
 separate scheduled nightly job, guarded so the expensive run is SKIPPED unless
 the default branch changed within roughly the past 3 days (commit-recency
 guard), and MAY be forced on demand via `workflow_dispatch` (longer budgets
@@ -399,7 +400,8 @@ allowed). A plain always-on nightly and a full partition on every `main` push
 are NOT required — same bursty / dormant trade-off as the change-guarded
 benchmark wall job. On failure the job SHALL upload reproducing inputs as
 artifacts and print a one-line local re-run command. The workflow job timeout
-MUST accommodate the active partition (short for PRs; full for nightly/dispatch).
+MUST accommodate the active partition (short for the merge queue; full for
+nightly/dispatch).
 
 The existing corpus mutation harness and Hypothesis property tests remain
 mandatory complementary layers; Atheris does not replace them. `atheris` is
@@ -409,11 +411,12 @@ installed only via the CI `fuzz` dependency group (`packaging-and-extras`).
 
 | Case | Expected |
 | --- | --- |
-| Pull request | Short partitioned budgets over the full target set (MAY be sharded across parallel jobs); green if no crash/hang/raw exception |
+| Merge-queue group | Short partitioned budgets over the full target set (MAY be sharded across parallel jobs); green if no crash/hang/raw exception, else the group does not merge |
+| Pull request push | Short fuzz not required (the merge queue runs it) |
 | Scheduled nightly, HEAD commit within ~3 days | Full partitioned target set runs |
 | Scheduled nightly, HEAD older than ~3 days | Expensive fuzz skipped (guard only) |
 | `workflow_dispatch` (optional longer env budget) | Full partition; extended exploration allowed |
-| Push to `main` alone | Full Atheris job not required (covered by PR short + change-guarded nightly) |
+| Push to `main` alone | Full Atheris job not required (covered by merge-queue short + change-guarded nightly) |
 | RAR backend absent | RAR targets skipped; other targets still run |
 | RAR backend present + `unrar` installed (Atheris CI) | RAR open+list target runs (not skipped for missing binary) |
 | Fuzzer finds a crashing input | Job fails; repro bytes uploaded; re-run command printed |
