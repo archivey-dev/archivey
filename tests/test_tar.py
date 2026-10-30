@@ -50,6 +50,7 @@ from archivey.internal.backends.tar_parser import DATA_READ_STEP, TarWalker
 from archivey.internal.backends.tar_reader import _WALK_BUFFER
 from archivey.internal.streams.archive_stream import MemberStreamParts
 from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
+from tests import tar_build
 from tests.conftest import CPYTHON, requires_zstd, zstd_backend
 from tests.corruption_util import (
     is_corruption_not_truncation,
@@ -4648,3 +4649,66 @@ def test_a_rewind_in_a_compressed_tar_logs_at_info(
     (record,) = rewinds
     assert record.diagnostic_code is DiagnosticCode.STREAM_REWIND_REDECOMPRESSES
     assert record.diagnostic_occurrence_id == diagnostic.occurrence_id
+
+
+# A PAX size frames the data of every typeflag, as GNU tar 1.35 skips it (measured
+# 2026-10-30): a member stored in the bytes after a directory or link header with a PAX
+# size is no member to GNU tar, so it must be none to archivey either.
+
+
+def _pax_framed(typeflag: bytes, *, linkname: bytes = b"") -> bytes:
+    """``[x size=1024][typeflag header][hidden: header + data][after]``, after a
+    link's target when ``linkname`` names one."""
+    tb = tar_build
+    hidden = tb.block(b"hidden", size=1) + tb.data(b"S")
+    name = b"d/" if typeflag == b"5" else b"lnk"
+    target = tb.block(linkname, size=1) + tb.data(b"T") if linkname else b""
+    return (
+        target
+        + tb.pax({"size": str(len(hidden))})
+        + tb.block(name, typeflag=typeflag, linkname=linkname)
+        + hidden
+        + tb.block(b"after", size=1)
+        + tb.data(b"Z")
+        + tb.END
+    )
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_dirtype_with_a_pax_size_holds_its_blocks_as_data(streaming: bool) -> None:
+    data = _pax_framed(b"5")
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    ) as ar:
+        listed = [
+            (m.name, m.type, m.size, stream.read() if stream is not None else None)
+            for m, stream in ar.stream_members()
+        ]
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED] == 1
+    assert [row[:3] for row in listed] == [
+        ("d/", MemberType.DIRECTORY, 1024),
+        ("after", MemberType.FILE, 1),
+    ]
+    assert listed[0][3][:6] == b"hidden"
+    assert listed[1][3] == b"Z"
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("typeflag", [b"1", b"2"])
+def test_link_with_a_pax_size_skips_its_blocks(
+    typeflag: bytes, streaming: bool
+) -> None:
+    """GNU tar skips the blocks whatever the block after the header is; a link's
+    header size, which GNU tar does not skip, still lets a member header there be
+    read (the 2026-10-17 ruling)."""
+    data = _pax_framed(typeflag, linkname=b"t")
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    ) as ar:
+        names = [m.name for m, _ in ar.stream_members()]
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_LINK_DATA_IGNORED] == 1
+    assert names == ["t", "lnk", "after"]

@@ -25,6 +25,7 @@ from archivey.internal.backends.tar_parser import (
     BLOCKSIZE,
     HeaderBlock,
     HeaderFormat,
+    LinkData,
     NameSource,
     RejectedBlock,
     SparseFormat,
@@ -703,6 +704,33 @@ def test_global_empty_value_deletes_the_key() -> None:
     )
     (entry,), _ = _walk(data)
     assert b"comment" not in entry.pax
+
+
+@pytest.mark.parametrize("typeflag", [b"5", b"2", b"6"])
+@pytest.mark.parametrize("header_type", [b"x", b"g"])
+def test_a_pax_size_frames_a_type_with_no_data_area(
+    typeflag: bytes, header_type: bytes
+) -> None:
+    """GNU tar 1.35 skips a PAX size's bytes after a directory, a link or a FIFO,
+    from a member's own record or a global one, though it skips nothing for the
+    same header's own size field."""
+    hidden = _block(b"hidden", size=1) + _data(b"S")
+    data = (
+        _pax({"size": str(len(hidden))}, typeflag=header_type)
+        + _block(b"m", typeflag=typeflag, linkname=b"t")
+        + hidden
+        + _END
+    )
+    (entry,), end = _walk(data)
+    # The end-of-archive marker, right after the bytes the PAX size spans.
+    assert (end.kind, end.offset) == (
+        TarEndKind.ZERO_BLOCK,
+        3 * BLOCKSIZE + len(hidden),
+    )
+    if typeflag == b"2":
+        assert (entry.link_data, entry.stored_size) == (LinkData.FRAMED, 0)
+    else:
+        assert entry.stored_size == len(hidden)
 
 
 def test_global_hdrcharset_binary_applies_to_later_members() -> None:

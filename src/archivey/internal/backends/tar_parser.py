@@ -862,9 +862,9 @@ class TarEntry:
     # device, FIFO or directory leave both None.
     sparse_format: SparseFormat | None = None
     sparse: SparseMap | None = None
-    # Set only for a link whose size field declares blocks that the walk took as its
-    # data (see LinkData). ``size`` keeps the declared byte count; ``stored_size`` is
-    # 0, since nothing delivers the bytes.
+    # Set only for a link whose size field or PAX size declares blocks that the walk
+    # took as its data (see LinkData). ``size`` keeps the declared byte count;
+    # ``stored_size`` is 0, since nothing delivers the bytes.
     link_data: LinkData | None = None
 
     @property
@@ -926,6 +926,9 @@ class LinkData(Enum):
     # of the archive is zero, fewer bytes than the size declares: the zero block ends
     # the walk, as a trailer after a header whose blocks were never written.
     ENDS_ARCHIVE = "ends_archive"
+    # A PAX ``size`` declared the blocks. GNU tar skips them whatever they hold, so
+    # the walk did too, without looking at the block after the header.
+    FRAMED = "framed"
 
 
 class TarEndKind(Enum):
@@ -1282,6 +1285,11 @@ class TarWalker:
             self._pos = entry.data_end
             if entry.stored_size:
                 self._unchecked_data_end = entry.data_end
+                if entry.typeflag in LINK_TYPES:
+                    # A PAX size framed the link's blocks: skipped, delivered by
+                    # nothing (LinkData.FRAMED).
+                    entry.link_data = LinkData.FRAMED
+                    entry.stored_size = 0
             elif entry.size and entry.typeflag in LINK_TYPES:
                 self._place_link_data(entry)
             return entry
@@ -1557,9 +1565,12 @@ class TarWalker:
         old_style_directory = typeflag in _OLD_STYLE_DIRECTORY_TYPES and name.endswith(
             b"/"
         )
-        if not carries_data(typeflag):
+        if not carries_data(typeflag) and pax_size is None:
             # The size field of a link, device, FIFO or directory announces no data
-            # area: the next header follows this one.
+            # area: the next header follows this one. A PAX size does: GNU tar 1.35
+            # skips that many bytes after a directory, a link or a FIFO (measured
+            # 2026-10-30), so a member stored in them is no member to it, and the walk
+            # skips them too.
             stored_size = 0
         return TarEntry(
             header=header,
