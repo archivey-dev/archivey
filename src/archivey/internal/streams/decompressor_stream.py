@@ -498,6 +498,9 @@ class BaseDecoder:
 _COMPRESSED_READ_SIZE = 65536
 # Ceiling when a large bounded ``read(n)`` (whole-member via fused verify) asks
 # for more output than the default feed — one compressed read ≈ one C inflate.
+# ``verify._SIZED_DRAIN_CHUNK`` and ``tar_parser.DATA_READ_STEP`` follow it, and the
+# latter is TAR's stated allocation bound (``tar.md``, ``threat-model.md`` O15 say
+# 1 MiB): change those docs with it.
 _COMPRESSED_READ_SIZE_MAX = 1 << 20
 # Output budget when skipping forward during seek (unbounded skip would reintroduce
 # the per-read amplification bomb on highly compressible spans).

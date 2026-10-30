@@ -1,14 +1,8 @@
 """Run a pyppmd decoder in a child process, so a native crash cannot kill the caller.
 
-pyppmd 1.3.1 (and 1.2.0) segfaults when it is asked to decode after a corrupt stream
-has already hit its end: the model returns its end symbol early, ``eof`` goes up, and
-the next ``decode`` starts a new worker on a model that has finished. From Python that
-state cannot be told apart from a valid stream that is waiting for more input, because
-``eof`` also rises (and never clears) on a valid stream whose compressed bytes happen to
-end in zeros at a chunk boundary. The one-symbol decode ``PpmdDecoder`` sends at close
-to stop a worker that may be parked reaches the same state on a member that ended early.
-So every PPMd member decodes in a child
-process unless ``process_isolation`` is ``NONE``.
+pyppmd has a known issue that can crash it on damaged or crafted data
+(``dev-docs/known-issues.md``), so every PPMd member decodes in a child process unless
+``process_isolation`` is ``NONE``.
 
 :func:`open_ppmd_child` returns a :class:`ChildPpmdDecoder`, which has the surface of
 ``pyppmd.Ppmd7Decoder`` / ``Ppmd8Decoder`` as ``PpmdDecoder`` uses it, so all the

@@ -1,16 +1,4 @@
-"""Stress-test PPMd native decode surfaces (Windows + Linux investigation).
-
-Background
-----------
-On Windows, ``test_py7zr_codec_fixtures_roundtrip[ppmd]`` intermittently aborts with
-``STATUS_HEAP_CORRUPTION`` (``0xC0000374``) inside ``pyppmd`` on a *valid* solid PPMd
-stream. Fresh PPMd-only subprocesses are enough to crash (~few percent on py3.11), so
-prior-test contamination is not required.
-
-On Linux, a related but distinct flake shows up when other 7z codecs are exercised in
-the same process before PPMd (``warmup_codecs``): SIGSEGV / ``malloc(): invalid size``
-at roughly ~1/3 of child runs. Raw ``pyppmd`` encode/decode alone has not reproduced
-that Linux abort here.
+"""Stress-test PPMd native decode surfaces (Windows + Linux).
 
 See ``dev-docs/known-issues.md``.
 
@@ -338,7 +326,7 @@ def _write_driver(path: Path, scenario: str, *, rounds: int, seed: int) -> None:
             """
         )
     elif scenario == "warmup_codecs":
-        # Linux: highly flaky (~1/3 SIGSEGV / malloc abort) after other codecs then PPMd.
+        # Other codecs first, then PPMd.
         body += _sevenzip_helpers()
         body += textwrap.dedent(
             f"""\
@@ -559,9 +547,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         lines.append("")
     lines.append(
-        "Known issue: valid PPMd streams can abort inside `pyppmd` (Windows "
-        "`STATUS_HEAP_CORRUPTION`; Linux SIGSEGV / malloc abort especially after "
-        "other-codec warmup). Prefer `raw_*` scenarios to isolate the minimal "
+        "Known issue: PPMd streams can abort inside `pyppmd`. Prefer `raw_*` scenarios to isolate the minimal "
         "surface. See `dev-docs/known-issues.md`."
     )
     summary = "\n".join(lines) + "\n"
