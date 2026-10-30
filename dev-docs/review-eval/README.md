@@ -53,6 +53,8 @@ python3 scripts/review_eval.py list
 python3 scripts/review_eval.py run --out /tmp/eval --case zstd-seek-point-in-frame
 python3 scripts/review_eval.py run --out /tmp/eval --jobs 5
 python3 scripts/review_eval.py judge --out /tmp/eval    # rescore saved reviews
+python3 scripts/review_eval.py run --out /tmp/eval --model claude-sonnet-5-5 --effort xhigh
+python3 scripts/review_eval.py run --out /tmp/eval --install   # PR's dependencies first
 ```
 
 Each case is a full review, one to two dollars of quota with Sonnet (see the costs in
