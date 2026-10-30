@@ -389,10 +389,25 @@ not reported.
   or a `linkpath` on a typeflag with no link, overrides nothing and is not reported.
 - `global_member_field`: a `g` header carrying `path`, `linkpath` or `size`, which then
   names or frames every later member.
+- `mixed_chain` (field `x`): `L` or `K` headers and an `x` header in one member's chain,
+  in either order, when `both_families` is not reported. GNU tar applies both to the
+  member. To a reader that knows only PAX an `L` header is a member of an unknown type,
+  so an `x` header before it, and its `size`, applies to the `L` header (tar-minefield F10 and N23).
+- `global_in_chain` (field `g`): a `g` header between an `x` or `L` header and its
+  member. GNU tar applies the `x` or `L` header to the member; a reader that applies it to
+  the `g` header names the member by its header (tar-minefield F19).
+- `empty_value`: an `x` record whose empty value the rule above skips: `path` (a reader
+  that follows POSIX's "delete" literally can drop the header name too) or a number (GNU
+  tar reports it as invalid and exits 2). Not in a `g` header, where an empty value is
+  how POSIX unsets a global record (tar-minefield N22).
+- `leading_zero` (field `size`): an `x` header `size` such as `0777`. It is decimal (777),
+  as GNU tar and POSIX read it; a reader using `strtoul(s, NULL, 0)` reads 511
+  (tar-minefield F26).
 
-The empty-value rule is not reported: an empty `uname` or
-`linkpath` is how a writer clears a global value, and an empty `size` is already
-`CorruptionError`. A ustar or GNU header field that differs from the PAX record
+The empty-value rule is not reported for `uname`, `gname` or `linkpath`, which it
+stores as empty: an empty `uname` or `linkpath` is how a writer clears a global value
+(an empty link target is reported as `SYMLINK_TARGET_UNAVAILABLE`), and an empty `size`
+is already `CorruptionError`. A ustar or GNU header field that differs from the PAX record
 overriding it is not reported either: writers put a cut name or a capped size there on
 purpose.
 

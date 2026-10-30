@@ -652,9 +652,20 @@ class HeaderAmbiguityContext(_JsonSafeContext):
       ``GNU.sparse.name`` holds a NUL byte; the value ends there.
     - ``"global_replaced"``: a global header drops a keyword an earlier global header
       set. GNU tar replaces the global records, ``tarfile`` merges them.
+    - ``"mixed_chain"``: a GNU long name or link name header and an ``x`` header
+      both extend one member, and no PAX record overrode the long name. Both apply
+      to the member; a reader that knows only PAX applies the ``x`` header (its
+      ``size`` too) to the long name header instead.
+    - ``"global_in_chain"``: a global header comes between an ``x`` or long name
+      header and its member. The extended header applies to the member.
+    - ``"empty_value"``: an ``x`` header record with an empty value that is skipped,
+      ``path`` or a number: the value in force before it stays.
+    - ``"leading_zero"``: a PAX ``size`` with a leading zero, read as decimal (a
+      reader that takes it as octal frames the member differently).
 
     ``field`` is the PAX keyword, with ``"path"`` and ``"linkpath"`` standing for GNU
-    long name and long link headers and ``"x"`` for a repeated ``x`` header. A global
+    long name and long link headers, ``"x"`` for a repeated ``x`` header and for
+    ``"mixed_chain"``, and ``"g"`` for ``"global_in_chain"``. A global
     header's shape is reported on the member after it.
     """
 
@@ -668,6 +679,10 @@ class HeaderAmbiguityContext(_JsonSafeContext):
         "global_member_field",
         "nul_in_value",
         "global_replaced",
+        "mixed_chain",
+        "global_in_chain",
+        "empty_value",
+        "leading_zero",
     ] = "repeated"
     field: str = ""
 

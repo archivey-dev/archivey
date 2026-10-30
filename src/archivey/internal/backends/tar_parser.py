@@ -537,6 +537,8 @@ class PaxRecords:
     repeated: dict[bytes, None]
     # Keys of _C_STRING_KEYS whose value held a NUL and was cut there, each once.
     nul_cut: dict[bytes, None]
+    # Keys whose empty value was skipped (not stored), each once.
+    emptied: dict[bytes, None]
 
 
 # The PAX sparse 0.0 map repeats these two keys by design.
@@ -566,6 +568,22 @@ class Ambiguity(Enum):
     # A global header that drops a key an earlier global header set (one per key):
     # GNU tar replaces the global records, tarfile and POSIX merge them.
     GLOBAL_REPLACED = "global_replaced"
+    # GNU long headers (L or K) and an x header in one member's chain, in either
+    # order, when no PAX record overrode the long name (that is BOTH_FAMILIES). To a
+    # reader that knows only PAX, an L header is a member of an unknown type, so the
+    # x header's records (a size among them) apply to it, not to the member.
+    MIXED_CHAIN = "mixed_chain"
+    # A global header between an x or L header and the member it extends. GNU tar
+    # applies the x or L header to the member; a reader can apply it to the global
+    # header instead, and the member keeps its header's name.
+    GLOBAL_IN_CHAIN = "global_in_chain"
+    # An x header record with an empty value that is skipped (path, a number): POSIX
+    # has it delete a field, and readers disagree on which. GNU tar keeps the value in
+    # force before it (and reports an empty number as invalid).
+    EMPTY_VALUE = "empty_value"
+    # A PAX size with a leading zero, such as 0777: 777 to GNU tar and POSIX, 511 to a
+    # reader that takes it as octal, as the header's numbers are.
+    LEADING_ZERO = "leading_zero"
 
 
 def _record_ambiguities(
@@ -581,6 +599,13 @@ def _record_ambiguities(
             for key in _MEMBER_KEYS
             if key in values
         ]
+        return
+    # In a global header an empty value is how POSIX unsets a global record, and a
+    # global size is GLOBAL_MEMBER_FIELD already.
+    found += [(Ambiguity.EMPTY_VALUE, key) for key in records.emptied]
+    size = values.get(b"size")
+    if size is not None and len(size.value) > 1 and size.value[:1] == b"0":
+        found.append((Ambiguity.LEADING_ZERO, b"size"))
 
 
 def parse_pax_records(
@@ -612,6 +637,7 @@ def parse_pax_records(
     numbytes: list[bytes] = []
     repeated: dict[bytes, None] = {}
     nul_cut: dict[bytes, None] = {}
+    emptied: dict[bytes, None] = {}
     pos = 0
     end = len(data)
     while pos < end and data[pos] != 0:
@@ -648,6 +674,7 @@ def parse_pax_records(
                     f"{pos - length}: the size frames the member's data"
                 )
             if not key.startswith(b"GNU.sparse."):
+                emptied[key] = None
                 continue
         if key in raw:
             # The sparse 0.0 map repeats its keys by design: not reported, but the
@@ -665,7 +692,7 @@ def parse_pax_records(
     values = cast("dict[bytes, PaxValue]", raw)
     for key, value in raw.items():
         values[key] = PaxValue(value, binary)
-    return PaxRecords(values, offsets, numbytes, repeated, nul_cut)
+    return PaxRecords(values, offsets, numbytes, repeated, nul_cut, emptied)
 
 
 _SHOWN_CHARACTERS = 40
@@ -1293,6 +1320,7 @@ class TarWalker:
         long_link: bytes | None = None
         ambiguities: list[tuple[Ambiguity, bytes]] = []
         x_seen = False
+        gnu_long_seen = False
         # Where the last x or L header of this member's chain starts, once there is
         # one: the chain must end in a member header. A global header describes no
         # member, so it starts no chain.
@@ -1351,6 +1379,8 @@ class TarWalker:
                 header_at = offset
                 if parsed.typeflag != PAX_GLOBAL_TYPE:
                     extended_at = offset
+                elif extended_at is not None:
+                    ambiguities.append((Ambiguity.GLOBAL_IN_CHAIN, b"g"))
                 charge(parsed.size, "an extended header")
                 data = self._read(parsed.size)
                 if len(data) < parsed.size:
@@ -1359,6 +1389,8 @@ class TarWalker:
                         f"offset {header_at}"
                     )
                 offset += BLOCKSIZE + _round_up(parsed.size)
+                if parsed.typeflag in (LONG_NAME_TYPE, LONG_LINK_TYPE):
+                    gnu_long_seen = True
                 if parsed.typeflag == LONG_NAME_TYPE:
                     if long_name is not None:
                         ambiguities.append((Ambiguity.REPEATED, b"path"))
@@ -1417,6 +1449,12 @@ class TarWalker:
                 ambiguities.append((Ambiguity.BOTH_FAMILIES, b"path"))
             if long_link is not None and entry.linkname_source is NameSource.PAX:
                 ambiguities.append((Ambiguity.BOTH_FAMILIES, b"linkpath"))
+            if (
+                gnu_long_seen
+                and x_seen
+                and not any(a is Ambiguity.BOTH_FAMILIES for a, _ in ambiguities)
+            ):
+                ambiguities.append((Ambiguity.MIXED_CHAIN, b"x"))
             if ambiguities:
                 entry.ambiguities = tuple(dict.fromkeys(ambiguities))
             self._pos = entry.data_end

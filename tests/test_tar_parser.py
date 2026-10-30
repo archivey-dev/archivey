@@ -1925,6 +1925,52 @@ _AMBIGUOUS = {
         "f",
         ("nul_in_value", "uname"),
     ),
+    # tar-minefield N23: the x header carries no name, so nothing overrides the L.
+    "L then x": (
+        _long(b"L", b"gnu") + _pax({"mtime": "5"}) + _file(b"hdr"),
+        "gnu",
+        ("mixed_chain", "x"),
+    ),
+    # tar-minefield F10: the x size frames the member, not the L header, as GNU tar
+    # reads it; the block after is the member's data.
+    "x size then L": (
+        _pax({"size": "1"}) + _long(b"L", b"gnu") + _block(b"hdr") + _data(b"x"),
+        "gnu",
+        ("mixed_chain", "x"),
+    ),
+    "K then x": (
+        _long(b"K", b"gnu") + _pax({"uname": "u"}) + _symlink(),
+        "s",
+        ("mixed_chain", "x"),
+    ),
+    # tar-minefield F19.
+    "g between x and member": (
+        _pax({"path": "pax"}) + _pax({"comment": "c"}, typeflag=b"g") + _file(),
+        "pax",
+        ("global_in_chain", "g"),
+    ),
+    "g between L and member": (
+        _long(b"L", b"gnu") + _pax({"comment": "c"}, typeflag=b"g") + _file(),
+        "gnu",
+        ("global_in_chain", "g"),
+    ),
+    # tar-minefield N22: GNU tar keeps the header name.
+    "empty x path": (
+        _pax_body(_rec(b"path", b"")) + _file(b"hdr"),
+        "hdr",
+        ("empty_value", "path"),
+    ),
+    "empty x mtime": (
+        _pax_body(_rec(b"mtime", b"")) + _file(),
+        "f",
+        ("empty_value", "mtime"),
+    ),
+    # tar-minefield F26: 0777 is 777 bytes, as GNU tar reads it.
+    "x size with a leading zero": (
+        _pax({"size": "01"}) + _block(b"f") + _data(b"x"),
+        "f",
+        ("leading_zero", "size"),
+    ),
 }
 
 
@@ -2068,6 +2114,14 @@ def _ordinary_archives() -> dict[str, bytes]:
     archives["global comment, then mtime in x"] = (
         _pax({"comment": "c"}, typeflag=b"g") + _pax({"mtime": "1.5"}) + _file() + _END
     )
+    archives["global header with an empty value"] = (
+        _pax({"uname": "u"}, typeflag=b"g")
+        + _file(b"m1")
+        + _pax_body(_rec(b"uname", b"u") + _rec(b"comment", b""), typeflag=b"g")
+        + _file(b"m2")
+        + _END
+    )
+    archives["x size 0"] = _pax({"size": "0"}) + _block(b"empty") + _END
     return archives
 
 
