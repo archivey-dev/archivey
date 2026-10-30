@@ -92,7 +92,8 @@ class Lzo1xCodec(StreamCodec):
     """Raw LZO1X with no header, as SquashFS stores a block. Container-only.
 
     Needs ``params.unpack_size``: LZO1X does not store its decoded length, and the
-    data must decode to exactly that many bytes.
+    data may decode to at most that many bytes. A SquashFS block passes its block
+    size, which a file's last block decodes to less than.
     """
 
     codec = Codec.LZO
