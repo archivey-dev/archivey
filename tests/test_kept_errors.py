@@ -156,3 +156,27 @@ def test_an_error_copy_cannot_rebuild_is_raised_with_a_bounded_traceback() -> No
             depths.append(len(traceback.extract_tb(again.__traceback__)))
             assert isinstance(again.__cause__, EarlierRaise)
     assert len(set(depths)) == 1
+
+
+def test_keeping_an_error_copy_cannot_rebuild_leaves_its_first_raise_whole() -> None:
+    """The first raise is the one the caller reads: keeping the error must not strip
+    its traceback or cause, nor the first-raise text it keeps."""
+
+    def boundary() -> None:
+        try:
+            try:
+                raise ValueError("the real cause")
+            except ValueError as cause:
+                raise _NotCopyable("boom", code=1) from cause
+        except _NotCopyable as exc:
+            kept.append(KeptError.of(exc))
+            raise
+
+    kept: list[KeptError] = []
+    try:
+        boundary()
+    except _NotCopyable as out:
+        assert isinstance(out.__cause__, ValueError)
+        assert traceback.extract_tb(out.__traceback__)
+    assert "Traceback" in kept[0].first_raise
+    assert "the real cause" in kept[0].first_raise

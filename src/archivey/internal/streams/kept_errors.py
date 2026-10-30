@@ -38,16 +38,14 @@ def unraised(exc: _E) -> _E:
     ``exc``. It has no traceback, cause or context. Every archivey error copies
     (``ArchiveyError.__reduce__``); the fallback is for a third-party type whose
     ``__init__`` takes other arguments than its ``args``. It forfeits the guarantee:
-    raising ``exc`` again ties it to the raising frames, and sets its cause and
-    context. Its traceback and those links are cleared here, so a retry's traceback
-    does not grow with every raise.
+    the stream keeps the raised instance, whose traceback holds the raising frames.
+    ``exc`` is not changed here, since a caller may be raising it still;
+    :meth:`KeptError.raise_again` clears the traceback of what it raises, so a
+    retry's traceback does not grow with every raise.
     """
     try:
         return copy.copy(exc)
-    except Exception:  # noqa: BLE001 - a type copy cannot rebuild: raise it, unlinked
-        exc.__traceback__ = None
-        exc.__cause__ = None
-        exc.__context__ = None
+    except Exception:  # noqa: BLE001 - a type copy cannot rebuild: keep the instance
         return exc
 
 
@@ -64,10 +62,19 @@ class KeptError:
     @classmethod
     def of(cls, raised: BaseException) -> KeptError:
         """Keep ``raised``, which is being raised now (its traceback so far)."""
-        return cls(unraised(raised), "".join(traceback.format_exception(raised)))
+        first_raise = "".join(traceback.format_exception(raised))
+        return cls(unraised(raised), first_raise)
 
     def raise_again(self) -> NoReturn:
-        """Raise a fresh copy of the error, caused by where it was first raised."""
-        raise unraised(self.error) from EarlierRaise(
-            f"first raised here:\n{self.first_raise}"
-        )
+        """Raise a fresh copy of the error, caused by where it was first raised.
+
+        The traceback is cleared first: a copy has none, and the instance the
+        fallback keeps would otherwise gain this raise's frames every time. The local
+        goes as the raise leaves, or this frame and the caller's would stay tied to
+        the error."""
+        again = unraised(self.error)
+        again.__traceback__ = None
+        try:
+            raise again from EarlierRaise(f"first raised here:\n{self.first_raise}")
+        finally:
+            del again
