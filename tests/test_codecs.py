@@ -1412,19 +1412,25 @@ def test_unix_compress_nine_bit_short_tail_after_the_fill(block_mode: bool) -> N
                 assert _lzw_decode_in_chunks(encoded, chunk) == prefix, (end, widens)
 
 
+# Few distinct bytes keep the codes after a CLEAR small, which is where the probe has
+# the least to go on: a reading off by a byte still sees literals.
+_LOW_VARIETY_PAYLOADS = {
+    "four-symbol": bytes(random.Random(3).choices(range(4), k=30_000)),
+    "nine-symbol": bytes(random.Random(5).choices(b"abcdefgh ", k=30_000)),
+}
+
+
 @pytest.mark.parametrize("widens", [True, False], ids=["compress-4.0", "ncompress"])
-@pytest.mark.parametrize("payload", ["text", "random"])
+@pytest.mark.parametrize("payload", ["text", "random", "four-symbol", "nine-symbol"])
 def test_unix_compress_nine_bit_clear_inside_the_probe(
     payload: str, widens: bool
 ) -> None:
     """A CLEAR soon after a 9-bit table fills sends both layouts back to 9-bit codes
-    inside the probe. Both are still told apart for a CLEAR anywhere in it, except one
-    case: an ncompress CLEAR as the very first code after the fill reads as a CLEAR in
-    the 10-bit layout too, and then both readings can hold, so compress 4.0's wins."""
-    data = _NON_BLOCK_PAYLOADS[payload][:30_000]
+    inside the probe. Both are still told apart for a CLEAR anywhere in it, the very
+    first code after the fill included, where an ncompress CLEAR reads as a CLEAR in the
+    10-bit layout too."""
+    data = _LOW_VARIETY_PAYLOADS.get(payload) or _NON_BLOCK_PAYLOADS[payload][:30_000]
     for clear_every in range(250, 320):
-        if not widens and clear_every == 256:
-            continue
         compressed = _lzw_compress(
             data, 9, block_mode=True, clear_every=clear_every, nine_bit_widens=widens
         )

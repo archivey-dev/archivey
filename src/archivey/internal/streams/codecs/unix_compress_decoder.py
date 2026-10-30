@@ -70,10 +70,15 @@ _Entry = bytes | tuple[int, bytes]
 # _NINE_BIT_PROBE_BYTES both ways (_nine_bit_layout_breaks) and looks for a code that
 # layout could not write: in the original layout, a 10-bit code with bit 9 set; in
 # either, after a CLEAR, a first code that is not a literal or a code past the next free
-# one. Every ncompress stream measured broke the 10-bit reading within seven codes. The
-# layout that does not break wins; if neither breaks, the original layout wins; if both
-# do, the one that held out longer. A source that ends first is decided on what it has.
+# one. Every ncompress stream measured without a CLEAR broke the 10-bit reading within
+# seven codes. The layout that does not break wins; if both do, the one that held out
+# longer. If neither does, a CLEAR decides: a reading that went through one and then met
+# at least _NINE_BIT_CLEAR_EVIDENCE codes above 256, all within the growing table, and
+# more than the other reading did, wins. Literals count for nothing, as a reading one
+# byte off from the real padding end turns literals into other literals. Otherwise the
+# original layout wins. A source that ends first is decided on what it has.
 _NINE_BIT_PROBE_BYTES = 64
+_NINE_BIT_CLEAR_EVIDENCE = 4
 
 
 def _expand(dictionary: Sequence[_Entry | None], link: tuple[int, bytes]) -> bytes:
@@ -308,12 +313,21 @@ class LzwState:
             if len(self._buf) < pad + _NINE_BIT_PROBE_BYTES and not eof:
                 return False
             window = bytes(self._buf[: pad + _NINE_BIT_PROBE_BYTES])
-            ten = self._nine_bit_layout_breaks(window, widens=True)
-            nine = self._nine_bit_layout_breaks(window, widens=False)
-            if ten is None or nine is None:
-                widens = ten is None
-            else:
+            ten, ten_checked = self._nine_bit_layout_breaks(window, widens=True)
+            nine, nine_checked = self._nine_bit_layout_breaks(window, widens=False)
+            if ten is not None and nine is not None:
                 widens = ten >= nine
+            elif ten is not None or nine is not None:
+                widens = ten is None
+            elif (
+                max(ten_checked, nine_checked) >= _NINE_BIT_CLEAR_EVIDENCE
+                and ten_checked != nine_checked
+            ):
+                # Both readings hold. Non-literal codes after a CLEAR are the strong
+                # evidence: each must stay within a table that grows one entry per code.
+                widens = ten_checked > nine_checked
+            else:
+                widens = True
             if widens and len(window) < pad + _NINE_BIT_PROBE_BYTES:
                 # The source ends inside the probe. A writer stops at the byte holding
                 # its last code's final bit, so a whole byte left over after the last
@@ -345,9 +359,11 @@ class LzwState:
         self._codes_in_era = 0
         return True
 
-    def _nine_bit_layout_breaks(self, window: bytes, *, widens: bool) -> int | None:
+    def _nine_bit_layout_breaks(
+        self, window: bytes, *, widens: bool
+    ) -> tuple[int | None, int]:
         """How many codes of ``window`` one 9-bit layout reads before one it could not
-        have written, or None if none.
+        have written (None if none), and how many codes above 256 it read after a CLEAR.
 
         ``window`` starts right after the code that filled the table. The 10-bit
         reading skips the group padding and the bits left in the current byte; the
@@ -364,11 +380,11 @@ class LzwState:
             pos, bits, nbits = 0, self._bit_buffer, self._bits_in_buffer
             era_bytes = self._bytes_in_era
             width, next_code = _INITIAL_CODE_WIDTH, 1 << _INITIAL_CODE_WIDTH
-        era_codes, after_clear, codes = 0, False, 0
+        era_codes, after_clear, codes, checked = 0, False, 0, 0
         while True:
             while nbits < width:
                 if pos >= len(window):
-                    return None
+                    return None, checked
                 bits |= window[pos] << nbits
                 nbits += 8
                 pos += 1
@@ -377,12 +393,13 @@ class LzwState:
             bits >>= width
             nbits -= width
             if code >> _INITIAL_CODE_WIDTH and width > _INITIAL_CODE_WIDTH:
-                return codes
+                return codes, checked
             if after_clear and (
                 code > next_code or (era_codes == 0 and code > _CLEAR_CODE)
             ):
-                return codes
+                return codes, checked
             codes += 1
+            checked += after_clear and code > _CLEAR_CODE
             if code == _CLEAR_CODE and block_mode:
                 i = era_bytes - 1
                 if advanced := i % width:
@@ -400,7 +417,7 @@ class LzwState:
                     next_code += 1
                 era_codes += 1
                 if next_code > _INITIAL_MASK:
-                    return None
+                    return None, checked
 
     def _process_step(
         self, *, eof: bool, max_length: int = -1
