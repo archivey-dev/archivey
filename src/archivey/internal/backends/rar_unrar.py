@@ -226,7 +226,15 @@ def _stat_identity(path: str) -> tuple[int, int, int, int]:
     try:
         return stat_identity(path)
     except OSError as exc:
-        raise PackageNotInstalledError(_NOT_INSTALLED_MSG) from exc
+        raise _unrar_missing(_NOT_INSTALLED_MSG) from exc
+
+
+def _unrar_missing(message: str) -> PackageNotInstalledError:
+    """The refusal when no usable RARLAB program is found, with ``unrar`` as its
+    missing component; ``message`` is also the component's install hint."""
+    return PackageNotInstalledError(
+        message, missing=(MissingComponent("unrar", message),)
+    )
 
 
 def _banner_meets_floor(banner: _UnrarBanner) -> bool:
@@ -250,7 +258,7 @@ def rarlab_unrar_missing() -> tuple[MissingComponent, ...]:
     try:
         find_rarlab_unrar()
     except PackageNotInstalledError as exc:
-        return (MissingComponent("unrar", str(exc)),)
+        return exc.missing
     return ()
 
 
@@ -333,15 +341,15 @@ def find_rarlab_unrar() -> str:
             _note_floor(candidate, banner.version)
 
     if floor_refusals:
-        raise PackageNotInstalledError(_unrar_floor_message(floor_refusals))
+        raise _unrar_missing(_unrar_floor_message(floor_refusals))
     if timed_out:
         message = _unrar_timeout_message(timed_out)
         if run_cause is not None:
-            raise PackageNotInstalledError(message) from run_cause
-        raise PackageNotInstalledError(message)
+            raise _unrar_missing(message) from run_cause
+        raise _unrar_missing(message)
     if run_cause is not None:
-        raise PackageNotInstalledError(_NOT_INSTALLED_MSG) from run_cause
-    raise PackageNotInstalledError(_NOT_INSTALLED_MSG)
+        raise _unrar_missing(_NOT_INSTALLED_MSG) from run_cause
+    raise _unrar_missing(_NOT_INSTALLED_MSG)
 
 
 def _password_arg(password: str | bytes | None) -> str:

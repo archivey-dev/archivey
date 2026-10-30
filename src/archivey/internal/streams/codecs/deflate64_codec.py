@@ -22,16 +22,16 @@ from archivey.internal.streams.codecs.deflate64_decoder import (
     Deflate64DecompressorStream,
 )
 from archivey.internal.streams.codecs.isolated import natives_for
-from archivey.types import MissingComponent
+from archivey.types import MissingComponent, OptionalLibrary
 
 
 class Deflate64Codec(StreamCodec):
     codec = Codec.DEFLATE64
     requirement = MissingComponent(
-        "inflate64",
+        OptionalLibrary.INFLATE64,
         "pip install archivey[recommended]",
         ("deflate64",),
-        reason=deps.unused_reason("inflate64"),
+        reason=deps.unused_reason(OptionalLibrary.INFLATE64),
     )
 
     def _backend_present(self) -> bool:

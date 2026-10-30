@@ -10,7 +10,7 @@ rejects it.
 
 The ``StrEnum`` classes are ``HashAlgorithm``, ``ContainerFormat``,
 ``StreamFormat``, ``DiagnosticCode``, ``AbortOn``, ``ExtractionStatus``,
-``NameRewrite`` and ``LinkTargetNotFoundReason``.
+``NameRewrite``, ``LinkTargetNotFoundReason`` and ``OptionalLibrary``.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from archivey import (
     HashAlgorithm,
     LinkTargetNotFoundReason,
     NameRewrite,
+    OptionalLibrary,
     StreamFormat,
 )
 
@@ -47,6 +48,7 @@ STR_VALUE_ENUMS: tuple[type[StrEnum], ...] = (
     ExtractionStatus,
     NameRewrite,
     LinkTargetNotFoundReason,
+    OptionalLibrary,
 )
 
 

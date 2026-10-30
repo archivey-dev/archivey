@@ -925,7 +925,7 @@ writes itself) is exercised against mutated and coverage-guided input.
    ZIP member or 7z coder does, since `AUTO` engages rapidgzip on them only with one.
    libFuzzer's own `-timeout` and `-rss_limit_mb` bound those targets: unlike a Python
    alarm, they fire while the main thread is inside native code. A
-   short partition runs on every pull request; the full one on a change-guarded nightly
+   short partition runs on every merge-queue group; the full one on a change-guarded nightly
    and on `workflow_dispatch` (`.github/workflows/atheris-fuzz.yml`,
    `openspec/specs/testing-contract/spec.md`). `atheris` is in the `fuzz` dependency
    group only.

@@ -74,11 +74,12 @@ _LINK_RE = re.compile(r"^\[[^\]]+\]: ", re.MULTILINE)
 RELEASE_GATE_WORKFLOWS = (
     "accelerator-crash-search.yml",
     "accelerator-fuzz-soak.yml",
-    # Its pull request mode runs each target for 1 to 3 seconds; a dispatched run uses
+    # Its merge-queue mode runs each target for 1 to 3 seconds; a dispatched run uses
     # the nightly budgets, about ten times longer.
     "atheris-fuzz.yml",
     "rapidgzip-resume-stress.yml",
-    # Pull requests skip PyPy's core-only suite; a dispatched run includes it.
+    # Pull requests run a reduced set of jobs and the merge queue skips PyPy's core-only
+    # suite; a dispatched run includes everything, as the daily run on main does.
     "ci.yml",
 )
 
