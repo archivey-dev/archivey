@@ -103,6 +103,9 @@ class ArReader(SequentialReader):
 
     def __init__(self, context: ReaderContext) -> None:
         self._context = context
+        # Both are what the walk has seen so far: in a streaming pass they can change
+        # until the walk ends (a table after the first member, a dialect only a later
+        # name shows). GNU ar and llvm-ar write the table first.
         self._dialect: str | None = None
         self._symbol_table = False
 
@@ -110,7 +113,8 @@ class ArReader(SequentialReader):
         extra = ArchiveInfoExtra({"ar.symbol_table": self._symbol_table})
         if self._dialect is not None:
             extra["ar.dialect"] = self._dialect
-        return ReaderArchiveInfo(format_version=self._dialect, extra=extra)
+        # A dialect is not a version: like TAR's, it is not in format_version.
+        return ReaderArchiveInfo(extra=extra)
 
     def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
         magic = stream.read(len(MAGIC))

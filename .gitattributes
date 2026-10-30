@@ -4,6 +4,6 @@
 
 # Archive fixtures are bytes, whatever git's text detection guesses: a Windows
 # checkout with core.autocrlf would otherwise rewrite the "\n" in an ar magic.
-tests/fixtures/**/*.a binary
-tests/fixtures/**/*.cpio binary
-tests/fixtures/**/*.sqfs binary
+*.a binary
+*.cpio binary
+*.sqfs binary
