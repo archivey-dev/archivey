@@ -63,13 +63,17 @@ _Entry = bytes | tuple[int, bytes]
 
 # A 9-bit stream comes in two layouts once its table fills. The original compress (4.0,
 # 1985) and BSD's, which GNU gzip, ncompress 5.0's reader and 7-Zip 26.05 follow, pad to
-# the end of the group of eight codes and write the rest 10 bits wide; the values stay
-# below 512. ncompress 4.2 to 5.0 (and its unreleased fix, 3303f31) keep 9-bit codes,
-# which unar and 7-Zip up to 26.04 read. Nothing in the header says which, so the
-# decoder reads the next _NINE_BIT_PROBE_BYTES as 10-bit codes: the original layout never
-# sets bit 9 of one, and every 9-bit stream measured set it within seven codes. A source
-# that ends first is decided on what it has, and the original layout wins a tie.
-_NINE_BIT_PROBE_BYTES = 40  # 32 codes of 10 bits
+# the end of the group of eight codes and write 10-bit codes until the next CLEAR; the
+# values stay below 512. ncompress 4.2 to 5.0 (and its unreleased fix, 3303f31) keep
+# 9-bit codes, which unar and 7-Zip up to 26.04 read. After a CLEAR both start again at
+# 9 bits. Nothing in the header says which, so the decoder reads the next
+# _NINE_BIT_PROBE_BYTES both ways (_nine_bit_layout_breaks) and looks for a code that
+# layout could not write: in the original layout, a 10-bit code with bit 9 set; in
+# either, after a CLEAR, a first code that is not a literal or a code past the next free
+# one. Every ncompress stream measured broke the 10-bit reading within seven codes. The
+# layout that does not break wins; if neither breaks, the original layout wins; if both
+# do, the one that held out longer. A source that ends first is decided on what it has.
+_NINE_BIT_PROBE_BYTES = 64
 
 
 def _expand(dictionary: Sequence[_Entry | None], link: tuple[int, bytes]) -> bytes:
@@ -140,9 +144,11 @@ class LzwState:
     Format errors raise :class:`CorruptionError` directly (same pattern as native
     xz/lzip). Unknown reserved header flags and a maximum code width over 16 raise
     :class:`UnsupportedFeatureError`.
-    A 9-bit stream whose table fills is read in the layout :data:`_NINE_BIT_PROBE_BYTES`
-    describes; ``nine_bit_widens`` fixes it instead (a recreated decoder keeps the one
-    the stream was read with).
+    A 9-bit stream whose table fills is read in one of two layouts, described with the
+    probe that picks between them above ``_NINE_BIT_PROBE_BYTES``. ``nine_bit_widens``
+    fixes the layout instead (a recreated decoder keeps the one the stream was read
+    with).
+
     At EOF, :attr:`truncation` names the evidence of a cut when there is some: a source
     that ended inside the header, inside a CLEAR's realignment padding, or with nonzero
     leftover bits after the last complete code. Zero leftover bits are normal for
@@ -181,7 +187,7 @@ class LzwState:
 
     @property
     def nine_bit_widens(self) -> bool | None:
-        """Whether a full 9-bit table moved to 10-bit codes; ``None`` until one filled."""
+        """Whether a full 9-bit table moves to 10-bit codes; ``None`` until known."""
         return self._nine_bit_widens
 
     @property
@@ -299,18 +305,21 @@ class LzwState:
         widens = self._nine_bit_widens
         pad = -self._bytes_in_era % _INITIAL_CODE_WIDTH
         if widens is None:
-            probe = self._buf[pad : pad + _NINE_BIT_PROBE_BYTES]
-            if len(probe) < _NINE_BIT_PROBE_BYTES and not eof:
+            if len(self._buf) < pad + _NINE_BIT_PROBE_BYTES and not eof:
                 return False
-            value = int.from_bytes(probe, "little")
-            codes = len(probe) * 8 // 10
-            widens = not any(value >> (10 * k + 9) & 1 for k in range(codes))
-            if widens and len(probe) < _NINE_BIT_PROBE_BYTES:
+            window = bytes(self._buf[: pad + _NINE_BIT_PROBE_BYTES])
+            ten = self._nine_bit_layout_breaks(window, widens=True)
+            nine = self._nine_bit_layout_breaks(window, widens=False)
+            if ten is None or nine is None:
+                widens = ten is None
+            else:
+                widens = ten >= nine
+            if widens and len(window) < pad + _NINE_BIT_PROBE_BYTES:
                 # The source ends inside the probe. A writer stops at the byte holding
                 # its last code's final bit, so a whole byte left over after the last
                 # 10-bit code, or padding cut short, rules the 10-bit reading out.
-                tail = len(self._buf)
-                widens = (tail == 0 or tail >= pad) and len(probe) * 8 % 10 != 8
+                tail = len(window)
+                widens = (tail == 0 or tail >= pad) and (tail - pad) * 8 % 10 != 8
             self._nine_bit_widens = widens
         self._at_nine_bit_fill = False
         if not widens:
@@ -335,6 +344,63 @@ class LzwState:
         self._bytes_in_era = 0
         self._codes_in_era = 0
         return True
+
+    def _nine_bit_layout_breaks(self, window: bytes, *, widens: bool) -> int | None:
+        """How many codes of ``window`` one 9-bit layout reads before one it could not
+        have written, or None if none.
+
+        ``window`` starts right after the code that filled the table. The 10-bit
+        reading skips the group padding and the bits left in the current byte; the
+        9-bit reading goes on from them. Only codes and table sizes are followed, not
+        the table's contents. A CLEAR realigns and restarts at 9 bits as in
+        :meth:`_process_step`, and the walk stops at the next width increase.
+        """
+        block_mode = self._block_mode
+        if widens:
+            pad = -self._bytes_in_era % _INITIAL_CODE_WIDTH
+            pos, bits, nbits, era_bytes = pad, 0, 0, 0
+            width, next_code = _INITIAL_CODE_WIDTH + 1, 1 << _INITIAL_CODE_WIDTH
+        else:
+            pos, bits, nbits = 0, self._bit_buffer, self._bits_in_buffer
+            era_bytes = self._bytes_in_era
+            width, next_code = _INITIAL_CODE_WIDTH, 1 << _INITIAL_CODE_WIDTH
+        era_codes, after_clear, codes = 0, False, 0
+        while True:
+            while nbits < width:
+                if pos >= len(window):
+                    return None
+                bits |= window[pos] << nbits
+                nbits += 8
+                pos += 1
+                era_bytes += 1
+            code = bits & ((1 << width) - 1)
+            bits >>= width
+            nbits -= width
+            if code >> _INITIAL_CODE_WIDTH and width > _INITIAL_CODE_WIDTH:
+                return codes
+            if after_clear and (
+                code > next_code or (era_codes == 0 and code > _CLEAR_CODE)
+            ):
+                return codes
+            codes += 1
+            if code == _CLEAR_CODE and block_mode:
+                i = era_bytes - 1
+                if advanced := i % width:
+                    i += width - advanced
+                pos += i - era_bytes
+                bits = nbits = era_bytes = era_codes = 0
+                width, next_code, after_clear = (
+                    _INITIAL_CODE_WIDTH,
+                    _CLEAR_CODE + 1,
+                    True,
+                )
+                continue
+            if after_clear:
+                if era_codes:
+                    next_code += 1
+                era_codes += 1
+                if next_code > _INITIAL_MASK:
+                    return None
 
     def _process_step(
         self, *, eof: bool, max_length: int = -1

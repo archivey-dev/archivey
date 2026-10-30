@@ -147,17 +147,24 @@ for `-b9` in block mode and without (`-C`), and reads it back. GNU gzip 1.12, nc
 9-bit codes and no padding, which `unar`, 7-Zip up to 26.04 and ncompress `3303f31` read,
 and which ncompress 5.0's own decoder, GNU gzip and 7-Zip 26.05 refuse (`Data Error`).
 
-Nothing in the header tells them apart, so archivey reads the 40 bytes after the fill as
-10-bit codes. compress 4.0's layout never sets bit 9 of one. Every ncompress-layout
-stream measured set it within the first seven codes, so a set bit 9 means 9-bit codes
-and none means 10-bit codes. The layout found at the first fill holds for the rest of
-the stream, a seek included. A source that ends inside those 40 bytes is decided on what
-it has: a whole byte left over after the last 10-bit code, or padding cut short, means 9
-bits, and otherwise compress 4.0's layout wins. So an ncompress-layout file that ends
-fewer than about 32 codes after its table filled can be read as the other layout and
-return wrong bytes. Before this, archivey read only the ncompress layout: a compress 4.0
-`-b9` file raised `CorruptionError`, or for long runs of one byte decoded with no error
-to wrong bytes.
+Nothing in the header tells them apart, so archivey reads the 64 bytes after the fill
+both ways and looks for a code that layout could not have written. In compress 4.0's
+layout that is a 10-bit code with bit 9 set, since no value reaches 512. In either, a
+CLEAR sends the stream back to 9-bit codes with a near-empty table, so after it a first
+code that is not a literal, or any code past the next free one, rules the reading out.
+The layout that holds wins; if both hold, compress 4.0's wins; if both break, the one
+that held out longer. Every ncompress-layout stream measured broke the 10-bit reading
+within the first seven codes. The layout found at the first fill holds for the rest of
+the stream, a seek included.
+
+Two cases can still go wrong, both on ncompress-layout files and both ending on
+compress 4.0's layout. A source that ends inside the 64 bytes is decided on what it has:
+a whole byte left over after the last 10-bit code, or padding cut short, means 9 bits,
+and otherwise both readings hold. So a file that ends fewer than about 32 codes after
+its table filled can return wrong bytes. And a CLEAR written as the very first code after
+the fill reads as a CLEAR both ways; the readings then differ only in where its padding
+ends, and both can hold. Before this, archivey read only the ncompress layout: a compress
+4.0 `-b9` file raised `CorruptionError`, or decoded with no error to wrong bytes.
 
 The test encoder writes both layouts. In block mode its compress 4.0 layout matched
 compress 4.0's output byte for byte; without block mode it differs only in the padding
@@ -206,6 +213,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A backward seek re-decodes from the start | **format** | No CLEAR codes in this file, or a non-seekable source |
 | `member.size` is `None` | **format** | No size field |
 | A `compress -b9` file reads with no error but returns wrong bytes | **format** | No checksum to show the damage; ncompress 5.0 writes such files (§3) |
+| An ncompress-layout `-b9` file that ends just after its table fills, or has a CLEAR right at the fill, reads with no error to wrong bytes | **archivey** | When the layout probe cannot tell the two 9-bit layouts apart, compress 4.0's wins (§3) |
 
 ## 6. Decisions
 
@@ -217,7 +225,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Report a cut only where there is evidence | Calling every file that ends on a code boundary truncated would refuse every valid file | Guessing |
 | A zero-byte source is `TruncatedError` (PR #420) | Every other codec raises on an empty source, and a `.Z` without its header is cut | An empty member |
 | Merge consecutive empty CLEAR points (PR #116) | Several points at one offset broke the seek table's invariant | Asserting |
-| Read both 9-bit layouts, found from the codes after the table fills; on a tie, the layout tools wrote historically (maintainer, 2026-10-30) | compress 4.0 wrote the 10-bit layout, and gzip and 7-Zip 26.05 read it; ncompress 4.2 to 5.0 wrote the 9-bit one. Bit 9 of the probe tells them apart | One layout only |
+| Read both 9-bit layouts, found from the codes after the table fills; on a tie, the layout tools wrote historically (maintainer, 2026-10-30) | compress 4.0 wrote the 10-bit layout, and gzip and 7-Zip 26.05 read it; ncompress 4.2 to 5.0 wrote the 9-bit one. The probe reads both ways and drops the reading that meets a code its layout could not write | One layout only |
 
 ## 7. Open questions
 
@@ -247,6 +255,7 @@ The truncation gap is the format's, not an open question;
 | compress 4.0's 9-bit layout decodes like GNU gzip, and like 7-Zip where it is 26.05 or later |
 | ncompress's 9-bit layout decodes like `7z` where it is 26.04 or earlier |
 | A source that ends soon after a 9-bit table fills still reads compress 4.0's layout |
+| A CLEAR anywhere inside the layout probe leaves both layouts readable, except an ncompress CLEAR as the first code after the fill |
 | In compress 4.0's 10-bit era, code 512 is corrupt; a seek back keeps the layout |
 | A 9-bit file with ncompress 5.0's damage reads with no error to wrong bytes; the same as `7z` where it is 26.04 or earlier |
 | 7-Zip 26.05 or later refuses a 9-bit file that keeps 9-bit codes, and reads a 16-bit one |

@@ -1412,6 +1412,25 @@ def test_unix_compress_nine_bit_short_tail_after_the_fill(block_mode: bool) -> N
                 assert _lzw_decode_in_chunks(encoded, chunk) == prefix, (end, widens)
 
 
+@pytest.mark.parametrize("widens", [True, False], ids=["compress-4.0", "ncompress"])
+@pytest.mark.parametrize("payload", ["text", "random"])
+def test_unix_compress_nine_bit_clear_inside_the_probe(
+    payload: str, widens: bool
+) -> None:
+    """A CLEAR soon after a 9-bit table fills sends both layouts back to 9-bit codes
+    inside the probe. Both are still told apart for a CLEAR anywhere in it, except one
+    case: an ncompress CLEAR as the very first code after the fill reads as a CLEAR in
+    the 10-bit layout too, and then both readings can hold, so compress 4.0's wins."""
+    data = _NON_BLOCK_PAYLOADS[payload][:30_000]
+    for clear_every in range(250, 320):
+        if not widens and clear_every == 256:
+            continue
+        compressed = _lzw_compress(
+            data, 9, block_mode=True, clear_every=clear_every, nine_bit_widens=widens
+        )
+        assert _lzw_decode_in_chunks(compressed, 1 << 20) == data, clear_every
+
+
 def test_unix_compress_nine_bit_ten_bit_era_refuses_code_512() -> None:
     """In compress 4.0's 10-bit era the table stays at 511 entries, so code 512 has no
     entry to stand for and is corrupt."""
@@ -1421,7 +1440,7 @@ def test_unix_compress_nine_bit_ten_bit_era_refuses_code_512() -> None:
     )
     fill = _nine_bit_fill_offset(True)
     # The probe must still see the 10-bit layout, so the bad code goes after it.
-    at = fill + 50
+    at = fill + 80
     value = int.from_bytes(compressed[at : at + 10], "little")
     value = (value & ~((1 << 10) - 1)) | 512
     compressed[at : at + 10] = value.to_bytes(10, "little")
