@@ -199,8 +199,8 @@ class TruncatedError(CorruptionError):
     again or resuming the download may give a whole archive. The label is best effort,
     not a diagnosis: damage that decodes short can raise it too, and a cut that falls
     between two members, or inside a trailer no member needs, may raise nothing (the
-    reader then usually reports ``ARCHIVE_EOF_MARKER_MISSING`` or
-    ``DIGEST_UNVERIFIABLE``).
+    reader then usually reports the :class:`~archivey.DiagnosticCode`
+    ``ARCHIVE_EOF_MARKER_MISSING`` or ``DIGEST_UNVERIFIABLE``).
     Catch :class:`CorruptionError` to handle damage of either kind.
     """
 

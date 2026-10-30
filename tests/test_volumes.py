@@ -1492,7 +1492,7 @@ def test_concatenated_file_mixed_path_and_stream(
     assert tracker.current == 0
 
 
-def test_concatenated_file_path_open_error_surfaces_on_read(
+def test_concatenated_file_path_oserror_surfaces_on_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     first = tmp_path / "ok.bin"
@@ -1503,14 +1503,15 @@ def test_concatenated_file_path_open_error_surfaces_on_read(
 
     def denying_open(file: Any, *args: Any, **kwargs: Any) -> Any:
         if Path(file).resolve() == denied.resolve():
-            raise PermissionError("denied")
+            raise PermissionError(errno.EACCES, "denied", str(file))
         return real_open(file, *args, **kwargs)
 
     monkeypatch.setattr(volumes_mod, "open", denying_open, raising=False)
     with ConcatenatedFile([first, denied]) as joined:
         assert joined.read(3) == b"aaa"
-        with pytest.raises(PermissionError, match="denied"):
+        with pytest.raises(PermissionError) as caught:
             joined.read()
+    assert caught.value.filename == str(denied)
 
 
 def test_concatenated_file_missing_path_fails_at_construction(tmp_path: Path) -> None:

@@ -674,8 +674,8 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
                 try:
                     st = os.stat(source)
                 except OSError as exc:
-                    # A path the caller listed that is missing or unreadable raises
-                    # its OSError, as the first path does. A numbering gap among
+                    # A volume path that is missing or unreadable, listed by the
+                    # caller or discovered, raises its OSError, as the first does. A numbering gap among
                     # paths that exist is TruncatedError in
                     # _validate_numbered_volume_completeness — discovery expected a
                     # part that is not in the set.
