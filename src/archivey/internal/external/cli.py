@@ -39,6 +39,7 @@ from archivey.internal.streams.child_process import (
 )
 from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.terminal import display_path
+from archivey.types import MissingComponent
 
 # Seconds each probe of one binary may run: the identification run, and the finder's
 # ``verify`` check where it runs one (``unar``'s RAR5 check reads this too). A binary
@@ -201,8 +202,9 @@ class CliToolFinder:
                 too_old.append((candidate, cached.banner.version))
             elif cached.timed_out:
                 timed_out.append(candidate)
+        message = self._refusal(purpose, too_old, timed_out, rejected, unchecked)
         raise PackageNotInstalledError(
-            self._refusal(purpose, too_old, timed_out, rejected, unchecked)
+            message, missing=(MissingComponent(self._display_name, message),)
         ) from cause
 
     def _refusal(

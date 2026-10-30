@@ -740,8 +740,9 @@ the pass, and declined rather than refused when the cap has no room.
 
 **Property.** `extract` stops a decompression bomb before it fills the disk.
 
-**Mechanism.** `internal/bomb_tracker.py` `BombTracker` enforces `ExtractionLimits`: total
-bytes (2 GiB), per-member ratio and archive-wide ratio (1000, active after 5 MiB), a
+**Mechanism.** `internal/bomb_tracker.py` `BombTracker` enforces `ExtractionLimits` and the
+ratio fields of `DecoderLimits`: total
+bytes (2 GiB), per-member ratio and archive-wide ratio (800, active after 5 MiB), a
 live ratio for sources of unknown size (active after 256 MiB, so an honest blank start
 read from a pipe is not judged before the data after it arrives), and an entry cap
 (262,144). Where a member records its size and compressed size, `check_recorded_size()`
@@ -800,8 +801,9 @@ much before the ratio refuses it, where it wrote about 5 MiB before that floor e
 
 **Property.** Reading one RAR member never quietly decodes other members first.
 
-**Mechanism.** `unrar` selects members by mask, and a member whose name is a glob that
-matches earlier entries would make `unrar -n` decompress every earlier match first. The
+**Mechanism.** `unrar` selects members by mask, and a member whose mask selects earlier
+entries (a glob, a duplicate name, two names `unrar` reads alike) would make `unrar -n`
+decompress every earlier match first. The
 read is refused by default when that skip is nonzero (`internal/backends/rar_reader.py`,
 `rar_allow_glob_member_concatenation` as the escape hatch). The refusal is narrower
 than it looks: on a solid archive an out-of-order `open()` decodes everything ahead of
@@ -810,9 +812,10 @@ there. Whether the refusal earns its keep is parked with the general unbounded-r
 question ([`formats/rar.md`](formats/rar.md) §5 to §7).
 
 **Residual.** A mask with no glob that still selects earlier members (a duplicate name,
-or two names `unrar` reads the same way) is not refused, so `unrar` decodes those
-members first. Their dictionaries count against `DecoderLimits.max_decoder_memory`
-([Decoder memory](#decoder-memory)); the bytes they decode count against no limit.
+or two names `unrar` reads the same way) is refused the same way since 2026-10-29. With
+the flag set, `unrar` decodes those members first: their dictionaries count against
+`DecoderLimits.max_decoder_memory` ([Decoder memory](#decoder-memory)); the bytes they
+decode count against no limit.
 
 **Tests.** `tests/test_rar_reader.py::test_glob_member_with_earlier_matches_is_refused`,
 `::test_solid_glob_refusal_does_not_claim_an_avoidable_decode`,
@@ -925,7 +928,7 @@ writes itself) is exercised against mutated and coverage-guided input.
    ZIP member or 7z coder does, since `AUTO` engages rapidgzip on them only with one.
    libFuzzer's own `-timeout` and `-rss_limit_mb` bound those targets: unlike a Python
    alarm, they fire while the main thread is inside native code. A
-   short partition runs on every pull request; the full one on a change-guarded nightly
+   short partition runs on every merge-queue group; the full one on a change-guarded nightly
    and on `workflow_dispatch` (`.github/workflows/atheris-fuzz.yml`,
    `openspec/specs/testing-contract/spec.md`). `atheris` is in the `fuzz` dependency
    group only.
@@ -1173,7 +1176,11 @@ consumes the stream once, and the entries its directory places in the bytes kept
 its members consume those at most twice more, however many it names there
 ([Resource use is bounded](#resource-use-is-bounded)). A "work per output byte" limit
 for BCJ2 was considered and not added: no other codec has one, and `ExtractionLimits`
-still bounds the amount, only the rate is lower. Callers who need a time bound run
+still bounds the amount, only the rate is lower. Detection of an unrecognised file with
+no known extension scans up to 2 MiB for an archive behind leading bytes, and 2 MiB of
+back-to-back ZIP local-header signatures costs about 2.4 s to reject, one validation each
+([prefixed archives §3](topics/prefixed-archives.md#3-cost-is-what-tiers-this-not-false-positives)).
+Callers who need a time bound run
 archivey in a worker they can kill. Public:
 [where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 
@@ -1285,9 +1292,7 @@ parent's scan and its own lists the target's entries. Reads are still refused wh
 listing recorded an identity. For an identity-less member the reparse check covers only
 the leaf and runs after the open, so a junction swapped in above it, or a swap racing
 the check, reads a same-size file outside the root. Both inferred from the code, not
-measured. On Python 3.11, `DirEntry.is_junction()` does not exist, so a junction may be
-walked ([`formats/directory.md`](formats/directory.md) §7). Public:
-[where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
+measured. Public: [where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 
 ### Nested-archive amplification
 
@@ -1299,9 +1304,36 @@ budget one level at a time. The caller bounds depth and total size. Public:
 
 ### Reads have no output bound
 
-`read()` and `open()` return whatever the member decodes to; `ExtractionLimits` apply to
-`extract` only. Chunk untrusted payloads. Public:
+`read()` and `open()` have no byte cap: `max_extracted_bytes` and `max_entries` apply to
+`extract` only, and a `read()` of an honest 1 GiB member holds 1 GiB. `max_ratio` does
+hold reads: each member stream is held to the per-member and archive-wide ratios
+(`bomb_tracker.MemberRatioGuard`, one `ReadRatioTally` per reader), so a scan or hash of a
+bzip2 or xz bomb stops within a step past 5 MiB. The archive-wide rule needs a
+denominator, so a ZIP, TAR or 7z read from a non-seekable stream (no trusted size, no live
+counter) has only the per-member rule for reads: many members each under 5 MiB are not
+bounded together, where extraction still has `max_extracted_bytes`. A container inside a
+compression stream (a `.tar.gz`) holds its whole decode, listing included, to the
+archive-wide ratio (`bomb_tracker.DecodeRatioGuard`), since listing it decodes everything.
+Chunk untrusted payloads. Public:
 [security.md §Where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
+
+### Volume discovery trusts the folder
+
+Opening one part of a set by path reads the other parts beside it
+(`internal/volumes.py` `discover_volume_siblings`, and the RAR reader's own walk). A part
+found that way that is a symlink is refused, so a user who can only add files to a
+shared folder cannot point a planted `x.part2.rar` at a file the caller can read and they
+cannot, and have its bytes come out inside an extracted member. The check is an `lstat`
+at discovery; the parts are opened by name afterwards (`join_volumes` reopens them, and
+`unrar` opens RAR volumes itself), so the same writer can swap a checked part for a link
+before the read. That is the swapping writer of §1, here for the folder beside an archive
+path rather than a directory source, and it is not defended. A hard link looks like any
+file and passes; Linux's `protected_hardlinks` stops an unprivileged user making one to a
+file they cannot read, macOS does not. `ArchiveyConfig(discover_volumes=False)` reads a
+path as the one file it names. `unrar`, run on volume 1's path, may still open later
+volumes by name, but a member that continues into a volume archivey was not given is
+refused before `unrar` reads it. Public:
+[security.md §Hardening](../docs/security.md#hardening).
 
 ### A probe can fabricate a member
 

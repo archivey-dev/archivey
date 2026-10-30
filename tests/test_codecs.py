@@ -61,7 +61,7 @@ from archivey.internal.streams.codecs.unix_compress_decoder import (
     LzwState,
 )
 from archivey.internal.streams.verify import VerifyingStream
-from archivey.types import HashAlgorithm, StreamFormat
+from archivey.types import HashAlgorithm, OptionalLibrary, StreamFormat
 from tests.conftest import (
     CPYTHON,
     UNUSED_UNDER_PYPY_NAMES,
@@ -75,6 +75,7 @@ from tests.corruption_util import (
     is_corruption_not_truncation,
     raises_corruption_not_truncation,
 )
+from tests.source_trees import source_files
 from tests.streams_util import (
     NonSeekableBytesIO,
     compress_lzma2_raw,
@@ -2912,6 +2913,9 @@ def test_absent_codec_backend_hint_is_installable(
     with pytest.raises(PackageNotInstalledError) as ei:
         open_codec_stream(codec, io.BytesIO(b""))
     _assert_hint_is_installable(str(ei.value))
+    assert requirement is not None
+    assert ei.value.missing == (requirement,)
+    assert isinstance(requirement.name, OptionalLibrary)
 
 
 @pytest.fixture
@@ -3109,6 +3113,30 @@ def test_rewind_report_gives_the_reason_rapidgzip_is_unused(
         ), message
 
 
+@pytest.mark.parametrize("present", [False, True], ids=["absent", "installed"])
+def test_rewind_report_gives_the_policy_when_rapidgzip_is_excluded(
+    monkeypatch: pytest.MonkeyPatch, present: bool
+) -> None:
+    """Excluded, rapidgzip is reported like a rapidgzip archivey does not use: the
+    report gives the policy, not install advice or the index."""
+    deps = codecs_module.deps
+    monkeypatch.setattr(deps, "UNDER_PYPY", False)
+    monkeypatch.setattr(
+        deps, "rapidgzip", deps.LazyOptional("rapidgzip", present=present)
+    )
+    messages = _rapidgzip_rewind_messages(
+        StreamConfig(
+            seekable=True, excluded_libraries=frozenset({OptionalLibrary.RAPIDGZIP})
+        )
+    )
+    assert len(messages) == 2
+    for message in messages:
+        assert message.endswith(
+            "The 'rapidgzip' accelerator is not available: "
+            "ArchiveyConfig.formats.exclude_libraries turns it off."
+        ), message
+
+
 def test_absent_crypto_hint_is_installable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(crypto, "_crypto_available", lambda: False)
     with pytest.raises(PackageNotInstalledError) as ei:
@@ -3130,6 +3158,21 @@ def test_conftest_names_the_same_unused_packages_as_deps() -> None:
     assert set(UNUSED_UNDER_PYPY_NAMES) == set(codecs_module.deps._UNUSED_UNDER_PYPY)
 
 
+def _missing_component_calls() -> Iterator[tuple[str, ast.Call]]:
+    """Every ``MissingComponent(...)`` call with a positional name, in archivey and in
+    the plugin packages of this repository."""
+    for rel, path in source_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "MissingComponent"
+                and node.args
+            ):
+                yield f"{rel}:{node.lineno}", node
+
+
 def test_every_requirement_on_an_unused_package_carries_its_reason() -> None:
     """Each ``MissingComponent`` naming a package in ``deps._UNUSED_UNDER_PYPY`` passes
     ``reason=deps.unused_reason(<name>)``, so a read under PyPy gives the reason and not
@@ -3137,32 +3180,117 @@ def test_every_requirement_on_an_unused_package_carries_its_reason() -> None:
 
     Read from the source: the requirement is built when its module is imported, and on
     CPython both the argument and its default are ``""``, so a live object cannot tell.
+    A plugin package cannot call archivey's internal ``unused_reason``, so there any
+    ``reason=`` will do: it must say why itself.
     """
-    unused = set(codecs_module.deps._UNUSED_UNDER_PYPY)
-    src = Path(__file__).resolve().parent.parent / "src"
+    # Member *names* (``"LZ4"``), which is what ``OptionalLibrary.LZ4`` unparses to
+    # once its prefix is cut; the members' values are the package names.
+    unused_member_names = {lib.name for lib in codecs_module.deps._UNUSED_UNDER_PYPY}
     seen: set[str] = set()
     offenders = []
-    for path in sorted(src.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "MissingComponent"
-                and node.args
-                and isinstance(node.args[0], ast.Constant)
-                and node.args[0].value in unused
-            ):
-                continue
-            name = node.args[0].value
-            seen.add(name)
-            reason = next((k.value for k in node.keywords if k.arg == "reason"), None)
-            if reason is None or ast.unparse(reason) != f"deps.unused_reason({name!r})":
-                offenders.append(f"{path.relative_to(src)}:{node.lineno}: {name}")
+    for where, node in _missing_component_calls():
+        member = ast.unparse(node.args[0])
+        name = member.removeprefix("OptionalLibrary.")
+        if name not in unused_member_names:
+            continue
+        seen.add(name)
+        reason = next((k.value for k in node.keywords if k.arg == "reason"), None)
+        in_archivey = where.startswith("src/archivey/")
+        if reason is None or (
+            in_archivey and ast.unparse(reason) != f"deps.unused_reason({member})"
+        ):
+            offenders.append(f"{where}: {name}")
     assert not offenders, "requirement without its unused reason:\n" + "\n".join(
         offenders
     )
-    assert seen == unused, f"no requirement found for {sorted(unused - seen)}"
+    assert seen == unused_member_names, (
+        f"no requirement found for {sorted(unused_member_names - seen)}"
+    )
+
+
+def test_archivey_names_its_own_packages_by_the_member() -> None:
+    """The maintainer's rule (2026-10-28): a ``MissingComponent`` for one of
+    archivey's optional packages names it by its ``OptionalLibrary`` member, not a
+    string, so the name cannot drift from what ``exclude_libraries`` accepts."""
+    values = set(OptionalLibrary)
+    offenders = [
+        f"{where}: {node.args[0].value!r}"
+        for where, node in _missing_component_calls()
+        if isinstance(node.args[0], ast.Constant) and node.args[0].value in values
+    ]
+    assert not offenders, "a package named by a string:\n" + "\n".join(offenders)
+
+
+# What archivey imports outside the standard library that is not an optional package
+# of its own, with why.
+_NOT_OPTIONAL_LIBRARIES = {
+    "__pypy__": "PyPy's own module, for memory pressure",
+    "_typeshed": "type-checking stubs, imported only under TYPE_CHECKING",
+    "tqdm": "the CLI's progress bar, a dependency of archivey-cli, not a decoder",
+}
+
+
+def _optional_library_of(module: str) -> OptionalLibrary | None:
+    """The member whose package ``module`` is, or is part of."""
+    for library in OptionalLibrary:
+        if module == library or module.startswith(f"{library}."):
+            return library
+    return None
+
+
+def _imported_modules(path: Path) -> Iterator[tuple[int, str]]:
+    """Each module ``path`` imports, by statement or by name, outside archivey."""
+    importers = {"import_module", "find_spec", "_optional", "LazyOptional"}
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        modules: list[str] = []
+        if isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            modules = [node.module]
+        elif isinstance(node, ast.Call) and node.args:
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+            first = node.args[0]
+            if name in importers and isinstance(first, ast.Constant):
+                modules = [str(first.value)]
+        for module in modules:
+            if module.split(".")[0] != "archivey":
+                yield node.lineno, module
+
+
+def test_every_optional_package_archivey_imports_is_an_optional_library() -> None:
+    """``OptionalLibrary`` lists exactly the optional packages archivey imports.
+
+    A package missing from it could not be turned off with
+    ``FormatPolicy(exclude_libraries=)``, and nothing else would say so. So every
+    module archivey imports outside the standard library, by an ``import`` statement or
+    by name through ``import_module``, ``find_spec``, ``_optional`` or
+    ``LazyOptional``, must belong to a member's package or be listed above with its
+    reason; and every member must be imported somewhere, so the list cannot keep a
+    package archivey no longer uses.
+    """
+    imported: set[OptionalLibrary] = set()
+    offenders = []
+    for rel, path in source_files():
+        if not rel.startswith("src/archivey/"):
+            continue
+        for line, module in _imported_modules(path):
+            library = _optional_library_of(module)
+            top = module.split(".")[0]
+            # A member first: ``compression.zstd`` is in the standard library on 3.14.
+            if library is not None:
+                imported.add(library)
+            elif (
+                top not in sys.stdlib_module_names
+                and top not in _NOT_OPTIONAL_LIBRARIES
+            ):
+                offenders.append(f"{rel}:{line}: {module}")
+    assert not offenders, "imported but not an OptionalLibrary:\n" + "\n".join(
+        offenders
+    )
+    assert imported == set(OptionalLibrary), (
+        f"never imported: {sorted(set(OptionalLibrary) - imported)}"
+    )
 
 
 def test_no_source_file_advertises_a_deleted_extra() -> None:

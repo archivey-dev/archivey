@@ -33,6 +33,7 @@ from archivey.exceptions import (
     PackageNotInstalledError,
     TruncatedError,
 )
+from archivey.internal.excluded_libraries import NO_EXCLUSIONS, as_reported
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
@@ -41,11 +42,11 @@ from archivey.internal.streams.streamtools import (
     resolve_seek,
     source_byte_size,
 )
-from archivey.types import MissingComponent
+from archivey.types import ArchiveFormat, MissingComponent, OptionalLibrary
 
 # The package name surfaced to users, and the single install hint every AES raise site
 # (here and in zip_aes) formats its message from.
-CRYPTO_PACKAGE = "cryptography"
+CRYPTO_PACKAGE = OptionalLibrary.CRYPTOGRAPHY
 CRYPTO_REQUIREMENT = MissingComponent(
     CRYPTO_PACKAGE, "pip install archivey[recommended]", ("aes",)
 )
@@ -249,25 +250,53 @@ def _crypto_available() -> bool:
     return importlib.util.find_spec(CRYPTO_PACKAGE) is not None
 
 
-def get_crypto_backend() -> CryptoBackend:
+def crypto_missing(
+    purpose: str,
+    excluded: frozenset[OptionalLibrary],
+    *,
+    archive_name: str | None = None,
+    member_name: str | None = None,
+    source_format: ArchiveFormat | None = None,
+) -> PackageNotInstalledError:
+    """The refusal for AES without ``cryptography``: absent, or turned off by
+    ``excluded`` (the call's ``FormatPolicy.exclude_libraries``)."""
+    requirement = as_reported(CRYPTO_REQUIREMENT, excluded)
+    return PackageNotInstalledError(
+        requirement.message(purpose),
+        missing=(requirement,),
+        archive_name=archive_name,
+        member_name=member_name,
+        source_format=source_format,
+    )
+
+
+def get_crypto_backend(
+    excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
+) -> CryptoBackend:
     """Return the crypto backend, or raise ``PackageNotInstalledError`` naming ``cryptography``.
 
     This is the single entry point to crypto for the whole library; format parsers call it
-    rather than importing any crypto library themselves.
+    rather than importing any crypto library themselves. ``excluded`` is the call's
+    ``FormatPolicy.exclude_libraries``: naming ``cryptography`` refuses as if it were
+    absent. Every caller passes it, which ``tests/test_exclude_libraries.py`` checks.
     """
-    if not _crypto_available():
-        raise PackageNotInstalledError(CRYPTO_REQUIREMENT.message("AES decryption"))
+    if CRYPTO_PACKAGE in excluded or not _crypto_available():
+        raise crypto_missing("AES decryption", excluded)
     return _CryptographyBackend()
 
 
-def open_aes_decrypt_stage(params: AesParams) -> DecryptStage:
+def open_aes_decrypt_stage(
+    params: AesParams, *, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
+) -> DecryptStage:
     """Convenience: resolve the crypto backend and build an AES-CBC decrypt stage."""
-    return get_crypto_backend().aes_cbc_decrypt_stage(params)
+    return get_crypto_backend(excluded).aes_cbc_decrypt_stage(params)
 
 
-def open_aes_ctr_stage(params: AesCtrParams) -> KeystreamStage:
+def open_aes_ctr_stage(
+    params: AesCtrParams, *, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
+) -> KeystreamStage:
     """Convenience: resolve the crypto backend and build an AES-CTR keystream stage."""
-    return get_crypto_backend().aes_ctr_keystream_stage(params)
+    return get_crypto_backend(excluded).aes_ctr_keystream_stage(params)
 
 
 class AesDecryptStream(ReadOnlyIOStream):
@@ -323,17 +352,19 @@ class AesDecryptStream(ReadOnlyIOStream):
         params: AesParams,
         *,
         owns_inner: bool = False,
+        excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
     ) -> None:
         super().__init__()
         self._source = source
         self._params = params
         self._owns_inner = owns_inner
+        self._excluded = excluded
         self._seekable = is_seekable(source)
         # Ciphertext origin of this wrapper. Seekable sources are positioned at
         # the first ciphertext byte (a 7z pack ``SharedView`` starts at 0 of the
         # view). Non-seekable sources have no origin to restore; seek is refused.
         self._cipher_start = source.tell() if self._seekable else 0
-        self._stage: DecryptStage = open_aes_decrypt_stage(params)
+        self._stage: DecryptStage = open_aes_decrypt_stage(params, excluded=excluded)
         self._buf = bytearray()
         self._eof = False
         self._pos = 0
@@ -519,7 +550,9 @@ class AesDecryptStream(ReadOnlyIOStream):
                 self._eof = True
                 return False
             # ``read_exact`` left the source at the start of ``block``.
-        self._stage = open_aes_decrypt_stage(replace(self._params, iv=iv))
+        self._stage = open_aes_decrypt_stage(
+            replace(self._params, iv=iv), excluded=self._excluded
+        )
         self._buf.clear()
         self._eof = False
         return True
@@ -538,6 +571,7 @@ def open_aes_decrypt_stream(
     params: AesParams,
     *,
     owns_inner: bool = False,
+    excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
 ) -> BinaryIO:
     """Wrap ``source`` in an AES-CBC decrypt stream using the shared crypto backend.
 
@@ -545,4 +579,4 @@ def open_aes_decrypt_stream(
     :class:`~archivey.internal.streams.streamtools.slice.SlicingStream`. The 7z
     pack view underneath is a :class:`~archivey.internal.streams.streamtools.slice.SharedView`.
     """
-    return AesDecryptStream(source, params, owns_inner=owns_inner)
+    return AesDecryptStream(source, params, owns_inner=owns_inner, excluded=excluded)

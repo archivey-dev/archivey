@@ -24,7 +24,7 @@ from archivey.internal.streams.codecs.base import (
     StreamCodec,
 )
 from archivey.internal.streams.codecs.ppmd_decoder import PpmdDecompressorStream
-from archivey.types import MissingComponent
+from archivey.types import MissingComponent, OptionalLibrary
 
 # 7-Zip's PPMd7 property bounds (``PPMD7_MIN_ORDER`` .. ``PPMD7_MAX_MEM_SIZE`` in
 # C/Ppmd7.h). Its decoder refuses properties outside them as unsupported
@@ -68,10 +68,10 @@ def _check_ppmd7_properties(order: int, mem_size: int) -> None:
 class PpmdCodec(StreamCodec):
     codec = Codec.PPMD
     requirement = MissingComponent(
-        "pyppmd",
+        OptionalLibrary.PYPPMD,
         "pip install archivey[recommended]",
         ("ppmd",),
-        reason=deps.unused_reason("pyppmd"),
+        reason=deps.unused_reason(OptionalLibrary.PYPPMD),
     )
 
     def _backend_present(self) -> bool:
@@ -82,12 +82,15 @@ class PpmdCodec(StreamCodec):
     ) -> BinaryIO:
         # Every PPMd member decodes in a child unless NONE, so this process does not
         # import pyppmd then (it re-enables the GIL on a free-threaded build).
-        if config.process_isolation is ProcessIsolation.NONE:
+        excluded = config.excluded_libraries
+        if self.excluded_by(excluded):
+            present = False
+        elif config.process_isolation is ProcessIsolation.NONE:
             present = deps.pyppmd.load() is not None
         else:
             present = deps.pyppmd.available()
         if not present:
-            raise self._missing("PPMd streams")
+            raise self._missing("PPMd streams", excluded=excluded)
         # ZIP method 98 supplies order/mem/restore directly (PPMd8). 7z supplies a
         # var.H properties blob (PPMd7). Prefer an explicit ``pack_size``; fall back to
         # the sized source length (``SlicingStream`` / path size) filled into

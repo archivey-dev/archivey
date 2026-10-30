@@ -1281,8 +1281,7 @@
    "path": {
     "format": "zip/uncompressed",
     "members": 2,
-    "digest": "27bb2929ea30f272",
-    "failed": 2
+    "digest": "491e83e7c9d7fbc1"
    }
   },
   "android/ActivitySceneTransitionBasic/app/build/outputs/apk/debug/app-debug.apk": {
@@ -2335,8 +2334,7 @@
    "path": {
     "format": "zip/uncompressed",
     "members": 1,
-    "digest": "d1b67e4d7e7d9bf9",
-    "failed": 1
+    "digest": "22e7aa39d0c8eb3e"
    }
   },
   "imploding-8Kdict-3trees.zip": {
@@ -2347,8 +2345,7 @@
    "path": {
     "format": "zip/uncompressed",
     "members": 1,
-    "digest": "af2ff2ac51a772a1",
-    "failed": 1
+    "digest": "e149c1c26e64f948"
    }
   },
   "invalid-zip.zip": {
@@ -2699,8 +2696,7 @@
    "path": {
     "format": "zip/uncompressed",
     "members": 1,
-    "digest": "67a6c1a008efdabe",
-    "failed": 1
+    "digest": "588d527bddcbb6c7"
    }
   },
   "lorem-ipsum.txt.bz2": {
@@ -2776,8 +2772,7 @@
    "path": {
     "format": "zip/uncompressed",
     "members": 135,
-    "digest": "552da8fcc93f4039",
-    "failed": 135
+    "digest": "2f6fa27fb333ba59"
    }
   },
   "moby.zip": {

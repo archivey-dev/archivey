@@ -55,6 +55,7 @@ from archivey.internal.diagnostics_collector import (
 )
 from archivey.internal.logs import streams as logger
 from archivey.internal.streams.child_process import is_no_verdict
+from archivey.internal.streams.kept_errors import KeptError
 from archivey.internal.streams.native_memory import end_lzma_decoder
 from archivey.internal.streams.resume import (
     ResumeReachedStreamEnd,
@@ -300,7 +301,19 @@ def _as_index_point(point: SeekPoint) -> SeekPoint:
 
 @dataclass
 class DecodeOut:
-    """Bytes produced by a decoder step, plus any absolute seek points discovered."""
+    """Bytes produced by a decoder step, plus any absolute seek points discovered.
+
+    The rule every decoder keeps: for any output offset, every pass offers the same
+    point, the latest compressed offset decoding can resume from there, whatever the
+    feed sizes. The seek table keeps a later compressed offset offered at an output
+    offset it has recorded (forward refinement), but reads an earlier one with resume
+    state as damage, so a re-read that offers an earlier point than the first pass kept
+    raises on an honest file. Decoders keep the rule two ways. lzip, xz, zstd and the
+    framed decoders record a point only where a unit's output begins, never for a unit
+    with no output, whose output offset is the next unit's or the end of the output.
+    ``.Z`` records a point after each CLEAR and, of two at one output offset, keeps the
+    later.
+    """
 
     data: bytes
     points: list[SeekPoint] = field(default_factory=list)
@@ -900,7 +913,8 @@ class DecompressorStream(ReadOnlyIOStream):
         self._size: int | None = None
         # The deferred error this stream raised at its end (see _raise_deferred), or the
         # error the decoder raised (see _decoding), until a seek restarts the decoder.
-        self._spent: BaseException | None = None
+        # Kept without its frames (``kept_errors``).
+        self._spent: KeptError | None = None
 
     def seekable(self) -> bool:
         return self._inner.seekable()
@@ -1159,9 +1173,9 @@ class DecompressorStream(ReadOnlyIOStream):
             return
         # Two different resume states at one output offset (xz block records that the
         # backward index scan and a forward read's per-stream scan disagree on). Two
-        # decode-discovered points cannot collide: a point is recorded only once its
-        # unit has output, so they rise in both coordinates. Points without resume
-        # state where one is the index's were settled above, without a raise.
+        # decode-discovered points cannot collide: by the rule on DecodeOut a pass never
+        # offers an earlier point than one already kept. Points without resume state
+        # where one is the index's were settled above, without a raise.
         raise CorruptionError(
             f"The {self._index_source()} and the data do not agree. Output offset "
             f"{point.decompressed_offset} starts at compressed offset "
@@ -1382,7 +1396,7 @@ class DecompressorStream(ReadOnlyIOStream):
         except Exception as exc:
             if self._drop_index_at_failed_point(exc):
                 return None
-            self._spent = exc
+            self._spent = KeptError.of(exc)
             raise
 
     def _drop_index_at_failed_point(self, exc: Exception) -> bool:
@@ -1526,10 +1540,9 @@ class DecompressorStream(ReadOnlyIOStream):
         # the recorded error's traceback keeps this frame, and its locals, alive. Gate
         # _size *before* raising so a caller that catches TruncatedError cannot then
         # read a clean prefix-as-complete size.
-        err = self._end_error()
-        if err is not None:
+        if self._end_error() is not None:
             chunks.clear()
-            self._raise_deferred(err)
+            self._raise_deferred()
         data = b"".join(chunks)
         if self._size is None or self._pos <= self._size:
             self._pos += len(data)
@@ -1597,37 +1610,44 @@ class DecompressorStream(ReadOnlyIOStream):
         data = bytes(self._buffer[:n])
         del self._buffer[:n]
         self._pos += len(data)
-        if not data:
-            err = self._end_error()
-            if err is not None:
-                self._raise_deferred(err)
+        if not data and self._end_error() is not None:
+            self._raise_deferred()
         return data
 
-    def _raise_deferred(self, err: BaseException) -> NoReturn:
+    def _raise_deferred(self) -> NoReturn:
         """Raise the decoder's deferred end-of-stream error, and keep raising it.
 
         The decoder has reached the end of its input, so a later read would otherwise
         return ``b""`` and a truncated stream would read as a short, clean one. Every
-        later read that has no buffered bytes raises ``err`` again, and no size is
+        later read that has no buffered bytes raises it again, and no size is
         published. A seek restarts the decoder (:meth:`_seek`), which reaches the same
         error again at the same place.
+
+        No frame keeps the error in a local as the raise leaves it: the callers ask
+        :meth:`_end_error` without keeping the answer, and this frame drops its own,
+        or the raise's traceback would hold this stream (``kept_errors``).
         """
+        err = self._end_error()
+        assert err is not None
         self._decoder.clear_pending_error()
         self._surplus = None
-        self._spent = err
-        raise err
+        try:
+            raise err
+        except BaseException as raised:
+            self._spent = KeptError.of(raised)
+            raise
+        finally:
+            del err
 
     def _raise_spent(self) -> NoReturn:
-        """Raise the recorded error again, with this raise's traceback only.
+        """Raise the recorded error again: a fresh copy, caused by the first raise.
 
-        Re-raising the stored instance as is would append each raise's frames to one
-        traceback, which grows with every retry and keeps every frame on it alive.
-        The same instance is raised each time, so a caller that kept an earlier raise
-        sees its traceback replaced by the latest one; the message and type do not
-        change, and a bounded traceback is worth more than the first raise's frames.
+        Raising the stored instance would tie this stream into a cycle through the
+        raise's frames (``kept_errors``), and append each raise's frames to one
+        traceback that grows with every retry.
         """
         assert self._spent is not None
-        raise self._spent.with_traceback(None)
+        self._spent.raise_again()
 
     def close(self) -> None:
         # Quiesce any decoder-owned native worker before dropping references, so a
@@ -1756,9 +1776,8 @@ class DecompressorStream(ReadOnlyIOStream):
             # Truncated streams must not publish a clean complete size; surface
             # the deferred fault instead of asserting or treating the prefix as
             # the full stream.
-            err = self._end_error()
-            if err is not None:
-                self._raise_deferred(err)
+            if self._end_error() is not None:
+                self._raise_deferred()
             if self._size is None:
                 raise TruncatedError(
                     "Cannot seek to end: decompressed size is unknown "

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import io
 import struct
+import sys
 from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
@@ -29,6 +30,8 @@ from archivey import (
     CompressionAlgorithm,
     CorruptionError,
     MemberType,
+    MissingComponent,
+    OptionalLibrary,
     PackageNotInstalledError,
     StreamFormat,
     TruncatedError,
@@ -61,6 +64,16 @@ _SYMLINK_MAX = 65535
 # follows the superblock. It is not read: zlib, xz, LZMA Alone and Zstandard streams
 # carry their own parameters, and the LZ4 and LZO options only name a compression
 # level or variant that the same decoder reads.
+# archivey does not use python-lz4 under PyPy, where its frame decoder crashes the
+# interpreter (dev-docs/known-issues.md). Only the block decoder is used here, but no one
+# has shown it safe there, so this package does the same and says why in place of the
+# install advice.
+_LZ4_UNUSED_REASON = (
+    "archivey-squashfs does not use lz4 under PyPy, where python-lz4 crashes the "
+    "interpreter"
+    if sys.implementation.name == "pypy"
+    else ""
+)
 _COMPRESSORS = {1: "gzip", 2: "lzma", 3: "lzo", 4: "xz", 5: "lz4", 6: "zstd"}
 _DECODED_AS: dict[str, CompressionAlgorithm | StreamFormat] = {
     "gzip": StreamFormat.ZLIB,
@@ -203,6 +216,31 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
 
     # ── Decoding ─────────────────────────────────────────────────────────────────────
 
+    def _lz4_block_module(self) -> Any:
+        """``lz4.block``, unless it is missing, unused on this interpreter, or turned
+        off by the caller's policy."""
+        reason = _LZ4_UNUSED_REASON
+        if OptionalLibrary.LZ4 in self._context.config.formats.exclude_libraries:
+            # Turned off for this call: it reads as not installed, and installing it
+            # would not help. The same words as archivey's own refusals
+            # (archivey.internal.excluded_libraries.EXCLUDED_REASON), which a plugin
+            # cannot import; a test compares the two.
+            reason = "ArchiveyConfig.formats.exclude_libraries turns it off"
+        if not reason:
+            try:
+                import lz4.block
+            except ImportError:
+                pass
+            else:
+                return lz4.block
+        requirement = MissingComponent(
+            OptionalLibrary.LZ4, "pip install lz4", ("lz4",), reason=reason
+        )
+        raise PackageNotInstalledError(
+            requirement.message("an LZ4-compressed SquashFS image"),
+            missing=(requirement,),
+        )
+
     def _block_decoder(self, compressor: str) -> Callable[[int, int, int], bytes]:
         """A function that decodes ``length`` bytes at ``start`` to at most ``limit``."""
         method = _DECODED_AS.get(compressor)
@@ -224,19 +262,13 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
 
             return through_archivey
         if compressor == "lz4":
-            try:
-                import lz4.block
-            except ImportError:
-                raise PackageNotInstalledError(
-                    "an LZ4-compressed SquashFS image needs the lz4 package: "
-                    "pip install lz4"
-                ) from None
+            lz4_block_module = self._lz4_block_module()
 
             def lz4_block(start: int, length: int, limit: int) -> bytes:
                 raw = self._read_exact(start, length, "an LZ4 block")
                 try:
-                    return lz4.block.decompress(raw, uncompressed_size=limit)
-                except lz4.block.LZ4BlockError as exc:
+                    return lz4_block_module.decompress(raw, uncompressed_size=limit)
+                except lz4_block_module.LZ4BlockError as exc:
                     raise CorruptionError(f"the LZ4 block at {start}: {exc}") from None
 
             return lz4_block

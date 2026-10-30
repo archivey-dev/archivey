@@ -310,6 +310,7 @@ def _rar_info(redirect_type: int) -> SimpleNamespace:
         file_redir=(redirect_type, 0, "target"),
         is_file_version_history=lambda: False,
         is_file_copy=lambda: redirect_type == 5,
+        has_unknown_redirect=lambda: not 1 <= redirect_type <= 5,
         file_version=None,
         extract_version=None,
         file_encryption=None,
@@ -924,7 +925,8 @@ def test_a_reparse_target_over_the_link_cap_is_refused(tmp_path: Path) -> None:
 
 
 # Deflated zeros: a ~64 KiB member that decodes to 64 MiB.
-_LARGE_CONTENT = b"\0" * (64 << 20)
+# Zeros, but under max_ratio, which a read holds too: 64 MiB of them alone deflate past it.
+_LARGE_CONTENT = (bytes(255) + b"\1") * (1 << 18)
 
 
 def test_a_large_non_link_reparse_member_keeps_all_its_content(

@@ -343,7 +343,8 @@ the right weight.
 **Rule.** A valid file using a feature archivey cannot decode raises
 `UnsupportedFeatureError`. `CorruptionError` is only for data that is actually damaged.
 The truncated/corrupt split is best-effort: `TruncatedError` is a `CorruptionError`
-subclass, and callers should not branch on it.
+subclass, and the docs present it as a hint that the source was most likely cut short,
+so fetching it again or resuming a download may help.
 
 **Why.** Exception types are control flow. A caller sorting a backup corpus treats
 "corrupt" files differently from "needs a newer tool".
@@ -351,7 +352,10 @@ subclass, and callers should not branch on it.
 **Rulings.** lzip version 0 is unsupported, not corrupt (2026-10-03, PR 567). LZMA with
 `lc + lp > 4` stays unsupported because liblzma cannot decode it, and the handbook names
 the one library that could (2026-10-08, PR 621). `TruncatedError` became a
-`CorruptionError` subclass before 0.2.0 (2026-09-27, PR 508).
+`CorruptionError` subclass before 0.2.0 (2026-09-27, PR 508). `TruncatedError` is a
+resume hint, kept best effort, instead of a label not to branch on: an aborted download
+is the common cause, and a caller can act on that (davi, 2026-10-30, PR 1140); reopen if
+a common cut raises plain `CorruptionError`.
 
 ### DR-4a. The integrity guarantee is for a start-to-end read
 
@@ -643,6 +647,24 @@ field would be false for most members of an ordinary read.
 - ISO path-table entries count against `max_members` (2026-10-06, PR 612).
 - Hard-link copies at the link-count limit count toward `max_ratio`; cross-device copies
   count only toward bytes (2026-10-07, PR 623).
+- A container inside a compression stream (a `.tar.gz`, a handler's `.cpio.xz`) holds
+  its whole decode to the archive-wide `max_ratio` in every use, listing included
+  (`DecodeRatioGuard`): listing one decodes everything, and extraction would refuse the
+  same archive anyway (davi, 2026-10-29, PR 1138). Cost: an honest archive over 1000:1
+  past the first 5 MiB no longer lists by default (800:1 since 2026-10-30). Reopen if a real archive class
+  (not a test of zeros) is refused there.
+- `max_ratio` holds every member read (`open()`, `read()`, `stream_members()`), by the
+  per-member and archive-wide rules extraction applies (`MemberRatioGuard`): scanning
+  or hashing members pays for the decode as extracting does, and holding only the
+  compressed-tar spelling of a bzip2 bomb left the ZIP, 7z and bare `.bz2` spellings
+  open (davi, 2026-10-30, after PR 1138). Cost: an honest member over 1000:1 past
+  5 MiB no longer reads by default. Extraction's passes keep their own tracker.
+- The ratio fields move from `ExtractionLimits` to `DecoderLimits`, since they now hold
+  every decode; the `ExtractionLimits` fields stay one minor, deprecated, and override
+  when set (davi, 2026-10-30). Default `max_ratio` 800, below Deflate's ceiling of about
+  1032:1, so a gzip of zeros (about 1003 to 1032:1) is refused every time rather than
+  by chance, as zeros are in every other codec (davi, 2026-10-30). Raising it so gzip
+  of zeros passes was weighed: bzip2, xz and zstd of zeros would still be refused.
 - Default numbers (decided 2026-10-07): `max_members` and `max_entries` 262,144;
   `max_key_derivation_rounds` 2**25. These replace the 2026-10-01 decision to keep
   1,048,576 and 2**27, after measuring per-member listing cost.

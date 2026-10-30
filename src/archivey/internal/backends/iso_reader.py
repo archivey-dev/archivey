@@ -124,10 +124,11 @@ from archivey.types import (
     MemberExtra,
     MemberType,
     MissingComponent,
+    OptionalLibrary,
 )
 
 _PYCDLIB_REQUIREMENT = MissingComponent(
-    "pycdlib", "pip install archivey[recommended]", ("iso",)
+    OptionalLibrary.PYCDLIB, "pip install archivey[recommended]", ("iso",)
 )
 
 
@@ -144,7 +145,7 @@ def _optional(name: str) -> ModuleType | None:
         return None
 
 
-pycdlib = _optional("pycdlib")
+pycdlib = _optional(OptionalLibrary.PYCDLIB)
 _pycdlib_exc = _optional("pycdlib.pycdlibexception")
 _pycdlib_core = _optional("pycdlib.pycdlib")
 _pycdlib_dr = _optional("pycdlib.dr")
@@ -248,6 +249,13 @@ class _SystemUseNotes:
                 length < 4
                 or length > left
                 or (version != 1 and tag in _PYCDLIB_SUSP_TAGS)
+                # pycdlib accepts one of CONTINUE, CURRENT and PARENT at most;
+                # isofs ignores such an entry and lists the record.
+                or (
+                    tag == b"NM"
+                    and length > 4
+                    and record[offset + 4] & 7 in (3, 5, 6, 7)
+                )
             ):
                 self._drop(
                     rock_ridge,
@@ -888,16 +896,34 @@ _JOLIET_SEARCH_RECORDS = 64
 
 
 def _nm_name(record: DirectoryRecord) -> bytes | None:
-    """The name a record's Rock Ridge ``NM`` entries spell, or ``None`` without any.
+    """The name a record's Rock Ridge ``NM`` entries spell, or ``None`` when it has no
+    ``NM`` entries or they spell no name.
 
     ``RockRidge.name()`` alone does not tell: with no ``NM`` entry, which RRIP allows and
     which a System Use area cut before its ``NM`` leaves, pycdlib hands back the ISO
-    9660 identifier, version suffix and all.
+    9660 identifier, version suffix and all. Either way ``None`` sends the caller to
+    the ISO 9660 identifier.
     """
     rr = record.rock_ridge
-    if rr is None or not any(e.nm_records for e in _rr_entry_groups(rr)):
+    if rr is None or not _has_nm_entries(rr):
         return None
-    return bytes(rr.name())
+    # An ``NM`` that spells nothing names nothing: joined into a path, an empty
+    # component would list the record's children one directory up. The ISO 9660
+    # identifier stands in, as the Linux kernel's isofs falls back to it. RRIP gives
+    # an empty ``NM`` only to ``.`` and ``..`` (the CURRENT and PARENT flags), which
+    # the walk never lists, so on a listed record it is a writer's error.
+    return bytes(rr.name()) or None
+
+
+def _has_nm_entries(rr: RockRidge) -> bool:
+    """Whether a Rock Ridge record holds any ``NM`` entry, in its area or continuation."""
+    return any(e.nm_records for e in _rr_entry_groups(rr))
+
+
+def _nm_name_is_empty(rr: RockRidge) -> bool:
+    """Whether ``NM`` entries are present and spell no name: the case where
+    :func:`_nm_name` gives ``None`` although the record has ``NM`` entries."""
+    return _has_nm_entries(rr) and not rr.name()
 
 
 def _rr_entry_groups(rr: RockRidge) -> tuple[RockRidgeEntries, ...]:
@@ -1413,6 +1439,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         if pycdlib is None:
             raise PackageNotInstalledError(
                 _PYCDLIB_REQUIREMENT.message("reading ISO images"),
+                missing=(_PYCDLIB_REQUIREMENT,),
                 archive_name=self._archive_name,
             )
 
@@ -2114,6 +2141,32 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
                 ),
                 member=member,
             )
+        # An absent ``NM`` is RRIP-legal, so its fallback to the ISO 9660 name is
+        # silent; an ``NM`` that is present and spells nothing is a writer's error,
+        # so the same fallback is reported. A record whose ISO 9660 identifier is
+        # empty too has no name left: the empty component then collapses as in any
+        # format, and ``member_name_normalized`` reports that.
+        if self._namespace == "rock_ridge" and rr is not None and _nm_name_is_empty(rr):
+            fallback = (
+                "the member is listed under its ISO 9660 name"
+                if record.file_identifier()
+                else "its ISO 9660 identifier is empty too, so no name is left"
+            )
+            self._context.report(
+                DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+                (
+                    f"The Rock Ridge NM entry of {quoted(member.name)} spells an "
+                    f"empty name; {fallback}."
+                ),
+                MemberHeaderRecordContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=index,
+                    record="NM",
+                    reason="empty alternate name",
+                ),
+                member=member,
+            )
         return member, presented
 
     def _zisofs_entry(self, record: DirectoryRecord) -> _ZisofsEntry | None:
@@ -2664,6 +2717,6 @@ IsoReadBackend = register_builtin_format(
         "its volume descriptors and directory records are at absolute offsets in "
         "the image"
     ),
-    OPTIONAL_DEPENDENCY=_PYCDLIB_REQUIREMENT.name,
+    OPTIONAL_DEPENDENCY=OptionalLibrary.PYCDLIB,
     INSTALL_HINT=_PYCDLIB_REQUIREMENT.install_hint,
 )

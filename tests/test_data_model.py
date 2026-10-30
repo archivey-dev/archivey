@@ -269,3 +269,43 @@ def test_modified_utc_normalizes_mixed_timestamps() -> None:
     # The stored field is untouched: provenance stays checkable.
     assert naive.modified is not None and naive.modified.tzinfo is None
     assert ArchiveMember(type=MemberType.FILE, name="none").modified_utc() is None
+
+
+# Every public timestamp field: ``types.py`` uses postponed annotations, so a field's
+# type is its annotation text. A new one with no ``*_utc()`` helper fails below.
+_TIMESTAMP_FIELDS = [
+    f.name for f in dataclasses.fields(ArchiveMember) if f.type == "datetime | None"
+]
+
+
+def test_the_timestamp_fields_are_found() -> None:
+    """The derivation finds the fields it must (an annotation spelled differently
+    would leave the inventory below empty and passing)."""
+    assert {"modified", "accessed", "created", "ctime"} <= set(_TIMESTAMP_FIELDS)
+
+
+@pytest.mark.parametrize("field", _TIMESTAMP_FIELDS)
+def test_every_timestamp_has_a_utc_helper(field: str) -> None:
+    """Each timestamp converts as ``modified_utc`` does, and reads only its own field."""
+    from datetime import datetime, timedelta, timezone
+
+    helper = f"{field}_utc"
+    minus3 = timezone(timedelta(hours=-3))
+    naive = ArchiveMember(
+        type=MemberType.FILE, name="naive", **{field: datetime(2020, 6, 1, 14, 0)}
+    )
+    assert getattr(naive, helper)(tz_for_naive=minus3) == datetime(
+        2020, 6, 1, 17, 0, tzinfo=UTC
+    )
+    assert getattr(naive, helper)().tzinfo == UTC
+    aware = ArchiveMember(
+        type=MemberType.FILE,
+        name="aware",
+        **{field: datetime(2020, 6, 1, 14, 0, tzinfo=timezone(timedelta(hours=2)))},
+    )
+    assert getattr(aware, helper)(tz_for_naive=minus3) == datetime(
+        2020, 6, 1, 12, 0, tzinfo=UTC
+    )
+    assert getattr(naive, field).tzinfo is None
+    others = {"modified", "accessed", "created", "ctime"} - {field}
+    assert all(getattr(naive, f"{other}_utc")() is None for other in others)

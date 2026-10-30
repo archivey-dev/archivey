@@ -17,6 +17,7 @@ See [Opening an archive](opening.md).
 ::: archivey.FormatAvailability
 ::: archivey.FormatSupport
 ::: archivey.MissingComponent
+::: archivey.OptionalLibrary
 ::: archivey.list_supported_formats
 ::: archivey.list_known_formats
 
@@ -64,6 +65,7 @@ See [Format](opening.md#format).
 ::: archivey.ContainerFormat
 ::: archivey.PluginContainer
 ::: archivey.StreamFormat
+::: archivey.PluginStream
 ::: archivey.MemberType
 ::: archivey.CompressionMethod
 ::: archivey.CompressionAlgorithm

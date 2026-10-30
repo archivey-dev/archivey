@@ -121,9 +121,6 @@ from archivey.internal.streams.archive_stream import (
     ArchiveStreamImpl,
     MemberStreamParts,
 )
-from archivey.internal.streams.codecs import (
-    SINGLE_FILE_CODECS,
-)
 from archivey.internal.streams.decompressor_stream import _StreamChecksumError
 from archivey.internal.streams.streamtools import (
     LockedStream,
@@ -276,42 +273,18 @@ def _declared_span_end(span: TarSpan) -> int:
     return span.data_offset + (span.size + BLOCKSIZE - 1) // BLOCKSIZE * BLOCKSIZE
 
 
-# Every compressed-tar combination the codec layer can decode: TAR composed with each
-# standalone stream codec (gz/bz2/xz/zst/lz4/lzip/lzma-alone/zlib/brotli/unix-compress).
-# The common ones have named ArchiveFormat constants; the rest are equal-by-value
-# on-demand instances.
-_TAR_COMPRESSED: tuple[ArchiveFormat, ...] = tuple(
-    ArchiveFormat(ContainerFormat.TAR, codec.stream_format)
-    for codec in SINGLE_FILE_CODECS
-    if codec.stream_format is not None
-)
-
-# Plain TAR plus every compressed combination the codec layer can decode.
-_TAR_FORMATS: tuple[ArchiveFormat, ...] = (ArchiveFormat.TAR, *_TAR_COMPRESSED)
-
-# Canonical extensions are derived from each format (TAR -> ".tar", TAR_GZ -> ".tar.gz",
-# (TAR, LZIP) -> ".tar.lz", …); only the short aliases (.tgz/.tbz/…) and `.cbt`
-# (comic-book TAR) are listed by hand.
-# (Built at module scope: a dict comprehension in the class body can't see class-level names.)
+# TAR's own extensions. Its pair with each single-file codec (``.tar.gz``, ``.tar.lz``,
+# ``.tar.brotli``) the registry makes from ``PAIR_EXTENSIONS`` and the codecs, so a
+# codec registered later has one too; the short aliases (``.tgz``) and ``.cbt``
+# (comic-book TAR) are listed here.
 _TAR_EXTENSIONS: dict[str, ArchiveFormat] = {
-    f".{fmt.file_extension()}": fmt for fmt in _TAR_FORMATS
-}
-# A codec's extension aliases have their ``.tar.`` forms too (``.tar.brotli``).
-_TAR_EXTENSIONS.update(
-    {
-        f".tar{alias}": ArchiveFormat(ContainerFormat.TAR, codec.stream_format)
-        for codec in SINGLE_FILE_CODECS
-        if codec.stream_format is not None
-        for alias in codec.extension_aliases
-    }
-)
-_TAR_EXTENSIONS.update(
-    {
+    ".tar": ArchiveFormat.TAR,
+    ".cbt": ArchiveFormat.TAR,
+    **{
         suffix: ArchiveFormat(ContainerFormat.TAR, stream)
         for suffix, stream in COMPRESSED_TAR_SHORT_SUFFIXES.items()
-    }
-)
-_TAR_EXTENSIONS[".cbt"] = ArchiveFormat.TAR
+    },
+}
 
 
 # Shared across FILE/HARDLINK members — avoid per-member CompressionMethod construction.
@@ -1329,7 +1302,7 @@ class TarReader(BaseArchiveReader):
             MemberType.HARDLINK,
         ):
             member.link_target = link_target
-        # All four GNU encodings: the old ``S`` typeflag and PAX sparse 0.0 / 0.1 /
+        # All four GNU encodings: an ``S`` in an old GNU header and PAX sparse 0.0 / 0.1 /
         # 1.0, which GNU tar writes under ``--format=pax`` with a plain ``0`` typeflag.
         if entry.sparse_format is not None:
             member.is_sparse = True
@@ -1626,7 +1599,10 @@ class TarReader(BaseArchiveReader):
 class TarReadBackend(ReadBackend):
     """Backend factory for TAR archives (plain and compressed)."""
 
-    FORMATS: tuple[ArchiveFormat, ...] = _TAR_FORMATS
+    FORMATS: tuple[ArchiveFormat, ...] = (ArchiveFormat.TAR,)
+    # TAR inside each single-file compression stream: TAR_GZ, TAR_XZ, and so on.
+    STREAM_PAIRS = True
+    PAIR_EXTENSIONS = (".tar",)
     EXTENSIONS: Mapping[str, ArchiveFormat] = _TAR_EXTENSIONS
     # Plain tar is recognized by the POSIX/GNU "ustar" magic at offset 257. Compressed tars
     # carry only their outer codec's magic; detection's inner-container probe (see

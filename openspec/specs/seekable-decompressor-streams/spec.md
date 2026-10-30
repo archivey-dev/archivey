@@ -75,7 +75,8 @@ it, because every backward seek restarts decryption from the member's start.
 The system SHALL support random access in XZ and lzip by reading their embedded
 index structures. XZ SHALL use the footer and block index to map uncompressed
 offsets to compressed block positions. Lzip SHALL scan trailers to locate block
-boundaries. A seek SHALL decompress only the block range needed for the requested
+boundaries. A forward read SHALL record a member start as a seek point only for a member
+that has output. A seek SHALL decompress only the block range needed for the requested
 uncompressed offset.
 
 #### Scenario: native index matrix

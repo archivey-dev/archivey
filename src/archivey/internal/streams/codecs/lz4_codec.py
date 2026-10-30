@@ -31,6 +31,7 @@ from archivey.types import (
     ArchiveFormat,
     MagicSignature,
     MissingComponent,
+    OptionalLibrary,
     StreamFormat,
 )
 
@@ -52,10 +53,10 @@ class Lz4Codec(StreamCodec):
         MagicSignature(0, LEGACY_MAGIC, ArchiveFormat.LZ4),
     )
     requirement = MissingComponent(
-        "lz4",
+        OptionalLibrary.LZ4,
         "pip install archivey[recommended]",
         ("lz4",),
-        reason=deps.unused_reason("lz4"),
+        reason=deps.unused_reason(OptionalLibrary.LZ4),
     )
 
     def _backend_present(self) -> bool:
@@ -64,8 +65,13 @@ class Lz4Codec(StreamCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        if deps.lz4_frame is None or deps.lz4_block is None:
-            raise self._missing("lz4 streams")
+        excluded = config.excluded_libraries
+        if (
+            self.excluded_by(excluded)
+            or deps.lz4_frame is None
+            or deps.lz4_block is None
+        ):
+            raise self._missing("lz4 streams", excluded=excluded)
         # A rewind re-decompresses from the start (the outer ArchiveStream warns on a
         # rewind — see rewind_warning).
         natives = natives_for(config.process_isolation)

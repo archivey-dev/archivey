@@ -107,6 +107,8 @@ from archivey.internal.streams.streamtools.binaryio import (
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
+    from archivey.types import OptionalLibrary
+
 # The most filters one liblzma chain holds (``LZMA_FILTERS_MAX`` in lzma/filter.h).
 _LIBLZMA_MAX_FILTERS = 4
 
@@ -615,6 +617,7 @@ def _open_aes_stage(
     *,
     password: bytes | None,
     key_cache: SevenZipKeyCache,
+    excluded: frozenset[OptionalLibrary],
 ) -> BinaryIO:
     if password is None:
         raise EncryptionError("Password required to decrypt this 7z folder")
@@ -624,7 +627,7 @@ def _open_aes_stage(
         params = key_cache.aes_params_from_properties(password, coder.properties)
     except ValueError as exc:
         raise CorruptionError(f"Malformed 7z AES properties: {exc}") from exc
-    return open_aes_decrypt_stream(source, params)
+    return open_aes_decrypt_stream(source, params, excluded=excluded)
 
 
 def _filter_stage(coder: SevenZipCoder, unpack_size: int) -> _FilterStage:
@@ -792,7 +795,11 @@ def _execute_stage(
     """
     if isinstance(stage, _AesStage):
         return _open_aes_stage(
-            stream, stage.coder, password=password, key_cache=key_cache
+            stream,
+            stage.coder,
+            password=password,
+            key_cache=key_cache,
+            excluded=stream_config.excluded_libraries,
         )
     if isinstance(stage, _CodecStage):
         if stage.pack_size is not None:

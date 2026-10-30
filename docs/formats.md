@@ -256,7 +256,8 @@ in a real folder named `__MACOSX`.
 
 ## ZIP
 
-- **Needs:** nothing for stored, Deflate, BZip2, LZMA and XZ members, or for ZipCrypto. `[recommended]`
+- **Needs:** nothing for stored, Deflate, BZip2, LZMA and XZ members, the PKZIP 1.x methods Shrink
+  and Implode, or ZipCrypto. `[recommended]`
   adds Deflate64 and PPMd (`inflate64`, `pyppmd`, the packages the 7z reader uses too), WinZip AES
   (`cryptography`), and Zstandard before Python 3.14 (`backports.zstd`). A missing package raises
   `PackageNotInstalledError` when you read such a member.
@@ -596,10 +597,11 @@ On a compressed tar, the stream's own checksum adds three cases:
   holes filled with zeros, so it takes its full size on disk. The zeros count as output for the
   [ratio limit](security.md#hardening), which a TAR checks across the whole archive because a
   member has no compressed size. A 10 MiB sparse file packs into a 10 KiB tar, 1024:1, and
-  `extract_all` raises `ResourceLimitError` against the default `max_ratio` of 1000.
+  `extract_all`, or reading the member, raises `ResourceLimitError` against the default
+  `max_ratio` of 800.
   `member.is_sparse` tells you which members are sparse before you extract. For a sparse archive
   you trust, raise the limit with
-  `reader.extract_all(dest, limits=ExtractionLimits(max_ratio=...))`, or `max_ratio=None`.
+  `ArchiveyConfig(decoder_limits=DecoderLimits(max_ratio=...))`, or `max_ratio=None`.
 - A PAX time record that does not parse leaves that time unset, and `MEMBER_TIMESTAMP_INVALID`
   reports it.
 
@@ -748,9 +750,9 @@ them wrong, sometimes with a success exit:
 - encrypted data in a RAR 2.x-4.x archive, except an uncompressed encrypted member in one part,
   which archivey decrypts itself. RAR5 encryption is read.
 - in a solid RAR 2.x-4.x archive, every compressed member after an encrypted one in the same solid
-  stream, when opened on its own. A `stream_members()` pass over a solid RAR 2.x-4.x archive with
-  encrypted headers or any encrypted member refuses every member it reaches, even those before the
-  encrypted one;
+  stream. A `stream_members()` pass refuses the encrypted member and the compressed members its
+  solid stream carries into, and reads the rest, those before the encrypted one included. With
+  encrypted headers it refuses every member;
 - a password that is not ASCII;
 - a multi-volume RAR5 set with encrypted headers (Homebrew's `unar` 1.10.8 returns nothing for it);
 - in a solid RAR5 archive, a member with data after an empty file, a directory or a link;
@@ -779,17 +781,19 @@ that mask select the wrong members, or none:
   `open()` or `read()`, and the error says how many bytes it would have cost. On a solid archive
   those bytes are already part of `AccessCost.SOLID`, so the error names the flag instead. Setting
   `ArchiveyConfig.rar_allow_glob_member_concatenation=True` reads it anyway. Two cases are not
-  affected: a name that matches no other member (an accidental `report*.pdf` beside `report1.pdf`)
-  reads with no flag, and a solid `stream_members()` pass reads everything, because it builds no
-  mask at all.
+  affected: a name that matches no earlier member with data (an accidental `report*.pdf` stored
+  before `report1.pdf`) reads with no flag, and a solid `stream_members()` pass reads everything,
+  because it builds no mask at all.
 - **`*` or `?` in a directory part of the name, or a backslash in it:** `unrar` cannot read the
   member, and the flag does not change that. The one exception is a backslash in a RAR5 name
   written on Windows, which `unrar` on Linux and macOS reads as `_`.
 - **Several members under one name** (two members with the same name, or two names `unrar` reads
-  the same way): `unrar` writes every member a name selects, in archive order, and archivey skips to
-  the one you asked for, so each read returns that member's own bytes. A RAR5 name that is not valid
-  UTF-8 is cut by `unrar` at its first invalid byte, and is read through that shorter name the same
-  way.
+  the same way): `unrar` would decode every earlier member with that name first, as for a `*` name,
+  so reading a later one raises `UnsupportedFeatureError` naming the same flag, unless every
+  earlier one is empty. With
+  `rar_allow_glob_member_concatenation=True`, archivey skips the earlier members' bytes, so each
+  read returns that member's own bytes. A RAR5 name that is not valid UTF-8 is cut by `unrar` at
+  its first invalid byte, and is handled through that shorter name the same way.
 - **A name `unrar` reads as empty** raises `UnsupportedFeatureError`, and so does a name `unrar`
   reads but that cannot be handed back to it as a mask.
 - **A name ending in `.`, or with a `.` before a `\`:** `unrar` up to 7.30 beta 1 lets the mask
@@ -904,7 +908,11 @@ misread the archive.
   gives the source's bytes, and extraction writes an independent file, as `unrar` does, by copying
   the source's file when it has just written it. A copy whose source is not an earlier file member
   raises `LinkTargetNotFoundError` when read. `stream_members(file_copy_streams=False)` yields `None`
-  for each copy; its bytes and digests are its source's.
+  for each copy; its bytes and digests are its source's. A RAR5 redirect of a type archivey does
+  not know (no RAR version writes one) is `OTHER` with no `size`, even with the directory
+  flag, holds no data and is not extracted, as `unrar` skips it with "Unknown extra field".
+  It is reported with `MEMBER_TYPE_UNKNOWN`. A redirect record of type 0 names no redirect,
+  and the member is an ordinary file, as in `unrar`.
 - **RAR 2.9-4 symlinks** store their target as member data. When that data is uncompressed and
   encrypted, archivey decrypts it while listing if you gave the password and `cryptography` is
   installed, and checks it against its CRC. Without either, `link_target` is unset, and a
@@ -1194,7 +1202,8 @@ file; with `format=`, a `.bz2` opens at once. Close the sending side when the fi
   never pays for), then the 512-byte `koly` block at the end of a seekable source
   ([Disk images](#disk-images)), then a TAR header with no magic
   ([TAR](#tar-and-compressed-tar)), then content probes for the formats with no magic (next
-  item), then the extension. A bzip2 or xz header that is the first block of a disk image loses
+  item), then the same 2 MiB scan for a ZIP, 7z or RAR behind leading bytes of any kind, then the
+  extension. A bzip2 or xz header that is the first block of a disk image loses
   to its `koly` block. A step that matches nothing falls through to the next; nothing is rejected for
   failing an earlier one. When only the extension matched and the decode then fails, the error has
   `format_unconfirmed=True`, and archivey reports `EXTENSION_FORMAT_UNCONFIRMED`.
@@ -1240,6 +1249,15 @@ file; with `format=`, a `.bz2` opens at once. Close the sending side when the fi
   as `payload_offset`. A launcher is text, so behind `#!` only formats with a structural check
   (ZIP, 7z, RAR) are searched for. Among several 7z candidates, one that ends exactly at the end of
   the file is preferred over an earlier one that ends short of it.
+- **An archive behind any leading bytes** (an image, zeros, text) is found too, as 7-Zip, `unrar`
+  and `unzip` find it: when no other step matched, the same 2 MiB scan runs without an executable
+  cue, for ZIP, 7z and RAR, each with its structural check. It is the last content step, so a file
+  archivey recognizes pays nothing for it; a file it does not recognize pays a read of up to 2 MiB.
+  On a source that cannot seek and whose length is not known yet, such as a pipe, the scan covers
+  only the bytes detection has already read, and `sfx_scan` is listed in `unavailable_tiers` as
+  `CAPABILITY_UNAVAILABLE`.
+  A file whose name has a known extension skips it and gets the extension's guess; the ZIP, 7z and
+  RAR readers find an archive behind leading bytes themselves.
 - **Ties go to the earlier step, then to registration order.** Detection stops at the first step
   that matches, and within a step the first backend registered wins. A file that is two formats at
   once (a polyglot) gets one fixed answer; pass `format=` to read it as the other.

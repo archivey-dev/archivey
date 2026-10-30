@@ -10,7 +10,7 @@ rejects it.
 
 The ``StrEnum`` classes are ``HashAlgorithm``, ``ContainerFormat``,
 ``StreamFormat``, ``DiagnosticCode``, ``AbortOn``, ``ExtractionStatus``,
-``NameRewrite`` and ``LinkTargetNotFoundReason``.
+``NameRewrite``, ``LinkTargetNotFoundReason`` and ``OptionalLibrary``.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from archivey import (
     HashAlgorithm,
     LinkTargetNotFoundReason,
     NameRewrite,
+    OptionalLibrary,
     StreamFormat,
 )
 
@@ -47,6 +48,7 @@ STR_VALUE_ENUMS: tuple[type[StrEnum], ...] = (
     ExtractionStatus,
     NameRewrite,
     LinkTargetNotFoundReason,
+    OptionalLibrary,
 )
 
 
@@ -115,9 +117,13 @@ def test_source_uses_strenum_for_string_enums() -> None:
         "returns the value. (str, Enum) renders as Class.NAME on Python 3.11 "
         "and later. Found:\n" + "\n".join(mixin)
     )
-    # PluginContainer has no members: it is the base a plugin's container enum
-    # subclasses (``archivey.formats``), so the value checks above cannot run on it.
-    expected = {cls.__name__ for cls in STR_VALUE_ENUMS} | {"PluginContainer"}
+    # PluginContainer and PluginStream have no members: each is the base a plugin's
+    # enum subclasses (``archivey.formats``), so the value checks above cannot run on
+    # them.
+    expected = {cls.__name__ for cls in STR_VALUE_ENUMS} | {
+        "PluginContainer",
+        "PluginStream",
+    }
     assert strenums == expected, (
         "StrEnum is for an enum whose members are strings, so str() returns "
         "the value. An enum that does not subclass str stays a plain Enum, "

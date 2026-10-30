@@ -24,6 +24,7 @@ from archivey.exceptions import (
     CorruptionError,
     FormatDetectionError,
     OpenError,
+    ResourceUnavailableError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -49,7 +50,8 @@ from tests.streams_util import ShortReadBytesIO, ShortReadNonSeekable
 _7Z_MAGIC = bytes.fromhex("377abcaf271c")
 _RAR_MAGIC = b"Rar!\x1a\x07\x00"
 _RAR5_ID = b"Rar!\x1a\x07\x01\x00"
-_RAR_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "rar"
+_FIXTURES = Path(__file__).resolve().parent / "fixtures"
+_RAR_FIXTURES = _FIXTURES / "rar"
 
 
 def test_discover_skips_stat_for_non_volume_names(tmp_path: Path) -> None:
@@ -1491,7 +1493,7 @@ def test_concatenated_file_mixed_path_and_stream(
     assert tracker.current == 0
 
 
-def test_concatenated_file_path_open_error_surfaces_on_read(
+def test_concatenated_file_path_oserror_surfaces_on_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     first = tmp_path / "ok.bin"
@@ -1502,24 +1504,34 @@ def test_concatenated_file_path_open_error_surfaces_on_read(
 
     def denying_open(file: Any, *args: Any, **kwargs: Any) -> Any:
         if Path(file).resolve() == denied.resolve():
-            raise PermissionError("denied")
+            raise PermissionError(errno.EACCES, "denied", str(file))
         return real_open(file, *args, **kwargs)
 
     monkeypatch.setattr(volumes_mod, "open", denying_open, raising=False)
     with ConcatenatedFile([first, denied]) as joined:
         assert joined.read(3) == b"aaa"
-        with pytest.raises(OpenError, match="Cannot open volume") as caught:
+        with pytest.raises(PermissionError) as caught:
             joined.read()
-    assert isinstance(caught.value.__cause__, PermissionError)
-    assert caught.value.archive_name == denied.as_posix()
+    assert caught.value.filename == str(denied)
 
 
 def test_concatenated_file_missing_path_fails_at_construction(tmp_path: Path) -> None:
     missing = tmp_path / "gone.bin"
-    with pytest.raises(OpenError, match="Cannot open volume") as caught:
+    with pytest.raises(FileNotFoundError) as caught:
         ConcatenatedFile([missing])
-    assert isinstance(caught.value.__cause__, FileNotFoundError)
-    assert caught.value.archive_name == missing.as_posix()
+    assert caught.value.filename == str(missing)
+
+
+def test_a_missing_listed_volume_raises_file_not_found_as_the_first_does(
+    tmp_path: Path,
+) -> None:
+    """A missing path is not about the archive, wherever it sits in the list."""
+    present = tmp_path / "x.zip.001"
+    present.write_bytes(b"PK\x03\x04" + bytes(60))
+    for paths in ([tmp_path / "x.zip.000"], [present, tmp_path / "x.zip.002"]):
+        with pytest.raises(FileNotFoundError) as caught:
+            open_archive(paths)
+        assert caught.value.filename == str(paths[-1])
 
 
 def test_concatenated_file_close_with_no_open_path(tmp_path: Path) -> None:
@@ -1648,7 +1660,9 @@ def test_concatenated_file_emfile_is_translated(
     monkeypatch.setattr(volumes_mod, "open", emfile_open, raising=False)
     with (
         ConcatenatedFile([path]) as joined,
-        pytest.raises(OpenError, match="file-descriptor limit") as caught,
+        pytest.raises(
+            ResourceUnavailableError, match="file-descriptor limit"
+        ) as caught,
     ):
         joined.read()
     cause = caught.value.__cause__
@@ -1965,7 +1979,8 @@ def test_numbered_part_number_too_long_to_parse_is_not_a_volume_name(
     assert volumes_mod._rar_part_number("x.part0001000000.rar") == 0
 
     # The explicit sequence: name validation used to raise before the open did.
-    with pytest.raises(OpenError, match="Cannot open volume"):
+    # The stat's own error, as for a first path (here the name is too long).
+    with pytest.raises(OSError):
         join_volumes([tmp_path / f"x.zip.{digits}", tmp_path / "x.zip.002"])
 
 
@@ -2501,3 +2516,148 @@ def test_name_patterns_are_ascii_only(
     # letters. Volume and suffix markers are ASCII, so lookalikes must not match.
     assert accepts(name)
     assert not accepts(lookalike)
+
+
+def _split_zip(directory: Path) -> tuple[Path, bytes]:
+    """A ZIP cut into ``x.zip.001`` and ``x.zip.002``, as ``7z -v`` writes it."""
+    buf = io.BytesIO()
+    payload = os.urandom(3000)
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("payload.bin", payload)
+    data = buf.getvalue()
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "x.zip.001").write_bytes(data[:2000])
+    (directory / "x.zip.002").write_bytes(data[2000:])
+    return directory / "x.zip.001", payload
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+def test_a_discovered_volume_that_is_a_symlink_is_refused(tmp_path: Path) -> None:
+    """A planted ``x.zip.002`` linking elsewhere would put that file's bytes into a
+    member, so a part found beside the named one must not be a link."""
+    first, _ = _split_zip(tmp_path / "set")
+    elsewhere = tmp_path / "elsewhere.bin"
+    (first.parent / "x.zip.002").rename(elsewhere)
+    try:
+        (first.parent / "x.zip.002").symlink_to(elsewhere)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    with pytest.raises(OpenError, match=r"x\.zip\.002.*symbolic link"):
+        open_archive(first)
+    with pytest.raises(OpenError, match="symbolic link"):
+        detect_format(first)
+    # Named by the caller, the same link is read.
+    with open_archive([first, first.parent / "x.zip.002"]) as reader:
+        assert [m.name for m in reader.members()] == ["payload.bin"]
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+def test_a_set_in_a_linked_directory_is_read(tmp_path: Path) -> None:
+    """Only the parts archivey finds are checked: the caller named the directory."""
+    _, payload = _split_zip(tmp_path / "real")
+    try:
+        (tmp_path / "linked").symlink_to(tmp_path / "real", target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    with open_archive(tmp_path / "linked" / "x.zip.001") as reader:
+        assert reader.read("payload.bin") == payload
+
+
+def test_discovery_off_reads_only_the_named_file(tmp_path: Path) -> None:
+    for name in ("tinyvol.part1.rar", "tinyvol.part2.rar"):
+        shutil.copy(_RAR_FIXTURES / name, tmp_path / name)
+    off = ArchiveyConfig(discover_volumes=False)
+    with (
+        pytest.raises(TruncatedError, match="volume 2 is missing"),
+        open_archive(tmp_path / "tinyvol.part1.rar", config=off) as reader,
+    ):
+        reader.members()
+    # The same set, listed, still reads.
+    with open_archive(
+        [tmp_path / "tinyvol.part1.rar", tmp_path / "tinyvol.part2.rar"], config=off
+    ) as reader:
+        assert reader.read("payload.bin") == b"ABCDEFGH" * 200
+    # Nothing looks for a numbered part's set, so it is not refused as one with parts
+    # missing. A ``.zip.NNN`` part is refused by its name, before anything is opened:
+    # bytes that are no ZIP at all get the same refusal.
+    first, payload = _split_zip(tmp_path / "zip")
+    with open_archive(first) as reader:
+        assert reader.read("payload.bin") == payload
+    with pytest.raises(UnsupportedFeatureError, match="Multi-volume"):
+        open_archive(first, config=off)
+    junk = tmp_path / "junk.zip.001"
+    junk.write_bytes(b"not an archive" * 10)
+    (tmp_path / "junk.zip.002").write_bytes(b"x")
+    with pytest.raises(UnsupportedFeatureError, match="Multi-volume"):
+        open_archive(junk, config=off)
+    # A ``.7z.NNN`` part is opened alone, and the 7z reader refuses what it finds.
+    data = (_FIXTURES / "damaged_member" / "7z_copy_nonsolid.7z").read_bytes()
+    (tmp_path / "s.7z.001").write_bytes(data[: len(data) // 2])
+    (tmp_path / "s.7z.002").write_bytes(data[len(data) // 2 :])
+    with open_archive(tmp_path / "s.7z.001") as reader:
+        assert reader.members()
+    with (
+        pytest.raises(TruncatedError, match="7z"),
+        open_archive(tmp_path / "s.7z.001", config=off) as reader,
+    ):
+        reader.members()
+
+
+def test_discovery_off_does_not_follow_a_stub_to_its_volumes(tmp_path: Path) -> None:
+    """A self-extracting stub with no archive in it opens its split set only by
+    discovery: ``vol.exe`` beside ``vol.zip.001``."""
+    _, payload = _split_zip(tmp_path)
+    for part in ("001", "002"):
+        (tmp_path / f"x.zip.{part}").rename(tmp_path / f"vol.zip.{part}")
+    stub = tmp_path / "vol.exe"
+    stub.write_bytes(b"MZ" + b"\x00" * 510)
+    with open_archive(stub) as reader:
+        assert reader.read("payload.bin") == payload
+    off = ArchiveyConfig(discover_volumes=False)
+    with pytest.raises(FormatDetectionError):
+        open_archive(stub, config=off)
+    with pytest.raises(FormatDetectionError):
+        detect_format(stub, config=off)
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+def test_a_stub_does_not_lead_to_a_linked_first_volume(tmp_path: Path) -> None:
+    """The first volume beside a stub is found, not named, so it may not be a link."""
+    first, _ = _split_zip(tmp_path / "real")
+    beside = tmp_path / "set"
+    beside.mkdir()
+    (first.parent / "x.zip.002").rename(beside / "vol.zip.002")
+    try:
+        (beside / "vol.zip.001").symlink_to(first)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    stub = beside / "vol.exe"
+    stub.write_bytes(b"MZ" + b"\x00" * 510)
+    with pytest.raises(OpenError, match=r"vol\.zip\.001.*symbolic link"):
+        open_archive(stub)
+    with pytest.raises(OpenError, match="symbolic link"):
+        detect_format(stub)
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+def test_the_named_volume_may_be_a_link(tmp_path: Path) -> None:
+    first, payload = _split_zip(tmp_path / "real")
+    beside = tmp_path / "set"
+    beside.mkdir()
+    (first.parent / "x.zip.002").rename(beside / "l.zip.002")
+    try:
+        (beside / "l.zip.001").symlink_to(first)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    with open_archive(beside / "l.zip.001") as reader:
+        assert reader.read("payload.bin") == payload
+
+
+def test_an_internal_probe_keeps_discovery_off() -> None:
+    """The empty-listing rescan resolves the source by name again, under
+    ``probe_config``: it must not look beside the path either."""
+    from archivey.internal.detection import probe_config
+
+    assert (
+        probe_config(ArchiveyConfig(discover_volumes=False)).discover_volumes is False
+    )

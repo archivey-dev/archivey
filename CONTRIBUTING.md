@@ -128,7 +128,13 @@ green. `-n auto` (pytest-xdist) runs the suite on every core; it is not in `addo
 a plain `uv run pytest tests/test_zip.py` stays one process.
 
 CI also matrixes supported **Python versions** (3.11–3.14 on Linux; 3.11/3.14 on
-macOS/Windows). Repo `.python-version` pins the default local env to 3.11, so a matrix
+macOS/Windows). A pull request push runs a reduced set (Linux 3.11 and 3.14, one
+core-only leg, Windows 3.14, free-threaded 3.13t, the benchmark and plugin jobs); the
+merge queue runs every leg plus PyPy, the distribution unar packages and the short
+Atheris fuzz, and a failure there takes the pull request out of the queue. `ci.yml`
+does not run again after the merge; a daily run tests `main` with every job. To run the
+whole set before queueing, dispatch `ci.yml` on your branch. The note at the top of
+`ci.yml` lists which job runs where. Repo `.python-version` pins the default local env to 3.11, so a matrix
 job must pin its Python on every `uv sync` / `uv run`, or newer-version legs silently
 re-test 3.11. Today the `ci.yml` test matrix sets `UV_PYTHON` and passes `--python`; the
 free-threaded job and the stress workflows pin each call with `--python` or `UV_PYTHON`.
@@ -142,13 +148,12 @@ Keep that when you add a step.
 > change what the gates report.
 
 A pull request that changes only documentation does not start `ci.yml` (none of its
-jobs: lint, test legs, unar and free-threaded legs, benchmark gate) or `atheris-fuzz.yml`.
-The docs build and the OpenSpec checks live in `docs-checks.yml`, which always runs. The
-list of documentation paths is the `pull_request: paths:` filter in those two workflows;
-if a test starts reading a doc file, re-include that file there, as `docs/api.md` is, or
-a change to it will skip the test that reads it. `tests/test_ci_doc_paths.py` checks that
-the two lists match and
-that the re-includes come after every `!` entry. Branch protection on `main` requires no
+jobs: lint, test legs, free-threaded leg, benchmark gate, plugin jobs). The docs build
+and the OpenSpec checks live in `docs-checks.yml`, which always runs. The list of
+documentation paths is the `pull_request: paths:` filter in `ci.yml`; if a test starts
+reading a doc file, re-include that file there, as `docs/api.md` is, or a change to it
+will skip the test that reads it. `tests/test_ci_doc_paths.py` checks that the
+re-includes come after every `!` entry. Branch protection on `main` requires no
 status checks today. If one is added, it must come from a workflow that runs on every
 pull request, because a filtered workflow reports no check at all and the PR would wait
 on it forever.

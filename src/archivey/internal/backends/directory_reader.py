@@ -39,7 +39,10 @@ from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import MemberStreamParts
 from archivey.internal.timestamps import unix_to_datetime
-from archivey.internal.windows_reparse import FILE_ATTRIBUTE_REPARSE_POINT
+from archivey.internal.windows_reparse import (
+    FILE_ATTRIBUTE_REPARSE_POINT,
+    IO_REPARSE_TAG_MOUNT_POINT,
+)
 from archivey.terminal import display_path, quoted
 from archivey.types import (
     EXTRA_IS_JUNCTION,
@@ -137,14 +140,18 @@ def _changed_since_listing(name: str, what: str, action: str = "reading") -> OSE
     )
 
 
-def _is_junction(entry: os.DirEntry[str]) -> bool:
+def _is_junction(entry: os.DirEntry[str], st: os.stat_result) -> bool:
     """True if a scandir entry is a Windows NTFS junction.
 
-    ``os.DirEntry.is_junction()`` only exists on Python 3.12+; on older interpreters
-    (and on every non-Windows platform, where junctions don't exist) this returns False.
+    ``st`` is the entry's ``stat(follow_symlinks=False)``. ``os.DirEntry.is_junction()``
+    only exists on Python 3.12+; before it, the junction's reparse tag in ``st`` says
+    so (``st_reparse_tag``, set on Windows only). On every other platform, where
+    junctions don't exist, this returns False.
     """
     is_junction = getattr(entry, "is_junction", None)
-    return bool(is_junction()) if is_junction is not None else False
+    if is_junction is not None:
+        return bool(is_junction())
+    return getattr(st, "st_reparse_tag", 0) == IO_REPARSE_TAG_MOUNT_POINT
 
 
 class DirectoryReader(BaseArchiveReader):
@@ -338,7 +345,7 @@ class DirectoryReader(BaseArchiveReader):
                 if _STAT_LACKS_IDENTITY and stat.S_ISREG(st.st_mode):
                     st = self._stat_with_identity(entry_path, st)
                 is_symlink = stat.S_ISLNK(st.st_mode)
-                is_junction = not is_symlink and _is_junction(entry)
+                is_junction = not is_symlink and _is_junction(entry, st)
                 link_target = (
                     self._read_link_target(entry_path, entry.name, dir_fd)
                     if is_symlink or is_junction

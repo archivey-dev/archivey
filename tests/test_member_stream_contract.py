@@ -43,7 +43,7 @@ from archivey.types import (
     MemberType,
     StreamFormat,
 )
-from tests.conftest import requires
+from tests.conftest import assert_raised_again, requires
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.sample_archives import (
     CORPUS,
@@ -212,12 +212,12 @@ def test_content_verdict_keeps_raising_after_a_seek_back(compression: int) -> No
             stream.read()
         with raises_corruption_not_truncation() as again:
             stream.read(10)
-        assert again.value is first.value
+        assert_raised_again(again.value, first.value)
         stream.seek(0)
         assert stream.read(10) == payload[:10]
         with raises_corruption_not_truncation() as after:
             stream.read()
-        assert after.value is first.value
+        assert_raised_again(after.value, first.value)
         stream.seek(0)
         with raises_corruption_not_truncation():
             while stream.read(1000):
@@ -227,7 +227,7 @@ def test_content_verdict_keeps_raising_after_a_seek_back(compression: int) -> No
         stream.seek(0)
         with raises_corruption_not_truncation() as whole:
             stream.read(len(payload))
-        assert whole.value is first.value
+        assert_raised_again(whole.value, first.value)
         stream.seek(0)
         with raises_corruption_not_truncation():
             stream.readinto(bytearray(len(payload)))
@@ -263,13 +263,13 @@ def test_a_cut_tar_gz_member_keeps_raising_after_a_seek_back(tmp_path: Path) -> 
         assert got and bytes(got) == payload[: len(got)]
         with pytest.raises(TruncatedError) as again:
             stream.read(10)
-        assert again.value is first.value
+        assert_raised_again(again.value, first.value)
         stream.seek(0)
         assert stream.read(10) == payload[:10]
         with pytest.raises(TruncatedError) as after:
             while stream.read(1024):
                 pass
-        assert after.value is first.value
+        assert_raised_again(after.value, first.value)
 
 
 @pytest.mark.parametrize("first_read", ["read", "read-size", "readinto-size"])
@@ -482,10 +482,11 @@ _SEEK_ARCHIVES: tuple[_SeekSpec, ...] = (
     # plaintext member is per-file and seeks as an unencrypted one)
     _SeekSpec("encrypted", "zip-aes"),
     _SeekSpec("encrypted-mixed", "zip-aes"),
-    # 7z solid LZMA2 (`basic`), stored COPY, encrypted (now seeks).
+    # 7z solid LZMA2 (`basic`), stored COPY, solid PPMd, encrypted (now seeks).
     # Mixed 7z is archive-wide encryption: the corpus-plain file is encrypted too.
     _SeekSpec("basic", "7z"),
     _SeekSpec("sevenzip-stored", "7z", packing="stored"),
+    _SeekSpec("sevenzip-ppmd", "7z"),
     _SeekSpec("encrypted", "7z"),
     _SeekSpec("encrypted-mixed", "7z"),
     _SeekSpec("encrypted-header", "7z"),
@@ -889,12 +890,11 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
     ("zip-deflate64", "no corpus builder for ZIP Deflate64"),
     ("zip-ppmd", "no corpus builder for ZIP PPMd"),
     ("zip-zstd", "no corpus builder for ZIP Zstd"),
-    ("7z-ppmd", "no corpus builder for 7z PPMd"),
     ("7z-deflate64", "no corpus builder for 7z Deflate64"),
     ("7z-bcj2", "no corpus builder for 7z BCJ2 (py7zr cannot write it)"),
     (
         "7z-compressed-nonsolid",
-        "py7zr multi-file writes are solid LZMA2; sevenzip-stored is a single COPY file (non-solid stored)",
+        "py7zr multi-file writes are solid (LZMA2, or PPMd in sevenzip-ppmd); sevenzip-stored is a single COPY file (non-solid stored)",
     ),
     (
         "rar4",
@@ -1083,6 +1083,7 @@ def test_zip_member_fuses_verify_no_verifying_stream_layer(tmp_path: Path) -> No
     After verify-fusion, the codec ArchiveStream collapses through and there is
     no VerifyingStream in the chain (review/archive/2026-07-19-stream-layering/collapse-design.md).
     """
+    from archivey.internal.bomb_tracker import MemberRatioGuard
     from archivey.internal.streams.archive_stream import ArchiveStreamImpl
     from archivey.internal.streams.streamtools.slice import SlicingStream
     from archivey.internal.streams.verify import VerifyingStream
@@ -1093,9 +1094,13 @@ def test_zip_member_fuses_verify_no_verifying_stream_layer(tmp_path: Path) -> No
     with open_archive(path) as ar, ar.open("a.bin") as f:
         assert isinstance(f, ArchiveStreamImpl)
         assert f._verifier is not None
-        assert not isinstance(f._inner, ArchiveStreamImpl)
-        assert not isinstance(f._inner, VerifyingStream)
-        assert isinstance(f._inner, SlicingStream)
+        inner = f._inner
+        # The ratio guard over the member's data, which changes no bytes.
+        assert isinstance(inner, MemberRatioGuard)
+        inner = inner._inner
+        assert not isinstance(inner, ArchiveStreamImpl)
+        assert not isinstance(inner, VerifyingStream)
+        assert isinstance(inner, SlicingStream)
         assert f.read() == b"hello-verify-fuse"
 
 

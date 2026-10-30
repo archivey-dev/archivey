@@ -56,6 +56,7 @@ from archivey.internal.streams.child_process import (
     REAP_TIMEOUT,
     describe_exit,
     is_crash,
+    mark_no_verdict,
     outside_death,
     python_argv,
     reap,
@@ -105,6 +106,7 @@ from archivey.internal.streams.codecs.rapidgzip_worker import (
 from archivey.internal.streams.decompressor_stream import SeekPoint, truncated_message
 from archivey.internal.streams.streamtools import ReadOnlyIOStream
 from archivey.internal.streams.streamtools.slice import file_region
+from archivey.types import OptionalLibrary
 
 _WORKER = Path(__file__).with_name("decoder_worker.py")
 
@@ -196,7 +198,7 @@ def rapidgzip_child_unavailable_reason() -> str | None:
     ``deps.rapidgzip`` already reads as absent, so this arm is the backstop for a
     ``deps.rapidgzip`` that reads as present.
     """
-    pypy_reason = deps.unused_reason("rapidgzip")
+    pypy_reason = deps.unused_reason(OptionalLibrary.RAPIDGZIP)
     if pypy_reason:
         return pypy_reason
     return unavailable_reason(_WORKER, "rapidgzip")
@@ -520,6 +522,9 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._served = 0
         # Whether the child's death was a crash on the data (``crashed_on_data``).
         self._crashed = False
+        # Whether something outside the decoder ended the child (``outside_death``):
+        # every error built from ``_death`` is then marked as no verdict on the data.
+        self._outside_death = False
         # Where a standard-library decoder can take over (``resume_point``): index
         # points the child reported, each with the output before it from what it sent,
         # by decompressed offset, oldest capture first.
@@ -775,6 +780,8 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         exc = cls(message)
         if self._crashed:
             setattr(exc, _CRASHED, True)
+        if self._outside_death and isinstance(exc, ArchiveyError):
+            mark_no_verdict(exc)
         return exc
 
     def _abandon(self) -> None:
@@ -916,6 +923,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
                 returncode,
                 f"the rapidgzip decoder process for this {label} stream ended ({how})",
             )
+            self._outside_death = True
         self._death = (cls, message)
         self._crashed = caused_by_source is None and (
             is_crash(returncode) or returncode == MEMORY_LIMIT_EXIT

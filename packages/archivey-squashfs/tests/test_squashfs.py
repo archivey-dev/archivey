@@ -16,14 +16,19 @@ from archivey_squashfs.reader import SquashfsReader
 
 import archivey
 from archivey import (
+    ArchiveyConfig,
     CorruptionError,
+    FormatPolicy,
     MemberType,
+    OptionalLibrary,
+    PackageNotInstalledError,
     TruncatedError,
     UnsupportedFeatureError,
     detect_format,
     open_archive,
 )
 from archivey.formats import register_format
+from archivey.internal.excluded_libraries import EXCLUDED_REASON
 
 DATA = Path(__file__).parent / "data"
 PACKAGE = Path(__file__).parents[1] / "src" / "archivey_squashfs"
@@ -358,3 +363,37 @@ def test_the_package_uses_only_public_archivey() -> None:
 
 def test_the_reader_is_an_indexed_reader() -> None:
     assert issubclass(SquashfsReader, archivey.formats.IndexedReader)
+
+
+@pytest.mark.skipif(not _LZ4, reason="needs lz4")
+def test_lz4_turned_off_by_the_policy_reads_as_not_installed() -> None:
+    config = ArchiveyConfig(
+        formats=FormatPolicy(exclude_libraries={OptionalLibrary.LZ4})
+    )
+    with (
+        pytest.raises(PackageNotInstalledError, match="exclude_libraries") as e,
+        open_archive(DATA / "lz4.sqfs", config=config) as archive,
+    ):
+        archive.read("a.txt")
+    (component,) = e.value.missing
+    assert component.name is OptionalLibrary.LZ4
+    # The plugin's copy of archivey's wording: a reword of either fails here.
+    assert component.reason == EXCLUDED_REASON
+
+
+def test_lz4_under_pypy_gives_the_reason_not_install_advice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from archivey_squashfs import reader as reader_module
+
+    reason = "archivey-squashfs does not use lz4 under PyPy, for the test"
+    monkeypatch.setattr(reader_module, "_LZ4_UNUSED_REASON", reason)
+    with (
+        pytest.raises(PackageNotInstalledError, match="for the test") as exc_info,
+        open_archive(DATA / "lz4.sqfs") as archive,
+    ):
+        archive.read("a.txt")
+    (component,) = exc_info.value.missing
+    assert component.name is OptionalLibrary.LZ4
+    assert component.reason == reason
+    assert "pip install" not in str(exc_info.value)

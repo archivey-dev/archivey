@@ -34,10 +34,16 @@ from typing import (
 )
 
 if TYPE_CHECKING:
+    from archivey.internal.bomb_tracker import ReadRatioTally
     from archivey.internal.password import _PasswordCandidates
     from archivey.internal.registry import ContentProbe
 
-from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, ExtractionLimits
+from archivey.config import (
+    DEFAULT_ARCHIVEY_CONFIG,
+    ArchiveyConfig,
+    DecoderLimits,
+    ExtractionLimits,
+)
 from archivey.cost import CostReceipt
 from archivey.detection import FormatInfo
 from archivey.diagnostics import (
@@ -168,8 +174,10 @@ from archivey.types import (
     MissingComponent,
     OnError,
     OnErrorStr,
+    OptionalLibrary,
     OverwritePolicy,
     OverwritePolicyStr,
+    PluginStream,
     StreamFormat,
     TrailerSignature,
 )
@@ -327,6 +335,13 @@ class _Materialized:
     report: MemberListReport
 
 
+def _new_read_ratio_tally() -> ReadRatioTally:
+    # Imported here: the codec layer imports reader-side modules at load.
+    from archivey.internal.bomb_tracker import ReadRatioTally
+
+    return ReadRatioTally()
+
+
 def pass_has_data(member: ArchiveMember) -> bool:
     """Whether a data pass yields a stream for ``member``: the members ``open()`` reads.
 
@@ -374,6 +389,19 @@ class ReadBackend(ABC):
     """
 
     FORMATS: tuple[ArchiveFormat, ...]
+    # Whether the backend also reads each of its ``FORMATS`` inside every single-file
+    # compression stream: TAR's ``.tar.gz``, a sequential plugin's ``.cpio.gz``. The
+    # registry makes those pairs when asked, from the codecs registered then, so a
+    # codec registered later reaches them too; ``FORMATS`` does not list them.
+    STREAM_PAIRS: ClassVar[bool] = False
+    # The extensions a stream's own is appended to for those pairs: ``.tar`` gives
+    # ``.tar.gz``, ``.tar.xz``, and so on. Each must also be an ``EXTENSIONS`` key,
+    # which names the container. Other pair spellings (``.tgz``) go in ``EXTENSIONS``.
+    PAIR_EXTENSIONS: ClassVar[tuple[str, ...]] = ()
+    # Whether this is the backend for a single compressed file, with no container:
+    # ``ArchiveFormat(RAW_STREAM, <stream>)`` for every single-file codec, made when
+    # asked like the pairs above. Only ``SingleFileBackend`` sets it.
+    RAW_STREAMS: ClassVar[bool] = False
     # ".gz" -> ArchiveFormat.GZ
     EXTENSIONS: Mapping[str, ArchiveFormat] = {}
     # Exact magic-byte signals as data (offset, bytes, format), accepted on the byte match.
@@ -454,9 +482,10 @@ class ReadBackend(ABC):
     # `del encoding`-ing it, which is how five of them used to differ from ZIP and TAR
     # with no signal at all.
     USES_ENCODING: bool = False
-    # Name of the optional dependency this backend needs (e.g. "pycdlib"); the registry
-    # derives availability centrally from whether it imports. ``None`` for core backends.
-    OPTIONAL_DEPENDENCY: str | None = None
+    # The optional package this backend needs, such as ``OptionalLibrary.PYCDLIB``; the
+    # registry derives availability centrally from whether it imports. ``None`` for core
+    # backends.
+    OPTIONAL_DEPENDENCY: OptionalLibrary | None = None
     # More modules the backend imports, checked after ``OPTIONAL_DEPENDENCY`` the same
     # way. Only plugin backends set it (``FormatHandler.requires``); ``INSTALL_HINT``
     # covers them all.
@@ -654,6 +683,9 @@ class BaseArchiveReader(ArchiveReader):
         # a stream source; backs compressed_bytes_consumed (the live decompression-ratio
         # denominator for a source whose total size is not cheaply knowable).
         self._compressed_input_counter: CountingReader | None = None
+        # What open() and stream_members() streams have decoded, for the archive-wide
+        # ratio they are held to (``_hold_to_ratio``).
+        self._read_ratio_tally = _new_read_ratio_tally()
         # Opt-in benchmark counters (see archivey.internal.measurement). When measurement
         # is off these stay None and wrap helpers are identity — zero hot-path overhead.
         self._measure = measurement_enabled()
@@ -1100,6 +1132,42 @@ class BaseArchiveReader(ArchiveReader):
             seekable=self._seek_declared(),
         )
         return self._register_public_stream(stream) if register else stream
+
+    def _ratio_limits(self) -> DecoderLimits:
+        """The ratio fields this reader's decodes are held to: ``decoder_limits``, or
+        what a deprecated ``extraction_limits`` ratio field sets."""
+        from archivey.internal.bomb_tracker import ratio_limits
+
+        config = self._config
+        return ratio_limits(config.decoder_limits, config.extraction_limits)
+
+    def _hold_to_ratio(self, stream: ArchiveStreamImpl, member: ArchiveMember) -> None:
+        """Hold a member stream ``open()`` or ``stream_members()`` gives the caller to
+        ``decoder_limits.max_ratio``, as extraction holds what it writes
+        (:class:`MemberRatioGuard`). ``member`` is the member whose data it reads.
+
+        Extraction's own passes are not held here: its ``BombTracker`` applies the
+        limits the ``extract_all`` call was given.
+        """
+        # Imported here, as in ``_open_outer_codec_stream``.
+        from archivey.internal.bomb_tracker import MemberRatioGuard
+
+        limits = self._ratio_limits()
+        if limits.max_ratio is None:
+            return
+        counter = self._compressed_input_counter
+        tally = self._read_ratio_tally
+        static_size = self._trusted_source_size()
+        stream._hold_inner(
+            lambda inner: MemberRatioGuard(
+                inner,
+                limits=limits,
+                member=member,
+                tally=tally,
+                static_size=static_size,
+                consumed=None if counter is None else lambda: counter.bytes_read,
+            )
+        )
 
     def _open_member_handle(self, member: ArchiveMember) -> ArchiveStreamImpl:
         """``_open_member`` as an open handle, for code that reads the member itself."""
@@ -3341,7 +3409,7 @@ class BaseArchiveReader(ArchiveReader):
     def _open_outer_codec_stream(
         self,
         source: ArchiveSource,
-        stream_format: StreamFormat,
+        stream_format: StreamFormat | PluginStream,
         streaming: bool,
         *,
         member_streams: MemberStreams,
@@ -3356,8 +3424,13 @@ class BaseArchiveReader(ArchiveReader):
         (:meth:`_codec_input`), so the live decompression-ratio guard can see the
         compressed bytes consumed. The codec stream is the whole file, so bytes after
         its end are reported, as bytes after an archive's own end are.
+
+        Listing such an archive decodes all of it, so the decoded stream is held to
+        ``decoder_limits.max_ratio`` of the archive's size (:class:`DecodeRatioGuard`)
+        in every use, not only in ``extract_all``.
         """
         # Imported here: the codec layer imports reader-side modules at load.
+        from archivey.internal.bomb_tracker import DecodeRatioGuard
         from archivey.internal.config import stream_config_from_archivey
         from archivey.internal.streams.codecs import (
             codec_for_stream_format,
@@ -3370,7 +3443,7 @@ class BaseArchiveReader(ArchiveReader):
             codec_source = str(source.path)
         else:
             codec_source = self._codec_input(source, track_seeks=True)
-        return open_codec_stream(
+        decoded = open_codec_stream(
             codec,
             codec_source,
             config=replace(
@@ -3389,6 +3462,16 @@ class BaseArchiveReader(ArchiveReader):
             # mark the stream rewound. A repeated verdict would drop the prefix of the
             # read that reaches the damage; each member stream repeats its own.
             repeat_verdict=streaming,
+        )
+        limits = self._ratio_limits()
+        if limits.max_ratio is None:
+            return decoded
+        counter = self._compressed_input_counter
+        return DecodeRatioGuard(
+            decoded,
+            limits=limits,
+            static_size=self._trusted_source_size(),
+            consumed=None if counter is None else lambda: counter.bytes_read,
         )
 
     def __iter__(self) -> MemberPass[ArchiveMember]:
@@ -3645,6 +3728,7 @@ class BaseArchiveReader(ArchiveReader):
                 stream = self._open_with_link_follow(
                     member, visited=set(), opened=opened
                 )
+                self._hold_to_ratio(stream, opened[0])
                 # Asked before the bind: from here a raise still closes the stream.
                 run = (
                     self._solid_run(opened[0])
@@ -3845,15 +3929,23 @@ class BaseArchiveReader(ArchiveReader):
                 f"{describe_value(file_copy_streams)}."
             )
         return MemberPassImpl(
-            self._stream_members(members, FileCopyPass(streams=file_copy_streams))
+            self._stream_members(
+                members, FileCopyPass(streams=file_copy_streams), hold_to_ratio=True
+            )
         )
 
     def _stream_members(
-        self, members: MemberSelectorArg, copies: FileCopyPass
+        self,
+        members: MemberSelectorArg,
+        copies: FileCopyPass,
+        *,
+        hold_to_ratio: bool = False,
     ) -> Generator[tuple[ArchiveMember, ArchiveStreamImpl | None], None, None]:
         """``stream_members()`` with the file-copy handling given whole.
 
-        The extraction coordinator calls this directly, to pass ``keep_source``.
+        The extraction coordinator calls this directly, to pass ``keep_source``, and
+        leaves ``hold_to_ratio`` off: its own tracker holds what it writes to the limits
+        of the ``extract_all`` call (``_hold_to_ratio``).
         """
         self._state.require_open("stream_members()")
         # Validate here rather than inside the generator: a generator body does not
@@ -3868,13 +3960,17 @@ class BaseArchiveReader(ArchiveReader):
             if isinstance(selector, CollectionSelector) and selector is not members
             else None
         )
-        return self._iter_stream_members(selector, report, copies)
+        return self._iter_stream_members(
+            selector, report, copies, hold_to_ratio=hold_to_ratio
+        )
 
     def _iter_stream_members(
         self,
         selector: Callable[[ArchiveMember], bool] | None,
         report: CollectionSelector | None = None,
         copies: FileCopyPass = DEFAULT_FILE_COPY_PASS,
+        *,
+        hold_to_ratio: bool = False,
     ) -> Generator[tuple[ArchiveMember, ArchiveStreamImpl | None], None, None]:
         token = self._state.acquire_pass("stream_members")
         current: ArchiveStreamImpl | None = None
@@ -3931,6 +4027,17 @@ class BaseArchiveReader(ArchiveReader):
                         # some formats only is a per-format accident callers would
                         # come to rely on. seekable_members=True is for open().
                         stream._make_forward_only()
+                        if hold_to_ratio:
+                            # A file copy decodes its source's bytes again: held, and
+                            # counted once, as that source.
+                            copied = m.link_target_member
+                            self._hold_to_ratio(
+                                stream,
+                                copied
+                                if copied is not None
+                                and m.extra.get(EXTRA_IS_FILE_COPY)
+                                else m,
+                            )
                     current = stream
                     # Suspended at the yield: this thread runs the caller's loop body,
                     # which is not re-entry (see OperationToken.suspended).
@@ -4053,6 +4160,10 @@ class BaseArchiveReader(ArchiveReader):
             selector=selector,
             filter=filter,
             limits=effective_limits,
+            # The reader's ratio, a deprecated field of its config's extraction limits
+            # included, under the call's: a per-call ``limits=`` that sets no ratio
+            # field keeps it.
+            ratio=self._ratio_limits(),
             dry_run=dry_run,
         )
         token = self._state.acquire_pass("extract_all")

@@ -125,10 +125,34 @@ The system SHALL execute format detection with this algorithm:
    Unless `ArchiveyConfig.always_probe_content` is set, only the probe of a stream format
    the source's extension names SHALL run (see *Magic-less formats are detected by a
    content probe*); `open_stream` SHALL run every probe.
-8. **Extension** — `Path` with a known extension → `GUESS` / `detected_by="extension"`.
-9. `FormatDetectionError` when nothing matched. When step 7 ran only the probes the
+8. **Leading-bytes scan** — the scan of step 3's requirement, run with no executable cue:
+   only when steps 1-7 matched nothing, the leading bytes raise no executable cue and carry
+   no known non-archive signature, and the name has no known extension (the ZIP, 7z and
+   RAR readers find a prefixed archive themselves under a name that names them). Every
+   needle SHALL need its format's hit validator. Match → `PROBABLE` /
+   `detected_by="sfx_scan"` with `payload_offset`. Last, so a source an earlier step
+   identifies pays nothing for the window. When the step does not run because of the
+   name or a non-archive signature, it SHALL be recorded in `unavailable_tiers` as
+   `sfx_scan` / `NOT_ENABLED_BY_POLICY`. On a forward-only source whose length is not yet
+   known, the step SHALL scan only the bytes detection already holds and SHALL NOT wait
+   for more, recording `sfx_scan` / `CAPABILITY_UNAVAILABLE` when that cut the window;
+   an unrecognised stream whose writer keeps it open still fails at once. When the step
+   ran its whole window and missed, the `FormatDetectionError` message SHALL say that no
+   ZIP, 7z or RAR archive starts in that window and that `format=` reads one further in.
+9. **Extension** — `Path` with a known extension → `GUESS` / `detected_by="extension"`.
+10. `FormatDetectionError` when nothing matched. When step 7 ran only the probes the
    extension allows, the message SHALL name the three ways to read a nameless
-   probe-only stream: `format=`, `open_stream()` and `always_probe_content=True`.
+   probe-only stream: `format=`, `open_stream()` and `always_probe_content=True`. When
+   the policy left a plugin out at any step, the message SHALL also name the policy
+   and the plugin formats it turned off, since none of the three reaches a plugin that
+   is off.
+
+A plugin format that `ArchiveyConfig.formats` does not allow SHALL NOT be a candidate
+at any step: its magic SHALL NOT match at steps 2 and 4, its probe SHALL NOT run at step
+6, and its extensions SHALL NOT match at step 7, so that an off plugin neither runs code
+nor claims a file an allowed plugin matches. Each step that leaves one out SHALL be
+recorded in `unavailable_tiers` with `NOT_ENABLED_BY_POLICY`. Built-in formats SHALL be
+candidates under every policy.
 
 Steps are ordered attempts, not alternatives: a step that produces no match falls through,
 and attempting one never prevents a later one from running.
@@ -279,9 +303,18 @@ Whenever the name leaves out at least one probe, whether or not another one runs
 step SHALL be recorded in `unavailable_tiers` as `content_probe` /
 `NOT_ENABLED_BY_POLICY`. `ArchiveyConfig.always_probe_content=True` SHALL run every
 probe whatever the name. `open_stream` SHALL always run every probe: its caller says the
-source is a compressed stream, so a probe only picks the codec. The internal detections
-`open_archive` runs under `format=` (stub check, empty-listing rescan) SHALL follow the
-caller's `always_probe_content`. This covers Brotli (no
+source is a compressed stream, so a probe only picks the codec. Both rules stop at the
+caller's format policy: the probe of a plugin format that `ArchiveyConfig.formats` does
+not allow SHALL NOT run, under `always_probe_content=True` and in `open_stream` alike,
+and the skip SHALL be recorded in `unavailable_tiers` as `content_probe` /
+`NOT_ENABLED_BY_POLICY` (the off plugin's magic and extensions are left out too; see
+*Magic-first detection*). `exclude_libraries` is the one entry that reaches built-in
+probes: a probe whose format needs a package the policy turns off (its stream codec's,
+or a plugin's `requires`) SHALL NOT run, so the package is not called. Nothing SHALL be
+recorded for that skip: an excluded package reads as absent, and a probe whose package
+is absent records nothing either.
+The internal detections `open_archive` runs under `format=` (stub check, empty-listing
+rescan) SHALL follow the caller's `always_probe_content`. This covers Brotli (no
 signature), zlib (too-unspecific CMF/FLG), and LZMA Alone (13-byte header whose
 properties byte is too weak for exact magic). Probes typically decode a bounded
 prefix; MAY gate on cheap structural bytes first; and MAY consult the source length
@@ -398,6 +431,23 @@ here still opens through a `.lzma` name.
 | Plausible Alone header (e.g. an ID3v2.3 tag) followed by a zero run, or by `00`, a few bytes and a zero run | No Alone claim — no measured encoder writes the run, though it decodes |
 | Real Alone stream of an all-zero input (liblzma or LZMA SDK, any level) | `LZMA_ALONE`, `content_probe` — unaffected |
 
+#### Scenario: A plugin that is off runs no code, even when every probe is asked for
+
+- **WHEN** a plugin with a content probe is registered and a caller runs
+  `detect_format` with `ArchiveyConfig(always_probe_content=True,
+  formats=FormatPolicy(plugins=False))` on a file only that probe recognises
+- **THEN** the plugin's probe is not called
+- **AND** `unavailable_tiers` records `content_probe` as `NOT_ENABLED_BY_POLICY`
+- **AND** the `FormatDetectionError` message names the format policy
+
+#### Scenario: A plugin that is off does not shadow an allowed one
+
+- **WHEN** plugins `A` and `B` are registered in that order, both with magic that
+  matches a file, and a caller opens the file with
+  `FormatPolicy(exclude={A.format.container})`
+- **THEN** detection reports `B`'s format and `B` reads the file
+- **AND** `unavailable_tiers` records `near_magic` as `NOT_ENABLED_BY_POLICY`
+
 ### Requirement: Compressed streams are probed for an inner TAR
 
 For single-file compressors (gzip, bzip2, xz, zstd, lz4, lzip, LZMA Alone, zlib,
@@ -491,6 +541,11 @@ requirement, which is graded by cue strength: a strong cue suppresses the conten
 probes, a weak one does not. "No silent fabricated member" is therefore guaranteed for
 a **strong** cue only — see that requirement for the measured reason.
 
+Leading bytes with **no** cue get the same scan, with every needle validated, as the last
+content step (the leading-bytes scan of *Magic-first detection*), so an archive behind an
+image, zeros or text is found as 7-Zip, `unrar` and `unzip` find it, and only a source that
+every earlier step declined pays for the window.
+
 Which magic the scan hunts for SHALL be **backend-declared data**, like every other
 detection signal, rather than a table maintained inside the detector. A backend declares
 only the magic that can legitimately begin an appended payload: ZIP declares its
@@ -554,6 +609,13 @@ judged, and SHALL record `sfx_scan` as *budget exhausted*, whether or not it ans
 | Whole valid 7z in the stub, then a real ZIP payload | `SEVEN_Z` at the stub's 7z: a `VALID` hit of another format does not displace a held short hit |
 | A valid 7z followed by trailing bytes, nothing later | That 7z, at its offset |
 | Bare brotli / non-executable stream | Unchanged content-probe behaviour |
+| Random bytes, zeros or text, then a ZIP, 7z or RAR inside the window | Found by the leading-bytes scan (step 8): that format, `payload_offset` at its start |
+| JPEG + appended ZIP | `ZIP` at the ZIP's local header, from the leading-bytes scan |
+| Leading bytes + ZIP, named `.lzma` | The extension's guess: the scan does not run for a name with a known extension, and `sfx_scan` is recorded as not enabled by policy |
+| Leading bytes + ZIP on a non-seekable source, inside the bytes detection already holds | Found, as on a seekable source |
+| Unrecognised text on a pipe whose writer keeps it open | `FormatDetectionError` at once; `sfx_scan` recorded as capability unavailable |
+| Leading bytes + ZIP past 256 KiB under `FAST` | Not found; `sfx_scan` recorded as budget exhausted |
+| Leading bytes + ZIP, named `.zip` | `ZIP` from the extension; the reader finds the archive from its end |
 | Strong cue, no archive in the stub, exactly one of `vol.exe.001` / `vol.7z.001` / `vol.zip.001` beside it | `detect_format` reports that volume's format; `open_archive` (including with `format=` matching that container) opens the set |
 | Same stub, but it *does* contain archive magic | The embedded archive; sibling volumes are ignored |
 | Two of those first-volume names beside the stub | `UnsupportedFeatureError` naming both |

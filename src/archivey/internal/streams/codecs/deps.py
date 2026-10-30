@@ -12,6 +12,7 @@ import sys
 from types import ModuleType
 
 from archivey.internal import logs
+from archivey.types import OptionalLibrary
 
 
 # Optional packages: resolved once via importlib (rather than static imports) because
@@ -26,14 +27,15 @@ def _optional(name: str) -> ModuleType | None:
         return None
 
 
-def _optional_zstd() -> ModuleType | None:
-    """Stdlib ``compression.zstd`` (3.14+) or ``backports.zstd`` (older Pythons)."""
-    for name in ("compression.zstd", "backports.zstd"):
+def _optional_zstd() -> tuple[ModuleType | None, OptionalLibrary | None]:
+    """Stdlib ``compression.zstd`` (3.14+) or ``backports.zstd`` (older Pythons), and
+    which of the two it is."""
+    for name in (OptionalLibrary.COMPRESSION_ZSTD, OptionalLibrary.BACKPORTS_ZSTD):
         try:
-            return importlib.import_module(name)
+            return importlib.import_module(name), name
         except ImportError:
             continue
-    return None
+    return None, None
 
 
 class LazyOptional:
@@ -54,7 +56,7 @@ class LazyOptional:
     not repeat-safe in that way needs a lock.
     """
 
-    def __init__(self, name: str, *, present: bool | None = None) -> None:
+    def __init__(self, name: OptionalLibrary, *, present: bool | None = None) -> None:
         self.name = name
         # ``present=`` overrides the lookup: ``False`` stands for an absent package
         # (also one archivey does not use here), ``True`` for an installed one (tests).
@@ -87,7 +89,7 @@ class LazyOptional:
                 logs.streams.warning(
                     "%r is installed but failed to import (%r); archivey reads as "
                     "if it were absent.",
-                    self.name,
+                    str(self.name),
                     exc,
                 )
         return self._module
@@ -101,37 +103,45 @@ class LazyOptional:
         return self._module
 
 
-zstd = _optional_zstd()
+# One zstd module per process: excluding it (``FormatPolicy.exclude_libraries``) turns
+# zstd off, and excluding the other name changes nothing. backports.zstd does not
+# install on 3.14 and later, so the two are not found together.
+zstd, zstd_library = _optional_zstd()
 # Packages archivey does not use under PyPy, with why. It reads as if they were absent, and
 # the reason replaces the install advice wherever a missing package is reported
 # (``MissingComponent.reason``). dev-docs/known-issues.md has the symptoms, the versions
 # measured and the upstream status. tests/conftest.py keeps its own copy of these names
 # (``UNUSED_UNDER_PYPY``), because it must block the imports before archivey loads.
 UNDER_PYPY = sys.implementation.name == "pypy"
-_UNUSED_UNDER_PYPY = {
-    "lz4": "archivey does not use lz4 under PyPy, where its frame decoder crashes the "
+_UNUSED_UNDER_PYPY: dict[OptionalLibrary, str] = {
+    OptionalLibrary.LZ4: "archivey does not use lz4 under PyPy, where its frame decoder crashes the "
     "interpreter",
-    "pyppmd": "archivey does not use pyppmd under PyPy, where it returns PPMd data cut "
+    OptionalLibrary.PYPPMD: "archivey does not use pyppmd under PyPy, where it returns PPMd data cut "
     "short",
-    "rapidgzip": "archivey does not use rapidgzip under PyPy, where it misreads valid "
+    OptionalLibrary.RAPIDGZIP: "archivey does not use rapidgzip under PyPy, where it misreads valid "
     "streams",
-    "inflate64": "archivey does not use inflate64 under PyPy, where it decodes larger "
+    OptionalLibrary.INFLATE64: "archivey does not use inflate64 under PyPy, where it decodes larger "
     "Deflate64 input wrong or crashes the interpreter",
 }
 
 
-def unused_reason(package: str) -> str:
+def unused_reason(package: OptionalLibrary) -> str:
     """Why archivey does not use ``package`` on this interpreter although it may be
     installed, or ``""`` when it uses it whenever it is installed."""
     return _UNUSED_UNDER_PYPY.get(package, "") if UNDER_PYPY else ""
 
 
-lz4_frame = None if unused_reason("lz4") else _optional("lz4.frame")
-lz4_block = None if unused_reason("lz4") else _optional("lz4.block")
-brotli = LazyOptional("brotli")
-pyppmd = LazyOptional("pyppmd", present=False if unused_reason("pyppmd") else None)
+_LZ4_UNUSED = bool(unused_reason(OptionalLibrary.LZ4))
+lz4_frame = None if _LZ4_UNUSED else _optional("lz4.frame")
+lz4_block = None if _LZ4_UNUSED else _optional("lz4.block")
+brotli = LazyOptional(OptionalLibrary.BROTLI)
+pyppmd = LazyOptional(
+    OptionalLibrary.PYPPMD,
+    present=False if unused_reason(OptionalLibrary.PYPPMD) else None,
+)
 inflate64 = LazyOptional(
-    "inflate64", present=False if unused_reason("inflate64") else None
+    OptionalLibrary.INFLATE64,
+    present=False if unused_reason(OptionalLibrary.INFLATE64) else None,
 )
 # rapidgzip runs in a child process for every codec it decodes (gzip, zlib, raw deflate
 # and bzip2), so this process only needs to know it is installed. bzip2 uses rapidgzip's
@@ -140,5 +150,6 @@ inflate64 = LazyOptional(
 # ``ON`` raises the PackageNotInstalledError of an absent package and ``AUTO`` stays
 # quiet; ``rapidgzip_child_unavailable_reason`` keeps refusing a child there as well.
 rapidgzip = LazyOptional(
-    "rapidgzip", present=False if unused_reason("rapidgzip") else None
+    OptionalLibrary.RAPIDGZIP,
+    present=False if unused_reason(OptionalLibrary.RAPIDGZIP) else None,
 )

@@ -437,6 +437,12 @@ class ForwardArchiveReader(ABC):
         way. The pass raises only when damage to the archive's structure stops it
         finding the next member, such as a TAR cut inside a member.
 
+        Each stream is held to :attr:`~archivey.DecoderLimits.max_ratio` as
+        extraction holds what it writes. A member that decodes past the ratio of its
+        compressed size raises ``ResourceLimitError`` from its own read and does not end
+        the pass; the reader's member reads together past the ratio of the archive's
+        size raise one that does, as in ``extract_all``.
+
         ``file_copy_streams=False`` also yields ``None`` for a file that the archive
         stores as a copy of an earlier member (``extra["is_file_copy"]``, a RAR5 file
         copy). Its bytes and digests are its source's, ``link_target_member``, so a
@@ -668,7 +674,10 @@ class ArchiveReader(ForwardArchiveReader):
                 is not installed.
             ResourceLimitError: The member asks a decoder for more memory than
                 :class:`~archivey.DecoderLimits` allows, or a scan for the name exceeds
-                :class:`~archivey.ListingLimits`.
+                :class:`~archivey.ListingLimits`; or, from a read of the returned
+                stream, the member decodes past
+                :attr:`~archivey.DecoderLimits.max_ratio` of its compressed size, or
+                this reader's member reads together pass it of the archive's size.
             DiagnosticRaisedError: A diagnostic that the
                 :class:`~archivey.DiagnosticPolicy` in the config raises on.
         """
@@ -676,8 +685,9 @@ class ArchiveReader(ForwardArchiveReader):
 
     @abstractmethod
     def read(self, member: str | ArchiveMember) -> bytes:
-        """Read a member's full contents as ``bytes`` (unbounded — prefer :meth:`open`
-        or :meth:`~ForwardArchiveReader.stream_members` for anything not known to be small).
+        """Read a member's full contents as ``bytes`` (no byte cap, only
+        :attr:`~archivey.DecoderLimits.max_ratio` — prefer :meth:`open` or
+        :meth:`~ForwardArchiveReader.stream_members` for anything not known to be small).
 
         Carries :meth:`open`'s solid-archive cost: on a ``SOLID`` archive this decodes
         every member preceding the requested one, so a loop over all members is

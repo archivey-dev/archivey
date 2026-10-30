@@ -35,6 +35,7 @@ from archivey.internal.streams.codecs.brotli_framing import (
 from archivey.internal.streams.codecs.isolated import BrotliChildError, natives_for
 from archivey.types import (
     MissingComponent,
+    OptionalLibrary,
     StreamFormat,
 )
 
@@ -52,7 +53,7 @@ class BrotliCodec(StreamCodec):
     extension_aliases = (".brotli",)
     # Brotli has no signature; the detector recognizes it by decoding a bounded prefix.
     requirement = MissingComponent(
-        "brotli", "pip install archivey[recommended]", ("brotli",)
+        OptionalLibrary.BROTLI, "pip install archivey[recommended]", ("brotli",)
     )
 
     def _backend_present(self) -> bool:
@@ -61,9 +62,10 @@ class BrotliCodec(StreamCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
+        excluded = config.excluded_libraries
         natives = natives_for(config.process_isolation)
-        if not natives.package_available(deps.brotli):
-            raise self._missing("Brotli streams")
+        if self.excluded_by(excluded) or not natives.package_available(deps.brotli):
+            raise self._missing("Brotli streams", excluded=excluded)
         # Brotli has no random-access index; a backward seek re-decodes from the start (the
         # outer ArchiveStream warns — see rewind_warning).
         return BrotliDecompressorStream(

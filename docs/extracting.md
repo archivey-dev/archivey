@@ -82,6 +82,11 @@ permissions gets written as it is:
 | `"standard"` | As in `"strict"`, but trailing dots and spaces are kept, and absolute paths are placed inside the destination | As stored, without setuid, setgid and sticky bits. Files are `rw-r--r--` and folders `rwxr-xr-x` when the archive stores no permissions |
 | `"trusted"` | As stored, but absolute paths are placed inside the destination | As stored, and the owner too when running as root. When the archive stores no permissions, whatever your system gives a new file |
 
+Under every policy, files and folders get the member's modification time, and on Windows and
+macOS its birth time too (`member.created`), as 7-Zip does. Linux has no way to set a birth time,
+so there a file's birth time is when it was extracted. A member that stores neither time keeps the
+time it was written, and a time the system refuses doesn't fail the member.
+
 `overwrite` decides what happens when a file is already where a member would go:
 
 | `overwrite` | Effect |
@@ -275,11 +280,14 @@ archive-wide `max_ratio`, since a small archive could otherwise write far more t
 ## Archives you trust
 
 By default, an extraction stops after 2 GiB of output, after 262,144 entries, or when data
-expands more than 1000 times. When the archive records both a member's size and its compressed
+expands more than 800 times. When the archive records both a member's size and its compressed
 size, a member that would expand too much is refused before any of it is written. Other members,
 and the whole archive, are checked as data is written. The expansion check ignores outputs under
 5 MiB, or under 256 MiB for a whole archive read from a pipe. To extract something bigger, pass
-higher `limits`, or `archivey.ExtractionLimits.UNLIMITED` to turn them off.
+higher `limits`, or `archivey.ExtractionLimits.UNLIMITED` to turn the size and entry limits off.
+The expansion limit is `DecoderLimits.max_ratio`, set when you open the archive, because it holds
+reads too: `config=archivey.ArchiveyConfig(decoder_limits=archivey.DecoderLimits(max_ratio=None))`
+turns it off.
 
 ??? note "Why ignore small outputs?"
     Small files compress very well without being dangerous. 1 MiB of zeros compresses about 1,000
@@ -291,7 +299,7 @@ higher `limits`, or `archivey.ExtractionLimits.UNLIMITED` to turn them off.
     bomb until the rest arrives, so that check waits longer.
 
 A sparse file in a TAR, such as a disk image, is stored without its empty regions, so it can expand
-far more than 1000 times and stop the extraction. `member.is_sparse` tells you which members are
+far more than 800 times and stop the extraction. `member.is_sparse` tells you which members are
 sparse.
 
 Some limits apply before extraction starts, such as the number of members or how much memory a

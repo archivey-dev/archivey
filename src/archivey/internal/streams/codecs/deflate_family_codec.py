@@ -16,7 +16,6 @@ from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
 )
-from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.base import (
     CodecParams,
     CodecSource,
@@ -27,6 +26,7 @@ from archivey.internal.streams.codecs.rapidgzip_select import (
     _deflate_family_uses_accelerator,
     _open_rapidgzip,
     _rapidgzip_enabled,
+    _rapidgzip_present,
     _rapidgzip_requirement,
     _rapidgzip_rewind_warning,
     _refuse_forward_only_accelerator,
@@ -97,11 +97,13 @@ class _DeflateFamilyCodec(StreamCodec):
         and cannot have it: rapidgzip is absent, or the source cannot seek."""
         label = self.codec.value
         _warn_if_auto_without_child(config)
-        if not _rapidgzip_enabled(config, available=deps.rapidgzip.available()):
+        present = _rapidgzip_present(config)
+        if not _rapidgzip_enabled(config, available=present):
             return False
-        if not deps.rapidgzip.available():
+        if not present:
+            requirement = _rapidgzip_requirement(config.excluded_libraries)
             raise PackageNotInstalledError(
-                _rapidgzip_requirement().message(f"{label} random access")
+                requirement.message(f"{label} random access"), missing=(requirement,)
             )
         _refuse_forward_only_accelerator(source, "use_rapidgzip", label)
         return True
