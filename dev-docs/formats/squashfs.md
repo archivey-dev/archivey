@@ -57,10 +57,13 @@ compressor (`gzip`, `lzma`, `lzo`, `xz`, `lz4`, `zstd`) and `extra["squashfs.blo
 the data block size.
 
 Members are files, directories, symlinks, hard links (a second name for an inode is a
-`HARDLINK` to the first), sparse files (a block stored with size 0 reads as zeros), and
-devices, FIFOs and sockets (`OTHER`, with `extra["special_file_type"]`, as in every
-format). Owner ids come from the id table; permissions and modification times from the
-inode.
+`HARDLINK` to the first), sparse files, and devices, FIFOs and sockets (`OTHER`, with
+`extra["special_file_type"]`, as in every format). Owner ids come from the id table;
+permissions and modification times from the inode.
+
+A block stored with size 0 is a hole and reads as zeros. `is_sparse` is true for a file
+whose block list holds one, read from the list at listing time: `mksquashfs` writes most
+sparse files under a basic inode, which has no "bytes saved" field to go by.
 
 Compressor options after the superblock are not read: the zlib, xz, LZMA Alone and
 Zstandard streams carry their own parameters, and the LZ4 and LZO options only name a
@@ -113,11 +116,15 @@ offsets the image declares:
 - A name with a `/`, and an entry whose inode has another type, are `CorruptionError`.
 - The directory walk is a loop, not a recursion, and refuses a directory reached twice,
   so a directory listed inside itself does not walk forever.
+- The block lists the listing scans for holes are bounded together: in a valid image
+  each lies in its own bytes of the inode table, so lists that add up to more than the
+  table are `CorruptionError`, before a list longer than the table is read.
 - Every decoder is bounded by the block size, so a block cannot expand past it. The LZO
   decoder refuses a stream that would read past its input, write past the block size, or
   copy from before the start of the output.
-- Decoded blocks are kept in two bounded caches: 64 metadata blocks and four fragment
-  blocks.
+- Decoded blocks are kept in two bounded caches, 64 metadata blocks and four fragment
+  blocks (about 4.5 MiB at the largest block size). They are caches, not limits: a block
+  that is not kept is decoded again.
 
 ## 5. Sharp edges
 
@@ -132,19 +139,24 @@ offsets the image declares:
 ## 6. Decisions
 
 - **Built in, not a separate package.** The maintainer's call (2026-10-28), as for ar
-  and CPIO. The reader still imports only public names (apart from
-  `register_builtin_format` and its own LZO module).
+  and CPIO. Unlike those two, the reader also imports archivey's internal lz4 handling
+  (`deps`, `natives_for`, `as_reported`, `LZ4_REQUIREMENT`), so LZ4 blocks follow
+  the PyPy rule, `exclude_libraries` and process isolation as every other lz4 use does.
+  A test pins the internal names it imports.
 - **SquashFS 4 only.** Big-endian images from SquashFS 3 and older have another layout;
-  they are claimed by magic so the refusal names them.
+  they are claimed by magic (`sqsh`) so the refusal names them, from a stream too.
 - **LZO is decoded in Python only.** `python-lzo` is GPL, so it is never a dependency,
   and an LZO image should open without it. Using it when installed would put a native
   decoder in the caller's process that neither `exclude_libraries` nor process
-  isolation reaches; the tests still use it, when present, to check the Python decoder.
+  isolation reaches. The tests compare the Python decoder with it when it is installed,
+  which the `LZO against liblzo2` CI job and the session setup script do.
   A shared LZO codec that declares `python-lzo` as an optional library, under both
   controls, is separate work.
-- **The reader keeps its own copy of the "turned off" reason for LZ4,** because it
-  imports only public names; a test compares the two.
 - **Extended attributes are not read.** archivey's members have no field for them.
+- **`is_sparse` comes from the block list.** Reading it costs a scan of each file's
+  list during the listing; the list sits in the inode table next to the inode, which the
+  listing decodes anyway. Rejected: leaving it false, which would make it mean
+  something else for SquashFS than for TAR.
 
 ## 7. Open questions
 
@@ -159,9 +171,9 @@ None are open.
 The fixtures in `tests/fixtures/squashfs/` were written by `mksquashfs` 4.6.1, one per
 compressor and a few layouts (no fragments, tail ends, uncompressed);
 `tests/fixtures/squashfs/make-images.sh` writes them again. Damaged images are built in
-the tests. The same tests check that the reader imports only archivey's public names,
-apart from `register_builtin_format` and its own LZO module. The Atheris target
-`squashfs` fuzzes the image walk and block reads.
+the tests. The tests also check that the LZO decoder imports only archivey's public
+names, and pin the internal names the reader imports. The Atheris target `squashfs`
+fuzzes the image walk and block reads.
 
 ## 9. References
 

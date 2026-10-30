@@ -1036,7 +1036,8 @@ misread the archive.
 - `ArchiveInfo.format_version` is `"4.0"`. `ArchiveInfo.extra["squashfs.compressor"]` names
   the compressor and `extra["squashfs.block_size"]` the block size.
 - Files, directories, symlinks, hard links, sparse files, and devices, FIFOs and sockets
-  (`OTHER`) read. Extended attributes are not read.
+  (`OTHER`) read. `member.is_sparse` is true for a file stored with holes. Extended
+  attributes are not read.
 - Big-endian images (SquashFS 3 and older) raise `UnsupportedFeatureError`.
 - SquashFS stores no checksums, so a damaged block is found only when it does not decode to
   its length.

@@ -48,7 +48,7 @@ from archivey.formats import (
     SequentialReader,
 )
 from archivey.internal.detection import probe_config
-from archivey.internal.format_adapter import registration_scope
+from archivey.internal.format_adapter import REPLACEABLE_CONTAINERS, registration_scope
 from tests.test_format_api import _ENTRIES, _MAGIC, _plugin_with, build_toya
 from tests.test_iso_raw_sectors import _image as _raw_sector_image
 from tests.test_sfx import _pe_stub
@@ -552,6 +552,29 @@ def test_a_replacement_is_not_given_a_raw_sector_image(tmp_path: Path) -> None:
     with pytest.raises(UnsupportedFeatureError, match="raw CD sector image"):
         open_archive(path, config=config)
     assert _opened == []
+
+
+def test_the_containers_a_plugin_can_replace() -> None:
+    """The set ``FormatPolicy.replace`` and the plugin guide name, and no more."""
+    assert REPLACEABLE_CONTAINERS == {C.ZIP, C.SEVEN_Z, C.RAR, C.ISO, C.SQUASHFS}
+
+
+class _RecordingSquashfsPlugin(FormatHandler):
+    format = ArchiveFormat.SQUASHFS
+
+    def open(self, source: ReaderSource, context: ReaderContext) -> _StdlibZipReader:
+        _opened.append(type(self).__name__)
+        raise AssertionError("reached")
+
+
+def test_a_squashfs_image_reaches_its_replacement() -> None:
+    config = ArchiveyConfig(
+        formats=FormatPolicy(replace={C.SQUASHFS: _RecordingSquashfsPlugin})
+    )
+    image = Path(__file__).parent / "fixtures" / "squashfs" / "gzip.sqfs"
+    with pytest.raises(AssertionError, match="reached"):
+        open_archive(image, config=config)
+    assert _opened == ["_RecordingSquashfsPlugin"]
 
 
 def test_a_replacement_is_not_given_a_volume_set(tmp_path: Path) -> None:

@@ -50,6 +50,7 @@ from archivey.internal.excluded_libraries import as_reported
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.isolated import Natives, natives_for
+from archivey.internal.streams.codecs.lz4_codec import LZ4_REQUIREMENT
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -57,7 +58,6 @@ from archivey.types import (
     ArchiveMember,
     CompressionAlgorithm,
     MemberType,
-    MissingComponent,
     OptionalLibrary,
     StreamFormat,
 )
@@ -78,14 +78,6 @@ _SYMLINK_MAX = 65535
 # follows the superblock. It is not read: zlib, xz, LZMA Alone and Zstandard streams
 # carry their own parameters, and the LZ4 and LZO options only name a compression
 # level or variant that the same decoder reads.
-# LZ4 blocks need lz4 (``[recommended]``). Under PyPy archivey does not use it, and
-# says why in place of the install advice (``deps.unused_reason``).
-_LZ4_REQUIREMENT = MissingComponent(
-    OptionalLibrary.LZ4,
-    "pip install archivey[recommended]",
-    ("lz4",),
-    reason=deps.unused_reason(OptionalLibrary.LZ4),
-)
 _COMPRESSORS = {1: "gzip", 2: "lzma", 3: "lzo", 4: "xz", 5: "lz4", 6: "zstd"}
 _DECODED_AS: dict[str, CompressionAlgorithm | StreamFormat] = {
     "gzip": StreamFormat.ZLIB,
@@ -114,7 +106,12 @@ _FRAGMENT_ENTRY = struct.Struct("<QII")
 _DIR_COUNT = 256
 
 # Decoded blocks kept for reuse: metadata blocks while listing, fragment blocks because
-# every small file in one fragment shares it.
+# every small file in one fragment shares it. Caches, not limits: they bound what an
+# open reader holds (64 x 8 KiB, plus 4 fragments of at most the 1 MiB block size,
+# about 4.5 MiB) whatever the image declares, and a miss only decodes the block again.
+# 64 covers the inode and directory blocks a listing walks back and forth over in
+# images of tens of thousands of files; mksquashfs packs the small files of one
+# directory into consecutive fragments, so a few cover a walk in archive order.
 _METADATA_CACHE = 64
 _FRAGMENT_CACHE = 4
 
@@ -207,7 +204,6 @@ class _Inode(NamedTuple):
     # Directory: (listing block, offset, listing size); file: FileLocation; symlink:
     # target bytes; others: None.
     body: object
-    sparse: bool = False
 
 
 def _listing(inode: _Inode) -> tuple[int, int, int]:
@@ -230,6 +226,8 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         self._metadata: OrderedDict[int, tuple[bytes, int]] = OrderedDict()
         self._fragments: OrderedDict[int, bytes] = OrderedDict()
         self._ids = self._ids_table()
+        # Block-list bytes scanned by the listing so far (``_has_holes``).
+        self._block_list_bytes = 0
 
     # ── Decoding ─────────────────────────────────────────────────────────────────────
 
@@ -240,7 +238,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         config = self._context.config
         excluded = config.formats.exclude_libraries
         if deps.lz4_block is None or OptionalLibrary.LZ4 in excluded:
-            requirement = as_reported(_LZ4_REQUIREMENT, excluded)
+            requirement = as_reported(LZ4_REQUIREMENT, excluded)
             raise PackageNotInstalledError(
                 requirement.message("an LZ4-compressed SquashFS image"),
                 missing=(requirement,),
@@ -436,7 +434,6 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         if uid_index >= len(self._ids) or gid_index >= len(self._ids):
             raise CorruptionError("an inode's owner is past the end of the id table")
         body: object = None
-        sparse = False
         if basic == _DIR:
             if extended:
                 _, size, listing, _, _, list_offset, _ = _EXT_DIR_INODE.unpack(
@@ -452,10 +449,9 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
             body = (listing, list_offset, size - 3)
         elif basic == _FILE:
             if extended:
-                start, size, saved, _, fragment, frag_offset, _ = (
-                    _EXT_FILE_INODE.unpack(cursor.read(_EXT_FILE_INODE.size))
+                start, size, _, _, fragment, frag_offset, _ = _EXT_FILE_INODE.unpack(
+                    cursor.read(_EXT_FILE_INODE.size)
                 )
-                sparse = saved > 0
             else:
                 start, fragment, frag_offset, size = _FILE_INODE.unpack(
                     cursor.read(_FILE_INODE.size)
@@ -482,7 +478,6 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
             self._ids[gid_index],
             mtime,
             body,
-            sparse,
         )
 
     def _entries(
@@ -514,7 +509,31 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
                 f"a directory listing runs to {cursor.consumed} bytes, not {size}"
             )
 
+    def _has_holes(self, location: FileLocation) -> bool:
+        """Whether a file has a block stored with size 0, which reads as zeros.
+
+        Only the block list says so: mksquashfs writes a sparse file under a basic
+        inode, which has no "bytes saved" field. In a valid image the files' lists
+        lie in separate bytes of the inode table, so together they fit in it; a
+        damaged image whose lists overlap would otherwise make the scan quadratic.
+        """
+        remaining = location.block_count * 4
+        self._block_list_bytes += remaining
+        if self._block_list_bytes > self._sb.directory_table - self._sb.inode_table:
+            raise CorruptionError(
+                "the files' block lists add up to more than the inode table holds"
+            )
+        cursor = self.block_list(location)
+        while remaining:
+            chunk = cursor.read(min(remaining, _METADATA_SIZE))
+            remaining -= len(chunk)
+            # A stored size of 0 is all-zero bytes in either byte order.
+            if 0 in memoryview(chunk).cast("I"):
+                return True
+        return False
+
     def iter_members(self) -> Iterator[MemberRecord[FileLocation | None]]:
+        self._block_list_bytes = 0
         root = self._sb.root_inode
         root_ref = (root >> 16, root & 0xFFFF)
         if root_ref[1] >= _METADATA_SIZE:
@@ -568,7 +587,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
                     assert isinstance(inode.body, FileLocation)
                     location = inode.body
                     member.size = location.size
-                    member.is_sparse = inode.sparse
+                    member.is_sparse = self._has_holes(location)
                 elif kind == _SYMLINK:
                     assert isinstance(inode.body, bytes)
                     member.type = MemberType.SYMLINK
@@ -659,7 +678,8 @@ class SquashfsHandler(FormatHandler):
 
     format = ArchiveFormat.SQUASHFS
     extensions = (".squashfs", ".sqfs", ".snap")
-    magic = (Magic(0, MAGIC),)
+    # ``sqsh`` too, so an older big-endian image is refused by name, not left undetected.
+    magic = (Magic(0, MAGIC), Magic(0, _SWAPPED_MAGIC))
     uses_encoding = True
 
     def open(self, source: ReaderSource, context: ReaderContext) -> SquashfsReader:

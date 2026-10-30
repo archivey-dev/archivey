@@ -52,15 +52,15 @@ same way it does for a built-in format: it normalizes member names, checks them,
 the listing limits, resolves links, checks each member's size and checksum as it is read,
 and extracts safely.
 
-Three complete readers in the repository use only `archivey.formats` and archivey's
-public names, apart from the call that registers each as a built-in format, so they read
-as a plugin would:
-[`squashfs_reader.py`](https://github.com/archivey-dev/archivey/blob/main/src/archivey/internal/backends/squashfs_reader.py)
-for SquashFS images, a format with an index, and
+Two complete readers in the repository, both read in one pass, use only
+`archivey.formats` and archivey's public names, apart from the call that registers each
+as a built-in format, so they read as a plugin would:
 [`cpio_reader.py`](https://github.com/archivey-dev/archivey/blob/main/src/archivey/internal/backends/cpio_reader.py)
 and
-[`ar_reader.py`](https://github.com/archivey-dev/archivey/blob/main/src/archivey/internal/backends/ar_reader.py),
-read in one pass.
+[`ar_reader.py`](https://github.com/archivey-dev/archivey/blob/main/src/archivey/internal/backends/ar_reader.py).
+[`squashfs_reader.py`](https://github.com/archivey-dev/archivey/blob/main/src/archivey/internal/backends/squashfs_reader.py)
+shows a format with an index through the same API, but it also uses archivey's internal
+lz4 handling, which a plugin cannot import.
 
 ## A complete example
 
@@ -699,7 +699,8 @@ probe is not handed the policy, so it must not import anything `requires` does n
 name. A plugin that imports an optional package only for some files, outside
 `requires`, checks `context.config.formats.exclude_libraries` itself before it imports
 the package, and raises `PackageNotInstalledError` with a `MissingComponent` whose
-`reason` says the policy turned it off.
+`reason` says the policy turned it off. The helper the built-in readers use for that
+reason is internal, so a plugin writes its own.
 
 A library that needs a file name rather than a stream can use `ReaderSource.path`, which is
 the path the archive was opened from, or `None` when it was opened from a stream.

@@ -1,10 +1,10 @@
 # Archivey
 
-Archivey reads ZIP, TAR, 7z, RAR, ISO, SquashFS, CPIO, ar and single compressed files from Python, with one
-simple API. Untrusted archives extract safely by default. Archive formats hide some slow and
-error-prone ways of reading, and archivey's defaults steer around them whenever possible.
-The [cheat sheet](cheat-sheet.md) has the main calls on one page, with the zipfile and tarfile
-equivalents.
+Archivey reads ZIP, TAR, 7z, RAR, ISO, SquashFS, CPIO, ar and single compressed files from
+Python, with one simple API. Untrusted archives extract safely by default. Archive formats
+hide some slow and error-prone ways of reading, and archivey's defaults steer around them
+whenever possible. The [cheat sheet](cheat-sheet.md) has the main calls on one page, with the
+zipfile and tarfile equivalents.
 Coding agents can read these docs as Markdown, starting from
 [llms.txt](https://archivey-dev.github.io/archivey/llms.txt), or all in one file from
 [llms-full.txt](https://archivey-dev.github.io/archivey/llms-full.txt).

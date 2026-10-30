@@ -44,6 +44,15 @@ _LZ4_STREAMS = stream_magic(
 )
 
 
+# What an LZ4 stream or block needs, shared with the SquashFS reader's LZ4 blocks.
+LZ4_REQUIREMENT = MissingComponent(
+    OptionalLibrary.LZ4,
+    "pip install archivey[recommended]",
+    ("lz4",),
+    reason=deps.unused_reason(OptionalLibrary.LZ4),
+)
+
+
 class Lz4Codec(StreamCodec):
     codec = Codec.LZ4
     stream_format = StreamFormat.LZ4
@@ -52,12 +61,7 @@ class Lz4Codec(StreamCodec):
         # The legacy stream ``lz4 -l`` writes, and Linux kernel images use.
         MagicSignature(0, LEGACY_MAGIC, ArchiveFormat.LZ4),
     )
-    requirement = MissingComponent(
-        OptionalLibrary.LZ4,
-        "pip install archivey[recommended]",
-        ("lz4",),
-        reason=deps.unused_reason(OptionalLibrary.LZ4),
-    )
+    requirement = LZ4_REQUIREMENT
 
     def _backend_present(self) -> bool:
         return deps.lz4_frame is not None and deps.lz4_block is not None
