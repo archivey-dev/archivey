@@ -588,9 +588,8 @@ On a compressed tar, the stream's own checksum adds three cases:
   numbers in `extra["tar.devmajor"]` and `extra["tar.devminor"]`. A device number field that is not
   a number is dropped and reported as `MEMBER_HEADER_RECORD_SKIPPED`, as GNU tar lists such a
   device too.
-- **A header time of all NUL bytes is no time.** A pax writer leaves the `mtime` field empty when a
-  PAX record carries the time. With no such record, the member has no `modified` and nothing is
-  reported, where GNU tar and `tarfile` show 1970-01-01.
+- **A header time of only NUL bytes or blanks is no time.** Unless a PAX record carries the time,
+  the member has no `modified` and nothing is reported, where GNU tar and `tarfile` show 1970-01-01.
 - **A member of an unknown type is a file when it has data.** A header whose type byte archivey
   does not know (such as `9`) and that declares data is a `FILE` of that size, which reads and
   extracts like any file, as GNU tar extracts it. One that declares no data is `OTHER`, and its

@@ -3980,21 +3980,24 @@ def test_pax_mtime_zero_is_the_epoch(tmp_path: Path) -> None:
 
 
 def _tar_with_mtime_field(field: bytes, pax_mtime: str | None = None) -> bytes:
-    tb = tar_build
-    pax = tb.pax({"mtime": pax_mtime}) if pax_mtime is not None else b""
+    pax = tar_build.pax({"mtime": pax_mtime}) if pax_mtime is not None else b""
     return (
         pax
-        + tb.block(b"f", size=1, patch=tb.field(136, 148, field))
-        + tb.data(b"x")
-        + tb.END
+        + tar_build.block(b"f", size=1, patch=tar_build.field(136, 148, field))
+        + tar_build.data(b"x")
+        + tar_build.END
     )
 
 
+@pytest.mark.parametrize("field", [bytes(12), b" " * 12], ids=["nul", "blanks"])
 @pytest.mark.parametrize("streaming", [False, True])
-def test_an_all_nul_mtime_is_unknown(streaming: bool, tmp_path: Path) -> None:
-    """An all-NUL ``mtime`` field records no time. GNU tar 1.35 and tarfile read it
-    as 0; archivey lists no ``modified`` rather than guess 1970, and says nothing."""
-    data = _tar_with_mtime_field(bytes(12))
+def test_an_all_nul_mtime_is_unknown(
+    streaming: bool, field: bytes, tmp_path: Path
+) -> None:
+    """An ``mtime`` field of NULs or blanks records no time. GNU tar 1.35 and tarfile
+    read all NULs as 0 (GNU tar reports all blanks and lists -1); archivey lists no
+    ``modified`` rather than guess 1970, and says nothing."""
+    data = _tar_with_mtime_field(field)
     with open_archive(
         NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
         format=ArchiveFormat.TAR,
@@ -4014,7 +4017,7 @@ def test_an_octal_zero_mtime_is_the_epoch() -> None:
 
 
 def test_a_pax_mtime_fills_an_all_nul_header_mtime() -> None:
-    """The shape pax writers produce: the header field left NUL, the time in PAX."""
+    """With the header field left NUL, the PAX ``mtime`` record gives the time."""
     data = _tar_with_mtime_field(bytes(12), pax_mtime="1700000000.5")
     with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
         assert ar.get("f").modified == datetime(
