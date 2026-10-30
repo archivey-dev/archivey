@@ -14,7 +14,6 @@ import shutil
 import struct
 import subprocess
 import time
-import tracemalloc
 from pathlib import Path
 
 import pytest
@@ -22,14 +21,17 @@ import pytest
 from archivey import CompressionAlgorithm, open_archive
 from archivey.exceptions import (
     CorruptionError,
+    EncryptionError,
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal.streams.codecs.zip_legacy_decoder import ShrinkDecoder
 from tests.conftest import run_7z
+from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO
 from tests.zip_legacy_build import (
+    BitWriter,
     LegacyEntry,
     build_zip,
     implode,
@@ -37,6 +39,7 @@ from tests.zip_legacy_build import (
     shrink,
     shrink_entry,
 )
+from tests.zipcrypto import build_zipcrypto_zip
 
 _README = (Path(__file__).parent.parent / "README.md").read_bytes()
 
@@ -201,21 +204,129 @@ def test_a_full_shrink_table_that_is_not_cleared_is_refused() -> None:
         _read_one(LegacyEntry("x", data, 1, compressed), compressed)
 
 
-def test_an_unknown_shrink_control_code_is_refused() -> None:
-    from tests.zip_legacy_build import BitWriter
-
+def _codes(*pairs: tuple[int, int]) -> bytes:
+    """Shrink codes as (code, width) pairs."""
     out = BitWriter()
-    for code in (ord("a"), 256, 3, ord("b")):
-        out.write(code, 9)
-    with pytest.raises(CorruptionError, match="unknown control code 3"):
-        _read_one(LegacyEntry("x", b"ab", 1, b""), out.getvalue())
+    for code, width in pairs:
+        out.write(code, width)
+    return out.getvalue()
 
 
-def test_an_implode_tree_with_the_wrong_number_of_lengths_is_refused() -> None:
-    # Two trees of one run of 16 lengths each (64 expected).
-    bad = bytes([0, 0xF5, 0, 0xF5]) + bytes(8)
-    with pytest.raises(CorruptionError, match="expected 64"):
-        _read_one(LegacyEntry("x", b"abc", 6, b""), bad)
+_A, _B, _X = ord("a"), ord("b"), ord("x")
+
+
+@pytest.mark.parametrize(
+    ("compressed", "message"),
+    [
+        pytest.param(
+            _codes((_A, 9), (256, 9), (3, 9), (_B, 9)),
+            "unknown control code 3",
+            id="unknown-control",
+        ),
+        pytest.param(
+            _codes((256, 9), (1, 9)), "starts with a control code", id="control-first"
+        ),
+        pytest.param(_codes((300, 9)), "starts with an undefined code", id="undefined"),
+        # One literal, then a widening at each width from 9: the one at 13 goes past.
+        pytest.param(
+            _codes((_A, 9), *((c, w) for w in range(9, 14) for c in (256, 1))),
+            "past 13 bits",
+            id="widen-past-13",
+        ),
+        pytest.param(_codes((_A, 9), (300, 9)), "names the free code 300", id="free"),
+        # 257 and 258 are leaves when the clear frees them, so the next entry takes
+        # slot 257 with the freed 257 (the previous code) as its parent: a loop.
+        pytest.param(
+            _codes((_A, 9), (_B, 9), (257, 9), (256, 9), (2, 9), (_X, 9), (257, 9)),
+            "links to a free code or loops",
+            id="loop",
+        ),
+    ],
+)
+def test_bad_shrink_codes_are_refused(compressed: bytes, message: str) -> None:
+    with pytest.raises(CorruptionError, match=message):
+        _read_one(LegacyEntry("x", bytes(100), 1, b""), compressed)
+
+
+def test_shrink_input_that_ends_inside_a_control_code_is_truncated() -> None:
+    with pytest.raises(TruncatedError, match="inside a control code"):
+        _read_one(LegacyEntry("x", b"ab", 1, b""), _codes((_A, 9), (256, 9)))
+
+
+def test_a_shrink_entry_past_the_declared_size_is_refused() -> None:
+    """Shrink stops after the code that reaches the size, so its last entry can run
+    past it; the member's size check refuses the surplus."""
+    # "a", "b", then 257 ("ab"): four bytes against a declared three.
+    compressed = _codes((_A, 9), (_B, 9), (257, 9))
+    with pytest.raises(CorruptionError, match="exceeds its declared size"):
+        _read_one(LegacyEntry("x", b"aba", 1, b""), compressed)
+
+
+def _all_16_bit_tree() -> bytes:
+    """64 lengths of 16 bits: only codes 0 to 63 of 65536 are defined."""
+    return bytes([3]) + bytes([0xFF]) * 4
+
+
+def _undefined_implode_code() -> bytes:
+    out = BitWriter()
+    for byte in _all_16_bit_tree() * 2:
+        out.write(byte, 8)
+    out.write(0, 1)  # a copy
+    out.write(0, 6)  # its low distance bits
+    out.write(0xFFFF, 16)  # a distance code past the defined ones
+    return out.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("compressed", "message"),
+    [
+        # Two trees of one run of 16 lengths each (64 expected).
+        pytest.param(bytes([0, 0xF5, 0, 0xF5]) + bytes(8), "expected 64", id="count"),
+        # 64 lengths of one bit.
+        pytest.param(
+            bytes([3, 0xF0, 0xF0, 0xF0, 0xF0]) + bytes(8),
+            "over-subscribe",
+            id="over-subscribed",
+        ),
+        pytest.param(
+            _undefined_implode_code(), "code its tree does not define", id="undefined"
+        ),
+    ],
+)
+def test_bad_implode_trees_and_codes_are_refused(
+    compressed: bytes, message: str
+) -> None:
+    with pytest.raises(CorruptionError, match=message):
+        _read_one(LegacyEntry("x", b"abc", 6, b""), compressed)
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        pytest.param(shrink_entry("a.txt", _README), id="shrink"),
+        pytest.param(
+            implode_entry("a.txt", _README, large_window=True, literal_tree=True),
+            id="implode",
+        ),
+    ],
+)
+def test_an_encrypted_member_reads(entry: LegacyEntry) -> None:
+    """ZipCrypto around either method, with the right and a wrong password."""
+    data = build_zipcrypto_zip(
+        b"pw",
+        b"a.txt",
+        entry.data,
+        compression=entry.method,
+        extra_flags=entry.flags,
+        compressed=entry.compressed,
+    )
+    with open_archive(io.BytesIO(data), password=b"pw") as reader:
+        assert reader.read(reader.get("a.txt")) == _README
+    with (
+        open_archive(io.BytesIO(data), password=b"wrong") as reader,
+        pytest.raises(EncryptionError),
+    ):
+        reader.read(reader.get("a.txt"))
 
 
 @pytest.mark.parametrize(
@@ -283,8 +394,8 @@ def test_a_huge_declared_size_allocates_nothing(
     the size only says where the data ends: a read finds the data cut short, and
     extraction refuses the ratio before decoding."""
     data = _zip64_entry(method, flags, b"\x41", 2**64 - 1)
-    tracemalloc.start()
-    try:
+
+    def reads() -> None:
         with open_archive(io.BytesIO(data)) as reader:
             with pytest.raises(TruncatedError):
                 reader.read(reader.get("a.txt"))
@@ -297,18 +408,15 @@ def test_a_huge_declared_size_allocates_nothing(
             for _, stream in reader.stream_members():
                 assert stream is not None
                 stream.read()
-        _, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
-    assert peak < 32 * 2**20
+
+    # About 1.5 MB measured.
+    assert traced_peak(reads) < 4 << 20
 
 
 def test_a_run_of_partial_clears_costs_little() -> None:
     """A clear makes no output, so neither the ratio guard nor a read budget sees it.
     Each costs the slots it frees, not a walk over the 8k-slot table: 60,000 clears
     (135 KB) took about 28 s with the walk."""
-    from tests.zip_legacy_build import BitWriter
-
     out = BitWriter()
     out.write(ord("A"), 9)
     for _ in range(60_000):
@@ -318,4 +426,7 @@ def test_a_run_of_partial_clears_costs_little() -> None:
     decoder = ShrinkDecoder(10**9)
     start = time.perf_counter()
     assert decoder.feed(data).data == b"A"
-    assert time.perf_counter() - start < 5
+    elapsed = time.perf_counter() - start
+    assert elapsed < 5, (
+        f"60,000 partial clears took {elapsed:.1f}s: a clear is walking the table again"
+    )

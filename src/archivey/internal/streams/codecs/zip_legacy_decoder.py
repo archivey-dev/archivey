@@ -14,8 +14,10 @@ open, the decoders do what Info-ZIP ``unzip`` (``unshrink.c``, ``explode.c``) do
   last copy stops at the member's declared size.
 
 Neither stream has an end marker. Implode always ends at the declared size, so it needs
-one; Shrink ends there when the size is known, and otherwise where the input does. The
-bits left in the last byte are padding. A whole byte after the end is input after the
+one, and clamps its last copy to it. Shrink stops after the first code that reaches the
+size when the size is known, and otherwise where the input does; a last entry that runs
+past the size is refused by the member's size check above the decoder. The bits left in
+the last byte are padding. A whole byte after the end is input after the
 end (:meth:`BaseDecoder._past_end`).
 
 Both decode forward only: a seek goes back to the start and decodes again.

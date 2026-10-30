@@ -29,7 +29,7 @@ Triage (2026-10-28, CC master ``0c20ded``, 1.29.0-SNAPSHOT), in the report's gro
 
 * **MISSING FORMAT** CC reads LHA, dump, ARJ and Snappy, which Archivey does not
   implement. ZIP Implode and Shrink, once on this list, now read and match CC on all
-  five of CC's archives (139 members).
+  five of CC's archives (140 members).
 * **POLICY** Archivey refuses, as the format's own tool does: a TAR header with a wrong
   checksum, bytes after a member's Deflate stream (DR-3), and two 7z headers 7-Zip
   calls Headers Error.
