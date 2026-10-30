@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass
-from typing import BinaryIO, ClassVar
+from typing import Any, BinaryIO, ClassVar
 
+from archivey.config import ProcessIsolation
 from archivey.exceptions import ArchiveyError
 from archivey.formats import CodecCall, CodecHandler
 from archivey.internal.config import DEFAULT_STREAM_CONFIG, StreamConfig
@@ -31,6 +32,9 @@ from archivey.internal.streams.codecs.base import (
     CodecId,
     CodecParams,
     CodecSource,
+    MetadataContext,
+    ProbeChargeDecode,
+    ProbeReadAt,
     StreamCodec,
 )
 from archivey.internal.streams.codecs.framed_decoder import (
@@ -41,6 +45,7 @@ from archivey.internal.streams.codecs.framed_decoder import (
 )
 from archivey.types import (
     ArchiveFormat,
+    ArchiveMember,
     ContainerFormat,
     MagicSignature,
     MissingComponent,
@@ -93,6 +98,8 @@ class BuiltinCodecHandler(CodecHandler):
     """
 
     codec: ClassVar[CodecId]
+    # The name diagnostics and messages give the stream, when not ``codec.value``.
+    codec_name: ClassVar[str | None] = None
     # The optional package the decoder needs, and its install advice; ``None`` for
     # the standard library. A codec with one overrides :meth:`_library`.
     requirement: ClassVar[MissingComponent | None] = None
@@ -139,9 +146,27 @@ class BuiltinCodecHandler(CodecHandler):
         return RewindWarning(self.codec.value, suggest_install=False)
 
     def _magic_behind_prefix(self, prefix: bytes) -> bool:
-        """:meth:`StreamCodec.magic_behind_prefix`. Default: no prefix."""
-        del prefix
-        return False
+        """:meth:`StreamCodec.magic_behind_prefix`. Read only when overridden."""
+        raise NotImplementedError
+
+    def _content_probe(
+        self,
+        entry: StreamCodec,
+        prefix: bytes,
+        *,
+        source_length: int | None = None,
+        read_at: ProbeReadAt | None = None,
+        charge_decode: ProbeChargeDecode | None = None,
+        isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
+    ) -> bool:
+        """:meth:`StreamCodec.content_probe`, for a probe that decodes a sample
+        (through ``entry``, the registry entry) or reads past the prefix. Read only
+        when overridden."""
+        raise NotImplementedError
+
+    def _extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
+        """:meth:`StreamCodec.extract_metadata`. Default: none."""
+        del ctx, member
 
 
 class BuiltinHandlerCodec(StreamCodec):
@@ -167,7 +192,7 @@ class BuiltinHandlerCodec(StreamCodec):
         return FramedDecompressorStream(
             source,
             lambda: handler.decompressor(call),
-            codec_name=self.codec.value,
+            codec_name=handler.codec_name or self.codec.value,
             magic=handler._stream_start(call),
             index=handler._stream_index(call),
             collector=config.collector,
@@ -187,8 +212,8 @@ class BuiltinHandlerCodec(StreamCodec):
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         return self.handler._rewind_warning(config)
 
-    def magic_behind_prefix(self, prefix: bytes) -> bool:
-        return self.handler._magic_behind_prefix(prefix)
+    def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
+        self.handler._extract_metadata(ctx, member)
 
     def _backend_present(self) -> bool:
         return self.requirement is None or self.handler._library() is not None
@@ -214,11 +239,24 @@ class BuiltinHandlerCodec(StreamCodec):
 def builtin_codec(handler: type[BuiltinCodecHandler]) -> type[StreamCodec]:
     """The registry entry's class for ``handler``."""
     fmt = ArchiveFormat(ContainerFormat.RAW_STREAM, handler.stream_format)
+    instance = handler()
+    # Only what the handler overrides: the detector skips a codec whose
+    # ``magic_behind_prefix`` or ``content_probe`` is the base's.
+    hooks: dict[str, Any] = {}
+    if handler._magic_behind_prefix is not BuiltinCodecHandler._magic_behind_prefix:
+        hooks["magic_behind_prefix"] = lambda self, prefix: (
+            self.handler._magic_behind_prefix(prefix)
+        )
+    if handler._content_probe is not BuiltinCodecHandler._content_probe:
+        hooks["content_probe"] = lambda self, prefix, **kwargs: (
+            self.handler._content_probe(self, prefix, **kwargs)
+        )
     return type(
         f"{handler.__name__}Codec",
         (BuiltinHandlerCodec,),
         {
-            "handler": handler(),
+            **hooks,
+            "handler": instance,
             "codec": handler.codec,
             "stream_format": handler.stream_format,
             "magic": tuple(
