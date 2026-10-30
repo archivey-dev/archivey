@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveyConfig, ExtractionPolicy, open_archive
+from archivey.exceptions import UnsupportedFeatureError
 from tests.conftest import requires_binary
 from tests.test_audit_rar_iso_dir import (
     _fixture,
@@ -140,9 +141,19 @@ def test_rar3_bytes_undefined_in_windows_1252_stay_distinct(tmp_path: Path) -> N
 def test_rar3_undefined_bytes_extract_escaped(tmp_path: Path) -> None:
     expected = _original_payloads()
     dest = tmp_path / "out"
-    with open_archive(
-        _rar3_with_undefined_cp1252_bytes(tmp_path), config=_UNRAR_ONLY
-    ) as archive:
+    source = _rar3_with_undefined_cp1252_bytes(tmp_path)
+    config = _UNRAR_ONLY
+    if sys.platform == "darwin":
+        # unrar's macOS build reads an 8-bit name as UTF-8 and stops at the first
+        # bad byte, so both names reach it as "b": the second one's mask selects
+        # the first, which is refused unless the caller allows it.
+        with (
+            open_archive(source, config=_UNRAR_ONLY) as archive,
+            pytest.raises(UnsupportedFeatureError, match="also selects them"),
+        ):
+            archive.extract_all(tmp_path / "refused")
+        config = _UNRAR_SHARED
+    with open_archive(source, config=config) as archive:
         archive.extract_all(dest)
     assert (dest / "b%81.txt").read_bytes() == expected[0]
     assert (dest / "b%8D.txt").read_bytes() == expected[1]
