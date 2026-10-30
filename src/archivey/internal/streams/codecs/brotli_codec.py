@@ -35,6 +35,7 @@ from archivey.internal.streams.codecs.brotli_framing import (
 from archivey.internal.streams.codecs.isolated import BrotliChildError, natives_for
 from archivey.types import (
     MissingComponent,
+    OptionalLibrary,
     StreamFormat,
 )
 
@@ -52,7 +53,7 @@ class BrotliCodec(StreamCodec):
     extension_aliases = (".brotli",)
     # Brotli has no signature; the detector recognizes it by decoding a bounded prefix.
     requirement = MissingComponent(
-        "brotli", "pip install archivey[recommended]", ("brotli",)
+        OptionalLibrary.BROTLI, "pip install archivey[recommended]", ("brotli",)
     )
 
     def _backend_present(self) -> bool:

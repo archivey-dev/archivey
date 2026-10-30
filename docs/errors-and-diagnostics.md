@@ -24,7 +24,7 @@ subclass of `ArchiveyError`. These are the ones you're most likely to handle:
 | `EncryptionError` | A password is needed and none was given, or none of the ones given works |
 | `FormatDetectionError` | The file isn't in a format archivey recognizes |
 | `UnsupportedFeatureError` | The format is recognized, but this archive uses something archivey can't handle, such as an unknown compression method |
-| `PackageNotInstalledError` | The archive needs an optional package or program that isn't installed. The message names it |
+| `PackageNotInstalledError` | The archive needs an optional package or program that isn't installed. The message names it, and `missing` lists it as data |
 | `ResourceLimitError` | The archive went over one of the [limits](security.md#hardening). Its subclass `ResourceUnavailableError` means the system ran short instead, for example the out-of-memory killer ended a decoder, so raising a limit won't help |
 
 The [reference][archivey.ArchiveyError] lists the rest, such as `ReadError`, the parent of

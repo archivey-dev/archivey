@@ -3,14 +3,16 @@
 Atheris lives in the PEP 735 `fuzz` dependency group (`atheris`) and runs via
 `.github/workflows/atheris-fuzz.yml` — same shape as the benchmark wall split:
 
-- **Every PR:** short partitioned budgets over all targets (blocks the PR; sharded
-  across parallel jobs because each target pays a large Atheris cold-start).
+- **Merge queue:** short partitioned budgets over all targets, called from `ci.yml`
+  (`workflow_call` with `short: true`), whose `CI gate` needs it, so a crash takes the
+  pull request out of the queue. Sharded across parallel jobs because each target pays a
+  large Atheris cold-start. Pull request pushes do not fuzz.
 - **Nightly schedule:** full partition, but only if default-branch HEAD moved in the
   last ~3 days (commit-recency guard; dormant stretches skip the expensive run).
 - **`workflow_dispatch`:** force the full partition (optional `budget_scale`).
 
 The four accelerator targets (`gzip_accel`, `zlib_accel`, `deflate_accel`,
-`bzip2_accel`) get only 1 to 2 seconds each there on a pull request and 10 to 15 on the
+`bzip2_accel`) get only 1 to 2 seconds each there in the merge queue and 10 to 15 on the
 nightly. `.github/workflows/accelerator-fuzz-soak.yml` runs them again once a week for 20
 minutes each, one runner per target, and keeps each target's corpus in the Actions cache
 so the next run starts from it (`workflow_dispatch` takes `seconds`). GitHub evicts a
