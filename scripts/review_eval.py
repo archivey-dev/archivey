@@ -52,7 +52,7 @@ COPIED = (SKILL, Path("scripts/review_prep.py"))
 REVIEW_MODEL = "claude-opus-5"
 # The loop's tools less WebFetch: a fetch of the PR's page on GitHub would show the
 # later rounds and the fix.
-REVIEW_TOOLS = "Read,Grep,Glob,Bash"
+REVIEW_TOOLS = "Read,Grep,Glob,Bash,Task"
 JUDGE_MODEL = "claude-sonnet-5-5"
 TIMEOUT = 3600
 
@@ -70,6 +70,14 @@ against, so the change under review is `git diff main...HEAD`. This is review ro
 Follow this repository's own review skill, in full, as if it had been invoked by name:
 read `.claude/skills/code-review-skill/SKILL.md` first, then the one reference doc its
 §1 names for this kind of review, and obey them over any generic review habit.
+
+How to work, which decides what the review costs (the loop's prompt says the same):
+every turn re-sends the whole context. Send independent tool calls together in one
+turn (a diff stat, a grep and two file reads whose outputs do not depend on each other
+go out as one message); make a call alone only when its output decides the next one.
+Send reading of files the diff does not touch to `Task` subagents with
+`model: "sonnet"`, several in parallel, and read yourself only the diff and the lines
+a finding cites.
 
 This replay differs from a real round in four ways:
 

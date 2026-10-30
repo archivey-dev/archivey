@@ -265,7 +265,7 @@ jobs:
           # request and for every round that re-reads fixes (`OPUS_PASS_TIERS`).
           claude_args: |
             --model ${{ steps.gate.outputs.opus_pass == 'true' && 'claude-opus-5' || 'claude-sonnet-5-5' }}
-            --allowedTools Read,Grep,Glob,WebFetch,Bash
+            --allowedTools Read,Grep,Glob,WebFetch,Bash,Task
           prompt: ${{ steps.prompt.outputs.prompt }}
 
       # `always()` so that a review that died still says so, rather than leaving a pull

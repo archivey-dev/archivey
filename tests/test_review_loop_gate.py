@@ -943,3 +943,10 @@ def test_cursor_is_asked_on_a_deep_opus_round_with_the_person_token_only() -> No
     assert text.index("- name: Ask Cursor") < text.index("- name: Claude review")
     # Only this step gets the token.
     assert text.count("secrets.CURSOR_TRIGGER_TOKEN") == 1
+
+
+def test_the_reviewer_may_send_subagents_and_is_told_to_batch() -> None:
+    assert "--allowedTools Read,Grep,Glob,WebFetch,Bash,Task" in _step("Claude review")
+    prompt = (ROOT / ".github" / "review-loop-prompt.md").read_text(encoding="utf-8")
+    assert "Send independent tool calls together in one turn" in prompt
+    assert '`model: "sonnet"`' in prompt

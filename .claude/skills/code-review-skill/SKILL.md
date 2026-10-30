@@ -13,6 +13,7 @@ allowed-tools:
   - Glob
   - Bash      # reproduce a finding or check a runtime claim — not to re-run the gates (§6)
   - WebFetch  # look up current docs and best practices
+  - Task      # subagents on Sonnet for reading outside the diff (§How to spend turns)
 ---
 
 # Code Review Skill
@@ -53,6 +54,22 @@ this list and §6 disagree, §6 wins; edit both together.
   approval on your own PR (§6 "You cannot post a GitHub approval").
 - End every review body, inline comment and reply with the attribution footer (§6
   "Attribution footer").
+
+## How to spend turns
+
+Each tool call that ends a turn re-sends the whole context, and a review's cost is mostly
+that: the eval reviews of 2026-10-30 made one call per turn, and re-reading the cached
+context was about half the bill. Stated in the loop's prompt, these two habits cut
+the cost of a first look by about a third with the same catches
+(`dev-docs/review-eval/results.md`). Two habits cut it without
+reading less:
+
+- **Batch.** When the next calls do not depend on each other's output (the diff stat, a
+  grep, two files, the tier command), send them in one turn. One call per turn only
+  when its output decides the next call.
+- **Delegate reading outside the diff** to subagents on Sonnet (the `Task` tool, called
+  `Agent` in newer versions; `reference/code-pr.md` §Reading outside the diff says
+  how). Read the diff and the lines a finding cites yourself.
 
 ## 1. What are you reviewing?
 

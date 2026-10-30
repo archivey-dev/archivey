@@ -5,6 +5,40 @@ One section per run worth keeping, newest first. `skill` is the tree hash of
 Score: `yes` = 1, `partial` = 0.5. The reviews themselves are kept outside the
 repository.
 
+## 2026-10-30: batching tool calls and Sonnet subagents, stated in the prompt
+
+Opus (`claude-opus-5`), judge `claude-sonnet-5-5`. The baseline is skill
+`2cc77b24651e` with the tools `Read,Grep,Glob,Bash`; it made one tool call per turn,
+and re-reading the cached context each turn was about half its cost. The new arm adds
+`Task` and a "How to work" paragraph to the prompt (batch independent calls, send
+reading outside the diff to Sonnet subagents), with the skill's §How to spend turns
+and `code-pr.md` §Reading outside the diff (an edited tree recorded as
+`28a624c388b2-dirty`; the text is this PR's).
+
+| Case | PR | Baseline | Batch + subagents |
+|---|---|---|---|
+| zstd-seek-point-in-frame | #934 | no | no |
+| decoder-death-reraise-cycle | #904 | yes | yes |
+| rapidgzip-cut-raw-deflate | #545 | no | no |
+| rapidgzip-cut-gzip-member-then-complete | #613 | no | no |
+| pax-sparse-version-by-records | #738 | partial | partial |
+| **Score** | | **1.5 of 5** | **1.5 of 5** |
+| Cost (USD) | | 39.24 | 25.66 |
+| API turns, all cases | | 258 | 224 |
+| Tool calls per turn | | 1.00 | 1.36 |
+| Cached context re-read (tokens) | | 36.6 M | 10.9 M |
+| Subagent calls (Sonnet cost) | | 0 | 23 ($3.00) |
+
+The same two arms replayed round 1 of five merged pull requests (#1144, #1143, #1139,
+#1130, #1128) and were scored against the findings the loop raised on that code and
+the author fixed (a one-off harness, not in this directory): 13.5 of 20 important
+findings and 8 of 11 nits for the baseline at $27.13, 14 of 20 and 4.5 of 12 at
+$16.74. The important catches held; fewer nits came back, in one run each.
+
+Stated only in the skill, the same two habits did not take: one call per turn stayed,
+subagents ran in about half the reviews, and the cost fell 14 percent on these cases
+and not at all on the five pull requests.
+
 ## 2026-10-29: Sonnet with the project installed, and at xhigh effort
 
 Two separate changes to the Sonnet review, two runs each: `--install` (the PR's own
