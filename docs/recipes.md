@@ -239,7 +239,8 @@ Each setting in `CONFIG` does one job:
   ([Raising or quieting a diagnostic](errors-and-diagnostics.md#raising-or-quieting-a-diagnostic)).
 
 `ExtractionLimits` covers only what `extract_all` writes, so a loop that reads member data keeps
-its own count. [Where the guarantees stop](security.md#where-the-guarantees-stop) says which limits
+its own count. The exception is a container inside a compression stream (a `.tar.gz`), whose
+`max_ratio` holds every decode of it. [Where the guarantees stop](security.md#where-the-guarantees-stop) says which limits
 apply to a read, and [Hardening](security.md#hardening) lists every limit.
 
 ### Refuse an upload with a reason

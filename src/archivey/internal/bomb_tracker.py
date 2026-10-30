@@ -342,7 +342,7 @@ class DecodeRatioGuard(DelegatingStream):
         self._pos = 0  # over a decoder that has not started
         self._decoded = 0  # the furthest offset decoded
         # The decoder's error after a read that already returned bytes: raised by
-        # the next call, so the prefix a damaged stream decodes is not lost
+        # the next read (a seek drops it), so the prefix a damaged stream decodes is not lost
         # (the hazard ReadAheadStream holds its error for).
         self._held: Exception | None = None
 
@@ -397,12 +397,17 @@ class DecodeRatioGuard(DelegatingStream):
         return b"".join(parts)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        self._raise_held()
+        # A seek drops the held error, as ReadAheadStream's does: it describes the
+        # position the caller is leaving, and a rewind re-decodes from a resume point.
+        self._held = None
         if whence == io.SEEK_END:
             # The decoder serves this by decoding to its end in one call: find the
             # end from its cheap size, or by reading to it a step at a time.
             size = source_byte_size(self._inner)
             if size is None:
+                if not self._inner.seekable():
+                    # Refused before the drain, not after decoding it all.
+                    raise io.UnsupportedOperation("seek")
                 while True:
                     data = read_blocking(self._inner, _GUARD_STEP)
                     if not data:

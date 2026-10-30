@@ -877,7 +877,10 @@ earlier check would save little. Members without a recorded `size` or
 ### Requirement: Bomb Protection Scope Limited to Extraction Paths
 
 The system SHALL apply `ExtractionLimits` bomb guards only during
-`ArchiveReader.extract_all()`. `ArchiveReader.read()`
+`ArchiveReader.extract_all()`, with one exception: when the archive is a container
+inside a compression stream, its archive-wide `max_ratio` reaches every decode of that
+stream, listing and member reads included (Requirement: A compressed container's
+decode is held to the archive-wide ratio). Otherwise `ArchiveReader.read()`
 and `ArchiveReader.open()` return decompressed data/streams without byte, ratio,
 or entry-count enforcement; callers are responsible for guarding direct reads.
 Listing materialization caps are separate (`ListingLimits` in `archive-reading`)
@@ -887,9 +890,10 @@ and do not apply to `read()` / `open()` either.
 
 | Case | Expected |
 | --- | --- |
-| `reader.read(member)` on extreme-ratio data | Raw decompressed bytes returned or normal read error; no extraction bomb guard |
-| `reader.open(member)` | Stream delivers decompressed data without extraction limits |
+| `reader.read(member)` on extreme-ratio data | Raw decompressed bytes returned or normal read error; no extraction bomb guard (in a container inside a compression stream, the archive-wide `max_ratio` still applies) |
+| `reader.open(member)` | Stream delivers decompressed data without extraction limits, with the same exception |
 | `reader.members()` on a metadata bomb | `ListingLimits` / `ResourceLimitError` per `archive-reading`, not `ExtractionLimits` |
+| `reader.members()` on a container inside a compression stream past `max_ratio` | `ResourceLimitError` from the archive-wide ratio |
 
 ### Requirement: Progress Reporting via on_progress Callback
 
@@ -1387,7 +1391,7 @@ one that check applies (`archive_ratio_refusal`). A backward seek that decodes a
 does not count again. Reads and forward seeks, a seek to the end included, reach the
 decoder in steps of at most 1 MiB, so the decode stops within a step of the limit. A
 decoder error after a read already returned bytes in the same call is held for the
-next call, so the prefix of a cut stream is kept. `max_ratio=None` turns it off.
+next read, so the prefix of a cut stream is kept; a seek drops it. `max_ratio=None` turns it off.
 
 #### Scenario: compressed container decode matrix
 

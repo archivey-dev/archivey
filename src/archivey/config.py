@@ -237,7 +237,8 @@ class ExtractionLimits:
     """Decompression-bomb limits for extraction.
 
     Applied by :meth:`~archivey.ForwardArchiveReader.extract_all`, and :attr:`max_ratio`
-    also to every decode of a compressed tar, listing included.
+    also to every decode of a container inside a compression stream (a ``.tar.gz``, a
+    format handler's ``.cpio.xz``), listing included.
 
     ``None`` on a guard field disables that guard. :attr:`UNLIMITED` sets the three
     guard fields to ``None``; :attr:`ratio_activation_threshold` and

@@ -166,6 +166,12 @@ class _CutDecoder(io.RawIOBase):
         self._left -= n
         return bytes(n)
 
+    def seekable(self) -> bool:
+        return True
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        return offset  # a rewind; the bytes are not read again here
+
 
 def test_a_cut_after_a_whole_step_keeps_the_prefix() -> None:
     """The bytes decoded before the cut come back; the next call raises."""
@@ -173,3 +179,28 @@ def test_a_cut_after_a_whole_step_keeps_the_prefix() -> None:
     assert len(guard.read(4 * 2**20)) == 2 * 2**20
     with pytest.raises(TruncatedError):
         guard.read(1)
+
+
+def test_a_seek_drops_the_held_error() -> None:
+    """The held error describes where the caller was; a rewind does not raise it."""
+    guard = _guarded(_CutDecoder(2 * 2**20))  # type: ignore[arg-type]
+    assert len(guard.read(4 * 2**20)) == 2 * 2**20
+    assert guard.seek(0) == 0
+
+
+class _ForwardOnly(_Decoder):
+    def seekable(self) -> bool:
+        return False
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        raise io.UnsupportedOperation("seek")
+
+
+def test_a_seek_to_the_end_of_a_forward_only_decoder_decodes_nothing() -> None:
+    decoder = _ForwardOnly(bytes(8 * 2**20))
+    guard = DecodeRatioGuard(
+        decoder, limits=ExtractionLimits(), static_size=None, consumed=None
+    )
+    with pytest.raises(io.UnsupportedOperation):
+        guard.seek(0, io.SEEK_END)
+    assert decoder.furthest == 0
