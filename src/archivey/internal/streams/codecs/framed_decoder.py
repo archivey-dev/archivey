@@ -31,7 +31,11 @@ if TYPE_CHECKING:
 
 
 class _OneStreamDecompressor(Protocol):
-    """The one-stream decompressor objects of ``bz2``, ``lzma``, ``zstd`` and ``lz4.frame``."""
+    """The one-stream decompressor objects of ``bz2``, ``lzma``, ``zstd`` and ``lz4.frame``.
+
+    One may also have ``flush()``, which :meth:`FramedDecoder.flush` calls at the end of
+    the input (:class:`archivey.formats.Decompressor`).
+    """
 
     def decompress(self, data: bytes, max_length: int = ...) -> bytes: ...
 
@@ -155,9 +159,10 @@ class FramedDecoder(BaseDecoder):
 
     The first stream is handed to the library as it comes, so a file that is not this
     codec at all fails with the library's own error. An empty source, or one that ends
-    inside a stream, is truncated. A stream with no end mark (legacy LZ4) ends with its
-    input instead, when its decompressor's ``complete_at_end_of_input`` says the input
-    stopped between blocks.
+    inside a stream, is truncated. A decompressor with a ``flush()`` is told where the
+    input ends, which lets a stream with no end mark (legacy LZ4, Shrink with no size)
+    end there: it returns the output it held, and sets ``eof`` when the stream may end
+    at that point. It may raise instead, after returning that output.
     """
 
     def __init__(
@@ -335,14 +340,40 @@ class FramedDecoder(BaseDecoder):
             self._held = b""
             self._done = True
             return DecodeOut(b"")
-        if getattr(self._decomp, "complete_at_end_of_input", False):
-            # A stream with no end mark (legacy LZ4) ends where its input does.
-            self._done = True
+        out = self._flush_decompressor()
+        if self._between:
+            # The stream ended with its input; what it did not use follows it.
+            self._held = self._decomp.unused_data or b""
+            self.flush()
+            return out
+        if self._pending_error is None:
+            self._pending_error = TruncatedError(
+                "File is truncated" if self._fed else "File is empty"
+            )
+        return out
+
+    def _flush_decompressor(self) -> DecodeOut:
+        """Tell the decompressor, when it has a ``flush()``, that the input ended.
+
+        It returns output until it has none left, or raises: an error is raised after
+        that output, as the decoder's pending error.
+        """
+        flush = getattr(self._decomp, "flush", None)
+        output = bytearray()
+        if flush is None:
             return DecodeOut(b"")
-        self._pending_error = TruncatedError(
-            "File is truncated" if self._fed else "File is empty"
-        )
-        return DecodeOut(b"")
+        try:
+            while chunk := flush():
+                output += chunk
+        except Exception as exc:  # noqa: BLE001 - the codec's error, raised later
+            self._pending_error = exc
+        points = []
+        if output and self._pending_point is not None:
+            points.append(self._pending_point)
+            self._pending_point = None
+        self._produced += len(output)
+        self._between = self._pending_error is None and self._decomp.eof
+        return DecodeOut(bytes(output), points)
 
     @property
     def finished(self) -> bool:

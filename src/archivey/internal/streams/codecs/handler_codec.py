@@ -82,6 +82,12 @@ def config_of(call: CodecCall) -> StreamConfig:
     return call.config
 
 
+def params_of(call: CodecCall) -> CodecParams:
+    """The container's parameters in a built-in codec's ``call``."""
+    assert isinstance(call, BuiltinCall), "a built-in codec is given a BuiltinCall"
+    return call.params
+
+
 def _never(data: bytes) -> bool:
     """The :data:`StreamStart` of a container coder that is one stream."""
     del data
@@ -237,8 +243,16 @@ class BuiltinHandlerCodec(StreamCodec):
 
 
 def builtin_codec(handler: type[BuiltinCodecHandler]) -> type[StreamCodec]:
-    """The registry entry's class for ``handler``."""
-    fmt = ArchiveFormat(ContainerFormat.RAW_STREAM, handler.stream_format)
+    """The registry entry's class for ``handler``.
+
+    A container-only codec (Shrink, Implode) leaves ``stream_format`` unset, and has no
+    ``magic``.
+    """
+    stream_format = getattr(handler, "stream_format", None)
+    magic = ()
+    if stream_format is not None:
+        fmt = ArchiveFormat(ContainerFormat.RAW_STREAM, stream_format)
+        magic = tuple(MagicSignature(m.offset, m.data, fmt) for m in handler.magic)
     instance = handler()
     # Only what the handler overrides: the detector skips a codec whose
     # ``magic_behind_prefix`` or ``content_probe`` is the base's.
@@ -258,10 +272,8 @@ def builtin_codec(handler: type[BuiltinCodecHandler]) -> type[StreamCodec]:
             **hooks,
             "handler": instance,
             "codec": handler.codec,
-            "stream_format": handler.stream_format,
-            "magic": tuple(
-                MagicSignature(m.offset, m.data, fmt) for m in handler.magic
-            ),
+            "stream_format": stream_format,
+            "magic": magic,
             "requirement": handler.requirement,
             "extension_aliases": tuple(handler.extension_aliases),
             "checks_content": bool(handler.checks_content),
@@ -276,4 +288,5 @@ __all__ = [
     "builtin_call",
     "builtin_codec",
     "config_of",
+    "params_of",
 ]

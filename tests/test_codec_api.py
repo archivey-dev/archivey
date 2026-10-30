@@ -386,6 +386,67 @@ def test_an_empty_stream_after_the_magic_is_truncated(toy: ArchiveFormat) -> Non
         stream.read()
 
 
+class EndlessStream(PluginStream):
+    ENDLESS = "toyendless"
+
+
+class EndlessDecompressor(ToyDecompressor):
+    """A TOY stream with no end record: it ends where its input does, between two
+    records (``flush``)."""
+
+    def flush(self) -> bytes:
+        if self._in:
+            raise ToyError("the input ends inside a record")
+        self._ended = self._started
+        return b""
+
+
+class EndlessHandler(ToyHandler):
+    stream_format = EndlessStream.ENDLESS
+    extension_aliases = ()
+    concatenated = False
+
+    def decompressor(self, call: CodecCall) -> EndlessDecompressor:
+        return EndlessDecompressor()
+
+
+def _endless(data: bytes) -> bytes:
+    """``data`` as a TOY stream with no end record."""
+    return toy_compress(data)[:-5]
+
+
+@pytest.mark.parametrize("data", [_TEXT, b""])
+def test_flush_ends_a_stream_with_no_end_mark(data: bytes) -> None:
+    with registration_scope():
+        register_codec(EndlessHandler)
+        with open_stream(
+            NonSeekableBytesIO(_endless(data)), format=EndlessStream.ENDLESS
+        ) as stream:
+            assert stream.read() == data
+
+
+def test_an_error_from_flush_is_raised_after_the_output() -> None:
+    with registration_scope():
+        register_codec(EndlessHandler)
+        with open_stream(
+            io.BytesIO(_endless(_TEXT)[:-3]), format=EndlessStream.ENDLESS
+        ) as stream:
+            got = stream.read(len(_TEXT) - 200)
+            with pytest.raises(CorruptionError, match="inside a record"):
+                stream.read()
+    assert _TEXT.startswith(got)
+
+
+def test_a_stream_flush_leaves_unended_is_truncated() -> None:
+    with registration_scope():
+        register_codec(EndlessHandler)
+        with (
+            open_stream(io.BytesIO(b""), format=EndlessStream.ENDLESS) as s,
+            pytest.raises(TruncatedError, match="empty"),
+        ):
+            s.read()
+
+
 def test_the_decoders_error_goes_through_translate_exception(
     toy: ArchiveFormat,
 ) -> None:

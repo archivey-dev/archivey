@@ -1,6 +1,7 @@
-"""Decoders for the two DOS-era ZIP methods: Shrink (1) and Implode (6).
+"""Decompressors for the two DOS-era ZIP methods: Shrink (1) and Implode (6).
 
-Opened via :class:`~.codecs.ShrinkCodec` and :class:`~.codecs.ImplodeCodec`. Both are
+Opened via :class:`~.zip_legacy_codec.ShrinkHandler` and
+:class:`~.zip_legacy_codec.ImplodeHandler`, which ``FramedDecoder`` drives. Both are
 pure Python (DR-20). Only archives from PKZIP 1.x and its contemporaries use them, so
 the decoders favour plain code over speed.
 
@@ -15,10 +16,10 @@ open, the decoders do what Info-ZIP ``unzip`` (``unshrink.c``, ``explode.c``) do
 
 Neither stream has an end marker. Implode always ends at the declared size, so it needs
 one, and clamps its last copy to it. Shrink stops after the first code that reaches the
-size when the size is known, and otherwise where the input does; a last entry that runs
-past the size is refused by the member's size check above the decoder. The bits left in
-the last byte are padding. A whole byte after the end is input after the
-end (:meth:`BaseDecoder._past_end`).
+size when the size is known, and otherwise where the input does (``flush``); a last
+entry that runs past the size is refused by the member's size check above the decoder.
+The bits left in the last byte are padding. A whole byte after the end is
+``unused_data``, which ``FramedDecoder`` reports as input after the end.
 
 Both decode forward only: a seek goes back to the start and decodes again.
 """
@@ -27,7 +28,6 @@ from __future__ import annotations
 
 import heapq
 from collections.abc import Generator
-from typing import BinaryIO
 
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.streams.codecs.unix_compress_decoder import (
@@ -36,12 +36,7 @@ from archivey.internal.streams.codecs.unix_compress_decoder import (
     _Entry,
     _expand,
 )
-from archivey.internal.streams.decompressor_stream import (
-    BaseDecoder,
-    DecodeOut,
-    SeekPoint,
-    truncated_message,
-)
+from archivey.internal.streams.decompressor_stream import truncated_message
 
 #: What the decode generator yields: True when it paused with output past the read's
 #: budget (it can go on without input), False when it needs more input.
@@ -52,8 +47,9 @@ class _InputEnded(Exception):
     """The input ended where a decoder needed more bits (raised inside the generator)."""
 
 
-class _BitDecoder(BaseDecoder):
-    """A decoder written as a generator over an LSB-first bit stream.
+class _BitDecompressor:
+    """A decompressor (:class:`archivey.formats.Decompressor`, with ``flush``) written
+    as a generator over an LSB-first bit stream.
 
     :meth:`_decode` reads bits with ``yield from self._need(n)`` / :meth:`_take`, puts
     its output in ``self._out``, and calls ``yield from self._budget()`` after each
@@ -85,6 +81,8 @@ class _BitDecoder(BaseDecoder):
         self._paused = False
         self._done = False
         self._truncation: str | None = None
+        # The bytes fed after the end of the stream.
+        self._unused = b""
         self._gen = self._decode()
 
     # --- the generator's helpers ---
@@ -123,11 +121,7 @@ class _BitDecoder(BaseDecoder):
     def _decode(self) -> _Step:
         raise NotImplementedError
 
-    # --- Decoder ---
-
-    def recreate(self, point: SeekPoint, inner: BinaryIO) -> _BitDecoder:
-        del point, inner
-        return type(self)(self._unpack_size)
+    # --- Decompressor ---
 
     def _run(self) -> None:
         if self._done:
@@ -143,11 +137,9 @@ class _BitDecoder(BaseDecoder):
     def _finish(self) -> None:
         self._done = True
         self._paused = False
-        rest = self._data[self._data_pos :]
+        self._unused = self._data[self._data_pos :]
         self._data = b""
         self._data_pos = 0
-        if rest:
-            self._past_end(rest)
 
     def _hand_out(self, max_length: int) -> bytes:
         if max_length < 0 or max_length >= len(self._out):
@@ -158,31 +150,39 @@ class _BitDecoder(BaseDecoder):
         del self._out[:max_length]
         return data
 
-    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
-        if chunk:
+    def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        if data:
             if self._done:
-                self._past_end(chunk)
+                self._unused += data
             else:
-                self._data = self._data[self._data_pos :] + chunk
+                self._data = self._data[self._data_pos :] + data
                 self._data_pos = 0
         if max_length < 0 or len(self._out) < max_length:
             self._limit = max_length
             self._run()
-        return DecodeOut(self._hand_out(max_length))
+        return self._hand_out(max_length)
 
-    def flush(self) -> DecodeOut:
+    def flush(self) -> bytes:
+        """The input ended: the output still held, then (on the next call) the
+        truncation, when the stream cannot end here."""
         self._eof = True
         self._limit = -1
         self._run()
+        if self._out:
+            return self._hand_out(-1)
         if self._truncation is not None:
-            self._pending_error = TruncatedError(
+            raise TruncatedError(
                 f"{truncated_message(self.label)} ({self._truncation})"
             )
-        return DecodeOut(self._hand_out(-1))
+        return b""
 
     @property
-    def finished(self) -> bool:
+    def eof(self) -> bool:
         return self._done and self._truncation is None and not self._out
+
+    @property
+    def unused_data(self) -> bytes:
+        return self._unused
 
     @property
     def needs_input(self) -> bool:
@@ -199,7 +199,7 @@ _SHRINK_WIDEN = 1
 _SHRINK_PARTIAL_CLEAR = 2
 
 
-class ShrinkDecoder(_BitDecoder):
+class ShrinkDecompressor(_BitDecompressor):
     """Shrink: LZW whose code 256 is followed by a control code (widen, partial clear).
 
     Each code after the first adds one entry, the previous code's string plus the first
@@ -251,7 +251,7 @@ class ShrinkDecoder(_BitDecoder):
         out = self._out
         produced = self._produced
         limit = self._limit
-        # The bit reader, in locals (see :class:`_BitDecoder`): only ``_data_pos``
+        # The bit reader, in locals (see :class:`_BitDecompressor`): only ``_data_pos``
         # goes back to self before a yield, and ``self._bits`` / ``_nbits`` stay
         # unused.
         data = self._data
@@ -397,7 +397,7 @@ class ShrinkDecoder(_BitDecoder):
 # --- Implode (method 6): LZ77 with Shannon-Fano coded literals, lengths, distances ---
 
 
-def _read_tree(decoder: _BitDecoder, values: int) -> Generator[bool, None, dict]:
+def _read_tree(decoder: _BitDecompressor, values: int) -> Generator[bool, None, dict]:
     """Read one Shannon-Fano tree and return its ``{(bit_length, code): value}`` map.
 
     The tree is stored as run-length coded bit lengths: a byte holding the number of
@@ -434,7 +434,7 @@ def _read_tree(decoder: _BitDecoder, values: int) -> Generator[bool, None, dict]
     return codes
 
 
-def _read_symbol(decoder: _BitDecoder, codes: dict) -> Generator[bool, None, int]:
+def _read_symbol(decoder: _BitDecompressor, codes: dict) -> Generator[bool, None, int]:
     """Read one code of ``codes``, its first bit read being the code's highest."""
     acc = 0
     for length in range(1, 17):
@@ -446,7 +446,7 @@ def _read_symbol(decoder: _BitDecoder, codes: dict) -> Generator[bool, None, int
     raise CorruptionError("Implode stream has a code its tree does not define")
 
 
-class ImplodeDecoder(_BitDecoder):
+class ImplodeDecompressor(_BitDecompressor):
     """Implode: a 4 KiB or 8 KiB window, and two or three Shannon-Fano trees."""
 
     label = "Implode"
@@ -461,14 +461,6 @@ class ImplodeDecoder(_BitDecoder):
         self._large_window = large_window
         self._literal_tree = literal_tree
         super().__init__(unpack_size)
-
-    def recreate(self, point: SeekPoint, inner: BinaryIO) -> ImplodeDecoder:
-        del point, inner
-        return ImplodeDecoder(
-            self._unpack_size,
-            large_window=self._large_window,
-            literal_tree=self._literal_tree,
-        )
 
     def _decode(self) -> _Step:
         size = self._unpack_size
