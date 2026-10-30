@@ -1391,7 +1391,8 @@ one that check applies (`archive_ratio_refusal`). A backward seek that decodes a
 does not count again. Reads and forward seeks, a seek to the end included, reach the
 decoder in steps of at most 1 MiB, so the decode stops within a step of the limit. A
 decoder error after a read already returned bytes in the same call is held for the
-next read, so the prefix of a cut stream is kept; a seek drops it. `max_ratio=None` turns it off.
+next read, so the prefix of a cut stream is kept; a seek, even a refused one, drops
+it. `max_ratio=None` turns it off.
 
 #### Scenario: compressed container decode matrix
 

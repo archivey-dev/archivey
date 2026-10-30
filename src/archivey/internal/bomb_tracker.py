@@ -399,6 +399,8 @@ class DecodeRatioGuard(DelegatingStream):
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         # A seek drops the held error, as ReadAheadStream's does: it describes the
         # position the caller is leaving, and a rewind re-decodes from a resume point.
+        # Unlike there, a refused seek drops it too; a decoder that has raised
+        # raises again on the next read.
         self._held = None
         if whence == io.SEEK_END:
             # The decoder serves this by decoding to its end in one call: find the

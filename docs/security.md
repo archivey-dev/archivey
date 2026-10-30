@@ -84,9 +84,9 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   listing it or reading from it can raise `ResourceLimitError` too. A RAR archive opened from a
   file object rather than a path is copied to a temporary file the first time a member needs
   `unrar` or `unar`. `spool_limits.max_bytes` caps that copy, along with the few other temporary
-  files archivey makes for RAR archives, listed in the table below. When the archive records a member's size in
-  `member.size`, archivey never decodes more than that, and a member holding more raises
-  `CorruptionError`.
+  files archivey makes for RAR archives, listed in the table below. When the archive records a
+  member's size in `member.size`, archivey never decodes more than that, and a member holding
+  more raises `CorruptionError`.
 - **A pass that reads members as it goes checks the listing limits as it goes.** On a TAR,
   `stream_members()` yields members up to the limit and then raises, and `extract_all` leaves the
   files it wrote before then on disk. 7z, RAR and ISO archives check the limits before they give you
