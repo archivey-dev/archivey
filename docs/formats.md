@@ -7,6 +7,7 @@ the same order: what it needs, how it lists and reads, and its quirks.
 The maintainer handbook has more depth on
 [7z](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/7z.md),
 [ISO](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/iso.md),
+[ar](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/ar.md),
 [RAR](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/rar.md),
 [TAR](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/tar.md) and
 [ZIP](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/zip.md), and on the single-file
@@ -43,6 +44,8 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
   solid, otherwise direct. Needs a source that can seek.
 - **ISO 9660:** `[recommended]` (`pycdlib`). Listing: from its index. Members: direct. Needs a
   source that can seek.
+- **ar** (`.a`, `.lib`, the outer layer of a `.deb`): core. Listing: header by header. Members:
+  direct. Reads from a pipe, and inside any compressor TAR reads inside (`.a.gz`, …).
 - **Directory:** core. Listing: walks the tree. Members: direct.
 - **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib and `.Z` in core;
   Zstandard in core on Python 3.14 and later, otherwise `[recommended]`; LZ4 and Brotli need
@@ -161,7 +164,7 @@ A CRC-32 is four big-endian bytes, so a CRC you computed compares as
 - **RAR5:** `crc32`, `blake2sp`, or both, for files that store them.
 - **`.lz`:** `crc32`, from a source that can seek. A file of several lzip members gets one value,
   combined from each member's CRC, equal to the CRC-32 of the whole payload.
-- **TAR, directory, and every other single compressed file:** none.
+- **TAR, ar, directory, and every other single compressed file:** none.
 
 When a format stores none, compute a digest while reading. A first-pass dedupe index can take the
 best one available:
@@ -1009,6 +1012,26 @@ misread the archive.
 - Raw CD sector images (the `.bin` of a `.bin`/`.cue` pair) are recognised and refused with
   `UnsupportedFeatureError` naming the sector layout. Convert one to a plain `.iso` first (for
   example with `bchunk` or `bin2iso`).
+
+## ar
+
+- **Needs:** nothing.
+- **Listing:** header by header, in one pass. Every member is a file: ar has no directories or
+  links.
+- **Reading members:** direct; inside a compressor, solid, as in a compressed TAR.
+- **From a pipe:** yes, with `streaming=True`.
+- Both dialects read. GNU (System V, also Windows `.lib`) keeps long names in a `//` member;
+  BSD and macOS keep a long name at the start of the member's data (`#1/N`).
+  `ArchiveInfo.format_version` is `"gnu"` or `"bsd"`, and `None` for an archive with no members.
+- The symbol table (`/`, `/SYM64/`, `__.SYMDEF`) is the linker's index, not a file. It is not
+  listed, and `ArchiveInfo.extra["ar.symbol_table"]` says whether there was one.
+- macOS ar pads each member with newlines so the next header starts on 8 bytes, and counts the
+  padding in the member's size. The padding is then part of the member, as llvm-ar and bsdtar
+  extract it.
+- A blank time, owner or mode field is `None`.
+- A thin archive (`!<thin>`) only names files kept outside it, and raises
+  `UnsupportedFeatureError`.
+- The long-name table counts against `ListingLimits.max_metadata_bytes`.
 
 ## Disk images
 

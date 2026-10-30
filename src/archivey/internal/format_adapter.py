@@ -2077,9 +2077,16 @@ def _backend_class(
         "INNER_MAGIC": magic if sequential else (),
         "CONTENT_PROBES": (((fmt, _prefix_probe(probe)),) if probe is not None else ()),
         "USES_ENCODING": bool(plugin.uses_encoding),
-        "NON_SEEKABLE_REASON": "its reader needs random access to the archive",
-        # A sequential format reads a pipe in a streaming pass.
+        # A sequential format reads a pipe in a streaming pass, so it has no reason
+        # to refuse one.
         "SUPPORTS_STREAMING_NON_SEEKABLE": sequential,
+        **(
+            {}
+            if sequential
+            else {
+                "NON_SEEKABLE_REASON": "its reader needs random access to the archive"
+            }
+        ),
         "INSTALL_HINT": plugin.install_hint,
         "REQUIRED_MODULES": tuple(plugin.requires),
         **overrides,
@@ -2109,11 +2116,15 @@ def register_builtin_format(
 
     The format keeps its built-in container, extensions, magic and place among the
     built-in backends, so detection does not change and ``FormatInfo.from_plugin`` is
-    false. ``overrides`` sets backend attributes a plugin cannot declare
+    false. A sequential format's compressed pairs are spelled as a plugin's are
+    (``"ar.gz"``). ``overrides`` sets backend attributes a plugin cannot declare
     (``NON_SEEKABLE_REASON``, ``OPTIONAL_DEPENDENCY``). Returns the backend class.
     """
     backend = _backend_class(plugin, plugin.format, overrides)
     get_registry().register_reader(backend)
+    # A sequential format's compressed pairs (``ar.gz``) have no named constant.
+    for each in backend.FORMATS[1:]:
+        add_plugin_spellings(each)
     return backend
 
 

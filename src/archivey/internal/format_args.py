@@ -79,8 +79,14 @@ def _archive_format_spellings() -> dict[str, ArchiveFormat]:
 
 
 # Spellings of plugin formats (``archivey.formats.register_format``), looked up after
-# the built-in table, so a plugin never changes what a built-in spelling means.
+# the built-in table, so a plugin never changes what a built-in spelling means. A
+# built-in format read in one pass puts its compressed pairs here too (``ar.gz``): they
+# have no named constant, so the built-in table cannot spell them.
 _plugin_spellings: dict[str, ArchiveFormat] = {}
+
+# The built-in containers read in one forward pass, so also inside any single-file
+# compression stream. ``cli/common.py`` keeps a copy of the rule that uses this.
+SEQUENTIAL_CONTAINERS = frozenset({ContainerFormat.TAR, ContainerFormat.AR})
 
 
 def _plugin_format_spellings(fmt: ArchiveFormat) -> tuple[str, str]:
@@ -138,8 +144,9 @@ def outer_stream_format(fmt: ArchiveFormat) -> StreamFormat | None:
     A raw stream is its codec. A compressed tar is a tar inside a single-file
     compressed stream, and the pair's stream half is that outer codec (detection
     builds the pair from it): ``open_stream`` peels that layer only and returns the tar
-    bytes, as ``gzip.open`` does for a ``.tar.gz``. A sequential plugin's compressed
-    pair (``.cpio.gz``) is the same. One rule for an explicit
+    bytes, as ``gzip.open`` does for a ``.tar.gz``. The compressed pair of every other
+    container read in one pass (``.a.gz``, a sequential plugin's ``.cpio.gz``) is the
+    same. One rule for an explicit
     ``format=``, a detected format and the accepted-spellings message, so the three
     cannot disagree. Every other container, an uncompressed tar included, has no
     compression layer to remove. ``(RAW_STREAM, UNCOMPRESSED)`` comes back as
@@ -149,7 +156,7 @@ def outer_stream_format(fmt: ArchiveFormat) -> StreamFormat | None:
     if fmt.container is ContainerFormat.RAW_STREAM:
         return fmt.stream
     if (
-        fmt.container is ContainerFormat.TAR
+        fmt.container in SEQUENTIAL_CONTAINERS
         or isinstance(fmt.container, PluginContainer)
     ) and fmt.stream is not StreamFormat.UNCOMPRESSED:
         return fmt.stream

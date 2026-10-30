@@ -77,6 +77,10 @@ class ContainerFormat(StrEnum):
     SEVEN_Z = "7z"
     ISO = "iso"
     """An ISO 9660 disc image."""
+    AR = "ar"
+    """A Unix ar archive: a static library (``.a``, ``.lib``) or the outer layer of a
+    ``.deb`` package. Read in one forward pass, so from a pipe and inside a compression
+    stream too."""
     DMG = "dmg"
     """An Apple disk image. archivey recognises one so that opening it can refuse it by
     name, but cannot read it."""
@@ -203,6 +207,7 @@ class ArchiveFormat:
     SEVEN_Z: ClassVar[ArchiveFormat]
     RAR: ClassVar[ArchiveFormat]
     ISO: ClassVar[ArchiveFormat]
+    AR: ClassVar[ArchiveFormat]
     DMG: ClassVar[ArchiveFormat]
     DIRECTORY: ClassVar[ArchiveFormat]
     UNKNOWN: ClassVar[ArchiveFormat]
@@ -277,6 +282,7 @@ ArchiveFormat.SEVEN_Z = ArchiveFormat(
 )
 ArchiveFormat.RAR = ArchiveFormat(ContainerFormat.RAR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.ISO = ArchiveFormat(ContainerFormat.ISO, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.AR = ArchiveFormat(ContainerFormat.AR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DMG = ArchiveFormat(ContainerFormat.DMG, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DIRECTORY = ArchiveFormat(
     ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED

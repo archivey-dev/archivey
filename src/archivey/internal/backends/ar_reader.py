@@ -28,6 +28,11 @@ The dialects differ in how a name longer than 15 bytes is stored:
 Symbol tables are the linker's index, not files: the walk skips them, and the archive
 info says one was there. A *thin* archive (``!<thin>\\n``) stores only the names of
 files kept outside it and is refused.
+
+The reader is written against ``archivey.formats`` and archivey's public names only,
+as a format added from outside would be; ``register_builtin_format`` is the one
+internal name it uses (``tests/test_ar.py`` checks). Handbook page:
+``dev-docs/formats/ar.md``.
 """
 
 from __future__ import annotations
@@ -35,21 +40,23 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import UTC, datetime
 
-from archivey import (
-    ArchiveMember,
+from archivey.exceptions import (
     CorruptionError,
-    MemberType,
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.formats import (
     ForwardStream,
+    Magic,
     MemberSpan,
     ReaderArchiveInfo,
     ReaderContext,
+    SequentialFormatHandler,
     SequentialReader,
 )
+from archivey.internal.format_adapter import register_builtin_format
+from archivey.types import ArchiveFormat, ArchiveMember, MemberType
 
 MAGIC = b"!<arch>\n"
 THIN_MAGIC = b"!<thin>\n"
@@ -227,3 +234,19 @@ class ArReader(SequentialReader):
             uid=_field(raw[28:34], 10, "uid", offset),
             gid=_field(raw[34:40], 10, "gid", offset),
         )
+
+
+class ArHandler(SequentialFormatHandler):
+    """ar archives in the GNU (System V) and BSD dialects: ``.a``, ``.ar``, ``.lib``."""
+
+    format = ArchiveFormat.AR
+    extensions = (".a", ".ar", ".lib")
+    # A thin archive is claimed too, so that opening one says why it cannot be read.
+    magic = (Magic(0, MAGIC), Magic(0, THIN_MAGIC))
+    uses_encoding = True
+
+    def open_sequential(self, context: ReaderContext) -> ArReader:
+        return ArReader(context)
+
+
+ArReadBackend = register_builtin_format(ArHandler)

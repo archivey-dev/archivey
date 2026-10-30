@@ -250,8 +250,8 @@ extend-immutable-calls = [
 "src/archivey/internal/backends/iso_reader.py" = ["B009", "B010"]
 
 [tool.pyrefly]
-search-path = ["src", "packages/archivey-squashfs/src", "packages/archivey-cpio/src", "packages/archivey-ar/src"]
-project-includes = ["src", "packages/archivey-squashfs/src", "packages/archivey-cpio/src", "packages/archivey-ar/src"]
+search-path = ["src", "packages/archivey-squashfs/src", "packages/archivey-cpio/src"]
+project-includes = ["src", "packages/archivey-squashfs/src", "packages/archivey-cpio/src"]
 python_version = "3.11"
 
 # pycdlib is py.typed but declares its signatures in PEP 484 type comments
@@ -270,12 +270,12 @@ untyped-def-behavior = "skip-and-infer-return-any"
 # is kept clean on both ty and Pyrefly.
 [tool.ty.environment]
 python-version = "3.11"
-root = ["src", "packages/archivey-squashfs/src", "packages/archivey-cpio/src", "packages/archivey-ar/src"]
+root = ["src", "packages/archivey-squashfs/src", "packages/archivey-cpio/src"]
 
 [tool.ty.src]
 # Type-check the library and the in-repo plugin packages, mirroring pyrefly's
 # `project-includes`, so a bare `uv run ty check` is the gate with no path arguments.
-include = ["src", "packages/archivey-squashfs/src", "packages/archivey-cpio/src", "packages/archivey-ar/src"]
+include = ["src", "packages/archivey-squashfs/src", "packages/archivey-cpio/src"]
 
 [tool.coverage.run]
 source = ["archivey"]

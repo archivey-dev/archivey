@@ -1,5 +1,5 @@
-"""archivey-ar against archives written by GNU ar, bsdtar and llvm-ar
-(``data/make-archives.sh``), read from a file and from a pipe."""
+"""The ar reader against archives written by GNU ar, bsdtar and llvm-ar
+(``fixtures/ar/make-archives.sh``), read from a file and from a pipe."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
-from archivey_ar import AR, ArHandler, ArReader
 
 import archivey
 from archivey import (
@@ -24,10 +23,12 @@ from archivey import (
     detect_format,
     open_archive,
 )
-from archivey.formats import SequentialReader, register_format
+from archivey.formats import SequentialReader
+from archivey.internal.backends import ar_reader
+from archivey.internal.backends.ar_reader import ArReader
 
-DATA = Path(__file__).parent / "data"
-PACKAGE = Path(__file__).parents[1] / "src" / "archivey_ar"
+AR = archivey.ArchiveFormat.AR
+DATA = Path(__file__).parent / "fixtures" / "ar"
 
 LONG = "a-file-name-longer-than-sixteen.txt"
 CONTENT = {
@@ -44,11 +45,6 @@ ARCHIVES = {
     "bsd": ("bsd", False, 0o644),
     "darwin": ("bsd", True, 0o644),
 }
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _registered() -> None:
-    register_format(ArHandler)
 
 
 class _Pipe(io.RawIOBase):
@@ -170,7 +166,7 @@ def test_detection() -> None:
         info = detect_format(io.BytesIO((DATA / f"{name}.a").read_bytes()))
         assert info.format == AR, name
         assert info.detected_by == "magic"
-        assert info.from_plugin
+        assert not info.from_plugin
 
 
 @pytest.mark.parametrize(
@@ -371,19 +367,26 @@ def test_a_time_past_the_datetime_range(tmp_path: Path) -> None:
         assert reader.members()[0].modified is None
 
 
-def _imports(path: Path) -> Iterator[str]:
+def _imported_names(path: Path) -> Iterator[tuple[str, str]]:
     for node in ast.walk(ast.parse(path.read_text())):
         if isinstance(node, ast.Import):
-            yield from (alias.name for alias in node.names)
+            yield from ((alias.name, "") for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
-            yield node.module
+            yield from ((node.module, alias.name) for alias in node.names)
 
 
-def test_the_package_uses_only_public_archivey() -> None:
-    """The point of the package: a format added from outside, through the plugin API."""
-    used = {name for path in PACKAGE.rglob("*.py") for name in _imports(path)}
-    archivey_modules = {name for name in used if name.split(".")[0] == "archivey"}
-    assert archivey_modules == {"archivey", "archivey.formats"}
+def test_the_reader_uses_only_public_archivey() -> None:
+    """Written as a format added from outside would be: every archivey name it imports
+    is public, apart from the call that registers it as a built-in."""
+    for module, name in _imported_names(Path(ar_reader.__file__)):
+        if module.split(".")[0] != "archivey":
+            continue
+        if module == "archivey.internal.format_adapter":
+            assert name == "register_builtin_format"
+        elif module == "archivey.formats":
+            assert name in archivey.formats.__all__, name
+        else:
+            assert name in archivey.__all__, (module, name)
 
 
 def test_the_reader_is_a_sequential_reader() -> None:
