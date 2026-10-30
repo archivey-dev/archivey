@@ -5,7 +5,7 @@ One section per run worth keeping, newest first. `skill` is the tree hash of
 Score: `yes` = 1, `partial` = 0.5. The reviews themselves are kept outside the
 repository.
 
-## 2026-10-30: what the reviewer reads, and a narrower `CONTRIBUTING.md` read
+## 2026-10-30: what the reviewer reads, and a narrower `CONTRIBUTING.md` read (not kept)
 
 The runner now keeps each review's transcript and writes `reads.json`: the characters
 every file the Read tool (or a lone `sed`, `cat`, `head`, `tail` or `nl` command)
@@ -36,12 +36,12 @@ counts under Bash, so the guide figures are lower bounds. Reading three sections
 the guide reading by under a tenth and `CONTRIBUTING.md` by about a fifth. The score
 changed by one case and the cost by 4 percent, both inside the run-to-run noise, so
 one run each shows no saving and no loss; it does not show that the trim leaves the
-review as good. After its review §1 grew to the rule part of `CONTRIBUTING.md`: from
-the gate paragraph of §Getting started to the end of §Testing standards, plus
-§Working with the specs, which carry gate, CI, release and spec-discrepancy rules.
-That version was not re-run, and it saves less than the measured one. The input a
-review pays for is mostly what it runs and reads in the code, at about 150 000 tokens
-of context per turn over 45 to 60 turns.
+review as good. Review then showed that most of the file carries review rules (gate,
+CI, release and spec-discrepancy ones outside the three sections); the part that
+holds them is 30 KB of the 43 KB, so a read that keeps them saves about 3 000 tokens,
+some 2 percent of a review's input once cached over its turns. The skill kept the
+whole-file read. The input a review pays for is mostly what it runs and reads in the
+code, at about 150 000 tokens of context per turn over 45 to 60 turns.
 
 ## 2026-10-29: Sonnet with the project installed, and at xhigh effort
 

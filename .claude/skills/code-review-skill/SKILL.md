@@ -20,8 +20,7 @@ allowed-tools:
 This file holds what every review in this repo needs: how to report, the output shape,
 verdicts, severity, and how to post. What to *do* depends on what you are reviewing, and
 each kind has its own doc (§1). Read this file, then the one doc §1 names for what you
-are reviewing, plus the part of `CONTRIBUTING.md` §1 names on a first look. Nothing
-else is required reading.
+are reviewing, plus `CONTRIBUTING.md` on a first look. Nothing else is required reading.
 
 > Started as a Python-only subset of
 > [awesome-skills/code-review-skill](https://github.com/awesome-skills/code-review-skill)
@@ -65,15 +64,9 @@ this list and §6 disagree, §6 wins; edit both together.
 | Whole files rather than a diff (a sweep batch) | [`reference/whole-file-sweep.md`](reference/whole-file-sweep.md) | One `SWEPT` marker per file, findings or not |
 | A commissioned `review/` brief | [`reference/deep-reviews.md`](reference/deep-reviews.md) | A different deliverable and a baseline you record yourself |
 
-**Also read the rule part of [`CONTRIBUTING.md`](../../../CONTRIBUTING.md) at the
-start of a first look:** from the paragraph of §Getting started that begins "If a gate
-cannot be run" to the end of §Testing standards (§Cutting a release, §Tooling
-decisions and §Coding standards lie between), and §Working with the specs.
-`grep -n '^## ' CONTRIBUTING.md` gives the line ranges. They hold the gate, CI, coding,
-testing, release and spec-discrepancy rules; `code-pr.md` says which of them PRs here
-break and does not restate them. Add §OpenSpec changes when the change touches
-`openspec/`. What is left is environment setup (the start of §Getting started) and
-§Where does a new doc go?; open them only when the change is about either.
+**Also read [`CONTRIBUTING.md`](../../../CONTRIBUTING.md) at the start of a first look.**
+It holds the coding and testing rules; `code-pr.md` says which of them PRs here break and
+does not restate them.
 
 ### How deep: the tier
 
