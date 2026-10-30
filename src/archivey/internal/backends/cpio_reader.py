@@ -12,7 +12,8 @@ The variants differ only in the header and the padding:
   ``070707``. No padding. afio writes odc too, but switches a member to its *large*
   header (``070727``, 116 bytes of mostly hexadecimal fields, as libarchive reads it)
   as afio(1) says, for a file over 2 GB, a uid or gid over 65535, or an archive of
-  more than 64K hard-linked files. That header has odc's rules otherwise, so the archive is still ``odc``.
+  more than 64K hard-linked files. That header has odc's rules otherwise, so the
+  archive is still ``odc``.
 - **newc** (``-H newc``, SVR4) and **crc** (``-H crc``): 110 bytes of hexadecimal ASCII
   fields after ``070701`` or ``070702``. Name and data are padded to 4 bytes. In crc,
   the header's ``check`` field is the 32-bit sum of the data bytes.
