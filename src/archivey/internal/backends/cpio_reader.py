@@ -67,7 +67,7 @@ from archivey.formats import (
     SequentialReader,
 )
 from archivey.internal.format_adapter import register_builtin_format
-from archivey.types import ArchiveFormat, ArchiveMember, MemberType
+from archivey.types import ArchiveFormat, ArchiveInfoExtra, ArchiveMember, MemberType
 
 TRAILER = b"TRAILER!!!"
 # A stored name longer than this is damage: no file system takes a path this long, and
@@ -208,9 +208,11 @@ class CpioReader(SequentialReader):
 
     def archive_info(self) -> ReaderArchiveInfo:
         variant = self._variant
+        extra = ArchiveInfoExtra({})
+        if variant is not None:
+            extra["cpio.variant"] = variant.value
         return ReaderArchiveInfo(
-            format_version=None if variant is None else variant.value,
-            extra={} if variant is None else {"cpio.variant": variant.value},
+            format_version=None if variant is None else variant.value, extra=extra
         )
 
     # The walk ---------------------------------------------------------------------
