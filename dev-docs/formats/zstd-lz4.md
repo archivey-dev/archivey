@@ -297,7 +297,7 @@ formats; `tests/streams_util.py::make_seekable_zstd` adds a seek table. `zstd`, 
 - Decisions: [ADR 0009](../decisions/0009-zstd-stdlib-backports.md) ·
   [ADR 0008](../decisions/0008-single-accelerator-rapidgzip.md) ·
   [`library-analysis.md`](../library-analysis.md) §zstd, §lz4
-- Code: `internal/streams/codecs/zstd_codec.py` (`ZstdHandler`), `lz4_codec.py` (`Lz4Handler`) ·
+- Code: `internal/streams/codecs/zstd_codec.py` (`ZstdCodec`), `lz4_codec.py` (`Lz4Codec`) ·
   `internal/streams/codecs/zstd_framing.py` · `internal/streams/codecs/zstd_seek_table.py` ·
   `internal/streams/codecs/lz4_legacy.py`
 - Handbook: [`single-file.md`](single-file.md) · [`zip.md`](zip.md) (zstd method) ·
