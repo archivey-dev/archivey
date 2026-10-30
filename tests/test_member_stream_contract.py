@@ -508,6 +508,7 @@ _SEEK_ARCHIVES: tuple[_SeekSpec, ...] = (
     _SeekSpec("basic", "tar.lz"),
     _SeekSpec("basic", "tar.zz"),
     _SeekSpec("basic", "tar.br"),
+    _SeekSpec("basic-lzo", "tar.lzo"),
     _SeekSpec("basic", "dir"),
     _SeekSpec("basic", "iso"),
     _SeekSpec("basic", "iso-joliet"),
@@ -519,6 +520,7 @@ _SEEK_ARCHIVES: tuple[_SeekSpec, ...] = (
     _SeekSpec("single-file", "lz"),
     _SeekSpec("single-file", "zz"),
     _SeekSpec("single-file", "br"),
+    _SeekSpec("single-file", "lzo"),
     _SeekSpec("single-file-meta", "gz-meta"),
 )
 

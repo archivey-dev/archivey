@@ -147,6 +147,10 @@ class StreamFormat(StrEnum):
     """Brotli has no signature, so archivey detects it by the file name."""
     UNIX_COMPRESS = "Z"
     """The Unix ``compress`` format."""
+    LZOP = "lzo"
+    """The ``.lzo`` file format ``lzop`` writes: LZO1X blocks behind a header.
+    archivey decodes LZO1X with ``python-lzo`` when it is installed, else in Python,
+    about 20 times slower."""
 
 
 @dataclass(frozen=True)
@@ -221,6 +225,7 @@ class ArchiveFormat:
     ZLIB: ClassVar[ArchiveFormat]
     BROTLI: ClassVar[ArchiveFormat]
     Z: ClassVar[ArchiveFormat]
+    LZOP: ClassVar[ArchiveFormat]
     SEVEN_Z: ClassVar[ArchiveFormat]
     RAR: ClassVar[ArchiveFormat]
     ISO: ClassVar[ArchiveFormat]
@@ -296,6 +301,7 @@ ArchiveFormat.LZMA_ALONE = ArchiveFormat(
 ArchiveFormat.ZLIB = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.ZLIB)
 ArchiveFormat.BROTLI = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BROTLI)
 ArchiveFormat.Z = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.UNIX_COMPRESS)
+ArchiveFormat.LZOP = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZOP)
 ArchiveFormat.SEVEN_Z = ArchiveFormat(
     ContainerFormat.SEVEN_Z, StreamFormat.UNCOMPRESSED
 )
@@ -344,6 +350,9 @@ class OptionalLibrary(StrEnum):
     """ISO 9660 images."""
     CRYPTOGRAPHY = "cryptography"
     """AES decryption in ZIP, 7z and RAR."""
+    LZO = "lzo"
+    """``python-lzo``: LZO1X in ``.lzo`` files and SquashFS images. archivey decodes
+    LZO1X in Python without it, more slowly."""
 
 
 OptionalLibraryStr = Literal[
@@ -356,6 +365,7 @@ OptionalLibraryStr = Literal[
     "rapidgzip",
     "pycdlib",
     "cryptography",
+    "lzo",
 ]
 """The values of :class:`OptionalLibrary`, for an argument that takes either spelling."""
 
@@ -598,6 +608,9 @@ class CompressionAlgorithm(Enum):
     IMPLODE = "implode"
     """ZIP method 6, LZ77 with Shannon-Fano codes, from PKZIP 1.x. No current tool
     writes it."""
+    LZO = "lzo"
+    """Raw LZO1X with no header, as SquashFS stores a block. Not the ``.lzo`` file
+    format, which is ``StreamFormat.LZOP``."""
     RAR = "rar"
     """RAR's own compression, any version. Not the same as ``ContainerFormat.RAR``,
     which is the archive format."""
@@ -851,6 +864,8 @@ class MemberExtra(dict[str, object]):
       size for a file of several members (it covers only the last; a bgzip file
       ends with an empty member and reads 0) or with bytes after the last one.
       ``size`` stays ``None`` until a full read fills it in.
+    * ``lzop.original_filename`` (``str``) — the name the lzop header stores, as
+      ``gzip.original_filename`` is for gzip.
     * ``iso.version`` (``int``) — plain ISO 9660 only: the ``;N`` file version
       stripped from the name. Versions of one name share it; the highest is
       listed last and is the current one.
@@ -910,6 +925,8 @@ class MemberExtra(dict[str, object]):
     def __getitem__(self, key: Literal["gzip.original_filename"], /) -> str: ...
     @overload
     def __getitem__(self, key: Literal["gzip.isize"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["lzop.original_filename"], /) -> str: ...
     @overload
     def __getitem__(self, key: Literal["iso.version"], /) -> int: ...
     @overload

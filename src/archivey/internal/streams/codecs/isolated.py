@@ -83,7 +83,14 @@ def _known(*classes: type[Exception] | None) -> dict[tuple[str, str], type[Excep
 
 _ZLIB_ERRORS = _known(zlib.error)
 _LZMA_ERRORS = _known(lzma.LZMAError)
+
+
 # Matched by type name alone ("*"): the modules that raise them differ by build.
+class LzoChildError(ValueError):
+    """Stand-in for ``lzo.error`` raised by liblzo2 in a child process."""
+
+
+_LZO_ERRORS: dict[tuple[str, str], type[Exception]] = {("*", "error"): LzoChildError}
 _BROTLI_ERRORS: dict[tuple[str, str], type[Exception]] = {
     ("*", "error"): BrotliChildError
 }
@@ -353,6 +360,28 @@ class Natives:
             return child.call("decompress", block, (), kwargs)
         finally:
             child.close()
+
+    def lzo_decompress(self, block: bytes, limit: int) -> bytes:
+        """``lzo.decompress(block, False, limit)``: one raw LZO1X block. Needs
+        python-lzo; not imported here when isolated, where it raises
+        :class:`LzoChildError` for ``lzo.error``."""
+        if not self.isolated:
+            lzo = deps.lzo.load()
+            assert lzo is not None
+            return lzo.decompress(block, False, limit)
+        child = self._child("lzo", known=_LZO_ERRORS)
+        try:
+            return child.call("decompress", block, (False, limit))
+        finally:
+            child.close()
+
+    def lzo_errors(self) -> tuple[type[Exception], ...]:
+        """The exception types :meth:`lzo_decompress` raises on bad data."""
+        if self.isolated:
+            return (LzoChildError,)
+        lzo = deps.lzo.load()
+        assert lzo is not None
+        return (lzo.error,)
 
     def brotli_decompressor(self) -> Any:
         """A ``brotli.Decompressor``; needs brotli installed. Not imported here when

@@ -79,6 +79,8 @@ class Codec(Enum):
     DEFLATE64 = "deflate64"
     SHRINK = "shrink"  # ZIP method 1 (LZW)
     IMPLODE = "implode"  # ZIP method 6 (LZ77 + Shannon-Fano)
+    LZOP = "lzop"  # the .lzo file format
+    LZO = "lzo"  # raw LZO1X (a SquashFS block)
     # Filter-only (composed with raw LZMA; see LZMA_FILTER_IDS).
     DELTA = "delta"
     BCJ_X86 = "bcj_x86"

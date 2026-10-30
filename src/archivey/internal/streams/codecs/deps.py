@@ -135,6 +135,8 @@ _LZ4_UNUSED = bool(unused_reason(OptionalLibrary.LZ4))
 lz4_frame = None if _LZ4_UNUSED else _optional("lz4.frame")
 lz4_block = None if _LZ4_UNUSED else _optional("lz4.block")
 brotli = LazyOptional(OptionalLibrary.BROTLI)
+# python-lzo: only an accelerator, since LZO1X decodes in Python without it.
+lzo = LazyOptional(OptionalLibrary.LZO)
 pyppmd = LazyOptional(
     OptionalLibrary.PYPPMD,
     present=False if unused_reason(OptionalLibrary.PYPPMD) else None,
