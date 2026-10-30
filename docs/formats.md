@@ -502,6 +502,12 @@ sending side when the ZIP is done.
 - With `concurrent_operations=True`, member reads share one file handle and take turns on it, so
   reads from several threads are safe but not parallel. ISO works the same way.
 - Hardlinks are extracted as hardlinks. An `extract_all` with no filter resolves them in one pass.
+- **Headers are read as GNU tar reads them.** Where tools disagree on a member's name, link target
+  or size, archivey gives GNU tar's answer. When the headers take a shape no known writer produces
+  (a GNU long name and a PAX `path` for one member, a field set twice, a global header setting a
+  name or size or dropping an earlier one's values, a NUL inside a PAX name), the member is also reported with
+  `MEMBER_HEADER_AMBIGUOUS`, because another tool may list it under another name or size.
+  `STRICT` refuses the archive.
 - A tar from macOS `tar` can hold `._name` sidecar files
   ([macOS sidecar files](#macos-sidecar-files)).
 

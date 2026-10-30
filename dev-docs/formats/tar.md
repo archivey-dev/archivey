@@ -367,6 +367,35 @@ GNU tar (DR-6, measured 2026-10-30):
   `parse_pax_records`), so a `path` that is empty after it is skipped and the earlier
   record, the global one or the header field stays.
 
+Where a difference above, or a shape like it, comes from no known writer, the member is
+reported with `MEMBER_HEADER_AMBIGUOUS` (`HeaderAmbiguityContext`, in
+`ARCHIVE_INTEGRITY_CODES`; maintainer request 2026-10-30: match GNU tar, and report what
+no real writer writes), once per shape and field. `TarWalker._next_entry` collects them
+as `TarEntry.ambiguities` (`Ambiguity`); a global header's are reported on the member
+after it, and a global header with no member after it frames and names nothing, so it is
+not reported.
+
+- `global_replaced`: a `g` header that drops a key an earlier `g` header set (one report per dropped key, `hdrcharset` aside). GNU tar writes one
+  `g` header; `tarfile` and POSIX merge them.
+- `repeated`: one field set twice for one member: two `L` or two `K` headers (GNU tar
+  keeps the last, `tarfile` the first), a PAX key twice in one `x` or `g` header, or two `x` headers for one member (field `x`: GNU tar drops
+  all but the last, `tarfile` merges them). The sparse 0.0 map's `GNU.sparse.offset` and
+  `GNU.sparse.numbytes` repeat by design and are not reported.
+- `nul_in_value`: a NUL inside one of the string values above; `tarfile` keeps the bytes after it.
+- `both_families`: a GNU `L` (or `K`) header whose name a PAX record overrode, as
+  `_resolve` decided it (`name_source`/`linkname_source` is `PAX`): the member's own or a
+  global `path`, its `GNU.sparse.name`, or a `linkpath` on a link. GNU tar uses the PAX
+  record; `tarfile` uses whichever comes first. A PAX `path` that the NUL cut leaves empty,
+  or a `linkpath` on a typeflag with no link, overrides nothing and is not reported.
+- `global_member_field`: a `g` header carrying `path`, `linkpath` or `size`, which then
+  names or frames every later member.
+
+The empty-value rule is not reported: an empty `uname` or
+`linkpath` is how a writer clears a global value, and an empty `size` is already
+`CorruptionError`. A ustar or GNU header field that differs from the PAX record
+overriding it is not reported either: writers put a cut name or a capped size there on
+purpose.
+
 ### 2.3 Member data
 
 **A member's stream is a view of its data area.** In random access it is a `SharedView`

@@ -14,9 +14,18 @@ from collections.abc import Callable
 
 import pytest
 
-from archivey import ArchiveFormat, DiagnosticCode, ExtractionStatus, open_archive
+from archivey import (
+    ArchiveFormat,
+    ArchiveyConfig,
+    DiagnosticCode,
+    DiagnosticPolicy,
+    ExtractionStatus,
+    open_archive,
+)
+from archivey.diagnostics import HeaderAmbiguityContext
 from archivey.exceptions import (
     CorruptionError,
+    DiagnosticRaisedError,
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -1827,3 +1836,252 @@ def test_number_cache_is_bounded_and_agrees_with_the_parse() -> None:
         assert isinstance(parsed, HeaderBlock)
         assert parsed.mtime == mtime
     assert cache.cache_info().currsize <= maxsize
+
+
+# ---------------------------------------------------------------------------
+# Header shapes no known writer produces: read as GNU tar does, and reported
+# ---------------------------------------------------------------------------
+
+
+def _long(typeflag: bytes, text: bytes) -> bytes:
+    return _block(b"././@LongLink", size=len(text) + 1, typeflag=typeflag) + _data(
+        text + b"\x00"
+    )
+
+
+def _file(name: bytes = b"f", **kwargs) -> bytes:
+    return _block(name, size=1, **kwargs) + _data(b"x")
+
+
+def _symlink(name: bytes = b"s") -> bytes:
+    return _block(name, typeflag=b"2", linkname=b"hdr")
+
+
+_AMBIGUOUS = {
+    "L and x path": (
+        _long(b"L", b"gnu") + _pax({"path": "pax"}) + _file(),
+        "pax",
+        ("both_families", "path"),
+    ),
+    "K and x linkpath": (
+        _long(b"K", b"gnu") + _pax({"linkpath": "pax"}) + _symlink(),
+        "s",
+        ("both_families", "linkpath"),
+    ),
+    "two L": (
+        _long(b"L", b"first") + _long(b"L", b"second") + _file(),
+        "second",
+        ("repeated", "path"),
+    ),
+    "two K": (
+        _long(b"K", b"first") + _long(b"K", b"second") + _symlink(),
+        "s",
+        ("repeated", "linkpath"),
+    ),
+    "path twice in one x": (
+        _pax_body(_rec(b"path", b"first") + _rec(b"path", b"second")) + _file(),
+        "second",
+        ("repeated", "path"),
+    ),
+    "two x": (
+        _pax({"path": "first"}) + _pax({"uname": "u"}) + _file(),
+        "f",
+        ("repeated", "x"),
+    ),
+    "uname twice in one g": (
+        _pax_body(_rec(b"uname", b"a") + _rec(b"uname", b"b"), typeflag=b"g") + _file(),
+        "f",
+        ("repeated", "uname"),
+    ),
+    "path in g": (
+        _pax({"path": "global"}, typeflag=b"g") + _file(),
+        "global",
+        ("global_member_field", "path"),
+    ),
+    "size in g": (
+        _pax({"size": "1"}, typeflag=b"g") + _file(),
+        "f",
+        ("global_member_field", "size"),
+    ),
+    "NUL in x path": (
+        _pax_body(_rec(b"path", b"cut\x00rest")) + _file(),
+        "cut",
+        ("nul_in_value", "path"),
+    ),
+    "L and GNU.sparse.name": (
+        _long(b"L", b"gnu") + _pax({"GNU.sparse.name": "real"}) + _file(),
+        "real",
+        ("both_families", "path"),
+    ),
+    "g replaced by g": (
+        _pax({"mtime": "100"}, typeflag=b"g")
+        + _pax({"uname": "bob"}, typeflag=b"g")
+        + _file(),
+        "f",
+        ("global_replaced", "mtime"),
+    ),
+    "NUL in x uname": (
+        _pax_body(_rec(b"uname", b"u\x00v")) + _file(),
+        "f",
+        ("nul_in_value", "uname"),
+    ),
+}
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("data", "name", "expected"), list(_AMBIGUOUS.values()), ids=list(_AMBIGUOUS)
+)
+def test_a_header_shape_no_writer_produces_is_reported(
+    data: bytes, name: str, expected: tuple[str, str], streaming: bool
+) -> None:
+    """Each shape lists as GNU tar 1.35 lists it, and MEMBER_HEADER_AMBIGUOUS says
+    which shape and field, once, on the member."""
+    data += _END
+    with open_archive(
+        io.BytesIO(data), format=ArchiveFormat.TAR, streaming=streaming
+    ) as ar:
+        members = [m for m, _ in ar.stream_members()]
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_HEADER_AMBIGUOUS] == 1
+    (member,) = members
+    assert member.name == name
+    (found,) = [
+        d
+        for d in member.diagnostics
+        if d.code is DiagnosticCode.MEMBER_HEADER_AMBIGUOUS
+    ]
+    assert isinstance(found.context, HeaderAmbiguityContext)
+    assert (found.context.ambiguity, found.context.field) == expected
+    assert found.context.member_name == name
+
+
+def test_a_long_name_a_global_path_overrides_is_reported() -> None:
+    """The global path names ``m2`` too, over its L header; tarfile lists the L."""
+    data = (
+        _pax({"path": "glob"}, typeflag=b"g")
+        + _file(b"m1")
+        + _long(b"L", b"long-m2")
+        + _file(b"m2")
+        + _END
+    )
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        found = [
+            [
+                (d.context.ambiguity, d.context.field)
+                for d in m.diagnostics
+                if isinstance(d.context, HeaderAmbiguityContext)
+            ]
+            for m in ar.members()
+        ]
+    assert found == [
+        [("global_member_field", "path")],
+        [("both_families", "path")],
+    ]
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        # The PAX path is empty after the NUL cut: the L name stands, as in tarfile.
+        _long(b"L", b"gnu") + _pax_body(_rec(b"path", b"\x00x")) + _file(),
+        # A linkpath on a regular file overrides nothing.
+        _long(b"K", b"gnu") + _pax({"linkpath": "pax"}) + _file(),
+    ],
+    ids=["path cut to empty", "linkpath on a file"],
+)
+def test_a_pax_value_that_overrides_nothing_is_not_both_families(data: bytes) -> None:
+    with open_archive(io.BytesIO(data + _END), format=ArchiveFormat.TAR) as ar:
+        (member,) = ar.members()
+        shapes = [
+            d.context.ambiguity
+            for d in member.diagnostics
+            if isinstance(d.context, HeaderAmbiguityContext)
+        ]
+    assert "both_families" not in shapes
+
+
+def test_a_global_header_keeps_the_first_repeated_sparse_key() -> None:
+    """The sparse map keys are not reported as repeated, but a global header still
+    keeps their first value, as it does every key's."""
+    body = _rec(b"GNU.sparse.offset", b"111") + _rec(b"GNU.sparse.offset", b"222")
+    records = parse_pax_records(body, binary_default=False, first_wins=True)
+    assert records.values[b"GNU.sparse.offset"].value == b"111"
+    assert not records.repeated
+
+
+def test_a_global_shape_is_reported_on_the_next_member_only() -> None:
+    data = (
+        _pax_body(_rec(b"uname", b"a") + _rec(b"uname", b"b"), typeflag=b"g")
+        + _file(b"first")
+        + _file(b"second")
+        + _END
+    )
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        reported = {m.name: [d.code for d in m.diagnostics] for m in ar.members()}
+    assert reported == {
+        "first": [DiagnosticCode.MEMBER_HEADER_AMBIGUOUS],
+        "second": [],
+    }
+
+
+def test_strict_refuses_an_ambiguous_header() -> None:
+    data = _long(b"L", b"gnu") + _pax({"path": "pax"}) + _file() + _END
+    with (
+        open_archive(
+            io.BytesIO(data),
+            format=ArchiveFormat.TAR,
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
+        ) as ar,
+        pytest.raises(DiagnosticRaisedError),
+    ):
+        ar.members()
+
+
+def _ordinary_archives() -> dict[str, bytes]:
+    long = "d/" + "n" * 150
+    archives = {}
+    for label, fmt in (("gnu", tarfile.GNU_FORMAT), ("pax", tarfile.PAX_FORMAT)):
+
+        def build(t: tarfile.TarFile) -> None:
+            _add(t, long, b"data")
+            info = tarfile.TarInfo("link")
+            info.type = tarfile.SYMTYPE
+            info.linkname = long
+            info.uname = "ü" * 40
+            t.addfile(info)
+
+        archives[label] = _tarfile_bytes(build, format=fmt)
+    # A PAX sparse 0.0 map repeats its offset and numbytes keys by design.
+    archives["sparse 0.0"] = (
+        _pax_body(
+            _rec(b"GNU.sparse.size", b"8")
+            + _rec(b"GNU.sparse.numblocks", b"2")
+            + _rec(b"GNU.sparse.offset", b"0")
+            + _rec(b"GNU.sparse.numbytes", b"1")
+            + _rec(b"GNU.sparse.offset", b"4")
+            + _rec(b"GNU.sparse.numbytes", b"1")
+        )
+        + _block(b"sp", size=2)
+        + _data(b"ab")
+        + _END
+    )
+    archives["global comment, then mtime in x"] = (
+        _pax({"comment": "c"}, typeflag=b"g") + _pax({"mtime": "1.5"}) + _file() + _END
+    )
+    return archives
+
+
+@pytest.mark.parametrize("label", list(_ordinary_archives()))
+def test_ordinary_archives_report_no_ambiguity(label: str) -> None:
+    data = _ordinary_archives()[label]
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        ar.members()
+        assert DiagnosticCode.MEMBER_HEADER_AMBIGUOUS not in ar.diagnostics.counts
+
+
+def test_pax_records_list_repeated_keys_once() -> None:
+    records = parse_pax_records(
+        _rec(b"a", b"1") * 3 + _rec(b"GNU.sparse.offset", b"0") * 2,
+        binary_default=False,
+    )
+    assert list(records.repeated) == [b"a"]
