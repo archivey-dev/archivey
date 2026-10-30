@@ -229,3 +229,20 @@ def test_another_answer_by_the_bot_is_not_a_review_post():
         "top-level post 50 does not end with the attribution footer",
         "top-level post 50 has a table",
     ]
+
+
+def test_until_checks_a_past_round_alone():
+    """After the fact: round 1, bounded by its own close, ignores round 2's posts."""
+    e = event()
+    e["round"] = 1
+    e["issue_comments"] = []
+    e["until"] = "2026-10-30T10:00:00Z"
+    e["reviews"][0]["body"] = BODY.replace("## Round 2", "## Round 1")
+    e["reviews"][1]["body"] = BODY.replace(FOOT, "")
+    e["review_comments"] = []
+    assert shape.check(e) == []
+    # Without the bound, round 2's posts would join it.
+    del e["until"]
+    assert shape.check(e) == [
+        "top-level post 2 does not end with the attribution footer"
+    ]
