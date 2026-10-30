@@ -71,6 +71,7 @@ from tests.conftest import (
     requires_zstd,
     run_7z,
     sevenzip_version,
+    sevenzip_version_text,
     zstd_backend,
 )
 from tests.corruption_util import (
@@ -1203,7 +1204,7 @@ def _seven_zip_decompress(
     result = run_7z(["e", "-so", str(path)], program=program)
     if result.returncode != 0:
         pytest.fail(
-            f"{program} (7-Zip {sevenzip_version(program)}) exited {result.returncode} on "
+            f"{program} (7-Zip {sevenzip_version_text(sevenzip_version(program))}) exited {result.returncode} on "
             f"{path.name}: {result.stderr.decode(errors='replace').strip()}"
         )
     return result.stdout
@@ -1221,7 +1222,10 @@ def _requires_nine_bit_7z() -> pytest.MarkDecorator:
     version = sevenzip_version()
     return pytest.mark.skipif(
         version is not None and version >= _SEVEN_ZIP_WIDENS_NINE_BITS,
-        reason=f"7z is 7-Zip {version}, which widens a full 9-bit .Z table to 10 bits",
+        reason=(
+            f"7z is 7-Zip {sevenzip_version_text(version)}, which widens a full 9-bit"
+            " .Z table to 10 bits"
+        ),
     )
 
 

@@ -389,6 +389,11 @@ def sevenzip_version(program: str = "7z") -> tuple[int, int] | None:
     return None if found is None else (int(found[1]), int(found[2]))
 
 
+def sevenzip_version_text(version: tuple[int, int] | None) -> str:
+    """``version`` as 7-Zip writes it (``26.05``), or ``unknown version`` for None."""
+    return "unknown version" if version is None else f"{version[0]}.{version[1]:02d}"
+
+
 @functools.cache
 def sevenzip_with_riscv() -> str | None:
     """The first of ``7zz`` and ``7z`` on ``PATH`` whose ``7z i`` lists RISCV, or None.
