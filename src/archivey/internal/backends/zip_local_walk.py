@@ -20,7 +20,8 @@ up to a bound, for the caller to parse with the seekable read's ``find_end_recor
 ``CentralDirectoryWalk``, so a forward read lists what a file read lists except where
 :meth:`ForwardTail.end_record` refuses a record it cannot see).
 
-Where a member's data ends (``openspec/changes/archive/2026-10-30-native-zip-reader/design.md``):
+Where a member's data ends
+(``openspec/changes/archive/2026-10-30-native-zip-reader/design.md``):
 
 - Bit 3 clear: the local header's ``compressed_size`` bytes.
 - Bit 3 and STORED: a scan for a descriptor, with or without its ``PK\\x07\\x08``,
