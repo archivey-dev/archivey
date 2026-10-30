@@ -25,6 +25,7 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.internal.excluded_libraries import NO_EXCLUSIONS
+from archivey.internal.overrides import override
 from archivey.internal.password import wrong_password_error
 from archivey.internal.streams.crypto import (
     CRYPTO_PACKAGE,
@@ -341,6 +342,7 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
         # from it, below any codec. The source is ciphertext: nothing below counts.
         return VerificationProofs(content=self._mac_matched, content_possible=True)
 
+    @override
     def read(self, size: int | None = -1) -> bytes:
         if size is None:  # read to EOF, as on any ``io`` stream
             size = -1
@@ -370,14 +372,17 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
             self._authenticate()
         return out
 
+    @override
     def seekable(self) -> bool:
         return self._source.seekable()
 
+    @override
     def tell(self) -> int:
         return (
             self._cipher_len - self._cipher_remaining - len(self._buf) + self._overshoot
         )
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         pos = self.tell()
         target = resolve_seek(offset, whence, pos=pos, end=lambda: self._cipher_len)
@@ -391,6 +396,7 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
         self._overshoot = target - reach
         return target
 
+    @override
     def close(self) -> None:
         if self.closed:
             return
@@ -486,6 +492,7 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
         # from it, below any codec. The source is ciphertext: nothing below counts.
         return VerificationProofs(content=self._mac_matched, content_possible=True)
 
+    @override
     def readall(self) -> bytes:
         # Through ``read(-1)``, so a ``hold_back`` stream refuses it too.
         return self.read(-1)
@@ -514,6 +521,7 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
         self._hmac.update(rest[: cipher_len - hashed])
         self._check_mac(rest[cipher_len - hashed : cipher_len - hashed + _HMAC_LEN])
 
+    @override
     def read(self, size: int | None = -1) -> bytes:
         if size is None:
             size = -1
@@ -536,6 +544,7 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
             del self._buf[:size]
         return out
 
+    @override
     def close(self) -> None:
         if self.closed:
             return

@@ -18,6 +18,7 @@ import zlib
 from collections.abc import Sequence
 from typing import BinaryIO
 
+from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     read_exact,
@@ -224,6 +225,7 @@ class ZipCryptoDecryptStream(ReadOnlyIOStream):
         self._logical = 0  # the caller's position; past ``_pos`` only after a seek
         self._origin = source.tell() if source.seekable() else 0
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         if n == 0 or self._logical != self._pos:
             return b""
@@ -236,12 +238,15 @@ class ZipCryptoDecryptStream(ReadOnlyIOStream):
         self._logical = self._pos
         return self._keys.decrypt(data)
 
+    @override
     def seekable(self) -> bool:
         return self._source.seekable()
 
+    @override
     def tell(self) -> int:
         return self._logical
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         target = resolve_seek(
             offset, whence, pos=self._logical, end=lambda: self._length
@@ -258,6 +263,7 @@ class ZipCryptoDecryptStream(ReadOnlyIOStream):
         self._logical = target
         return target
 
+    @override
     def close(self) -> None:
         if self.closed:
             return

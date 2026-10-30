@@ -114,6 +114,7 @@ from archivey.internal.naming import (
     normalize_member_name,
 )
 from archivey.internal.open_site import OpenSite
+from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
@@ -605,6 +606,7 @@ class TarReader(BaseArchiveReader):
         assert counted <= cap, (counted, cap)
         return (cap - counted, cap)
 
+    @override
     def _register_member(
         self,
         idx: int,
@@ -622,6 +624,7 @@ class TarReader(BaseArchiveReader):
                 len(span.sparse) * SPARSE_ENTRY_BYTES
             )
 
+    @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
         """The member walk, one header per pull.
 
@@ -654,11 +657,13 @@ class TarReader(BaseArchiveReader):
         pass stamps ids and resolves backward links."""
         return self._iter_members()
 
+    @override
     def _pass_reads_through_walk(self) -> bool:
         """A random-access pass reads through the walk until it ends, so a compressed
         tar is decoded once for the headers and the data, not once for each."""
         return True
 
+    @override
     def _open_member_in_walk(self, member: ArchiveMember) -> MemberStreamParts:
         # The raw body, not another ArchiveStream: the pass's lazy handle adopts the
         # parts and is the one wrapper.
@@ -667,6 +672,7 @@ class TarReader(BaseArchiveReader):
                 self._member_body(member, in_walk=True), member.name, size=member.size
             )
 
+    @override
     def _iter_with_data(
         self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
     ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
@@ -1450,6 +1456,7 @@ class TarReader(BaseArchiveReader):
             return self._decode_name(pax.value, NameSource.PAX, pax.binary)[0]
         return self._decode_name(header, NameSource.HEADER, False)[0]
 
+    @override
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         # The stream layer (streamtools) raises builtins, never archivey errors.
         # Today the one EOFError a member read can raise is a sparse member's
@@ -1460,6 +1467,7 @@ class TarReader(BaseArchiveReader):
             return TruncatedError(f"TAR member data ended early: {exc}")
         return None
 
+    @override
     def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         with self._translated_errors(member.name):
             return self._member_parts(
@@ -1566,6 +1574,7 @@ class TarReader(BaseArchiveReader):
             )
         )
 
+    @override
     def _get_archive_info(self) -> ArchiveInfo:
         stream_cap = self._source_stream_capability()
         if self._compressed:
@@ -1593,6 +1602,7 @@ class TarReader(BaseArchiveReader):
             cost=cost,
         )
 
+    @override
     def _close_archive(self) -> None:
         # Close what this reader built, even when a close raises: teardown runs once.
         # The source closes with the reader, after this. Under the handle lock, so a
@@ -1627,6 +1637,7 @@ class TarReadBackend(ReadBackend):
     SUPPORTS_STREAMING_NON_SEEKABLE = True
     USES_ENCODING = True  # the fallback codec for names that are not valid UTF-8
 
+    @override
     def open_read(
         self,
         source: ArchiveSource,

@@ -51,6 +51,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.internal.overrides import override
 from archivey.internal.streams.decompressor_stream import _COMPRESSED_READ_SIZE_MAX
 from archivey.internal.streams.streamtools import read_within_reach
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
@@ -1697,6 +1698,7 @@ class _ForwardSlice(ReadOnlyIOStream):
         self._length = length
         self._done = 0
 
+    @override
     def tell(self) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
@@ -1706,6 +1708,7 @@ class _ForwardSlice(ReadOnlyIOStream):
         """Whether the walk is still where this stream reads next."""
         return self._walker._stream_pos == self._start + self._done
 
+    @override
     def read(self, size: int = -1, /) -> bytes:
         if self.closed:
             raise ValueError("read from a closed TAR member stream")

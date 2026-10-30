@@ -14,6 +14,7 @@ from archivey.config import ExtractionLimits
 from archivey.cost import CostReceipt
 from archivey.detection import FormatInfo
 from archivey.diagnostics import DiagnosticSummary, ExtractionReport, MemberListReport
+from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.types import (
     AbortOn,
@@ -77,6 +78,7 @@ class ArchiveStream(ReadOnlyIOStream):
 
     @property
     @abstractmethod
+    @override
     def name(self) -> str:  # pyrefly: ignore[bad-override]  # ty: ignore[invalid-property-type-override]  # base is Never; a member stream has a name
         """The member's name inside its archive, or raise ``AttributeError``.
 
@@ -139,6 +141,7 @@ class ArchiveStream(ReadOnlyIOStream):
         """
 
     @abstractmethod
+    @override
     def read(self, n: int | None = -1, /) -> bytes:
         """Read up to ``n`` bytes of the member; ``-1`` or ``None`` reads to EOF.
 
@@ -165,6 +168,7 @@ class ArchiveStream(ReadOnlyIOStream):
         """
 
     @abstractmethod
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         """Move to ``offset``, as on any ``io`` stream; raises when it can't seek.
 
@@ -174,10 +178,12 @@ class ArchiveStream(ReadOnlyIOStream):
         """
 
     @abstractmethod
+    @override
     def tell(self, /) -> int:
         """The current position in the member's decompressed bytes."""
 
     @abstractmethod
+    @override
     def seekable(self) -> bool:
         """Whether :meth:`seek` works on this stream.
 
@@ -195,6 +201,7 @@ class ArchiveStream(ReadOnlyIOStream):
         releases.
         """
 
+    @override
     def close(self) -> None:
         """Close the stream and release what it holds in the reader. Closing it
         again does nothing."""
@@ -250,10 +257,12 @@ class MemberPass(Iterator[_T_co]):
             return super().__new__(cast("type[Self]", MemberPassImpl))
         return super().__new__(cls)
 
+    @override
     def __iter__(self) -> Self:
         return self
 
     @abstractmethod
+    @override
     def __next__(self) -> _T_co: ...
 
     @abstractmethod

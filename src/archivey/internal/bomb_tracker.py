@@ -17,6 +17,7 @@ from archivey.config import (
     ratio_field_is_set,
 )
 from archivey.exceptions import ResourceLimitError
+from archivey.internal.overrides import override
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.internal.streams.streamtools.binaryio import (
@@ -410,6 +411,7 @@ class _RatioGuard(DelegatingStream):
             err, self._held = self._held, None
             raise err
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         self._raise_held()
         if n is not None and 0 <= n <= max(_GUARD_STEP, self._room()):
@@ -444,6 +446,7 @@ class _RatioGuard(DelegatingStream):
                 left -= len(data)
         return b"".join(parts)
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         # A seek drops the held error, as ReadAheadStream's does: it describes the
         # position the caller is leaving, and a rewind re-decodes from a resume point.
@@ -477,6 +480,7 @@ class _RatioGuard(DelegatingStream):
         self._check(self._pos)
         return self._pos
 
+    @override
     def tell(self, /) -> int:
         return self._pos
 
@@ -516,6 +520,7 @@ class DecodeRatioGuard(_RatioGuard):
     def nearest_resume_offset(self, target: int) -> int | None:
         return ask_resume_offset(self._inner, target)
 
+    @override
     def _judge(self, position: int) -> None:
         limits = self._limits
         refusal = archive_ratio_refusal(
@@ -628,6 +633,7 @@ class MemberRatioGuard(_RatioGuard):
         size = getattr(inner, "size", None)
         return size if isinstance(size, int) and not isinstance(size, bool) else None
 
+    @override
     def _room(self) -> float:
         # The first position either rule could refuse at, less the current one.
         safe = self._member_safe
@@ -635,6 +641,7 @@ class MemberRatioGuard(_RatioGuard):
             safe = min(safe, self._archive_safe - self._tally.others(self._key))
         return max(_GUARD_STEP, safe - self._pos)
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         # The decoder answers the seek itself, with its own clamping and end rules;
         # only a forward gap is decoded first, in steps, to the target the seek names.
@@ -689,6 +696,7 @@ class MemberRatioGuard(_RatioGuard):
             self._check(self._pos)
         return self._pos + offset
 
+    @override
     def _judge(self, position: int) -> None:
         limits = self._limits
         max_ratio = limits.max_ratio

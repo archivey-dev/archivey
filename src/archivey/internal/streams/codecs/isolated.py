@@ -21,6 +21,7 @@ from collections.abc import Mapping
 from typing import Any, Protocol
 
 from archivey.config import ProcessIsolation
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.decoder_child import (
     DecoderChild,
@@ -260,6 +261,7 @@ class Natives:
     def __init__(self, *, isolated: bool) -> None:
         self.isolated = isolated
 
+    @override
     def __repr__(self) -> str:
         return f"Natives(isolated={self.isolated})"
 

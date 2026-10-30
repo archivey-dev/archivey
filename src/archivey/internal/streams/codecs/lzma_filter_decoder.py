@@ -11,6 +11,7 @@ from typing import BinaryIO
 
 from archivey.exceptions import TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64, arm64_decode
 from archivey.internal.streams.codecs.isolated import IN_PROCESS, Decompressor, Natives
 from archivey.internal.streams.codecs.riscv_filter import FILTER_RISCV, riscv_decode
@@ -130,6 +131,7 @@ class FilterDecoder(BaseDecoder):
         return self._produced >= self._unpack_size
 
     @property
+    @override
     def needs_input(self) -> bool:
         return not self._pending
 
@@ -214,6 +216,7 @@ class PythonBranchFilterDecoder(BaseDecoder):
         return self._produced >= self._unpack_size
 
     @property
+    @override
     def needs_input(self) -> bool:
         return self._ready_offset >= len(self._ready)
 

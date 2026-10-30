@@ -92,9 +92,11 @@ def _translate_lzma(
 class _LzmaErrorCodec(StreamCodec):
     """Shared LZMA/XZ error taxonomy for the lzma-family codecs (xz, lzip, raw LZMA)."""
 
+    @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
         return _translate_lzma(exc)
 
+    @override
     def translator(self, config: StreamConfig) -> ExceptionTranslator:
         # The limits the stream's decompressors are built with, so a memlimit refusal
         # names the cap (``.lzma``: ``new_capped_decompressor``).
@@ -104,6 +106,7 @@ class _LzmaErrorCodec(StreamCodec):
 class _SizedLzmaCodec(_LzmaErrorCodec):
     """xz / lzip: surface the decompressed size recorded in the stream index/trailer."""
 
+    @override
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
         member.size = ctx.probe_decompressed_size()
 
@@ -113,6 +116,7 @@ class XzCodec(_SizedLzmaCodec):
     stream_format = StreamFormat.XZ
     magic = (MagicSignature(0, b"\xfd7zXZ\x00", ArchiveFormat.XZ),)
 
+    @override
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
@@ -142,6 +146,7 @@ class LzipCodec(_SizedLzmaCodec):
     stream_format = StreamFormat.LZIP
     magic = (MagicSignature(0, b"LZIP", ArchiveFormat.LZIP),)
 
+    @override
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
@@ -156,6 +161,7 @@ class LzipCodec(_SizedLzmaCodec):
             usage=config.usage,
         )
 
+    @override
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
         """Surface decompressed size and whole-member CRC-32 from one seekable index scan.
 
@@ -487,6 +493,7 @@ def decode_lzma_filter_properties(filter_id: int, props: bytes, *, what: str) ->
 class _RawLzmaCodec(_LzmaErrorCodec):
     """Raw LZMA1/LZMA2 (FORMAT_RAW + properties); container-only (no standalone stream)."""
 
+    @override
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
@@ -869,6 +876,7 @@ class _LzmaToSizeDecoder(BaseDecoder):
         return self._state == _DONE and not self._input_after_end
 
     @property
+    @override
     def needs_input(self) -> bool:
         if self._state != _RUN:
             return True

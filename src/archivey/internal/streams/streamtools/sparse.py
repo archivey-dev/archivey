@@ -36,6 +36,7 @@ from bisect import bisect_right
 from collections.abc import Sequence
 from typing import BinaryIO
 
+from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools.base import DelegatingStream
 from archivey.internal.streams.streamtools.binaryio import (
     check_read_size,
@@ -94,10 +95,12 @@ class SparseStream(DelegatingStream):
         if self.closed:
             raise ValueError("I/O operation on closed file.")
 
+    @override
     def tell(self) -> int:
         self._raise_if_closed()
         return self._pos
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         self._raise_if_closed()
         target = resolve_seek(offset, whence, pos=self._pos, end=lambda: self._size)
@@ -123,6 +126,7 @@ class SparseStream(DelegatingStream):
         # pos belongs to a chunk the position has already left.
         return bisect_right(self._ends, pos)
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         self._raise_if_closed()
         n = check_read_size(n)

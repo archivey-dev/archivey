@@ -70,6 +70,7 @@ from archivey.internal.filters import (
 from archivey.internal.link_watch import LinkWatch
 from archivey.internal.logs import extraction as logger
 from archivey.internal.long_paths import long_path, plain
+from archivey.internal.overrides import override
 from archivey.internal.selection import CollectionSelector
 from archivey.paths import numbered_name
 from archivey.terminal import display_path, quoted
@@ -314,9 +315,11 @@ class _PassedData(io.RawIOBase):
         super().__init__()
         self._error = error
 
+    @override
     def readable(self) -> bool:
         return True
 
+    @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         raise self._error
 

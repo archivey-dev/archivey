@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import BinaryIO
 
 from archivey.exceptions import TruncatedError
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.isolated import Decompressor
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
@@ -149,5 +150,6 @@ class Bzip2ResumeDecoder(BaseDecoder):
         return False
 
     @property
+    @override
     def needs_input(self) -> bool:
         return self._decomp.needs_input
