@@ -844,9 +844,10 @@ class CodecHandler(ABC):
     file of the format reports it as ``ARCHIVE_TRAILING_DATA``.
     """
 
-    stream_format: ClassVar[PluginStream]
+    stream_format: ClassVar[PluginStream | StreamFormat]
     """The format, a member of a :class:`~archivey.PluginStream` subclass. Its value
-    is the file extension, without the dot."""
+    is the file extension, without the dot. (A ``StreamFormat`` is archivey's own
+    codecs', which are handlers too; ``register_codec`` refuses one.)"""
 
     extension_aliases: ClassVar[tuple[str, ...]] = ()
     """Other file extensions, with the dot, besides ``"." + stream_format.value``.

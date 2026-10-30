@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-import functools
-from typing import BinaryIO
+from typing import Any
 
 from archivey.exceptions import (
     ArchiveyError,
@@ -13,6 +12,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
     exception_detail,
 )
+from archivey.formats import CodecCall, Decompressor
 from archivey.internal.config import (
     DecoderLimits,
     StreamConfig,
@@ -27,13 +27,16 @@ from archivey.internal.streams.codecs.base import (
     _SKIPPABLE_FRAME,
     Codec,
     CodecParams,
-    CodecSource,
     StreamCodec,
 )
 from archivey.internal.streams.codecs.framed_decoder import (
-    FramedDecompressorStream,
     StreamIndex,
+    StreamStart,
     stream_magic,
+)
+from archivey.internal.streams.codecs.handler_codec import (
+    BuiltinCodecHandler,
+    builtin_codec,
 )
 from archivey.internal.streams.codecs.isolated import natives_for
 from archivey.internal.streams.codecs.zstd_framing import (
@@ -96,9 +99,9 @@ def _zstd_window_log_max(limits: DecoderLimits) -> tuple[int, bool]:
 _PROBE_WINDOW_LOG = 27
 
 
-def _probe_window_log_max(window_log_max: int, config: StreamConfig) -> int:
+def _probe_window_log_max(window_log_max: int, probe_bound: int | None) -> int:
     """``window_log_max`` lowered to :data:`_PROBE_WINDOW_LOG` for a detection probe."""
-    if config.probe_read_bound is None:
+    if probe_bound is None:
         return window_log_max
     return min(window_log_max, _PROBE_WINDOW_LOG)
 
@@ -126,75 +129,68 @@ def _zstd_window_refusal(exc: Exception, limits: DecoderLimits) -> ArchiveyError
     )
 
 
-class ZstdCodec(StreamCodec):
+class ZstdHandler(BuiltinCodecHandler):
     codec = Codec.ZSTD
     stream_format = StreamFormat.ZSTD
-    magic = (MagicSignature(0, ZSTD_FRAME_MAGIC, ArchiveFormat.ZST),)
+    signatures = (MagicSignature(0, ZSTD_FRAME_MAGIC, ArchiveFormat.ZST),)
     requirement = MissingComponent(
         OptionalLibrary.BACKPORTS_ZSTD, "pip install archivey[recommended]", ("zstd",)
     )
+    # The backport is only relevant below 3.14; on 3.14+ the stdlib module is used,
+    # so the bare hint alone would send such a caller installing a no-op.
+    missing_note = "On Python 3.14+ the stdlib compression.zstd module is used instead."
 
     def _backend_present(self) -> bool:
         return deps.zstd is not None
 
-    def excluded_by(self, excluded: frozenset[OptionalLibrary]) -> bool:
+    def _excluded_by(self, excluded: frozenset[OptionalLibrary]) -> bool:
         # The module in use, which ``requirement`` (the backport) may not name.
         return deps.zstd_library is not None and deps.zstd_library in excluded
 
-    def requirement_under(
+    def _requirement_under(
         self, excluded: frozenset[OptionalLibrary]
     ) -> MissingComponent | None:
-        if not self.excluded_by(excluded):
-            return self.requirement
+        if not self._excluded_by(excluded):
+            return None
         assert deps.zstd_library is not None and self.requirement is not None
         return as_excluded(
             dataclasses.replace(self.requirement, name=deps.zstd_library)
         )
 
-    def open(
-        self, source: CodecSource, params: CodecParams, config: StreamConfig
-    ) -> BinaryIO:
-        excluded = config.excluded_libraries
-        if deps.zstd is None or self.excluded_by(excluded):
-            # The backport is only relevant below 3.14; on 3.14+ the stdlib module is used,
-            # so the bare hint alone would send such a caller installing a no-op.
-            raise self._missing(
-                "zstd streams",
-                note="On Python 3.14+ the stdlib compression.zstd module is used instead.",
-                excluded=excluded,
-            )
-        zstd = deps.zstd
-        window_log_max, _ = _zstd_window_log_max(config.decoder_limits)
-        window_log_max = _probe_window_log_max(window_log_max, config)
-        options = {zstd.DecompressionParameter.window_log_max: window_log_max}
-        index = None
-        if config.seekable:
-            # Declared seek demand only (``seekable-decompressor-streams``): each
-            # regular frame starts a seek point, and the seekable format's table
-            # lists them all without decoding.
-            collector = config.collector
-            index = StreamIndex(
-                resumes_at=lambda data: data.startswith(ZSTD_FRAME_MAGIC),
-                build=lambda inner, last: build_seek_table_index(
-                    inner, last, collector
-                ),
-            )
-        return FramedDecompressorStream(
-            source,
-            functools.partial(
-                natives_for(config.process_isolation).zstd_decompressor, options
-            ),
-            codec_name="zstd",
-            # Every frame is content, in a .zst file and in a ZIP or 7z coder alike:
-            # RFC 8878 defines Zstd data as one or more frames.
-            magic=_ZSTD_STREAMS,
-            index=index,
-            collector=config.collector,
-            report_trailing_data=config.report_trailing_data,
-            refuse_input_after_end=config.refuse_input_after_end,
+    @staticmethod
+    def _options(call: CodecCall) -> dict[Any, int]:
+        assert deps.zstd is not None
+        window_log_max, _ = _zstd_window_log_max(call.limits)
+        window_log_max = _probe_window_log_max(window_log_max, call.probe_bound)
+        return {deps.zstd.DecompressionParameter.window_log_max: window_log_max}
+
+    def decompressor(self, call: CodecCall) -> Decompressor:
+        assert deps.zstd is not None
+        return deps.zstd.ZstdDecompressor(options=self._options(call))
+
+    def _decompressor(self, call: CodecCall, config: StreamConfig) -> Decompressor:
+        natives = natives_for(config.process_isolation)
+        return natives.zstd_decompressor(self._options(call))
+
+    def _stream_start(self, params: CodecParams) -> StreamStart:
+        # Every frame is content, in a .zst file and in a ZIP or 7z coder alike:
+        # RFC 8878 defines Zstd data as one or more frames.
+        del params
+        return _ZSTD_STREAMS
+
+    def _stream_index(self, config: StreamConfig) -> StreamIndex | None:
+        if not config.seekable:
+            return None
+        # Declared seek demand only (``seekable-decompressor-streams``): each
+        # regular frame starts a seek point, and the seekable format's table
+        # lists them all without decoding.
+        collector = config.collector
+        return StreamIndex(
+            resumes_at=lambda data: data.startswith(ZSTD_FRAME_MAGIC),
+            build=lambda inner, last: build_seek_table_index(inner, last, collector),
         )
 
-    def translator(self, config: StreamConfig) -> ExceptionTranslator:
+    def _translator(self, config: StreamConfig) -> ExceptionTranslator:
         limits = config.decoder_limits
 
         def translate(exc: Exception) -> ArchiveyError | None:
@@ -204,18 +200,18 @@ class ZstdCodec(StreamCodec):
                 and _ZSTD_WINDOW_REFUSED in str(exc)
             ):
                 own, _ = _zstd_window_log_max(limits)
-                if _probe_window_log_max(own, config) < own:
+                if _probe_window_log_max(own, config.probe_read_bound) < own:
                     return UnsupportedFeatureError(
                         "A zstd frame declares a window over "
                         f"{1 << _PROBE_WINDOW_LOG} bytes, more than a detection "
                         f"probe reserves: {exc}"
                     )
                 return _zstd_window_refusal(exc, limits)
-            return self.translate(exc)
+            return self.translate_exception(exc)
 
         return translate
 
-    def translate(self, exc: Exception) -> ArchiveyError | None:
+    def translate_exception(self, exc: Exception) -> ArchiveyError | None:
         if deps.zstd is not None and isinstance(exc, deps.zstd.ZstdError):
             if "Dictionary mismatch" in str(exc):
                 # The frame names a dictionary (its Dictionary_ID), and archivey has no
@@ -233,10 +229,13 @@ class ZstdCodec(StreamCodec):
             return CorruptionError(
                 f"Error reading zstd stream: {exception_detail(exc)}"
             )
-        return self._eof_truncation(exc, "zstd")
+        return StreamCodec._eof_truncation(exc, "zstd")
 
-    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
+    def _rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         return RewindWarning("zstd")
 
-    def magic_behind_prefix(self, prefix: bytes) -> bool:
+    def _magic_behind_prefix(self, prefix: bytes) -> bool:
         return regular_frame_behind_skippable_frames(prefix)
+
+
+ZstdCodec = builtin_codec(ZstdHandler)

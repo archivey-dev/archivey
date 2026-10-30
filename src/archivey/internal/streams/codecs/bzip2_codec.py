@@ -4,6 +4,7 @@ results, stream gaps, resume points).
 
 from __future__ import annotations
 
+import bz2
 import io
 import itertools
 import re
@@ -18,6 +19,7 @@ from archivey.exceptions import (
     TruncatedError,
     exception_detail,
 )
+from archivey.formats import CodecCall, Decompressor
 from archivey.internal.config import (
     AcceleratorMode,
     StreamConfig,
@@ -37,7 +39,12 @@ from archivey.internal.streams.codecs.base import (
 from archivey.internal.streams.codecs.bzip2_resume import Bzip2Resume
 from archivey.internal.streams.codecs.framed_decoder import (
     FramedDecompressorStream,
+    StreamStart,
     stream_magic,
+)
+from archivey.internal.streams.codecs.handler_codec import (
+    BuiltinCodecHandler,
+    builtin_codec,
 )
 from archivey.internal.streams.codecs.isolated import natives_for
 from archivey.internal.streams.codecs.rapidgzip_child import (
@@ -786,25 +793,34 @@ def _starts_empty_bzip2_stream(data: bytes) -> bool:
     return _EMPTY_BZIP2_STREAM.fullmatch(completed) is not None
 
 
-class Bzip2Codec(StreamCodec):
+class Bzip2Handler(BuiltinCodecHandler):
     codec = Codec.BZIP2
     checks_content = True
     stream_format = StreamFormat.BZIP2
-    magic = (MagicSignature(0, b"BZh", ArchiveFormat.BZ2),)
+    signatures = (MagicSignature(0, b"BZh", ArchiveFormat.BZ2),)
 
-    def open(
+    def decompressor(self, call: CodecCall) -> Decompressor:
+        return bz2.BZ2Decompressor()
+
+    def _decompressor(self, call: CodecCall, config: StreamConfig) -> Decompressor:
+        return natives_for(config.process_isolation).bz2_decompressor()
+
+    def _stream_start(self, params: CodecParams) -> StreamStart:
+        # Every engine that decodes a coder's data, the accelerator's fallbacks too,
+        # must agree on what follows its stream (DR-5): see ``_stdlib_bzip2``.
+        return _NO_FURTHER_STREAM if params.single_stream else _BZIP2_STREAMS
+
+    def _open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
-    ) -> BinaryIO:
+    ) -> BinaryIO | None:
+        # Without the accelerator, a rewind re-decompresses from the start; the outer
+        # ArchiveStream warns about that (see _rewind_warning). The [seekable]
+        # accelerator gives real random access.
         if self._use_accelerator(config):
-            stream = self._open_accelerated(source, params, config)
-            if stream is not None:
-                return stream
-        # A rewind re-decompresses from the start; the outer ArchiveStream warns about
-        # that (see rewind_warning). The [seekable] accelerator gives real random
-        # access.
-        return _stdlib_bzip2(source, config, single_stream=params.single_stream)
+            return self._open_accelerated(source, params, config)
+        return None
 
-    def check_accelerator(self, source: CodecSource, config: StreamConfig) -> None:
+    def _check_accelerator(self, source: CodecSource, config: StreamConfig) -> None:
         if config.use_indexed_bzip2 is not AcceleratorMode.ON:
             return
         if self._use_accelerator(config):
@@ -867,21 +883,21 @@ class Bzip2Codec(StreamCodec):
             )
         )
 
-    def translate(self, exc: Exception) -> ArchiveyError | None:
+    def translate_exception(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, OSError) and "Invalid data stream" in str(exc):
             return CorruptionError(f"bzip2 stream is corrupt: {exception_detail(exc)}")
         if isinstance(exc, ValueError):
             return TruncatedError(
                 f"{truncated_message('bzip2')}: {exception_detail(exc)}"
             )
-        return self._eof_truncation(exc, "bzip2")
+        return StreamCodec._eof_truncation(exc, "bzip2")
 
-    def translator(self, config: StreamConfig) -> ExceptionTranslator:
+    def _translator(self, config: StreamConfig) -> ExceptionTranslator:
         if _bzip2_uses_accelerator(config):
             return self._translate_accelerator
-        return self.translate
+        return self.translate_exception
 
-    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
+    def _rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         # An engaged accelerator no longer suppresses the report: its index can be sparse
         # enough that a backward seek still re-decodes megabytes. The distance decides.
         unused_reason = _rapidgzip_unused_reason(config)
@@ -959,7 +975,11 @@ class Bzip2Codec(StreamCodec):
             )
         if isinstance(exc, (EOFError, OSError)):
             # The stdlib engine that _Bzip2EmptyStreamCheck falls back to raises these.
-            # This does not widen translation: translate maps only an OSError saying
-            # "Invalid data stream"; any other OSError comes back None and propagates.
-            return self.translate(exc)
+            # This does not widen translation: translate_exception maps only an
+            # OSError saying "Invalid data stream"; any other OSError comes back None
+            # and propagates.
+            return self.translate_exception(exc)
         return None
+
+
+Bzip2Codec = builtin_codec(Bzip2Handler)
