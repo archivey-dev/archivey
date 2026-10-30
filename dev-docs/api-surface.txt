@@ -920,10 +920,16 @@ function archivey.paths.match_glob(*patterns: str, with_contents: bool = False) 
 function archivey.paths.match_tar_glob(*patterns: str) -> Callable[[ArchiveMember | str], bool]
 function archivey.paths.numbered_name(name: str, n: int, *, is_dir: bool) -> str
 module archivey.formats
+class archivey.formats.CodecCall()
+init archivey.formats.CodecCall(size: int | None = None, properties: bytes | None = None, limits: DecoderLimits = <factory>, probe_bound: int | None = None) -> None
+field archivey.formats.CodecCall.limits: DecoderLimits = <factory>
+field archivey.formats.CodecCall.probe_bound: int | None = None
+field archivey.formats.CodecCall.properties: bytes | None = None
+field archivey.formats.CodecCall.size: int | None = None
 class archivey.formats.CodecHandler(ABC)
 attribute archivey.formats.CodecHandler.checks_content = False
 attribute archivey.formats.CodecHandler.concatenated = True
-method archivey.formats.CodecHandler.decompressor(self) -> Decompressor
+method archivey.formats.CodecHandler.decompressor(self, call: CodecCall) -> Decompressor
 attribute archivey.formats.CodecHandler.extension_aliases = ()
 attribute archivey.formats.CodecHandler.install_hint = None
 attribute archivey.formats.CodecHandler.magic = ()

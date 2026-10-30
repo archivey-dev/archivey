@@ -9,6 +9,7 @@ those codecs have.
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, BinaryIO
 
@@ -46,7 +47,7 @@ from archivey.types import (
 )
 
 if TYPE_CHECKING:
-    from archivey.formats import CodecHandler
+    from archivey.formats import CodecCall, CodecHandler
 
 
 def _never(data: bytes) -> bool:
@@ -97,15 +98,15 @@ class HandlerCodec(StreamCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        del params
         if not self.available(config.excluded_libraries):
             raise self._missing(
                 f"{self.handler.stream_format.value} streams",
                 excluded=config.excluded_libraries,
             )
+        call = codec_call(params, config)
         return FramedDecompressorStream(
             source,
-            self.handler.decompressor,
+            functools.partial(self.handler.decompressor, call),
             codec_name=self.handler.stream_format.value,
             magic=self.starts,
             collector=config.collector,
@@ -121,6 +122,20 @@ class HandlerCodec(StreamCodec):
 
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         return RewindWarning(self.handler.stream_format.value, suggest_install=False)
+
+
+def codec_call(params: CodecParams, config: StreamConfig) -> CodecCall:
+    """The :class:`CodecCall` a handler's decoder is given for ``params`` and
+    ``config``."""
+    # Imported here: archivey.formats imports this module's neighbours.
+    from archivey.formats import CodecCall
+
+    return CodecCall(
+        size=params.unpack_size,
+        properties=params.properties,
+        limits=config.decoder_limits,
+        probe_bound=config.probe_read_bound,
+    )
 
 
 def _content_probe(probe: Callable[[bytes], bool]) -> Callable[..., bool]:

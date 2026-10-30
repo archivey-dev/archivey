@@ -10,6 +10,7 @@ import tarfile
 import zlib
 from collections.abc import Iterator
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -36,8 +37,15 @@ from archivey import (
     open_archive,
     open_stream,
 )
+from archivey.config import DecoderLimits
 from archivey.exceptions import ArchiveyError
-from archivey.formats import CodecHandler, Magic, register_codec, register_format
+from archivey.formats import (
+    CodecCall,
+    CodecHandler,
+    Magic,
+    register_codec,
+    register_format,
+)
 from archivey.internal.format_adapter import registration_scope
 from tests.streams_util import NonSeekableBytesIO
 from tests.test_format_api import _compressed_archive, _compressed_plugin
@@ -150,8 +158,11 @@ class ToyHandler(CodecHandler):
     extension_aliases = (".toyz",)
     magic = (Magic(0, _MAGIC),)
     checks_content = True
+    # Each decoder's call, newest last.
+    calls: ClassVar[list[CodecCall]] = []
 
-    def decompressor(self) -> ToyDecompressor:
+    def decompressor(self, call: CodecCall) -> ToyDecompressor:
+        ToyHandler.calls.append(call)
         return ToyDecompressor()
 
     def translate_exception(self, exc: Exception) -> ArchiveyError | None:
@@ -313,7 +324,7 @@ class ProbedHandler(CodecHandler):
     stream_format = ProbedStream.PROBED
     probe = staticmethod(lambda prefix: prefix.startswith(_PROBED_MAGIC))
 
-    def decompressor(self) -> ProbedDecompressor:
+    def decompressor(self, call: CodecCall) -> ProbedDecompressor:
         return ProbedDecompressor()
 
 
@@ -478,6 +489,33 @@ def test_reader_context_decompress_takes_the_codec(
         path = _compressed_archive(tmp_path, toy_compress(plain), plain)
         with open_archive(path) as reader:
             assert reader.read(reader.members()[0]) == plain
+
+
+def test_the_decoder_is_given_the_call(toy: ArchiveFormat, tmp_path: Path) -> None:
+    """``CodecCall`` carries what the format reader passed, and the caller's limits."""
+    plain = b"plugin member data " * 200
+    limits = DecoderLimits(max_decoder_memory=1 << 20)
+    with registration_scope():
+        register_format(_compressed_plugin(ToyStream.TOY, properties=b"\x01\x02"))
+        path = _compressed_archive(tmp_path, toy_compress(plain), plain)
+        ToyHandler.calls.clear()
+        with open_archive(path, config=ArchiveyConfig(decoder_limits=limits)) as reader:
+            assert reader.read(reader.members()[0]) == plain
+    assert ToyHandler.calls[-1] == CodecCall(
+        size=len(plain), properties=b"\x01\x02", limits=limits
+    )
+
+
+def test_a_detection_probe_sets_the_probe_bound(toy: ArchiveFormat) -> None:
+    ToyHandler.calls.clear()
+    data = toy_compress(_tar({"a.txt": b"alpha"}))
+    assert detect_format(io.BytesIO(data)).format == TAR_TOY
+    bound = ToyHandler.calls[0].probe_bound
+    assert bound is not None and bound > 0
+    ToyHandler.calls.clear()
+    with open_stream(io.BytesIO(data), format=TOY) as stream:
+        stream.read()
+    assert [c.probe_bound for c in ToyHandler.calls] == [None]
 
 
 # --- the registry -----------------------------------------------------------------------

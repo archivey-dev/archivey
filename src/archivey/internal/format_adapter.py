@@ -271,6 +271,9 @@ class _PluginAdapter(BaseArchiveReader):
         # stream format is read as a file of that format is, so a ``.bz2`` stream may
         # hold several, as bzip2 itself decodes them.
         params = CodecParams(single_stream=codec is Codec.BZIP2 and not is_stream)
+        if isinstance(method, PluginStream):
+            # A registered codec parses its own properties (``CodecCall``).
+            params = CodecParams(unpack_size=size, properties=properties)
         if codec is Codec.LZMA or codec is Codec.LZMA2:
             want = 5 if codec is Codec.LZMA else 1
             if properties is None or len(properties) != want:
