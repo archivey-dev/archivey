@@ -45,8 +45,8 @@ class Lz4LegacyDecompressor:
     """One legacy LZ4 stream, behind the one-stream decompressor interface.
 
     The interface is the one ``FramedDecoder`` drives (``decompress(data, max_length)``,
-    ``eof``, ``unused_data``, ``needs_input``, ``flush``). ``eof`` is set at a size
-    field that ends the stream, and by :meth:`flush` when the input ends where the
+    ``eof``, ``unused_data``, ``needs_input``, ``end_input``). ``eof`` is set at a size
+    field that ends the stream, and by :meth:`end_input` when the input ends where the
     stream may. Corrupt blocks raise ``lz4.block.LZ4BlockError``.
     """
 
@@ -129,7 +129,7 @@ class Lz4LegacyDecompressor:
         end = self._block_end()
         return end is None or (end != _STREAM_END and len(self._input) < end)
 
-    def flush(self) -> None:
+    def end_input(self) -> None:
         """The input ended: the stream is complete when that is between blocks, or in
         zeros after one.
 
@@ -197,6 +197,6 @@ class Lz4Decompressor:
             return True
         return self._inner.needs_input
 
-    def flush(self) -> None:
+    def end_input(self) -> None:
         if isinstance(self._inner, Lz4LegacyDecompressor):
-            self._inner.flush()
+            self._inner.end_input()

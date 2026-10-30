@@ -23,6 +23,7 @@ from archivey.internal.config import (
     AcceleratorMode,
     StreamConfig,
 )
+from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
@@ -798,15 +799,18 @@ class Bzip2Handler(BuiltinCodecHandler):
     stream_format = StreamFormat.BZIP2
     magic = (Magic(0, b"BZh"),)
 
+    @override
     def decompressor(self, call: CodecCall) -> Decompressor:
         return natives_for(config_of(call).process_isolation).bz2_decompressor()
 
+    @override
     def _stream_start(self, call: BuiltinCall) -> StreamStart:
         # The whole stream header, block-size digit included, not ``magic`` alone.
         # Every engine that decodes a coder's data, the accelerator's fallbacks too,
         # must agree on what follows its stream (DR-5): see ``_stdlib_bzip2``.
         return _NO_FURTHER_STREAM if call.params.single_stream else _BZIP2_STREAMS
 
+    @override
     def _open(self, source: CodecSource, call: BuiltinCall) -> BinaryIO | None:
         # Without the accelerator, a rewind re-decompresses from the start; the outer
         # ArchiveStream warns about that (see _rewind_warning). The [seekable]
@@ -815,6 +819,7 @@ class Bzip2Handler(BuiltinCodecHandler):
             return self._open_accelerated(source, call.params, call.config)
         return None
 
+    @override
     def _check_accelerator(self, source: CodecSource, config: StreamConfig) -> None:
         if config.use_indexed_bzip2 is not AcceleratorMode.ON:
             return
@@ -878,6 +883,7 @@ class Bzip2Handler(BuiltinCodecHandler):
             )
         )
 
+    @override
     def translate_exception(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, OSError) and "Invalid data stream" in str(exc):
             return CorruptionError(f"bzip2 stream is corrupt: {exception_detail(exc)}")
@@ -887,11 +893,13 @@ class Bzip2Handler(BuiltinCodecHandler):
             )
         return StreamCodec._eof_truncation(exc, "bzip2")
 
+    @override
     def _translator(self, config: StreamConfig) -> ExceptionTranslator:
         if _bzip2_uses_accelerator(config):
             return self._translate_accelerator
         return self.translate_exception
 
+    @override
     def _rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         # An engaged accelerator no longer suppresses the report: its index can be sparse
         # enough that a backward seek still re-decodes megabytes. The distance decides.

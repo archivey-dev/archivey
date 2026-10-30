@@ -16,7 +16,7 @@ open, the decoders do what Info-ZIP ``unzip`` (``unshrink.c``, ``explode.c``) do
 
 Neither stream has an end marker. Implode always ends at the declared size, so it needs
 one, and clamps its last copy to it. Shrink stops after the first code that reaches the
-size when the size is known, and otherwise where the input does (``flush``); a last
+size when the size is known, and otherwise where the input does (``end_input``); a last
 entry that runs past the size is refused by the member's size check above the decoder.
 The bits left in the last byte are padding. A whole byte after the end is
 ``unused_data``, which ``FramedDecoder`` reports as input after the end.
@@ -30,6 +30,7 @@ import heapq
 from collections.abc import Generator
 
 from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.unix_compress_decoder import (
     _MAX_ENTRY_TAIL,
     _MAX_FLAT_ENTRY,
@@ -48,7 +49,7 @@ class _InputEnded(Exception):
 
 
 class _BitDecompressor:
-    """A decompressor (:class:`archivey.formats.Decompressor`, with ``flush``) written
+    """A decompressor (:class:`archivey.formats.Decompressor`, with ``end_input``) written
     as a generator over an LSB-first bit stream.
 
     :meth:`_decode` reads bits with ``yield from self._need(n)`` / :meth:`_take`, puts
@@ -162,7 +163,7 @@ class _BitDecompressor:
             self._run()
         return self._hand_out(max_length)
 
-    def flush(self) -> None:
+    def end_input(self) -> None:
         """The input ended: raise when the stream cannot end here.
 
         Called once every byte of output has been returned, so the generator waits
@@ -217,6 +218,7 @@ class ShrinkDecompressor(_BitDecompressor):
 
     label = "Shrink"
 
+    @override
     def _decode(self) -> _Step:
         parent = [-1] * _SHRINK_TABLE
         suffix = bytearray(_SHRINK_TABLE)
@@ -463,6 +465,7 @@ class ImplodeDecompressor(_BitDecompressor):
         self._literal_tree = literal_tree
         super().__init__(unpack_size)
 
+    @override
     def _decode(self) -> _Step:
         size = self._unpack_size
         assert size is not None

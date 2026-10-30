@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from archivey.exceptions import UnsupportedFeatureError
 from archivey.formats import CodecCall, Decompressor
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.base import Codec
 from archivey.internal.streams.codecs.handler_codec import (
     BuiltinCodecHandler,
@@ -25,6 +26,7 @@ class ShrinkHandler(BuiltinCodecHandler):
 
     codec = Codec.SHRINK
 
+    @override
     def decompressor(self, call: CodecCall) -> Decompressor:
         if call.size is None and params_of(call).input_runs_on:
             raise UnsupportedFeatureError(
@@ -44,6 +46,7 @@ class ImplodeHandler(BuiltinCodecHandler):
 
     codec = Codec.IMPLODE
 
+    @override
     def decompressor(self, call: CodecCall) -> Decompressor:
         if call.size is None:
             raise UnsupportedFeatureError(

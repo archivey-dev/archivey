@@ -32,6 +32,7 @@ from archivey.exceptions import ArchiveyError
 from archivey.formats import CodecCall, CodecHandler
 from archivey.internal.config import DEFAULT_STREAM_CONFIG, StreamConfig
 from archivey.internal.excluded_libraries import NO_EXCLUSIONS, as_excluded
+from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
@@ -188,6 +189,7 @@ class BuiltinHandlerCodec(StreamCodec):
 
     handler: BuiltinCodecHandler
 
+    @override
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
@@ -214,21 +216,27 @@ class BuiltinHandlerCodec(StreamCodec):
             refuse_input_after_end=config.refuse_input_after_end,
         )
 
+    @override
     def check_accelerator(self, source: CodecSource, config: StreamConfig) -> None:
         self.handler._check_accelerator(source, config)
 
+    @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
         return self.handler.translate_exception(exc)
 
+    @override
     def translator(self, config: StreamConfig) -> ExceptionTranslator:
         return self.handler._translator(config)
 
+    @override
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         return self.handler._rewind_warning(config)
 
+    @override
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
         self.handler._extract_metadata(ctx, member)
 
+    @override
     def _backend_present(self) -> bool:
         return self.requirement is None or self.handler._library() is not None
 
@@ -241,10 +249,12 @@ class BuiltinHandlerCodec(StreamCodec):
             return None
         return self.handler._library() or self.requirement.name
 
+    @override
     def excluded_by(self, excluded: frozenset[OptionalLibrary]) -> bool:
         library = self._excludable()
         return library is not None and library in excluded
 
+    @override
     def requirement_under(
         self, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
     ) -> MissingComponent | None:

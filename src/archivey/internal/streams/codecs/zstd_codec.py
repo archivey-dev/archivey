@@ -14,6 +14,7 @@ from archivey.internal.config import (
     DecoderLimits,
     StreamConfig,
 )
+from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
@@ -135,12 +136,14 @@ class ZstdHandler(BuiltinCodecHandler):
     # so the bare hint alone would send such a caller installing a no-op.
     missing_note = "On Python 3.14+ the stdlib compression.zstd module is used instead."
 
+    @override
     def _library(self) -> str | None:
         # The module in use: the standard library's on 3.14+, else the backport.
         if deps.zstd is None:
             return None
         return deps.zstd_library or OptionalLibrary.BACKPORTS_ZSTD
 
+    @override
     def decompressor(self, call: CodecCall) -> Decompressor:
         assert deps.zstd is not None
         window_log_max, _ = _zstd_window_log_max(call.limits)
@@ -148,6 +151,7 @@ class ZstdHandler(BuiltinCodecHandler):
         options = {deps.zstd.DecompressionParameter.window_log_max: window_log_max}
         return natives_for(config_of(call).process_isolation).zstd_decompressor(options)
 
+    @override
     def _stream_start(self, call: BuiltinCall) -> StreamStart:
         # Every frame is content, in a .zst file and in a ZIP or 7z coder alike:
         # RFC 8878 defines Zstd data as one or more frames. A skippable frame may
@@ -155,6 +159,7 @@ class ZstdHandler(BuiltinCodecHandler):
         del call
         return _ZSTD_STREAMS
 
+    @override
     def _stream_index(self, call: BuiltinCall) -> StreamIndex | None:
         config = call.config
         if not config.seekable:
@@ -168,6 +173,7 @@ class ZstdHandler(BuiltinCodecHandler):
             build=lambda inner, last: build_seek_table_index(inner, last, collector),
         )
 
+    @override
     def _translator(self, config: StreamConfig) -> ExceptionTranslator:
         limits = config.decoder_limits
 
@@ -189,6 +195,7 @@ class ZstdHandler(BuiltinCodecHandler):
 
         return translate
 
+    @override
     def translate_exception(self, exc: Exception) -> ArchiveyError | None:
         if deps.zstd is not None and isinstance(exc, deps.zstd.ZstdError):
             if "Dictionary mismatch" in str(exc):
@@ -209,9 +216,11 @@ class ZstdHandler(BuiltinCodecHandler):
             )
         return StreamCodec._eof_truncation(exc, "zstd")
 
+    @override
     def _rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         return RewindWarning("zstd")
 
+    @override
     def _magic_behind_prefix(self, prefix: bytes) -> bool:
         return regular_frame_behind_skippable_frames(prefix)
 

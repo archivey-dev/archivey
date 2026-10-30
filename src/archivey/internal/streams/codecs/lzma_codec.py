@@ -25,6 +25,7 @@ from archivey.internal.config import (
     probe_lzma_dictionary,
 )
 from archivey.internal.hashing import crc32_digest
+from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import ExceptionTranslator, RewindWarning
 from archivey.internal.streams.codecs.base import (
     Codec,
@@ -364,6 +365,7 @@ class LzmaAloneHandler(BuiltinCodecHandler):
     stream_format = StreamFormat.LZMA_ALONE
     # No exact magic: the properties byte is too weak; recognition is by content probe.
 
+    @override
     def decompressor(self, call: CodecCall) -> Decompressor:
         return _new_alone_decompressor(
             call.probe_bound,
@@ -371,24 +373,29 @@ class LzmaAloneHandler(BuiltinCodecHandler):
             natives_for(config_of(call).process_isolation),
         )
 
+    @override
     def _stream_start(self, call: BuiltinCall) -> StreamStart:
         # No magic: a further stream is one whose header liblzma would decode.
         del call
         return _starts_alone_stream
 
+    @override
     def translate_exception(self, exc: Exception) -> ArchiveyError | None:
         return _translate_lzma(exc)
 
+    @override
     def _translator(self, config: StreamConfig) -> ExceptionTranslator:
         # The limits the stream's decompressors are built with, so a memlimit refusal
         # names the cap (``new_capped_decompressor``).
         return functools.partial(_translate_lzma, limits=config.decoder_limits)
 
+    @override
     def _rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         # A rewind re-decompresses from the start; the outer ArchiveStream warns.
         del config
         return RewindWarning("lzma")
 
+    @override
     def _extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
         header = ctx.peek_header(_ALONE_HEADER_SIZE)
         if len(header) < _ALONE_HEADER_SIZE:
@@ -397,6 +404,7 @@ class LzmaAloneHandler(BuiltinCodecHandler):
         if size != _ALONE_UNKNOWN_SIZE:
             member.size = size
 
+    @override
     def _content_probe(
         self,
         entry: StreamCodec,
