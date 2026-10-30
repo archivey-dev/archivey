@@ -28,6 +28,7 @@ from archivey import (
     ResourceLimitError,
     StreamFormat,
     TruncatedError,
+    Verification,
     detect_format,
     format_availability,
     list_supported_formats,
@@ -235,6 +236,107 @@ def test_trailing_data_is_reported(toy: ArchiveFormat) -> None:
         assert reader.read(reader.members()[0]) == _TEXT
         codes = {d.code for d in reader.diagnostics.retained}
     assert DiagnosticCode.ARCHIVE_TRAILING_DATA in codes
+
+
+@pytest.mark.parametrize(("checks", "level"), [(True, "CONTENT"), (False, "STRUCTURE")])
+def test_checks_content_sets_the_verification_level(checks: bool, level: str) -> None:
+    class Handler(ToyHandler):
+        checks_content = checks
+
+    with registration_scope():
+        register_codec(Handler)
+        with (
+            open_archive(io.BytesIO(toy_compress(_TEXT))) as reader,
+            reader.open(reader.members()[0]) as stream,
+        ):
+            assert stream.verifiable == Verification[level]
+            assert stream.read() == _TEXT
+            assert stream.verified == Verification[level]
+
+
+class OnceStream(PluginStream):
+    ONCE = "toyonce"
+
+
+def test_a_codec_that_is_not_concatenated_reads_one_stream() -> None:
+    class OnceHandler(ToyHandler):
+        stream_format = OnceStream.ONCE
+        extension_aliases = ()
+        concatenated = False
+
+    with registration_scope():
+        register_codec(OnceHandler)
+        data = toy_compress(b"first ") + toy_compress(b"second")
+        with open_archive(io.BytesIO(data)) as reader:
+            assert reader.read(reader.members()[0]) == b"first "
+            codes = {d.code for d in reader.diagnostics.retained}
+    assert DiagnosticCode.ARCHIVE_TRAILING_DATA in codes
+
+
+class ProbedStream(PluginStream):
+    PROBED = "toyprobed"
+
+
+_PROBED_MAGIC = b"PRB!"
+
+
+class ProbedDecompressor(ToyDecompressor):
+    """A TOY stream behind another 4-byte prefix that no magic declares."""
+
+    def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        if not self._started and len(self._in) + len(data) >= 4:
+            data = bytes(self._in) + data
+            self._in.clear()
+            if data[:4] != _PROBED_MAGIC:
+                raise ToyError("not a probed TOY stream")
+            data = _MAGIC + data[4:]
+        return super().decompress(data, max_length)
+
+
+class ProbedHandler(CodecHandler):
+    stream_format = ProbedStream.PROBED
+    probe = staticmethod(lambda prefix: prefix.startswith(_PROBED_MAGIC))
+
+    def decompressor(self) -> ProbedDecompressor:
+        return ProbedDecompressor()
+
+
+def _probed(data: bytes) -> bytes:
+    return _PROBED_MAGIC + toy_compress(data)[4:]
+
+
+def test_a_probe_finds_a_codec_with_no_magic(tmp_path: Path) -> None:
+    probed = ArchiveFormat(ContainerFormat.RAW_STREAM, ProbedStream.PROBED)
+    data = _probed(_TEXT)
+    with registration_scope():
+        register_codec(ProbedHandler)
+        # As for a built-in probe: not on an unnamed source by default...
+        with pytest.raises(FormatDetectionError):
+            detect_format(io.BytesIO(data))
+        # ...but on a source with the format's extension, with
+        # always_probe_content, and in open_stream.
+        path = tmp_path / "notes.toyprobed"
+        path.write_bytes(data)
+        assert detect_format(path).format == probed
+        config = ArchiveyConfig(always_probe_content=True)
+        assert detect_format(io.BytesIO(data), config=config).format == probed
+        with open_stream(io.BytesIO(data)) as stream:
+            assert stream.read() == _TEXT
+
+
+def test_a_probe_that_raises_is_no_match() -> None:
+    def probe(prefix: bytes) -> bool:
+        raise RuntimeError("broken probe")
+
+    class RaisingHandler(ProbedHandler):
+        pass
+
+    RaisingHandler.probe = staticmethod(probe)
+    config = ArchiveyConfig(always_probe_content=True)
+    with registration_scope():
+        register_codec(RaisingHandler)
+        with pytest.raises(FormatDetectionError):
+            detect_format(io.BytesIO(_probed(_TEXT)), config=config)
 
 
 def test_a_cut_stream_is_truncated(toy: ArchiveFormat) -> None:
