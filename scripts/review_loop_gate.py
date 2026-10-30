@@ -595,12 +595,25 @@ def finish(event: dict) -> Finish:
             "this way."
         )
 
+    # `null` (present but empty) is a check the close could not run.
+    unchecked = "shape" in event and event["shape"] is None
     shape = [str(miss) for miss in event.get("shape") or []]
     misshapen = (
         "\n\n**Posting shape.** The review's posts miss the shape "
-        "`code-review-skill` §6 asks for, which the fixes and the weekly tally read "
-        "by. This does not change the verdict:\n\n"
+        "`code-review-skill` §3 and §6 ask for, which the fixes and the weekly tally "
+        "read by. It is a reviewer defect, to fix in the skill or the prompt, not on "
+        "this pull request, and it does not change the verdict:\n\n"
         + "\n".join(f"- {miss}" for miss in shape)
+        if shape
+        else "\n\n**Posting shape.** Not checked: the pull request's comments "
+        "could not be read."
+        if unchecked
+        else ""
+    )
+    shape_field = (
+        f" {SHAPE_FIELD}=skipped"
+        if unchecked
+        else f" {SHAPE_FIELD}={len(shape)}"
         if shape
         else ""
     )
@@ -608,7 +621,7 @@ def finish(event: dict) -> Finish:
         f"{ROUND_MARKER} n={rnd}{f' sha={sha}' if sha else ''} verdict={v.verdict}"
         f"{f' {OPUS_PASS_FIELD}' if opus_pass else ''}"
         f"{f' {OPUS_NEXT_FIELD}' if pass_after_fixes else ''}"
-        f"{f' {SHAPE_FIELD}={len(shape)}' if shape else ''} -->"
+        f"{shape_field} -->"
     )
     # No outcome label while the Opus pass is still to read the pull request: an
     # `approved` put on now would stay if the pass died. The pass's close sets it.

@@ -53,16 +53,23 @@ def reply(to: int, text: str, user: dict = DAVI) -> dict:
 def test_rounds_come_from_the_workflow_markers_only():
     comments = [
         marker(1, "conditional", " next=opus"),
-        marker(2, "findings", " pass=opus"),
+        marker(2, "findings", " pass=opus shape=skipped"),
         {"user": DAVI, "body": marker(3, "approved")["body"]},  # a person quoting one
         marker(3, "approved"),
     ]
     rounds = tally.read_rounds(comments)
-    assert [(r.n, r.verdict, r.opus_pass) for r in rounds] == [
-        (1, "conditional", False),
-        (2, "findings", True),
-        (3, "approved", False),
+    assert [(r.n, r.verdict, r.opus_pass, r.opus_next) for r in rounds] == [
+        (1, "conditional", False, True),
+        (2, "findings", True, False),
+        (3, "approved", False, False),
     ]
+    # A conditional approval that the Opus pass follows did not stop the loop.
+    assert tally.PullRequest(1, "t", rounds).passed_at == 3
+    # A close that could not check the posting shape is not a pass.
+    assert [r.shape for r in rounds] == [0, None, 0]
+    out = tally.report([tally.PullRequest(1, "t", rounds)], "#1")
+    assert "- **Rounds whose posts missed the posting shape:** 0" in out
+    assert "- **Rounds whose posting shape was not checked:** 1: #1 round 2" in out
 
 
 @pytest.mark.parametrize(
@@ -92,13 +99,27 @@ def test_findings_get_their_round_severity_and_reply():
             "id": 901,
             "user": BOT,
             "body": "## Round 1 · ✅ Approve, conditional on K1\n\n"
-            "**Findings**\n- K1 · 🟢 · CONFIRMED · stale name · {422 error}\n",
+            "**Findings**\n- K1 · 🟢 · CONFIRMED · stale name · {422 error}\n"
+            # The template's spelling, for a finding with no line to anchor on.
+            "- **K4** 🟡 `CONFIRMED` — the PR body is stale\n"
+            "  - **K5** · 📚 `[learning]` · `CONFIRMED` — why the bound is first\n",
+        },
+        {
+            "id": 902,
+            "user": BOT,
+            # A status line in a later round is not a new finding.
+            "body": "## Round 2 · 🔄 Request Changes\n\n- **K4** fixed in `abc`\n"
+            "- **K6** fixed in `abc`\n",
         },
     ]
     comments = [
         inline(1, "K2", "🔴", 2, "The K1 fix moved the bound past the read."),
         reply(1, "Fixed in abc123: the bound comes first again."),
         inline(2, "K3", "🟡", 2, "There is no test; K2's fix would want one."),
+        inline(3, "K7", "🟡", 2),
+        reply(3, "### K7 · for davitf\n\nLeft open: the maintainer's call."),
+        {**reply(3, "### K7 · fixed in `abc`\n\nAs decided."), "id": 31},
+        {**reply(3, "Agreed, will do."), "id": 32},
     ]
     issue_comments = [
         {"user": DAVI, "body": "## Round 1 · 1 fixed\n\n- K1 · fixed in `def`"}
@@ -109,6 +130,11 @@ def test_findings_get_their_round_severity_and_reply():
         ("K2", "blocking", 2, "fixed", True),
         # "K2's fix" is about a fix still to come, not one that caused this finding.
         ("K3", "important", 2, "no reply", False),
+        ("K4", "important", 1, "no reply", False),
+        ("K5", "learning", 1, "no reply", False),
+        # Escalated, answered, then fixed: the last stated disposition stands, and
+        # a reply that states none does not undo it.
+        ("K7", "important", 2, "fixed", False),
     ]
 
 
@@ -127,24 +153,26 @@ def test_the_report_splits_findings_around_the_opus_pass():
             tally.Finding(1, "K3", "important", 2, False, "disproven"),
             tally.Finding(1, "K4", "nit", 3, True, "fixed"),
             tally.Finding(1, "K5", "nit", None, False, "fixed"),
+            tally.Finding(1, "K6", "other", 2, False, "fixed"),
         ],
     )
-    out = tally.report([pr], datetime(2026, 10, 30, tzinfo=UTC))
+    out = tally.report([pr], "since 2026-10-30")
+    assert out.startswith("# Review tally: since 2026-10-30")
+    assert "- **1 reviewed pull request**, 3 rounds" in out
     assert "- **First approving round:** round 1: 1" in out
     assert "- **Ended on a conditional approval:** 0 of 1" in out
     assert "  - before the pass: 1 important" in out
-    assert "  - the pass: 1 blocking, 1 important" in out
+    # A heading the parser could not read is still shown, not dropped.
+    assert "  - the pass: 1 blocking, 1 important, 1 other" in out
     assert "  - after the pass: 1 nit" in out
     assert "  - with no round on them, so left out above: 1" in out
-    assert "- **Dispositions:** 4 fixed, 1 disproven" in out
+    assert "- **Dispositions:** 5 fixed, 1 disproven" in out
     assert "- **Raised by an earlier fix:** 1: #1 K4" in out
     assert "conditional → findings (Opus pass) → approved" in out
 
 
 def test_an_empty_window_says_so():
-    out = tally.report(
-        [tally.PullRequest(1, "No review")], datetime(2026, 10, 30, tzinfo=UTC)
-    )
+    out = tally.report([tally.PullRequest(1, "No review")], "since 2026-10-30")
     assert "No merged pull request in the window had a review round." in out
 
 

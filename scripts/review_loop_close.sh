@@ -41,11 +41,12 @@ live="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
   --json headRefOid --jq .headRefOid || true)"
 
 # The posting shape (`scripts/review_shape.py`), checked only when the review got
-# as far as a verdict. A failure to check is no miss: it must not fail a round that
-# already posted.
+# as far as a verdict. A failure to check is no miss and must not fail a round that
+# already posted, but it is recorded: `null` makes the marker say `shape=skipped`.
 echo '[]' > /tmp/shape.json
 fetched=false
 if [ "$verdict" != null ]; then
+  echo 'null' > /tmp/shape.json
   fetched=true
   for what in issues/comments pulls/reviews pulls/comments; do
     gh api --paginate --slurp \
@@ -62,7 +63,11 @@ if [ "$fetched" = true ]; then
     '{round: $round, issue_comments: ($ic[0] | add // []),
       reviews: ($rv[0] | add // []), review_comments: ($rc[0] | add // [])}' \
     2>/dev/null | python3 scripts/review_shape.py | jq '.misses' > /tmp/shape.json \
-    || echo '[]' > /tmp/shape.json
+    || echo 'null' > /tmp/shape.json
+fi
+if [ "$(cat /tmp/shape.json)" = null ]; then
+  echo "Posting shape: not checked (a comment list could not be read)" \
+    >> "$GITHUB_STEP_SUMMARY"
 fi
 
 # The gate step's markers say whether this pull request's Opus pass already ran.
@@ -82,7 +87,7 @@ jq -n \
     live_head_sha: $live_head_sha, repository: $repository,
     tier: $tier, opus_pass: $opus_pass,
     markers: ($markers | split("\n") | map(select(length > 0))),
-    verdict: $verdict, shape: ($shape[0] // [])}' \
+    verdict: $verdict, shape: $shape[0]}' \
   | python3 scripts/review_loop_gate.py --finish > /tmp/finish.json
 jq -r '"Verdict: \(.verdict) stop=\(.stop) counted=\(.counted) — \(.reason)"' \
   /tmp/finish.json >> "$GITHUB_STEP_SUMMARY"
