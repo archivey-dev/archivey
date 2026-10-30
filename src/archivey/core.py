@@ -208,8 +208,9 @@ def _follow_stub_volume(
 
     Returns the resolved first volume, or ``None`` when no split volume sits beside
     the stub (``slot`` is then unchanged). Raises :class:`ArchiveyUsageError` when
-    ``format`` names a different container than the volume's, and the volume-name
-    refusals of :func:`_refuse_unjoined_volume_names`.
+    ``format`` names a different container than the volume's, :class:`OpenError` when
+    the volume found is a symbolic link, and the volume-name refusals of
+    :func:`_refuse_unjoined_volume_names`.
     """
     stub = slot.current.path
     if stub is None or (config is not None and not config.discover_volumes):

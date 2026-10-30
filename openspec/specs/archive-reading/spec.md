@@ -239,7 +239,8 @@ a link afterwards is not caught.
 | A stub `vol.exe` beside `vol.zip.001` with `discover_volumes=False` | `FormatDetectionError` from `open_archive()` and `detect_format()` |
 | A stub `vol.exe` beside `vol.zip.001`, a symlink | `OpenError` naming `vol.zip.001` |
 | `l.zip.001`, a symlink the caller named, beside a regular `l.zip.002` | Read as before |
-| `x.zip.001` with `discover_volumes=False`, `x.zip.002` beside it | The ZIP reader refuses a split segment (`UnsupportedFeatureError`), not "part 2 missing" |
+| `x.zip.001` with `discover_volumes=False`, `x.zip.002` beside it | Refused by its name as a ZIP split segment (`UnsupportedFeatureError`) with nothing opened, not "part 2 missing" |
+| `x.7z.001` with `discover_volumes=False`, `x.7z.002` beside it | Opened alone; the 7z reader refuses what it finds (`TruncatedError`), not "part 2 missing" |
 
 Joining is format-specific (`format-7z` / `format-rar`): 7z concatenates a split
 byte stream; RAR parses self-describing volumes in order and stitches

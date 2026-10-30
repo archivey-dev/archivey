@@ -277,9 +277,8 @@ the other parts in the same folder. A part found that way that is a symbolic lin
 file you can read and they can't. That check runs once, when the parts are found, and the parts are
 opened by name later, so it doesn't stop someone who swaps a part for a link in between. A hard link
 also gets past it, and some systems, macOS among them, let any user make one. If others can write to
-the folder, set
-`ArchiveyConfig(discover_volumes=False)`: a path is then read as the one file it names, and you
-pass a set's volumes as a list.
+the folder, set `ArchiveyConfig(discover_volumes=False)`: a path is then read as the one file it
+names, and you pass a set's volumes as a list.
 
 For archives from strangers, the default `policy="strict"` refuses or rewrites every kind of unsafe
 member archivey knows of. The [policy

@@ -583,7 +583,9 @@ def first_volume_for_stub(path: Path) -> Path | None:
     hand to :func:`discover_volume_siblings`.
 
     A path that is already volume-shaped (``vol.exe.001``, ``rv.part1.exe``) is not
-    a stub. Two matching first volumes beside the stub is a refusal, not a guess.
+    a stub. Two matching first volumes beside the stub is a refusal, not a guess, and
+    a first volume that is a symbolic link is refused with :class:`OpenError`: it was
+    found, not named.
     """
     name = path.name
     if not is_sfx_stub_name(name):

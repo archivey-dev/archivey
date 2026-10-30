@@ -49,7 +49,8 @@ from tests.streams_util import ShortReadBytesIO, ShortReadNonSeekable
 _7Z_MAGIC = bytes.fromhex("377abcaf271c")
 _RAR_MAGIC = b"Rar!\x1a\x07\x00"
 _RAR5_ID = b"Rar!\x1a\x07\x01\x00"
-_RAR_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "rar"
+_FIXTURES = Path(__file__).resolve().parent / "fixtures"
+_RAR_FIXTURES = _FIXTURES / "rar"
 
 
 def test_discover_skips_stat_for_non_volume_names(tmp_path: Path) -> None:
@@ -2562,13 +2563,30 @@ def test_discovery_off_reads_only_the_named_file(tmp_path: Path) -> None:
         [tmp_path / "tinyvol.part1.rar", tmp_path / "tinyvol.part2.rar"], config=off
     ) as reader:
         assert reader.read("payload.bin") == b"ABCDEFGH" * 200
-    # A numbered part is opened alone too. Nothing looked for its set, so it is not
-    # refused as one with parts missing: the ZIP reader refuses a split segment.
+    # Nothing looks for a numbered part's set, so it is not refused as one with parts
+    # missing. A ``.zip.NNN`` part is refused by its name, before anything is opened:
+    # bytes that are no ZIP at all get the same refusal.
     first, payload = _split_zip(tmp_path / "zip")
     with open_archive(first) as reader:
         assert reader.read("payload.bin") == payload
     with pytest.raises(UnsupportedFeatureError, match="Multi-volume"):
         open_archive(first, config=off)
+    junk = tmp_path / "junk.zip.001"
+    junk.write_bytes(b"not an archive" * 10)
+    (tmp_path / "junk.zip.002").write_bytes(b"x")
+    with pytest.raises(UnsupportedFeatureError, match="Multi-volume"):
+        open_archive(junk, config=off)
+    # A ``.7z.NNN`` part is opened alone, and the 7z reader refuses what it finds.
+    data = (_FIXTURES / "damaged_member" / "7z_copy_nonsolid.7z").read_bytes()
+    (tmp_path / "s.7z.001").write_bytes(data[: len(data) // 2])
+    (tmp_path / "s.7z.002").write_bytes(data[len(data) // 2 :])
+    with open_archive(tmp_path / "s.7z.001") as reader:
+        assert reader.members()
+    with (
+        pytest.raises(TruncatedError, match="7z"),
+        open_archive(tmp_path / "s.7z.001", config=off) as reader,
+    ):
+        reader.members()
 
 
 def test_discovery_off_does_not_follow_a_stub_to_its_volumes(tmp_path: Path) -> None:
