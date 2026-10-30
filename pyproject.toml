@@ -277,6 +277,19 @@ root = ["src", "packages/archivey-squashfs/src", "packages/archivey-cpio/src", "
 # `project-includes`, so a bare `uv run ty check` is the gate with no path arguments.
 include = ["src", "packages/archivey-squashfs/src", "packages/archivey-cpio/src", "packages/archivey-ar/src"]
 
+[tool.ty.rules]
+# Every method that overrides one of a base class carries ``@override``
+# (archivey.internal.overrides); ``invalid-explicit-override``, on by default, refuses
+# the decorator on a method that overrides nothing.
+missing-override-decorator = "error"
+
+[[tool.ty.overrides]]
+# The CLI and the plugin packages use only archivey's public API, which has no
+# ``override`` (tests/test_cli_uses_public_api.py).
+include = ["src/archivey/cli/**", "packages/**"]
+[tool.ty.overrides.rules]
+missing-override-decorator = "ignore"
+
 [tool.coverage.run]
 source = ["archivey"]
 branch = true

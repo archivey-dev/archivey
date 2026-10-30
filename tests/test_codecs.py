@@ -3226,6 +3226,7 @@ def test_archivey_names_its_own_packages_by_the_member() -> None:
 _NOT_OPTIONAL_LIBRARIES = {
     "__pypy__": "PyPy's own module, for memory pressure",
     "_typeshed": "type-checking stubs, imported only under TYPE_CHECKING",
+    "typing_extensions": "the type checkers' override, imported only under TYPE_CHECKING",
     "tqdm": "the CLI's progress bar, a dependency of archivey-cli, not a decoder",
 }
 
