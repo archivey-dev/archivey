@@ -48,7 +48,8 @@ SKILL = Path(".claude/skills/code-review-skill")
 # Copied with the skill: its §1 tells the reviewer to run the tier command.
 COPIED = (SKILL, Path("scripts/review_prep.py"))
 
-REVIEW_MODEL = "claude-sonnet-5-5"  # what .github/workflows/review-loop.yml runs
+# What .github/workflows/review-loop.yml runs for a standard or deep first look.
+REVIEW_MODEL = "claude-opus-5"
 # The loop's tools less WebFetch: a fetch of the PR's page on GitHub would show the
 # later rounds and the fix.
 REVIEW_TOOLS = "Read,Grep,Glob,Bash"
