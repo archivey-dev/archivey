@@ -122,29 +122,34 @@ Measured with `ncompress` 5.0, as listed on [`single-file.md`](single-file.md) �
 | A 16-bit file cut at 200 even points | 100 `TruncatedError`, 100 read short with no error |
 | A 12-bit file cut at 200 even points | 131 `TruncatedError`, 69 read short with no error |
 | A zero-byte `.Z` | `TruncatedError` |
-| `compress -b9` | Reads, unless the file hit a bug in ncompress 5.0 that writes a code that does not fit in 9 bits. Such a file reads without error but returns wrong bytes, as in `7z` and `unar`; see below |
+| `compress -b9` | Reads, unless the file hit a bug in ncompress 5.0 that writes a code that does not fit in 9 bits. Such a file reads without error but returns wrong bytes, as in `7z` up to 26.04 and `unar`; see below |
 
 **9-bit files from ncompress 5.0 can be damaged.** When `compress -b9` fills the table
 partway through a string, ncompress 5.0 adds one entry too many, code 512, and can later
 write it in 9 bits. Its low 9 bits read as the literal byte 0, and its tenth bit lands in
-the next code. Nothing marks the damage, so every decoder reads on: archivey, `7z` and
-`unar` return the same wrong bytes. Whether a file is hit depends on the data. The bug
+the next code. Nothing marks the damage, so archivey, `7z` up to 26.04 and `unar` read
+on and return the same wrong bytes. Whether a file is hit depends on the data. The bug
 is in the oldest version in ncompress's repository, 4.2.3 (commit `4b59db4`, 1992), which
 already sets the 9-bit limit one too high. It was fixed in its repository in February
 2021 (commit `3303f31`, "fixed nine bits processing"), after the 5.0 release, and no
 release carries the fix yet. A build of that commit writes 9-bit files that archivey,
-`7z` and `unar` read back to their input.
+`7z` up to 26.04 and `unar` read back to their input.
 
 ncompress 5.0 and GNU gzip 1.12 refuse every 9-bit file, damaged or not. Their decoders
 move to 10-bit codes when the table fills, even when the header says 9, which is the other
 half of the same ncompress fix. So their refusal is not evidence against a file.
 
-7-Zip 26.05 (2026-10-21) went the other way. Its rewritten decoder moves to 10-bit codes
-when a 9-bit table fills, as the original `compress` and ncompress 5.0 do, and it reports
-`Data Error` on every 9-bit file that filled its table, including ones archivey reads to
-their input. 7-Zip up to 26.04 keeps 9-bit codes. The 9-bit oracle tests in
-`tests/test_codecs.py` skip where `7z` is 26.05 or later, and one test pins 26.05's
-refusal so a later change shows up.
+7-Zip 26.05 (2026-10-21) sides with the original decoder. Its rewritten decoder adds a
+9-bit path, `Z7_ZDECODER_BIT9_COMPAT` in `ZDecoder.cpp`, which its source describes as
+"compatible with original Z decoder": once a 9-bit table fills, it skips the code-group
+padding and reads codes 10 bits wide, whose values stay below 512. Its comment says 7-Zip
+up to 26.04 "can't unpack some old bit9 archives correctly". So 26.05 reads the shape the
+original `compress` wrote and ncompress 5.0 and GNU gzip read. It reports `Data Error`
+on every 9-bit file that keeps 9-bit codes after the table fills, the shape ncompress
+`3303f31` writes and archivey, `unar` and 7-Zip up to 26.04 read. The 9-bit `7z`
+comparisons in `tests/test_codecs.py` skip where `7z` is 26.05 or later; archivey's own
+9-bit checks run everywhere, and one test pins 26.05's refusal so a later change shows
+up. Which shape archivey should read is open (§7).
 
 Without block mode (`compress -C`) no installed tool writes files, so the tests carry
 their own encoder, which writes both modes. GNU gzip 1.12 reads its output like archivey at 10 to 16 bits. The
@@ -203,7 +208,10 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 
 ## 7. Open questions
 
-None.
+- **Which 9-bit shape to read.** Once a 9-bit table fills, archivey keeps 9-bit codes
+  (ncompress `3303f31`, `unar`, 7-Zip up to 26.04). The original `compress`, ncompress
+  5.0, GNU gzip and 7-Zip 26.05 move to 10-bit-wide codes (§3). Which shape real `-b9`
+  files carry, and whether archivey should read both, is not settled.
 
 The truncation gap is the format's, not an open question;
 [`docs/formats.md`](../../docs/formats.md) tells users it is best-effort.
@@ -225,8 +233,9 @@ The truncation gap is the format's, not an open question;
 | One call's output is bounded |
 | The table stays under about 19 MiB, 21 MiB on a free-threaded build (§4) |
 | Files written without block mode decode like GNU `gzip -d` at 10 to 16 bits |
-| 9-bit files, in block mode with and without CLEAR codes and without block mode, decode to their input like `7z` |
-| A 9-bit file with ncompress 5.0's damage reads with no error to the same wrong bytes as `7z` |
+| 9-bit files, in block mode with and without CLEAR codes and without block mode, decode to their input; like `7z` where it is 26.04 or earlier |
+| A 9-bit file with ncompress 5.0's damage reads with no error to wrong bytes; the same as `7z` where it is 26.04 or earlier |
+| 7-Zip 26.05 or later refuses a 9-bit file that keeps 9-bit codes, and reads a 16-bit one |
 | Linked long entries decode exactly |
 | `.tar.Z` is found; a bare `.Z` stays bare |
 
