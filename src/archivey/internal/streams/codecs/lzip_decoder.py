@@ -36,7 +36,7 @@ import struct
 import zlib
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.exceptions import (
     CorruptionError,
@@ -52,7 +52,7 @@ from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.hashing import crc32_combine
 from archivey.internal.overrides import override
 from archivey.internal.resource_usage import ResourceUsageRecorder
-from archivey.internal.streams.codecs.isolated import IN_PROCESS, Decompressor, Natives
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
 from archivey.internal.streams.codecs.xz_decoder import lzma_error_to_archivey
 from archivey.internal.streams.decompressor_stream import (
     TRAILING_DATA_CANDIDATES,
@@ -68,6 +68,9 @@ from archivey.internal.streams.decompressor_stream import (
     near_stream_magic,
     release_decoder,
 )
+
+if TYPE_CHECKING:
+    from archivey.formats import Decompressor
 
 _MAGIC = b"LZIP"
 _HEADER_SIZE = 6

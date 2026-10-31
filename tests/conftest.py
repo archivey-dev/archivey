@@ -371,6 +371,30 @@ def sevenzip_lists_arm64() -> bool:
 
 
 @functools.cache
+def sevenzip_version(program: str = "7z") -> tuple[int, int] | None:
+    """The version ``program``'s ``7z i`` banner names, as (major, minor), or None.
+
+    7-Zip prints ``7-Zip 23.01 (x64)`` or ``7-Zip (z) 26.05 (x64)``; p7zip prints
+    ``p7zip Version 16.02``. A missing program, a banner neither matches, or a run
+    that does not finish is None; the last is written to stderr once.
+    """
+    if shutil.which(program) is None:
+        return None
+    try:
+        listing = run_7z(["i"], text=True, program=program).stdout
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"{program} i did not finish: {exc}", file=sys.stderr)
+        return None
+    found = re.search(r"(?:7-Zip(?: \([a-z]\))?|p7zip Version) (\d+)\.(\d+)", listing)
+    return None if found is None else (int(found[1]), int(found[2]))
+
+
+def sevenzip_version_text(version: tuple[int, int] | None) -> str:
+    """``version`` as 7-Zip writes it (``26.05``), or ``unknown version`` for None."""
+    return "unknown version" if version is None else f"{version[0]}.{version[1]:02d}"
+
+
+@functools.cache
 def sevenzip_with_riscv() -> str | None:
     """The first of ``7zz`` and ``7z`` on ``PATH`` whose ``7z i`` lists RISCV, or None.
 

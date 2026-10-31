@@ -1,17 +1,15 @@
 """A :class:`~archivey.formats.CodecHandler` as a :class:`StreamCodec`: what
 ``register_codec`` adds to the codec registry.
 
-The handler's decompressor has the standard library's one-stream interface, so the
-codec decodes through :class:`FramedDecoder`, the adapter bzip2, zstd and LZ4 use: it
-gives the handler the same rules for padding, further streams and trailing data as
-those codecs have.
+The entry's :meth:`~StreamCodec.decompressor` is the handler's, so it decodes through
+:class:`StreamCodec`'s default ``open``, as bzip2, zstd and LZ4 do: the handler gets the
+same rules for padding, further streams and trailing data as those codecs have.
 """
 
 from __future__ import annotations
 
-import functools
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, BinaryIO
+from typing import TYPE_CHECKING, Any
 
 from archivey.config import ProcessIsolation
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
@@ -25,17 +23,9 @@ from archivey.internal.format_adapter import prefix_probe
 from archivey.internal.format_args import add_plugin_spellings, plugin_spelling_clash
 from archivey.internal.overrides import override
 from archivey.internal.registry import _optional, get_registry
-from archivey.internal.streams.archive_stream import RewindWarning
 from archivey.internal.streams.codecs.base import (
     CodecParams,
-    CodecSource,
     StreamCodec,
-)
-from archivey.internal.streams.codecs.framed_decoder import (
-    FramedDecompressorStream,
-    StreamStart,
-    never_starts,
-    offset0_start,
 )
 from archivey.internal.streams.codecs.registry import add_stream_codec, stream_codecs
 from archivey.types import (
@@ -49,16 +39,13 @@ from archivey.types import (
 )
 
 if TYPE_CHECKING:
-    from archivey.formats import CodecCall, CodecHandler
+    from archivey.formats import CodecCall, CodecHandler, Decompressor
 
 
 class HandlerCodec(StreamCodec):
     """The base of the codec class :func:`codec_class` builds for each handler."""
 
     handler: CodecHandler
-    # How a further stream starts (``CodecHandler.concatenated``).
-    # A static method: a plain function here would be bound, and called with the codec.
-    starts: StreamStart = staticmethod(never_starts)
 
     @override
     def requirement_under(
@@ -96,24 +83,8 @@ class HandlerCodec(StreamCodec):
         return not self.excluded_by(excluded) and self._backend_present()
 
     @override
-    def open(
-        self, source: CodecSource, params: CodecParams, config: StreamConfig
-    ) -> BinaryIO:
-        if not self.available(config.excluded_libraries):
-            raise self._missing(
-                f"{self.handler.stream_format.value} streams",
-                excluded=config.excluded_libraries,
-            )
-        call = codec_call(params, config)
-        return FramedDecompressorStream(
-            source,
-            functools.partial(self.handler.decompressor, call),
-            codec_name=self.handler.stream_format.value,
-            magic=self.starts,
-            collector=config.collector,
-            report_trailing_data=config.report_trailing_data,
-            refuse_input_after_end=config.refuse_input_after_end,
-        )
+    def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
+        return self.handler.decompressor(codec_call(params, config))
 
     @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
@@ -121,10 +92,6 @@ class HandlerCodec(StreamCodec):
         if translated is not None:
             return translated
         return self._eof_truncation(exc, self.handler.stream_format.value)
-
-    @override
-    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
-        return RewindWarning(self.handler.stream_format.value, suggest_install=False)
 
 
 def codec_call(params: CodecParams, config: StreamConfig) -> CodecCall:
@@ -175,8 +142,8 @@ def codec_class(handler: type[CodecHandler]) -> type[HandlerCodec]:
         "magic": tuple(MagicSignature(m.offset, m.data, fmt) for m in handler.magic),
         "extension_aliases": tuple(handler.extension_aliases),
         "checks_content": bool(handler.checks_content),
+        "concatenated": bool(handler.concatenated),
     }
-    attrs["starts"] = staticmethod(offset0_start(handler.magic, handler.concatenated))
     if handler.probe is not None:
         attrs["content_probe"] = _content_probe(handler.probe)
     return type(f"{handler.__name__}Codec", (HandlerCodec,), attrs)

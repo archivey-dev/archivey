@@ -2318,7 +2318,9 @@ class BaseArchiveReader(ArchiveReader):
                 self._present_member(idx, member)
             self._walk_presented = idx + 1
         is_symlink = member.type is MemberType.SYMLINK
-        if is_symlink and member.link_target == "":
+        if member.link_target == "" and (
+            is_symlink or member.type is MemberType.HARDLINK
+        ):
             # A target the header carries (TAR, RAR5, ISO Rock Ridge) is set while the
             # member is typed, so this is the first place every backend's passes share.
             # Emit first and clear after: a strict policy that raises here leaves the
@@ -2370,10 +2372,11 @@ class BaseArchiveReader(ArchiveReader):
         self._presenting = None
 
     def _emit_empty_link_target(self, member: ArchiveMember) -> None:
-        """Report a symlink whose stored target is the empty string.
+        """Report a symlink or hard link whose stored target is the empty string.
 
-        No filesystem takes an empty path as a link target, so the archive records no
-        target for this link, the same as a writer that stored none. It is presented
+        No filesystem takes an empty path as a link target, and an empty name matches
+        no member, so the archive records no target for this link, the same as a
+        writer that stored none. It is presented
         the same way: ``link_target`` unset, and extraction records
         ``LINK_TARGET_UNAVAILABLE`` for it instead of passing ``""`` to ``os.symlink``.
         """
@@ -2381,7 +2384,8 @@ class BaseArchiveReader(ArchiveReader):
             member,
             reason="target_empty",
             message=(
-                f"The symlink target of {quoted(member.name)} is stored as an empty "
+                f"The {'symlink' if member.type is MemberType.SYMLINK else 'hard link'} "
+                f"target of {quoted(member.name)} is stored as an empty "
                 f"string; leaving link_target unset."
             ),
             target_in_archive=False,

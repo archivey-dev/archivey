@@ -18,7 +18,7 @@ from __future__ import annotations
 import lzma
 import zlib
 from collections.abc import Mapping
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from archivey.config import ProcessIsolation
 from archivey.internal.overrides import override
@@ -31,21 +31,8 @@ from archivey.internal.streams.codecs.decoder_child import (
 )
 from archivey.internal.streams.native_memory import note_native_memory
 
-
-class Decompressor(Protocol):
-    """The one-stream decompressor surface of ``bz2``, ``lzma``, zstd and
-    ``lz4.frame``, in-process or in a child."""
-
-    def decompress(self, data: bytes, max_length: int = ...) -> bytes: ...
-
-    @property
-    def eof(self) -> bool: ...
-
-    @property
-    def needs_input(self) -> bool: ...
-
-    @property
-    def unused_data(self) -> bytes: ...
+if TYPE_CHECKING:
+    from archivey.formats import Decompressor
 
 
 class ZlibDecompressor(Protocol):

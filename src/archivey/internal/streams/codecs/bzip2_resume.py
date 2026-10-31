@@ -32,11 +32,10 @@ from __future__ import annotations
 import bz2
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.exceptions import TruncatedError
 from archivey.internal.overrides import override
-from archivey.internal.streams.codecs.isolated import Decompressor
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -44,6 +43,9 @@ from archivey.internal.streams.decompressor_stream import (
     SeekPoint,
 )
 from archivey.internal.streams.resume import ResumeReachedStreamEnd
+
+if TYPE_CHECKING:
+    from archivey.formats import Decompressor
 
 # A stream header that accepts a block of any size (see the module docstring).
 _HEADER = b"BZh9"

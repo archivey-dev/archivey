@@ -1,7 +1,7 @@
 """Decompressors for the two DOS-era ZIP methods: Shrink (1) and Implode (6).
 
-Opened via :class:`~.zip_legacy_codec.ShrinkHandler` and
-:class:`~.zip_legacy_codec.ImplodeHandler`, which ``FramedDecoder`` drives. Both are
+Opened via :class:`~.zip_legacy_codec.ShrinkCodec` and
+:class:`~.zip_legacy_codec.ImplodeCodec`, which ``FramedDecoder`` drives. Both are
 pure Python (DR-20). Only archives from PKZIP 1.x and its contemporaries use them, so
 the decoders favour plain code over speed.
 

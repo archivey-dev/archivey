@@ -129,11 +129,11 @@ def test_rapidgzip_catch_all_translates_the_same_for_deflate_and_bzip2(
     # one: a RuntimeError it reports is marked, and the reported_by_child arm gives it
     # the same verdict. Unmarked, only the catch-all arm can map it.
     from archivey.internal.streams.codecs import GzipCodec
-    from archivey.internal.streams.codecs.bzip2_codec import Bzip2Handler
+    from archivey.internal.streams.codecs.bzip2_codec import Bzip2Codec
 
     exc = RuntimeError(message)
     assert is_corruption_not_truncation(GzipCodec()._translate_accelerator(exc))
-    assert is_corruption_not_truncation(Bzip2Handler()._translate_accelerator(exc))
+    assert is_corruption_not_truncation(Bzip2Codec()._translate_accelerator(exc))
 
 
 def test_rapidgzip_truncation_is_reported(tmp_path: Path) -> None:
@@ -1062,13 +1062,21 @@ def test_bzip2_read_as_empty_fallback_keeps_the_single_stream_rule(
     # The standard library that an empty first accelerator read hands over to decodes
     # as the accelerator-off path does: after a container coder's single stream (7z),
     # a second stream is trailing data, not content.
-    from archivey.internal.streams.codecs.bzip2_codec import _Bzip2EmptyStreamCheck
+    from archivey.internal.streams.codecs.base import CodecParams
+    from archivey.internal.streams.codecs.bzip2_codec import (
+        Bzip2Codec,
+        _Bzip2EmptyStreamCheck,
+    )
 
     data = bz2.compress(b"first") + bz2.compress(b"second")
+    params = CodecParams(single_stream=single_stream)
     stream = _Bzip2EmptyStreamCheck(
         io.BytesIO(b""),  # an accelerator that read the stream as empty
         views=_SourceViews(lambda: io.BytesIO(data)),
         config=DEFAULT_STREAM_CONFIG,
         single_stream=single_stream,
+        open_stdlib=lambda source: Bzip2Codec().open_framed(
+            source, params, DEFAULT_STREAM_CONFIG
+        ),
     )
     assert stream.read() == (b"first" if single_stream else b"firstsecond")

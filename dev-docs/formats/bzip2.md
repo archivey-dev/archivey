@@ -211,7 +211,7 @@ the end check under `refuse_input_after_end` finds the pad and raises `DataAfter
 has no such clip, so on a source that is not cut it does raise there: see §5.
 
 **Errors through the accelerator.** Its messages carry no exception type archivey can
-match on, so `Bzip2Handler._translate_accelerator` matches the text. "Calculated CRC",
+match on, so `Bzip2Codec._translate_accelerator` matches the text. "Calculated CRC",
 "[BZip2 block", "Huffman", "magic", "bit string", "bad optional access", and any
 message that contains `std::exception` or "Unknown exception" are `CorruptionError`; each
 was seen on a corrupt file. A non-seekable source is `StreamNotSeekableError`.
@@ -365,7 +365,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
   [`threat-model.md`](../threat-model.md) O5, O11
 - Decisions: [ADR 0008](../decisions/0008-single-accelerator-rapidgzip.md) ·
   [`library-analysis.md`](../library-analysis.md) §bzip2
-- Code: `internal/streams/codecs/bzip2_codec.py` (`Bzip2Handler`, `_Bzip2EmptyStreamCheck`),
+- Code: `internal/streams/codecs/bzip2_codec.py` (`Bzip2Codec`, `_Bzip2EmptyStreamCheck`),
   `rapidgzip_select.py` (`_bound_rapidgzip_source`, `_open_rapidgzip`),
   `rapidgzip_child.py` (`RapidgzipChildStream`), `rapidgzip_worker.py`
 - Handbook: [`single-file.md`](single-file.md) · [`gzip.md`](gzip.md) (the DEFLATE side of

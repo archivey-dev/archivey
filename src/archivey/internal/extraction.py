@@ -3146,6 +3146,14 @@ class ExtractionCoordinator:
         result_index: int,
     ) -> ExtractionResult:
         source = original.link_target_member
+        if source is None and original.link_target_unrecorded:
+            # A hard link stored with an empty target names no member. GNU tar
+            # substitutes "." and fails that one link; like a symlink with no target,
+            # it is LINK_TARGET_UNAVAILABLE, reported at listing, not a failure that
+            # OnError.STOP would turn into an aborted extraction.
+            return ExtractionResult(
+                original, None, ExtractionStatus.LINK_TARGET_UNAVAILABLE, None
+            )
         if source is None:
             raise LinkTargetNotFoundError(
                 "Hardlink target not found",

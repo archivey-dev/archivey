@@ -14,9 +14,18 @@ from collections.abc import Callable
 
 import pytest
 
-from archivey import open_archive
+from archivey import (
+    ArchiveFormat,
+    ArchiveyConfig,
+    DiagnosticCode,
+    DiagnosticPolicy,
+    ExtractionStatus,
+    open_archive,
+)
+from archivey.diagnostics import HeaderAmbiguityContext
 from archivey.exceptions import (
     CorruptionError,
+    DiagnosticRaisedError,
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -25,6 +34,7 @@ from archivey.internal.backends.tar_parser import (
     BLOCKSIZE,
     HeaderBlock,
     HeaderFormat,
+    LinkData,
     NameSource,
     RejectedBlock,
     SparseFormat,
@@ -51,6 +61,7 @@ from tests.tar_build import (
     field as _field,
     octal as _octal,
     pax as _pax,
+    pax_body as _pax_body,
     pax_record as _rec,
 )
 
@@ -663,7 +674,9 @@ def test_pax_path_wins_over_a_gnu_long_name_in_either_order(pax_first: bool) -> 
     assert entry.name == b"pax-n"
 
 
-def test_empty_pax_value_cancels_a_global() -> None:
+def test_empty_pax_uname_clears_a_global() -> None:
+    """GNU tar 1.35 stores an empty ``uname`` as it is: the member has no user name,
+    neither the global one nor the header's."""
     data = (
         _pax({"uname": "global"}, typeflag=b"g")
         + _block(b"a")
@@ -673,7 +686,7 @@ def test_empty_pax_value_cancels_a_global() -> None:
     )
     a, b = _walk(data)[0]
     assert a.uname_pax is not None and a.uname_pax.value == b"global"
-    assert b.uname_pax is None
+    assert b.uname_pax is not None and b.uname_pax.value == b""
 
 
 def test_global_records_are_shared_until_a_global_header_changes_them() -> None:
@@ -694,15 +707,351 @@ def test_global_records_are_shared_until_a_global_header_changes_them() -> None:
     assert a.pax[b"comment"].value == b"one"  # the old snapshot is unchanged
 
 
-def test_global_empty_value_deletes_the_key() -> None:
+def test_a_later_global_header_with_an_empty_value_still_replaces() -> None:
+    """``comment`` goes because the second header replaces the first; its empty
+    record is skipped, so it is not what removed the key."""
     data = (
         _pax({"comment": "one"}, typeflag=b"g")
-        + _pax({"comment": ""}, typeflag=b"g")
+        + _pax_body(_rec(b"comment", b"") + _rec(b"other", b"x"), typeflag=b"g")
         + _block(b"a")
         + _END
     )
     (entry,), _ = _walk(data)
     assert b"comment" not in entry.pax
+    assert entry.pax[b"other"].value == b"x"
+
+
+# How PAX records combine follows GNU tar 1.35, measured 2026-10-30 against crafted
+# archives; tarfile and POSIX read several of these shapes differently, and each
+# difference frames or names a member differently from GNU tar.
+
+
+def _member(name: bytes, payload: bytes, **kwargs) -> bytes:
+    return _block(name, size=len(payload), **kwargs) + _data(payload)
+
+
+def test_a_global_header_replaces_the_earlier_global_records() -> None:
+    """``[g size=1024][g mtime=5][hdr size 0][hidden][after]``: GNU tar lists
+    ``hdr`` empty, then ``hidden``; merging the global headers (POSIX, tarfile) would
+    read ``hidden`` as 1024 bytes of ``hdr``."""
+    data = (
+        _pax({"size": "1024"}, typeflag=b"g")
+        + _pax({"mtime": "5"}, typeflag=b"g")
+        + _block(b"hdr")
+        + _member(b"hidden", b"S")
+        + _member(b"after", b"Z")
+        + _END
+    )
+    entries, end = _walk(data)
+    assert [(e.name, e.stored_size) for e in entries] == [
+        (b"hdr", 0),
+        (b"hidden", 1),
+        (b"after", 1),
+    ]
+    assert end.kind is TarEndKind.ZERO_BLOCK
+    assert b"size" not in entries[0].pax
+
+
+def test_a_global_hdrcharset_outlives_a_later_global_header() -> None:
+    data = (
+        _pax({"hdrcharset": "BINARY"}, typeflag=b"g")
+        + _pax({"comment": "c"}, typeflag=b"g")
+        + _pax({"path": "p"})
+        + _block(b"a")
+        + _END
+    )
+    (entry,), _ = _walk(data)
+    assert entry.name_binary
+
+
+@pytest.mark.parametrize(
+    ("typeflag", "expected"), [(b"x", b"second"), (b"g", b"first")]
+)
+def test_a_repeated_key_keeps_the_value_gnu_tar_applies(
+    typeflag: bytes, expected: bytes
+) -> None:
+    """GNU tar applies a member's records in order and a global header's in reverse
+    (it prepends them to a list), so the last wins in ``x`` and the first in ``g``."""
+    data = (
+        _pax([("path", "first"), ("path", "second")], typeflag=typeflag)
+        + _block(b"hdr")
+        + _END
+    )
+    (entry,), _ = _walk(data)
+    assert entry.name == expected
+
+
+def test_a_global_header_frames_by_its_first_size() -> None:
+    data = (
+        _pax([("size", "512"), ("size", "0")], typeflag=b"g")
+        + _block(b"hdr")
+        + _member(b"inner", b"I")[:BLOCKSIZE]
+        + _END
+    )
+    (entry,), end = _walk(data)
+    assert (entry.name, entry.stored_size) == (b"hdr", 512)
+    assert end.kind is TarEndKind.ZERO_BLOCK
+
+
+@pytest.mark.parametrize("typeflag", [b"x", b"g"])
+def test_an_empty_size_record_is_damage(typeflag: bytes) -> None:
+    """GNU tar reports ``size=`` as malformed ("invalid size=") and frames the member
+    by the size in force before it; POSIX would delete the header's size too. The
+    size frames the next header, so archivey refuses it, as it refuses ``size=abc``."""
+    data = (
+        _pax({"size": "1024"}, typeflag=b"g")
+        + _pax({"size": ""}, typeflag=typeflag)
+        + _block(b"hdr")
+        + _END
+    )
+    entries, end = _walk(data)
+    assert entries == []
+    assert (end.kind, end.offset) == (TarEndKind.REJECTED, 2 * BLOCKSIZE)
+    assert "empty size record" in end.reason
+
+
+@pytest.mark.parametrize("key", ["path", "mtime", "uid", "gid"])
+def test_an_empty_member_value_keeps_the_global_one(key: str) -> None:
+    """GNU tar skips an empty ``path`` and reports an empty number as invalid: the
+    global record stays in force. POSIX would fall back to the header field."""
+    data = _pax({key: "7"}, typeflag=b"g") + _pax({key: ""}) + _block(b"hdr") + _END
+    (entry,), _ = _walk(data)
+    assert entry.pax[key.encode()].value == b"7"
+    if key == "path":
+        assert entry.name == b"7"
+
+
+def test_an_empty_member_path_keeps_the_header_name() -> None:
+    (entry,), _ = _walk(_pax({"path": ""}) + _block(b"hdr") + _END)
+    assert (entry.name, entry.name_source) == (b"hdr", NameSource.HEADER)
+
+
+def test_an_empty_path_does_not_undo_an_earlier_one_in_the_same_header() -> None:
+    data = _pax([("path", "a"), ("path", "")]) + _block(b"hdr") + _END
+    (entry,), _ = _walk(data)
+    assert entry.name == b"a"
+
+
+def test_an_empty_linkpath_clears_the_target() -> None:
+    """GNU tar 1.35 lists ``lnk ->`` and creates nothing, over the global record,
+    the GNU long link and the header's link name alike."""
+    long_link = _block(b"././@LongLink", size=4, typeflag=b"K") + _data(b"tgt\x00")
+    data = (
+        _pax({"linkpath": "global"}, typeflag=b"g")
+        + long_link
+        + _pax({"linkpath": ""})
+        + _block(b"lnk", typeflag=b"2", linkname=b"header")
+        + _END
+    )
+    (entry,), _ = _walk(data)
+    assert (entry.linkname, entry.linkname_source) == (b"", NameSource.PAX)
+
+
+@pytest.mark.parametrize("typeflag", [b"1", b"2"])
+@pytest.mark.parametrize("streaming", [False, True])
+def test_an_empty_link_target_is_unavailable_not_fatal(
+    typeflag: bytes, streaming: bool, tmp_path
+) -> None:
+    """An empty PAX linkpath (or header link name) leaves a symlink or hard link with
+    no target: SYMLINK_TARGET_UNAVAILABLE at listing and LINK_TARGET_UNAVAILABLE at
+    extraction, which goes on to the members after it. GNU tar 1.35 substitutes "."
+    for an empty hard link target and fails that link alone."""
+    for spelling in (
+        _pax({"linkpath": ""}) + _block(b"lnk", typeflag=typeflag, linkname=b"t"),
+        _block(b"lnk", typeflag=typeflag, linkname=b""),
+    ):
+        data = _member(b"t", b"T") + spelling + _member(b"after", b"A") + _END
+        with open_archive(
+            io.BytesIO(data), format=ArchiveFormat.TAR, streaming=streaming
+        ) as ar:
+            members = {m.name: m for m, _ in ar.stream_members()}
+            counts = ar.diagnostics.counts
+            assert counts[DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE] == 1
+        assert members["lnk"].link_target is None
+        assert members["lnk"].link_target_unrecorded
+        dest = tmp_path / f"{typeflag.decode()}-{len(spelling)}-{streaming}"
+        with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+            statuses = {r.member.name: r.status for r in ar.extract_all(dest)}
+        assert statuses == {
+            "t": ExtractionStatus.EXTRACTED,
+            "lnk": ExtractionStatus.LINK_TARGET_UNAVAILABLE,
+            "after": ExtractionStatus.EXTRACTED,
+        }
+
+
+def test_only_the_last_x_header_of_a_member_applies() -> None:
+    """GNU tar 1.35 keeps the last x header and drops the earlier ones: merging them
+    would let a dropped size frame ``hidden`` as the member's data."""
+    data = (
+        _pax({"size": "1024"})
+        + _pax({"mtime": "5"})
+        + _block(b"hdr")
+        + _member(b"hidden", b"H")
+        + _member(b"after", b"A")
+        + _END
+    )
+    entries, _ = _walk(data)
+    assert [(e.name, e.size) for e in entries] == [
+        (b"hdr", 0),
+        (b"hidden", 1),
+        (b"after", 1),
+    ]
+    data = _pax({"path": "p1"}) + _pax({"uname": "u"}) + _block(b"hdr") + _END
+    (entry,), _ = _walk(data)
+    assert entry.name == b"hdr"
+    assert entry.uname_pax is not None and entry.uname_pax.value == b"u"
+
+
+def test_a_global_header_between_does_not_drop_the_member_x_header() -> None:
+    data = (
+        _pax({"path": "p1"})
+        + _pax({"comment": "c"}, typeflag=b"g")
+        + _block(b"hdr")
+        + _END
+    )
+    (entry,), _ = _walk(data)
+    assert entry.name == b"p1"
+
+
+@pytest.mark.parametrize(
+    ("records", "expected"),
+    [
+        # The global path stays when the member's own one is empty after the cut.
+        (_rec(b"path", b"\x00abc"), b"glob"),
+        # In one header, a later path empty after the cut leaves the earlier one.
+        (_rec(b"path", b"p1") + _rec(b"path", b"\x00evil"), b"p1"),
+    ],
+)
+def test_a_path_empty_after_the_nul_cut_leaves_the_value_in_force(
+    records: bytes, expected: bytes
+) -> None:
+    data = (
+        _pax({"path": "glob"}, typeflag=b"g")
+        + _pax_body(records)
+        + _block(b"hdr")
+        + _END
+    )
+    (entry,), _ = _walk(data)
+    assert entry.name == expected
+
+
+@pytest.mark.parametrize(
+    ("typeflag", "records", "binary"),
+    [
+        # x: the last hdrcharset decides, as the last value of any key does.
+        (b"x", [b"ISO-IR 10646 2000 UTF-8", b"BINARY"], True),
+        # g: the first, as the first value of any key does.
+        (b"g", [b"BINARY", b"ISO-IR 10646 2000 UTF-8"], True),
+        (b"g", [b"ISO-IR 10646 2000 UTF-8", b"BINARY"], False),
+    ],
+)
+def test_hdrcharset_follows_its_header_s_rule(
+    typeflag: bytes, records: list[bytes], binary: bool
+) -> None:
+    body = b"".join(_rec(b"hdrcharset", r) for r in records) + _rec(b"path", b"n")
+    parsed = parse_pax_records(body, binary_default=False, first_wins=typeflag == b"g")
+    assert parsed.values[b"path"].binary is binary
+    assert (parsed.values[b"hdrcharset"].value == b"BINARY") is binary
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(b"a\x00b", b"a"), (b"\x00abc", b"hdr")],
+)
+def test_a_pax_path_ends_at_its_first_nul(value: bytes, expected: bytes) -> None:
+    """GNU tar reads the value as a C string, as it reads an ``L`` payload; a value
+    that is empty after the cut is skipped like an empty one."""
+    data = _pax_body(_rec(b"path", value)) + _block(b"hdr") + _END
+    (entry,), _ = _walk(data)
+    assert entry.name == expected
+
+
+def test_pax_link_and_owner_names_end_at_their_first_nul() -> None:
+    records = (
+        _rec(b"linkpath", b"t\x00evil")
+        + _rec(b"uname", b"u\x00x")
+        + _rec(b"gname", b"g\x00x")
+    )
+    data = _pax_body(records) + _block(b"lnk", typeflag=b"2", linkname=b"h") + _END
+    (entry,), _ = _walk(data)
+    assert entry.linkname == b"t"
+    assert entry.uname_pax is not None and entry.uname_pax.value == b"u"
+    assert entry.gname_pax is not None and entry.gname_pax.value == b"g"
+
+
+# Shapes from the parser-differential classes Astral's tar-codec write-up names
+# (2026-10), where the walker already reads as GNU tar 1.35 does.
+
+
+@pytest.mark.parametrize(("typeflag", "field"), [(b"L", "name"), (b"K", "linkname")])
+def test_a_repeated_gnu_long_header_keeps_the_last(typeflag: bytes, field: str) -> None:
+    """GNU tar lists the second; tarfile lists the first."""
+
+    def long(text: bytes) -> bytes:
+        return _block(b"././@LongLink", size=len(text) + 1, typeflag=typeflag) + _data(
+            text + b"\x00"
+        )
+
+    data = (
+        long(b"first")
+        + long(b"second")
+        + _block(b"hdr", typeflag=b"2", linkname=b"tgt")
+        + _END
+    )
+    (entry,), _ = _walk(data)
+    assert getattr(entry, field) == b"second"
+
+
+def test_a_pax_value_may_hold_a_newline() -> None:
+    """The length prefix frames a record, not the newline: splitting on newlines
+    would read ``b`` as a record and fail, or worse."""
+    (entry,), _ = _walk(_pax({"path": "a\nb"}) + _block(b"hdr") + _END)
+    assert entry.name == b"a\nb"
+
+
+@pytest.mark.parametrize("value", [" 3", "3 ", "+3", "1_0", "\u0663", "0x3", "-3"])
+def test_a_pax_size_python_would_parse_is_not_a_number(value: str) -> None:
+    """Python's ``int()`` accepts blanks, a sign, underscores and non-ASCII digits;
+    GNU tar reports each of these as an invalid size, and archivey refuses them."""
+    data = _pax({"size": value}) + _block(b"hdr") + _data(b"abc") + _END
+    with pytest.raises(CorruptionError, match="not a number"):
+        _walk(data)
+
+
+def test_a_32_byte_owner_name_with_no_nul_is_read_whole() -> None:
+    def owners(h: bytearray) -> None:
+        h[265:297] = b"u" * 32
+        h[297:329] = b"g" * 32
+
+    (entry,), _ = _walk(_block(b"hdr", patch=owners) + _END)
+    assert (entry.uname, entry.gname) == (b"u" * 32, b"g" * 32)
+
+
+@pytest.mark.parametrize("typeflag", [b"5", b"2", b"6"])
+@pytest.mark.parametrize("header_type", [b"x", b"g"])
+def test_a_pax_size_frames_a_type_with_no_data_area(
+    typeflag: bytes, header_type: bytes
+) -> None:
+    """GNU tar 1.35 skips a PAX size's bytes after a directory, a link or a FIFO,
+    from a member's own record or a global one, though it skips nothing for the
+    same header's own size field."""
+    hidden = _block(b"hidden", size=1) + _data(b"S")
+    data = (
+        _pax({"size": str(len(hidden))}, typeflag=header_type)
+        + _block(b"m", typeflag=typeflag, linkname=b"t")
+        + hidden
+        + _END
+    )
+    (entry,), end = _walk(data)
+    # The end-of-archive marker, right after the bytes the PAX size spans.
+    assert (end.kind, end.offset) == (
+        TarEndKind.ZERO_BLOCK,
+        3 * BLOCKSIZE + len(hidden),
+    )
+    if typeflag == b"2":
+        assert (entry.link_data, entry.stored_size) == (LinkData.FRAMED, 0)
+    else:
+        assert entry.stored_size == len(hidden)
 
 
 def test_global_hdrcharset_binary_applies_to_later_members() -> None:
@@ -1487,3 +1836,252 @@ def test_number_cache_is_bounded_and_agrees_with_the_parse() -> None:
         assert isinstance(parsed, HeaderBlock)
         assert parsed.mtime == mtime
     assert cache.cache_info().currsize <= maxsize
+
+
+# ---------------------------------------------------------------------------
+# Header shapes no known writer produces: read as GNU tar does, and reported
+# ---------------------------------------------------------------------------
+
+
+def _long(typeflag: bytes, text: bytes) -> bytes:
+    return _block(b"././@LongLink", size=len(text) + 1, typeflag=typeflag) + _data(
+        text + b"\x00"
+    )
+
+
+def _file(name: bytes = b"f", **kwargs) -> bytes:
+    return _block(name, size=1, **kwargs) + _data(b"x")
+
+
+def _symlink(name: bytes = b"s") -> bytes:
+    return _block(name, typeflag=b"2", linkname=b"hdr")
+
+
+_AMBIGUOUS = {
+    "L and x path": (
+        _long(b"L", b"gnu") + _pax({"path": "pax"}) + _file(),
+        "pax",
+        ("both_families", "path"),
+    ),
+    "K and x linkpath": (
+        _long(b"K", b"gnu") + _pax({"linkpath": "pax"}) + _symlink(),
+        "s",
+        ("both_families", "linkpath"),
+    ),
+    "two L": (
+        _long(b"L", b"first") + _long(b"L", b"second") + _file(),
+        "second",
+        ("repeated", "path"),
+    ),
+    "two K": (
+        _long(b"K", b"first") + _long(b"K", b"second") + _symlink(),
+        "s",
+        ("repeated", "linkpath"),
+    ),
+    "path twice in one x": (
+        _pax_body(_rec(b"path", b"first") + _rec(b"path", b"second")) + _file(),
+        "second",
+        ("repeated", "path"),
+    ),
+    "two x": (
+        _pax({"path": "first"}) + _pax({"uname": "u"}) + _file(),
+        "f",
+        ("repeated", "x"),
+    ),
+    "uname twice in one g": (
+        _pax_body(_rec(b"uname", b"a") + _rec(b"uname", b"b"), typeflag=b"g") + _file(),
+        "f",
+        ("repeated", "uname"),
+    ),
+    "path in g": (
+        _pax({"path": "global"}, typeflag=b"g") + _file(),
+        "global",
+        ("global_member_field", "path"),
+    ),
+    "size in g": (
+        _pax({"size": "1"}, typeflag=b"g") + _file(),
+        "f",
+        ("global_member_field", "size"),
+    ),
+    "NUL in x path": (
+        _pax_body(_rec(b"path", b"cut\x00rest")) + _file(),
+        "cut",
+        ("nul_in_value", "path"),
+    ),
+    "L and GNU.sparse.name": (
+        _long(b"L", b"gnu") + _pax({"GNU.sparse.name": "real"}) + _file(),
+        "real",
+        ("both_families", "path"),
+    ),
+    "g replaced by g": (
+        _pax({"mtime": "100"}, typeflag=b"g")
+        + _pax({"uname": "bob"}, typeflag=b"g")
+        + _file(),
+        "f",
+        ("global_replaced", "mtime"),
+    ),
+    "NUL in x uname": (
+        _pax_body(_rec(b"uname", b"u\x00v")) + _file(),
+        "f",
+        ("nul_in_value", "uname"),
+    ),
+}
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("data", "name", "expected"), list(_AMBIGUOUS.values()), ids=list(_AMBIGUOUS)
+)
+def test_a_header_shape_no_writer_produces_is_reported(
+    data: bytes, name: str, expected: tuple[str, str], streaming: bool
+) -> None:
+    """Each shape lists as GNU tar 1.35 lists it, and MEMBER_HEADER_AMBIGUOUS says
+    which shape and field, once, on the member."""
+    data += _END
+    with open_archive(
+        io.BytesIO(data), format=ArchiveFormat.TAR, streaming=streaming
+    ) as ar:
+        members = [m for m, _ in ar.stream_members()]
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_HEADER_AMBIGUOUS] == 1
+    (member,) = members
+    assert member.name == name
+    (found,) = [
+        d
+        for d in member.diagnostics
+        if d.code is DiagnosticCode.MEMBER_HEADER_AMBIGUOUS
+    ]
+    assert isinstance(found.context, HeaderAmbiguityContext)
+    assert (found.context.ambiguity, found.context.field) == expected
+    assert found.context.member_name == name
+
+
+def test_a_long_name_a_global_path_overrides_is_reported() -> None:
+    """The global path names ``m2`` too, over its L header; tarfile lists the L."""
+    data = (
+        _pax({"path": "glob"}, typeflag=b"g")
+        + _file(b"m1")
+        + _long(b"L", b"long-m2")
+        + _file(b"m2")
+        + _END
+    )
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        found = [
+            [
+                (d.context.ambiguity, d.context.field)
+                for d in m.diagnostics
+                if isinstance(d.context, HeaderAmbiguityContext)
+            ]
+            for m in ar.members()
+        ]
+    assert found == [
+        [("global_member_field", "path")],
+        [("both_families", "path")],
+    ]
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        # The PAX path is empty after the NUL cut: the L name stands, as in tarfile.
+        _long(b"L", b"gnu") + _pax_body(_rec(b"path", b"\x00x")) + _file(),
+        # A linkpath on a regular file overrides nothing.
+        _long(b"K", b"gnu") + _pax({"linkpath": "pax"}) + _file(),
+    ],
+    ids=["path cut to empty", "linkpath on a file"],
+)
+def test_a_pax_value_that_overrides_nothing_is_not_both_families(data: bytes) -> None:
+    with open_archive(io.BytesIO(data + _END), format=ArchiveFormat.TAR) as ar:
+        (member,) = ar.members()
+        shapes = [
+            d.context.ambiguity
+            for d in member.diagnostics
+            if isinstance(d.context, HeaderAmbiguityContext)
+        ]
+    assert "both_families" not in shapes
+
+
+def test_a_global_header_keeps_the_first_repeated_sparse_key() -> None:
+    """The sparse map keys are not reported as repeated, but a global header still
+    keeps their first value, as it does every key's."""
+    body = _rec(b"GNU.sparse.offset", b"111") + _rec(b"GNU.sparse.offset", b"222")
+    records = parse_pax_records(body, binary_default=False, first_wins=True)
+    assert records.values[b"GNU.sparse.offset"].value == b"111"
+    assert not records.repeated
+
+
+def test_a_global_shape_is_reported_on_the_next_member_only() -> None:
+    data = (
+        _pax_body(_rec(b"uname", b"a") + _rec(b"uname", b"b"), typeflag=b"g")
+        + _file(b"first")
+        + _file(b"second")
+        + _END
+    )
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        reported = {m.name: [d.code for d in m.diagnostics] for m in ar.members()}
+    assert reported == {
+        "first": [DiagnosticCode.MEMBER_HEADER_AMBIGUOUS],
+        "second": [],
+    }
+
+
+def test_strict_refuses_an_ambiguous_header() -> None:
+    data = _long(b"L", b"gnu") + _pax({"path": "pax"}) + _file() + _END
+    with (
+        open_archive(
+            io.BytesIO(data),
+            format=ArchiveFormat.TAR,
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
+        ) as ar,
+        pytest.raises(DiagnosticRaisedError),
+    ):
+        ar.members()
+
+
+def _ordinary_archives() -> dict[str, bytes]:
+    long = "d/" + "n" * 150
+    archives = {}
+    for label, fmt in (("gnu", tarfile.GNU_FORMAT), ("pax", tarfile.PAX_FORMAT)):
+
+        def build(t: tarfile.TarFile) -> None:
+            _add(t, long, b"data")
+            info = tarfile.TarInfo("link")
+            info.type = tarfile.SYMTYPE
+            info.linkname = long
+            info.uname = "ü" * 40
+            t.addfile(info)
+
+        archives[label] = _tarfile_bytes(build, format=fmt)
+    # A PAX sparse 0.0 map repeats its offset and numbytes keys by design.
+    archives["sparse 0.0"] = (
+        _pax_body(
+            _rec(b"GNU.sparse.size", b"8")
+            + _rec(b"GNU.sparse.numblocks", b"2")
+            + _rec(b"GNU.sparse.offset", b"0")
+            + _rec(b"GNU.sparse.numbytes", b"1")
+            + _rec(b"GNU.sparse.offset", b"4")
+            + _rec(b"GNU.sparse.numbytes", b"1")
+        )
+        + _block(b"sp", size=2)
+        + _data(b"ab")
+        + _END
+    )
+    archives["global comment, then mtime in x"] = (
+        _pax({"comment": "c"}, typeflag=b"g") + _pax({"mtime": "1.5"}) + _file() + _END
+    )
+    return archives
+
+
+@pytest.mark.parametrize("label", list(_ordinary_archives()))
+def test_ordinary_archives_report_no_ambiguity(label: str) -> None:
+    data = _ordinary_archives()[label]
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        ar.members()
+        assert DiagnosticCode.MEMBER_HEADER_AMBIGUOUS not in ar.diagnostics.counts
+
+
+def test_pax_records_list_repeated_keys_once() -> None:
+    records = parse_pax_records(
+        _rec(b"a", b"1") * 3 + _rec(b"GNU.sparse.offset", b"0") * 2,
+        binary_default=False,
+    )
+    assert list(records.repeated) == [b"a"]

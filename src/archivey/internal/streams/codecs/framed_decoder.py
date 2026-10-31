@@ -1,5 +1,9 @@
-"""A decoder for one-shot decompressors that end at a stream end marker (bzip2,
-zstd, LZ4): the stream-start magic that tells a following stream from trailing data.
+"""The decoder for a codec whose library decodes one stream at a time
+(:class:`archivey.formats.Decompressor`): bzip2, zstd, LZ4, LZMA Alone, raw LZMA (a
+container's LZMA coder with no declared size), Shrink, Implode and every plugin codec.
+It ends a stream at its end mark, or where the input
+ends for one with none (``end_input()``), and tells a following stream from trailing
+data by its start (:data:`StreamStart`).
 """
 
 from __future__ import annotations
@@ -7,7 +11,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
+from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.exceptions import TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
@@ -28,26 +32,7 @@ from archivey.internal.streams.decompressor_stream import (
 )
 
 if TYPE_CHECKING:
-    from archivey.internal.streams.codecs.isolated import Decompressor
-
-
-class _OneStreamDecompressor(Protocol):
-    """The one-stream decompressor objects of ``bz2``, ``lzma``, ``zstd`` and ``lz4.frame``.
-
-    One may also have ``end_input()``, which :meth:`FramedDecoder.flush` calls at the end of
-    the input (:class:`archivey.formats.Decompressor`).
-    """
-
-    def decompress(self, data: bytes, max_length: int = ...) -> bytes: ...
-
-    @property
-    def eof(self) -> bool: ...
-
-    @property
-    def unused_data(self) -> bytes | None: ...
-
-    @property
-    def needs_input(self) -> bool: ...
+    from archivey.formats import Decompressor
 
 
 # A stream's magic, as the bytes each position may hold; a codec lists one per kind of
@@ -191,7 +176,7 @@ class FramedDecoder(BaseDecoder):
 
     def __init__(
         self,
-        new_decompressor: Callable[[], _OneStreamDecompressor],
+        new_decompressor: Callable[[], Decompressor],
         *,
         magic: StreamStart,
         zero_padding: bool = True,
@@ -240,9 +225,8 @@ class FramedDecoder(BaseDecoder):
         del inner
         if isinstance(point.state, Bzip2Resume):
             # Only the bzip2 takeover adds such a point (``bzip2_resume``), so
-            # ``_new`` builds a bz2 decompressor, whose ``unused_data`` is bytes.
-            new = cast("Callable[[], Decompressor]", self._new)
-            return Bzip2ResumeDecoder(point.state, self, new)
+            # ``_new`` builds a bz2 decompressor.
+            return Bzip2ResumeDecoder(point.state, self, self._new)
         return FramedDecoder(
             self._new,
             magic=self._magic,
@@ -446,7 +430,7 @@ class FramedDecoder(BaseDecoder):
 
 def FramedDecompressorStream(
     path: str | os.PathLike[str] | BinaryIO,
-    new_decompressor: Callable[[], _OneStreamDecompressor],
+    new_decompressor: Callable[[], Decompressor],
     *,
     codec_name: str,
     magic: StreamStart,
