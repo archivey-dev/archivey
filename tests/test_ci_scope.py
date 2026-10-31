@@ -9,6 +9,7 @@ wiring are pinned.
 from __future__ import annotations
 
 import importlib.util
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -39,6 +40,8 @@ _spec.loader.exec_module(scope)
         [".github/workflows/ci.yml"],
         [".github/workflows/atheris-fuzz.yml"],
         ["scripts/setup-dev-env.sh"],
+        ["scripts/junit_failure_lines.py"],
+        ["scripts/ci_scope.py"],
         [],
     ],
 )
@@ -85,6 +88,15 @@ def test_the_script_writes_a_github_output_line() -> None:
 def test_the_full_paths_exist() -> None:
     for path in scope.FULL:
         assert (ROOT / path).exists(), path
+
+
+def test_every_script_the_workflows_run_is_a_full_path() -> None:
+    """A script only a skipped job runs (PyPy's JUnit summary, the unar installers)
+    would otherwise merge untested. `release.py` is only named in a comment."""
+    named = set()
+    for workflow in (CI, CI.with_name("atheris-fuzz.yml")):
+        named |= set(re.findall(r"scripts/[\w.-]+", workflow.read_text()))
+    assert named - {"scripts/release.py"} <= set(scope.FULL)
 
 
 def test_the_queue_only_jobs_wait_on_scope_and_run_when_it_did_not() -> None:

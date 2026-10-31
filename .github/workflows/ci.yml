@@ -468,11 +468,14 @@ jobs:
     if: github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
     outputs:
       full: ${{ steps.scope.outputs.full }}
     steps:
       - uses: actions/checkout@v4
         with:
+          persist-credentials: false
           sparse-checkout: scripts/ci_scope.py
           sparse-checkout-cone-mode: false
       - name: Changed paths

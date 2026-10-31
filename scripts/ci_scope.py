@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import sys
 
-#: Paths whose change needs the whole matrix. A trailing ``/`` covers a directory.
+#: Paths whose change needs the whole matrix. A trailing ``/`` covers a directory. The
+#: scripts are the ones the two workflows run (a test keeps the list complete), this
+#: script among them, so a group that edits the rule is not decided by the edit alone.
 FULL = (
     "src/",
     "packages/",
@@ -28,6 +30,14 @@ FULL = (
     ".github/workflows/ci.yml",
     ".github/workflows/atheris-fuzz.yml",
     "scripts/setup-dev-env.sh",
+    "scripts/ci_scope.py",
+    "scripts/ci_run_native_modules.py",
+    "scripts/gen_corpus_rar_fixtures.py",
+    "scripts/install-7zip-from-source.sh",
+    "scripts/install-rarlab-unrar.ps1",
+    "scripts/install-rarlab-unrar.sh",
+    "scripts/install-unar-from-source.sh",
+    "scripts/junit_failure_lines.py",
 )
 
 
