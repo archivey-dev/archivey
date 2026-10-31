@@ -288,8 +288,9 @@ class LzwState:
         self, *, eof: bool, max_length: int = -1
     ) -> tuple[bytes, list[tuple[int, int]]]:
         # Each step's output is kept as it comes and joined once: almost every call
-        # is one step, and a step can be megabytes (a run of zeros), so copying it
-        # into a buffer and out again doubled the decode time.
+        # is one step, ``b"".join`` hands a lone piece back without copying it, and a
+        # step can be megabytes (a run of zeros), so staging it in a ``bytearray`` and
+        # copying it out again would cost two more passes over those bytes.
         parts: list[bytes] = []
         got = 0
         units: list[tuple[int, int]] = []
@@ -307,8 +308,6 @@ class LzwState:
             units += more_units
             if not self._at_nine_bit_fill:
                 break
-        if len(parts) == 1:
-            return parts[0], units
         return b"".join(parts), units
 
     def _settle_nine_bit_fill(self, eof: bool) -> bool:

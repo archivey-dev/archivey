@@ -1454,6 +1454,32 @@ def test_unix_compress_nine_bit_ten_bit_era_refuses_code_512() -> None:
         _lzw_decode_in_chunks(bytes(compressed), 1 << 20)
 
 
+@pytest.mark.parametrize("widens", [True, False], ids=["compress-4.0", "ncompress"])
+@pytest.mark.parametrize(("block_mode", "clear_every"), _NINE_BIT_LAYOUTS)
+@pytest.mark.parametrize("max_length", [7, 1000, 4096])
+def test_unix_compress_output_budget_holds_across_the_nine_bit_fill(
+    max_length: int, block_mode: bool, clear_every: int, widens: bool
+) -> None:
+    """A budgeted ``feed`` stops at the first code that reaches ``max_length``, so it
+    overshoots by less than one code's string (at most 256 bytes at 9 bits). That holds
+    when one call runs past a 9-bit table fill into the next step, which gets only
+    what is left of the budget. Everything is buffered up front, so each call's size is
+    set by the budget alone."""
+    from archivey.internal.streams.codecs.unix_compress_decoder import LzwState
+
+    data = _NON_BLOCK_PAYLOADS["text"][:60_000]
+    compressed = _lzw_compress(
+        data, 9, block_mode=block_mode, clear_every=clear_every, nine_bit_widens=widens
+    )
+    state = LzwState()
+    chunks = [state.feed(compressed, max_length=max_length)[0]]
+    while not state.needs_input:
+        chunks.append(state.feed(b"", max_length=max_length)[0])
+    largest = max(len(chunk) for chunk in chunks)
+    assert largest <= max_length + 256, largest
+    assert b"".join(chunks) + state.flush()[0] == data
+
+
 def test_unix_compress_nine_bit_layout_survives_a_seek_back() -> None:
     """A decoder recreated at a CLEAR point keeps the layout the stream was read with."""
     data = _NON_BLOCK_PAYLOADS["text"][:60_000]
