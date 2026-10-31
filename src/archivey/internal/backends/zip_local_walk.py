@@ -91,7 +91,13 @@ from archivey.internal.backends.zip_parser import (
     zip64_record_matches,
 )
 from archivey.internal.overrides import override
-from archivey.internal.sfx import SFX_MAX, VALIDATOR_PEEK_MAX, HitOutcome
+from archivey.internal.sfx import (
+    SFX_MAX,
+    VALIDATOR_PEEK_MAX,
+    HitOutcome,
+    cut_signature_error,
+    is_cut_signature,
+)
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.internal.streams.streamtools.binaryio import read_exact
 
@@ -1141,6 +1147,11 @@ class LocalHeaderWalk:
         sig = self.source.peek(4)
         if sig in _OPENS_STREAM or not self._find_start:
             return
+        # A source that ends inside the signature it starts with was cut short, not
+        # a stub to scan past. (Without ``find_start`` the first ``next_entry`` reports
+        # the short signature itself.)
+        if is_cut_signature(sig, _OPENS_STREAM):
+            raise cut_signature_error("ZIP", len(sig))
         window = self._scan_for_local_header()
         if window is None:
             return

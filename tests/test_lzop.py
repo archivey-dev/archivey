@@ -330,6 +330,51 @@ def test_raw_lzo1x_past_its_size_is_refused(decoder: str, tmp_path: Path) -> Non
             reader.read(reader.members()[0])
 
 
+def test_raw_lzo1x_input_is_bounded_by_its_size(decoder: str, tmp_path: Path) -> None:
+    # Raw LZO1X is held whole until its input ends: input longer than LZO1X needs
+    # for ``size`` bytes is refused as it arrives, not buffered.
+    plain = _PLAIN
+    data = _literal_lzo1x(plain) + bytes(8 << 20)
+    with registration_scope():
+        register_format(_compressed_plugin(CompressionAlgorithm.LZO))
+        path = _compressed_archive(tmp_path, data, plain)
+
+        def read() -> None:
+            with open_archive(path) as reader:
+                member = reader.members()[0]
+                with pytest.raises(CorruptionError, match="more than LZO1X takes"):
+                    reader.read(member)
+
+        # Once outside the window: formatting the error fills caches on first use.
+        read()
+        assert traced_peak(read) < 1 << 20
+
+
+def test_raw_lzo1x_input_bound_edge() -> None:
+    # Accepted at the bound, refused one byte past it.
+    size = 1000
+    most = size + size // 7 + 64 + 3
+    bounded = lzo_decoder.Lzo1xDecoder(lzo_decoder.lzo1x_decompress_python, size)
+    bounded.feed(bytes(most))
+    with pytest.raises(CorruptionError, match="more than LZO1X takes"):
+        bounded.feed(b"\x00")
+
+
+def test_raw_lzo1x_longest_valid_stream_is_read() -> None:
+    # A 4-byte literal run and a 3-byte match, over and over: 8 bytes of input for
+    # each 7 of output, the most a decodable stream takes, and more than liblzo2's
+    # compressor would write (lzo1x_worst_compress, size // 16).
+    stream = bytearray([18]) + b"a"
+    for _ in range(10_000):
+        stream += bytes([33, 0, 0, 1]) + b"wxyz"
+    stream += b"\x11\x00\x00"
+    plain = lzo_decoder.lzo1x_decompress_python(bytes(stream), 1 << 20)
+    assert len(stream) > len(plain) + len(plain) // 16 + 64 + 3
+    bounded = lzo_decoder.Lzo1xDecoder(lzo_decoder.lzo1x_decompress_python, len(plain))
+    bounded.feed(bytes(stream))
+    assert bounded.flush().data == plain
+
+
 def test_raw_lzo1x_needs_a_size(tmp_path: Path) -> None:
     from tests.test_format_api import MemberData, ToyHandler, ToyReader
 

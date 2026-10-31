@@ -1,4 +1,5 @@
-"""Self-extracting (SFX) stubs: the shared scan bound, the forward scan, and the cue.
+"""Self-extracting (SFX) stubs: the shared scan bound, the forward scan, and the cue;
+and, for the same three readers, a signature cut off by the end of the file.
 
 A self-extracting archive is an executable stub with a real archive appended, so the
 archive magic sits at some offset ``N > 0`` rather than at byte zero. Four places have
@@ -32,15 +33,27 @@ false matches out. Hit validators (ZIP local-header sanity, 7z StartHeaderCRC, R
 main-header CRC) are what reject a decoy. Widening the cue is therefore a cost
 decision: ``MZ``, ELF, a ``#!`` shebang, or a Mach-O header that parses. The gate is
 deliberately two-tiered — see :class:`ExecutableCue`.
+
+:func:`is_cut_signature` and :func:`cut_signature_error` are the other side of the
+same start-of-file decision: a source that ends before its signature is complete was
+cut short, not a stub to scan past, and raises ``TruncatedError``.
 """
 
 from __future__ import annotations
 
 import struct
-from collections.abc import Callable, Container, Iterator, Sequence, Set as AbstractSet
+from collections.abc import (
+    Callable,
+    Container,
+    Iterable,
+    Iterator,
+    Sequence,
+    Set as AbstractSet,
+)
 from enum import Enum
 from typing import BinaryIO, Generic, NamedTuple, Protocol, TypeVar
 
+from archivey.exceptions import TruncatedError
 from archivey.internal.streams.streamtools import source_byte_size
 
 _T = TypeVar("_T")
@@ -251,6 +264,31 @@ class MagicScan(NamedTuple):
     hit: MagicHit | None
     miss: ScanMiss | None
     rejected_count: int
+
+
+def is_cut_signature(head: bytes, magics: Iterable[bytes]) -> bool:
+    """Whether ``head``, every byte a source holds from where its signature starts,
+    is a signature the end of the source cut off: shorter than one of ``magics`` while
+    matching its start. An empty ``head`` counts, as a download that stopped before its
+    first byte, the way TAR and the compressors read an empty file.
+
+    A reader raises ``TruncatedError`` for such a source rather than "Not a …
+    archive": the bytes that are there are the format's, and the file ends. Only a
+    signature at the start counts; a stub followed by a cut signature is not looked
+    for, as a stub can hold any bytes."""
+    return any(len(head) < len(magic) and magic.startswith(head) for magic in magics)
+
+
+def cut_signature_error(format_name: str, held: int) -> TruncatedError:
+    """The error for a source that holds only ``held`` bytes of its signature
+    (:func:`is_cut_signature`), none for an empty file."""
+    if held == 0:
+        return TruncatedError(f"{format_name} archive is truncated: the file is empty")
+    noun = "byte" if held == 1 else "bytes"
+    return TruncatedError(
+        f"{format_name} archive is truncated: it holds {held} {noun}, the start of "
+        "its signature"
+    )
 
 
 def describe_scan_miss(scan: MagicScan, *, limit: int) -> str:
