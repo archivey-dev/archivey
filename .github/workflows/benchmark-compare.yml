@@ -94,8 +94,7 @@ jobs:
               # log line says why.
               (cd "$side" && uv run --no-sync python -m benchmarks.harness \
                 --mode full --scale realistic --warmup \
-                --json-out "$out" --text-out "${out%.json}.md") > "$log" 2>&1 || true
-              cat "$log"
+                --json-out "$out" --text-out "${out%.json}.md") 2>&1 | tee "$log" || true
               echo "::endgroup::"
               if [ ! -f "$out" ]; then
                 echo "::error::$side round $round wrote no JSON: $(tail -n 1 "$log")"
