@@ -1,16 +1,21 @@
-"""A decoder for one-shot decompressors that end at a stream end marker (bzip2,
-zstd, LZ4): the stream-start magic that tells a following stream from trailing data.
+"""The decoder for a codec whose library decodes one stream at a time
+(:class:`archivey.formats.Decompressor`): bzip2, zstd, LZ4, LZMA Alone, raw LZMA (a
+container's LZMA coder with no declared size), Shrink, Implode and every plugin codec.
+It ends a stream at its end mark, or where the input
+ends for one with none (``end_input()``), and tells a following stream from trailing
+data by its start (:data:`StreamStart`).
 """
 
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
+from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.exceptions import TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.bzip2_resume import (
     Bzip2Resume,
     Bzip2ResumeDecoder,
@@ -27,22 +32,7 @@ from archivey.internal.streams.decompressor_stream import (
 )
 
 if TYPE_CHECKING:
-    from archivey.internal.streams.codecs.isolated import Decompressor
-
-
-class _OneStreamDecompressor(Protocol):
-    """The one-stream decompressor objects of ``bz2``, ``lzma``, ``zstd`` and ``lz4.frame``."""
-
-    def decompress(self, data: bytes, max_length: int = ...) -> bytes: ...
-
-    @property
-    def eof(self) -> bool: ...
-
-    @property
-    def unused_data(self) -> bytes | None: ...
-
-    @property
-    def needs_input(self) -> bool: ...
+    from archivey.formats import Decompressor
 
 
 # A stream's magic, as the bytes each position may hold; a codec lists one per kind of
@@ -54,6 +44,10 @@ StreamMagic = tuple[tuple[frozenset[int], ...], ...]
 # check does for a damaged magic, so its result must not be cached or its call skipped.
 StreamStart = Callable[[bytes], bool | None]
 
+# The most output one ``FramedDecoder.flush`` call drains from a decompressor that held
+# some back until the end of its input; the stream calls ``flush`` again for the rest.
+_FLUSH_DRAIN_CHUNK = 65536
+
 
 def stream_magic(*alternatives: tuple[bytes | range, ...]) -> StreamStart:
     """A :data:`StreamStart` matching any of ``alternatives``, per-position bytes or ranges."""
@@ -63,6 +57,24 @@ def stream_magic(*alternatives: tuple[bytes | range, ...]) -> StreamStart:
             for alternative in alternatives
         )
     )
+
+
+def never_starts(data: bytes) -> bool:
+    """The :data:`StreamStart` of a codec that reads one stream: nothing starts another."""
+    del data
+    return False
+
+
+def offset0_start(
+    magic: Iterable[tuple[int, bytes]], concatenated: bool
+) -> StreamStart:
+    """How a further stream starts for a codec that declares ``magic`` as
+    ``(offset, data)`` pairs: one of its offset-0 magics, or nothing when it is not
+    ``concatenated`` or has none. Plugin and built-in codecs share this rule."""
+    starts = [data for offset, data in magic if offset == 0]
+    if not concatenated or not starts:
+        return never_starts
+    return stream_magic(*(tuple(bytes([b]) for b in data) for data in starts))
 
 
 @dataclass(frozen=True)
@@ -155,14 +167,16 @@ class FramedDecoder(BaseDecoder):
 
     The first stream is handed to the library as it comes, so a file that is not this
     codec at all fails with the library's own error. An empty source, or one that ends
-    inside a stream, is truncated. A stream with no end mark (legacy LZ4) ends with its
-    input instead, when its decompressor's ``complete_at_end_of_input`` says the input
-    stopped between blocks.
+    inside a stream, is truncated. A decompressor with an ``end_input()`` is told where the
+    input ends, which lets a stream with no end mark (legacy LZ4, Shrink with no size)
+    end there. Output it held back until then comes from ``decompress(b"",
+    max_length)``, called again until it sets ``eof``; asking for input instead, or
+    producing nothing, leaves the stream truncated.
     """
 
     def __init__(
         self,
-        new_decompressor: Callable[[], _OneStreamDecompressor],
+        new_decompressor: Callable[[], Decompressor],
         *,
         magic: StreamStart,
         zero_padding: bool = True,
@@ -200,14 +214,19 @@ class FramedDecoder(BaseDecoder):
         self._held = b""
         self._need_more = False
         self._done = False
+        # The last ``feed``'s output budget, which bounds the output ``flush`` drains.
+        self._max_length = -1
+        # Set once a decompressor with an ``end_input()`` has been told the input ended;
+        # ``_draining`` while its held-back output is still coming (``flush``).
+        self._told_end = False
+        self._draining = False
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> Decoder:
         del inner
         if isinstance(point.state, Bzip2Resume):
             # Only the bzip2 takeover adds such a point (``bzip2_resume``), so
-            # ``_new`` builds a bz2 decompressor, whose ``unused_data`` is bytes.
-            new = cast("Callable[[], Decompressor]", self._new)
-            return Bzip2ResumeDecoder(point.state, self, new)
+            # ``_new`` builds a bz2 decompressor.
+            return Bzip2ResumeDecoder(point.state, self, self._new)
         return FramedDecoder(
             self._new,
             magic=self._magic,
@@ -284,6 +303,7 @@ class FramedDecoder(BaseDecoder):
         data = self._held + chunk
         self._held = b""
         self._need_more = False
+        self._max_length = max_length
         self._fed = self._fed or bool(data)
         self._fed_end += len(chunk)
         output = bytearray()
@@ -335,27 +355,71 @@ class FramedDecoder(BaseDecoder):
             self._held = b""
             self._done = True
             return DecodeOut(b"")
-        if getattr(self._decomp, "complete_at_end_of_input", False):
-            # A stream with no end mark (legacy LZ4) ends where its input does.
+        if not self._told_end:
+            self._end_input()
+        output = self._drain() if self._told_end else b""
+        self._draining = False
+        if self._decomp.eof:
+            # A stream with no end mark ended with its input, so no stream follows
+            # it: any byte it did not use is after its end.
+            self._past_end(self._decomp.unused_data or b"")
             self._done = True
-            return DecodeOut(b"")
-        self._pending_error = TruncatedError(
-            "File is truncated" if self._fed else "File is empty"
-        )
-        return DecodeOut(b"")
+        elif output and not self._decomp.needs_input:
+            # More held-back output follows: the stream calls ``flush`` again.
+            self._draining = True
+        elif self._pending_error is None:
+            self._pending_error = TruncatedError(
+                "File is truncated" if self._fed else "File is empty"
+            )
+        self._produced += len(output)
+        return DecodeOut(output)
+
+    def _end_input(self) -> None:
+        """Tell the decompressor, when it has an ``end_input()``, that the input ended.
+
+        ``end_input()`` returns nothing: output it held back until the end comes from
+        ``decompress(b"", max_length)`` (``_drain``), bounded like any other. Its error
+        is the decoder's pending error.
+        """
+        end_input = getattr(self._decomp, "end_input", None)
+        if end_input is None:
+            return
+        self._told_end = True
+        try:
+            if end_input():
+                raise TypeError("a decompressor's end_input() returns no output")
+        except Exception as exc:  # noqa: BLE001 - the codec's error, raised later
+            self._pending_error = exc
+
+    def _drain(self) -> bytes:
+        """The next piece of the output a decompressor held back until the end of its
+        input, at most ``_FLUSH_DRAIN_CHUNK`` bytes and the last ``feed``'s budget."""
+        if self._pending_error is not None or self._decomp.eof:
+            return b""
+        limit = _FLUSH_DRAIN_CHUNK
+        if self._max_length > 0:
+            limit = min(limit, self._max_length)
+        return self._decomp.decompress(b"", limit)
+
+    @property
+    @override
+    def drains_after_flush(self) -> bool:
+        return self._draining
 
     @property
     def finished(self) -> bool:
         return self._done
 
     @property
+    @override
     def needs_input(self) -> bool:
-        if self._done:
+        if self._done or self._draining:
             return True
         if self._held:
             return self._need_more
         return self._between or self._decomp.needs_input
 
+    @override
     def build_index(
         self, inner: BinaryIO, last_known: SeekPoint
     ) -> tuple[list[SeekPoint], int | None]:
@@ -366,7 +430,7 @@ class FramedDecoder(BaseDecoder):
 
 def FramedDecompressorStream(
     path: str | os.PathLike[str] | BinaryIO,
-    new_decompressor: Callable[[], _OneStreamDecompressor],
+    new_decompressor: Callable[[], Decompressor],
     *,
     codec_name: str,
     magic: StreamStart,

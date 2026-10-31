@@ -37,12 +37,14 @@ After a full walk, :meth:`TarReader._verify_tar_eof` checks the end, from the
 
 A directory listed from an old-style regular-file header named ``d/`` keeps its declared
 ``size`` and is reported with ``MEMBER_DIRECTORY_DATA_IGNORED`` at listing; ``open()``
-and ``stream_members()`` deliver the bytes, extraction creates the directory (DR-3).
+and ``stream_members()`` deliver the bytes, extraction creates the directory (DR-3). A
+``DIRTYPE`` header whose size is a PAX record is read the same way, as GNU tar skips
+those bytes.
 
 A symlink or hard link header with a size is listed as a link with no ``size``. When
-the block after it is not a member header, the walker skips the declared blocks (see
-``TarWalker._place_link_data``) and the link is reported with
-``MEMBER_LINK_DATA_IGNORED`` at listing; extraction creates the link.
+the block after it is not a member header, or the size is a PAX record, the walker
+skips the declared blocks (see ``TarWalker._place_link_data``) and the link is reported
+with ``MEMBER_LINK_DATA_IGNORED`` at listing; extraction creates the link.
 
 These codes follow the diagnostic policy like any other: a caller who wants one to fail
 sets it to ``RAISE`` (``DiagnosticPolicy.STRICT`` does so for all of them).
@@ -69,6 +71,7 @@ from archivey.diagnostics import (
     DiagnosticCode,
     DigestContext,
     DirectoryDataContext,
+    HeaderAmbiguityContext,
     LinkDataContext,
     MemberHeaderRecordContext,
     UnknownMemberTypeContext,
@@ -83,6 +86,7 @@ from archivey.exceptions import (
 from archivey.internal.backends.tar_parser import (
     BLOCKSIZE,
     SPARSE_ENTRY_BYTES,
+    Ambiguity,
     Budget,
     LinkData,
     NameSource,
@@ -114,15 +118,13 @@ from archivey.internal.naming import (
     normalize_member_name,
 )
 from archivey.internal.open_site import OpenSite
+from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import (
     ArchiveStreamImpl,
     MemberStreamParts,
-)
-from archivey.internal.streams.codecs import (
-    SINGLE_FILE_CODECS,
 )
 from archivey.internal.streams.decompressor_stream import _StreamChecksumError
 from archivey.internal.streams.streamtools import (
@@ -252,6 +254,15 @@ def _member_type(entry: TarEntry) -> MemberType:
     return MemberType.OTHER
 
 
+def _directory_has_data(entry: TarEntry) -> bool:
+    """Whether ``entry`` is a directory with a data area: an old-style ``d/``
+    regular-file header with a size, or a ``DIRTYPE`` header a PAX ``size`` gave one
+    (GNU tar skips those bytes). A GNU dumpdir's data is its listing, not this."""
+    if entry.old_style_directory:
+        return entry.size > 0
+    return entry.typeflag == b"5" and entry.stored_size > 0
+
+
 def _directory_declaring_blocks(member: ArchiveMember | None) -> TarSpan | None:
     """``member``'s span when it is a ``DIRTYPE`` header with a non-zero size, else None.
 
@@ -264,7 +275,8 @@ def _directory_declaring_blocks(member: ArchiveMember | None) -> TarSpan | None:
         return None
     span = member._raw
     assert isinstance(span, TarSpan), "TAR member is missing its span"
-    if span.typeflag != b"5" or not span.size:
+    if span.typeflag != b"5" or not span.size or span.stored_size:
+        # A stored size is a PAX size, which framed the blocks: they were read.
         return None
     return span
 
@@ -276,42 +288,18 @@ def _declared_span_end(span: TarSpan) -> int:
     return span.data_offset + (span.size + BLOCKSIZE - 1) // BLOCKSIZE * BLOCKSIZE
 
 
-# Every compressed-tar combination the codec layer can decode: TAR composed with each
-# standalone stream codec (gz/bz2/xz/zst/lz4/lzip/lzma-alone/zlib/brotli/unix-compress).
-# The common ones have named ArchiveFormat constants; the rest are equal-by-value
-# on-demand instances.
-_TAR_COMPRESSED: tuple[ArchiveFormat, ...] = tuple(
-    ArchiveFormat(ContainerFormat.TAR, codec.stream_format)
-    for codec in SINGLE_FILE_CODECS
-    if codec.stream_format is not None
-)
-
-# Plain TAR plus every compressed combination the codec layer can decode.
-_TAR_FORMATS: tuple[ArchiveFormat, ...] = (ArchiveFormat.TAR, *_TAR_COMPRESSED)
-
-# Canonical extensions are derived from each format (TAR -> ".tar", TAR_GZ -> ".tar.gz",
-# (TAR, LZIP) -> ".tar.lz", …); only the short aliases (.tgz/.tbz/…) and `.cbt`
-# (comic-book TAR) are listed by hand.
-# (Built at module scope: a dict comprehension in the class body can't see class-level names.)
+# TAR's own extensions. Its pair with each single-file codec (``.tar.gz``, ``.tar.lz``,
+# ``.tar.brotli``) the registry makes from ``PAIR_EXTENSIONS`` and the codecs, so a
+# codec registered later has one too; the short aliases (``.tgz``) and ``.cbt``
+# (comic-book TAR) are listed here.
 _TAR_EXTENSIONS: dict[str, ArchiveFormat] = {
-    f".{fmt.file_extension()}": fmt for fmt in _TAR_FORMATS
-}
-# A codec's extension aliases have their ``.tar.`` forms too (``.tar.brotli``).
-_TAR_EXTENSIONS.update(
-    {
-        f".tar{alias}": ArchiveFormat(ContainerFormat.TAR, codec.stream_format)
-        for codec in SINGLE_FILE_CODECS
-        if codec.stream_format is not None
-        for alias in codec.extension_aliases
-    }
-)
-_TAR_EXTENSIONS.update(
-    {
+    ".tar": ArchiveFormat.TAR,
+    ".cbt": ArchiveFormat.TAR,
+    **{
         suffix: ArchiveFormat(ContainerFormat.TAR, stream)
         for suffix, stream in COMPRESSED_TAR_SHORT_SUFFIXES.items()
-    }
-)
-_TAR_EXTENSIONS[".cbt"] = ArchiveFormat.TAR
+    },
+}
 
 
 # Shared across FILE/HARDLINK members — avoid per-member CompressionMethod construction.
@@ -322,7 +310,8 @@ _STORED_COMPRESSION: tuple[CompressionMethod, ...] = (
 
 def _pax_text(entry: TarEntry, key: bytes) -> str | None:
     """The PAX record ``key`` in force for ``entry`` as text, or ``None`` when it is
-    absent or empty (an empty value in a member's own header cancels the keyword)."""
+    absent or empty (the walker keeps an empty value only for the keywords it clears,
+    ``parse_pax_records``)."""
     value = entry.pax.get(key)
     if value is None or not value.value:
         return None
@@ -632,6 +621,7 @@ class TarReader(BaseArchiveReader):
         assert counted <= cap, (counted, cap)
         return (cap - counted, cap)
 
+    @override
     def _register_member(
         self,
         idx: int,
@@ -649,6 +639,7 @@ class TarReader(BaseArchiveReader):
                 len(span.sparse) * SPARSE_ENTRY_BYTES
             )
 
+    @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
         """The member walk, one header per pull.
 
@@ -681,11 +672,13 @@ class TarReader(BaseArchiveReader):
         pass stamps ids and resolves backward links."""
         return self._iter_members()
 
+    @override
     def _pass_reads_through_walk(self) -> bool:
         """A random-access pass reads through the walk until it ends, so a compressed
         tar is decoded once for the headers and the data, not once for each."""
         return True
 
+    @override
     def _open_member_in_walk(self, member: ArchiveMember) -> MemberStreamParts:
         # The raw body, not another ArchiveStream: the pass's lazy handle adopts the
         # parts and is the one wrapper.
@@ -694,6 +687,7 @@ class TarReader(BaseArchiveReader):
                 self._member_body(member, in_walk=True), member.name, size=member.size
             )
 
+    @override
     def _iter_with_data(
         self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
     ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
@@ -1227,6 +1221,11 @@ class TarReader(BaseArchiveReader):
             modified, issue = _pax_time(entry, "mtime", presented)
             if issue is not None:
                 timestamp_issues.append(issue)
+        elif entry.header.mtime is None:
+            # A field of only NULs and blanks records no time; GNU tar and tarfile
+            # read all NULs as 0, but 1970 would be a guess (DR-1), so the member
+            # has no ``modified``.
+            modified = None
         else:
             # A hostile out-of-range value (a base-256 mtime beyond datetime's range)
             # must not sink the whole listing, so it degrades to None and is reported.
@@ -1254,11 +1253,13 @@ class TarReader(BaseArchiveReader):
                 # data: GNU tar and libarchive ignore its size field and read the next
                 # header where the "data" starts. An all-zero payload would then read
                 # as the end-of-archive marker and every later member would vanish
-                # without a word, so the header is refused as damage (DR-25).
+                # without a word, so the header is refused as damage (DR-25). A PAX
+                # size is refused too, though GNU tar 1.35 skips the bytes it declares
+                # and extracts the entry: only a crafted archive has one there (DR-5a).
                 raise CorruptionError(
                     f"TAR header for {quoted(name)} is a {special.replace('_', ' ')} "
                     f"that declares {entry.size} bytes of data; a device or FIFO entry "
-                    "has no data, and tar skips such a header as damaged",
+                    "has no data, so a size on its header is damage",
                     archive_name=self._archive_name,
                     member_name=name,
                 )
@@ -1277,12 +1278,12 @@ class TarReader(BaseArchiveReader):
             name=name,
             raw_name=entry.name,
             # An old-style directory keeps its declared size: its regular-file
-            # typeflag gives it a data area, which open() and a pass deliver (DR-3). A DIRTYPE
-            # size names no data area, so it is dropped here and judged at the end
-            # of the walk (_verify_tar_eof).
+            # typeflag gives it a data area, which open() and a pass deliver (DR-3), and
+            # so does a DIRTYPE one whose size is a PAX record. A DIRTYPE header's own
+            # size names no data area, so it is dropped here and judged at the end of
+            # the walk (_verify_tar_eof).
             size=entry.size
-            if member_type == MemberType.FILE
-            or (entry.old_style_directory and entry.size)
+            if member_type == MemberType.FILE or _directory_has_data(entry)
             else None,
             modified=modified,
             # The permission bits are the low twelve, which is what stat.S_IMODE
@@ -1381,15 +1382,69 @@ class TarReader(BaseArchiveReader):
                 attach_to_member=True,
                 logger=backends_logger,
             )
-        if entry.old_style_directory and entry.size:
+        if _directory_has_data(entry):
+            # An old-style directory, or a DIRTYPE one a PAX size gave a data area:
             # GNU tar creates the directory and skips the bytes without a word (7-Zip
             # too, for NUL and 0). Say so; read() delivers them.
             self._emit_directory_data_ignored(member, index)
         if entry.link_data is not None:
             self._emit_link_data_ignored(member, index, entry)
+        for ambiguity, key in entry.ambiguities:
+            self._emit_header_ambiguous(member, index, ambiguity, key)
         if entry.typeflag not in _KNOWN_TYPES:
             self._emit_member_type_unknown(member, index, entry.typeflag)
         return member
+
+    def _emit_header_ambiguous(
+        self, member: ArchiveMember, member_id: int, ambiguity: Ambiguity, key: bytes
+    ) -> None:
+        """Report ``MEMBER_HEADER_AMBIGUOUS`` for a header shape no known writer
+        produces (:class:`Ambiguity`). The walk read it as GNU tar 1.35 does; the
+        report says so, because ``tarfile`` and other tools read it otherwise and list
+        another name or size. In ``ARCHIVE_INTEGRITY_CODES``: ``STRICT`` refuses it.
+        """
+        field = key.decode("ascii", "backslashreplace")
+        if ambiguity is Ambiguity.BOTH_FAMILIES:
+            gnu = "long name" if key == b"path" else "long link name"
+            what = (
+                f"a GNU {gnu} header that a PAX record overrides; the PAX record is "
+                "used"
+            )
+        elif ambiguity is Ambiguity.REPEATED:
+            what = (
+                f"{field} set more than once; the last value is used (the first in "
+                "a global header)"
+            )
+        elif ambiguity is Ambiguity.GLOBAL_MEMBER_FIELD:
+            what = (
+                f"a global PAX header setting {field}, which then applies to every "
+                "member after it"
+            )
+        elif ambiguity is Ambiguity.NUL_IN_VALUE:
+            what = f"a PAX {field} record holding a NUL byte; the value ends there"
+        else:
+            what = (
+                f"a global PAX header that drops the {field} an earlier global header "
+                "set; it no longer applies"
+            )
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_HEADER_AMBIGUOUS,
+            message=(
+                f"TAR headers of {quoted(member.name)} have {what}, as GNU tar reads "
+                "them. No known writer produces this, and other readers may list "
+                "another name or size."
+            ),
+            context=HeaderAmbiguityContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=member_id,
+                ambiguity=ambiguity.value,
+                field=field,
+            ),
+            member=member,
+            attach_to_member=True,
+            logger=integrity_logger,
+        )
 
     def _emit_link_data_ignored(
         self, member: ArchiveMember, member_id: int, entry: TarEntry
@@ -1406,7 +1461,12 @@ class TarReader(BaseArchiveReader):
         """
         kind = "Symlink" if member.type == MemberType.SYMLINK else "Hard link"
         declares = f"{kind} {quoted(member.name)} declares {entry.size} bytes of data"
-        if entry.link_data is LinkData.ENDS_ARCHIVE:
+        if entry.link_data is LinkData.FRAMED:
+            what = (
+                f"{declares} in a PAX size record; a TAR link entry has no data area, "
+                "so the blocks are skipped, as GNU tar skips them."
+            )
+        elif entry.link_data is LinkData.ENDS_ARCHIVE:
             what = (
                 f"{declares}, and the archive ends on zero bytes before the span those "
                 "bytes would occupy ends: if the blocks are there, they are zeros cut "
@@ -1472,6 +1532,7 @@ class TarReader(BaseArchiveReader):
             return self._decode_name(pax.value, NameSource.PAX, pax.binary)[0]
         return self._decode_name(header, NameSource.HEADER, False)[0]
 
+    @override
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         # The stream layer (streamtools) raises builtins, never archivey errors.
         # Today the one EOFError a member read can raise is a sparse member's
@@ -1482,6 +1543,7 @@ class TarReader(BaseArchiveReader):
             return TruncatedError(f"TAR member data ended early: {exc}")
         return None
 
+    @override
     def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         with self._translated_errors(member.name):
             return self._member_parts(
@@ -1588,6 +1650,7 @@ class TarReader(BaseArchiveReader):
             )
         )
 
+    @override
     def _get_archive_info(self) -> ArchiveInfo:
         stream_cap = self._source_stream_capability()
         if self._compressed:
@@ -1615,6 +1678,7 @@ class TarReader(BaseArchiveReader):
             cost=cost,
         )
 
+    @override
     def _close_archive(self) -> None:
         # Close what this reader built, even when a close raises: teardown runs once.
         # The source closes with the reader, after this. Under the handle lock, so a
@@ -1626,7 +1690,10 @@ class TarReader(BaseArchiveReader):
 class TarReadBackend(ReadBackend):
     """Backend factory for TAR archives (plain and compressed)."""
 
-    FORMATS: tuple[ArchiveFormat, ...] = _TAR_FORMATS
+    FORMATS: tuple[ArchiveFormat, ...] = (ArchiveFormat.TAR,)
+    # TAR inside each single-file compression stream: TAR_GZ, TAR_XZ, and so on.
+    STREAM_PAIRS = True
+    PAIR_EXTENSIONS = (".tar",)
     EXTENSIONS: Mapping[str, ArchiveFormat] = _TAR_EXTENSIONS
     # Plain tar is recognized by the POSIX/GNU "ustar" magic at offset 257. Compressed tars
     # carry only their outer codec's magic; detection's inner-container probe (see
@@ -1646,6 +1713,7 @@ class TarReadBackend(ReadBackend):
     SUPPORTS_STREAMING_NON_SEEKABLE = True
     USES_ENCODING = True  # the fallback codec for names that are not valid UTF-8
 
+    @override
     def open_read(
         self,
         source: ArchiveSource,

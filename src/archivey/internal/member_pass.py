@@ -12,6 +12,7 @@ from collections.abc import Generator
 from typing import TypeVar
 
 from archivey.exceptions import ArchiveyUsageError
+from archivey.internal.overrides import override
 from archivey.reader import MemberPass
 
 _T = TypeVar("_T")
@@ -25,9 +26,11 @@ class MemberPassImpl(MemberPass[_T]):
     def __init__(self, items: Generator[_T, None, None]) -> None:
         self._pass = items
 
+    @override
     def __next__(self) -> _T:
         return next(self._pass)
 
+    @override
     def close(self) -> None:
         if inspect.getgeneratorstate(self._pass) == inspect.GEN_RUNNING:
             raise _executing_pass_error()

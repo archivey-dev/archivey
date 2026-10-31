@@ -210,6 +210,11 @@ assistant, answers only people.
 - **Measuring the reviewer.** After changing the review skill, the prompt
   (`.github/review-loop-prompt.md`) or the model, rerun the bugs the loop missed ([`review-eval/`](review-eval/README.md))
   and add the score to its results.
+- **Counting what it found.** `review-tally.yml` runs `scripts/review_tally.py` each
+  Monday over the week's merged pull requests: rounds per pull request, findings by
+  severity and by who raised them (a loop round or the Opus pass), each finding's
+  disposition, and findings an earlier fix caused. The report is the run's job summary.
+  Run the script by hand for any window (`--since`, `--pr`).
 
 ## Setup
 

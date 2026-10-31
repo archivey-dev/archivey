@@ -70,6 +70,7 @@ from archivey.internal.filters import (
 from archivey.internal.link_watch import LinkWatch
 from archivey.internal.logs import extraction as logger
 from archivey.internal.long_paths import long_path, plain
+from archivey.internal.overrides import override
 from archivey.internal.selection import CollectionSelector
 from archivey.paths import numbered_name
 from archivey.terminal import display_path, quoted
@@ -314,9 +315,11 @@ class _PassedData(io.RawIOBase):
         super().__init__()
         self._error = error
 
+    @override
     def readable(self) -> bool:
         return True
 
+    @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         raise self._error
 
@@ -3143,6 +3146,14 @@ class ExtractionCoordinator:
         result_index: int,
     ) -> ExtractionResult:
         source = original.link_target_member
+        if source is None and original.link_target_unrecorded:
+            # A hard link stored with an empty target names no member. GNU tar
+            # substitutes "." and fails that one link; like a symlink with no target,
+            # it is LINK_TARGET_UNAVAILABLE, reported at listing, not a failure that
+            # OnError.STOP would turn into an aborted extraction.
+            return ExtractionResult(
+                original, None, ExtractionStatus.LINK_TARGET_UNAVAILABLE, None
+            )
         if source is None:
             raise LinkTargetNotFoundError(
                 "Hardlink target not found",

@@ -59,6 +59,7 @@ from archivey.internal.external.cli import (
     signal_exit_error,
     spawn_for_stdout,
 )
+from archivey.internal.overrides import override
 from archivey.internal.streams.child_process import describe_exit, is_system_kill
 
 # Inclusive floor. Measured: Debian/Ubuntu ``unar`` 1.10.1 and MacPaw XADMaster v1.10.8
@@ -361,6 +362,7 @@ class UnarOutputStream(ProcessOutputStream):
         self._saw_eof = False
         super().__init__(stdout, proc)
 
+    @override
     def _at_eof(self) -> None:
         self._saw_eof = True
         if self._empty_means_wrong_password and self._bytes_read == 0:
@@ -373,6 +375,7 @@ class UnarOutputStream(ProcessOutputStream):
             )
         super()._at_eof()
 
+    @override
     def _raise_for_returncode(self, rc: int) -> None:
         # A status before end of file is archivey's doing: it closed the pipe on a
         # program that was still writing.

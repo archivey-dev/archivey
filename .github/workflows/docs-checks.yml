@@ -96,3 +96,15 @@ jobs:
       # Stdlib-only script, so no uv sync — the runner's python3 is enough.
       - name: Assert no spec prose refers to "this change"
         run: python3 scripts/check_openspec_self_reference.py
+
+  # AGENTS.md: no internal-tracker URL in the repository. Here rather than in ci.yml,
+  # whose path filter skips the docs-only pull requests most such URLs would arrive in.
+  tracker-urls:
+    name: No tracker URLs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # Stdlib-only script, so no uv sync — the runner's python3 is enough.
+      - name: Assert no tracked file holds an internal-tracker URL
+        run: python3 scripts/check_tracker_urls.py

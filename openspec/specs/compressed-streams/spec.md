@@ -366,13 +366,18 @@ MAY delegate to `inner.read(-1)` and then run the EOF verdict.
 
 Once the public `ArchiveStream` has raised a content verdict (`CorruptionError` or
 `TruncatedError`, or an error raised from one, such as ZipCrypto's password-or-damage
-`EncryptionError`), every later `read` / `readinto` SHALL raise the same error object
-again until the caller seeks, with the traceback it was first raised with rather than
-one that grows per call. A seek SHALL succeed and restart the decode, so the prefix
-reads again, as a truncated `DecompressorStream` does; the read that then reaches the
+`EncryptionError`), every later `read` / `readinto` SHALL raise that verdict again until
+the caller seeks: an error of the same type and arguments, whose `__cause__` shows where
+it was first raised as text, rather than a traceback that grows per call. The raise
+SHALL NOT be the instance the stream keeps, and the stream SHALL NOT keep a traceback:
+a kept traceback holds the stream's frames, a cycle that keeps the stream and its
+decoder (a leased decoder process among them) alive until the garbage collector runs.
+The one exception is an error whose type the stream cannot copy: it is raised again as
+itself, and that stream waits for the collector. A seek SHALL succeed and restart the
+decode, so the prefix reads again, as a truncated `DecompressorStream` does; the read that then reaches the
 end SHALL raise the verdict again and return no bytes, whether or not a seek forfeited
-the digest check (a seek to 0 re-arms it, and the damage found again raises the same
-error object). A read reaches the end when it returns short or empty, is `read(-1)`, or
+the digest check (a seek to 0 re-arms it, and the damage found again raises the first
+verdict again). A read reaches the end when it returns short or empty, is `read(-1)`, or
 leaves the stream at or past the member's declared size; a full-length
 `read(member.size)` after `seek(0)` is one. A caller who catches the verdict and seeks
 back SHALL NOT read the damaged member as complete, clean data. `tell()`, `seekable()`
@@ -423,14 +428,15 @@ fresh stream.
 | Declared size met; the compressed bytes after it are damaged (a ZIP DEFLATE member declared empty, body not DEFLATE) | `CorruptionError` from the probe past the declared size, not a silent end |
 | Partial read then `close` before clean EOF (verify) | No digest/length verdict |
 | Inner teardown fails on `close` | Teardown error may propagate |
-| `ArchiveStream` raised a content verdict; caller catches it, then `read()` | Raises the same error object again; no bytes returned |
+| `ArchiveStream` raised a content verdict; caller catches it, then `read()` | Raises the verdict again (same type and arguments, first raise as its cause); no bytes returned |
 | Same, then `seek(0)` and a bounded `read(n)` inside the member | Seek succeeds; the prefix bytes are returned |
-| Same, then `seek(0)` and a read that reaches the end | Raises the same error object again; that call returns no bytes |
-| Same, retried many times | Traceback stays the first one; it does not grow per call |
+| Same, then `seek(0)` and a read that reaches the end | Raises the verdict again; that call returns no bytes |
+| Same, retried many times | Traceback does not grow per call |
 | Same, `tell()` or `close()` | Not gated; `close()` does not raise the verdict |
 | Accelerated decoder; a read raises and the decoder moves back | `tell()` equals the bytes delivered; the stream stays usable |
 | Accelerated decoder; a read raises and the decoder cannot be moved back | That read raises its own error; every later `read` / `readinto` / `seek` / `tell()` raises `ReadError` naming the cause; `close()` succeeds |
 | Accelerated decoder; the caller's source raises during a read or a seek | That call raises the source's error; then as the row above, even if the source recovers |
+| Same, then the caller drops the stream, with the garbage collector off | The stream is freed at once (unless the verdict's type cannot be copied) |
 
 ### Requirement: Decompressed output digests are verified at clean EOF
 

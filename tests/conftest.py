@@ -62,6 +62,19 @@ for _blocked in UNUSED_UNDER_PYPY - {"pyppmd", "inflate64"}:
     sys.modules[_blocked] = None  # type: ignore[assignment]
 
 
+def assert_raised_again(again: BaseException, first: BaseException) -> None:
+    """``again`` is ``first`` raised again by a stream that kept it: a fresh copy of the
+    same type, arguments and stamped attributes, caused by the first raise
+    (``kept_errors``)."""
+    from archivey.internal.streams.kept_errors import EarlierRaise
+
+    assert again is not first
+    assert type(again) is type(first)
+    assert again.args == first.args
+    assert again.__dict__ == first.__dict__
+    assert isinstance(again.__cause__, EarlierRaise)
+
+
 def has_package(name: str) -> bool:
     """Whether optional package ``name`` is installed and archivey uses it here."""
     return name not in UNUSED_UNDER_PYPY and importlib.util.find_spec(name) is not None
@@ -355,6 +368,30 @@ def sevenzip_lists_arm64() -> bool:
         print(f"7z i did not finish: {exc}", file=sys.stderr)
         return False
     return re.search(r"\bARM64\b", listing) is not None
+
+
+@functools.cache
+def sevenzip_version(program: str = "7z") -> tuple[int, int] | None:
+    """The version ``program``'s ``7z i`` banner names, as (major, minor), or None.
+
+    7-Zip prints ``7-Zip 23.01 (x64)`` or ``7-Zip (z) 26.05 (x64)``; p7zip prints
+    ``p7zip Version 16.02``. A missing program, a banner neither matches, or a run
+    that does not finish is None; the last is written to stderr once.
+    """
+    if shutil.which(program) is None:
+        return None
+    try:
+        listing = run_7z(["i"], text=True, program=program).stdout
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"{program} i did not finish: {exc}", file=sys.stderr)
+        return None
+    found = re.search(r"(?:7-Zip(?: \([a-z]\))?|p7zip Version) (\d+)\.(\d+)", listing)
+    return None if found is None else (int(found[1]), int(found[2]))
+
+
+def sevenzip_version_text(version: tuple[int, int] | None) -> str:
+    """``version`` as 7-Zip writes it (``26.05``), or ``unknown version`` for None."""
+    return "unknown version" if version is None else f"{version[0]}.{version[1]:02d}"
 
 
 @functools.cache

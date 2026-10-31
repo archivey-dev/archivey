@@ -33,6 +33,8 @@ from typing import (
     cast,
 )
 
+from archivey.internal.overrides import override
+
 if TYPE_CHECKING:
     from archivey.internal.bomb_tracker import ReadRatioTally
     from archivey.internal.password import _PasswordCandidates
@@ -177,6 +179,7 @@ from archivey.types import (
     OptionalLibrary,
     OverwritePolicy,
     OverwritePolicyStr,
+    PluginStream,
     StreamFormat,
     TrailerSignature,
 )
@@ -388,6 +391,19 @@ class ReadBackend(ABC):
     """
 
     FORMATS: tuple[ArchiveFormat, ...]
+    # Whether the backend also reads each of its ``FORMATS`` inside every single-file
+    # compression stream: TAR's ``.tar.gz``, a sequential plugin's ``.cpio.gz``. The
+    # registry makes those pairs when asked, from the codecs registered then, so a
+    # codec registered later reaches them too; ``FORMATS`` does not list them.
+    STREAM_PAIRS: ClassVar[bool] = False
+    # The extensions a stream's own is appended to for those pairs: ``.tar`` gives
+    # ``.tar.gz``, ``.tar.xz``, and so on. Each must also be an ``EXTENSIONS`` key,
+    # which names the container. Other pair spellings (``.tgz``) go in ``EXTENSIONS``.
+    PAIR_EXTENSIONS: ClassVar[tuple[str, ...]] = ()
+    # Whether this is the backend for a single compressed file, with no container:
+    # ``ArchiveFormat(RAW_STREAM, <stream>)`` for every single-file codec, made when
+    # asked like the pairs above. Only ``SingleFileBackend`` sets it.
+    RAW_STREAMS: ClassVar[bool] = False
     # ".gz" -> ArchiveFormat.GZ
     EXTENSIONS: Mapping[str, ArchiveFormat] = {}
     # Exact magic-byte signals as data (offset, bytes, format), accepted on the byte match.
@@ -2302,7 +2318,9 @@ class BaseArchiveReader(ArchiveReader):
                 self._present_member(idx, member)
             self._walk_presented = idx + 1
         is_symlink = member.type is MemberType.SYMLINK
-        if is_symlink and member.link_target == "":
+        if member.link_target == "" and (
+            is_symlink or member.type is MemberType.HARDLINK
+        ):
             # A target the header carries (TAR, RAR5, ISO Rock Ridge) is set while the
             # member is typed, so this is the first place every backend's passes share.
             # Emit first and clear after: a strict policy that raises here leaves the
@@ -2354,10 +2372,11 @@ class BaseArchiveReader(ArchiveReader):
         self._presenting = None
 
     def _emit_empty_link_target(self, member: ArchiveMember) -> None:
-        """Report a symlink whose stored target is the empty string.
+        """Report a symlink or hard link whose stored target is the empty string.
 
-        No filesystem takes an empty path as a link target, so the archive records no
-        target for this link, the same as a writer that stored none. It is presented
+        No filesystem takes an empty path as a link target, and an empty name matches
+        no member, so the archive records no target for this link, the same as a
+        writer that stored none. It is presented
         the same way: ``link_target`` unset, and extraction records
         ``LINK_TARGET_UNAVAILABLE`` for it instead of passing ``""`` to ``os.symlink``.
         """
@@ -2365,7 +2384,8 @@ class BaseArchiveReader(ArchiveReader):
             member,
             reason="target_empty",
             message=(
-                f"The symlink target of {quoted(member.name)} is stored as an empty "
+                f"The {'symlink' if member.type is MemberType.SYMLINK else 'hard link'} "
+                f"target of {quoted(member.name)} is stored as an empty "
                 f"string; leaving link_target unset."
             ),
             target_in_archive=False,
@@ -3252,21 +3272,25 @@ class BaseArchiveReader(ArchiveReader):
             )
 
     @property
+    @override
     def format(self) -> ArchiveFormat:
         self._state.require_open("format")
         return self._format
 
     @property
+    @override
     def format_info(self) -> FormatInfo | None:
         self._state.require_open("format_info")
         return self._format_info
 
     @property
+    @override
     def info(self) -> ArchiveInfo:
         self._state.require_open("info")
         return self._get_archive_info()
 
     @property
+    @override
     def cost(self) -> CostReceipt:
         self._state.require_open("cost")
         return self._cost_receipt()
@@ -3276,6 +3300,7 @@ class BaseArchiveReader(ArchiveReader):
         return self._get_archive_info().cost
 
     @property
+    @override
     def diagnostics(self) -> DiagnosticSummary:
         """Fresh immutable cumulative snapshot of diagnostics for this reader."""
         self._state.require_open("diagnostics")
@@ -3395,7 +3420,7 @@ class BaseArchiveReader(ArchiveReader):
     def _open_outer_codec_stream(
         self,
         source: ArchiveSource,
-        stream_format: StreamFormat,
+        stream_format: StreamFormat | PluginStream,
         streaming: bool,
         *,
         member_streams: MemberStreams,
@@ -3460,6 +3485,7 @@ class BaseArchiveReader(ArchiveReader):
             consumed=None if counter is None else lambda: counter.bytes_read,
         )
 
+    @override
     def __iter__(self) -> MemberPass[ArchiveMember]:
         return MemberPassImpl(self._iter_pass())
 
@@ -3507,6 +3533,7 @@ class BaseArchiveReader(ArchiveReader):
         if report.error is not None:
             raise report.error
 
+    @override
     def members(self) -> list[ArchiveMember]:
         self._require_random_access("members()")
         # Under CONCURRENT, first-touch materialization is coordinated via worker tokens
@@ -3531,6 +3558,7 @@ class BaseArchiveReader(ArchiveReader):
         finally:
             self._state.release_pass(token)
 
+    @override
     def members_report(self) -> MemberListReport:
         self._state.require_open("members_report()")
         if not self._streaming:
@@ -3567,6 +3595,7 @@ class BaseArchiveReader(ArchiveReader):
         finally:
             self._state.release_pass(token)
 
+    @override
     def members_report_if_available(self) -> MemberListReport | None:
         """Return the member-list report if it is available **without scanning**, else
         ``None``. Safe to call on any reader (including a streaming one).
@@ -3620,6 +3649,7 @@ class BaseArchiveReader(ArchiveReader):
             diagnostics=self._diagnostics_collector.snapshot(),
         )
 
+    @override
     def __contains__(self, member: object) -> bool:
         # Identity membership for ArchiveMembers: O(1), no scan, so it works in any
         # access mode. This method must exist even though it is a convenience — without
@@ -3635,6 +3665,7 @@ class BaseArchiveReader(ArchiveReader):
             f"Got {type(member).__name__}.",
         )
 
+    @override
     def get(
         self, name: str, default: ArchiveMember | None = None
     ) -> ArchiveMember | None:
@@ -3660,6 +3691,7 @@ class BaseArchiveReader(ArchiveReader):
         finally:
             self._state.release_worker(token)
 
+    @override
     def open(self, member: str | ArchiveMember) -> ArchiveStreamImpl:
         """Open member for reading. Follows symlinks.
 
@@ -3889,11 +3921,13 @@ class BaseArchiveReader(ArchiveReader):
             opened.append(current)
         return self._open_member_handle(current)
 
+    @override
     def read(self, member: str | ArchiveMember) -> bytes:
         """Read member data as bytes."""
         with self.open(member) as f:
             return f.read()
 
+    @override
     def stream_members(
         self,
         members: MemberSelectorArg = None,
@@ -4077,6 +4111,7 @@ class BaseArchiveReader(ArchiveReader):
         Called before anything is created.
         """
 
+    @override
     def extract_all(
         self,
         dest: str | Path,
@@ -4171,6 +4206,7 @@ class BaseArchiveReader(ArchiveReader):
             _resource_usage=self._resource_usage(),
         )
 
+    @override
     def close(self) -> None:
         """Close the reader.
 
@@ -4302,10 +4338,12 @@ class BaseArchiveReader(ArchiveReader):
                 "closing member streams during reader close failed", failures
             )
 
+    @override
     def __enter__(self) -> Self:
         self._state.require_open("__enter__")
         return self
 
+    @override
     def __exit__(self, *args: object) -> None:
         self.close()
 
@@ -4376,9 +4414,11 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
         self._finished = False
         self._error: BaseException | None = None
 
+    @override
     def __iter__(self) -> _ProgressivePassIterator:
         return self
 
+    @override
     def __next__(self) -> ArchiveMember:
         if self._error is not None:
             # The pass previously failed. A plain retry could step past the end of a
