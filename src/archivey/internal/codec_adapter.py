@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 class PluginCodec(StreamCodec):
     """A plugin's codec in the registry: the :class:`StreamCodec` that decodes with a
     :class:`~archivey.formats.CodecHandler` (``handler``). :func:`plugin_codec_class`
-    builds one subclass per handler, as ``register_codec`` adds it.
+    builds one subclass per handler, when ``register_codec`` adds it.
 
     The public class a plugin writes is the handler; this is archivey's side of it,
     as ``format_adapter``'s readers are for a :class:`~archivey.formats.FormatHandler`.

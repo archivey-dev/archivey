@@ -69,7 +69,7 @@ class BrotliCodec(StreamCodec):
         if self.excluded_by(excluded) or not natives.package_available(deps.brotli):
             raise self._missing("Brotli streams", excluded=excluded)
         # Brotli has no random-access index; a backward seek re-decodes from the start (the
-        # outer ArchiveStream warns — see rewind_warning).
+        # outer ArchiveStream warns, named by the default rewind_warning).
         return BrotliDecompressorStream(
             source,
             collector=config.collector,

@@ -96,7 +96,7 @@ class StreamConfig:
     ``window_log_max``). Past the bound the stream may end or fail, so the probe reads
     no further. ``process_isolation`` is the caller's
     :class:`~archivey.config.ProcessIsolation`: a codec builds its native decoder
-    through :attr:`natives`, which it selects.
+    through :attr:`natives`, which that setting selects.
     ``seek_index`` is an xz index scan the single-file reader already
     made over this same source; the xz stream uses it in place of its own scan. Like
     ``collector`` it is left out of equality. So is ``usage``, the reader's
