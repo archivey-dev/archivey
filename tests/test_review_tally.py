@@ -55,7 +55,7 @@ def test_rounds_come_from_the_workflow_markers_only():
         marker(1, "conditional", " next=opus"),
         marker(2, "findings", " pass=opus shape=skipped"),
         {"user": DAVI, "body": marker(3, "approved")["body"]},  # a person quoting one
-        marker(3, "approved"),
+        marker(3, "approved", " shape=2"),
     ]
     rounds = tally.read_rounds(comments)
     assert [(r.n, r.verdict, r.opus_pass, r.opus_next) for r in rounds] == [
@@ -65,10 +65,10 @@ def test_rounds_come_from_the_workflow_markers_only():
     ]
     # A conditional approval that the Opus pass follows did not stop the loop.
     assert tally.PullRequest(1, "t", rounds).passed_at == 3
-    # A close that could not check the posting shape is not a pass.
-    assert [r.shape for r in rounds] == [0, None, 0]
+    # A close that could not check the posting shape is not stored as zero misses.
+    assert [r.shape for r in rounds] == [0, None, 2]
     out = tally.report([tally.PullRequest(1, "t", rounds)], "#1")
-    assert "- **Rounds whose posts missed the posting shape:** 0" in out
+    assert "- **Rounds whose posts missed the posting shape:** 1: #1 round 3 (2)" in out
     assert "- **Rounds whose posting shape was not checked:** 1: #1 round 2" in out
 
 

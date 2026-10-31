@@ -20,6 +20,7 @@ from archivey.config import (
 )
 from archivey.exceptions import ResourceLimitError
 from archivey.internal.excluded_libraries import NO_EXCLUSIONS
+from archivey.internal.overrides import override
 from archivey.types import OptionalLibrary
 
 if TYPE_CHECKING:
@@ -271,6 +272,7 @@ class KeyDerivationBudget:
         self._spent = 0
         self._lock = threading.Lock()
 
+    @override
     def __repr__(self) -> str:
         return f"<KeyDerivationBudget: {self._spent} of {self._cap} rounds spent>"
 

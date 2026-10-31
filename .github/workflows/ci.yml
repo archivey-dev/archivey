@@ -94,9 +94,9 @@ jobs:
         # the everyday recommended install; core-only is covered by the test matrix.
         run: uv sync --group dev --extra all
       - name: Ruff lint
-        run: uv run ruff check src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/ packages/archivey-cpio/ packages/archivey-ar/
+        run: uv run ruff check src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/ packages/archivey-cpio/
       - name: Ruff format
-        run: uv run ruff format --check src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/ packages/archivey-cpio/ packages/archivey-ar/
+        run: uv run ruff format --check src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/ packages/archivey-cpio/
       - name: Pyrefly
         run: uv run pyrefly check
       - name: ty
@@ -804,13 +804,17 @@ jobs:
       - name: Install liblzo2, which python-lzo builds against
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends liblzo2-dev
       - name: Sync, then install the package over it
-        # python-lzo too, so the tests check the package's LZO decoder against liblzo2.
+        # python-lzo too, so the tests check archivey's LZO decoder against liblzo2.
         run: |
           uv sync --group dev --extra all
           uv pip install -e packages/archivey-squashfs --no-deps
           uv pip install python-lzo
       - name: Pytest
-        run: uv run --no-sync pytest packages/archivey-squashfs/tests -q --no-cov -rs
+        # The core LZO tests run here too: this is the job with python-lzo, so the
+        # comparison with liblzo2 and the decode in a child process run nowhere else.
+        run: >-
+          uv run --no-sync pytest packages/archivey-squashfs/tests tests/test_lzo.py
+          tests/test_lzop.py -q --no-cov -rs
 
   # The CPIO reader in packages/archivey-cpio: a format read in one forward pass, added
   # from outside the library through the public plugin API only. Its own tests, against
@@ -836,30 +840,6 @@ jobs:
       - name: Pytest
         run: uv run --no-sync pytest packages/archivey-cpio/tests -q --no-cov -rs
 
-  # The ar reader in packages/archivey-ar: a second format read in one forward pass, to
-  # test the same API from a different shape (a long-name table carried across the walk,
-  # names stored in the data area). Its own tests, against archives GNU ar, bsdtar and
-  # llvm-ar wrote (tests/data/make-archives.sh), from a file and from a pipe.
-  ar-plugin:
-    name: archivey-ar plugin
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - name: Set up Python
-        run: uv python install 3.11
-      - name: Sync, then install the package over it
-        run: |
-          uv sync --group dev
-          uv pip install -e packages/archivey-ar --no-deps
-      - name: Pytest
-        run: uv run --no-sync pytest packages/archivey-ar/tests -q --no-cov -rs
-
   # The short Atheris fuzz (atheris-fuzz.yml in its short mode, three shards), in the
   # merge queue only. The nightly and dispatched full runs stay in that workflow.
   atheris:
@@ -876,7 +856,7 @@ jobs:
   gate:
     name: CI gate
     if: ${{ always() && github.event_name == 'merge_group' }}
-    needs: [lint, test, test-queue, unar-distro-packages, free-threaded-concurrency, pypy, benchmark, squashfs-plugin, cpio-plugin, ar-plugin, atheris]
+    needs: [lint, test, test-queue, unar-distro-packages, free-threaded-concurrency, pypy, benchmark, squashfs-plugin, cpio-plugin, atheris]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

@@ -32,12 +32,14 @@ from archivey.internal.excluded_libraries import (
 from archivey.internal.format_args import coerce_archive_format
 from archivey.internal.sfx import HitValidator
 from archivey.internal.streams.codecs import (
-    SINGLE_FILE_CODECS,
-    STREAM_CODECS,
     Codec,
+    StreamCodec,
     codec_for_stream_format,
     codec_requirement,
     is_codec_available,
+    single_file_codec,
+    single_file_codecs,
+    stream_codecs,
 )
 from archivey.types import (
     ArchiveFormat,
@@ -156,6 +158,7 @@ class BackendRegistry:
         # detection table lists them after the built-in backends and the stream codecs:
         # detection takes the first match in table order, so a built-in signal wins.
         self._plugin_classes: list[type[ReadBackend]] = []
+        self._raw_stream_backend: type[ReadBackend] | None = None
         self._extension_map_cache: dict[str, ArchiveFormat] | None = None
 
     def register_reader(self, backend_cls: type[ReadBackend]) -> None:
@@ -163,7 +166,78 @@ class BackendRegistry:
             self._reader_classes.append(backend_cls)
         for fmt in backend_cls.FORMATS:
             self._readers[fmt] = backend_cls
+        if backend_cls.RAW_STREAMS:
+            self._raw_stream_backend = backend_cls
         self._extension_map_cache = None
+
+    def codecs_changed(self) -> None:
+        """Drop what is cached from the codec list: a codec was registered."""
+        self._extension_map_cache = None
+
+    def _backend_for(self, fmt: ArchiveFormat) -> type[ReadBackend] | None:
+        """The backend that reads ``fmt``, or ``None``.
+
+        A registered format first. Else a stream pair, made from the codecs there are
+        now: a single compressed file goes to the ``RAW_STREAMS`` backend, and a
+        container inside a single-file stream to the backend of the uncompressed
+        container, when it is ``STREAM_PAIRS``.
+        """
+        backend = self._readers.get(fmt)
+        if backend is not None or fmt.stream is StreamFormat.UNCOMPRESSED:
+            return backend
+        if single_file_codec(fmt.stream) is None:
+            return None
+        if fmt.container is ContainerFormat.RAW_STREAM:
+            return self._raw_stream_backend
+        base = self._readers.get(
+            ArchiveFormat(fmt.container, StreamFormat.UNCOMPRESSED)
+        )
+        return base if base is not None and base.STREAM_PAIRS else None
+
+    def stream_pair_bases(self) -> list[ArchiveFormat]:
+        """The formats read inside each single-file stream (``STREAM_PAIRS``): TAR and
+        each sequential plugin format."""
+        return [
+            fmt
+            for cls in (*self._reader_classes, *self._plugin_classes)
+            if cls.STREAM_PAIRS
+            for fmt in cls.FORMATS
+            if self._readers.get(fmt) is cls
+        ]
+
+    def stream_pair_extensions(self) -> list[str]:
+        """Every ``PAIR_EXTENSIONS`` entry, which a stream's extension follows."""
+        return [
+            ext
+            for cls in (*self._reader_classes, *self._plugin_classes)
+            if cls.STREAM_PAIRS
+            for ext in cls.PAIR_EXTENSIONS
+        ]
+
+    def _known_formats(self) -> list[ArchiveFormat]:
+        """Every format a backend reads, in registration order: each backend's own,
+        each followed by its stream pairs, built-in backends before plugins."""
+        stream_formats = [
+            codec.single_file_format
+            for codec in single_file_codecs()
+            if codec.single_file_format is not None
+        ]
+        known: dict[ArchiveFormat, None] = {}
+        for cls in (*self._reader_classes, *self._plugin_classes):
+            if cls.RAW_STREAMS and self._raw_stream_backend is cls:
+                known.update(dict.fromkeys(stream_formats))
+            for fmt in cls.FORMATS:
+                if self._readers.get(fmt) is not cls:
+                    continue
+                known[fmt] = None
+                if cls.STREAM_PAIRS:
+                    known.update(
+                        dict.fromkeys(
+                            ArchiveFormat(fmt.container, raw.stream)
+                            for raw in stream_formats
+                        )
+                    )
+        return list(known)
 
     def register_plugin_backend(self, backend_cls: type[ReadBackend]) -> None:
         """Register a plugin's backend after every built-in one (see ``_plugin_classes``)."""
@@ -190,7 +264,7 @@ class BackendRegistry:
 
     # --- detection tables (aggregated from two sources) ----------------------------------
     # The container format backends (`ReadBackend.MAGIC`/`EXTENSIONS`/`CONTENT_PROBES`) and
-    # the stream-codec objects (`STREAM_CODECS`). The detector reads both via these methods,
+    # the stream-codec objects (`stream_codecs()`). The detector reads both via these methods,
     # so a new standalone codec is detectable by adding one `StreamCodec` — no edits here.
 
     def magic_entries(self) -> list[MagicSignature]:
@@ -198,7 +272,7 @@ class BackendRegistry:
         entries: list[MagicSignature] = []
         for cls in self._reader_classes:
             entries.extend(cls.MAGIC)
-        for codec in STREAM_CODECS:
+        for codec in stream_codecs():
             entries.extend(codec.magic)
         for cls in self._plugin_classes:
             entries.extend(cls.MAGIC)
@@ -224,7 +298,7 @@ class BackendRegistry:
         """
         return [
             (codec.single_file_format, codec.magic_behind_prefix)
-            for codec in SINGLE_FILE_CODECS
+            for codec in single_file_codecs()
             if codec.walks_magic_prefix and codec.single_file_format is not None
         ]
 
@@ -309,7 +383,7 @@ class BackendRegistry:
         probes: list[tuple[ArchiveFormat, ContentProbe]] = []
         for cls in self._reader_classes:
             probes.extend(cls.CONTENT_PROBES)
-        for codec in SINGLE_FILE_CODECS:
+        for codec in single_file_codecs():
             if codec.probes_content and codec.single_file_format is not None:
                 probes.append((codec.single_file_format, codec.content_probe))
         for cls in self._plugin_classes:
@@ -327,18 +401,45 @@ class BackendRegistry:
         if cached is not None:
             return cached
         merged: dict[str, ArchiveFormat] = {}
+        codecs = single_file_codecs()
         for cls in self._reader_classes:
-            merged.update(cls.EXTENSIONS)
-        for codec in SINGLE_FILE_CODECS:
+            merged.update(self._extensions_of(cls, codecs))
+        for codec in codecs:
             if codec.single_file_format is not None:
                 for ext in codec.extensions:
                     merged[ext] = codec.single_file_format
         for cls in self._plugin_classes:
             # Registration refuses an extension already in the map, so a plugin
             # never overwrites a built-in entry here.
-            merged.update(cls.EXTENSIONS)
+            merged.update(self._extensions_of(cls, codecs))
         self._extension_map_cache = merged
         return merged
+
+    @staticmethod
+    def _extensions_of(
+        backend: type[ReadBackend], codecs: tuple[StreamCodec, ...]
+    ) -> dict[str, ArchiveFormat]:
+        """``backend.EXTENSIONS``, and for a ``STREAM_PAIRS`` backend each of its
+        ``PAIR_EXTENSIONS`` followed by each codec's (``.tar.gz``, ``.cpio.br``)."""
+        if not backend.STREAM_PAIRS:
+            return dict(backend.EXTENSIONS)
+        extensions: dict[str, ArchiveFormat] = {}
+        for ext in backend.PAIR_EXTENSIONS:
+            fmt = backend.EXTENSIONS.get(ext)
+            assert fmt is not None, (
+                f"{backend.__name__}.PAIR_EXTENSIONS has {ext!r}, which is not an "
+                "EXTENSIONS key"
+            )
+            for codec in codecs:
+                if codec.stream_format is None:
+                    continue
+                pair = ArchiveFormat(fmt.container, codec.stream_format)
+                for codec_ext in codec.extensions:
+                    extensions[f"{ext}{codec_ext}"] = pair
+        # The backend's own spellings last, so a short alias it lists (``.tgz``) is
+        # never overwritten.
+        extensions.update(backend.EXTENSIONS)
+        return extensions
 
     # --- availability --------------------------------------------------------------------
 
@@ -386,7 +487,7 @@ class BackendRegistry:
                 member_codecs=False,
                 excluded=excluded,
             )
-        backend_cls = self._readers.get(fmt)
+        backend_cls = self._backend_for(fmt)
         if backend_cls is None:
             # No backend, so no source shape to report: the SEEKABLE default stands as
             # the conservative answer.
@@ -487,7 +588,7 @@ class BackendRegistry:
         ``open_archive`` raises it with the archive name before it asks for a reader;
         ``reader_for_format`` raises the same text for a direct caller.
         """
-        backend_cls = self._readers.get(fmt)
+        backend_cls = self._backend_for(fmt)
         if backend_cls is None or backend_cls.READ_IMPLEMENTED:
             return None
         return (
@@ -505,7 +606,7 @@ class BackendRegistry:
         install a package it still could not be read with. ``False`` for a format with
         no backend: ``reader_for_format`` names that absence instead.
         """
-        if fmt not in self._readers:
+        if self._backend_for(fmt) is None:
             return False
         # One derivation of the flag, shared with ``format_availability``, so the
         # refusal and the queryable ``required_source`` cannot drift apart.
@@ -518,7 +619,7 @@ class BackendRegistry:
     ) -> bool:
         """Whether the backend registered for ``fmt`` needs a module ``excluded`` turns
         off: its ``OPTIONAL_DEPENDENCY`` or one of its ``REQUIRED_MODULES``."""
-        backend = self._readers.get(fmt)
+        backend = self._backend_for(fmt)
         if backend is None or not excluded:
             return False
         dep = backend.OPTIONAL_DEPENDENCY
@@ -537,7 +638,7 @@ class BackendRegistry:
         readable whether or not its optional package imports. ``None`` when no backend
         is registered. Use ``reader_for_format`` to get a class that can open.
         """
-        return self._readers.get(fmt)
+        return self._backend_for(fmt)
 
     def reader_for_format(
         self,
@@ -578,7 +679,7 @@ class BackendRegistry:
             return replacement_backend(replacement)
         availability = self.format_availability(fmt, excluded=excluded)
         if availability.support is FormatSupport.NONE:
-            backend_cls = self._readers.get(fmt)
+            backend_cls = self._backend_for(fmt)
             if backend_cls is None:
                 raise UnsupportedFeatureError(
                     f"No read backend registered for format {fmt.display_name}",
@@ -593,13 +694,15 @@ class BackendRegistry:
                 missing=availability.missing,
                 source_format=fmt,
             )
-        return self._readers[fmt]
+        backend = self._backend_for(fmt)
+        assert backend is not None  # support NONE otherwise
+        return backend
 
     # --- queries -------------------------------------------------------------------------
 
     def list_known_formats(self) -> list[ArchiveFormat]:
         """Every format the registry knows, including those with support NONE."""
-        return list(self._readers.keys())
+        return self._known_formats()
 
     def list_supported_formats(
         self, policy: FormatPolicy | None = None
@@ -609,12 +712,12 @@ class BackendRegistry:
         if policy is None:
             return [
                 fmt
-                for fmt in self._readers
+                for fmt in self._known_formats()
                 if self.format_availability(fmt).support is not FormatSupport.NONE
             ]
         return [
             fmt
-            for fmt in self._readers
+            for fmt in self._known_formats()
             if self.format_availability(
                 fmt,
                 excluded=policy.exclude_libraries,

@@ -16,7 +16,6 @@ from archivey.internal.registry import get_registry
 # Module and class of each plugin in packages/. A new plugin goes here.
 PLUGINS = (
     ("archivey_cpio", "CpioHandler"),
-    ("archivey_ar", "ArHandler"),
     ("archivey_squashfs", "SquashfsHandler"),
 )
 

@@ -17,6 +17,7 @@ from collections.abc import Callable
 from typing import BinaryIO
 
 from archivey.exceptions import TruncatedError
+from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     ReadOnlyIOStream,
@@ -54,6 +55,7 @@ class WalkHandoffStream(ReadOnlyIOStream):
         self._pos = 0
         super().__init__()
 
+    @override
     def tell(self) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
@@ -64,6 +66,7 @@ class WalkHandoffStream(ReadOnlyIOStream):
         if self._detached_at is None and not self.closed:
             self._detached_at = self._pos
 
+    @override
     def read(self, n: int | None = -1, /) -> bytes:
         if self.closed:
             raise ValueError("read from a closed member stream")
@@ -83,6 +86,7 @@ class WalkHandoffStream(ReadOnlyIOStream):
         self._pos += len(data)
         return data
 
+    @override
     def close(self) -> None:
         if self._view is not None:
             self._view.close()
@@ -113,6 +117,7 @@ class MemberDataView(DelegatingStream):
         self._length = length
         self._what = what
 
+    @override
     def read(self, n: int | None = -1, /) -> bytes:
         n = check_read_size(n)
         position = self._inner.tell()

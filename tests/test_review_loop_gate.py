@@ -437,7 +437,8 @@ def test_a_round_that_does_not_need_another_look_says_so() -> None:
     assert "grow into a larger change" in approved.comment
 
     clean = finish(verdict_file(verdict="clean"))
-    assert "ready for a person to look at and merge" in clean.comment
+    assert "An agent merges it once CI is green" in clean.comment
+    assert "the maintainer merges this one" in clean.comment
 
 
 def test_a_decision_carries_its_question() -> None:

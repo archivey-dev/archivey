@@ -22,6 +22,7 @@ from archivey.cost import CostReceipt, StreamCapability
 from archivey.exceptions import ArchiveyError
 from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.enum_args import coerce_enum
+from archivey.internal.overrides import override
 
 if TYPE_CHECKING:
     from archivey.diagnostics import Diagnostic
@@ -77,6 +78,10 @@ class ContainerFormat(StrEnum):
     SEVEN_Z = "7z"
     ISO = "iso"
     """An ISO 9660 disc image."""
+    AR = "ar"
+    """A Unix ar archive: a static library (``.a``, ``.lib``) or the outer layer of a
+    ``.deb`` package. Read in one forward pass, so from a pipe and inside a compression
+    stream too."""
     DMG = "dmg"
     """An Apple disk image. archivey recognises one so that opening it can refuse it by
     name, but cannot read it."""
@@ -107,6 +112,26 @@ class PluginContainer(StrEnum):
     """
 
 
+class PluginStream(StrEnum):
+    """Base class for a stream enum that a codec plugin defines.
+
+    A plugin subclasses it with one member per compression stream format it adds. The
+    value is the format's file extension, as a :class:`~archivey.StreamFormat` value
+    is::
+
+        class LzhamStream(PluginStream):
+            LZHAM = "lzham"
+
+    The member is the codec's ``CodecHandler.stream_format``, and the second half of
+    each :class:`~archivey.ArchiveFormat` read with it: ``ArchiveFormat(RAW_STREAM,
+    LzhamStream.LZHAM)`` for a single ``.lzham`` file, ``ArchiveFormat(TAR, ...)`` for
+    a ``.tar.lzham``.
+
+    Provisional, with the rest of ``archivey.formats``. Code that matches on
+    ``ArchiveFormat.stream`` needs a default case once a codec is registered.
+    """
+
+
 class StreamFormat(StrEnum):
     """The compression around the whole container, the second half of an
     :class:`~archivey.ArchiveFormat`. Each value is the format's file extension."""
@@ -127,6 +152,10 @@ class StreamFormat(StrEnum):
     """Brotli has no signature, so archivey detects it by the file name."""
     UNIX_COMPRESS = "Z"
     """The Unix ``compress`` format."""
+    LZOP = "lzo"
+    """The ``.lzo`` file format ``lzop`` writes: LZO1X blocks behind a header.
+    archivey decodes LZO1X with ``python-lzo`` when it is installed, else in Python,
+    more than 25 times slower on text."""
 
 
 @dataclass(frozen=True)
@@ -149,9 +178,10 @@ class ArchiveFormat:
     """The archive format, such as ``ZIP`` or ``TAR``, or a member of a
     :class:`~archivey.PluginContainer` subclass for a format a plugin adds."""
 
-    stream: StreamFormat
+    stream: StreamFormat | PluginStream
     """The compression around the archive, such as ``GZIP`` for a ``.tar.gz``, or
-    ``UNCOMPRESSED``."""
+    ``UNCOMPRESSED``, or a member of a :class:`~archivey.PluginStream` subclass for a
+    compression format a plugin adds."""
 
     def __post_init__(self) -> None:
         # Converted, not only checked: both enums are ``StrEnum``, so a member is a
@@ -200,9 +230,11 @@ class ArchiveFormat:
     ZLIB: ClassVar[ArchiveFormat]
     BROTLI: ClassVar[ArchiveFormat]
     Z: ClassVar[ArchiveFormat]
+    LZOP: ClassVar[ArchiveFormat]
     SEVEN_Z: ClassVar[ArchiveFormat]
     RAR: ClassVar[ArchiveFormat]
     ISO: ClassVar[ArchiveFormat]
+    AR: ClassVar[ArchiveFormat]
     DMG: ClassVar[ArchiveFormat]
     DIRECTORY: ClassVar[ArchiveFormat]
     UNKNOWN: ClassVar[ArchiveFormat]
@@ -243,8 +275,12 @@ class ArchiveFormat:
             return name
         if self.stream == StreamFormat.UNCOMPRESSED:
             return self.container.name
+        if self.container is ContainerFormat.RAW_STREAM:
+            # A plugin codec's single file, named by its stream as ``GZ`` is.
+            return self.stream.name
         return f"{self.container.name}_{self.stream.name}"
 
+    @override
     def __repr__(self) -> str:
         name = _FORMAT_NAMES.get(self)
         if name is not None:
@@ -272,11 +308,13 @@ ArchiveFormat.LZMA_ALONE = ArchiveFormat(
 ArchiveFormat.ZLIB = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.ZLIB)
 ArchiveFormat.BROTLI = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BROTLI)
 ArchiveFormat.Z = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.UNIX_COMPRESS)
+ArchiveFormat.LZOP = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZOP)
 ArchiveFormat.SEVEN_Z = ArchiveFormat(
     ContainerFormat.SEVEN_Z, StreamFormat.UNCOMPRESSED
 )
 ArchiveFormat.RAR = ArchiveFormat(ContainerFormat.RAR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.ISO = ArchiveFormat(ContainerFormat.ISO, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.AR = ArchiveFormat(ContainerFormat.AR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DMG = ArchiveFormat(ContainerFormat.DMG, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DIRECTORY = ArchiveFormat(
     ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED
@@ -320,6 +358,9 @@ class OptionalLibrary(StrEnum):
     """ISO 9660 images."""
     CRYPTOGRAPHY = "cryptography"
     """AES decryption in ZIP, 7z and RAR."""
+    LZO = "lzo"
+    """``python-lzo``: LZO1X in ``.lzo`` files and SquashFS images. archivey decodes
+    LZO1X in Python without it, more slowly."""
 
 
 OptionalLibraryStr = Literal[
@@ -332,6 +373,7 @@ OptionalLibraryStr = Literal[
     "rapidgzip",
     "pycdlib",
     "cryptography",
+    "lzo",
 ]
 """The values of :class:`OptionalLibrary`, for an argument that takes either spelling."""
 
@@ -574,6 +616,9 @@ class CompressionAlgorithm(Enum):
     IMPLODE = "implode"
     """ZIP method 6, LZ77 with Shannon-Fano codes, from PKZIP 1.x. No current tool
     writes it."""
+    LZO = "lzo"
+    """Raw LZO1X with no header, as SquashFS stores a block. Not the ``.lzo`` file
+    format, which is ``StreamFormat.LZOP``."""
     RAR = "rar"
     """RAR's own compression, any version. Not the same as ``ContainerFormat.RAR``,
     which is the archive format."""
@@ -716,30 +761,39 @@ class _ReadOnlyDict(dict[str, str]):
     def _refuse(self, *args: object, **kwargs: object) -> NoReturn:
         raise TypeError("extra['tar.pax_headers'] is read-only; copy it with dict()")
 
+    @override
     def __setitem__(self, key: str, value: str, /) -> NoReturn:
         self._refuse()
 
+    @override
     def __delitem__(self, key: str, /) -> NoReturn:
         self._refuse()
 
+    @override
     def __ior__(self, value: object, /) -> NoReturn:
         self._refuse()
 
+    @override
     def clear(self) -> NoReturn:
         self._refuse()
 
+    @override
     def pop(self, key: object, /, *default: object) -> NoReturn:
         self._refuse()
 
+    @override
     def popitem(self) -> NoReturn:
         self._refuse()
 
+    @override
     def setdefault(self, key: str, default: str = "", /) -> NoReturn:
         self._refuse()
 
+    @override
     def update(self, *args: object, **kwargs: object) -> NoReturn:
         self._refuse()
 
+    @override
     def __reduce__(self) -> tuple[type[dict[str, str]], tuple[dict[str, str]]]:
         return (dict, (dict(self),))
 
@@ -827,6 +881,8 @@ class MemberExtra(dict[str, object]):
       size for a file of several members (it covers only the last; a bgzip file
       ends with an empty member and reads 0) or with bytes after the last one.
       ``size`` stays ``None`` until a full read fills it in.
+    * ``lzop.original_filename`` (``str``) — the name the lzop header stores, as
+      ``gzip.original_filename`` is for gzip.
     * ``iso.version`` (``int``) — plain ISO 9660 only: the ``;N`` file version
       stripped from the name. Versions of one name share it; the highest is
       listed last and is the current one.
@@ -887,9 +943,12 @@ class MemberExtra(dict[str, object]):
     @overload
     def __getitem__(self, key: Literal["gzip.isize"], /) -> int: ...
     @overload
+    def __getitem__(self, key: Literal["lzop.original_filename"], /) -> str: ...
+    @overload
     def __getitem__(self, key: Literal["iso.version"], /) -> int: ...
     @overload
     def __getitem__(self, key: str, /) -> object: ...
+    @override
     def __getitem__(self, key: str, /) -> object:
         return super().__getitem__(key)
 
@@ -906,6 +965,8 @@ class ArchiveInfoExtra(dict[str, object]):
     * ``zip.volume_count`` (``int``)
     * ``rar.volume_count`` (``int``)
     * ``7z.volume_count`` (``int``)
+    * ``ar.symbol_table`` (``bool``)
+    * ``ar.dialect`` (``str``)
     """
 
     __slots__ = ()
@@ -919,7 +980,12 @@ class ArchiveInfoExtra(dict[str, object]):
     @overload
     def __getitem__(self, key: Literal["7z.volume_count"], /) -> int: ...
     @overload
+    def __getitem__(self, key: Literal["ar.symbol_table"], /) -> bool: ...
+    @overload
+    def __getitem__(self, key: Literal["ar.dialect"], /) -> str: ...
+    @overload
     def __getitem__(self, key: str, /) -> object: ...
+    @override
     def __getitem__(self, key: str, /) -> object:
         return super().__getitem__(key)
 
@@ -974,6 +1040,9 @@ class ArchiveMember:
       source has no file name); ``raw_name`` holds the original file name from the
       gzip header (``FNAME``), and ``extra["gzip.original_filename"]`` holds those
       bytes decoded as Latin-1.
+    - A ``.lzo`` file's member is named after the archive source in the same way;
+      ``raw_name`` holds the name the lzop header stores, and
+      ``extra["lzop.original_filename"]`` holds those bytes decoded.
     - A 7z member stored with no name is named after the archive source, and
       ``raw_name`` is ``b""``.
     - A RAR5 file-version-history member gets a ``;n`` suffix in ``name`` (as

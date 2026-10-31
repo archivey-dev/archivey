@@ -801,8 +801,9 @@ much before the ratio refuses it, where it wrote about 5 MiB before that floor e
 
 **Property.** Reading one RAR member never quietly decodes other members first.
 
-**Mechanism.** `unrar` selects members by mask, and a member whose name is a glob that
-matches earlier entries would make `unrar -n` decompress every earlier match first. The
+**Mechanism.** `unrar` selects members by mask, and a member whose mask selects earlier
+entries (a glob, a duplicate name, two names `unrar` reads alike) would make `unrar -n`
+decompress every earlier match first. The
 read is refused by default when that skip is nonzero (`internal/backends/rar_reader.py`,
 `rar_allow_glob_member_concatenation` as the escape hatch). The refusal is narrower
 than it looks: on a solid archive an out-of-order `open()` decodes everything ahead of
@@ -811,9 +812,10 @@ there. Whether the refusal earns its keep is parked with the general unbounded-r
 question ([`formats/rar.md`](formats/rar.md) §5 to §7).
 
 **Residual.** A mask with no glob that still selects earlier members (a duplicate name,
-or two names `unrar` reads the same way) is not refused, so `unrar` decodes those
-members first. Their dictionaries count against `DecoderLimits.max_decoder_memory`
-([Decoder memory](#decoder-memory)); the bytes they decode count against no limit.
+or two names `unrar` reads the same way) is refused the same way since 2026-10-29. With
+the flag set, `unrar` decodes those members first: their dictionaries count against
+`DecoderLimits.max_decoder_memory` ([Decoder memory](#decoder-memory)); the bytes they
+decode count against no limit.
 
 **Tests.** `tests/test_rar_reader.py::test_glob_member_with_earlier_matches_is_refused`,
 `::test_solid_glob_refusal_does_not_claim_an_avoidable_decode`,
@@ -1174,7 +1176,11 @@ consumes the stream once, and the entries its directory places in the bytes kept
 its members consume those at most twice more, however many it names there
 ([Resource use is bounded](#resource-use-is-bounded)). A "work per output byte" limit
 for BCJ2 was considered and not added: no other codec has one, and `ExtractionLimits`
-still bounds the amount, only the rate is lower. Callers who need a time bound run
+still bounds the amount, only the rate is lower. Detection of an unrecognised file with
+no known extension scans up to 2 MiB for an archive behind leading bytes, and 2 MiB of
+back-to-back ZIP local-header signatures costs about 2.4 s to reject, one validation each
+([prefixed archives §3](topics/prefixed-archives.md#3-cost-is-what-tiers-this-not-false-positives)).
+Callers who need a time bound run
 archivey in a worker they can kill. Public:
 [where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 

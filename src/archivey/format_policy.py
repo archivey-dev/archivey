@@ -17,11 +17,13 @@ from archivey.exceptions import _UsageTypeError, _UsageValueError
 from archivey.internal.arg_checks import check_instance
 from archivey.internal.enum_args import coerce_enum_collection
 from archivey.internal.excluded_libraries import is_excluded_module
+from archivey.internal.overrides import override
 from archivey.types import (
     ArchiveFormat,
     ContainerFormat,
     OptionalLibrary,
     PluginContainer,
+    PluginStream,
     StreamFormat,
 )
 
@@ -33,7 +35,7 @@ __all__ = ["FormatPolicy"]
 
 # One entry of ``only`` or ``exclude``: a container or a compression, each half of an
 # ArchiveFormat.
-_FormatEntry = ContainerFormat | PluginContainer | StreamFormat
+_FormatEntry = ContainerFormat | PluginContainer | StreamFormat | PluginStream
 
 _CALL = "FormatPolicy()"
 
@@ -50,8 +52,8 @@ def _coerce_entries(values: object, *, param: str) -> frozenset[_FormatEntry]:
     """
     if isinstance(values, (str, bytes)) or not isinstance(values, Iterable):
         raise _UsageTypeError(
-            f"{_CALL} takes a collection of ContainerFormat, PluginContainer and "
-            f"StreamFormat members for {param}, got {values!r}."
+            f"{_CALL} takes a collection of ContainerFormat, PluginContainer, "
+            f"StreamFormat and PluginStream members for {param}, got {values!r}."
         )
     entries: set[_FormatEntry] = set()
     for value in values:
@@ -61,10 +63,13 @@ def _coerce_entries(values: object, *, param: str) -> frozenset[_FormatEntry]:
                 f"format {value!r}: pass {_entry_name(value.container)}, and "
                 f"{_entry_name(value.stream)} for its compression."
             )
-        if not isinstance(value, (ContainerFormat, PluginContainer, StreamFormat)):
+        if not isinstance(
+            value, (ContainerFormat, PluginContainer, StreamFormat, PluginStream)
+        ):
             raise _UsageTypeError(
-                f"{_CALL} takes ContainerFormat, PluginContainer and StreamFormat "
-                f"members for {param}, got {value!r} ({type(value).__name__})."
+                f"{_CALL} takes ContainerFormat, PluginContainer, StreamFormat and "
+                f"PluginStream members for {param}, got {value!r} "
+                f"({type(value).__name__})."
             )
         if value is ContainerFormat.UNKNOWN:
             raise _UsageValueError(
@@ -154,18 +159,23 @@ class _Replacements(Mapping[ContainerFormat, "type[FormatHandler]"]):
     def __init__(self, items: Mapping[ContainerFormat, type[FormatHandler]]) -> None:
         self._items = dict(items)
 
+    @override
     def __getitem__(self, key: ContainerFormat) -> type[FormatHandler]:
         return self._items[key]
 
+    @override
     def __iter__(self) -> Iterator[ContainerFormat]:
         return iter(self._items)
 
+    @override
     def __len__(self) -> int:
         return len(self._items)
 
+    @override
     def __hash__(self) -> int:
         return hash(frozenset(self._items.items()))
 
+    @override
     def __repr__(self) -> str:
         return repr(self._items)
 
@@ -209,7 +219,7 @@ class FormatPolicy:
     whose message names every entry to change; ``format=`` does not bypass the policy.
     :func:`~archivey.detect_format` reports the true format of a built-in file whatever
     the policy says, so a caller can check :meth:`allows` before opening. A plugin
-    format the policy turns off is not detected at all: its magic, extensions and
+    format or codec the policy turns off is not detected at all: its magic, extensions and
     content probe are left out of that call, and the detection receipt records each
     tier that left one out as ``NOT_ENABLED_BY_POLICY``.
 
@@ -225,15 +235,19 @@ class FormatPolicy:
         MY_ZIP = ArchiveyConfig(formats=FormatPolicy(replace={C.ZIP: MyZipPlugin}))
     """
 
-    only: frozenset[ContainerFormat | PluginContainer | StreamFormat] | None
+    only: (
+        frozenset[ContainerFormat | PluginContainer | StreamFormat | PluginStream]
+        | None
+    )
     """The containers and compressions that may open, or ``None`` for all of them."""
 
-    exclude: frozenset[ContainerFormat | PluginContainer | StreamFormat]
+    exclude: frozenset[ContainerFormat | PluginContainer | StreamFormat | PluginStream]
     """The containers and compressions that may not open."""
 
     plugins: bool
-    """Whether registered plugin formats may open. Use ``False`` with ``exclude``;
-    under ``only`` a plugin opens only when its container is listed."""
+    """Whether registered plugin formats and plugin codecs may open. Use ``False``
+    with ``exclude``; under ``only`` a plugin opens only when its container (or its
+    :class:`~archivey.PluginStream`, for a codec) is listed."""
 
     replace: Mapping[ContainerFormat, type[FormatHandler]]
     """Built-in containers read by a plugin instead of the built-in reader.
@@ -276,8 +290,11 @@ class FormatPolicy:
     def __init__(
         self,
         *,
-        only: Iterable[ContainerFormat | PluginContainer | StreamFormat] | None = None,
-        exclude: Iterable[ContainerFormat | PluginContainer | StreamFormat] = (),
+        only: Iterable[ContainerFormat | PluginContainer | StreamFormat | PluginStream]
+        | None = None,
+        exclude: Iterable[
+            ContainerFormat | PluginContainer | StreamFormat | PluginStream
+        ] = (),
         plugins: bool = True,
         replace: Mapping[ContainerFormat, type[FormatHandler]] | None = None,
         exclude_libraries: Iterable[OptionalLibrary | OptionalLibraryStr] = (),
@@ -298,11 +315,13 @@ class FormatPolicy:
                 raise _UsageValueError(
                     f"{_CALL} got entries in both only= and exclude=: {names}."
                 )
-            listed_plugins = [e for e in only_parsed if isinstance(e, PluginContainer)]
+            listed_plugins = [
+                e for e in only_parsed if isinstance(e, (PluginContainer, PluginStream))
+            ]
             if listed_plugins and not plugins:
                 names = ", ".join(sorted(_entry_name(e) for e in listed_plugins))
                 raise _UsageValueError(
-                    f"{_CALL} lists the plugin containers {names} in only= but sets "
+                    f"{_CALL} lists the plugin formats {names} in only= but sets "
                     "plugins=False. Drop one of the two."
                 )
         replace_parsed = _coerce_replacements({} if replace is None else replace)
@@ -361,7 +380,9 @@ class FormatPolicy:
         elif self.only is not None and container not in self.only:
             unlisted.append(container)
         stream = fmt.stream
-        if stream is not StreamFormat.UNCOMPRESSED:
+        if isinstance(stream, PluginStream) and not self.plugins:
+            reasons.append("plugins=False turns off every plugin codec")
+        elif stream is not StreamFormat.UNCOMPRESSED:
             if stream in self.exclude:
                 reasons.append(f"exclude= lists {_entry_name(stream)}")
             elif self.only is not None and stream not in self.only:

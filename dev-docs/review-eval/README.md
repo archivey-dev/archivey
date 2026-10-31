@@ -69,7 +69,11 @@ Five cases is a small set and one review is one sample: a model can catch a bug 
 one run and miss it on the next. Treat a change of one case as noise, a change of
 two or more, or a `yes` turning into a `no` on the same case across two runs, as
 signal. The judge reads only for the named bug; it does not count false positives,
-so read the saved `review.md` files when the number of findings changes a lot.
+so read the saved `review.md` files when the number of findings changes a lot. Each case
+also keeps its `transcript.jsonl` and a `reads.json` with what the reviewer read (the
+characters each file and each tool returned) and the run's token totals, to see where
+a change to the reading moves the cost. `summary.md` totals the turns and the guide
+reads (the paths `GUIDES` lists) across the cases.
 
 The isolation is by prompt as well as by construction. The reviewer runs with Bash,
 so if it ignored the prompt it could reach another checkout, or GitHub through a

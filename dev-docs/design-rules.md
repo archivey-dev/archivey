@@ -1187,10 +1187,13 @@ reaches him.
 - A **clash between consistency and the official tool** where the factors split.
 - Anything **outside the repo**: upstream bug reports (agents draft them, the maintainer
   files them), repository settings, publishing.
-- Merging a **tricky** pull request: a behaviour trade-off, a design reversal, removing
-  or renaming a public name (DR-12a), a very large diff, or anything an open
-  decision touches. A straightforward one an agent may merge once its review approves and
-  CI is green.
+- Merging a **tricky** pull request: one that makes a decision of the maintainer's, such
+  as a behaviour trade-off, a design reversal, removing or renaming a public name
+  (DR-12a), or anything an open decision touches (the list is in `AGENTS.md`, and
+  `scripts/review_prep.py tier` finds most of it). Size alone is not one of them. Any
+  other one an agent may merge once its review approves and CI is green; on standard and
+  deep that approval includes the Opus pass, and on deep Cursor's too (maintainer,
+  2026-10-31).
 
 How to ask is in `AGENTS.md` §Working with the maintainer.
 

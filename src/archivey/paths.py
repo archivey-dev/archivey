@@ -31,6 +31,7 @@ from pathlib import PurePath
 from typing import TYPE_CHECKING
 
 from archivey.exceptions import _UsageValueError
+from archivey.internal.overrides import override
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -203,6 +204,7 @@ class _TarGlob:
         # fnmatchcase: the same answer on every platform (fnmatch folds case on Windows).
         return any(fnmatch.fnmatchcase(name, form) for form in self._forms)
 
+    @override
     def __repr__(self) -> str:
         return f"match_tar_glob({', '.join(map(repr, self.patterns))})"
 
@@ -268,6 +270,7 @@ class _MemberGlob:
             is_dir and self._dirs_only is not None and self._dirs_only.fullmatch(name)
         )
 
+    @override
     def __repr__(self) -> str:
         args = ", ".join(map(repr, self.patterns))
         return (

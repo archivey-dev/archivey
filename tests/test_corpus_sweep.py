@@ -47,11 +47,23 @@ _MODE_FORMATS = {
     "tar.lz",
     "tar.zz",
     "tar.br",
+    "tar.lzo",
     "zip",
 }
 # Single-member formats: the member name is inferred from the archive filename, so the
 # listing check differs (see format-single-file-compressors).
-_SINGLE_FILE_KEYS = {"gz", "gz-meta", "bz2", "xz", "zst", "lz4", "lz", "zz", "br"}
+_SINGLE_FILE_KEYS = {
+    "gz",
+    "gz-meta",
+    "bz2",
+    "xz",
+    "zst",
+    "lz4",
+    "lz",
+    "zz",
+    "br",
+    "lzo",
+}
 
 # Builder-variant keys write the same container a different way, so the reader contract
 # they must satisfy is the base format's. The per-format assertions below key off this,

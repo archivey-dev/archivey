@@ -86,6 +86,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from archivey.internal.overrides import override
+
 if __package__:
     from archivey.internal.streams.codecs import decoder_worker as shared
 else:
@@ -196,12 +198,15 @@ class _ParentSource(io.RawIOBase):
                 return SRC_FAIL, 0, b""
             return answer
 
+    @override
     def readable(self) -> bool:
         return True
 
+    @override
     def seekable(self) -> bool:
         return True
 
+    @override
     def readinto(self, buf: Any) -> int:
         # Views released on return (the rule in binaryio.try_readinto): the caller
         # may resize or free ``buf`` next.
@@ -212,10 +217,12 @@ class _ParentSource(io.RawIOBase):
             view[: len(data)] = data
             return len(data)
 
+    @override
     def seek(self, offset: int, whence: int = 0) -> int:
         answer, value, _ = self._ask(SRC_SEEK, offset, bytes([whence]))
         return value if answer == SRC_VALUE else 0
 
+    @override
     def tell(self) -> int:
         answer, value, _ = self._ask(SRC_TELL)
         return value if answer == SRC_VALUE else 0
@@ -243,12 +250,15 @@ class _FileRange(io.RawIOBase):
         # rapidgzip's threads share one position.
         self._lock = threading.Lock()
 
+    @override
     def readable(self) -> bool:
         return True
 
+    @override
     def seekable(self) -> bool:
         return True
 
+    @override
     def readinto(self, buf: Any) -> int:
         with memoryview(buf) as outer, outer.cast("B") as view, self._lock:
             want = min(len(view), self._length - self._pos)
@@ -262,12 +272,14 @@ class _FileRange(io.RawIOBase):
             self._pos += len(data)
             return len(data)
 
+    @override
     def seek(self, offset: int, whence: int = 0) -> int:
         with self._lock:
             base = self._pos if whence == 1 else self._length if whence == 2 else 0
             self._pos = max(base + offset, 0)
             return self._pos
 
+    @override
     def tell(self) -> int:
         return self._pos
 

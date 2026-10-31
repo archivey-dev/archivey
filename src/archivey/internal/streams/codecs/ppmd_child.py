@@ -15,6 +15,7 @@ cleanly: ``PpmdDecoder`` calls ``spoil`` otherwise.
 from __future__ import annotations
 
 from archivey.exceptions import ResourceUnavailableError
+from archivey.internal.overrides import override
 from archivey.internal.streams.child_process import describe_exit
 from archivey.internal.streams.codecs.decoder_child import (
     DecoderChild,
@@ -64,6 +65,7 @@ class _PpmdChild(DecoderChild):
         self._mem_size = mem_size
         super().__init__(codec, args, known=PPMD_ERRORS, setting=setting)
 
+    @override
     def _fresh_child_error(self, exc: Exception) -> Exception:
         if isinstance(exc, MemoryError):
             exc = _allocation_error(self._mem_size, str(exc) or "MemoryError")
@@ -73,6 +75,7 @@ class _PpmdChild(DecoderChild):
             return ResourceUnavailableError(str(exc))
         return super()._fresh_child_error(exc)
 
+    @override
     def _death_error(self, returncode: int | None) -> Exception:
         if self._building:
             return _allocation_error(self._mem_size, describe_exit(returncode))

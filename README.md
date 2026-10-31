@@ -7,7 +7,8 @@ Python library for reading, streaming, and safely extracting archives (ZIP, TAR,
 ## Features
 
 - **One interface for every format:** ZIP, TAR (plain or compressed with gzip, bzip2, xz,
-  zstd, lz4 or Unix compress), 7z, RAR, ISO 9660, plain directories, and single-file
+  zstd, lz4 or Unix compress), 7z, RAR, ISO 9660, ar (static libraries, `.deb`), plain
+  directories, and single-file
   streams (gzip, bzip2, xz, lzip, LZMA, zstd, lz4, zlib, Brotli, Unix compress).
   List members, read one, or stream them all in one pass, the same way for each.
 - **Automatic format detection** from the file's content, so a misnamed file still opens.

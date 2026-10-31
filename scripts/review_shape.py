@@ -5,13 +5,14 @@
 skill and the maintainer's phone both read it that way: a review body headed
 ``## Round <n> · <verdict>`` with one attribution line under it and the collapsed
 ``Measured this round`` list at its end; every inline finding and reply headed
-``### K<n> · ...``; the attribution footer on every post; and no table anywhere.
+``### K<n> · ...``; the attribution footer on every post; and no table outside a
+code fence.
 
 This reads one JSON object on stdin and writes one on stdout::
 
     {"round": 2, "issue_comments": [...], "reviews": [...], "review_comments": [...],
      "until": "2026-10-30T12:00:00Z"}
-    -> {"misses": ["inline comment 123 has no `### K<n> ·` heading", ...]}
+    -> {"misses": ["inline finding 123 has no `### K<n> ·` heading", ...]}
 
 The three lists are the pull request's, as the REST API returns them. The round's posts
 are the reviewer's ones after the workflow's last closing comment (a round or attempt
