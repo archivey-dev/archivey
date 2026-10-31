@@ -1594,7 +1594,18 @@ class DecompressorStream(ReadOnlyIOStream):
                 ):
                     self._pos += len(chunk)
                     return chunk
-                self._buffer.extend(chunk)
+                if len(chunk) < need:
+                    # A short chunk: gather the rest of ``need`` in a list and join
+                    # it once, as ``readall`` does. Staging a large bounded read
+                    # through ``_buffer`` copies it twice more (extend, then slice),
+                    # which doubled a ratio-guarded read of a big gzip member.
+                    data = self._gather(chunk, need, n, pending)
+                    chunk = b""
+                    if data is not None:
+                        self._pos += len(data)
+                        return data
+                else:
+                    self._buffer.extend(chunk)
                 # ``_buffer`` holds it now. A raise below keeps this frame alive on
                 # its traceback, which must not pin a second copy of the bytes.
                 chunk = b""
@@ -1616,6 +1627,49 @@ class DecompressorStream(ReadOnlyIOStream):
         self._pos += len(data)
         if not data and self._end_error() is not None:
             self._raise_deferred()
+        return data
+
+    def _gather(
+        self,
+        first: bytes,
+        need: int,
+        n: int,
+        pending: Callable[[], Exception | None],
+    ) -> bytes | None:
+        """Decode on from ``first`` to ``need`` bytes; ``None`` leaves it to the loop.
+
+        Returns the joined bytes, at most ``n`` of them, when the decode ran clean:
+        no held raise, no restart, and something to give back. Otherwise everything
+        decoded so far goes to ``_buffer``, as the buffered loop in :meth:`_read`
+        would have left it, and that loop finishes the read. A decoder error raised
+        on the way leaves the decoded bytes in ``_buffer`` too, for the next read.
+        """
+        parts = [first]
+        got = len(first)
+        try:
+            while (
+                got < need
+                and not self._eof
+                and self._spent is None
+                and not self._restart_pending
+                and pending() is None
+            ):
+                more = self._read_decompressed_chunk(n - got)
+                if more:
+                    parts.append(more)
+                    got += len(more)
+        except BaseException:
+            self._buffer.extend(b"".join(parts))
+            parts.clear()
+            raise
+        data = b"".join(parts)
+        parts.clear()
+        if not data or self._restart_pending or pending() is not None:
+            self._buffer.extend(data)
+            return None
+        if len(data) > n:
+            self._buffer.extend(memoryview(data)[n:])
+            data = data[:n]
         return data
 
     def _raise_deferred(self) -> NoReturn:
