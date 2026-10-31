@@ -818,8 +818,8 @@ the rulings above.
   A stable signature that only mentions one (`FormatPolicy`'s constructor with
   `replace=`, `ArchiveFormat`'s `container` field typed `ContainerFormat |
   PluginContainer`) still shows as a minor; the maintainer judges that change.
-  `FormatPolicy.plugins` stays stable: a switch that refuses plugin formats keeps
-  working whatever happens to the interface it refuses. Declaring the interface stable
+  `FormatPolicy.plugins` stays stable (maintainer, 2026-10-31): a switch that refuses
+  plugin formats keeps working whatever happens to the interface it refuses. Declaring the interface stable
   is the maintainer's call.
 
 Public docs: `docs/how-it-is-built.md` §Versioning and stability.
