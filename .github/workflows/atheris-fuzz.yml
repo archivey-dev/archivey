@@ -5,8 +5,9 @@ name: Atheris fuzz
 # Mirrors the benchmark split:
 # - workflow_call with `short: true`: short budgets, 3-way sharded (each target pays ~30s
 #   Atheris cold start; sharding cuts wall time roughly 3× while keeping the full target
-#   set). ci.yml calls it so in the merge queue only, and its `CI gate` needs it; pull
-#   request pushes do not fuzz (davi, 2026-10-29).
+#   set). ci.yml calls it so in the merge queue only, on a group that changes a path
+#   `scripts/ci_scope.py` lists, and its `CI gate` needs it; pull request pushes do not
+#   fuzz (davi, 2026-10-29).
 # - schedule (nightly) + change guard: full partition only when default-branch HEAD
 #   moved in the last ~3 days (dormant stretches cost only the guard step)
 # - workflow_dispatch: force the full partition on demand (optional budget_scale)
@@ -133,6 +134,7 @@ jobs:
             export ARCHIVEY_FUZZ_BUDGET_ZIP=2
             export ARCHIVEY_FUZZ_BUDGET_TAR=1
             export ARCHIVEY_FUZZ_BUDGET_ISO=1
+            export ARCHIVEY_FUZZ_BUDGET_AR=1
             export ARCHIVEY_FUZZ_BUDGET_RAR_HEADER=2
             export ARCHIVEY_FUZZ_BUDGET_RAR=1
             export ARCHIVEY_FUZZ_BUDGET_OPEN_DETECTED=2
@@ -160,6 +162,7 @@ jobs:
             export ARCHIVEY_FUZZ_BUDGET_ZIP=$((25 * scale))
             export ARCHIVEY_FUZZ_BUDGET_TAR=$((10 * scale))
             export ARCHIVEY_FUZZ_BUDGET_ISO=$((8 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_AR=$((6 * scale))
             export ARCHIVEY_FUZZ_BUDGET_RAR_HEADER=$((30 * scale))
             export ARCHIVEY_FUZZ_BUDGET_RAR=$((15 * scale))
             export ARCHIVEY_FUZZ_BUDGET_OPEN_DETECTED=$((20 * scale))

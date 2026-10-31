@@ -10,6 +10,7 @@ import random
 import struct
 import zlib
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -113,20 +114,31 @@ def test_a_tar_inside_is_found(decoder: str, tmp_path: Path) -> None:
             assert reader.read("dir/two.txt") == _TEXT[:5000]
 
 
-def test_python_lzo_can_be_excluded(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[frozenset[object]] = []
-    real = lzo_decoder._python_lzo
+@pytest.mark.parametrize("exclude", [False, True])
+def test_python_lzo_can_be_excluded(
+    exclude: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With python-lzo installed, ``exclude_libraries={"lzo"}`` makes the read use the
+    Python decoder and never python-lzo; without it, python-lzo decodes every block."""
+    lzo = pytest.importorskip("lzo")
+    used: list[str] = []
+    real_lzo, real_python = lzo.decompress, lzo_decoder.lzo1x_decompress_python
 
-    def spy(excluded: frozenset[object], *rest: object) -> object:
-        calls.append(excluded)
-        return real(excluded, *rest)  # type: ignore[arg-type]
+    def spy_lzo(*args: Any) -> bytes:
+        used.append("python-lzo")
+        return real_lzo(*args)
 
-    monkeypatch.setattr(lzo_decoder, "_python_lzo", spy)
-    config = ArchiveyConfig(formats=FormatPolicy(exclude_libraries={"lzo"}))
+    def spy_python(data: bytes, limit: int) -> bytes:
+        used.append("python")
+        return real_python(data, limit)
+
+    monkeypatch.setattr(lzo, "decompress", spy_lzo)
+    monkeypatch.setattr(lzo_decoder, "lzo1x_decompress_python", spy_python)
+    excluded = {"lzo"} if exclude else set()
+    config = ArchiveyConfig(formats=FormatPolicy(exclude_libraries=excluded))
     with open_stream(_DATA / "text.txt.lzo", config=config) as stream:
         assert stream.read() == _TEXT
-    assert calls and all("lzo" in excluded for excluded in calls)
-    assert real(frozenset({"lzo"})) is None  # type: ignore[arg-type]
+    assert used and set(used) == {"python" if exclude else "python-lzo"}
 
 
 def test_python_lzo_runs_in_a_child_under_native_decoders() -> None:
@@ -328,6 +340,51 @@ def test_raw_lzo1x_past_its_size_is_refused(decoder: str, tmp_path: Path) -> Non
         path = _compressed_archive(tmp_path, _literal_lzo1x(plain), plain[:-10])
         with open_archive(path) as reader, pytest.raises(CorruptionError):
             reader.read(reader.members()[0])
+
+
+def test_raw_lzo1x_input_is_bounded_by_its_size(decoder: str, tmp_path: Path) -> None:
+    # Raw LZO1X is held whole until its input ends: input longer than LZO1X needs
+    # for ``size`` bytes is refused as it arrives, not buffered.
+    plain = _PLAIN
+    data = _literal_lzo1x(plain) + bytes(8 << 20)
+    with registration_scope():
+        register_format(_compressed_plugin(CompressionAlgorithm.LZO))
+        path = _compressed_archive(tmp_path, data, plain)
+
+        def read() -> None:
+            with open_archive(path) as reader:
+                member = reader.members()[0]
+                with pytest.raises(CorruptionError, match="more than LZO1X takes"):
+                    reader.read(member)
+
+        # Once outside the window: formatting the error fills caches on first use.
+        read()
+        assert traced_peak(read) < 1 << 20
+
+
+def test_raw_lzo1x_input_bound_edge() -> None:
+    # Accepted at the bound, refused one byte past it.
+    size = 1000
+    most = size + size // 7 + 64 + 3
+    bounded = lzo_decoder.Lzo1xDecoder(lzo_decoder.lzo1x_decompress_python, size)
+    bounded.feed(bytes(most))
+    with pytest.raises(CorruptionError, match="more than LZO1X takes"):
+        bounded.feed(b"\x00")
+
+
+def test_raw_lzo1x_longest_valid_stream_is_read() -> None:
+    # A 4-byte literal run and a 3-byte match, over and over: 8 bytes of input for
+    # each 7 of output, the most a decodable stream takes, and more than liblzo2's
+    # compressor would write (lzo1x_worst_compress, size // 16).
+    stream = bytearray([18]) + b"a"
+    for _ in range(10_000):
+        stream += bytes([33, 0, 0, 1]) + b"wxyz"
+    stream += b"\x11\x00\x00"
+    plain = lzo_decoder.lzo1x_decompress_python(bytes(stream), 1 << 20)
+    assert len(stream) > len(plain) + len(plain) // 16 + 64 + 3
+    bounded = lzo_decoder.Lzo1xDecoder(lzo_decoder.lzo1x_decompress_python, len(plain))
+    bounded.feed(bytes(stream))
+    assert bounded.flush().data == plain
 
 
 def test_raw_lzo1x_needs_a_size(tmp_path: Path) -> None:

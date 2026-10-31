@@ -60,21 +60,20 @@ uv run ty check                    # type-check (ty)
 uv run pre-commit run --all-files  # optional: framework hooks over the whole tree
 ```
 
-Pyrefly and ty are scoped to `src/`, `packages/archivey-squashfs/src/`,
-`packages/archivey-cpio/src/` and `packages/archivey-ar/src/` (the library and the
-in-repo plugin packages), so every command above runs clean with no extra path
-arguments. **Both type checkers must stay green** — `ruff` passing is not the gate,
-and running it alone is the most common self-inflicted CI failure here.
+Pyrefly and ty are scoped to `src/`, `packages/archivey-squashfs/src/` and
+`packages/archivey-cpio/src/` (the library and the in-repo plugin packages), so every
+command above runs clean with no extra path arguments. **Both type checkers must stay
+green** — `ruff` passing is not the gate, and running it alone is the most common
+self-inflicted CI failure here.
 
 **Format before you commit.** CI runs `ruff format --check` (and `ruff check`) over
-`src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/ packages/archivey-cpio/
-packages/archivey-ar/` and will fail on drift. Installing the git hook
-(`./scripts/install-git-hooks.sh`) makes this automatic: staged `*.py` under those
-paths are `ruff check --fix`'d and `ruff format`'d on commit. If you skip the hook,
-run `uv run ruff format` yourself before committing — `ruff format --check` only
-reports problems; it does not rewrite files. Prefer the script over
-`uv run pre-commit install`: Cursor remaps `core.hooksPath`, and the script installs into
-the chained original hooks directory so the hook still runs.
+`src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/ packages/archivey-cpio/`
+and will fail on drift. Installing the git hook (`./scripts/install-git-hooks.sh`) makes
+this automatic: staged `*.py` under those paths are `ruff check --fix`'d and `ruff
+format`'d on commit. If you skip the hook, run `uv run ruff format` yourself before
+committing — `ruff format --check` only reports problems; it does not rewrite files.
+Prefer the script over `uv run pre-commit install`: Cursor remaps `core.hooksPath`, and
+the script installs into the chained original hooks directory so the hook still runs.
 
 **From a `git worktree`,** both scripts work unchanged. A worktree starts without a
 `.venv`, so they create one for it (about a second; uv hardlinks from its cache), and the
@@ -131,8 +130,11 @@ CI also matrixes supported **Python versions** (3.11–3.14 on Linux; 3.11/3.14 
 macOS/Windows). A pull request push runs a reduced set (Linux 3.11 and 3.14, one
 core-only leg, Windows 3.14, free-threaded 3.13t, the benchmark and plugin jobs); the
 merge queue runs every leg plus PyPy, the distribution unar packages and the short
-Atheris fuzz, and a failure there takes the pull request out of the queue. `ci.yml`
-does not run again after the merge; a daily run tests `main` with every job. To run the
+Atheris fuzz, and a failure there takes the pull request out of the queue. A queued
+change that touches no library, test, dependency or CI path (`scripts/ci_scope.py`)
+runs only the pull request set plus the free-threaded 3.15t leg there, and skips the
+short fuzz. `ci.yml` does not run again after the merge; a daily run tests `main` with
+every job. To run the
 whole set before queueing, dispatch `ci.yml` on your branch. The note at the top of
 `ci.yml` lists which job runs where. Repo `.python-version` pins the default local env to 3.11, so a matrix
 job must pin its Python on every `uv sync` / `uv run`, or newer-version legs silently

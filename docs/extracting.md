@@ -99,6 +99,20 @@ time it was written, and a time the system refuses doesn't fail the member.
 A folder member merges into a folder that's already there. A file member whose path is an
 existing folder is a conflict like any other.
 
+A file that something else writes to the same name while the extraction runs, such as a
+second extraction into the same folder, is not replaced either, except under
+`"replace"`. archivey writes each file under a temporary name and then gives it its real
+name in one step that the system refuses when the name is taken: a hard link on Linux
+and macOS, a rename on Windows. There is no gap between a check and the move for another
+writer to slip into. When the name turns out to be taken, `"error"` fails the member and
+`"skip"` skips it, as if the file had been there from the start, and `"rename"` gives
+the written file the next free name, without extracting it again. A symlink or folder
+member is created at its final name, so under `"rename"` it fails, as under `"error"`,
+when its name is taken that way. On Linux and macOS this needs a filesystem with hard
+links; on one without them (FAT, some network drives), or when a hard-linked file has
+used up the link slots the filesystem allows, the later writer replaces the earlier
+one's file.
+
 `on_error` decides what a failed member does to the rest of the extraction:
 
 | `on_error` | Effect |

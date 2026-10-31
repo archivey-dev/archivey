@@ -812,6 +812,13 @@ def test_replace_over_a_read_only_file_on_windows(tmp_path: Path) -> None:
 # --- More hard links than NTFS allows ----------------------------------------------
 
 
+def _is_landing(src: str | Path) -> bool:
+    """Whether an ``os.link`` call is the ERROR landing of a staged temp (POSIX), not
+    the link a HARDLINK member makes to its source. The link-limit fakes leave it to
+    the real call."""
+    return os.path.basename(os.fspath(src)).startswith(".archivey-tmp-")
+
+
 @pytest.mark.parametrize("refusal", ["emlink", "winerror"])
 def test_hard_link_past_the_link_limit_is_copied(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, refusal: str
@@ -822,7 +829,10 @@ def test_hard_link_past_the_link_limit_is_copied(
     """
     real_link = os.link
 
-    def link(src: str | Path, dst: str | Path) -> None:
+    def link(src: str | Path, dst: str | Path, **kwargs: bool) -> None:
+        if _is_landing(src):
+            real_link(src, dst, **kwargs)
+            return
         if os.stat(src).st_nlink >= 2:
             if refusal == "emlink":
                 raise OSError(errno.EMLINK, "Too many links")
@@ -850,8 +860,11 @@ def test_links_past_the_limit_cost_one_attempt_each(
     real_link = os.link
     calls = 0
 
-    def link(src: str | Path, dst: str | Path) -> None:
+    def link(src: str | Path, dst: str | Path, **kwargs: bool) -> None:
         nonlocal calls
+        if _is_landing(src):
+            real_link(src, dst, **kwargs)
+            return
         calls += 1
         if os.stat(src).st_nlink >= 4:
             raise OSError(errno.EMLINK, "Too many links")
@@ -878,7 +891,10 @@ def test_link_limit_copies_trip_the_archive_wide_ratio(
     it depends on the destination, not the archive."""
     real_link = os.link
 
-    def link(src: str | Path, dst: str | Path) -> None:
+    def link(src: str | Path, dst: str | Path, **kwargs: bool) -> None:
+        if _is_landing(src):
+            real_link(src, dst, **kwargs)
+            return
         if os.stat(src).st_nlink >= 2:
             raise OSError(errno.EMLINK, "Too many links")
         real_link(src, dst)
@@ -898,7 +914,10 @@ def test_link_limit_copies_trip_the_archive_wide_ratio(
     ):
         open_and_extract(io.BytesIO(data), tmp_path / "out", limits=limits)
 
-    def cross_device(src: str | Path, dst: str | Path) -> None:
+    def cross_device(src: str | Path, dst: str | Path, **kwargs: bool) -> None:
+        if _is_landing(src):
+            real_link(src, dst, **kwargs)
+            return
         raise OSError(errno.EXDEV, "Invalid cross-device link")
 
     monkeypatch.setattr(os, "link", cross_device)
@@ -1523,11 +1542,31 @@ _OTHER_WRITER = b"other writer"
 
 def _another_writer_takes(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
     """Simulate another writer (a second extraction into the same folder) creating
-    ``name`` as a file between the existence check and the landing. Windows refuses the
-    rename of a FILE or HARDLINK with access denied; ``os.symlink`` and ``os.makedirs``
-    refuse a taken name on every OS."""
+    ``name`` as a file between the existence check and the landing, and the landing
+    refused with access denied, as Windows refuses it (seen with two extractions into
+    one folder) and POSIX does in a sticky directory. ``os.symlink`` and
+    ``os.makedirs`` refuse a taken name on every OS. Under ERROR a FILE or HARDLINK
+    lands with ``os.rename`` on Windows, whose refusal is the clash; on POSIX with
+    ``os.link``, whose access-denied refusal hands the landing to ``os.replace``, whose
+    refusal is the clash. A plain taken-name refusal (``FileExistsError``) is
+    ``_another_writer_takes_before_the_landing``'s case."""
     real_replace = os.replace
     real_makedirs = os.makedirs
+    real_link = os.link
+    real_rename = os.rename
+
+    def link(src: str, dst: str, **kwargs: bool) -> None:
+        if os.path.basename(str(dst)) == name:
+            take(dst)
+            raise PermissionError(errno.EACCES, "Access is denied", str(dst))
+        # Forwarded only when given: Windows refuses an explicit follow_symlinks.
+        real_link(src, dst, **kwargs)
+
+    def rename(src: str, dst: str) -> None:
+        if os.path.basename(str(dst)) == name:
+            take(dst)
+            raise PermissionError(errno.EACCES, "Access is denied", str(dst))
+        real_rename(src, dst)
 
     def take(dst: str) -> None:
         Path(dst).write_bytes(_OTHER_WRITER)
@@ -1551,6 +1590,8 @@ def _another_writer_takes(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
     monkeypatch.setattr(os, "replace", replace)
     monkeypatch.setattr(os, "symlink", symlink)
     monkeypatch.setattr(os, "makedirs", makedirs)
+    monkeypatch.setattr(os, "link", link)
+    monkeypatch.setattr(os, "rename", rename)
 
 
 # What each landing raises when nothing maps it: the other policies.
@@ -1566,7 +1607,10 @@ _UNMAPPED = {
     "kind",
     ["file", "hard", pytest.param("sym", marks=_POSIX_SYMLINKS), "dir"],
 )
-@pytest.mark.parametrize("overwrite", [OverwritePolicy.ERROR, OverwritePolicy.REPLACE])
+@pytest.mark.parametrize(
+    "overwrite",
+    [OverwritePolicy.ERROR, OverwritePolicy.SKIP, OverwritePolicy.REPLACE],
+)
 def test_landing_on_a_name_taken_after_the_check(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1574,8 +1618,10 @@ def test_landing_on_a_name_taken_after_the_check(
     overwrite: OverwritePolicy,
 ) -> None:
     """Another writer takes ``b.txt`` between the existence check and the landing.
-    Under ERROR that is the clash the check reports, for every member kind; the other
-    policies do not handle it, and the landing's own error goes out as it is."""
+    Under ERROR that is the clash the check reports, for every member kind, and under
+    SKIP the member is skipped as the check would skip it; REPLACE does not handle it,
+    and the landing's own error goes out as it is. (RENAME is
+    ``test_a_landing_under_rename_takes_the_next_free_name``'s.)"""
     dest = tmp_path / "out"
     _another_writer_takes(monkeypatch, "b.txt")
     second: tuple[str, str, bytes | str | None] = {
@@ -1585,12 +1631,240 @@ def test_landing_on_a_name_taken_after_the_check(
         "dir": ("dir", "b.txt", None),
     }[kind]
     archive = _tar([("file", "a.txt", b"first"), second])
-    raised = ExtractionError if overwrite is OverwritePolicy.ERROR else _UNMAPPED[kind]
-    with pytest.raises(raised) as excinfo:
-        open_and_extract(io.BytesIO(archive), dest, overwrite=overwrite)
-    if raised is ExtractionError:
-        assert "Destination already exists" in str(excinfo.value)
+    if overwrite is OverwritePolicy.SKIP:
+        report = open_and_extract(io.BytesIO(archive), dest, overwrite=overwrite)
+        assert [(r.status, r.path) for r in report.results] == [
+            (ExtractionStatus.EXTRACTED, dest / "a.txt"),
+            (ExtractionStatus.NOT_OVERWRITTEN, None),
+        ]
+    else:
+        raised = (
+            ExtractionError if overwrite is OverwritePolicy.ERROR else _UNMAPPED[kind]
+        )
+        with pytest.raises(raised) as excinfo:
+            open_and_extract(io.BytesIO(archive), dest, overwrite=overwrite)
+        if raised is ExtractionError:
+            assert "Destination already exists" in str(excinfo.value)
     assert (dest / "b.txt").read_bytes() == _OTHER_WRITER
+    assert _tree(dest) == ["a.txt", "b.txt"]
+
+
+def _another_writer_takes_before_the_landing(
+    monkeypatch: pytest.MonkeyPatch, *names: str
+) -> None:
+    """Another writer creates each of ``names`` just before the landing call, which
+    then runs for real: unlike ``_another_writer_takes``, ``os.replace`` is not
+    patched, so on POSIX it would replace the other writer's file without a word."""
+    real_link = os.link
+    real_rename = os.rename
+    real_replace = os.replace
+
+    def take_first(real: Callable[..., None]) -> Callable[..., None]:
+        def call(src: str, dst: str, **kwargs: object) -> None:
+            if os.path.basename(str(dst)) in names:
+                Path(dst).write_bytes(_OTHER_WRITER)
+            real(src, dst, **kwargs)
+
+        return call
+
+    monkeypatch.setattr(os, "link", take_first(real_link))
+    monkeypatch.setattr(os, "rename", take_first(real_rename))
+    monkeypatch.setattr(os, "replace", take_first(real_replace))
+
+
+_SECOND = {
+    "file": ("file", "b.txt", b"ours"),
+    "hard": ("hard", "b.txt", "a.txt"),
+}
+
+
+@pytest.mark.parametrize("kind", ["file", "hard"])
+@pytest.mark.parametrize("overwrite", [OverwritePolicy.ERROR, OverwritePolicy.SKIP])
+def test_a_landing_never_replaces_another_writers_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    overwrite: OverwritePolicy,
+) -> None:
+    """Under ERROR and SKIP a FILE or HARDLINK lands only on a free name, so a file
+    another writer put there after the existence check is the clash, or a skip, on
+    POSIX too, where a rename would replace it."""
+    dest = tmp_path / "out"
+    _another_writer_takes_before_the_landing(monkeypatch, "b.txt")
+    archive = _tar([("file", "a.txt", b"first"), _SECOND[kind]])
+    if overwrite is OverwritePolicy.ERROR:
+        with pytest.raises(ExtractionError, match="Destination already exists"):
+            open_and_extract(io.BytesIO(archive), dest, overwrite=overwrite)
+    else:
+        report = open_and_extract(io.BytesIO(archive), dest, overwrite=overwrite)
+        assert report.results[1].status is ExtractionStatus.NOT_OVERWRITTEN
+    assert (dest / "b.txt").read_bytes() == _OTHER_WRITER
+    assert _tree(dest) == ["a.txt", "b.txt"]
+
+
+@pytest.mark.parametrize("kind", [pytest.param("sym", marks=_POSIX_SYMLINKS), "dir"])
+@pytest.mark.parametrize("window", ["before_prepare", "at_creation"])
+def test_a_symlink_or_folder_under_rename_never_removes_another_writers_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, window: str
+) -> None:
+    """A SYMLINK or DIRECTORY is created at its final name, so under RENAME a name
+    another writer takes after collision resolution fails the member as the ERROR
+    clash, whether the entry appears before the policy check or at the creation call.
+    The other writer's file is never removed."""
+    dest = tmp_path / "out"
+    if window == "before_prepare":
+        prepare = extraction.ExtractionCoordinator._prepare_destination
+
+        def take_then_prepare(
+            self: extraction.ExtractionCoordinator,
+            member: ArchiveMember,
+            dest_path: Path,
+            **kwargs: bool,
+        ) -> bool:
+            if dest_path.name == "b.txt":
+                dest_path.write_bytes(_OTHER_WRITER)
+            return prepare(self, member, dest_path, **kwargs)
+
+        monkeypatch.setattr(
+            extraction.ExtractionCoordinator, "_prepare_destination", take_then_prepare
+        )
+    else:
+        _another_writer_takes(monkeypatch, "b.txt")
+    second: tuple[str, str, str | None] = (
+        ("sym", "b.txt", "a.txt") if kind == "sym" else ("dir", "b.txt", None)
+    )
+    archive = _tar([("file", "a.txt", b"first"), second])
+    with pytest.raises(ExtractionError, match="Destination already exists"):
+        open_and_extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.RENAME)
+    assert (dest / "b.txt").read_bytes() == _OTHER_WRITER
+    assert _tree(dest) == ["a.txt", "b.txt"]
+
+
+@pytest.mark.parametrize("taken", [("h1",), ("h1", "h2"), ("h1", "h2", "h3")])
+def test_an_orphan_link_skipped_at_the_landing_hands_its_content_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, taken: tuple[str, ...]
+) -> None:
+    """The second pass reads an excluded source into its first link's temp file. When
+    another writer takes that link's name before it lands, under SKIP, the link is
+    skipped and the file it read goes to the next link, rather than the spent stream
+    (which wrote an empty file)."""
+    dest = tmp_path / "out"
+    _another_writer_takes_before_the_landing(monkeypatch, *taken)
+    archive = _tar(
+        [
+            ("file", "s", b"data"),
+            ("hard", "h1", "s"),
+            ("hard", "h2", "s"),
+            ("hard", "h3", "s"),
+        ]
+    )
+    report = open_and_extract(
+        io.BytesIO(archive),
+        dest,
+        members=["h1", "h2", "h3"],
+        overwrite=OverwritePolicy.SKIP,
+    )
+    statuses = {r.member.name: r.status for r in report.results}
+    for name in ("h1", "h2", "h3"):
+        if name in taken:
+            assert statuses[name] is ExtractionStatus.NOT_OVERWRITTEN
+            assert (dest / name).read_bytes() == _OTHER_WRITER
+        else:
+            assert statuses[name] is ExtractionStatus.EXTRACTED
+            assert (dest / name).read_bytes() == b"data"
+    if not taken[1:]:
+        assert os.path.samefile(dest / "h2", dest / "h3")
+    assert _tree(dest) == ["h1", "h2", "h3"]
+
+
+@pytest.mark.parametrize("kind", ["file", "hard"])
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_landing_under_rename_takes_the_next_free_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, streaming: bool
+) -> None:
+    """Under RENAME a FILE or HARDLINK whose free name another writer takes first lands
+    on the next free name, numbered from the name the member asked for, and the result
+    reports where it went."""
+    dest = tmp_path / "out"
+    _another_writer_takes_before_the_landing(monkeypatch, "b.txt", "b (1).txt")
+    archive = _tar([("file", "a.txt", b"first"), _SECOND[kind]])
+    report = open_and_extract(
+        io.BytesIO(archive), dest, streaming=streaming, overwrite=OverwritePolicy.RENAME
+    )
+    result = report.results[1]
+    assert (result.status, result.requested_path, result.path) == (
+        ExtractionStatus.EXTRACTED,
+        dest / "b.txt",
+        dest / "b (2).txt",
+    )
+    assert result.collided_with is None
+    assert (dest / "b.txt").read_bytes() == _OTHER_WRITER
+    assert (dest / "b (1).txt").read_bytes() == _OTHER_WRITER
+    assert (dest / "b (2).txt").read_bytes() == (
+        b"ours" if kind == "file" else b"first"
+    )
+    if kind == "hard":
+        assert os.path.samefile(dest / "a.txt", dest / "b (2).txt")
+    assert _tree(dest) == ["a.txt", "b (1).txt", "b (2).txt", "b.txt"]
+
+
+def test_a_renamed_member_landing_on_a_taken_name_goes_on_counting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A member already given ``b (1).txt`` by a collision that finds it taken at the
+    landing takes ``b (2).txt``, not ``b (1) (1).txt``."""
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "b.txt").write_bytes(b"callers")
+    _another_writer_takes_before_the_landing(monkeypatch, "b (1).txt")
+    report = open_and_extract(
+        io.BytesIO(_tar([("file", "b.txt", b"ours")])),
+        dest,
+        overwrite=OverwritePolicy.RENAME,
+    )
+    assert report.results[0].path == dest / "b (2).txt"
+    assert (dest / "b (2).txt").read_bytes() == b"ours"
+    assert _tree(dest) == ["b (1).txt", "b (2).txt", "b.txt"]
+
+
+def test_a_rename_landing_gives_up_after_its_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another writer that takes every name first fails the member after
+    ``_LANDING_ATTEMPTS`` names, rather than holding the extraction forever."""
+    monkeypatch.setattr(extraction, "_LANDING_ATTEMPTS", 3)
+    _another_writer_takes_before_the_landing(
+        monkeypatch, "b.txt", "b (1).txt", "b (2).txt"
+    )
+    dest = tmp_path / "out"
+    with pytest.raises(ExtractionError, match="No free name found"):
+        open_and_extract(
+            io.BytesIO(_tar([("file", "b.txt", b"ours")])),
+            dest,
+            overwrite=OverwritePolicy.RENAME,
+        )
+    assert _tree(dest) == ["b (1).txt", "b (2).txt", "b.txt"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows lands with os.rename")
+def test_a_filesystem_without_hard_links_lands_with_a_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Where ``link`` fails for another reason than a taken name (FAT, some network
+    mounts: ``EPERM``), the landing falls back to the rename and the member is
+    written."""
+    real_link = os.link
+
+    def link(src: str, dst: str, **kwargs: object) -> None:
+        if os.path.basename(str(dst)) == "b.txt":
+            raise PermissionError(errno.EPERM, "Operation not permitted", str(dst))
+        real_link(src, dst, **kwargs)
+
+    monkeypatch.setattr(os, "link", link)
+    dest = tmp_path / "out"
+    archive = _tar([("file", "a.txt", b"first"), ("file", "b.txt", b"ours")])
+    open_and_extract(io.BytesIO(archive), dest)
+    assert (dest / "b.txt").read_bytes() == b"ours"
     assert _tree(dest) == ["a.txt", "b.txt"]
 
 
@@ -1621,7 +1895,8 @@ def test_a_refused_landing_on_a_parked_copy_is_not_a_clash(
 ) -> None:
     """A streaming pass parks the earlier ``a.txt`` and the later one replaces it under
     any policy. A rename refused there is not the caller's entry in the way, so ERROR
-    does not report it as one: the refusal goes out as it is."""
+    does not report it as one: the refusal goes out as it is. (The first ``a.txt``
+    lands on a free name, which under ERROR is not a rename; the second is.)"""
     real_replace = os.replace
     landings = 0
 
@@ -1629,8 +1904,7 @@ def test_a_refused_landing_on_a_parked_copy_is_not_a_clash(
         nonlocal landings
         if os.path.basename(str(dst)) == "a.txt":
             landings += 1
-            if landings == 2:
-                raise PermissionError(errno.EACCES, "Access is denied", str(dst))
+            raise PermissionError(errno.EACCES, "Access is denied", str(dst))
         real_replace(src, dst)
 
     monkeypatch.setattr(os, "replace", replace)
@@ -1642,4 +1916,4 @@ def test_a_refused_landing_on_a_parked_copy_is_not_a_clash(
             streaming=True,
             overwrite=OverwritePolicy.ERROR,
         )
-    assert landings == 2
+    assert landings == 1

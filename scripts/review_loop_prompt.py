@@ -6,11 +6,9 @@ appends what it prints to ``$GITHUB_OUTPUT``: ``prompt`` (the filled-in
 `.github/review-loop-prompt.md`), and ``round`` and ``final`` for the round it is.
 Stdlib only.
 
-Reads ``PR``, ``GITHUB_REPOSITORY``, ``ROUND`` (the gate's round), ``MAX_ROUNDS``,
-``PASS`` and ``TIER`` from the environment. ``PASS=opus`` is the Opus pass run as the
-gate's own round (after a conditional approval's fixes), and ``PASS=opus-after`` the one
-that follows an approving round in the same workflow run, as the round after the
-gate's. Anything else is an ordinary round.
+Reads ``PR``, ``GITHUB_REPOSITORY``, ``ROUND`` (the gate's round), ``MAX_ROUNDS`` and
+``PASS`` from the environment. ``PASS=opus`` is the pull request's Opus round
+(`OPUS_PASS_TIERS` in the gate); anything else is an ordinary round.
 """
 
 from __future__ import annotations
@@ -24,37 +22,25 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ROOT / ".github" / "review-loop-prompt.md"
 
-#: The paragraph an Opus pass's prompt carries, in place of ``{PASS}``.
-OPUS_PASS = """
-This round is the Opus pass. Earlier rounds, by another reviewer, approved this
-pull request (a conditional approval's fixes are pushed by now), and this repository
-runs one full review by a stronger model on a pull request once that happens. Read it as a first look, not as a fix round: the
-whole change against the base, with the reference doc §1 names for a first look, at
-the tier §1 gives it. Their findings are on the pull request; do not repeat them, skip
-the status bullets for their IDs, and look hardest at what they could have missed, and
-at severities they may have rated too low. Number your findings on from the highest
-ID already on the pull request, as §6 asks across rounds, so none collides with theirs.
-"""
-
-#: In place of ``{CONDITIONAL}`` on an ordinary round of a standard or deep pull request,
-#: where `finish` in `review_loop_gate.py` follows an approval with the Opus pass.
-CONDITIONAL_RE_ROUNDS = """
-
-  On this pull request, until its Opus pass has run (a closing comment says when it
-  does), an approval is followed by that pass: at once after a plain one, and as the
-  next round, once the fixes are pushed, after a conditional one. That round is
-  Opus's, not yours, so pick the verdict that matches your verdict line."""
-
-#: Added to `OPUS_PASS` on a deep pull request, where the workflow asks Cursor too.
-CURSOR_TOO = """Cursor is reviewing it at the same time, so leave its comments alone.
+#: The paragraph the Opus round's prompt carries, in place of ``{PASS}``, when it is not
+#: the pull request's first round: rounds by another reviewer came before it, because
+#: its tier rose after them or they ran before the Opus round moved to the front.
+OPUS_LATE = """
+This round is the pull request's one review by Opus. Earlier rounds, by another
+reviewer, came before it. Read it as a first look, not as a fix round: the whole
+change against the base, with the reference doc §1 names for a first look, at the
+tier §1 gives it. Their findings are on the pull request; do not repeat them, skip
+the status bullets for their IDs, and look hardest at what they could have missed,
+and at severities they may have rated too low. Number your findings on from the
+highest ID already on the pull request, as §6 asks across rounds, so none collides
+with theirs.
 """
 
 
 def render(env: dict[str, str]) -> tuple[str, int, bool]:
     """The prompt, the round it is for, and whether that round is the agents' last."""
-    opus = env.get("PASS") in ("opus", "opus-after")
     max_rounds = int(env["MAX_ROUNDS"])
-    rnd = int(env["ROUND"]) + (1 if env.get("PASS") == "opus-after" else 0)
+    rnd = int(env["ROUND"])
     text = TEMPLATE.read_text(encoding="utf-8")
     # The comment at the top is for whoever edits the template, not for the reviewer.
     text = re.sub(r"\A<!--.*?-->\n", "", text, flags=re.DOTALL)
@@ -63,16 +49,7 @@ def render(env: dict[str, str]) -> tuple[str, int, bool]:
         "REPOSITORY": env["GITHUB_REPOSITORY"],
         "ROUND": str(rnd),
         "MAX_ROUNDS": str(max_rounds),
-        "PASS": (
-            OPUS_PASS + (CURSOR_TOO if env.get("TIER") == "deep" else "")
-            if opus
-            else ""
-        ),
-        "CONDITIONAL": (
-            CONDITIONAL_RE_ROUNDS
-            if not opus and env.get("TIER") in ("standard", "deep")
-            else ""
-        ),
+        "PASS": OPUS_LATE if env.get("PASS") == "opus" and rnd > 1 else "",
     }
     for name, value in values.items():
         text = text.replace("{" + name + "}", value)

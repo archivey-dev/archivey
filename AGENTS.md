@@ -30,8 +30,8 @@ session needs and points at the rest.
 ## What this repo is
 
 This repo (`archivey`) is the clean-slate **v2** of the Archivey archive library: read,
-stream, and safely extract ZIP / TAR / RAR / 7z / ISO / directory / single-file-compressed
-archives behind one uniform interface. The previous v1 tree is
+stream, and safely extract ZIP / TAR / RAR / 7z / ISO / ar / directory /
+single-file-compressed archives behind one uniform interface. The previous v1 tree is
 [`davitf/archivey-old`](https://github.com/davitf/archivey-old).
 
 It is a **pure Python library** — no server and no web UI. It does ship a CLI
@@ -39,7 +39,7 @@ It is a **pure Python library** — no server and no web UI. It does ship a CLI
 application" normally means exercising the library API:
 `archivey.open_archive(path)` / `reader.extract_all(dest)` plus the detection
 helpers (`detect_format`, `format_availability`, `list_supported_formats`).
-All backends ship: ZIP, TAR, **7z**, **RAR**, ISO, directory, and
+All backends ship: ZIP, TAR, **7z**, **RAR**, ISO, ar, directory, and
 single-file-compressed (gz/bz2/xz/lzip/LZMA Alone/zstd/lz4/zlib/Brotli/.Z).
 
 7z and RAR are read with **native** parsers, not `py7zr` / `rarfile`, which are test
@@ -226,11 +226,20 @@ rulings on the handbook page, and general ones in `dev-docs/design-rules.md`.
 - An agent may merge a straightforward PR once its review approves and CI is green
   (maintainer, 2026-09-25: "go ahead with merge straightforward ones … if there's a
   tricky one, you can ask me to take a look before merging").
-  Tricky ones go to the maintainer: a behaviour trade-off, a design reversal, removing
-  or renaming a public name or an `archivey` verb or option (`design-rules.md`
-  DR-12a), a very large diff, anything an open decision touches, or a change to a
-  workflow, a release file or the review loop's own rules (`scripts/review_prep.py
-  tier` says "the maintainer merges this one").
+  On standard and deep that approval includes the Opus pass, and on deep Cursor's too.
+  The maintainer merges a PR that makes a decision of theirs (maintainer, 2026-10-31),
+  so their merges go to the PRs that need their judgement, not to every deep one. The tier
+  command's `merge:` line says which, run from the base branch's copy as
+  `address-review-findings` §7 shows: "merge: the maintainer merges this one" and the
+  decisions it found (a public name, parameter or fixed value removed, or a top-level
+  name added, `design-rules.md` DR-12a; a config default; a defended property dropped or
+  cut down, or a non-guarantee accepted; a new ADR, runtime dependency, workflow or
+  workflow action; a workflow's permissions, secrets, triggers or event text; the
+  release path; the merge gate, and an edit about merging in this paragraph or the
+  other files that state the rule). So do the decisions a script cannot see, which the
+  review lists in its maintainer decisions block: a behaviour trade-off, a design
+  reversal, a new subsystem, anything an open decision touches. Size alone is not one
+  of them: a large diff an agent may merge like any other.
 - `main` refuses a merge while any review thread is open, so every thread needs its
   reply and its resolution first (`address-review-findings` §7).
 - The PR body is the record of a piece of work. Do not commit working plans to the repo.

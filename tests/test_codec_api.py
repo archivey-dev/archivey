@@ -70,6 +70,7 @@ class ToyStream(PluginStream):
 
 TOY = ArchiveFormat(ContainerFormat.RAW_STREAM, ToyStream.TOY)
 TAR_TOY = ArchiveFormat(ContainerFormat.TAR, ToyStream.TOY)
+_FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def toy_compress(data: bytes) -> bytes:
@@ -585,6 +586,20 @@ def test_the_tar_pair_has_its_extension(toy: ArchiveFormat, tmp_path: Path) -> N
     assert detect_format(path).format == TAR_TOY
     with open_archive(path, streaming=True) as reader:
         assert [m.name for m, _ in reader.stream_members()] == ["a.txt"]
+
+
+def test_a_built_in_sequential_format_is_spelled_with_a_later_codec(
+    toy: ArchiveFormat, tmp_path: Path
+) -> None:
+    """ar's compressed pairs have no named constant, so ``ar.toy`` is spelled as
+    ``ar.gz`` is; TAR's pair keeps the named-constant rule and takes no spelling."""
+    path = tmp_path / "lib.bin"
+    path.write_bytes(toy_compress((_FIXTURES / "ar" / "gnu.a").read_bytes()))
+    with open_archive(path, format="ar.toy") as reader:
+        assert reader.format == ArchiveFormat(ContainerFormat.AR, ToyStream.TOY)
+        assert reader.members()
+    with pytest.raises(ArchiveyUsageError):
+        open_archive(path, format="tar.toy")
 
 
 @pytest.mark.parametrize(

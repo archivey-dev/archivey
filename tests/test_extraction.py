@@ -363,10 +363,13 @@ def test_unrepresentable_name_oserror_is_translated(
     # accepts any bytes) by making the atomic file write raise EILSEQ.
     import archivey.internal.extraction as extraction_mod
 
-    def fake_replace(src: object, dst: object, /) -> None:
+    def fake_replace(src: object, dst: object, /, **kwargs: object) -> None:
         raise OSError(errno.EILSEQ, "Illegal byte sequence")
 
     monkeypatch.setattr(extraction_mod.os, "replace", fake_replace)
+    # Under ERROR a file lands with os.link first (POSIX) or os.rename (Windows).
+    monkeypatch.setattr(extraction_mod.os, "link", fake_replace)
+    monkeypatch.setattr(extraction_mod.os, "rename", fake_replace)
 
     archive = _tar_bytes([("file", "member.txt", b"hi")])
     dest = tmp_path / "out"
@@ -2424,7 +2427,8 @@ def test_a_temp_that_cannot_be_removed_does_not_fail_the_member(
     # POSIX for a hard link placed through a temp. When that unlink fails (on Windows,
     # a scanner holding the file open), the member is already in place, so the failure
     # must not turn a completed write into FAILED. A file this write created leaves no
-    # temp name on POSIX, so no unlink is tried for it there.
+    # temp name on POSIX, so no unlink is tried for it there. REPLACE takes that path;
+    # the ERROR landing on a free name is the last block.
     real_unlink = os.unlink
     refused: list[str] = []
 
@@ -2440,7 +2444,7 @@ def test_a_temp_that_cannot_be_removed_does_not_fail_the_member(
     src = tmp_path / "file.tar"
     src.write_bytes(_tar_bytes([("file", "f", b"AAA")]))
     with open_archive(src) as r:
-        report = r.extract_all(tmp_path / "file")
+        report = r.extract_all(tmp_path / "file", overwrite="replace")
     assert [res.status for res in report.results] == [ExtractionStatus.EXTRACTED]
     assert (tmp_path / "file" / "f").read_bytes() == b"AAA"
     assert len(refused) == (1 if windows else 0)
@@ -2449,10 +2453,21 @@ def test_a_temp_that_cannot_be_removed_does_not_fail_the_member(
     src = tmp_path / "link.tar"
     src.write_bytes(_tar_bytes([("file", "f", b"AAA"), ("hard", "h", "f")]))
     with open_archive(src) as r:
-        report = r.extract_all(tmp_path / "link")
+        report = r.extract_all(tmp_path / "link", overwrite="replace")
     assert [res.status for res in report.results] == [ExtractionStatus.EXTRACTED] * 2
     assert (tmp_path / "link" / "h").read_bytes() == b"AAA"
     assert refused
+
+    # Under ERROR, POSIX lands a new name with a link and then removes the temp name;
+    # Windows renames it and has none left.
+    refused.clear()
+    src = tmp_path / "error.tar"
+    src.write_bytes(_tar_bytes([("file", "f", b"AAA")]))
+    with open_archive(src) as r:
+        report = r.extract_all(tmp_path / "error")
+    assert [res.status for res in report.results] == [ExtractionStatus.EXTRACTED]
+    assert (tmp_path / "error" / "f").read_bytes() == b"AAA"
+    assert len(refused) == (0 if windows else 1)
 
 
 def test_tar_hardlink_orphan_recovered_seekable(tmp_path: Path) -> None:

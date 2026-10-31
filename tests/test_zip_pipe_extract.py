@@ -1284,17 +1284,24 @@ def test_a_data_failure_while_staging_stops_a_stop_run_at_once(
 
 
 @posix_modes
-def test_a_staged_file_lands_by_a_rename_with_its_metadata(
+def test_a_staged_file_lands_by_moving_it_with_its_metadata(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     replaced: list[tuple[str, str]] = []
     real_replace = os.replace
+    real_link = os.link
 
     def recording(src: str, dst: str) -> None:
         replaced.append((os.path.basename(os.path.dirname(src)), os.path.basename(dst)))
         real_replace(src, dst)
 
+    def recording_link(src: str, dst: str, **kwargs: bool) -> None:
+        replaced.append((os.path.basename(os.path.dirname(src)), os.path.basename(dst)))
+        real_link(src, dst, **kwargs)
+
+    # Under ERROR the landing on a free name is a link on POSIX.
     monkeypatch.setattr(os, "replace", recording)
+    monkeypatch.setattr(os, "link", recording_link)
     data = _zip([(_entry("run.sh", mode=0o100750), b"#!/bin/sh\n")])
     _extract(data, tmp_path, piped=True, policy="trusted")
     [(staging, landed)] = replaced

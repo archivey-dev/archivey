@@ -54,13 +54,14 @@ same way it does for a built-in format: it normalizes member names, checks them,
 the listing limits, resolves links, checks each member's size and checksum as it is read,
 and extracts safely.
 
-Three complete plugins outside archivey are in the repository:
+Complete readers written this way are in the repository. Two are plugins outside archivey:
 [`packages/archivey-squashfs`](https://github.com/archivey-dev/archivey/tree/main/packages/archivey-squashfs)
-for SquashFS images, a format with an index;
+for SquashFS images, a format with an index, and
 [`packages/archivey-cpio`](https://github.com/archivey-dev/archivey/tree/main/packages/archivey-cpio)
-for CPIO archives and
-[`packages/archivey-ar`](https://github.com/archivey-dev/archivey/tree/main/packages/archivey-ar)
-for ar archives (static libraries), both read in one pass. None is published.
+for CPIO archives, read in one pass. Neither is published. The built-in ar reader,
+[`ar_reader.py`](https://github.com/archivey-dev/archivey/blob/main/src/archivey/internal/backends/ar_reader.py),
+uses only `archivey.formats` and archivey's public names too, apart from the call that
+registers it as a built-in format.
 
 ## A complete example
 
@@ -227,6 +228,8 @@ def open_member(self, member: ArchiveMember, locator: Locator) -> MemberData:
 - bzip2;
 - Zstandard and LZ4 frames;
 - Brotli;
+- raw LZO1X, with `size` as the most it may decode to (the call raises
+  `UnsupportedFeatureError` without it);
 - raw LZMA and LZMA2, with the `properties` bytes the format stores;
 - XZ, for `.xz` data kept inside a member, as ZIP method 95 keeps it;
 - `STORED`, for data kept as is, so a format with a per-member method can pass every
@@ -276,8 +279,8 @@ for each index, wherever the format stores them.
 **Your own decoder.** For a method archivey does not decode, wrap the view in your
 library's decoder, or one of your own. Such a decoder is outside archivey's decoder
 limits, so it must stop at the size the format allows: pass the expected output size and
-refuse anything longer. The SquashFS package does this for its LZ4 and LZO blocks, which
-can never be larger than one block.
+refuse anything longer. The SquashFS package does this for its LZ4 blocks, which can
+never be larger than one block.
 
 ### Seeking and short reads
 

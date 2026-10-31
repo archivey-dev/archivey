@@ -388,8 +388,11 @@ Full member **extract** remains out of scope for this harness (covered by the
 mutation harness). Filter-only codecs (BCJ, Delta) are not required as standalone
 stream targets.
 
-CI SHALL run a **short** partitioned harness on every merge-queue group, and its
-failure SHALL keep the group from merging; pull request pushes need not run it (same
+CI SHALL run a **short** partitioned harness on every merge-queue group that changes
+a library, test, dependency or CI path (the list in `scripts/ci_scope.py`; the fuzz
+targets live under `tests/`, so a change to one always counts), and its failure SHALL
+keep the group from merging; a group that changes none of those paths, and pull request
+pushes, need not run it (same
 target set, reduced per-target budgets, and MAY shard targets across parallel jobs so
 wall time stays on the order of a few minutes — each Atheris target pays a large
 process cold-start cost). The **full** partition SHALL run off the merge path as a
@@ -411,8 +414,9 @@ installed only via the CI `fuzz` dependency group (`packaging-and-extras`).
 
 | Case | Expected |
 | --- | --- |
-| Merge-queue group | Short partitioned budgets over the full target set (MAY be sharded across parallel jobs); green if no crash/hang/raw exception, else the group does not merge |
-| Pull request push | Short fuzz not required (the merge queue runs it) |
+| Merge-queue group changing a library, test, dependency or CI path | Short partitioned budgets over the full target set (MAY be sharded across parallel jobs); green if no crash/hang/raw exception, else the group does not merge |
+| Merge-queue group changing none of those paths (docs, review files, or a script the list does not name) | Short fuzz not required; the nightly guard still sees the commit on `main` |
+| Pull request push | Short fuzz not required (the merge queue runs it for a group that changes one of those paths) |
 | Scheduled nightly, HEAD commit within ~3 days | Full partitioned target set runs |
 | Scheduled nightly, HEAD older than ~3 days | Expensive fuzz skipped (guard only) |
 | `workflow_dispatch` (optional longer env budget) | Full partition; extended exploration allowed |
