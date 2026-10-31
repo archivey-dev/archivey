@@ -56,6 +56,7 @@ from archivey.formats import (
     SequentialReader,
 )
 from archivey.internal.format_adapter import register_builtin_format
+from archivey.internal.overrides import override
 from archivey.types import ArchiveFormat, ArchiveInfoExtra, ArchiveMember, MemberType
 
 MAGIC = b"!<arch>\n"
@@ -109,6 +110,7 @@ class ArReader(SequentialReader):
         self._dialect: str | None = None
         self._symbol_table = False
 
+    @override
     def archive_info(self) -> ReaderArchiveInfo:
         extra = ArchiveInfoExtra({"ar.symbol_table": self._symbol_table})
         if self._dialect is not None:
@@ -116,6 +118,7 @@ class ArReader(SequentialReader):
         # A dialect is not a version: like TAR's, it is not in format_version.
         return ReaderArchiveInfo(extra=extra)
 
+    @override
     def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
         magic = stream.read(len(MAGIC))
         if magic == THIN_MAGIC:
@@ -249,6 +252,7 @@ class ArHandler(SequentialFormatHandler):
     magic = (Magic(0, MAGIC), Magic(0, THIN_MAGIC))
     uses_encoding = True
 
+    @override
     def open_sequential(self, context: ReaderContext) -> ArReader:
         return ArReader(context)
 
