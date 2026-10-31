@@ -76,7 +76,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from archivey import open_archive as _open_archive
+from archivey import ForwardArchiveReader, open_archive as _open_archive
 from archivey.config import AcceleratorMode, ArchiveyConfig
 from archivey.exceptions import PackageNotInstalledError
 from archivey.internal.base_reader import BaseArchiveReader
@@ -197,8 +197,13 @@ def _accel_skipped_case(case: str, fmt: str) -> CaseResult:
 _BENCH_MAX_RATIO = 1_000_000.0
 
 
-def open_archive(path: Path, *, config: ArchiveyConfig | None = None, **kwargs: Any):
-    """``archivey.open_archive`` with the ratio limit raised past the fixtures' ratios."""
+def open_archive(
+    path: Path, *, config: ArchiveyConfig | None = None, **kwargs: Any
+) -> ForwardArchiveReader:
+    """``archivey.open_archive`` with the ratio limit raised past the fixtures' ratios.
+
+    It shadows the library name on purpose, so every case below goes through it.
+    """
     base = config if config is not None else ArchiveyConfig()
     limits = dataclasses.replace(base.decoder_limits, max_ratio=_BENCH_MAX_RATIO)
     return _open_archive(
