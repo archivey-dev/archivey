@@ -28,9 +28,10 @@ on:
         options: ["1", "2", "3", "4"]
         default: "3"
 
+# A second dispatch waits for the first rather than cancelling a long run.
 concurrency:
   group: benchmark-compare
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -42,17 +43,22 @@ jobs:
     timeout-minutes: 120
     steps:
       # This run's own ref: compare_refs.py comes from here.
+      # The measured refs' own code runs below (uv sync builds them, the harness is
+      # theirs), so no checkout keeps the job token.
       - uses: actions/checkout@v4
         with:
           path: tools
+          persist-credentials: false
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.baseline_ref }}
           path: baseline
+          persist-credentials: false
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.candidate_ref || github.sha }}
           path: candidate
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -81,13 +87,20 @@ jobs:
             for side in baseline candidate; do
               echo "::group::round $round, $side"
               out="$GITHUB_WORKSPACE/results/$side-$round.json"
+              log="${out%.json}.log"
               # The harness exits 1 on its own wall-time gates; only a missing
-              # JSON is a failure here.
+              # JSON is a failure here. A ref whose harness raises (a main from
+              # before #1195 stops on the ratio limit) writes none, and its last
+              # log line says why.
               (cd "$side" && uv run --no-sync python -m benchmarks.harness \
                 --mode full --scale realistic --warmup \
-                --json-out "$out" --text-out "${out%.json}.md") || true
-              test -f "$out" || { echo "::error::$side round $round wrote no JSON"; exit 1; }
+                --json-out "$out" --text-out "${out%.json}.md") > "$log" 2>&1 || true
+              cat "$log"
               echo "::endgroup::"
+              if [ ! -f "$out" ]; then
+                echo "::error::$side round $round wrote no JSON: $(tail -n 1 "$log")"
+                exit 1
+              fi
             done
           done
 
