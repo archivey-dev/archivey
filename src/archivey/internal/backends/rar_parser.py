@@ -61,7 +61,13 @@ from archivey.internal.config import KeyDerivationBudget
 from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.listing_limits import metadata_limit_error, text_bytes
 from archivey.internal.password import wrong_password_error
-from archivey.internal.sfx import SFX_MAX, describe_scan_miss, scan_for_magic
+from archivey.internal.sfx import (
+    SFX_MAX,
+    cut_signature_error,
+    describe_scan_miss,
+    is_cut_signature,
+    scan_for_magic,
+)
 from archivey.internal.streams.crypto import AesParams, open_aes_decrypt_stage
 from archivey.internal.streams.streamtools import read_exact
 from archivey.internal.timestamps import (
@@ -1205,6 +1211,8 @@ def _find_sfx_header(source: BinaryIO, start: int) -> tuple[int, int]:
         return 5, 0
     if head.startswith(RAR_ID):
         return 4, 0
+    if is_cut_signature(head, (RAR5_ID, RAR_ID)):
+        raise cut_signature_error("RAR", len(head))
 
     source.seek(start)
     # Imported here: rar_detect imports this module for the ids / CRC helpers.

@@ -37,10 +37,18 @@ deliberately two-tiered — see :class:`ExecutableCue`.
 from __future__ import annotations
 
 import struct
-from collections.abc import Callable, Container, Iterator, Sequence, Set as AbstractSet
+from collections.abc import (
+    Callable,
+    Container,
+    Iterable,
+    Iterator,
+    Sequence,
+    Set as AbstractSet,
+)
 from enum import Enum
 from typing import BinaryIO, Generic, NamedTuple, Protocol, TypeVar
 
+from archivey.exceptions import TruncatedError
 from archivey.internal.streams.streamtools import source_byte_size
 
 _T = TypeVar("_T")
@@ -251,6 +259,30 @@ class MagicScan(NamedTuple):
     hit: MagicHit | None
     miss: ScanMiss | None
     rejected_count: int
+
+
+def is_cut_signature(head: bytes, magics: Iterable[bytes]) -> bool:
+    """Whether ``head``, every byte a source holds from where its signature starts,
+    is a signature the end of the source cut off: not empty, and shorter than one of
+    ``magics`` while matching its start.
+
+    A reader raises ``TruncatedError`` for such a source rather than "Not a …
+    archive": the bytes that are there are the format's, and the file ends. Only a
+    signature at the start counts; a stub followed by a cut signature is not looked
+    for, as a stub can hold any bytes."""
+    return bool(head) and any(
+        len(head) < len(magic) and magic.startswith(head) for magic in magics
+    )
+
+
+def cut_signature_error(format_name: str, held: int) -> TruncatedError:
+    """The error for a source that holds only ``held`` bytes of its signature
+    (:func:`is_cut_signature`)."""
+    noun = "byte" if held == 1 else "bytes"
+    return TruncatedError(
+        f"{format_name} archive is truncated: it holds {held} {noun}, the start of "
+        "its signature"
+    )
 
 
 def describe_scan_miss(scan: MagicScan, *, limit: int) -> str:

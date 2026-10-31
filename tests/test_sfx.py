@@ -2292,3 +2292,54 @@ def test_a_self_extractor_past_the_fast_window_needs_the_default_or_a_named_form
     with open_archive(src(), streaming=True, format=ArchiveFormat.ZIP) as reader:
         read = {m.name: s.read() for m, s in reader.stream_members() if s is not None}
     assert read == _FILES
+
+
+# --- A signature cut off by the end of the file -------------------------------------
+
+_SIGNATURES = {
+    "zip": b"PK\x03\x04",
+    "7z": b"7z\xbc\xaf\x27\x1c",
+    "rar": b"Rar!\x1a\x07\x01\x00",
+}
+
+
+def _cut_signatures() -> Iterator[tuple[str, bytes]]:
+    for ext, magic in _SIGNATURES.items():
+        for held in range(1, len(magic)):
+            yield ext, magic[:held]
+    # RAR4's signature is RAR5's but one byte shorter, with a different last byte.
+    yield "rar", b"Rar!\x1a\x07"
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(("ext", "head"), list(_cut_signatures()))
+def test_a_file_cut_inside_its_signature_is_truncated(
+    tmp_path: Path, ext: str, head: bytes, streaming: bool
+) -> None:
+    """A file holding only the start of its format's signature ends where a download
+    cut off would: ``TruncatedError``, not "Not a … archive"."""
+    path = tmp_path / f"cut.{ext}"
+    path.write_bytes(head)
+    with (
+        pytest.raises(TruncatedError, match="the start of its signature"),
+        open_archive(path, streaming=streaming) as reader,
+    ):
+        list(reader.iter_members())
+
+
+@pytest.mark.parametrize(
+    ("ext", "data"),
+    [
+        ("zip", b"PKx"),  # not the start of a ZIP signature
+        ("7z", b"7y"),
+        ("rar", b"Rar?"),
+        ("zip", b"MZ" + b"\0" * 64 + b"PK\x03"),  # a stub, then a cut signature
+    ],
+)
+def test_bytes_that_are_not_a_cut_signature_are_not_an_archive(
+    tmp_path: Path, ext: str, data: bytes
+) -> None:
+    path = tmp_path / f"other.{ext}"
+    path.write_bytes(data)
+    with raises_corruption_not_truncation(), open_archive(path) as reader:
+        list(reader.iter_members())
