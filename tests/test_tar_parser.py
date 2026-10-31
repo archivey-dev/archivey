@@ -708,8 +708,8 @@ def test_global_records_are_shared_until_a_global_header_changes_them() -> None:
 
 
 def test_a_later_global_header_with_an_empty_value_still_replaces() -> None:
-    """``comment`` goes because the second header replaces the first; its empty
-    record is skipped, so it is not what removed the key."""
+    """The second header replaces the first: ``comment`` is its empty record, which
+    is stored as GNU tar stores any string, not the first header's value."""
     data = (
         _pax({"comment": "one"}, typeflag=b"g")
         + _pax_body(_rec(b"comment", b"") + _rec(b"other", b"x"), typeflag=b"g")
@@ -717,7 +717,7 @@ def test_a_later_global_header_with_an_empty_value_still_replaces() -> None:
         + _END
     )
     (entry,), _ = _walk(data)
-    assert b"comment" not in entry.pax
+    assert entry.pax[b"comment"].value == b""
     assert entry.pax[b"other"].value == b"x"
 
 
@@ -1925,6 +1925,64 @@ _AMBIGUOUS = {
         "f",
         ("nul_in_value", "uname"),
     ),
+    # tar-minefield N23: the x header carries no name, so nothing overrides the L.
+    "L then x": (
+        _long(b"L", b"gnu") + _pax({"mtime": "5"}) + _file(b"hdr"),
+        "gnu",
+        ("mixed_chain", "x"),
+    ),
+    # tar-minefield F10: the x size frames the member, not the L header, as GNU tar
+    # reads it; the block after is the member's data.
+    "x size then L": (
+        _pax({"size": "1"}) + _long(b"L", b"gnu") + _block(b"hdr") + _data(b"x"),
+        "gnu",
+        ("mixed_chain", "x"),
+    ),
+    "K then x": (
+        _long(b"K", b"gnu") + _pax({"uname": "u"}) + _symlink(),
+        "s",
+        ("mixed_chain", "x"),
+    ),
+    # tar-minefield F19.
+    "g between x and member": (
+        _pax({"path": "pax"}) + _pax({"comment": "c"}, typeflag=b"g") + _file(),
+        "pax",
+        ("global_in_chain", "g"),
+    ),
+    "g between L and member": (
+        _long(b"L", b"gnu") + _pax({"comment": "c"}, typeflag=b"g") + _file(),
+        "gnu",
+        ("global_in_chain", "g"),
+    ),
+    # tar-minefield N22: GNU tar keeps the header name.
+    "empty x path": (
+        _pax_body(_rec(b"path", b"")) + _file(b"hdr"),
+        "hdr",
+        ("empty_value", "path"),
+    ),
+    # Empty only after the NUL cut: the record is not empty, so no empty_value.
+    "x path empty after the NUL cut": (
+        _pax_body(_rec(b"path", b"\x00rest")) + _file(b"hdr"),
+        "hdr",
+        ("nul_in_value", "path"),
+    ),
+    "empty x mtime": (
+        _pax_body(_rec(b"mtime", b"")) + _file(),
+        "f",
+        ("empty_value", "mtime"),
+    ),
+    # tar-minefield F26: 0777 is 777 bytes, as GNU tar reads it.
+    "x size with a leading zero": (
+        # 010 is 10 bytes, where octal would read 8.
+        _pax({"size": "010"}) + _block(b"f") + _data(b"0123456789"),
+        "f",
+        ("leading_zero", "size"),
+    ),
+    "sparse realsize with a leading zero": (
+        _pax_1_0_member("1", "0", {"GNU.sparse.realsize": "020"})[: -len(_END)],
+        "real",
+        ("leading_zero", "GNU.sparse.realsize"),
+    ),
 }
 
 
@@ -2068,7 +2126,33 @@ def _ordinary_archives() -> dict[str, bytes]:
     archives["global comment, then mtime in x"] = (
         _pax({"comment": "c"}, typeflag=b"g") + _pax({"mtime": "1.5"}) + _file() + _END
     )
+    archives["global header with an empty value"] = (
+        _pax({"uname": "u"}, typeflag=b"g")
+        + _file(b"m1")
+        + _pax_body(_rec(b"uname", b"u") + _rec(b"comment", b""), typeflag=b"g")
+        + _file(b"m2")
+        + _END
+    )
+    archives["x size 0"] = _pax({"size": "0"}) + _block(b"empty") + _END
+    # GNU tar 1.35 --xattrs writes this for an empty extended attribute.
+    archives["empty xattr"] = (
+        _pax_body(_rec(b"SCHILY.xattr.user.empty", b"")) + _file() + _END
+    )
     return archives
+
+
+def test_an_empty_record_archivey_does_not_read_is_kept() -> None:
+    """GNU tar restores an empty xattr from it, so it stays in the PAX records."""
+    data = (
+        _pax_body(_rec(b"SCHILY.xattr.user.empty", b"") + _rec(b"comment", b""))
+        + _file()
+        + _END
+    )
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        (member,) = ar.members()
+    pax = member.extra["tar.pax_headers"]
+    assert pax["SCHILY.xattr.user.empty"] == ""
+    assert pax["comment"] == ""
 
 
 @pytest.mark.parametrize("label", list(_ordinary_archives()))
@@ -2077,6 +2161,34 @@ def test_ordinary_archives_report_no_ambiguity(label: str) -> None:
     with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
         ar.members()
         assert DiagnosticCode.MEMBER_HEADER_AMBIGUOUS not in ar.diagnostics.counts
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (_rec(b"path", b"") + _rec(b"path", b"foo"), [("repeated", "path")]),
+        (
+            _rec(b"path", b"foo") + _rec(b"path", b""),
+            [("repeated", "path"), ("empty_value", "path")],
+        ),
+        (_rec(b"mtime", b"") + _rec(b"mtime", b"2"), [("repeated", "mtime")]),
+    ],
+    ids=["set after the empty record", "set before it", "number set after it"],
+)
+def test_an_empty_record_and_another_of_its_key_are_reported(
+    body: bytes, expected: list[tuple[str, str]]
+) -> None:
+    """One key set twice in one header is repeated, an empty record too; the empty
+    one is empty_value only when it is the last, as the earlier value then stays."""
+    data = _pax_body(body) + _file(b"foo") + _END
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        (member,) = ar.members()
+        shapes = [
+            (d.context.ambiguity, d.context.field)
+            for d in member.diagnostics
+            if isinstance(d.context, HeaderAmbiguityContext)
+        ]
+    assert shapes == expected
 
 
 def test_pax_records_list_repeated_keys_once() -> None:

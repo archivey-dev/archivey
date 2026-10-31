@@ -310,8 +310,8 @@ _STORED_COMPRESSION: tuple[CompressionMethod, ...] = (
 
 def _pax_text(entry: TarEntry, key: bytes) -> str | None:
     """The PAX record ``key`` in force for ``entry`` as text, or ``None`` when it is
-    absent or empty (the walker keeps an empty value only for the keywords it clears,
-    ``parse_pax_records``)."""
+    absent or empty (``parse_pax_records`` stores an empty value for every keyword
+    outside ``_EMPTY_VALUE_SKIPPED``; this helper reads it as absent)."""
     value = entry.pax.get(key)
     if value is None or not value.value:
         return None
@@ -1422,6 +1422,23 @@ class TarReader(BaseArchiveReader):
             )
         elif ambiguity is Ambiguity.NUL_IN_VALUE:
             what = f"a PAX {field} record holding a NUL byte; the value ends there"
+        elif ambiguity is Ambiguity.MIXED_CHAIN:
+            what = (
+                "both a GNU long name (or link name) header and a PAX x header; "
+                "both apply to the member"
+            )
+        elif ambiguity is Ambiguity.GLOBAL_IN_CHAIN:
+            what = (
+                "a global PAX header between an extended header and the member; "
+                "the extended header applies to the member"
+            )
+        elif ambiguity is Ambiguity.EMPTY_VALUE:
+            what = (
+                f"an empty PAX {field} record; it is skipped, and the value in "
+                "force before it stays"
+            )
+        elif ambiguity is Ambiguity.LEADING_ZERO:
+            what = f"a PAX {field} with a leading zero; it is read as decimal"
         else:
             what = (
                 f"a global PAX header that drops the {field} an earlier global header "
