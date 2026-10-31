@@ -27,7 +27,7 @@ from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import codecs
 from tests.conftest import has_package, importorskip
 
-_GIL_REENABLING = ("pyppmd", "inflate64", "brotli", "rapidgzip")
+_GIL_REENABLING = ("pyppmd", "inflate64", "brotli", "rapidgzip", "lzo")
 
 _PROBE = textwrap.dedent(
     """

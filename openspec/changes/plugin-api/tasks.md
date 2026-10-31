@@ -199,9 +199,8 @@ more indexed plugin, 2026-10-27).
       sequential plugin pairs, by the inner-container probe and by
       `ReaderContext.decompress`. The pair, extension and codec tables become
       computed on demand instead of at import.
-- [ ] 5.2 LZO as a built-in codec (the lzop stream and raw LZO1X as a member method),
-      python-lzo optional with the pure-Python decoder as the fallback, when SquashFS
-      becomes built-in.
+- [x] 5.2 LZO as a built-in codec (the lzop stream and raw LZO1X as a member method),
+      python-lzo optional with the pure-Python decoder as the fallback.
 
 ## 6. Names
 

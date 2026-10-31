@@ -223,7 +223,9 @@ def test_closing_a_member_stream_gives_its_child_back_at_once(
         stream.read(10)
         POOL.close_idle()
         stream.close()
-        assert POOL.idle_count() == 1, key
+        # The corpus ``.lzo`` stores its blocks, so it runs no decoder at all
+        # (test_lzop.py has the isolated LZO1X decode).
+        assert POOL.idle_count() == (key != "lzo"), key
         del stream
 
 

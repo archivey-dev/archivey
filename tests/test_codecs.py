@@ -3538,6 +3538,15 @@ def _imported_modules(path: Path) -> Iterator[tuple[int, str]]:
             first = node.args[0]
             if name in importers and isinstance(first, ast.Constant):
                 modules = [str(first.value)]
+            elif (
+                name in importers
+                and isinstance(first, ast.Attribute)
+                and isinstance(first.value, ast.Name)
+                and first.value.id == "OptionalLibrary"
+            ):
+                # ``LazyOptional(OptionalLibrary.BROTLI)``: how ``deps.py`` names
+                # every optional library it loads lazily.
+                modules = [OptionalLibrary[first.attr].value]
         for module in modules:
             if module.split(".")[0] != "archivey":
                 yield node.lineno, module

@@ -804,13 +804,17 @@ jobs:
       - name: Install liblzo2, which python-lzo builds against
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends liblzo2-dev
       - name: Sync, then install the package over it
-        # python-lzo too, so the tests check the package's LZO decoder against liblzo2.
+        # python-lzo too, so the tests check archivey's LZO decoder against liblzo2.
         run: |
           uv sync --group dev --extra all
           uv pip install -e packages/archivey-squashfs --no-deps
           uv pip install python-lzo
       - name: Pytest
-        run: uv run --no-sync pytest packages/archivey-squashfs/tests -q --no-cov -rs
+        # The core LZO tests run here too: this is the job with python-lzo, so the
+        # comparison with liblzo2 and the decode in a child process run nowhere else.
+        run: >-
+          uv run --no-sync pytest packages/archivey-squashfs/tests tests/test_lzo.py
+          tests/test_lzop.py -q --no-cov -rs
 
   # The short Atheris fuzz (atheris-fuzz.yml in its short mode, three shards), in the
   # merge queue only. The nightly and dispatched full runs stay in that workflow.

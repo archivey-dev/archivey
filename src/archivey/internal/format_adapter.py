@@ -298,6 +298,15 @@ class _PluginAdapter(BaseArchiveReader):
                 # Raw LZMA1 may have no end marker: it stops at the stored size.
                 unpack_size=size if codec is Codec.LZMA else None,
             )
+        if codec is Codec.LZO:
+            if size is None:
+                raise UnsupportedFeatureError(
+                    "ReaderContext.decompress() needs size= for LZO: raw LZO1X does "
+                    "not store its decoded length",
+                    source_format=self._format,
+                    archive_name=self._archive_name,
+                )
+            params = CodecParams(unpack_size=size)
         # Per call, as ZIP fills them per member (``_member_decoder_config``): the
         # output size, and the input size while ``data`` is at its start. The
         # accelerators choose by them, and rapidgzip's length check needs the first.
@@ -1837,6 +1846,7 @@ _PLUGIN_CODECS: dict[CompressionAlgorithm, Codec] = {
     CompressionAlgorithm.LZMA: Codec.LZMA,
     CompressionAlgorithm.LZMA2: Codec.LZMA2,
     CompressionAlgorithm.XZ: Codec.XZ,
+    CompressionAlgorithm.LZO: Codec.LZO,
 }
 
 

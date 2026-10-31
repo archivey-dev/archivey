@@ -559,13 +559,15 @@ class ReaderContext:
         ``BZIP2``, ``ZSTD``, ``LZ4`` (frames), ``BROTLI``, ``LZMA`` (raw LZMA1;
         ``properties`` is its 5-byte properties: the ``lc``, ``lp``, ``pb`` byte and the
         dictionary size), ``LZMA2`` (raw; ``properties`` is its 1-byte dictionary
-        size) and ``XZ`` (``.xz`` data kept inside a member, as ZIP method 95 keeps
-        it). As a stream format, the data is a whole stream with its own framing,
-        decoded as a file of that format is: ``ZLIB`` (deflate with the zlib header and
-        Adler-32), ``GZIP``, ``XZ``, ``LZMA_ALONE``, ``LZIP`` and the others
-        ``StreamFormat`` names, or a registered codec's :class:`~archivey.PluginStream`
-        member. Any other method raises ``UnsupportedFeatureError``,
-        and one whose optional package is missing raises ``PackageNotInstalledError``.
+        size), ``XZ`` (``.xz`` data kept inside a member, as ZIP method 95 keeps
+        it) and ``LZO`` (raw LZO1X, as SquashFS stores a block; it needs ``size``, the
+        most the data may decode to). As a stream format, the data is a whole stream
+        with its own framing, decoded as a file of that format is: ``ZLIB`` (deflate
+        with the zlib header and Adler-32), ``GZIP``, ``XZ``, ``LZMA_ALONE``, ``LZIP``
+        and the others ``StreamFormat`` names, or a registered codec's
+        :class:`~archivey.PluginStream` member. Any other method raises
+        ``UnsupportedFeatureError``, and one whose optional package is missing raises
+        ``PackageNotInstalledError``.
 
         Where the compressed data ends depends on the method. ``ZSTD`` and ``LZ4`` data
         is one or more frames, decoded together, and ``XZ`` data is one or more xz
