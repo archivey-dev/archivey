@@ -223,11 +223,17 @@ rulings on the handbook page, and general ones in `dev-docs/design-rules.md`.
 - An agent may merge a straightforward PR once its review approves and CI is green
   (maintainer, 2026-09-25: "go ahead with merge straightforward ones … if there's a
   tricky one, you can ask me to take a look before merging").
-  Tricky ones go to the maintainer: a behaviour trade-off, a design reversal, removing
-  or renaming a public name or an `archivey` verb or option (`design-rules.md`
-  DR-12a), a very large diff, anything an open decision touches, or a change to a
-  workflow, a release file or the review loop's own rules (`scripts/review_prep.py
-  tier` says "the maintainer merges this one").
+  A deep PR merges the same way once the Opus pass and Cursor approve too.
+  The maintainer merges a PR that makes a decision of theirs (maintainer, 2026-10-31:
+  "I'm tired of having to merge all deep PRs, I don't actually look at them"):
+  `scripts/review_prep.py tier` prints "merge: the maintainer merges this one" and the
+  decisions it found (a public name removed or a top-level one added, `design-rules.md`
+  DR-12a; a config default; a defended property dropped or a non-guarantee accepted; a
+  new ADR or runtime dependency; a workflow's permissions, secrets or triggers; the
+  release path; the merge gate), and the `merge: maintainer` label marks the PR. So do
+  the decisions a script cannot see, which the review lists in its maintainer decisions
+  block: a behaviour trade-off, a design reversal, a new subsystem, anything an open
+  decision touches.
 - `main` refuses a merge while any review thread is open, so every thread needs its
   reply and its resolution first (`address-review-findings` §7).
 - The PR body is the record of a piece of work. Do not commit working plans to the repo.

@@ -410,9 +410,10 @@ or a decision that turned into a new code path or a redesign, and say so in your
 disposition comment. The workflow lets that label through and trusts your judgement, so
 do not spend a round on fixes the review already described.
 
-**After an approving verdict with CI green**, you may merge a straightforward PR; a tricky
-one goes to the maintainer. What counts as tricky: `AGENTS.md` §Working with the
-maintainer. Any verdict leaves threads open, a conditional approval most of all: fix the
+**After an approving verdict with CI green**, you may merge a straightforward PR (a deep
+one after the Opus pass and Cursor approve too); a tricky one goes to the maintainer. It
+is tricky when it carries the `merge: maintainer` label, when the review's maintainer
+decisions block names one, or by `AGENTS.md` §Working with the maintainer. Any verdict leaves threads open, a conditional approval most of all: fix the
 conditioned findings, reply on every thread the review opened, and resolve each one, or
 the merge queue will not take the PR (the rule is in the list above). A thread you cannot
 resolve yet, such as an escalated question, keeps the PR out of the queue until it is

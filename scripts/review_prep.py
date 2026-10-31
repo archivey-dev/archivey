@@ -399,18 +399,17 @@ DEEP_SECURITY = (
     "src/archivey/internal/external/",
     "src/archivey/internal/streams/child_process.py",
 )
-# A new file under one of these is a new format reader, parser or codec: the pull
-# request gets the security pass (skill §1) whatever its tier. Other changes there get it when
-# the PR body's `Security:` line or the reviewer applies the template's rules.
+# A new file under one of these may be a new format reader, parser or codec: the pull
+# request gets the security pass (skill §1) whatever its tier. Other changes there get it
+# when the PR body's `Security:` line or the reviewer applies the template's rules.
 SECURITY_NEW_FILES = (
     "src/archivey/internal/backends/",
     "src/archivey/internal/streams/codecs/",
 )
-# A deep pull request touching one of these also goes to the maintainer to merge. The
-# review loop's own rules are here because a pull request is reviewed under its own copy
-# of them (dev-docs/review-loop.md, Known rough edges): the tier is read from the base
-# branch, so a pull request that edits them cannot take itself off this list.
-DEEP_MAINTAINER = (
+# The release's and the review loop's own files: deep, with the pull request's author as
+# the attacker (skill §1). The loop's rules are here because a pull request is reviewed
+# under its own copy of them (dev-docs/review-loop.md, Known rough edges).
+DEEP_PROCESS = (
     ".github/workflows/",
     "scripts/release.py",
     ".github/review-loop-prompt.md",
@@ -420,6 +419,168 @@ DEEP_MAINTAINER = (
     "scripts/review_loop_prompt.py",
     "scripts/review_prep.py",
 )
+
+# --- who merges: the decisions the maintainer keeps ------------------------------------
+
+# A pull request of any tier that makes one of these decisions goes to the maintainer to
+# merge; an agent merges the rest once the review approves and CI is green, and a deep
+# one once the Opus pass and Cursor approve too (maintainer, 2026-10-31: "I'm tired of
+# having to merge all deep PRs, I don't actually look at them"). The reviewer adds what
+# a script cannot see, such as a new subsystem or a reversed ruling, in its maintainer
+# decisions block. The tier is read from the base branch, and this script is on the
+# gate list, so a pull request cannot take itself off the list.
+MAINTAINER_FILES = {
+    "scripts/release.py": "touches the release path",
+    ".github/workflows/publish.yml": "touches the release path",
+    # The merge gate: who approves, when the loop stops, and who merges.
+    "scripts/review_loop_gate.py": "touches the merge gate",
+    "scripts/review_loop_close.sh": "touches the merge gate",
+    "scripts/review_prep.py": "touches the merge gate",
+}
+DECISIONS_DIR = "dev-docs/decisions/"
+# Most threat model edits describe a new defence; the maintainer's call is a defended
+# property dropped (§3) or a non-guarantee accepted (§4), each one a `###` heading.
+THREAT_MODEL = "dev-docs/threat-model.md"
+_DEFENDED, _ACCEPTED = "## 3.", "## 4."
+CONFIG = "src/archivey/config.py"
+WORKFLOWS = ".github/workflows/"
+# The checks `main` requires before a merge (the repository's ruleset).
+REQUIRED_CHECKS = (
+    "CI gate",
+    "Docs build",
+    "OpenSpec spec prose",
+    "OpenSpec changes archived",
+)
+# A workflow line that grants a token scope, reads a secret or runs on the base
+# repository's trust (`pull_request_target`).
+_WORKFLOW_POWER_RE = re.compile(
+    r"\bpermissions\s*:|\bsecrets\.|\bpull_request_target\b"
+    r"|^\s*(?:actions|attestations|checks|contents|deployments|discussions|id-token"
+    r"|issues|models|packages|pages|pull-requests|repository-projects|security-events"
+    r"|statuses)\s*:\s*(?:read|write|none)\b"
+)
+# A dataclass field with a default, as config.py writes its limits and options.
+_DEFAULT_RE = re.compile(r"^\s+([a-z_]\w*)\s*:[^=]*=\s*\S")
+_API_KEY_RE = re.compile(r" \[| = |(?<=\w)\(|: ")
+# A new name at these places is one the maintainer picks: a module, a class, function,
+# constant or alias exported from `archivey` itself, a CLI verb.
+_TOP_LEVEL_RE = re.compile(
+    r"^(?:module \S+|cli-verb \S+|(?:class|function|constant|alias) archivey\.\w+)$"
+)
+
+
+def _api_key(line: str) -> str:
+    """An api-surface line without its signature, type or value: what names it."""
+    kind, _, rest = line.partition(" ")
+    return f"{kind} {_API_KEY_RE.split(rest, maxsplit=1)[0]}"
+
+
+def _requirement_names(pyproject: str | None) -> dict[str, set[str]]:
+    """Runtime requirement names per group ("" for the core list)."""
+    if pyproject is None:
+        return {}
+    import tomllib  # 3.11+; the caller says so on 3.10
+
+    project = tomllib.loads(pyproject).get("project", {})
+    groups = {"": project.get("dependencies", [])}
+    groups.update(project.get("optional-dependencies", {}))
+    name = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+    return {
+        group: {
+            re.sub(r"[-_.]+", "-", m.group(1)).lower()
+            for req in reqs
+            if (m := name.match(req))
+        }
+        for group, reqs in groups.items()
+    }
+
+
+def _threat_headings(text: str | None) -> dict[str, set[str]]:
+    """The `###` headings under each `## N.` section of the threat model."""
+    sections: dict[str, set[str]] = {}
+    current = ""
+    for line in (text or "").splitlines():
+        if line.startswith("## "):
+            current = line.split()[1] if len(line.split()) > 1 else ""
+            current = f"## {current}"
+        elif line.startswith("### "):
+            sections.setdefault(current, set()).add(line[4:].strip())
+    return sections
+
+
+def maintainer_decisions(
+    files: Iterable[FileDiff],
+    added: Iterable[str] = (),
+    pyprojects: tuple[str | None, str | None] | None = None,
+    threat_models: tuple[str | None, str | None] | None = None,
+) -> list[str]:
+    """What in this diff is the maintainer's call. ``pyprojects`` and ``threat_models``
+    are those files at the base and the head, when the diff touches them."""
+    found: list[str] = []
+    if threat_models is not None:
+        before, after = (_threat_headings(t) for t in threat_models)
+        found += [
+            f"drops or renames a defended property: {h}"
+            for h in sorted(before.get(_DEFENDED, set()) - after.get(_DEFENDED, set()))
+        ]
+        found += [
+            f"accepts a new non-guarantee: {h}"
+            for h in sorted(after.get(_ACCEPTED, set()) - before.get(_ACCEPTED, set()))
+        ]
+    for f in files:
+        paths = [f.path] + ([f.renamed_from] if f.renamed_from else [])
+        for path in paths:
+            if path in MAINTAINER_FILES:
+                found.append(f"{MAINTAINER_FILES[path]}: {path}")
+        if f.path == API_SURFACE:
+            old = {_api_key(t) for _, t in f.removed if t and t[0] != "#"}
+            new = {_api_key(t) for _, t in f.added if t and t[0] != "#"}
+            found += [
+                f"removes or renames a public name: {k}" for k in sorted(old - new)
+            ]
+            found += [
+                f"adds a top-level name: {k}"
+                for k in sorted(new - old)
+                if _TOP_LEVEL_RE.match(k)
+            ]
+        if f.path == CONFIG:
+            names = sorted(
+                {
+                    m.group(1)
+                    for t in [t for _, t in f.removed] + [t for _, t in f.added]
+                    if (m := _DEFAULT_RE.match(t))
+                }
+            )
+            found += [f"changes a default in {CONFIG}: {n}" for n in names]
+        if f.path.startswith(WORKFLOWS):
+            lines = [t for _, t in f.removed] + [t for _, t in f.added]
+            if any(_WORKFLOW_POWER_RE.search(t) for t in lines):
+                found.append(
+                    f"changes a workflow's permissions, secrets or triggers: {f.path}"
+                )
+            gone = [c for c in REQUIRED_CHECKS if any(c in t for _, t in f.removed)]
+            found += [f"changes a required check: {c} ({f.path})" for c in gone]
+    found += [
+        f"adds an architecture decision: {p}"
+        for p in sorted(set(added))
+        if p.startswith(DECISIONS_DIR)
+    ]
+    if pyprojects is not None:
+        try:
+            before, after = (_requirement_names(t) for t in pyprojects)
+        except ImportError:
+            found.append(
+                "pyproject.toml changed: check its dependencies by hand (Python 3.10)"
+            )
+        else:
+            for group, names in after.items():
+                where = f" ({group})" if group else ""
+                found += [
+                    f"adds a runtime dependency: {n}{where}"
+                    for n in sorted(names - before.get(group, set()))
+                ]
+    return list(dict.fromkeys(found))
+
 
 API_SURFACE = "dev-docs/api-surface.txt"
 
@@ -432,10 +593,11 @@ def _matches(path: str, entries: Iterable[str]) -> bool:
 class Tier:
     name: str  # "light", "standard" or "deep"
     reasons: list[str]
-    maintainer_merges: bool
     api_changed: bool
-    # New reader, parser or codec files: the security pass runs on any tier.
+    # New files under a parser or codec directory: the security pass runs on any tier.
     new_parsers: list[str] = field(default_factory=list)
+    # What makes the maintainer merge it (maintainer_decisions); empty: an agent merges.
+    maintainer: list[str] = field(default_factory=list)
 
 
 def tier(paths: Iterable[str], added: Iterable[str] = ()) -> Tier:
@@ -444,12 +606,10 @@ def tier(paths: Iterable[str], added: Iterable[str] = ()) -> Tier:
     paths = sorted(set(paths))
     new_parsers = sorted(p for p in set(added) if _matches(p, SECURITY_NEW_FILES))
     security = [p for p in paths if _matches(p, DEEP_SECURITY)]
-    maintainer = [p for p in paths if _matches(p, DEEP_MAINTAINER)]
+    process = [p for p in paths if _matches(p, DEEP_PROCESS)]
     api_changed = API_SURFACE in paths
-    if security or maintainer:
-        return Tier(
-            "deep", security + maintainer, bool(maintainer), api_changed, new_parsers
-        )
+    if security or process:
+        return Tier("deep", security + process, api_changed, new_parsers)
     heavier = [
         p
         for p in paths
@@ -461,35 +621,48 @@ def tier(paths: Iterable[str], added: Iterable[str] = ()) -> Tier:
         )
     ]
     if paths and not heavier:
-        return Tier("light", [], False, api_changed, new_parsers)
-    return Tier("standard", heavier, False, api_changed, new_parsers)
+        return Tier("light", [], api_changed, new_parsers)
+    return Tier("standard", heavier, api_changed, new_parsers)
 
 
-def added_paths(base: str, head: str) -> list[str]:
-    return git("diff", "--name-only", "--diff-filter=A", f"{base}...{head}").split()
-
-
-def review_tier(base: str, head: str) -> Tier:
-    return tier(changed_paths(base, head), added_paths(base, head))
+def _name_status(base: str, head: str) -> list[list[str]]:
+    """``git diff --name-status -M``: a status letter, then the path, or for a rename the
+    old path and the new one. ``-M`` keeps a moved file a rename whatever the machine's
+    ``diff.renames`` says."""
+    out = git("diff", "--name-status", "-M", f"{base}...{head}")
+    return [line.split("\t") for line in out.splitlines() if line]
 
 
 def changed_paths(base: str, head: str) -> list[str]:
-    out = git("diff", "--name-status", "-M", f"{base}...{head}")
-    paths: list[str] = []
-    for line in out.splitlines():
-        # A rename lists the old path and the new one; both count.
-        paths.extend(line.split("\t")[1:])
-    return paths
+    # A rename lists the old path and the new one; both count.
+    return [p for status, *paths in _name_status(base, head) for p in paths]
+
+
+def added_paths(base: str, head: str) -> list[str]:
+    return [paths[0] for status, *paths in _name_status(base, head) if status == "A"]
+
+
+def review_tier(base: str, head: str) -> Tier:
+    paths, added = changed_paths(base, head), added_paths(base, head)
+    t = tier(paths, added)
+    files = parse_diff(git("diff", "-U0", "-M", f"{base}...{head}"))
+    # `base...head` diffs from the merge base, so the "before" texts come from there too.
+    fork = git("merge-base", base, head).strip()
+    both = {
+        path: (base_text(fork, path), base_text(head, path))
+        for path in ("pyproject.toml", THREAT_MODEL)
+        if path in paths
+    }
+    t.maintainer = maintainer_decisions(
+        files, added, both.get("pyproject.toml"), both.get(THREAT_MODEL)
+    )
+    return t
 
 
 def tier_report(t: Tier) -> list[str]:
     lines = [f"tier: {t.name}"]
     if t.name == "deep":
         lines += [f"  deep path: {p}" for p in t.reasons]
-        if t.maintainer_merges:
-            lines.append(
-                "  merge: the maintainer merges this one (workflow or release)"
-            )
     elif t.name == "standard" and not t.reasons:
         lines.append("  no committed changes against the base")
     elif t.name == "standard":
@@ -498,7 +671,9 @@ def tier_report(t: Tier) -> list[str]:
         lines.append(f"  not light because of: {', '.join(shown)}{more}")
     if t.name == "deep" or t.new_parsers:
         lines.append("security pass: yes")
-        lines += [f"  new reader, parser or codec: {p}" for p in t.new_parsers]
+        lines += [
+            f"  new file under a parser or codec directory: {p}" for p in t.new_parsers
+        ]
     else:
         lines.append(
             "security pass: per the Risk line's rules (pull_request_template.md)"
@@ -506,6 +681,18 @@ def tier_report(t: Tier) -> list[str]:
     lines.append(
         f"public API: {'changed (' + API_SURFACE + ')' if t.api_changed else 'unchanged'}"
     )
+    if t.maintainer:
+        lines.append("merge: the maintainer merges this one")
+        shown = t.maintainer[:8]
+        lines += [f"  maintainer decision: {d}" for d in shown]
+        if len(t.maintainer) > len(shown):
+            lines.append(f"  (+{len(t.maintainer) - len(shown)} more)")
+    elif t.name == "deep":
+        lines.append(
+            "merge: an agent merges once the Opus pass and Cursor approve and CI is green"
+        )
+    else:
+        lines.append("merge: an agent merges once the review approves and CI is green")
     return lines
 
 

@@ -48,8 +48,8 @@ jobs:
           # lists that decide the tier live in it, and a pull request must not be able
           # to lower its own tier by editing them.
           git show "origin/$BASE:scripts/review_prep.py" > scripts/review_prep.py
-          tier="$(python3 scripts/review_prep.py --base "origin/$BASE" tier \
-            | sed -n 's/^tier: //p')"
+          report="$(python3 scripts/review_prep.py --base "origin/$BASE" tier)"
+          tier="$(sed -n 's/^tier: //p' <<< "$report")"
           case "$tier" in
             light|standard|deep) ;;
             *) echo "Unexpected tier: '$tier'" >&2; exit 1 ;;
@@ -67,4 +67,17 @@ jobs:
           if ! grep -qxF -- "risk: $tier" <<< "$present"; then
             gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR/labels" \
               -f "labels[]=risk: $tier" --silent
+          fi
+
+          # Who merges: the maintainer when the base branch's script finds one of their
+          # decisions in the diff (dev-docs/review-loop.md).
+          if grep -q '^merge: the maintainer' <<< "$report"; then
+            echo "Merge: maintainer" >> "$GITHUB_STEP_SUMMARY"
+            if ! grep -qxF -- "merge: maintainer" <<< "$present"; then
+              gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR/labels" \
+                -f "labels[]=merge: maintainer" --silent
+            fi
+          elif grep -qxF -- "merge: maintainer" <<< "$present"; then
+            gh api --method DELETE \
+              "repos/$GITHUB_REPOSITORY/issues/$PR/labels/merge:%20maintainer" --silent
           fi
