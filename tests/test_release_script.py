@@ -492,6 +492,7 @@ NOT_RELEASE_GATES = {
     "conflict-notice.yml": "comments on conflicted pull requests; it tests nothing",
     "ppmd-native-stress.yml": "it finds pyppmd's known native crashes, which archivey "
     "contains in a child process; a red run must not hold a release",
+    "review-tally.yml": "counts review findings into a job summary; it tests nothing",
 }
 
 

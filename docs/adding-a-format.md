@@ -752,6 +752,15 @@ interface already, so `decompressor()` can return one as it is. Import the libra
 at the top of the module, not in `decompressor()`: archivey calls it for every stream,
 and a failed import costs more than decoding a small one.
 
+A format with no end mark, whose stream ends where its input does, gives its decoder an
+`end_input()` method as well. archivey calls it once, when the input has ended and the
+decoder asks for more (`needs_input`). It returns nothing, and raises (for example
+`TruncatedError`) when the stream cannot end there. A decoder that held output back
+until it knew the input ended returns it from the calls to `decompress(b"", max_length)`
+that follow, which archivey makes until `eof` is set, so a long tail still comes in
+bounded pieces. If one returns nothing, or asks for input, before `eof` is set,
+archivey raises `TruncatedError`.
+
 `call` is a `CodecCall`: what archivey knows about the data beyond its bytes:
 
 - `size` and `properties`: what a format reader passed to `ReaderContext.decompress`.

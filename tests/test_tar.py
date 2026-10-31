@@ -50,6 +50,7 @@ from archivey.internal.backends.tar_parser import DATA_READ_STEP, TarWalker
 from archivey.internal.backends.tar_reader import _WALK_BUFFER
 from archivey.internal.streams.archive_stream import MemberStreamParts
 from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
+from tests import tar_build
 from tests.conftest import CPYTHON, requires_zstd, zstd_backend
 from tests.corruption_util import (
     is_corruption_not_truncation,
@@ -3978,6 +3979,52 @@ def test_pax_mtime_zero_is_the_epoch(tmp_path: Path) -> None:
         assert DiagnosticCode.MEMBER_TIMESTAMP_INVALID not in ar.diagnostics.counts
 
 
+def _tar_with_mtime_field(field: bytes, pax_mtime: str | None = None) -> bytes:
+    pax = tar_build.pax({"mtime": pax_mtime}) if pax_mtime is not None else b""
+    return (
+        pax
+        + tar_build.block(b"f", size=1, patch=tar_build.field(136, 148, field))
+        + tar_build.data(b"x")
+        + tar_build.END
+    )
+
+
+@pytest.mark.parametrize("field", [bytes(12), b" " * 12], ids=["nul", "blanks"])
+@pytest.mark.parametrize("streaming", [False, True])
+def test_an_mtime_field_with_no_digit_is_unknown(
+    streaming: bool, field: bytes, tmp_path: Path
+) -> None:
+    """An ``mtime`` field of NULs or blanks records no time. GNU tar 1.35 and tarfile
+    read all NULs as 0 (GNU tar reports all blanks and lists -1); archivey lists no
+    ``modified`` rather than guess 1970, and says nothing."""
+    data = _tar_with_mtime_field(field)
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    ) as ar:
+        (member,) = [m for m, _ in ar.stream_members()]
+        assert member.modified is None
+        assert DiagnosticCode.MEMBER_TIMESTAMP_INVALID not in ar.diagnostics.counts
+    open_and_extract(io.BytesIO(data), tmp_path, format=ArchiveFormat.TAR)
+    assert (tmp_path / "f").read_bytes() == b"x"
+
+
+def test_an_octal_zero_mtime_is_the_epoch() -> None:
+    data = _tar_with_mtime_field(b"00000000000\0")
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        assert ar.get("f").modified == datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def test_a_pax_mtime_fills_an_all_nul_header_mtime() -> None:
+    """With the header field left NUL, the PAX ``mtime`` record gives the time."""
+    data = _tar_with_mtime_field(bytes(12), pax_mtime="1700000000.5")
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        assert ar.get("f").modified == datetime(
+            2023, 11, 14, 22, 13, 20, 500000, tzinfo=UTC
+        )
+
+
 def _tar_hardlink_then_target() -> bytes:
     """``h`` is a hardlink to ``t``; the only ``t`` comes after it, and an earlier
     ``u`` that a later ``u`` replaces is linked from ``hu`` between the two."""
@@ -4648,3 +4695,166 @@ def test_a_rewind_in_a_compressed_tar_logs_at_info(
     (record,) = rewinds
     assert record.diagnostic_code is DiagnosticCode.STREAM_REWIND_REDECOMPRESSES
     assert record.diagnostic_occurrence_id == diagnostic.occurrence_id
+
+
+# A PAX size frames the data of every typeflag, as GNU tar 1.35 skips it (measured
+# 2026-10-30): a member stored in the bytes after a directory or link header with a PAX
+# size is no member to GNU tar, so it must be none to archivey either.
+
+
+def _pax_framed(
+    typeflag: bytes, *, header_type: bytes = b"x", linkname: bytes = b""
+) -> bytes:
+    """``[size=1024 in an x or g header][typeflag header][hidden: header + data]
+    [after]``, after a link's target when ``linkname`` names one. A global size also
+    applies to ``after``, so ``after`` then carries its own ``x`` size."""
+    tb = tar_build
+    hidden = tb.block(b"hidden", size=1) + tb.data(b"S")
+    name = b"d/" if typeflag == b"5" else b"lnk"
+    target = tb.block(linkname, size=1) + tb.data(b"T") if linkname else b""
+    after = tb.pax({"size": "1"}) if header_type == b"g" else b""
+    return (
+        target
+        + tb.pax({"size": str(len(hidden))}, typeflag=header_type)
+        + tb.block(name, typeflag=typeflag, linkname=linkname)
+        + hidden
+        + after
+        + tb.block(b"after", size=1)
+        + tb.data(b"Z")
+        + tb.END
+    )
+
+
+@pytest.mark.parametrize("header_type", [b"x", b"g"])
+@pytest.mark.parametrize("streaming", [False, True])
+def test_dirtype_with_a_pax_size_holds_its_blocks_as_data(
+    streaming: bool, header_type: bytes
+) -> None:
+    data = _pax_framed(b"5", header_type=header_type)
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    ) as ar:
+        listed = [
+            (m.name, m.type, m.size, stream.read() if stream is not None else None)
+            for m, stream in ar.stream_members()
+        ]
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED] == 1
+    assert [row[:3] for row in listed] == [
+        ("d/", MemberType.DIRECTORY, 1024),
+        ("after", MemberType.FILE, 1),
+    ]
+    assert listed[0][3][:6] == b"hidden"
+    assert listed[1][3] == b"Z"
+
+
+@pytest.mark.parametrize("header_type", [b"x", b"g"])
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("typeflag", [b"1", b"2"])
+def test_link_with_a_pax_size_skips_its_blocks(
+    typeflag: bytes, streaming: bool, header_type: bytes
+) -> None:
+    """GNU tar skips the blocks whatever the block after the header is; a link's
+    header size, which GNU tar does not skip, still lets a member header there be
+    read (the 2026-10-17 ruling)."""
+    data = _pax_framed(typeflag, header_type=header_type, linkname=b"t")
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    ) as ar:
+        names = [m.name for m, _ in ar.stream_members()]
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_LINK_DATA_IGNORED] == 1
+    assert names == ["t", "lnk", "after"]
+
+
+@pytest.mark.parametrize("header_type", [b"x", b"g"])
+@pytest.mark.parametrize(
+    ("typeflag", "linkname", "expected"),
+    [
+        (b"5", b"", ["after", "d"]),
+        (b"2", b"t", ["after", "lnk", "t"]),
+        (b"1", b"t", ["after", "lnk", "t"]),
+    ],
+)
+def test_a_pax_framed_member_is_not_extracted(
+    tmp_path: Path,
+    typeflag: bytes,
+    linkname: bytes,
+    expected: list[str],
+    header_type: bytes,
+) -> None:
+    """The directory or link is created and the member stored in its PAX-sized
+    bytes is written nowhere, as GNU tar extracts the archive."""
+    data = _pax_framed(typeflag, header_type=header_type, linkname=linkname)
+    open_and_extract(io.BytesIO(data), tmp_path, format=ArchiveFormat.TAR)
+    assert sorted(os.listdir(tmp_path)) == expected
+
+
+@pytest.mark.parametrize("header_type", [b"x", b"g"])
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_fifo_with_a_pax_size_is_corruption(
+    streaming: bool, header_type: bytes
+) -> None:
+    """GNU tar 1.35 skips the bytes a PAX ``size`` declares after a FIFO header and
+    extracts the FIFO; archivey refuses any size on a device or FIFO header, a shape
+    only a crafted archive has."""
+    tb = tar_build
+    data = (
+        tb.pax({"size": "512"}, typeflag=header_type)
+        + tb.block(b"pipe", typeflag=b"6")
+        + b"\0" * 512
+        + tb.block(b"after", size=1)
+        + tb.data(b"Z")
+        + tb.END
+    )
+    with (
+        open_archive(
+            NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+            format=ArchiveFormat.TAR,
+            streaming=streaming,
+        ) as ar,
+        pytest.raises(CorruptionError, match="fifo.*declares 512 bytes"),
+    ):
+        list(ar.stream_members())
+
+
+def _pax_framed_link_then(tail: bytes) -> bytes:
+    tb = tar_build
+    return (
+        tb.pax({"size": "1024"}) + tb.block(b"lnk", typeflag=b"2", linkname=b"t") + tail
+    )
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_pax_framed_link_span_ending_the_archive_has_no_end_marker(
+    streaming: bool,
+) -> None:
+    """The all-zero exception of a header-size link span does not apply: a PAX size
+    frames real blocks, so the archive ends at their end with no trailer."""
+    data = _pax_framed_link_then(b"\0" * 1024)
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    ) as ar:
+        names = [m.name for m, _ in ar.stream_members()]
+        counts = ar.diagnostics.counts
+        assert counts[DiagnosticCode.MEMBER_LINK_DATA_IGNORED] == 1
+        assert counts[DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING] == 1
+    assert names == ["lnk"]
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_pax_framed_link_span_cut_short_is_truncated(streaming: bool) -> None:
+    data = _pax_framed_link_then(b"\0" * 512)
+    with (
+        open_archive(
+            NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+            format=ArchiveFormat.TAR,
+            streaming=streaming,
+        ) as ar,
+        pytest.raises(TruncatedError),
+    ):
+        list(ar.stream_members())

@@ -29,6 +29,7 @@ from archivey.internal.streams.decompressor_stream import (
 from archivey.internal.streams.streamtools import ReadAheadStream
 from archivey.internal.streams.streamtools.binaryio import OneReadEachStream
 from archivey.types import HashAlgorithm
+from tests.conftest import assert_raised_again
 from tests.streams_util import QueuedChunks
 
 
@@ -239,7 +240,7 @@ def test_archive_stream_repeats_its_verdict_without_asking_the_codec() -> None:
     calls = source.calls
     with pytest.raises(CorruptionError) as again:
         stream.read_ahead(1, 1000)
-    assert again.value is first.value
+    assert_raised_again(again.value, first.value)
     assert source.calls == calls
 
 
