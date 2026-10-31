@@ -21,9 +21,11 @@ Each case below gives a reason per run that owes one: Safest wherever it fails t
 | --- | --- | --- |
 | TRUSTED | 40 of 81 | 78 of 81 |
 | STRICT | 45 of 81 | 71 of 81 |
-| Safest (STRICT + DiagnosticPolicy.STRICT) | 71 of 81 | not compared |
-| GNU tar 1.35 | 40 of 81 | |
-| tar-codec | 68 of 81 | |
+| Safest (STRICT + DiagnosticPolicy.STRICT) | 71 of 81 | 45 of 81 |
+| GNU tar 1.35 | 40 of 81 |  |
+| tar-codec | 68 of 81 | 45 of 81 |
+
+The safest settings and tar-codec refuse what GNU tar extracts, so a low count in the last column is expected for them: they are held to the corpus's verdicts, not to GNU tar's trees.
 
 ## Cases the safest settings fail
 

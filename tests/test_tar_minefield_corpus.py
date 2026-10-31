@@ -532,6 +532,14 @@ def agrees_with_gnu(pin: dict[str, Any], label: str) -> bool:
     return run["gnu_tree"] or run["outcome"] == pin["gnu"]["outcome"] == "rejected"
 
 
+def _reader_agrees_with_gnu(pin: dict[str, Any], key: str) -> bool:
+    """Whether another reader's pinned result (``tar_codec``) is GNU tar's."""
+    run, gnu = pin[key], pin["gnu"]
+    if run["outcome"] == "rejected" or gnu["outcome"] == "rejected":
+        return run["outcome"] == gnu["outcome"]
+    return run["tree"] == gnu["tree"]
+
+
 def differs(pin: dict[str, Any], label: str) -> bool:
     """Whether Archivey's run under ``label`` fails the verdict or is not GNU tar's."""
     return (
@@ -664,17 +672,27 @@ def render_results(expected: dict[str, Any]) -> str:
     ]
     for label in POLICIES:
         n_pass = sum(passed(pin, label) for pin in cases.values())
-        same = (
-            f"{sum(agrees_with_gnu(pin, label) for pin in cases.values())} of {total}"
-            if label != "strict_diag"
-            else "not compared"
-        )
-        lines.append(f"| {TITLES[label]} | {n_pass} of {total} | {same} |")
+        same = sum(agrees_with_gnu(pin, label) for pin in cases.values())
+        lines.append(f"| {TITLES[label]} | {n_pass} of {total} | {same} of {total} |")
     for title, key in (("GNU tar 1.35", "gnu"), ("tar-codec", "tar_codec")):
         n_pass = sum(
             pin[key]["outcome"] in pin["passes_with"] for pin in cases.values()
         )
-        lines.append(f"| {title} | {n_pass} of {total} | |")
+        same_cell = (
+            f"{sum(_reader_agrees_with_gnu(pin, key) for pin in cases.values())} "
+            f"of {total}"
+            if key != "gnu"
+            else ""
+        )
+        lines.append(f"| {title} | {n_pass} of {total} | {same_cell} |")
+    lines += [
+        "",
+        (
+            "The safest settings and tar-codec refuse what GNU tar extracts, so a low "
+            "count in the last column is expected for them: they are held to the "
+            "corpus's verdicts, not to GNU tar's trees."
+        ),
+    ]
     explained = {
         name
         for name, pin in cases.items()
