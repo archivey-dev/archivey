@@ -359,9 +359,13 @@ GNU tar (DR-6, measured 2026-10-30):
   an empty `linkpath` has no target (`SYMLINK_TARGET_UNAVAILABLE`, and
   `LINK_TARGET_UNAVAILABLE` at extraction, which goes on; GNU tar substitutes `.` for an
   empty hard link target and fails that link). An empty `size` is
-  `CorruptionError`, as GNU tar calls it malformed. Any other empty value is skipped, so
-  the global record or the header field stays: POSIX would delete both, and GNU tar
-  keeps an empty `path` from naming anything.
+  `CorruptionError`, as GNU tar calls it malformed. An empty `path`, `mtime`, `atime`,
+  `ctime`, `uid`, `gid` or `hdrcharset` is skipped (`_EMPTY_VALUE_SKIPPED`), so the
+  global record or the header field stays: POSIX would delete both, and GNU tar keeps
+  an empty `path` from naming anything. Any other empty value is stored, so a key
+  archivey does not read, such as GNU tar's `SCHILY.xattr.<name>` for an empty
+  extended attribute, stays in `extra["tar.pax_headers"]` with an empty value
+  (maintainer ruling 2026-10-31: it is the only trace that the attribute exists).
 - A `path`, `GNU.sparse.name`, `linkpath`, `uname` or `gname` value ends at its first
   NUL, as a header field and an `L` or `K` name do. The cut comes first (in
   `parse_pax_records`), so a `path` that is empty after it is skipped and the earlier
@@ -389,10 +393,34 @@ not reported.
   or a `linkpath` on a typeflag with no link, overrides nothing and is not reported.
 - `global_member_field`: a `g` header carrying `path`, `linkpath` or `size`, which then
   names or frames every later member.
+- `mixed_chain` (field `x`): `L` or `K` headers and an `x` header in one member's chain,
+  in either order, when `both_families` (on `path` or `linkpath`) is not reported, which
+  already names the mix. GNU tar applies both to the
+  member. To a reader that knows only PAX an `L` header is a member of an unknown type,
+  so an `x` header before it, and its `size`, applies to the `L` header (tar-minefield F10 and N23).
+- `global_in_chain` (field `g`): a `g` header between an `x` or `L` header and its
+  member. GNU tar applies the `x` or `L` header to the member; a reader that applies it to
+  the `g` header names the member by its header (tar-minefield F19).
+- `empty_value`: an `x` record whose empty value the rule above skips: `path` (a reader
+  that follows POSIX's "delete" literally can drop the header name too) or a number (GNU
+  tar reports it as invalid and exits 2). Not in a `g` header, where an empty value is
+  how POSIX unsets a global record (tar-minefield N22). Only `path`, `mtime`, `atime`,
+  `ctime`, `uid` and `gid` count (`_EMPTY_VALUE_REPORTED`): GNU tar writes an empty
+  `SCHILY.xattr.<name>` record for an empty extended attribute with `--xattrs`, and
+  other keywords name and frame nothing. Only the key's last record in the header
+  counts: `path=` then `path=foo` names the member `foo` and is `repeated`. A value
+  empty only after the NUL cut is `nul_in_value` alone.
+- `leading_zero` (field `size`, `GNU.sparse.size` or `GNU.sparse.realsize`): an `x`
+  header number such as `0777`. It is decimal (777), as GNU tar and POSIX read it; a
+  reader using `strtoul(s, NULL, 0)` reads 511 (tar-minefield F26). These are the
+  numbers that frame a member or give its listed size. A sparse map's offsets and
+  lengths are not checked: the walk requires the chunks to sum to the stored size, so a
+  map read as octal frames nothing differently.
 
-The empty-value rule is not reported: an empty `uname` or
-`linkpath` is how a writer clears a global value, and an empty `size` is already
-`CorruptionError`. A ustar or GNU header field that differs from the PAX record
+The empty-value rule is not reported for `uname`, `gname` or `linkpath`, which it
+stores as empty: an empty `uname` or `linkpath` is how a writer clears a global value
+(an empty link target is reported as `SYMLINK_TARGET_UNAVAILABLE`), and an empty `size`
+is already `CorruptionError`. A ustar or GNU header field that differs from the PAX record
 overriding it is not reported either: writers put a cut name or a capped size there on
 purpose.
 

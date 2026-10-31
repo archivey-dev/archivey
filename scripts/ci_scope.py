@@ -19,8 +19,10 @@ from __future__ import annotations
 import sys
 
 #: Paths whose change needs the whole matrix. A trailing ``/`` covers a directory. The
-#: scripts are the ones the two workflows run (a test keeps the list complete), this
-#: script among them, so a group that edits the rule is not decided by the edit alone.
+#: scripts are the ones the two workflows run (a test keeps the list complete), plus the
+#: dev-env installer. This script is listed too, but the group's own copy decides, so
+#: what guards an edit to the rule is `tests/test_ci_scope.py`, which the `test` legs
+#: run on every group.
 FULL = (
     "src/",
     "packages/",

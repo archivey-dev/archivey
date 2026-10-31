@@ -500,9 +500,20 @@ def _sparse_slots(block: bytes, start: int, count: int) -> tuple[tuple[int, int]
 
 
 _PAX_LENGTH = re.compile(rb"([0-9]{1,20}) ")
-# The keywords an empty value sets to empty, as GNU tar 1.35's decoders store any
-# string. Another keyword's empty value leaves the value in force before it.
-_EMPTY_VALUE_STORED = frozenset((b"linkpath", b"uname", b"gname"))
+# The skipped empty values EMPTY_VALUE reports: a name, or a number GNU tar 1.35 calls
+# invalid. Each leaves the value in force before it. Not reported: GNU tar writes an
+# empty SCHILY.xattr.<name> for an empty extended attribute (tar --xattrs), and a
+# comment or vendor record names and frames nothing.
+_EMPTY_VALUE_REPORTED = frozenset(
+    (b"path", b"mtime", b"atime", b"ctime", b"uid", b"gid")
+)
+# The keywords whose empty value is skipped: those above, ``hdrcharset``, and
+# ``size``, which raises instead. Every other empty value is stored, as GNU tar 1.35's
+# decoders store any string: ``linkpath``, ``uname`` and ``gname`` become empty, a
+# ``GNU.sparse.*`` record is kept for the sparse checks to judge, and a key archivey
+# does not read, such as an empty xattr, stays in ``extra["tar.pax_headers"]``
+# (maintainer ruling 2026-10-31: it is the only trace that the xattr exists).
+_EMPTY_VALUE_SKIPPED = _EMPTY_VALUE_REPORTED | {b"hdrcharset", b"size"}
 # The keywords whose value is a C string to GNU tar 1.35, cut at its first NUL as an
 # ``L`` or ``K`` payload and a header field are. The cut comes before the empty-value
 # rule, so a ``path`` that is empty after it is skipped and the value in force stays.
@@ -538,10 +549,18 @@ class PaxRecords:
     repeated: dict[bytes, None]
     # Keys of _C_STRING_KEYS whose value held a NUL and was cut there, each once.
     nul_cut: dict[bytes, None]
+    # Keys of _EMPTY_VALUE_REPORTED whose empty value was skipped and is the
+    # block's last record of that key, each once.
+    emptied: dict[bytes, None]
 
 
 # The PAX sparse 0.0 map repeats these two keys by design.
 _SPARSE_MAP_KEYS = frozenset((b"GNU.sparse.offset", b"GNU.sparse.numbytes"))
+# The PAX numbers LEADING_ZERO reports: the ones that frame a member or give its listed
+# size. A sparse map's offsets and lengths are left out: the walk checks that the
+# chunks sum to the stored size, so a map read as octal cannot frame anything, and no
+# case of tar-minefield (whose F26 is about size) covers them.
+_LEADING_ZERO_KEYS = (b"size", b"GNU.sparse.size", b"GNU.sparse.realsize")
 # Keys that name or frame one member, which a global header applies to every member.
 _MEMBER_KEYS = (b"path", b"linkpath", b"size")
 
@@ -567,6 +586,25 @@ class Ambiguity(Enum):
     # A global header that drops a key an earlier global header set (one per key):
     # GNU tar replaces the global records, tarfile and POSIX merge them.
     GLOBAL_REPLACED = "global_replaced"
+    # GNU long headers (L or K) and an x header in one member's chain, in either
+    # order, when BOTH_FAMILIES is not reported on the member: any BOTH_FAMILIES,
+    # on path or linkpath, already names the mix and stands in for this one. To a
+    # reader that knows only PAX, an L header is a member of an unknown type, so the
+    # x header's records (a size among them) apply to it, not to the member.
+    MIXED_CHAIN = "mixed_chain"
+    # A global header between an x or L header and the member it extends. GNU tar
+    # applies the x or L header to the member; a reader can apply it to the global
+    # header instead, and the member keeps its header's name.
+    GLOBAL_IN_CHAIN = "global_in_chain"
+    # An x header's last record of path or a number (_EMPTY_VALUE_REPORTED) with an
+    # empty value, which is skipped: POSIX has it delete a field, and readers disagree
+    # on which. GNU tar keeps the value in force before it (and reports an empty
+    # number as invalid).
+    EMPTY_VALUE = "empty_value"
+    # A PAX size or sparse size (_LEADING_ZERO_KEYS) with a leading zero, such as 0777:
+    # 777 to GNU tar and POSIX, 511 to a reader that takes it as octal, as the
+    # header's numbers are.
+    LEADING_ZERO = "leading_zero"
 
 
 def _record_ambiguities(
@@ -582,6 +620,19 @@ def _record_ambiguities(
             for key in _MEMBER_KEYS
             if key in values
         ]
+        return
+    # In a global header an empty value is how POSIX unsets a global record, and a
+    # global size is GLOBAL_MEMBER_FIELD already.
+    # A value empty only after the NUL cut is NUL_IN_VALUE: the record is not empty.
+    found += [
+        (Ambiguity.EMPTY_VALUE, key)
+        for key in records.emptied
+        if key not in records.nul_cut
+    ]
+    for key in _LEADING_ZERO_KEYS:
+        number = values.get(key)
+        if number is not None and len(number.value) > 1 and number.value[:1] == b"0":
+            found.append((Ambiguity.LEADING_ZERO, key))
 
 
 def parse_pax_records(
@@ -598,13 +649,14 @@ def parse_pax_records(
     A repeated key keeps one value, so a block of many records of one key holds no
     object per record: the last one, as GNU tar 1.35 applies a member's records in
     order, or the first with ``first_wins``, as it applies a global header's (it
-    keeps them in a list it prepends to). An empty value is read as GNU tar reads it:
-    ``linkpath``, ``uname`` and ``gname`` become empty, a ``GNU.sparse.*`` record is
-    kept for the sparse checks to judge, an empty ``size`` is
+    keeps them in a list it prepends to). An empty value is read as GNU tar reads it
+    (``_EMPTY_VALUE_SKIPPED``): an empty ``path``, number or ``hdrcharset`` is left
+    out, so the value in force before it stays (GNU tar skips an empty ``path`` and
+    reports an empty number as invalid), an empty ``size`` is
     :class:`CorruptionError` (GNU tar reports it as "invalid size=", and the size
-    frames the member), and any other keyword is left out, so the value in force
-    before it stays (GNU tar skips an empty ``path`` and reports an empty number as
-    invalid). The keywords in ``_C_STRING_KEYS`` are cut at their first NUL before
+    frames the member), and any other keyword is stored empty: ``linkpath``,
+    ``uname`` and ``gname`` become empty, and a ``GNU.sparse.*`` or vendor record is
+    kept. The keywords in ``_C_STRING_KEYS`` are cut at their first NUL before
     that rule applies. ``hdrcharset`` is kept by the same rule as any key, and the one
     kept decides whether the block's names are binary.
     """
@@ -613,6 +665,8 @@ def parse_pax_records(
     numbytes: list[bytes] = []
     repeated: dict[bytes, None] = {}
     nul_cut: dict[bytes, None] = {}
+    emptied: dict[bytes, None] = {}
+    seen: set[bytes] = set()
     pos = 0
     end = len(data)
     while pos < end and data[pos] != 0:
@@ -642,21 +696,27 @@ def parse_pax_records(
         elif key == b"GNU.sparse.numbytes":
             numbytes.append(value)
         pos = record_end
-        if not value and key not in _EMPTY_VALUE_STORED:
+        # Every record of a key after its first counts, an empty one too: one key
+        # set twice in one header is REPEATED whichever value wins.
+        if key in seen and key not in _SPARSE_MAP_KEYS:
+            repeated[key] = None
+        seen.add(key)
+        if not value and key in _EMPTY_VALUE_SKIPPED:
             if key == b"size":
                 raise CorruptionError(
                     f"TAR PAX header has an empty size record at byte "
                     f"{pos - length}: the size frames the member's data"
                 )
-            if not key.startswith(b"GNU.sparse."):
-                continue
-        if key in raw:
-            # The sparse 0.0 map repeats its keys by design: not reported, but the
-            # value kept still follows first_wins like any other key.
-            if key not in _SPARSE_MAP_KEYS:
-                repeated[key] = None
-            if first_wins:
-                continue
+            if key in _EMPTY_VALUE_REPORTED:
+                emptied[key] = None
+            continue
+        # The sparse 0.0 map repeats its keys by design: not reported above, but the
+        # value kept still follows first_wins like any other key.
+        if key in raw and first_wins:
+            continue
+        # A value stored after an empty record of its key is the one in force, so the
+        # empty record no longer kept an earlier value.
+        emptied.pop(key, None)
         raw[key] = value
     # hdrcharset follows the block's own rule (last in x, first in g) like any key,
     # and an empty one is skipped like any other empty value.
@@ -666,7 +726,7 @@ def parse_pax_records(
     values = cast("dict[bytes, PaxValue]", raw)
     for key, value in raw.items():
         values[key] = PaxValue(value, binary)
-    return PaxRecords(values, offsets, numbytes, repeated, nul_cut)
+    return PaxRecords(values, offsets, numbytes, repeated, nul_cut, emptied)
 
 
 _SHOWN_CHARACTERS = 40
@@ -1352,6 +1412,8 @@ class TarWalker:
                 header_at = offset
                 if parsed.typeflag != PAX_GLOBAL_TYPE:
                     extended_at = offset
+                elif extended_at is not None:
+                    ambiguities.append((Ambiguity.GLOBAL_IN_CHAIN, b"g"))
                 charge(parsed.size, "an extended header")
                 data = self._read(parsed.size)
                 if len(data) < parsed.size:
@@ -1418,6 +1480,12 @@ class TarWalker:
                 ambiguities.append((Ambiguity.BOTH_FAMILIES, b"path"))
             if long_link is not None and entry.linkname_source is NameSource.PAX:
                 ambiguities.append((Ambiguity.BOTH_FAMILIES, b"linkpath"))
+            if (
+                (long_name is not None or long_link is not None)
+                and x_seen
+                and not any(a is Ambiguity.BOTH_FAMILIES for a, _ in ambiguities)
+            ):
+                ambiguities.append((Ambiguity.MIXED_CHAIN, b"x"))
             if ambiguities:
                 entry.ambiguities = tuple(dict.fromkeys(ambiguities))
             self._pos = entry.data_end
