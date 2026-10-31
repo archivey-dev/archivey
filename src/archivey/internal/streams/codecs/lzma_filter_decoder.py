@@ -7,12 +7,12 @@ from __future__ import annotations
 import lzma
 import os
 from collections.abc import Callable, Mapping
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.exceptions import TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64, arm64_decode
-from archivey.internal.streams.codecs.isolated import IN_PROCESS, Decompressor, Natives
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
 from archivey.internal.streams.codecs.riscv_filter import FILTER_RISCV, riscv_decode
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
@@ -20,6 +20,9 @@ from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     SeekPoint,
 )
+
+if TYPE_CHECKING:
+    from archivey.formats import Decompressor
 
 # An LZMA2 uncompressed chunk carries at most 64 KiB of payload behind a 3-byte
 # header (control byte + big-endian size-1); see `_Lzma2Framer`.

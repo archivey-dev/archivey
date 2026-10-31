@@ -1092,27 +1092,33 @@ when the name `unrar` reads cannot be passed back to it in argv, when the mask w
 select the target, and when an earlier member's name cannot be read the way `unrar`
 reads it on this host. A stored name that contains a NUL SHALL be refused the same way.
 
-A mask with no `*` or `?` that selects earlier members SHALL be read without
-`rar_allow_glob_member_concatenation`.
+A mask with no `*` or `?` that selects earlier members costs `unrar` the same decode of
+those members as a glob, and SHALL be refused like one by default (`Refuse a member name
+whose mask also selects earlier members`); with `rar_allow_glob_member_concatenation`, or
+when `auto` reads it with `unar`, the read SHALL return the target's own bytes as above.
 
 #### Scenario: shared mask matrix
 
 | Case | Expected |
 | --- | --- |
-| Two or three members with the same name, solid or not | Each read returns its own bytes |
-| RAR5 `ab\xffcd.txt` after members `unrar` reads as `ab` | Its own bytes; the earlier ones are skipped |
+| Two or three members with the same name, solid or not, with `rar_allow_glob_member_concatenation` | Each read returns its own bytes |
+| The same names, default config, `rar_decompressor='unrar'` | The first reads; a later one is refused like a glob name |
+| RAR5 `ab\xffcd.txt` after members `unrar` reads as `ab`, with the flag | Its own bytes; the earlier ones are skipped |
 | RAR5 name `\xff` beside a sibling named U+FFFD, no stored digest | `UnsupportedFeatureError`; never the sibling's bytes |
 | A name `unrar` reads as empty (`\xc0\x80x`) | `UnsupportedFeatureError` |
 | Earlier 8-bit RAR 1.5-4 name and no UTF-8 locale for `unrar` | A later member's read raises `UnsupportedFeatureError` |
 
-### Requirement: Refuse a glob member name whose mask also matches earlier members
+### Requirement: Refuse a member name whose mask also selects earlier members
 
 A RAR member's stored name may contain `*` or `?`. Because `unrar` is addressed by an
 include mask, such a name can match other members, and `unrar` decompresses every match
-and emits them concatenated ahead of the target.
+and emits them concatenated ahead of the target. A name with no `*` or `?` does the same
+when its mask selects other members: a duplicate name, or two names `unrar` reads as the
+same text.
 
-When the mask built from a member's stored name also matches **earlier** payload
-members, the system SHALL raise `UnsupportedFeatureError` rather than read the member.
+When the mask built from a member's stored name, glob or not, also selects **earlier**
+payload members holding data, the system SHALL raise `UnsupportedFeatureError` rather
+than read the member.
 The error SHALL name the configuration flag that allows the read. On a non-solid
 archive it SHALL also name the number of bytes of earlier matching members that
 `unrar` would decompress first. On a solid archive those members are already inside
@@ -1124,12 +1130,11 @@ to `True` the read SHALL proceed and return the member's own bytes, skipping the
 matches as before. The flag SHALL govern only whether the read is attempted; it SHALL
 NOT change what a successful read returns.
 
-A glob name whose mask matches **no** other member SHALL be unaffected and SHALL read
-without the flag. A name with no `*` or `?` SHALL NOT be refused by this requirement,
-whatever else its mask selects (`Return a named member's own bytes when its mask selects
-others`), unless the mask built for it holds a `?` that the name does not: on POSIX a
-RAR 1.5-4 UTF-16 name sends each surrogate unit as `?` (`Decode RAR member names`), and
-that mask falls under this requirement like a stored glob.
+A name whose mask selects **no** earlier member SHALL be unaffected and SHALL read
+without the flag; so is the first of several members with the same name. The flag keeps
+its name for a non-glob name: it governs every mask that selects earlier members. On
+POSIX a RAR 1.5-4 UTF-16 name sends each surrogate unit as `?` (`Decode RAR member
+names`), and that mask falls under this requirement like a stored glob.
 
 A call site that builds no include mask SHALL be unaffected, whatever the member names
 are. In particular a solid `stream_members()` pass uses one unnamed `unrar p` pipe
@@ -1150,13 +1155,15 @@ refused.
 | The same read with `rar_allow_glob_member_concatenation=True` | The member's own bytes, earlier matches skipped |
 | `only*.dat`, whose mask matches nothing else, default config | Reads normally; no refusal |
 | Solid `stream_members()` over glob-named members, default config | All members read; no mask is built |
-| A name with no `*` or `?`, even one shared with an earlier member | Not refused in either configuration |
+| A name with no `*` or `?` shared with an earlier member, default config, `rar_decompressor='unrar'` | `UnsupportedFeatureError` naming the flag (and, non-solid, the byte count) |
+| The same read with the flag | The member's own bytes |
+| A name with no `*` or `?` that selects nothing earlier | Not refused |
 | POSIX: `hi` U+D800 `.txt` after `hiX.txt`, default config | `UnsupportedFeatureError` naming the flag; with the flag, the member's own bytes |
 
 ### Requirement: Under auto, read a member unrar cannot name with unar
 
-`unar` selects members by index, so a name `unrar` cannot be given, or a glob name
-whose mask also matches earlier members, costs it nothing. When
+`unar` selects members by index, so a name `unrar` cannot be given, or a name whose
+mask also selects earlier members, glob or not, costs it nothing. When
 `ArchiveyConfig.rar_decompressor` is `auto` and resolved to `unrar`, a read that the
 two requirements above would refuse SHALL instead be served by `unar -i <index>`, when
 all of these hold: an accepted `unar` is installed (the same check `auto` uses), the
@@ -1177,6 +1184,7 @@ the refusals SHALL stand.
 | --- | --- |
 | `a*.txt` with an earlier `subdir/aY.txt`, non-solid, `auto`, accepted `unar` installed | The member's own bytes, read with `unar`; other members read with `unrar` |
 | `d*/x.txt` (glob in a directory component), `auto`, accepted `unar` installed | The member's own bytes, read with `unar` |
+| A duplicate name after an earlier entry with data, non-solid, `auto`, accepted `unar` installed | The member's own bytes, read with `unar` |
 | The same reads with no accepted `unar` | The `unrar` refusals, unchanged |
 | The same reads with `rar_decompressor='unrar'` | The `unrar` refusals, unchanged |
 | RAR5 solid archive with data after a directory (`unar` refuses it) | The `unrar` refusal, unchanged |
@@ -1339,7 +1347,7 @@ SHALL give the declared size when the count is smaller.
 | `unrar`, a nonsolid member declaring 4 GiB and 3 GiB unpacked, default cap | `ResourceLimitError` naming 3 GiB and the declared 4 GiB; `unrar` not spawned |
 | `unrar`, a solid member behind a member declaring 4 GiB and 3 GiB unpacked | `ResourceLimitError`, for a named read and in a `stream_members()` pass |
 | `unrar`, a stored solid member behind a member declaring 4 GiB and 3 GiB unpacked | `ResourceLimitError` naming the earlier member; `unar` counts it 0 |
-| `unrar`, a duplicate name whose earlier entry declares 4 GiB and 3 GiB unpacked | `ResourceLimitError` when the later, small entry is read |
+| `unrar` with `rar_allow_glob_member_concatenation`, a duplicate name whose earlier entry declares 4 GiB and 3 GiB unpacked | `ResourceLimitError` when the later, small entry is read |
 | `rar_decompressor="auto"` | The count of the program `auto` picked |
 
 ### Requirement: A RAR file cut inside a header SHALL list the members before the cut

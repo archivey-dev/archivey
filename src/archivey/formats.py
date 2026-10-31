@@ -780,6 +780,14 @@ class Decompressor(Protocol):
     ``lzma.LZMADecompressor``, which ``lz4.frame.LZ4FrameDecompressor`` and Python
     3.14's ``compression.zstd.ZstdDecompressor`` share, so a decoder from such a
     library is returned as it is.
+
+    A decompressor for a format with no end mark may also have an ``end_input()`` method.
+    archivey calls it once, when the input has ended and :attr:`needs_input` is true.
+    It returns nothing, and raises when the stream cannot end at that point. Output
+    the decompressor held back until it knew the input ended is then read with
+    ``decompress(b"", max_length)``, called again until :attr:`eof` is set. When a
+    call returns nothing, or :attr:`needs_input` turns true, before :attr:`eof` is
+    set, or there is no ``end_input()``, the stream is truncated.
     """
 
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
