@@ -127,6 +127,11 @@ NO_DATA_TYPES = frozenset((b"1", b"2", b"3", b"4", b"5", b"6"))
 # data area (LinkData.FRAMED for a link, tar_reader._directory_has_data for ``5``; a
 # device or FIFO with one is refused by the reader).
 
+# Typeflags whose header size the walk can read as naming no data at all, the block
+# after the header being the next one (a device or FIFO with a size is refused by the
+# reader instead).
+_SIZE_NAMES_NO_DATA = NO_DATA_TYPES - frozenset((b"3", b"4", b"6"))
+
 # The regular-file typeflags whose entry is a directory when its final name ends in
 # "/": AREGTYPE (NUL), REGTYPE (``0``) and CONTTYPE (``7``), the three GNU tar's
 # extract.c sends to ``extract_dir`` on a trailing slash. Old GNU sparse ``S`` is not
@@ -605,6 +610,16 @@ class Ambiguity(Enum):
     # 777 to GNU tar and POSIX, 511 to a reader that takes it as octal, as the
     # header's numbers are.
     LEADING_ZERO = "leading_zero"
+    # A member header's size, name, prefix or linkname field, or an extended
+    # header's size (field "x size", "L size", ...), with bytes after the NUL or
+    # blank that ends it. GNU tar ignores them; a reader that skips the blank in
+    # "000000 1000" reads a size of 512 and the next header as data. Only a member
+    # field the member uses counts: not a name or size an extended header overrode.
+    FIELD_TAIL = "field_tail"
+    # A size in the header of a directory or link, when the block after it is a
+    # header (member or extended): GNU tar reads that header next, a reader that
+    # skips the size reads it as data and loses the member.
+    SIZE_ON_NO_DATA = "size_on_no_data"
 
 
 def _record_ambiguities(
@@ -1072,6 +1087,43 @@ class TarSpan:
     sparse: SparseMap | None
 
 
+def _field_tails(block: bytes, entry: TarEntry) -> list[tuple[Ambiguity, bytes]]:
+    """FIELD_TAIL for each of the member header's size, name, prefix and linkname
+    fields that has bytes after the NUL or blank that ends it, and that the member
+    uses (a name or size an extended header overrode does not count). The walk calls
+    it only when a check inline at its call site, which every member pays for, finds
+    a field that may have a tail or a link name to look at.
+
+    A name field (``name``, ``linkname``, and ``prefix`` under the ustar magic, which
+    is the only one that joins it) has a tail when it still holds a NUL once its
+    trailing NULs go: a blank is a byte of a name, so a blank after the NUL counts.
+    """
+    found = []
+    if _size_has_tail(block) and b"size" not in entry.pax:
+        found.append((Ambiguity.FIELD_TAIL, b"size"))
+    if entry.name_source is NameSource.HEADER:
+        if b"\x00" in block[0:100].rstrip(b"\x00"):
+            found.append((Ambiguity.FIELD_TAIL, b"name"))
+        if block[257:263] == POSIX_MAGIC and b"\x00" in block[345:500].rstrip(b"\x00"):
+            found.append((Ambiguity.FIELD_TAIL, b"prefix"))
+    if entry.linkname_source is NameSource.HEADER and b"\x00" in block[157:257].rstrip(
+        b"\x00"
+    ):
+        found.append((Ambiguity.FIELD_TAIL, b"linkname"))
+    return found
+
+
+def _size_has_tail(block: bytes) -> bool:
+    """Whether a header block's size field has bytes other than NULs and blanks after
+    the NUL or blank that ends its digits.
+
+    The size parsed, so stripped of the NULs and blanks around it, it is all digits
+    unless a tail follows them, or it is base-256 (first byte 0x80 or 0xFF).
+    """
+    digits = block[124:136].strip(_NO_DIGIT)
+    return bool(digits) and block[124] < 0x80 and not digits.isdigit()
+
+
 def _round_up(n: int) -> int:
     return (n + BLOCKSIZE - 1) // BLOCKSIZE * BLOCKSIZE
 
@@ -1414,6 +1466,13 @@ class TarWalker:
                     extended_at = offset
                 elif extended_at is not None:
                     ambiguities.append((Ambiguity.GLOBAL_IN_CHAIN, b"g"))
+                # The size frames the header's own data, so a reader that takes a
+                # tail in it reads other records or another name, and frames every
+                # header after it elsewhere.
+                if _size_has_tail(block):
+                    ambiguities.append(
+                        (Ambiguity.FIELD_TAIL, parsed.typeflag + b" size")
+                    )
                 charge(parsed.size, "an extended header")
                 data = self._read(parsed.size)
                 if len(data) < parsed.size:
@@ -1486,6 +1545,15 @@ class TarWalker:
                 and not any(a is Ambiguity.BOTH_FAMILIES for a, _ in ambiguities)
             ):
                 ambiguities.append((Ambiguity.MIXED_CHAIN, b"x"))
+            # FIELD_TAIL (_field_tails), its common no-tail case inline: this runs
+            # for every member.
+            if (
+                not block[124:136].strip(_NO_DIGIT).isdigit()
+                or b"\x00" in block[0:100].rstrip(b"\x00")
+                or b"\x00" in block[345:500].rstrip(b"\x00")
+                or entry.linkname_source is not None
+            ):
+                ambiguities += _field_tails(block, entry)
             if ambiguities:
                 entry.ambiguities = tuple(dict.fromkeys(ambiguities))
             self._pos = entry.data_end
@@ -1498,7 +1566,31 @@ class TarWalker:
                     entry.stored_size = 0
             elif entry.size and entry.typeflag in LINK_TYPES:
                 self._place_link_data(entry)
+            if (
+                parsed.size
+                and entry.typeflag in _SIZE_NAMES_NO_DATA
+                and entry.link_data is None
+                and b"size" not in entry.pax
+                and self._header_follows(entry.data_end)
+            ):
+                entry.ambiguities += ((Ambiguity.SIZE_ON_NO_DATA, b"size"),)
             return entry
+
+    def _header_follows(self, offset: int) -> bool:
+        """Whether the block at ``offset``, where the next header starts, is a member
+        or extended header. On a forward-only stream the block is held for the
+        header loop to read next, as :meth:`_place_link_data` holds it."""
+        held = self._held_block
+        if held is not None:
+            assert held[0] == offset, (held[0], offset)
+            block = held[1]
+        else:
+            block = self._read_block(offset)
+            if not self._seekable:
+                self._held_block = (offset, block)
+        return len(block) == BLOCKSIZE and isinstance(
+            parse_header_block(block, offset), HeaderBlock
+        )
 
     def _place_link_data(self, entry: TarEntry) -> None:
         """Decide where the next header starts after a link header with a size.
@@ -1510,7 +1602,8 @@ class TarWalker:
         block right after the header decides, as for a ``DIRTYPE`` header:
 
         - A member header: the size names no data, and the walk reads that header
-          next, as GNU tar, ``tarfile`` and bsdtar read it. Nothing is reported.
+          next, as GNU tar, ``tarfile`` and bsdtar read it. The walk records
+          :attr:`Ambiguity.SIZE_ON_NO_DATA`, as no known writer puts a size there.
         - A short block or none: the walk reads it next, and the reader reports the
           missing end-of-archive marker.
         - Any other full block (data, or a zero block): the declared blocks are the
