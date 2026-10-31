@@ -1523,7 +1523,8 @@ def test_a_repeated_identifier_without_the_flag_lists_each_file(tmp_path: Path) 
     multi-extent flag on the first in memory, and its walk skips the second record.
     Only the flag as written in the image makes the two records one file. Without
     it they are two files with one name, and both list, as ZIP and TAR list two
-    members with one name and as 7-Zip lists this image. The later one is current.
+    members with one name and as 7-Zip lists this image. The later one is current,
+    and it is reported with ``MEMBER_NAME_DUPLICATE``.
     """
     image = _split_into_extents(
         _image_with_two_block_file(), b"BIG.BIN;1", flags=(False,)
@@ -1539,7 +1540,9 @@ def test_a_repeated_identifier_without_the_flag_lists_each_file(tmp_path: Path) 
         assert ar.read(first) == b"a" * 2048
         assert ar.read(second) == b"b" * 1000
         assert ar.read("BIG.BIN") == b"b" * 1000
-        assert ar.diagnostics.total_count == 0
+        # The second record is reported: a reader that keeps the first lists another
+        # file under that name.
+        assert dict(ar.diagnostics.counts) == {DiagnosticCode.MEMBER_NAME_DUPLICATE: 1}
         ar.extract_all(tmp_path)
     assert (tmp_path / "BIG.BIN").read_bytes() == b"b" * 1000
 

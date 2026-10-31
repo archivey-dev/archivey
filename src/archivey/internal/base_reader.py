@@ -57,7 +57,9 @@ from archivey.diagnostics import (
     ExtractionReport,
     MemberListReport,
     MemberTimestampContext,
+    NameDuplicateContext,
     NameEncodingContext,
+    ReaderDisagreementContext,
     SpecialFileDataContext,
     SymlinkTargetContext,
     UnconfirmedFormatContext,
@@ -640,6 +642,10 @@ class BaseArchiveReader(ArchiveReader):
     # (ZIP, 7z, RAR 4)? Such a link reads ``member_state_final=False`` until that read.
     # Elsewhere the target is set while the member is typed, so nothing is left to read.
     _LINK_TARGETS_IN_DATA: bool = False
+    # Is a member's name final when the walk registers it? A ZIP read from a pipe
+    # renames members from the central directory at the end; it reports duplicate
+    # names then (``_emit_name_duplicates``), not at registration.
+    _NAMES_FINAL_AT_REGISTRATION: bool = True
     # Does a forward pass change members it has already yielded, once the walk ends (a
     # ZIP read from a pipe, whose central directory comes last)? ``extract_all`` then
     # stages each such member's data and places the members only once the walk has
@@ -2314,8 +2320,21 @@ class BaseArchiveReader(ArchiveReader):
         member._member_id = idx
         member._archive_id = self._archive_id
         if idx >= self._walk_presented:
-            if name_controls_possible(member):
-                self._present_member(idx, member)
+            # Both lookups read only the members before this one: it is indexed after
+            # registration. A hard link is looked up only when it is one, so the
+            # common member pays two dict lookups.
+            earlier = (
+                self._earlier_same_name(member)
+                if self._NAMES_FINAL_AT_REGISTRATION
+                else None
+            )
+            to_symlink = (
+                member.type is MemberType.HARDLINK
+                and bool(member.link_target)
+                and self._hardlink_names_symlink(member)
+            )
+            if name_controls_possible(member) or earlier is not None or to_symlink:
+                self._present_member(idx, member, earlier, to_symlink)
             self._walk_presented = idx + 1
         is_symlink = member.type is MemberType.SYMLINK
         if member.link_target == "" and (
@@ -2339,8 +2358,136 @@ class BaseArchiveReader(ArchiveReader):
             member._link_target_unread = True
         self._listing_tracker.account_member(member)
 
-    def _present_member(self, idx: int, member: ArchiveMember) -> None:
-        """Run the name and link-target checks for the member at ``idx``.
+    def _earlier_same_name(self, member: ArchiveMember) -> ArchiveMember | None:
+        """The latest member listed before ``member`` under its name, or under its
+        name with or without a final ``/``, when the two are not both directories and
+        both are current (``MEMBER_NAME_DUPLICATE``). ``None`` otherwise, the common
+        case.
+
+        A backend's superseded versions (a RAR file version, an older ISO 9660
+        version) are not current and take no part, as in
+        :func:`_apply_last_entry_wins_is_current`.
+        """
+        if not member.is_current:
+            return None
+        index = self._listed_by_name
+        name = member.name
+        held = index.get(name)
+        other = index.get(name[:-1] if name.endswith("/") else name + "/")
+        if held is None and other is None:
+            return None
+        found: ArchiveMember | None = None
+        for entry in (held, other):
+            if entry is None:
+                continue
+            for candidate in reversed(entry if isinstance(entry, list) else (entry,)):
+                if candidate.is_current:
+                    if found is None or (candidate._member_id or 0) > (
+                        found._member_id or 0
+                    ):
+                        found = candidate
+                    break
+        if found is None or (
+            found.type is MemberType.DIRECTORY and member.type is MemberType.DIRECTORY
+        ):
+            return None
+        return found
+
+    def _emit_name_duplicates(self, members: Sequence[ArchiveMember]) -> None:
+        """Report ``MEMBER_NAME_DUPLICATE`` over ``members``, in the archive's index
+        order, for a backend whose names are not final when the walk registers them
+        (``_NAMES_FINAL_AT_REGISTRATION``): the same rule as
+        :meth:`_earlier_same_name`, decided once the names are.
+
+        The backend calls it once, after the last rename. Every member here is
+        compared: such a backend lists no superseded versions of its own.
+        """
+        # By name: the position in ``members`` of the latest member so far, and it.
+        latest: dict[str, tuple[int, ArchiveMember]] = {}
+        for position, member in enumerate(members):
+            name = member.name
+            found = max(
+                (
+                    latest[key]
+                    for key in (name, name[:-1] if name.endswith("/") else name + "/")
+                    if key in latest
+                ),
+                default=None,
+                key=lambda entry: entry[0],
+            )
+            latest[name] = (position, member)
+            if found is not None and not (
+                found[1].type is MemberType.DIRECTORY
+                and member.type is MemberType.DIRECTORY
+            ):
+                self._emit_presentation_shapes(member, found[1], to_symlink=False)
+
+    def _hardlink_names_symlink(self, member: ArchiveMember) -> bool:
+        """Whether the hard link ``member`` names a symlink listed before it
+        (``MEMBER_READERS_DISAGREE``, ``hardlink_to_symlink``)."""
+        target = self._find_link_target(member)
+        return target is not None and target.type is MemberType.SYMLINK
+
+    def _emit_presentation_shapes(
+        self,
+        member: ArchiveMember,
+        earlier: ArchiveMember | None,
+        to_symlink: bool,
+    ) -> None:
+        """Report a name an earlier member has and a hard link to a symlink: shapes
+        every format can hold, which readers make different trees of."""
+        collector = self._diagnostics_collector
+        if earlier is not None:
+            collector.emit(
+                code=DiagnosticCode.MEMBER_NAME_DUPLICATE,
+                message=(
+                    f"{member.type.value.capitalize()} {quoted(member.name)} has the "
+                    f"name of an earlier {earlier.type.value} "
+                    f"(member {earlier._member_id}): the later member supersedes it, "
+                    "as tar -x and unzip write them, but another reader may keep the "
+                    "first or refuse the archive."
+                ),
+                context=NameDuplicateContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=member._member_id,
+                    earlier_member_id=earlier._member_id,
+                    earlier_type=earlier.type.value,
+                    member_type=member.type.value,
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=integrity_logger,
+            )
+        if to_symlink:
+            collector.emit(
+                code=DiagnosticCode.MEMBER_READERS_DISAGREE,
+                message=(
+                    f"Hard link {quoted(member.name)} names the symlink "
+                    f"{quoted(member.link_target or '')}: it links to the symlink, as "
+                    "link() does on Linux, but another reader may link to the "
+                    "symlink's target instead."
+                ),
+                context=ReaderDisagreementContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=member._member_id,
+                    shape="hardlink_to_symlink",
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=integrity_logger,
+            )
+
+    def _present_member(
+        self,
+        idx: int,
+        member: ArchiveMember,
+        earlier: ArchiveMember | None = None,
+        to_symlink: bool = False,
+    ) -> None:
+        """Run the name and link-target checks for the member at ``idx``, and report
+        the shapes :meth:`_emit_presentation_shapes` names.
 
         One member can make several of these emits (a name and a target, up to three
         codes each). If a later one raises, the earlier ones already count, so a walk
@@ -2356,6 +2503,7 @@ class BaseArchiveReader(ArchiveReader):
             emit_link_target_controls(
                 collector, member=member, archive_name=self._archive_name
             )
+            self._emit_presentation_shapes(member, earlier, to_symlink)
             return
         if self._presenting is None or self._presenting[0] != idx:
             self._presenting = (idx, EmitLog())
@@ -2369,6 +2517,7 @@ class BaseArchiveReader(ArchiveReader):
             emit_link_target_controls(
                 collector, member=member, archive_name=self._archive_name
             )
+            self._emit_presentation_shapes(member, earlier, to_symlink)
         self._presenting = None
 
     def _emit_empty_link_target(self, member: ArchiveMember) -> None:

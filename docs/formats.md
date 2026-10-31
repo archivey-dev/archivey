@@ -518,6 +518,14 @@ sending side when the ZIP is done.
 - With `concurrent_operations=True`, member reads share one file handle and take turns on it, so
   reads from several threads are safe but not parallel. ISO works the same way.
 - Hardlinks are extracted as hardlinks. An `extract_all` with no filter resolves them in one pass.
+- **Shapes real tarballs use, which other readers take differently**, are read as GNU tar reads
+  them and reported with `MEMBER_READERS_DISAGREE`: a regular file named `a/` (a directory, as v7
+  tars store them), a link name on a regular file, in the header or a PAX `linkpath` (not used), a star header whose prefix runs past
+  star's 131 bytes, old GNU times where ustar keeps the prefix, and a hard link to a symlink. A
+  member with the name of an earlier one is reported with `MEMBER_NAME_DUPLICATE`, in every
+  format. Neither is in `STRICT`, which would refuse archives GNU tar extracts; a caller who checks
+  an archive that another tool will extract can refuse them with `DiagnosticPolicy.PEDANTIC` or
+  `raise_on=`.
 - **Headers are read as GNU tar reads them.** Where tools disagree on a member's name, link target
   or size, archivey gives GNU tar's answer. When the headers take a shape no known writer produces
   (a GNU long name and a PAX `path` for one member, a field set twice, a global header setting a

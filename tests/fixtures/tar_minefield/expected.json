@@ -31,6 +31,11 @@
     "outcome": "expected",
     "tree": "bf073b7a9ab7edc4",
     "gnu_tree": true
+   },
+   "corpus": {
+    "outcome": "expected",
+    "tree": "bf073b7a9ab7edc4",
+    "gnu_tree": true
    }
   },
   "F02-end-data-after": {
@@ -65,6 +70,11 @@
     "outcome": "rejected",
     "tree": "2da7ede53362bf61",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": false
    }
   },
   "F03-end-lone-zero-block": {
@@ -95,6 +105,11 @@
     "gnu_tree": true
    },
    "strict_diag": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": false
+   },
+   "corpus": {
     "outcome": "rejected",
     "tree": "2da7ede53362bf61",
     "gnu_tree": false
@@ -132,6 +147,11 @@
     "outcome": "rejected",
     "tree": "2da7ede53362bf61",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": false
    }
   },
   "F05-magic-version-nuls": {
@@ -161,6 +181,11 @@
     "gnu_tree": true
    },
    "strict_diag": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "corpus": {
     "outcome": "expected",
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
@@ -197,6 +222,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "F07-end-archive-after": {
@@ -230,6 +260,11 @@
     "outcome": "rejected",
     "tree": "2da7ede53362bf61",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": false
    }
   },
   "F08-end-truncated-in-member": {
@@ -260,6 +295,11 @@
     "gnu_tree": false
    },
    "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "corpus": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -297,6 +337,11 @@
     "outcome": "rejected",
     "tree": "2da7ede53362bf61",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": false
    }
   },
   "F10-extended-pax-size-before-gnu-long": {
@@ -327,6 +372,11 @@
     "gnu_tree": true
    },
    "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "corpus": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -363,6 +413,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "F12-number-size-gap": {
@@ -393,6 +448,11 @@
     "gnu_tree": true
    },
    "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "corpus": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -429,6 +489,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "F14-pax-size-disagrees": {
@@ -458,6 +523,11 @@
     "gnu_tree": true
    },
    "strict_diag": {
+    "outcome": "expected",
+    "tree": "04611c107823da44",
+    "gnu_tree": true
+   },
+   "corpus": {
     "outcome": "expected",
     "tree": "04611c107823da44",
     "gnu_tree": true
@@ -494,6 +564,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "F16-type-unknown": {
@@ -527,6 +602,11 @@
     "outcome": "other",
     "tree": "15e78f0a85c2ab8b",
     "gnu_tree": true
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "F17-pax-global-comment": {
@@ -555,6 +635,11 @@
     "gnu_tree": true
    },
    "strict_diag": {
+    "outcome": "expected",
+    "tree": "589ba0b3e435fecc",
+    "gnu_tree": true
+   },
+   "corpus": {
     "outcome": "expected",
     "tree": "589ba0b3e435fecc",
     "gnu_tree": true
@@ -587,6 +672,11 @@
     "gnu_tree": true
    },
    "strict_diag": {
+    "outcome": "expected",
+    "tree": "489ebf9eb6726cf0",
+    "gnu_tree": true
+   },
+   "corpus": {
     "outcome": "expected",
     "tree": "489ebf9eb6726cf0",
     "gnu_tree": true
@@ -623,6 +713,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "F20-pax-global-size": {
@@ -653,6 +748,11 @@
     "gnu_tree": true
    },
    "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "corpus": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -689,6 +789,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "F22-pax-size-negative": {
@@ -719,6 +824,11 @@
     "gnu_tree": false
    },
    "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "corpus": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -755,6 +865,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "F24-pax-size-leading-space": {
@@ -785,6 +900,11 @@
     "gnu_tree": false
    },
    "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "corpus": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -821,6 +941,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "F26-pax-size-leading-zero": {
@@ -851,6 +976,11 @@
     "gnu_tree": true
    },
    "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "corpus": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -887,6 +1017,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "F28-pax-newline-in-comment": {
@@ -917,6 +1052,11 @@
     "gnu_tree": true
    },
    "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "corpus": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -953,6 +1093,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "F30-number-size-base256-too-large": {
@@ -983,6 +1128,11 @@
     "gnu_tree": false
    },
    "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "corpus": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -1017,6 +1167,11 @@
     "outcome": "expected",
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
+   },
+   "corpus": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
    }
   },
   "F32-checksum-leading-space": {
@@ -1046,6 +1201,11 @@
     "gnu_tree": true
    },
    "strict_diag": {
+    "outcome": "expected",
+    "tree": "84eef239717c849f",
+    "gnu_tree": true
+   },
+   "corpus": {
     "outcome": "expected",
     "tree": "84eef239717c849f",
     "gnu_tree": true
@@ -1082,6 +1242,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "F34-size-on-hardlink": {
@@ -1112,6 +1277,11 @@
     "gnu_tree": true
    },
    "strict_diag": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": false
+   },
+   "corpus": {
     "outcome": "rejected",
     "tree": "2da7ede53362bf61",
     "gnu_tree": false
@@ -1148,6 +1318,11 @@
     "outcome": "rejected",
     "tree": "2da7ede53362bf61",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": false
    }
   },
   "F36-pax-record-length-short": {
@@ -1178,6 +1353,11 @@
     "gnu_tree": false
    },
    "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "corpus": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -1214,6 +1394,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "K01-kind-trailing-slash-file": {
@@ -1230,7 +1415,9 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a"
    },
-   "codes": [],
+   "codes": [
+    "member_readers_disagree"
+   ],
    "trusted": {
     "outcome": "other",
     "tree": "e6df658443a9a7d3",
@@ -1245,6 +1432,11 @@
     "outcome": "other",
     "tree": "e6df658443a9a7d3",
     "gnu_tree": true
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "K02-linkname-on-file": {
@@ -1261,7 +1453,9 @@
     "outcome": "other",
     "tree": "8ce6e36c9afbf8d4"
    },
-   "codes": [],
+   "codes": [
+    "member_readers_disagree"
+   ],
    "trusted": {
     "outcome": "other",
     "tree": "8ce6e36c9afbf8d4",
@@ -1276,6 +1470,11 @@
     "outcome": "other",
     "tree": "8ce6e36c9afbf8d4",
     "gnu_tree": true
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "K03-symlink-trailing-slash": {
@@ -1306,6 +1505,11 @@
     "gnu_tree": true
    },
    "strict_diag": {
+    "outcome": "rejected",
+    "tree": "635b45a2b55b6a50",
+    "gnu_tree": false
+   },
+   "corpus": {
     "outcome": "rejected",
     "tree": "635b45a2b55b6a50",
     "gnu_tree": false
@@ -1340,6 +1544,11 @@
     "outcome": "expected",
     "tree": "801166cfb9a22b6e",
     "gnu_tree": true
+   },
+   "corpus": {
+    "outcome": "expected",
+    "tree": "801166cfb9a22b6e",
+    "gnu_tree": true
    }
   },
   "N02-name-fills-field": {
@@ -1368,6 +1577,11 @@
     "gnu_tree": true
    },
    "strict_diag": {
+    "outcome": "expected",
+    "tree": "fb88a5262ecadb95",
+    "gnu_tree": true
+   },
+   "corpus": {
     "outcome": "expected",
     "tree": "fb88a5262ecadb95",
     "gnu_tree": true
@@ -1402,6 +1616,11 @@
     "outcome": "expected",
     "tree": "801166cfb9a22b6e",
     "gnu_tree": true
+   },
+   "corpus": {
+    "outcome": "expected",
+    "tree": "801166cfb9a22b6e",
+    "gnu_tree": true
    }
   },
   "N04-ustar-prefix": {
@@ -1430,6 +1649,11 @@
     "gnu_tree": true
    },
    "strict_diag": {
+    "outcome": "expected",
+    "tree": "38d440b55d035625",
+    "gnu_tree": true
+   },
+   "corpus": {
     "outcome": "expected",
     "tree": "38d440b55d035625",
     "gnu_tree": true
@@ -1465,6 +1689,11 @@
     "outcome": "expected",
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
+   },
+   "corpus": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
    }
   },
   "N06-name-leading-dot-slash": {
@@ -1497,6 +1726,11 @@
     "outcome": "expected",
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
+   },
+   "corpus": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
    }
   },
   "N07-symlink-absolute": {
@@ -1526,6 +1760,11 @@
     "gnu_tree": false
    },
    "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "corpus": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -1562,6 +1801,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "N09-extended-two-pax-headers": {
@@ -1595,6 +1839,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "N10-format-star": {
@@ -1611,7 +1860,9 @@
     "outcome": "other",
     "tree": "dd27f332bd4342ce"
    },
-   "codes": [],
+   "codes": [
+    "member_readers_disagree"
+   ],
    "trusted": {
     "outcome": "other",
     "tree": "dd27f332bd4342ce",
@@ -1625,6 +1876,11 @@
    "strict_diag": {
     "outcome": "other",
     "tree": "977170ae9aa1a103",
+    "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
     "gnu_tree": false
    }
   },
@@ -1642,7 +1898,9 @@
     "outcome": "other",
     "tree": "2da7ede53362bf61"
    },
-   "codes": [],
+   "codes": [
+    "member_readers_disagree"
+   ],
    "trusted": {
     "outcome": "other",
     "tree": "2da7ede53362bf61",
@@ -1657,6 +1915,11 @@
     "outcome": "other",
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "N12-name-absolute": {
@@ -1688,6 +1951,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "N13-name-backslash": {
@@ -1716,6 +1984,11 @@
     "gnu_tree": false
    },
    "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "corpus": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -1752,6 +2025,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "N15-name-control-character": {
@@ -1781,6 +2059,11 @@
     "gnu_tree": false
    },
    "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "corpus": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -1815,6 +2098,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "N17-name-empty": {
@@ -1846,6 +2134,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "N18-name-not-utf8": {
@@ -1874,6 +2167,11 @@
     "gnu_tree": false
    },
    "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "corpus": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -1910,6 +2208,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "N20-pax-repeated-key": {
@@ -1943,6 +2246,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "N21-pax-global-path": {
@@ -1960,7 +2268,8 @@
     "tree": "44136fa355b3678a"
    },
    "codes": [
-    "member_header_ambiguous"
+    "member_header_ambiguous",
+    "member_name_duplicate"
    ],
    "trusted": {
     "outcome": "other",
@@ -1973,6 +2282,11 @@
     "gnu_tree": true
    },
    "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "corpus": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -2009,6 +2323,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "N23-extended-gnu-long-then-pax": {
@@ -2042,6 +2361,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "N24-pax-hdrcharset-binary": {
@@ -2070,6 +2394,11 @@
     "gnu_tree": false
    },
    "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "corpus": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -2106,6 +2435,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "N26-pax-global-path-then-empty": {
@@ -2136,6 +2470,11 @@
     "gnu_tree": true
    },
    "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "corpus": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -2170,6 +2509,11 @@
     "outcome": "expected",
     "tree": "7077d9088bad58af",
     "gnu_tree": true
+   },
+   "corpus": {
+    "outcome": "expected",
+    "tree": "7077d9088bad58af",
+    "gnu_tree": true
    }
   },
   "N28-pax-long-hardlink": {
@@ -2198,6 +2542,11 @@
     "gnu_tree": true
    },
    "strict_diag": {
+    "outcome": "expected",
+    "tree": "9f2abf5c3d3db9e8",
+    "gnu_tree": true
+   },
+   "corpus": {
     "outcome": "expected",
     "tree": "9f2abf5c3d3db9e8",
     "gnu_tree": true
@@ -2232,6 +2581,11 @@
     "outcome": "expected",
     "tree": "99be968445db001c",
     "gnu_tree": true
+   },
+   "corpus": {
+    "outcome": "expected",
+    "tree": "99be968445db001c",
+    "gnu_tree": true
    }
   },
   "S02-tree-duplicate-dir": {
@@ -2260,6 +2614,11 @@
     "gnu_tree": true
    },
    "strict_diag": {
+    "outcome": "expected",
+    "tree": "ce2c338b4d6c1165",
+    "gnu_tree": true
+   },
+   "corpus": {
     "outcome": "expected",
     "tree": "ce2c338b4d6c1165",
     "gnu_tree": true
@@ -2294,6 +2653,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "S04-hardlink-to-itself": {
@@ -2310,7 +2674,9 @@
     "outcome": "rejected",
     "tree": "2da7ede53362bf61"
    },
-   "codes": [],
+   "codes": [
+    "member_name_duplicate"
+   ],
    "trusted": {
     "outcome": "other",
     "tree": "2da7ede53362bf61",
@@ -2325,6 +2691,11 @@
     "outcome": "other",
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": false
    }
   },
   "S05-hardlink-to-later-member": {
@@ -2356,6 +2727,11 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "S06-hardlink-to-symlink": {
@@ -2372,7 +2748,9 @@
     "outcome": "rejected",
     "tree": "cf6164c9ab34add1"
    },
-   "codes": [],
+   "codes": [
+    "member_readers_disagree"
+   ],
    "trusted": {
     "outcome": "other",
     "tree": "d1517a9789f09e2b",
@@ -2387,6 +2765,11 @@
     "outcome": "other",
     "tree": "d1517a9789f09e2b",
     "gnu_tree": true
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "c8c59e37b05a32a3",
+    "gnu_tree": false
    }
   },
   "S07-tree-duplicate-file-differs": {
@@ -2403,7 +2786,9 @@
     "outcome": "other",
     "tree": "1cf4351d5d7aac03"
    },
-   "codes": [],
+   "codes": [
+    "member_name_duplicate"
+   ],
    "trusted": {
     "outcome": "other",
     "tree": "1cf4351d5d7aac03",
@@ -2418,6 +2803,11 @@
     "outcome": "other",
     "tree": "1cf4351d5d7aac03",
     "gnu_tree": true
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "ad4f1b114e713a6a",
+    "gnu_tree": false
    }
   },
   "S08-tree-duplicate-file-dir": {
@@ -2434,7 +2824,9 @@
     "outcome": "other",
     "tree": "e6df658443a9a7d3"
    },
-   "codes": [],
+   "codes": [
+    "member_name_duplicate"
+   ],
    "trusted": {
     "outcome": "other",
     "tree": "e6df658443a9a7d3",
@@ -2446,6 +2838,11 @@
     "gnu_tree": false
    },
    "strict_diag": {
+    "outcome": "rejected",
+    "tree": "635efa60de524573",
+    "gnu_tree": false
+   },
+   "corpus": {
     "outcome": "rejected",
     "tree": "635efa60de524573",
     "gnu_tree": false
@@ -2465,7 +2862,9 @@
     "outcome": "other",
     "tree": "c9ea737f243cd08d"
    },
-   "codes": [],
+   "codes": [
+    "member_name_duplicate"
+   ],
    "trusted": {
     "outcome": "other",
     "tree": "c9ea737f243cd08d",
@@ -2480,6 +2879,11 @@
     "outcome": "other",
     "tree": "c9ea737f243cd08d",
     "gnu_tree": true
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "c9ea737f243cd08d",
+    "gnu_tree": false
    }
   },
   "S10-tree-symlink-then-file": {
@@ -2496,7 +2900,9 @@
     "outcome": "other",
     "tree": "3e140f31efe90819"
    },
-   "codes": [],
+   "codes": [
+    "member_name_duplicate"
+   ],
    "trusted": {
     "outcome": "other",
     "tree": "3e140f31efe90819",
@@ -2511,6 +2917,11 @@
     "outcome": "other",
     "tree": "3e140f31efe90819",
     "gnu_tree": true
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "4c600965646dbf98",
+    "gnu_tree": false
    }
   },
   "S11-tree-through-symlink": {
@@ -2539,6 +2950,11 @@
     "gnu_tree": false
    },
    "strict_diag": {
+    "outcome": "rejected",
+    "tree": "5488ad32f700cdd7",
+    "gnu_tree": false
+   },
+   "corpus": {
     "outcome": "rejected",
     "tree": "5488ad32f700cdd7",
     "gnu_tree": false
@@ -2573,6 +2989,11 @@
     "outcome": "rejected",
     "tree": "6eb5e0d4dc2a6073",
     "gnu_tree": false
+   },
+   "corpus": {
+    "outcome": "rejected",
+    "tree": "6eb5e0d4dc2a6073",
+    "gnu_tree": false
    }
   },
   "S13-hardlink-empty-target": {
@@ -2603,6 +3024,11 @@
     "gnu_tree": false
    },
    "strict_diag": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": false
+   },
+   "corpus": {
     "outcome": "rejected",
     "tree": "2da7ede53362bf61",
     "gnu_tree": false

@@ -314,7 +314,9 @@ value archivey.DiagnosticCode.MEMBER_LOCAL_CRC_USED = 'member_local_crc_used'
 value archivey.DiagnosticCode.ARCHIVE_OFFSET_WRAPPED = 'archive_offset_wrapped'
 value archivey.DiagnosticCode.MEMBER_SIZE_WRAPPED = 'member_size_wrapped'
 value archivey.DiagnosticCode.MEMBER_TYPE_UNKNOWN = 'member_type_unknown'
-alias archivey.DiagnosticContext = NameNormalizationContext | NameEncodingContext | MemberNameControlsContext | UnusedArgumentContext | EmptyArchiveContext | UnconfirmedFormatContext | FormatConflictContext | ScanRaceContext | ArchiveEofContext | UnlistedDataContext | MemberTimestampContext | MemberHeaderRecordContext | SymlinkTargetContext | DigestContext | DirectoryDataContext | LinkDataContext | HeaderAmbiguityContext | EncryptedVerificationContext | SeekIndexContext | StreamRewindContext | SelectorUnmatchedContext | SpecialFileDataContext | LocalHeaderContext | OffsetWrapContext | SizeWrapContext | UnknownMemberTypeContext
+value archivey.DiagnosticCode.MEMBER_NAME_DUPLICATE = 'member_name_duplicate'
+value archivey.DiagnosticCode.MEMBER_READERS_DISAGREE = 'member_readers_disagree'
+alias archivey.DiagnosticContext = NameNormalizationContext | NameEncodingContext | MemberNameControlsContext | UnusedArgumentContext | EmptyArchiveContext | UnconfirmedFormatContext | FormatConflictContext | ScanRaceContext | ArchiveEofContext | UnlistedDataContext | MemberTimestampContext | MemberHeaderRecordContext | SymlinkTargetContext | DigestContext | DirectoryDataContext | LinkDataContext | HeaderAmbiguityContext | EncryptedVerificationContext | SeekIndexContext | StreamRewindContext | SelectorUnmatchedContext | SpecialFileDataContext | LocalHeaderContext | OffsetWrapContext | SizeWrapContext | UnknownMemberTypeContext | NameDuplicateContext | ReaderDisagreementContext
 class archivey.DiagnosticPolicy()
 init archivey.DiagnosticPolicy(*, ignore: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None, raise_on: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None) -> None
 field archivey.DiagnosticPolicy.ignore: frozenset[DiagnosticCode]
@@ -700,6 +702,10 @@ code-literal archivey.diagnostics.DiagnosticCodeStr 'member_size_wrapped'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-size-wrapped'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_type_unknown'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-type-unknown'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_name_duplicate'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-name-duplicate'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_readers_disagree'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-readers-disagree'
 reexport archivey.diagnostics.DiagnosticContext = archivey.DiagnosticContext
 reexport archivey.diagnostics.DiagnosticPolicy = archivey.DiagnosticPolicy
 reexport archivey.diagnostics.DiagnosticSummary = archivey.DiagnosticSummary
@@ -807,6 +813,16 @@ field archivey.diagnostics.MemberTimestampContext.member_name: str = ''
 field archivey.diagnostics.MemberTimestampContext.source: str = ''
 field archivey.diagnostics.MemberTimestampContext.value_repr: str = ''
 method archivey.diagnostics.MemberTimestampContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.NameDuplicateContext(_JsonSafeContext)
+init archivey.diagnostics.NameDuplicateContext(kind: Literal['name_duplicate'] = 'name_duplicate', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, earlier_member_id: int | None = None, earlier_type: str = '', member_type: str = '') -> None
+field archivey.diagnostics.NameDuplicateContext.archive_name: str | None = None
+field archivey.diagnostics.NameDuplicateContext.earlier_member_id: int | None = None
+field archivey.diagnostics.NameDuplicateContext.earlier_type: str = ''
+field archivey.diagnostics.NameDuplicateContext.kind: Literal['name_duplicate'] = 'name_duplicate'
+field archivey.diagnostics.NameDuplicateContext.member_id: int | None = None
+field archivey.diagnostics.NameDuplicateContext.member_name: str = ''
+field archivey.diagnostics.NameDuplicateContext.member_type: str = ''
+method archivey.diagnostics.NameDuplicateContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.NameEncodingContext(_JsonSafeContext)
 init archivey.diagnostics.NameEncodingContext(kind: Literal['name_encoding'] = 'name_encoding', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, raw_name_base64: str | None = None, inferred_encoding: str = '', declared_encoding: str = '') -> None
 field archivey.diagnostics.NameEncodingContext.archive_name: str | None = None
@@ -839,6 +855,14 @@ field archivey.diagnostics.OffsetWrapContext.record: Literal['local_header', 'ce
 field archivey.diagnostics.OffsetWrapContext.stored_offset: int = 0
 method archivey.diagnostics.OffsetWrapContext.to_dict(self) -> dict[str, object]
 reexport archivey.diagnostics.OnDiagnostic = archivey.OnDiagnostic
+class archivey.diagnostics.ReaderDisagreementContext(_JsonSafeContext)
+init archivey.diagnostics.ReaderDisagreementContext(kind: Literal['reader_disagreement'] = 'reader_disagreement', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, shape: Literal['file_named_as_directory', 'link_name_on_file', 'star_prefix', 'gnu_prefix_bytes', 'hardlink_to_symlink'] = 'file_named_as_directory') -> None
+field archivey.diagnostics.ReaderDisagreementContext.archive_name: str | None = None
+field archivey.diagnostics.ReaderDisagreementContext.kind: Literal['reader_disagreement'] = 'reader_disagreement'
+field archivey.diagnostics.ReaderDisagreementContext.member_id: int | None = None
+field archivey.diagnostics.ReaderDisagreementContext.member_name: str = ''
+field archivey.diagnostics.ReaderDisagreementContext.shape: Literal['file_named_as_directory', 'link_name_on_file', 'star_prefix', 'gnu_prefix_bytes', 'hardlink_to_symlink'] = 'file_named_as_directory'
+method archivey.diagnostics.ReaderDisagreementContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.ScanRaceContext(_JsonSafeContext)
 init archivey.diagnostics.ScanRaceContext(kind: Literal['scan_race'] = 'scan_race', archive_name: str | None = None, relative_path: str = '', entry_kind: Literal['directory', 'entry'] = 'entry') -> None
 field archivey.diagnostics.ScanRaceContext.archive_name: str | None = None

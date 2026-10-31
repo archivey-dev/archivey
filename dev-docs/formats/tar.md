@@ -462,6 +462,27 @@ is already `CorruptionError`. A ustar or GNU header field that differs from the 
 overriding it is not reported either: writers put a cut name or a capped size there on
 purpose.
 
+Shapes real writers produce, which other readers make another tree of, are read as GNU
+tar reads them and reported with `MEMBER_READERS_DISAGREE` (`ReaderDisagreementContext`,
+attached to the member; advisory, out of `ARCHIVE_INTEGRITY_CODES` and logged at INFO:
+maintainer request 2026-10-31, so a caller checking an archive that another tool will
+extract can refuse them with `PEDANTIC` or `raise_on=`). `_to_member` emits the TAR ones:
+
+- `file_named_as_directory`: an old-style directory, a regular-file header whose final
+  name ends in `/` (tar-minefield K01; v7 tars of sendmail and tcp_wrappers).
+- `link_name_on_file`: a regular file whose header field or PAX `linkpath` stores a link
+  name (K02; bgen 1.1.7 writes the header field).
+- `star_prefix`: a ustar header with star's `tar\0` at 508 whose prefix runs past star's
+  131 bytes (N10; star's archives of berkeley-db and ncurses). `parse_header_block` sets
+  `HeaderBlock.prefix_shape`; only a name taken from the header counts.
+- `gnu_prefix_bytes`: an old GNU header, not `S`, with a byte at 345, where GNU tar's
+  incremental archives keep atime (N11). `tarfile` joins the prefix for that magic.
+
+The base reader reports two shapes every format can hold, in `_register_member`: a hard
+link whose target is a symlink listed before it (`hardlink_to_symlink`, S06), and a
+member with the name of an earlier one, with or without a final `/`, when the two are not
+both directories (`MEMBER_NAME_DUPLICATE`, S04, S07 to S10).
+
 ### 2.3 Member data
 
 **A member's stream is a view of its data area.** In random access it is a `SharedView`

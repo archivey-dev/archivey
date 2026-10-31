@@ -61,6 +61,8 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 | `ARCHIVE_OFFSET_WRAPPED` | `OffsetWrapContext`: `kind="offset_wrap"`, `archive_name`, `format`, `member_name`, `member_id` (empty and `None` for the directory), `record` ∈ `{"local_header","central_directory"}`, `stored_offset`, `corrected_offset` |
 | `MEMBER_SIZE_WRAPPED` | `SizeWrapContext`: `kind="size_wrap"`, `archive_name`, `format`, `member_name`, `member_id`, `stored_compressed_size`, `compressed_size`, `stored_size`, `size` (`None` when only a read can tell) |
 | `MEMBER_TYPE_UNKNOWN` | `UnknownMemberTypeContext`: `kind="unknown_member_type"`, `archive_name`, `member_name`, `member_id`, `stored_type` (the TAR typeflag byte as a one-character string, the byte read as Latin-1; for a RAR5 redirect, the type number in decimal), `size` (the member's `size`; `None` for an `OTHER` member) |
+| `MEMBER_NAME_DUPLICATE` | `NameDuplicateContext`: `kind="name_duplicate"`, `archive_name`, `member_name`, `member_id`, `earlier_member_id` (the latest earlier member under the name, or under it with or without a final `/`), `earlier_type` and `member_type` (`MemberType` values). Emitted at listing, in every format, when a current member has the name of an earlier current one and the two are not both directories. Names are compared as the listing presents them: a ZIP read from a pipe compares the central directory's names, once it has read the directory |
+| `MEMBER_READERS_DISAGREE` | `ReaderDisagreementContext`: `kind="reader_disagreement"`, `archive_name`, `member_name`, `member_id`, `shape` (`"file_named_as_directory"`, `"link_name_on_file"` (the header's field or a PAX `linkpath` on a regular file), `"star_prefix"` or `"gnu_prefix_bytes"` for a TAR header; `"hardlink_to_symlink"` in every format with hard links) |
 | `ENCRYPTED_MEMBER_UNVERIFIED` | `EncryptedVerificationContext`: `kind="encrypted_verification"`, `archive_name`, `member_name`, `member_id`, `check`, `reason` |
 | `SEEK_INDEX_DEGRADED` | `SeekIndexContext`: `kind="seek_index"`, `archive_name`, `member_name`, `member_id`, `codec`, `scan`, `error_type` |
 | `STREAM_REWIND_REDECOMPRESSES` | `StreamRewindContext`: `kind="stream_rewind"`, `archive_name`, `member_name`, `member_id`, `codec`, `from_offset`, `to_offset`, `accelerator` |
@@ -313,7 +315,8 @@ id, build immutable value, update counts/retention → **release all locks** →
 synchronous callback on calling thread → escalate. Logs/callbacks see
 already-updated state, in emission order. The log record is WARNING, except for the codes
 in `archivey.diagnostics._INFO_LOG_CODES`, which log at INFO: they report the caller's
-access pattern rather than the archive (`logging` spec).
+access pattern rather than the archive, or a shape of ordinary archives that only a
+caller comparing readers asks for (`logging` spec).
 
 | Failure | Behavior |
 | --- | --- |
@@ -521,7 +524,7 @@ the archive's own bytes or metadata as anomalous:
 
 | In `ARCHIVE_INTEGRITY_CODES` | Excluded |
 | --- | --- |
-| `MEMBER_NAME_NORMALIZED`, `MEMBER_NAME_ENCODING_INFERRED`, `MEMBER_NAME_BIDI_CONTROL`, `MEMBER_NAME_ZERO_WIDTH_CHARACTER`, `EXTENSION_FORMAT_UNCONFIRMED`, `SCAN_DIRECTORY_VANISHED`, `SCAN_ENTRY_VANISHED`, `ARCHIVE_EOF_MARKER_MISSING`, `ARCHIVE_TRAILING_DATA`, `ARCHIVE_UNLISTED_DATA`, `MEMBER_TIMESTAMP_INVALID`, `MEMBER_HEADER_RECORD_SKIPPED`, `SYMLINK_TARGET_UNAVAILABLE`, `DIGEST_UNVERIFIABLE`, `MEMBER_DIRECTORY_DATA_IGNORED`, `MEMBER_LINK_DATA_IGNORED`, `MEMBER_HEADER_AMBIGUOUS`, `SEEK_INDEX_DEGRADED`, `MEMBER_LOCAL_NAME_DIFFERS`, `MEMBER_LOCAL_METHOD_DIFFERS` | `EMPTY_ARCHIVE` (an empty archive is legitimate), `EXPLICIT_FORMAT_LISTED_EMPTY`, `ENCODING_ARGUMENT_UNUSED`, `PASSWORD_ARGUMENT_UNUSED`, `STREAM_REWIND_REDECOMPRESSES`, `PROBE_FORMAT_UNCONFIRMED`, `ENCRYPTED_MEMBER_UNVERIFIED`, `MEMBER_SELECTOR_UNMATCHED`, `MEMBER_SPECIAL_FILE_HAS_DATA`, `MEMBER_NAME_INVISIBLE_CHARACTER`, `FORMAT_EXTENSION_CONFLICT` (the name is wrong, not the bytes), `MEMBER_LOCAL_CRC_USED` (Adobe AIR writes it; the data is checked against the local CRC-32), `ARCHIVE_OFFSET_WRAPPED` and `MEMBER_SIZE_WRAPPED` (macOS writes the shape by default), `MEMBER_TYPE_UNKNOWN` (GNU tar extracts the member as a file) |
+| `MEMBER_NAME_NORMALIZED`, `MEMBER_NAME_ENCODING_INFERRED`, `MEMBER_NAME_BIDI_CONTROL`, `MEMBER_NAME_ZERO_WIDTH_CHARACTER`, `EXTENSION_FORMAT_UNCONFIRMED`, `SCAN_DIRECTORY_VANISHED`, `SCAN_ENTRY_VANISHED`, `ARCHIVE_EOF_MARKER_MISSING`, `ARCHIVE_TRAILING_DATA`, `ARCHIVE_UNLISTED_DATA`, `MEMBER_TIMESTAMP_INVALID`, `MEMBER_HEADER_RECORD_SKIPPED`, `SYMLINK_TARGET_UNAVAILABLE`, `DIGEST_UNVERIFIABLE`, `MEMBER_DIRECTORY_DATA_IGNORED`, `MEMBER_LINK_DATA_IGNORED`, `MEMBER_HEADER_AMBIGUOUS`, `SEEK_INDEX_DEGRADED`, `MEMBER_LOCAL_NAME_DIFFERS`, `MEMBER_LOCAL_METHOD_DIFFERS` | `EMPTY_ARCHIVE` (an empty archive is legitimate), `EXPLICIT_FORMAT_LISTED_EMPTY`, `ENCODING_ARGUMENT_UNUSED`, `PASSWORD_ARGUMENT_UNUSED`, `STREAM_REWIND_REDECOMPRESSES`, `PROBE_FORMAT_UNCONFIRMED`, `ENCRYPTED_MEMBER_UNVERIFIED`, `MEMBER_SELECTOR_UNMATCHED`, `MEMBER_SPECIAL_FILE_HAS_DATA`, `MEMBER_NAME_INVISIBLE_CHARACTER`, `FORMAT_EXTENSION_CONFLICT` (the name is wrong, not the bytes), `MEMBER_LOCAL_CRC_USED` (Adobe AIR writes it; the data is checked against the local CRC-32), `ARCHIVE_OFFSET_WRAPPED` and `MEMBER_SIZE_WRAPPED` (macOS writes the shape by default), `MEMBER_TYPE_UNKNOWN` (GNU tar extracts the member as a file), `MEMBER_NAME_DUPLICATE` and `MEMBER_READERS_DISAGREE` (real archives have the shapes, read as the format's tool reads them) |
 
 Each exclusion is deliberate, and the reason SHALL be recorded so the boundary is not
 rediscovered: `EMPTY_ARCHIVE` because an empty archive is legitimate and this spec
@@ -558,7 +561,12 @@ are corrected only where the layout or deflate's ratio forces a value, with the 
 and CRC-32 checked on a read; `MEMBER_TYPE_UNKNOWN` because GNU tar extracts a TAR
 member of a typeflag it does not know as a regular file, with a warning, and archivey
 lists its data as a `FILE`, so nothing is hidden and `STRICT` would refuse an archive
-the reference tool extracts; and `FORMAT_EXTENSION_CONFLICT` because it
+the reference tool extracts; `MEMBER_NAME_DUPLICATE` and `MEMBER_READERS_DISAGREE`
+because real archives have those shapes (`tar -r` appends, cabal sdists, v7
+directories, star and GNU incremental headers) and archivey reads them as the
+format's own tool does, so `STRICT` would refuse archives that tool extracts: they are
+for a caller who checks an archive another tool will extract, through
+`DiagnosticPolicy(raise_on=...)` or `PEDANTIC`; and `FORMAT_EXTENSION_CONFLICT` because it
 reports the file's name, which lies outside the archive, not the archive's bytes: the
 bytes win and the archive reads in full, so `STRICT` would refuse a well-formed tarball
 saved as `b.gz`. The code is still recorded, and a caller who wants the refusal adds it
