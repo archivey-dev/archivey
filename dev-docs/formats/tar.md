@@ -379,6 +379,9 @@ as `TarEntry.ambiguities` (`Ambiguity`); a global header's are reported on the m
 after it, and a global header with no member after it frames and names nothing, so it is
 not reported.
 
+The tar-minefield cases cited below are in [`../tar-minefield-results.md`](../tar-minefield-results.md),
+with every case's result under each policy.
+
 - `global_replaced`: a `g` header that drops a key an earlier `g` header set (one report per dropped key, `hdrcharset` aside). GNU tar writes one
   `g` header; `tarfile` and POSIX merge them.
 - `repeated`: one field set twice for one member: two `L` or two `K` headers (GNU tar
