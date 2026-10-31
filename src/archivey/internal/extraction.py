@@ -4290,16 +4290,16 @@ class ExtractionCoordinator:
         return self._already_exists(dest, member)
 
     def _taken_after_check(self, dest: Path, *, atomic: bool) -> bool:
-        """Whether, under ``OverwritePolicy.ERROR`` or ``SKIP``, ``dest`` is now taken by something
-        that was not there at the existence check: another writer into the same folder,
-        such as a second extraction. Asked by every landing whose creation refuses a
-        taken name: the ``os.replace`` of a FILE or HARDLINK (``atomic``), and the
-        ``os.symlink`` of a SYMLINK and the ``os.makedirs`` of a DIRECTORY.
+        """Whether, under ``OverwritePolicy.ERROR`` or ``SKIP``, ``dest`` is now taken
+        by something that was not there at the existence check: another writer into the
+        same folder, such as a second extraction. Asked by every landing whose creation
+        refuses a taken name: the ``os.replace`` of a FILE or HARDLINK (``atomic``), and
+        the ``os.symlink`` of a SYMLINK and the ``os.makedirs`` of a DIRECTORY.
 
         Under ERROR and SKIP the check lets a member through only to a free name, to a
-        copy this run parked (``_park_earlier_copies``), or, for a DIRECTORY member, to an existing
-        directory. An atomic landing replaces a parked copy where it stands, so that
-        copy does not count (``_occupied``); the other landings removed it in
+        copy this run parked (``_park_earlier_copies``), or, for a DIRECTORY member, to
+        an existing directory. An atomic landing replaces a parked copy where it stands,
+        so that copy does not count (``_occupied``); the other landings removed it in
         ``_prepare_destination``. ``os.makedirs(exist_ok=True)`` never raises for an
         existing directory, so a ``FileExistsError`` there means a non-directory. So
         anything a landing is refused over appeared after the check. Under the other
