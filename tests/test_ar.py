@@ -455,12 +455,16 @@ def _imported_names(path: Path) -> Iterator[tuple[str, str]]:
 
 def test_the_reader_uses_only_public_archivey() -> None:
     """Written as a format added from outside would be: every archivey name it imports
-    is public, apart from the call that registers it as a built-in."""
+    is public, apart from the call that registers it as a built-in and ``override``,
+    the typing decorator every library source carries (one from outside would take
+    ``typing.override``)."""
     for module, name in _imported_names(Path(ar_reader.__file__)):
         if module.split(".")[0] != "archivey":
             continue
         if module == "archivey.internal.format_adapter":
             assert name == "register_builtin_format"
+        elif module == "archivey.internal.overrides":
+            assert name == "override"
         elif module == "archivey.formats":
             assert name in archivey.formats.__all__, name
         else:
