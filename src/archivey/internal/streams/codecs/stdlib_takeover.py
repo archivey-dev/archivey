@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import BinaryIO, TypeVar
 
 from archivey.exceptions import ArchiveyError
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.base import CodecSource
 from archivey.internal.streams.codecs.rapidgzip_child import (
     RapidgzipChildStream,
@@ -251,6 +252,7 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         """The position in the output: the bytes delivered so far, moved by seeks."""
         return self._position
 
+    @override
     def read(self, size: int = -1, /) -> bytes:
         with self._typed_after_switch():
             try:
@@ -315,6 +317,7 @@ class _StdlibOnAcceleratorError(DelegatingStream):
             self._restart_without_resume()
             return op()
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         inner_seek = functools.partial(super().seek, offset, whence)
         with self._typed_after_switch():

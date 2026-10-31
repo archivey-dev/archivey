@@ -68,6 +68,7 @@ from archivey.formats import (
     SequentialReader,
 )
 from archivey.internal.format_adapter import register_builtin_format
+from archivey.internal.overrides import override
 from archivey.types import ArchiveFormat, ArchiveInfoExtra, ArchiveMember, MemberType
 
 TRAILER = b"TRAILER!!!"
@@ -207,6 +208,7 @@ class CpioReader(SequentialReader):
         self._context = context
         self._variant: Variant | None = None
 
+    @override
     def archive_info(self) -> ReaderArchiveInfo:
         variant = self._variant
         extra = ArchiveInfoExtra({})
@@ -217,6 +219,7 @@ class CpioReader(SequentialReader):
 
     # The walk ---------------------------------------------------------------------
 
+    @override
     def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
         groups: dict[tuple[tuple[int, int], int], _LinkGroup] = {}
         held = 0
@@ -571,6 +574,7 @@ class CpioHandler(SequentialFormatHandler):
     probe = staticmethod(_binary_probe)
     uses_encoding = True
 
+    @override
     def open_sequential(self, context: ReaderContext) -> CpioReader:
         return CpioReader(context)
 

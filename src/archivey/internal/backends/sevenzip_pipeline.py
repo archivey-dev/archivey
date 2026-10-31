@@ -76,6 +76,7 @@ from archivey.internal.config import (
     check_decoder_memory,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs import (
     LZMA_DICTIONARY_FILTERS,
     Codec,
@@ -728,6 +729,7 @@ class _DecodedPastSizeCheck(DelegatingStream):
         self._position = 0
         self._checked = False
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         if n == 0:
             return b""
@@ -735,6 +737,7 @@ class _DecodedPastSizeCheck(DelegatingStream):
         self._count(len(data))
         return data
 
+    @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         n = try_readinto(self._inner, b)
         if n is None:
@@ -765,6 +768,7 @@ class _DecodedPastSizeCheck(DelegatingStream):
             f"{self._size} bytes"
         )
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         self._position = self._inner.seek(offset, whence)
         self._checked = False

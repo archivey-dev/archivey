@@ -152,6 +152,7 @@ from archivey.internal.naming import (
     normalize_member_name,
 )
 from archivey.internal.open_site import OpenSite
+from archivey.internal.overrides import override
 from archivey.internal.password import (
     _PasswordCandidates,
     _PasswordCandidatesExhausted,
@@ -593,12 +594,14 @@ class _UnconfirmedZipCryptoStream(DelegatingStream):
         self._payload_complete = payload_complete
         super().__init__(inner)
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         try:
             return super().read(n)
         except Exception as exc:  # noqa: BLE001 - classified, then re-raised
             self._reraise(exc)
 
+    @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         # Overridden too, so the zero-copy passthrough stays on and still translates.
         try:
@@ -606,6 +609,7 @@ class _UnconfirmedZipCryptoStream(DelegatingStream):
         except Exception as exc:  # noqa: BLE001 - classified, then re-raised
             self._reraise(exc)
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         # A forward seek decrypts and decodes what it skips.
         try:
@@ -1752,6 +1756,7 @@ class ZipReader(BaseArchiveReader):
             logger=logger,
         )
 
+    @override
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, io.UnsupportedOperation):
             if "seek" in str(exc):
@@ -1785,6 +1790,7 @@ class ZipReader(BaseArchiveReader):
             return TruncatedError(f"Truncated ZIP member data: {exception_detail(exc)}")
         return None
 
+    @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
         """Walk the central directory, yielding each member as its entry is parsed.
 
@@ -2066,6 +2072,7 @@ class ZipReader(BaseArchiveReader):
             logger=logger,
         )
 
+    @override
     def _iter_with_data(
         self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
     ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
@@ -4192,6 +4199,7 @@ class ZipReader(BaseArchiveReader):
             self._stamp_error_context(exc, member.name)
             raise
 
+    @override
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         if member.type != MemberType.SYMLINK or member.link_target is not None:
             return
@@ -4230,6 +4238,7 @@ class ZipReader(BaseArchiveReader):
         bytes the pass kept in a forward walk."""
         return lambda: self._open_member_handle(member)
 
+    @override
     def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         # The member carries its own locator (`_raw`), so data access needs no name/id
         # map, and a duplicate member name can't resolve to the wrong entry.
@@ -4270,14 +4279,17 @@ class ZipReader(BaseArchiveReader):
             return self._open_encrypted_member(loc, member)
         return self._open_codec_member(loc, member)
 
+    @override
     def _archive_comment(self) -> str | None:
         comment = self._end.comment
         # The archive comment has no UTF-8 flag of its own.
         return self._decode_unflagged_comment(comment) if comment else None
 
+    @override
     def _cost_receipt(self) -> CostReceipt:
         return _ZIP_COST
 
+    @override
     def _get_archive_info(self) -> ArchiveInfo:
         info_extra = ArchiveInfoExtra({"zip.volume_count": self._volume_count})
         return ArchiveInfo(
@@ -4295,6 +4307,7 @@ class ZipReader(BaseArchiveReader):
             extra=info_extra,
         )
 
+    @override
     def _close_archive(self) -> None:
         # Wait out an in-flight read before the handle goes; a later read then fails
         # its SharedView check_open with the closed-archive error. The base closes the
@@ -4500,6 +4513,7 @@ class ZipReadBackend(ReadBackend):
     SUPPORTS_PASSWORD = True  # per-member ZipCrypto/AES encryption
     USES_ENCODING = True  # decodes unflagged names that are not valid UTF-8
 
+    @override
     def open_read(
         self,
         source: ArchiveSource,

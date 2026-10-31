@@ -19,6 +19,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.config import StreamConfig
 from archivey.internal.hashing import crc32_combine
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.base import (
     GZIP_MAGIC,
     GZIP_WBITS,
@@ -327,6 +328,7 @@ class _GzipTruncationCheckStream(DelegatingStream):
                 resumed.feed(pos, data)
         self._pos += len(data)
 
+    @override
     def read(self, size: int = -1, /) -> bytes:
         if size == 0:
             return b""  # an explicit read(0) is not EOF; it must not trip the check
@@ -350,6 +352,7 @@ class _GzipTruncationCheckStream(DelegatingStream):
             self._pos += len(data)
         return data
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         # A seek short of the end leaves the checks armed. A seek that stops at the end
         # of rapidgzip's output runs them there (class docstring).
@@ -862,12 +865,14 @@ class GzipCodec(_DeflateFamilyCodec):
     # library gives the verdict there (``_GzipTruncationCheckStream``, item 1).
     _empty_to_stdlib = True
 
+    @override
     def prepare_config(self, source: CodecSource, config: StreamConfig) -> StreamConfig:
         # gzip ISIZE makes truncation checkable → allows rapidgzip AUTO with the ISIZE
         # backstop. Do not promote ISIZE into expected_decompressed_size (mod 2**32 /
         # multi-member).
         return _config_with_gzip_isize(source, config)
 
+    @override
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
@@ -875,6 +880,7 @@ class GzipCodec(_DeflateFamilyCodec):
         # still select rapidgzip with the dedicated ISIZE backstop (not VerifyingStream).
         return super().open(source, params, _config_with_gzip_isize(source, config))
 
+    @override
     def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
         # Stdlib path: gzip-window DecompressorStream (not gzip.GzipFile). CRC/ISIZE
         # outcomes come from zlib's gzip window; members with nothing between them
@@ -884,11 +890,13 @@ class GzipCodec(_DeflateFamilyCodec):
         # progress reaches REWIND_REDECODE_WARN_BYTES.
         return _stdlib_gzip(source, config)
 
+    @override
     def _leaves_to_stdlib(self, source: CodecSource, config: StreamConfig) -> bool:
         # The standard-library engine raises zlib's own error on the first read, as
         # it does with the accelerator off.
         return _gzip_header_refused(source, natives_for(config.process_isolation))
 
+    @override
     def _end_check(
         self,
         source: CodecSource,
@@ -920,6 +928,7 @@ class GzipCodec(_DeflateFamilyCodec):
             natives=natives_for(config.process_isolation),
         )
 
+    @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, gzip.BadGzipFile):
             return CorruptionError(
@@ -935,6 +944,7 @@ class GzipCodec(_DeflateFamilyCodec):
             return gzip_error(exc)
         return self._eof_truncation(exc, "gzip")
 
+    @override
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
         """Surface gzip's stored filename (FNAME), mtime and trailer ISIZE.
 

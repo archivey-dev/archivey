@@ -60,6 +60,8 @@ from typing import (
     cast,
 )
 
+from archivey.internal.overrides import override
+
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
     from pycdlib.dates import DirectoryRecordDate, VolumeDescriptorDate
@@ -1326,15 +1328,19 @@ class _ZisofsStream(io.RawIOBase):
         self._cached_index = -1
         self._cached = b""
 
+    @override
     def readable(self) -> bool:
         return True
 
+    @override
     def seekable(self) -> bool:
         return True
 
+    @override
     def tell(self) -> int:
         return self._position
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         # A relative seek to before the start clamps to 0, as io.BytesIO and the other
         # member streams do. ArchiveStream.seek rejects a negative SEEK_SET and a bad
@@ -1345,6 +1351,7 @@ class _ZisofsStream(io.RawIOBase):
         )
         return self._position
 
+    @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         # Views released on return: see try_readinto.
         with memoryview(b) as outer, outer.cast("B") as view:
@@ -1407,6 +1414,7 @@ class _ZisofsStream(io.RawIOBase):
         self._cached_index, self._cached = index, data
         return data
 
+    @override
     def close(self) -> None:
         if not self.closed:
             # ``getattr``: ``IOBase.__del__`` closes an instance whose ``__init__``
@@ -1945,6 +1953,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         """The records that hold one file's data, as the walk joined them."""
         return self._file_records_of.get(id(record), (record,))
 
+    @override
     def iter_members(self) -> Iterator[MemberRecord[DirectoryRecord]]:
         # Pinned-pycdlib audit (tar-concurrent-open 2.7 / concurrent-member-streams 5.4):
         # the record walk traverses in-memory parsed catalog records and reads nothing
@@ -2484,6 +2493,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             end = start + length
         return spans
 
+    @override
     def open_member(
         self, member: ArchiveMember, locator: DirectoryRecord
     ) -> MemberData:
@@ -2549,6 +2559,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             stream.close()
             raise
 
+    @override
     def archive_info(self) -> ReaderArchiveInfo:
         pvd = self._iso.pvd
         # The standard allows d-characters only, but writers store the -V text as it
@@ -2588,6 +2599,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         finally:
             self._iso_fp.close()
 
+    @override
     def close(self) -> None:
         self._release_archive_handles()
 
@@ -2686,9 +2698,11 @@ class IsoHandler(FormatHandler):
     )
     uses_encoding = True  # for Rock Ridge and plain names that are not valid UTF-8
 
+    @override
     def open(self, source: ReaderSource, context: ReaderContext) -> IsoReader:
         return IsoReader(source, context)
 
+    @override
     def translate_exception(self, exc: Exception) -> ArchiveyError | None:
         # pycdlib choked on corrupt structure; ``_PYCDLIB_ERRORS`` says why the set is
         # this broad. A genuine OSError is not in it and propagates unchanged.

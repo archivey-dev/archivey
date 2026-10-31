@@ -12,6 +12,7 @@ from archivey.exceptions import (
     PackageNotInstalledError,
 )
 from archivey.internal.config import AcceleratorMode, StreamConfig
+from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
@@ -64,6 +65,7 @@ class _DeflateFamilyCodec(StreamCodec):
     # end in its own wrapper.
     _empty_to_stdlib: ClassVar[bool] = False
 
+    @override
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
@@ -73,6 +75,7 @@ class _DeflateFamilyCodec(StreamCodec):
                 return stream
         return self._open_stdlib(source, config)
 
+    @override
     def check_accelerator(self, source: CodecSource, config: StreamConfig) -> None:
         if config.use_rapidgzip is not AcceleratorMode.ON:
             return
@@ -171,11 +174,13 @@ class _DeflateFamilyCodec(StreamCodec):
         """
         return None
 
+    @override
     def translator(self, config: StreamConfig) -> ExceptionTranslator:
         if _deflate_family_uses_accelerator(config):
             return self._translate_accelerator
         return self.translate
 
+    @override
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         return _rapidgzip_rewind_warning(self.codec.value, config)
 

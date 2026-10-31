@@ -15,6 +15,7 @@ from archivey.exceptions import (
     exception_detail,
 )
 from archivey.internal.config import StreamConfig
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.base import (
     BZIP2_HEADER,
     GZIP_MAGIC,
@@ -208,6 +209,7 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         self._checked = False
         self._verdict: KeptError | None = None
 
+    @override
     def read(self, size: int = -1, /) -> bytes:
         if size == 0:
             return b""
@@ -234,6 +236,7 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         self._returned = max(self._returned, start + len(data))
         return data
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if whence == io.SEEK_CUR:
             # Absolute before any read-through moves the position it is relative to.
@@ -246,6 +249,7 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         self._pos = self._inner.seek(offset, whence)
         return self._pos
 
+    @override
     def tell(self, /) -> int:
         return self._pos
 
@@ -457,6 +461,7 @@ class _DeflateEndCheckStream(DelegatingStream):
         self._refuse_input_after_end = refuse_input_after_end
         self._checked = False
 
+    @override
     def read(self, size: int = -1, /) -> bytes:
         if size == 0:
             return b""
@@ -472,6 +477,7 @@ class _DeflateEndCheckStream(DelegatingStream):
             buf += self._inner.read(size)
         return bytes(buf)
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         result = super().seek(offset, whence)
         if _seek_reached_end(offset, whence, result) and self._hands_over_at_end():
@@ -519,6 +525,7 @@ class _ZlibErrorCodec(_DeflateFamilyCodec):
     # The stream's name in messages.
     _label: str
 
+    @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, zlib.error):
             # A zlib stream's Adler-32 failing is a whole-stream checksum.
@@ -531,12 +538,14 @@ class DeflateCodec(_ZlibErrorCodec):
     _label = "deflate"
     _empty_to_stdlib = True
 
+    @override
     def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
         # Stdlib raw deflate; a backward seek re-decodes from the start (see rewind_warning).
         # Under rapidgzip it is also the takeover's decoder, so bytes after the stream
         # that rapidgzip fails on are refused there too (refuse_input_after_end).
         return _stdlib_zlib(source, config, wbits=RAW_DEFLATE_WBITS)
 
+    @override
     def _leaves_to_stdlib(self, source: CodecSource, config: StreamConfig) -> bool:
         # rapidgzip would decode a gzip, zlib or bzip2 stream here; the standard
         # library reads it as raw DEFLATE, as it does with the accelerator off. No
@@ -545,6 +554,7 @@ class DeflateCodec(_ZlibErrorCodec):
         # real stream that has it decodes without the accelerator.
         return _rapidgzip_may_read_as_another_format(source)
 
+    @override
     def _end_check(
         self,
         source: CodecSource,
@@ -558,6 +568,7 @@ class DeflateCodec(_ZlibErrorCodec):
             stream, views=views, refuse_input_after_end=refuse, natives=natives
         )
 
+    @override
     def _accelerated_limit(
         self, params: CodecParams, config: StreamConfig
     ) -> int | None:
@@ -606,16 +617,19 @@ class ZlibCodec(_ZlibErrorCodec):
     # No exact magic: zlib's 2-byte header is too unspecific, so it is recognized by a content
     # probe that gates on that header before decoding.
 
+    @override
     def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
         # Stdlib zlib; a backward seek re-decodes from the start (see rewind_warning).
         return _stdlib_zlib(source, config)
 
+    @override
     def _leaves_to_stdlib(self, source: CodecSource, config: StreamConfig) -> bool:
         # Not a zlib header rapidgzip accepts: it would decode a gzip member, a
         # bzip2 stream or raw DEFLATE, and the standard library raises at the
         # first read, as it does with the accelerator off.
         return not _rapidgzip_reads_as_zlib(source)
 
+    @override
     def _end_check(
         self,
         source: CodecSource,
@@ -632,6 +646,7 @@ class ZlibCodec(_ZlibErrorCodec):
             stream, views=views, trailer=trailer, natives=natives
         )
 
+    @override
     def content_probe(
         self,
         prefix: bytes,

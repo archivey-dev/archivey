@@ -106,6 +106,7 @@ from archivey.internal.naming import (
     normalize_member_name,
 )
 from archivey.internal.open_site import OpenSite
+from archivey.internal.overrides import override
 from archivey.internal.password import (
     _PasswordCandidates,
     _PasswordCandidatesExhausted,
@@ -510,6 +511,7 @@ class _ReadAheadStream(ReadOnlyIOStream):
         self._rest = rest
         self._head = head
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
@@ -524,6 +526,7 @@ class _ReadAheadStream(ReadOnlyIOStream):
             data += self._rest.read(n - len(data))
         return data
 
+    @override
     def close(self) -> None:
         if self.closed:
             return
@@ -772,9 +775,11 @@ class SevenZipReader(BaseArchiveReader):
                 grouped.setdefault(raw.folder_index, []).append(member)
         return grouped
 
+    @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield from self._members
 
+    @override
     def _iter_with_data(
         self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
     ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
@@ -948,6 +953,7 @@ class SevenZipReader(BaseArchiveReader):
             owned.pop_all()
             return content
 
+    @override
     def _prepare_link_target_reads(self, members: list[ArchiveMember]) -> None:
         """Sweep each folder holding one of ``members`` once, up to its last link.
 
@@ -1439,6 +1445,7 @@ class SevenZipReader(BaseArchiveReader):
             why="no checksum confirmed the password",
         )
 
+    @override
     def _solid_run(self, member: ArchiveMember) -> SolidRun | None:
         # Every open() builds its folder's decoder afresh and decodes up to the member.
         # A member alone in its folder decodes no other member's bytes.
@@ -1516,11 +1523,13 @@ class SevenZipReader(BaseArchiveReader):
             verify_member=verify_member,
         )
 
+    @override
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, EOFError):
             return TruncatedError("7z folder ended before the requested member")
         return None
 
+    @override
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         if member.type != MemberType.SYMLINK or member.link_target is not None:
             return
@@ -1534,6 +1543,7 @@ class SevenZipReader(BaseArchiveReader):
             reparse_fallback=self._reparse_fallback_type(raw.record),
         )
 
+    @override
     def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         raw = member._raw
         assert isinstance(raw, _MemberRaw)
@@ -1579,6 +1589,7 @@ class SevenZipReader(BaseArchiveReader):
             inner.close()
             raise
 
+    @override
     def _get_archive_info(self) -> ArchiveInfo:
         solid_blocks = sum(
             1 for members in self._folder_members.values() if len(members) > 1
@@ -1605,6 +1616,7 @@ class SevenZipReader(BaseArchiveReader):
             extra=info_extra,
         )
 
+    @override
     def _close_archive(self) -> None:
         self._shared.close()
 
@@ -1628,6 +1640,7 @@ class SevenZipReadBackend(ReadBackend):
     NON_SEEKABLE_REASON = "its index is at the end of the file"
     OPTIONAL_DEPENDENCY = None
 
+    @override
     def open_read(
         self,
         source: ArchiveSource,

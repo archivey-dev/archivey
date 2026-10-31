@@ -47,6 +47,7 @@ from archivey.internal.diagnostics_collector import (
     resolve_collector,
 )
 from archivey.internal.logs import streams as logger
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
 from archivey.internal.streams.decompressor_stream import (
     TRAILING_DATA_CANDIDATES,
@@ -1104,18 +1105,21 @@ class XzDecoder(BaseDecoder):
         )
 
     @property
+    @override
     def trailing_bytes(self) -> int | None:
         # Only the sequential engine meets the end of the data; a block resume hands
         # off to one before then.
         return getattr(self._engine, "trailing_bytes", None)
 
     @property
+    @override
     def input_after_end(self) -> bool:
         # Further streams and stream padding are part of the xz data, so they are not
         # input after its end: 7-Zip reads them in a ZIP member too.
         return getattr(self._engine, "input_after_end", False)
 
     @property
+    @override
     def needs_input(self) -> bool:
         return self._engine.needs_input
 
@@ -1208,6 +1212,7 @@ class XzDecoder(BaseDecoder):
             self._decomp_cursor += decompressed_size
         return points
 
+    @override
     def build_index(
         self, inner: BinaryIO, last_known: SeekPoint
     ) -> tuple[list[SeekPoint], int | None]:
