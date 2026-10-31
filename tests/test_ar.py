@@ -227,6 +227,25 @@ def test_a_compressed_pair_is_spelled_like_a_plugins(
         assert [m.name for m in reader.members()] == NAMES
     with pytest.raises(CorruptionError, match="No ar magic"):
         open_archive(path, format="ar").close()
+    # open_stream takes the same spelling and peels the compression layer only.
+    with archivey.open_stream(path, format=spelling) as peeled:
+        plain = peeled.read()
+    assert plain == (DATA / "gnu.a").read_bytes()
+    with open_archive(io.BytesIO(plain)) as reader:
+        assert [m.name for m in reader.members()] == NAMES
+
+
+@pytest.mark.parametrize("compressed", [False, True], ids=["plain", "gz"])
+def test_the_cost_follows_the_compression_layer(compressed: bool) -> None:
+    """Plain ar is scanned and direct; inside a compressor, as a compressed TAR is."""
+    data = (DATA / "gnu.a").read_bytes()
+    with open_archive(io.BytesIO(gzip.compress(data) if compressed else data)) as r:
+        cost = r.info.cost
+    assert (cost.listing_cost, cost.access_cost) == (
+        (archivey.ListingCost.REQUIRES_DECOMPRESSION, archivey.AccessCost.SOLID)
+        if compressed
+        else (archivey.ListingCost.REQUIRES_SCANNING, archivey.AccessCost.DIRECT)
+    )
 
 
 @pytest.mark.parametrize("compressed", [False, True], ids=["plain", "gz"])

@@ -13,8 +13,8 @@ format added from outside uses, and is registered as a built-in the way ISO is.
 | Read | Yes. `internal/backends/ar_reader.py`, an `ArHandler` (`SequentialFormatHandler`) and an `ArReader` (`SequentialReader`), registered with `register_builtin_format` |
 | Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
 | Source | A file, a stream that can seek, or a pipe (`streaming=True`). Inside any single-file compression stream (`.a.gz`, `.ar.xz`, …), as TAR is |
-| Listing cost | `REQUIRES_SCANNING`, header by header |
-| Access cost | `DIRECT` from a source that can seek; inside a compression stream, solid, as a compressed TAR is |
+| Listing cost | `REQUIRES_SCANNING`, header by header; inside a compression stream, `REQUIRES_DECOMPRESSION`, as a compressed TAR is |
+| Access cost | `DIRECT` from a source that can seek; inside a compression stream, `SOLID`, as a compressed TAR is |
 | Core dependencies | None |
 | Encryption | None |
 | Checksums | None. Damage shows only as a header that does not parse |

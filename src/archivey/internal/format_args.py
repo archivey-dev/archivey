@@ -91,6 +91,13 @@ _plugin_spellings: dict[str, ArchiveFormat] = {}
 # ``tests/test_cli_outer.py`` pins the copy to it.
 SEQUENTIAL_CONTAINERS: set[ContainerFormat] = {ContainerFormat.TAR}
 
+# The built-in containers whose compressed pairs are spelled as a plugin's (``ar.gz``),
+# because they have no named constant. TAR is not one: its pairs are named constants,
+# and the three without one (``(TAR, LZIP)`` and the rest) are unspelled on purpose.
+# ``register_builtin_format`` adds each; ``register_codec`` spells a later codec's
+# pair for them too.
+PAIR_SPELLED_CONTAINERS: set[ContainerFormat] = set()
+
 
 def _plugin_format_spellings(fmt: ArchiveFormat) -> tuple[str, str]:
     return fmt.file_extension(), fmt.display_name

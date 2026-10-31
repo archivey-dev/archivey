@@ -2142,8 +2142,8 @@ def register_builtin_format(
             "a built-in has a named container"
         )
         add_sequential_container(container)
-    # A sequential format's compressed pairs (``ar.gz``) have no named constant.
-    if backend.STREAM_PAIRS:
+        # Its compressed pairs (``ar.gz``) have no named constant.
+        format_args.PAIR_SPELLED_CONTAINERS.add(container)
         for each in compressed_formats(plugin.format):
             add_plugin_spellings(each)
     return backend

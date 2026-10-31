@@ -39,6 +39,9 @@ version.
 | BSD archive with a `#1/20` name in the data area | Member named by those 20 bytes, its data after them; `extra["ar.dialect"] == "bsd"` |
 | `!<arch>\n` and nothing else | No members, no `ar.dialect` key, no error |
 | The same archive gzipped, opened with `format="ar.gz"` | `ArchiveFormat(AR, GZIP)`; `format="ar"` on those bytes raises `CorruptionError` |
+| `open_stream` of that file with `format="ar.gz"` | The uncompressed ar bytes |
+| A plain archive, opened | `cost.listing_cost=REQUIRES_SCANNING`; `cost.access_cost=DIRECT` |
+| The same archive gzipped, opened | `cost.listing_cost=REQUIRES_DECOMPRESSION`; `cost.access_cost=SOLID` |
 
 ### Requirement: Bound a BSD name to 64 KiB
 
