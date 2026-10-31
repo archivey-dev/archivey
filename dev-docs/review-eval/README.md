@@ -57,7 +57,9 @@ python3 scripts/review_eval.py run --out /tmp/eval --model claude-sonnet-5-5 --e
 python3 scripts/review_eval.py run --out /tmp/eval --install   # PR's dependencies first
 ```
 
-Each case is a full review, one to two dollars of quota with Sonnet (see the costs in
+Each case is a full review. The default model is Opus, which the loop runs for a
+standard or deep pull request's first look: about eight dollars of quota a case, against
+one to two with `--model claude-sonnet-5-5` (see the costs in
 [`results.md`](results.md)). Try a change on one case first; run the whole set once
 the change is final, and add the line to `results.md` in the same PR.
 

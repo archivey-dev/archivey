@@ -52,10 +52,12 @@ on:
   workflow_dispatch:
 
 # A pull request push runs a reduced set of jobs; the merge queue, the daily run and a
-# dispatched run get all of them. Every job below runs on pull requests unless it says
-# otherwise. On a pull request: lint, the `test` legs (Linux 3.11 and 3.14 [all], Linux
-# 3.11 core-only, Windows 3.14 [all]), free-threaded 3.13t, the structural benchmark and
-# the three plugin jobs. Only past it: the `test-queue` legs (the other Pythons, 3.14
+# dispatched run get all of them, except that a merge group changing no library, test,
+# dependency or CI path runs only the pull request set plus the free-threaded 3.15t leg
+# (the `scope` job). Every job below runs on pull requests unless it says otherwise. On
+# a pull request: lint, the `test` legs (Linux 3.11 and 3.14 [all], Linux 3.11
+# core-only, Windows 3.14 [all]), free-threaded 3.13t, the structural benchmark and the
+# three plugin jobs. Only past it: the `test-queue` legs (the other Pythons, 3.14
 # core-only, the minimum versions, macOS, Windows 3.11), 3.15t, the distribution unar
 # packages, PyPy and the short Atheris fuzz. A failure there takes the pull request out
 # of the queue. The split exists because the organization's runners are shared (20 jobs
@@ -455,11 +457,57 @@ jobs:
           pytest tests/test_property_safety.py -q -n auto
           ${{ matrix.coverage && '--cov-report=term-missing' || '--no-cov' }}
 
+  # Whether a merge-queue run needs every job. A group that changes none of the paths
+  # in `scripts/ci_scope.py` (the library, the plugin packages, the tests, the
+  # dependencies, this CI and the scripts it runs) runs what a pull request push runs,
+  # on the merged tree, and skips the four queue-only jobs that wait on this one:
+  # `test-queue`, `unar-distro-packages`, `pypy` and `atheris`. The daily run still runs
+  # them all. Only a merge_group runs it; a skipped or failed scope, and a diff the
+  # compare API cut off, mean the full run. The four jobs start after it in every group,
+  # a few seconds plus a runner wait.
+  scope:
+    name: Queue scope
+    if: github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      full: ${{ steps.scope.outputs.full }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ci_scope.py
+          sparse-checkout-cone-mode: false
+      - name: Changed paths
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.merge_group.head_sha }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/compare/$BASE...$HEAD" > /tmp/compare.json
+          # The compare API lists at most 300 files.
+          truncated=$(jq '(.files | length) >= 300' /tmp/compare.json)
+          jq -r '.files[] | .filename, (.previous_filename // empty)' /tmp/compare.json \
+            > /tmp/paths.txt
+          args=()
+          [ "$truncated" = true ] && args+=(--truncated)
+          decision=$(python3 scripts/ci_scope.py "${args[@]}" < /tmp/paths.txt)
+          echo "$decision" >> "$GITHUB_OUTPUT"
+          # Renames list both names, so count each path once.
+          echo "Paths considered: $(sort -u /tmp/paths.txt | wc -l); $decision" \
+            >> "$GITHUB_STEP_SUMMARY"
+
   # The test legs that run only past a pull request: in the merge queue, the daily run
-  # and a dispatched run (see the note at the top). Same steps as `test`.
+  # and a dispatched run (see the note at the top). Same steps as `test`. In the merge
+  # queue, only when `scope` says the group needs them.
   test-queue:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
-    if: github.event_name != 'pull_request'
+    needs: scope
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.scope.outputs.full != 'false' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     # Prerelease legs (matrix.prerelease) report but cannot fail the run: a CPython
@@ -530,7 +578,8 @@ jobs:
   # Not on pull requests: the packages change on the distributions' schedule, not ours.
   unar-distro-packages:
     name: unar package / ${{ matrix.image }}
-    if: github.event_name != 'pull_request'
+    needs: scope
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.scope.outputs.full != 'false' }}
     runs-on: ubuntu-latest
     container: mirror.gcr.io/library/${{ matrix.image }}
     timeout-minutes: 15
@@ -673,7 +722,8 @@ jobs:
   # part of the log the GitHub API returns. Not on pull requests.
   pypy:
     name: ${{ matrix.python }}
-    if: github.event_name != 'pull_request'
+    needs: scope
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.scope.outputs.full != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -819,7 +869,8 @@ jobs:
   # The short Atheris fuzz (atheris-fuzz.yml in its short mode, three shards), in the
   # merge queue only. The nightly and dispatched full runs stay in that workflow.
   atheris:
-    if: github.event_name == 'merge_group'
+    needs: scope
+    if: ${{ !cancelled() && github.event_name == 'merge_group' && needs.scope.outputs.full != 'false' }}
     uses: ./.github/workflows/atheris-fuzz.yml
     with:
       short: true
@@ -832,7 +883,7 @@ jobs:
   gate:
     name: CI gate
     if: ${{ always() && github.event_name == 'merge_group' }}
-    needs: [lint, test, test-queue, unar-distro-packages, free-threaded-concurrency, pypy, benchmark, squashfs-plugin, atheris]
+    needs: [scope, lint, test, test-queue, unar-distro-packages, free-threaded-concurrency, pypy, benchmark, squashfs-plugin, atheris]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

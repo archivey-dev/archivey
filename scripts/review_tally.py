@@ -9,7 +9,8 @@ merged pull requests and reports what a retrospective would otherwise count by h
 - how many pull requests ended on a conditional approval, whose last fixes no round read;
 - findings by severity, and which ones the Opus pass raised rather than a loop round;
 - what happened to each finding: fixed, disproven, escalated, split, or no reply found;
-- findings that name an earlier finding's fix as their cause.
+- findings that name an earlier finding's fix as their cause;
+- rounds whose posts missed the shape the skill asks for (`scripts/review_shape.py`).
 
     python3 scripts/review_tally.py --days 7
     python3 scripts/review_tally.py --pr 1141 --pr 1143   # these, whenever merged
@@ -121,6 +122,9 @@ class Round:
     opus_pass: bool
     #: A conditional approval the Opus pass follows (``next=opus``): the loop went on.
     opus_next: bool = False
+    #: Posting-shape misses the round's close counted (`scripts/review_shape.py`), or
+    #: ``None`` when the close could not check (``shape=skipped``).
+    shape: int | None = 0
 
 
 @dataclass
@@ -171,11 +175,13 @@ def read_rounds(issue_comments: list[dict]) -> list[Round]:
             n = int(fields.get("n", ""))
         except ValueError:
             continue
+        shape = fields.get("shape", "0").rstrip("-> ")
         rounds[n] = Round(
             n,
             fields.get("verdict", "").rstrip("-> "),
             "pass" in fields,
             fields.get("next", "").rstrip("-> ") == "opus",
+            int(shape) if shape.isdigit() else None,
         )
     return [rounds[n] for n in sorted(rounds)]
 
@@ -397,6 +403,21 @@ def report(prs: list[PullRequest], scope: str) -> str:
             if disp[k]
         )
     )
+    misshapen = [(p.number, r) for p in reviewed for r in p.rounds if r.shape]
+    out.append(
+        f"- **Rounds whose posts missed the posting shape:** {len(misshapen)}"
+        + (
+            ": " + ", ".join(f"#{n} round {r.n} ({r.shape})" for n, r in misshapen)
+            if misshapen
+            else ""
+        )
+    )
+    unchecked = [(p.number, r) for p in reviewed for r in p.rounds if r.shape is None]
+    if unchecked:
+        out.append(
+            f"- **Rounds whose posting shape was not checked:** {len(unchecked)}: "
+            + ", ".join(f"#{n} round {r.n}" for n, r in unchecked)
+        )
     from_fix = [f for f in findings if f.from_fix]
     out.append(
         f"- **Raised by an earlier fix:** {len(from_fix)}"

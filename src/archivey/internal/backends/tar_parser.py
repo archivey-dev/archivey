@@ -42,7 +42,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
-from typing import BinaryIO, cast
+from typing import BinaryIO, Literal, cast
 
 from archivey.exceptions import (
     ArchiveyError,
@@ -102,6 +102,9 @@ DATA_READ_STEP = _COMPRESSED_READ_SIZE_MAX
 
 POSIX_MAGIC = b"ustar\x00"
 GNU_MAGIC = b"ustar  \x00"
+# The version bytes after POSIX_MAGIC that writers use: "00", and NULs, which some Java
+# archivers write. Any other is MAGIC_VERSION.
+_USTAR_VERSIONS = (b"00", b"\x00\x00")
 
 # Typeflags.
 SPARSE_TYPE = b"S"
@@ -126,6 +129,11 @@ NO_DATA_TYPES = frozenset((b"1", b"2", b"3", b"4", b"5", b"6"))
 # header's own size field: a PAX size, which GNU tar 1.35 skips, gives these typeflags a
 # data area (LinkData.FRAMED for a link, tar_reader._directory_has_data for ``5``; a
 # device or FIFO with one is refused by the reader).
+
+# Typeflags whose header size the walk can read as naming no data at all, the block
+# after the header being the next one (a device or FIFO with a size is refused by the
+# reader instead).
+_SIZE_NAMES_NO_DATA = NO_DATA_TYPES - frozenset((b"3", b"4", b"6"))
 
 # The regular-file typeflags whose entry is a directory when its final name ends in
 # "/": AREGTYPE (NUL), REGTYPE (``0``) and CONTTYPE (``7``), the three GNU tar's
@@ -193,6 +201,8 @@ class HeaderBlock:
     sparse_extended: bool = False
     sparse_realsize: int = 0
     device_number_fault: str | None = None
+    # The checksum matches only the signed sum (_checksum_matches).
+    signed_checksum: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,19 +295,21 @@ def _byte_sum(data: bytes) -> int:
     return total
 
 
-def _checksum_matches(block: bytes, stored: int) -> bool:
-    """Whether ``stored`` is the unsigned or the signed sum of ``block`` with its
-    checksum field as spaces.
+def _checksum_matches(
+    block: bytes, stored: int
+) -> Literal["unsigned", "signed"] | None:
+    """Which sum of ``block``, with its checksum field as spaces, ``stored`` is:
+    ``"unsigned"``, ``"signed"``, or ``None`` when it is neither.
 
-    Old Sun and other writers summed signed bytes; GNU tar and ``tarfile`` accept
-    either sum.
+    Old SunOS and Ultrix tars summed signed bytes; GNU tar and ``tarfile`` accept
+    either sum. The signed one is SIGNED_CHECKSUM: no current writer produces it.
     """
     unsigned = _byte_sum(block) - sum(block[148:156]) + 8 * 0x20
     if stored == unsigned:
-        return True
+        return "unsigned"
     rest = block[:148] + block[156:]
     high = len(rest) - len(rest.translate(None, _HIGH_BYTES))
-    return stored == unsigned - 256 * high
+    return "signed" if stored == unsigned - 256 * high else None
 
 
 _FIELDS = (
@@ -357,7 +369,8 @@ def parse_header_block(
         stored_sum = parse_number(block[148:156])
     except _BadNumber:
         return RejectedBlock(offset, "the checksum field is not a number")
-    if not _checksum_matches(block, stored_sum):
+    checksum = _checksum_matches(block, stored_sum)
+    if checksum is None:
         return RejectedBlock(offset, "bad header checksum")
     try:
         mode, uid, gid, size, mtime = map(_cached_number, _split_numbers(block))
@@ -448,6 +461,7 @@ def parse_header_block(
         sparse_slots=sparse_slots,
         sparse_extended=sparse_extended,
         sparse_realsize=sparse_realsize,
+        signed_checksum=checksum == "signed",
         mode=mode,
         uid=uid,
         gid=gid,
@@ -500,9 +514,20 @@ def _sparse_slots(block: bytes, start: int, count: int) -> tuple[tuple[int, int]
 
 
 _PAX_LENGTH = re.compile(rb"([0-9]{1,20}) ")
-# The keywords an empty value sets to empty, as GNU tar 1.35's decoders store any
-# string. Another keyword's empty value leaves the value in force before it.
-_EMPTY_VALUE_STORED = frozenset((b"linkpath", b"uname", b"gname"))
+# The skipped empty values EMPTY_VALUE reports: a name, or a number GNU tar 1.35 calls
+# invalid. Each leaves the value in force before it. Not reported: GNU tar writes an
+# empty SCHILY.xattr.<name> for an empty extended attribute (tar --xattrs), and a
+# comment or vendor record names and frames nothing.
+_EMPTY_VALUE_REPORTED = frozenset(
+    (b"path", b"mtime", b"atime", b"ctime", b"uid", b"gid")
+)
+# The keywords whose empty value is skipped: those above, ``hdrcharset``, and
+# ``size``, which raises instead. Every other empty value is stored, as GNU tar 1.35's
+# decoders store any string: ``linkpath``, ``uname`` and ``gname`` become empty, a
+# ``GNU.sparse.*`` record is kept for the sparse checks to judge, and a key archivey
+# does not read, such as an empty xattr, stays in ``extra["tar.pax_headers"]``
+# (maintainer ruling 2026-10-31: it is the only trace that the xattr exists).
+_EMPTY_VALUE_SKIPPED = _EMPTY_VALUE_REPORTED | {b"hdrcharset", b"size"}
 # The keywords whose value is a C string to GNU tar 1.35, cut at its first NUL as an
 # ``L`` or ``K`` payload and a header field are. The cut comes before the empty-value
 # rule, so a ``path`` that is empty after it is skipped and the value in force stays.
@@ -536,12 +561,27 @@ class PaxRecords:
     # Keys set more than once in the block, apart from the sparse 0.0 map's, each
     # once (a dict, so a block of one key repeated holds one entry).
     repeated: dict[bytes, None]
-    # Keys of _C_STRING_KEYS whose value held a NUL and was cut there, each once.
+    # Keys of _C_STRING_KEYS whose value held a NUL and was cut there, and keys
+    # holding a NUL themselves, each once.
     nul_cut: dict[bytes, None]
+    # Keys of _EMPTY_VALUE_REPORTED whose empty value was skipped and is the
+    # block's last record of that key, each once.
+    emptied: dict[bytes, None]
+    # Keys whose value holds a newline, outside _NEWLINE_ALLOWED_PREFIXES, or that
+    # hold one themselves, each once.
+    newlines: dict[bytes, None]
 
 
+# The keywords whose values real writers fill with newlines: extended attributes and
+# ACLs hold arbitrary bytes or lines (GNU tar --xattrs, star, libarchive).
+_NEWLINE_ALLOWED_PREFIXES = (b"SCHILY.xattr.", b"LIBARCHIVE.xattr.", b"SCHILY.acl.")
 # The PAX sparse 0.0 map repeats these two keys by design.
 _SPARSE_MAP_KEYS = frozenset((b"GNU.sparse.offset", b"GNU.sparse.numbytes"))
+# The PAX numbers LEADING_ZERO reports: the ones that frame a member or give its listed
+# size. A sparse map's offsets and lengths are left out: the walk checks that the
+# chunks sum to the stored size, so a map read as octal cannot frame anything, and no
+# case of tar-minefield (whose F26 is about size) covers them.
+_LEADING_ZERO_KEYS = (b"size", b"GNU.sparse.size", b"GNU.sparse.realsize")
 # Keys that name or frame one member, which a global header applies to every member.
 _MEMBER_KEYS = (b"path", b"linkpath", b"size")
 
@@ -567,6 +607,49 @@ class Ambiguity(Enum):
     # A global header that drops a key an earlier global header set (one per key):
     # GNU tar replaces the global records, tarfile and POSIX merge them.
     GLOBAL_REPLACED = "global_replaced"
+    # GNU long headers (L or K) and an x header in one member's chain, in either
+    # order, when BOTH_FAMILIES is not reported on the member: any BOTH_FAMILIES,
+    # on path or linkpath, already names the mix and stands in for this one. To a
+    # reader that knows only PAX, an L header is a member of an unknown type, so the
+    # x header's records (a size among them) apply to it, not to the member.
+    MIXED_CHAIN = "mixed_chain"
+    # A global header between an x or L header and the member it extends. GNU tar
+    # applies the x or L header to the member; a reader can apply it to the global
+    # header instead, and the member keeps its header's name.
+    GLOBAL_IN_CHAIN = "global_in_chain"
+    # An x header's last record of path or a number (_EMPTY_VALUE_REPORTED) with an
+    # empty value, which is skipped: POSIX has it delete a field, and readers disagree
+    # on which. GNU tar keeps the value in force before it (and reports an empty
+    # number as invalid).
+    EMPTY_VALUE = "empty_value"
+    # A PAX size or sparse size (_LEADING_ZERO_KEYS) with a leading zero, such as 0777:
+    # 777 to GNU tar and POSIX, 511 to a reader that takes it as octal, as the
+    # header's numbers are.
+    LEADING_ZERO = "leading_zero"
+    # A member header's size, name, prefix or linkname field, or an extended
+    # header's size (field "x size", "L size", ...), with bytes after the NUL or
+    # blank that ends it. GNU tar ignores them; a reader that skips the blank in
+    # "000000 1000" reads a size of 512 and the next header as data. Only a member
+    # field the member uses counts: not a name or size an extended header overrode.
+    FIELD_TAIL = "field_tail"
+    # A size in the header of a directory or link, when the block after it is a
+    # header (member or extended): GNU tar reads that header next, a reader that
+    # skips the size reads it as data and loses the member.
+    SIZE_ON_NO_DATA = "size_on_no_data"
+    # A header whose checksum matches only the signed sum of its bytes, as SunOS 4 and
+    # Ultrix tars wrote it (field "chksum"). GNU tar accepts it; a reader that takes
+    # the POSIX unsigned sum refuses the header, or skips to the next one and frames
+    # every member after it differently (tar-minefield F06).
+    SIGNED_CHECKSUM = "signed_checksum"
+    # The POSIX magic with a version other than "00" or NULs (field "version"). GNU
+    # tar reads it as ustar and joins the prefix; a reader that takes it as v7 drops
+    # the prefix and names the member differently (tar-minefield F11).
+    MAGIC_VERSION = "magic_version"
+    # A newline inside a PAX value other than an extended attribute's or an ACL's
+    # (_NEWLINE_ALLOWED_PREFIXES). Records are framed by their length, so it is a
+    # byte of the value; a reader that splits records on lines reads another record,
+    # a path or a size (tar-minefield F13, F28).
+    NEWLINE_IN_VALUE = "newline_in_value"
 
 
 def _record_ambiguities(
@@ -576,12 +659,26 @@ def _record_ambiguities(
     values = records.values
     found += [(Ambiguity.REPEATED, key) for key in records.repeated]
     found += [(Ambiguity.NUL_IN_VALUE, key) for key in records.nul_cut]
+    found += [(Ambiguity.NEWLINE_IN_VALUE, key) for key in records.newlines]
     if is_global:
         found += [
             (Ambiguity.GLOBAL_MEMBER_FIELD, key)
             for key in _MEMBER_KEYS
             if key in values
         ]
+        return
+    # In a global header an empty value is how POSIX unsets a global record, and a
+    # global size is GLOBAL_MEMBER_FIELD already.
+    # A value empty only after the NUL cut is NUL_IN_VALUE: the record is not empty.
+    found += [
+        (Ambiguity.EMPTY_VALUE, key)
+        for key in records.emptied
+        if key not in records.nul_cut
+    ]
+    for key in _LEADING_ZERO_KEYS:
+        number = values.get(key)
+        if number is not None and len(number.value) > 1 and number.value[:1] == b"0":
+            found.append((Ambiguity.LEADING_ZERO, key))
 
 
 def parse_pax_records(
@@ -598,13 +695,14 @@ def parse_pax_records(
     A repeated key keeps one value, so a block of many records of one key holds no
     object per record: the last one, as GNU tar 1.35 applies a member's records in
     order, or the first with ``first_wins``, as it applies a global header's (it
-    keeps them in a list it prepends to). An empty value is read as GNU tar reads it:
-    ``linkpath``, ``uname`` and ``gname`` become empty, a ``GNU.sparse.*`` record is
-    kept for the sparse checks to judge, an empty ``size`` is
+    keeps them in a list it prepends to). An empty value is read as GNU tar reads it
+    (``_EMPTY_VALUE_SKIPPED``): an empty ``path``, number or ``hdrcharset`` is left
+    out, so the value in force before it stays (GNU tar skips an empty ``path`` and
+    reports an empty number as invalid), an empty ``size`` is
     :class:`CorruptionError` (GNU tar reports it as "invalid size=", and the size
-    frames the member), and any other keyword is left out, so the value in force
-    before it stays (GNU tar skips an empty ``path`` and reports an empty number as
-    invalid). The keywords in ``_C_STRING_KEYS`` are cut at their first NUL before
+    frames the member), and any other keyword is stored empty: ``linkpath``,
+    ``uname`` and ``gname`` become empty, and a ``GNU.sparse.*`` or vendor record is
+    kept. The keywords in ``_C_STRING_KEYS`` are cut at their first NUL before
     that rule applies. ``hdrcharset`` is kept by the same rule as any key, and the one
     kept decides whether the block's names are binary.
     """
@@ -613,6 +711,9 @@ def parse_pax_records(
     numbytes: list[bytes] = []
     repeated: dict[bytes, None] = {}
     nul_cut: dict[bytes, None] = {}
+    emptied: dict[bytes, None] = {}
+    newlines: dict[bytes, None] = {}
+    seen: set[bytes] = set()
     pos = 0
     end = len(data)
     while pos < end and data[pos] != 0:
@@ -634,6 +735,17 @@ def parse_pax_records(
             raise CorruptionError(
                 f"TAR PAX header has a record at byte {pos} with no key"
             )
+        # A newline in the keyword is the same smuggled record one byte earlier: a
+        # reader that splits on lines reads what follows it as another record. The
+        # allow-list is for values only; no keyword holds one.
+        if 0x0A in key or (
+            0x0A in value and not key.startswith(_NEWLINE_ALLOWED_PREFIXES)
+        ):
+            newlines[key] = None
+        # A NUL in the keyword: a reader that cuts the keyword there reads another
+        # key (path\0junk as path). The whole keyword is kept.
+        if 0 in key:
+            nul_cut[key] = None
         if key in _C_STRING_KEYS and 0 in value:
             value = _cut_nul(value)
             nul_cut[key] = None
@@ -642,21 +754,27 @@ def parse_pax_records(
         elif key == b"GNU.sparse.numbytes":
             numbytes.append(value)
         pos = record_end
-        if not value and key not in _EMPTY_VALUE_STORED:
+        # Every record of a key after its first counts, an empty one too: one key
+        # set twice in one header is REPEATED whichever value wins.
+        if key in seen and key not in _SPARSE_MAP_KEYS:
+            repeated[key] = None
+        seen.add(key)
+        if not value and key in _EMPTY_VALUE_SKIPPED:
             if key == b"size":
                 raise CorruptionError(
                     f"TAR PAX header has an empty size record at byte "
                     f"{pos - length}: the size frames the member's data"
                 )
-            if not key.startswith(b"GNU.sparse."):
-                continue
-        if key in raw:
-            # The sparse 0.0 map repeats its keys by design: not reported, but the
-            # value kept still follows first_wins like any other key.
-            if key not in _SPARSE_MAP_KEYS:
-                repeated[key] = None
-            if first_wins:
-                continue
+            if key in _EMPTY_VALUE_REPORTED:
+                emptied[key] = None
+            continue
+        # The sparse 0.0 map repeats its keys by design: not reported above, but the
+        # value kept still follows first_wins like any other key.
+        if key in raw and first_wins:
+            continue
+        # A value stored after an empty record of its key is the one in force, so the
+        # empty record no longer kept an earlier value.
+        emptied.pop(key, None)
         raw[key] = value
     # hdrcharset follows the block's own rule (last in x, first in g) like any key,
     # and an empty one is skipped like any other empty value.
@@ -666,7 +784,7 @@ def parse_pax_records(
     values = cast("dict[bytes, PaxValue]", raw)
     for key, value in raw.items():
         values[key] = PaxValue(value, binary)
-    return PaxRecords(values, offsets, numbytes, repeated, nul_cut)
+    return PaxRecords(values, offsets, numbytes, repeated, nul_cut, emptied, newlines)
 
 
 _SHOWN_CHARACTERS = 40
@@ -1012,6 +1130,43 @@ class TarSpan:
     sparse: SparseMap | None
 
 
+def _field_tails(block: bytes, entry: TarEntry) -> list[tuple[Ambiguity, bytes]]:
+    """FIELD_TAIL for each of the member header's size, name, prefix and linkname
+    fields that has bytes after the NUL or blank that ends it, and that the member
+    uses (a name or size an extended header overrode does not count). The walk calls
+    it only when a check inline at its call site, which every member pays for, finds
+    a field that may have a tail or a link name to look at.
+
+    A name field (``name``, ``linkname``, and ``prefix`` under the ustar magic, which
+    is the only one that joins it) has a tail when it still holds a NUL once its
+    trailing NULs go: a blank is a byte of a name, so a blank after the NUL counts.
+    """
+    found = []
+    if _size_has_tail(block) and b"size" not in entry.pax:
+        found.append((Ambiguity.FIELD_TAIL, b"size"))
+    if entry.name_source is NameSource.HEADER:
+        if b"\x00" in block[0:100].rstrip(b"\x00"):
+            found.append((Ambiguity.FIELD_TAIL, b"name"))
+        if block[257:263] == POSIX_MAGIC and b"\x00" in block[345:500].rstrip(b"\x00"):
+            found.append((Ambiguity.FIELD_TAIL, b"prefix"))
+    if entry.linkname_source is NameSource.HEADER and b"\x00" in block[157:257].rstrip(
+        b"\x00"
+    ):
+        found.append((Ambiguity.FIELD_TAIL, b"linkname"))
+    return found
+
+
+def _size_has_tail(block: bytes) -> bool:
+    """Whether a header block's size field has bytes other than NULs and blanks after
+    the NUL or blank that ends its digits.
+
+    The size parsed, so stripped of the NULs and blanks around it, it is all digits
+    unless a tail follows them, or it is base-256 (first byte 0x80 or 0xFF).
+    """
+    digits = block[124:136].strip(_NO_DIGIT)
+    return bool(digits) and block[124] < 0x80 and not digits.isdigit()
+
+
 def _round_up(n: int) -> int:
     return (n + BLOCKSIZE - 1) // BLOCKSIZE * BLOCKSIZE
 
@@ -1348,10 +1503,26 @@ class TarWalker:
                 else:
                     self.end = TarEnd(TarEndKind.REJECTED, offset, reason=parsed.reason)
                 return self.end
+            if parsed.signed_checksum:
+                ambiguities.append((Ambiguity.SIGNED_CHECKSUM, b"chksum"))
+            if (
+                parsed.format is HeaderFormat.USTAR
+                and block[263:265] not in _USTAR_VERSIONS
+            ):
+                ambiguities.append((Ambiguity.MAGIC_VERSION, b"version"))
             if parsed.typeflag in EXTENDED_TYPES:
                 header_at = offset
                 if parsed.typeflag != PAX_GLOBAL_TYPE:
                     extended_at = offset
+                elif extended_at is not None:
+                    ambiguities.append((Ambiguity.GLOBAL_IN_CHAIN, b"g"))
+                # The size frames the header's own data, so a reader that takes a
+                # tail in it reads other records or another name, and frames every
+                # header after it elsewhere.
+                if _size_has_tail(block):
+                    ambiguities.append(
+                        (Ambiguity.FIELD_TAIL, parsed.typeflag + b" size")
+                    )
                 charge(parsed.size, "an extended header")
                 data = self._read(parsed.size)
                 if len(data) < parsed.size:
@@ -1418,6 +1589,21 @@ class TarWalker:
                 ambiguities.append((Ambiguity.BOTH_FAMILIES, b"path"))
             if long_link is not None and entry.linkname_source is NameSource.PAX:
                 ambiguities.append((Ambiguity.BOTH_FAMILIES, b"linkpath"))
+            if (
+                (long_name is not None or long_link is not None)
+                and x_seen
+                and not any(a is Ambiguity.BOTH_FAMILIES for a, _ in ambiguities)
+            ):
+                ambiguities.append((Ambiguity.MIXED_CHAIN, b"x"))
+            # FIELD_TAIL (_field_tails), its common no-tail case inline: this runs
+            # for every member.
+            if (
+                not block[124:136].strip(_NO_DIGIT).isdigit()
+                or b"\x00" in block[0:100].rstrip(b"\x00")
+                or b"\x00" in block[345:500].rstrip(b"\x00")
+                or entry.linkname_source is not None
+            ):
+                ambiguities += _field_tails(block, entry)
             if ambiguities:
                 entry.ambiguities = tuple(dict.fromkeys(ambiguities))
             self._pos = entry.data_end
@@ -1430,7 +1616,31 @@ class TarWalker:
                     entry.stored_size = 0
             elif entry.size and entry.typeflag in LINK_TYPES:
                 self._place_link_data(entry)
+            if (
+                parsed.size
+                and entry.typeflag in _SIZE_NAMES_NO_DATA
+                and entry.link_data is None
+                and b"size" not in entry.pax
+                and self._header_follows(entry.data_end)
+            ):
+                entry.ambiguities += ((Ambiguity.SIZE_ON_NO_DATA, b"size"),)
             return entry
+
+    def _header_follows(self, offset: int) -> bool:
+        """Whether the block at ``offset``, where the next header starts, is a member
+        or extended header. On a forward-only stream the block is held for the
+        header loop to read next, as :meth:`_place_link_data` holds it."""
+        held = self._held_block
+        if held is not None:
+            assert held[0] == offset, (held[0], offset)
+            block = held[1]
+        else:
+            block = self._read_block(offset)
+            if not self._seekable:
+                self._held_block = (offset, block)
+        return len(block) == BLOCKSIZE and isinstance(
+            parse_header_block(block, offset), HeaderBlock
+        )
 
     def _place_link_data(self, entry: TarEntry) -> None:
         """Decide where the next header starts after a link header with a size.
@@ -1442,7 +1652,8 @@ class TarWalker:
         block right after the header decides, as for a ``DIRTYPE`` header:
 
         - A member header: the size names no data, and the walk reads that header
-          next, as GNU tar, ``tarfile`` and bsdtar read it. Nothing is reported.
+          next, as GNU tar, ``tarfile`` and bsdtar read it. The walk records
+          :attr:`Ambiguity.SIZE_ON_NO_DATA`, as no known writer puts a size there.
         - A short block or none: the walk reads it next, and the reader reports the
           missing end-of-archive marker.
         - Any other full block (data, or a zero block): the declared blocks are the

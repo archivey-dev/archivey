@@ -290,6 +290,7 @@ def test_the_review_rules_are_deep_and_the_gate_goes_to_the_maintainer() -> None
     for rules in (
         ".github/review-loop-prompt.md",
         ".claude/skills/code-review-skill/SKILL.md",
+        "scripts/review_shape.py",
     ):
         assert prep.tier([rules]).name == "deep", rules
         assert prep.maintainer_decisions([prep.FileDiff(rules)]) == [], rules

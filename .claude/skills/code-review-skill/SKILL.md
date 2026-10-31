@@ -419,10 +419,7 @@ approval at round 1 ends the loop at round 1. The round's verdict file maps 🔄
 Changes to a closing comment that asks for another round, and the three "I do not need
 to see the result" verdicts — a plain approval, the conditional approval above, and
 💬 Comment — to one that asks for none, whatever rounds the cap has left
-([`dev-docs/review-loop.md`](../../../dev-docs/review-loop.md) §Stopping it). The one
-exception is a standard or deep pull request whose Opus pass has not run yet: there a
-conditional approval is followed by that pass as the next round, once the fixes are
-pushed. That round is Opus's, not yours, and the round's prompt says so. So the
+([`dev-docs/review-loop.md`](../../../dev-docs/review-loop.md) §Stopping it). So the
 verdict line is a decision about spending another review, and writing 🔄 to keep a round
 in hand spends one on wording you have already described.
 

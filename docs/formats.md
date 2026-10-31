@@ -517,7 +517,13 @@ sending side when the ZIP is done.
 - **Headers are read as GNU tar reads them.** Where tools disagree on a member's name, link target
   or size, archivey gives GNU tar's answer. When the headers take a shape no known writer produces
   (a GNU long name and a PAX `path` for one member, a field set twice, a global header setting a
-  name or size or dropping an earlier one's values, a NUL inside a PAX name), the member is also reported with
+  name or size or dropping an earlier one's values, a NUL inside a PAX name, GNU long name and PAX headers both extending one member, a
+  global header inside a member's headers, an empty PAX `path` or number, a PAX size with a
+  leading zero, bytes after the end of a header's size, name or link name, a size on a
+  directory or link header that names no data, a checksum that matches only as a signed sum, a
+  ustar version other than `00` or NULs, a newline in a PAX keyword or in a value other than
+  an extended attribute's or an ACL's, a NUL in a PAX keyword),
+  the member is also reported with
   `MEMBER_HEADER_AMBIGUOUS`, because another tool may list it under another name or size.
   `STRICT` refuses the archive.
 - A tar from macOS `tar` can hold `._name` sidecar files
@@ -576,7 +582,8 @@ On a compressed tar, the stream's own checksum adds three cases:
   and extracts the entry; archivey refuses a shape only a crafted archive has.
 - **A directory header (typeflag `5`) with data in its own size field** has no data area either, so the next header is
   read straight after it. When that header parses, the directory lists with no size, as GNU tar,
-  bsdtar and 7-Zip list it. When the walk ends instead on a zero block inside the declared span,
+  bsdtar and 7-Zip list it, and `MEMBER_HEADER_AMBIGUOUS` reports the size, which no real writer
+  puts there. When the walk ends instead on a zero block inside the declared span,
   the directory lists with no size and `MEMBER_DIRECTORY_DATA_IGNORED` is reported (`STRICT`
   refuses the archive). The declared blocks, if they are there, were read as the end-of-archive
   marker, and the members behind them are not listed, as GNU tar does. Nothing in the file tells
@@ -596,8 +603,9 @@ On a compressed tar, the stream's own checksum adds three cases:
   modes. `STRICT` refuses the archive.
 - **A symlink or hard link header (typeflag `2` or `1`) with data in its own size field** has no
   data area either. When
-  a member header follows it at once, the size names no data, and the link lists with nothing
-  reported, as GNU tar and `tarfile` read it. Otherwise the declared blocks are skipped, so a zero
+  a member header follows it at once, the size names no data, and the link lists as GNU tar and
+  `tarfile` read it, reported with `MEMBER_HEADER_AMBIGUOUS` (a tool that skips by the size
+  would lose the next member). Otherwise the declared blocks are skipped, so a zero
   block among them does not end the archive, and `MEMBER_LINK_DATA_IGNORED` reports the link
   (`STRICT` refuses the archive). GNU tar and `tarfile` skip nothing and stop at such a zero block,
   dropping the later members. When the declared blocks are all zeros and no member header follows
