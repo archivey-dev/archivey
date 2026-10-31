@@ -1,6 +1,6 @@
 """`scripts/ci_scope.py` and the `scope` job in ci.yml that uses it.
 
-A merge group that changes no library, dependency or CI path skips the queue-only jobs.
+A merge group that changes no library, test, dependency or CI path skips the queue-only jobs.
 A wrong answer here either runs the whole matrix for nothing or, worse, lets a library
 change into main without the legs only the queue runs, so both the path rule and the
 wiring are pinned.
@@ -33,6 +33,7 @@ _spec.loader.exec_module(scope)
         ["src/archivey/formats/zip_reader.py"],
         ["docs/index.md", "src/archivey/__init__.py"],
         ["packages/archivey-cpio/src/archivey_cpio/reader.py"],
+        ["scripts/review_prep.py", "tests/test_review_prep.py"],
         ["pyproject.toml"],
         ["uv.lock"],
         [".github/workflows/ci.yml"],
@@ -41,14 +42,16 @@ _spec.loader.exec_module(scope)
         [],
     ],
 )
-def test_a_library_dependency_or_ci_change_runs_everything(paths: list[str]) -> None:
+def test_a_library_test_dependency_or_ci_change_runs_everything(
+    paths: list[str],
+) -> None:
     assert scope.needs_full(paths)
 
 
 @pytest.mark.parametrize(
     "paths",
     [
-        ["scripts/review_prep.py", "tests/test_review_prep.py"],
+        ["scripts/review_prep.py", "scripts/review_tally.py"],
         [".claude/skills/code-review-skill/SKILL.md", "AGENTS.md"],
         [".github/workflows/review-loop.yml"],
         ["dev-docs/review-eval/results.md"],

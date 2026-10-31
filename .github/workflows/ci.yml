@@ -52,7 +52,7 @@ on:
   workflow_dispatch:
 
 # A pull request push runs a reduced set of jobs; the merge queue, the daily run and a
-# dispatched run get all of them, except that a merge group changing no library,
+# dispatched run get all of them, except that a merge group changing no library, test,
 # dependency or CI path runs only the pull request set (the `scope` job). Every job
 # below runs on pull requests unless it says otherwise. On a pull request: lint, the
 # `test` legs (Linux 3.11 and 3.14 [all], Linux 3.11 core-only, Windows 3.14 [all]),
@@ -458,10 +458,10 @@ jobs:
           ${{ matrix.coverage && '--cov-report=term-missing' || '--no-cov' }}
 
   # Whether a merge-queue run needs every job. A group that changes none of the paths
-  # in `scripts/ci_scope.py` (the library, the plugin packages, the dependencies, this
-  # CI) runs what a pull request push runs, on the merged tree, and skips the four
-  # queue-only jobs that wait on this one: `test-queue`, `unar-distro-packages`, `pypy`
-  # and `atheris`. The daily run still runs them all. Only a merge_group runs it; a
+  # in `scripts/ci_scope.py` (the library, the plugin packages, the tests, the
+  # dependencies, this CI) runs what a pull request push runs, on the merged tree, and
+  # skips the four queue-only jobs that wait on this one: `test-queue`,
+  # `unar-distro-packages`, `pypy` and `atheris`. The daily run still runs them all. Only a merge_group runs it; a
   # skipped or failed scope, and a diff the compare API cut off, mean the full run.
   scope:
     name: Queue scope

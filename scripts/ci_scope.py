@@ -3,14 +3,15 @@
 
 Reads the changed paths of a merge group, one per line, on stdin, and prints
 ``full=true`` or ``full=false`` for ``$GITHUB_OUTPUT``. A group that changes none of
-`FULL` (the library, the plugin packages, the dependencies, or the CI that tests them)
-skips the jobs a pull request push skips too: the `test-queue` legs, the distribution
-unar packages, PyPy and the short Atheris fuzz. It still runs every job a pull request
-runs, on the merged tree. ``--truncated`` (the compare API stopped listing files) and an
+`FULL` (the library, the plugin packages, the tests, the dependencies, or the CI that
+tests them) skips the jobs a pull request push skips too: the `test-queue` legs, the
+distribution unar packages, PyPy and the short Atheris fuzz. It still runs every job a
+pull request runs, on the merged tree. ``--truncated`` (the compare API stopped listing files) and an
 empty list both mean the full run, since an unknown diff is not a small one.
 
 The daily scheduled run on main still runs every job, so a change outside `FULL` that
-breaks a skipped leg (a test that fails only on macOS, say) shows up within a day.
+breaks a skipped leg shows up within a day. Tests are in `FULL` so that a test which
+fails only on a skipped leg (macOS, PyPy, the minimum versions) cannot merge.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import sys
 FULL = (
     "src/",
     "packages/",
+    "tests/",
     "pyproject.toml",
     "uv.lock",
     ".github/workflows/ci.yml",
