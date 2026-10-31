@@ -71,9 +71,12 @@ under the index, still with its ID.
 ```markdown
 ### Snapshot
 
-~[X] added / [Y] removed, [small|medium|large]. Tier: [light | standard | deep: the
-guarantees checked]. Gates: [green | CI pending | what is red and whether it is in
-scope] — glanced, not re-run.
+~[X] added / [Y] removed, [small|medium|large]. Tier: [light | standard | deep].
+Gates: [green | CI pending | what is red and whether it is in scope] — glanced, not
+re-run.
+
+Security pass: [deep PRs only, one line per property or file: what you tried → what
+happened, with the finding ID if any; a fix round covers what its fixes change and reach]
 
 **Pass 1 (cold).** [What the code alone did not explain, each with its finding ID] | nothing
 ```
