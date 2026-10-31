@@ -13,9 +13,9 @@ parallel workers would see each other's N12 run.
 
 Each case in ``suite/archives`` is a crafted ``.tar`` with a verdict (``accept``,
 ``tolerate`` or ``reject``) and, unless it is to be rejected, the tree an extractor
-should write. Archivey extracts it three ways (``POLICIES``): ``TRUSTED`` and ``STRICT``
-with ``overwrite=REPLACE`` as ``tar -x`` does, and the safest settings, the defaults
-with ``DiagnosticPolicy.STRICT``, held to tar-codec's bar. Each goes into ``root/x/y/dest``,
+should write. Archivey extracts it three ways (``POLICIES``): ``TRUSTED`` with
+``overwrite=REPLACE`` as ``tar -x`` does, the defaults (``STRICT``), and the safest
+settings, the defaults with ``DiagnosticPolicy.STRICT``, held to tar-codec's bar. Each goes into ``root/x/y/dest``,
 so that a write outside the destination is caught. The run is classified as the
 corpus's ``suite/check.py`` classifies one (the logic is re-implemented here: the test
 runs no code from the clone): ``expected`` (the expected tree), ``rejected`` (a member
@@ -30,7 +30,7 @@ the reasons below.
 
 Two tests need no clone and run in the normal suite: every case where Archivey fails
 the corpus's verdict or extracts another tree than GNU tar must have a reason in
-``TRIAGE`` (``STRICT_TRIAGE`` for ``STRICT``), no reason may outlive its difference,
+``TRIAGE`` (``DEFAULTS_TRIAGE`` for the defaults), no reason may outlive its difference,
 and the results page must be what the pins and the reasons render.
 """
 
@@ -62,7 +62,7 @@ RESULTS_PATH = REPO_ROOT / "dev-docs" / "tar-minefield-results.md"
 # DiagnosticPolicy.STRICT, which refuses every shape in ARCHIVE_INTEGRITY_CODES.
 POLICIES: dict[str, tuple[ExtractionPolicy, OverwritePolicy, DiagnosticPolicy]] = {
     "trusted": (ExtractionPolicy.TRUSTED, OverwritePolicy.REPLACE, DiagnosticPolicy()),
-    "strict": (ExtractionPolicy.STRICT, OverwritePolicy.REPLACE, DiagnosticPolicy()),
+    "defaults": (ExtractionPolicy.STRICT, OverwritePolicy.ERROR, DiagnosticPolicy()),
     "strict_diag": (
         ExtractionPolicy.STRICT,
         OverwritePolicy.ERROR,
@@ -71,7 +71,7 @@ POLICIES: dict[str, tuple[ExtractionPolicy, OverwritePolicy, DiagnosticPolicy]] 
 }
 TITLES = {
     "trusted": "TRUSTED",
-    "strict": "STRICT",
+    "defaults": "Defaults (STRICT)",
     "strict_diag": "Safest (STRICT + DiagnosticPolicy.STRICT)",
 }
 # The corpus's column for Astral's tar-codec (as in uv), the safety yardstick for
@@ -82,7 +82,7 @@ TAR_CODEC = "Rust tar-codec, as in uv"
 ABSOLUTE = Path("/tmp/tar-minefield-absolute")
 
 # Why Archivey, under TRUSTED, fails the corpus's verdict or writes another tree than
-# GNU tar. TRUSTED is the policy closest to tar -x; STRICT's own differences follow.
+# GNU tar. TRUSTED is the policy closest to tar -x; the defaults' own differences follow.
 # The rule that decides most of them is DR-6: read a format as its official tool does,
 # here GNU tar, so a "reject" case GNU tar extracts is extracted the same way, and a
 # shape no real writer produces is reported with MEMBER_HEADER_AMBIGUOUS (in
@@ -245,27 +245,30 @@ TRIAGE: dict[str, str] = {
     ),
 }
 
-# Why Archivey, under STRICT, writes another tree than GNU tar where TRUSTED does not
+# Why Archivey, under the defaults (STRICT), writes another tree than GNU tar where TRUSTED does not
 # say why already. STRICT writes a name in a spelling every OS can hold (ADR 0013), so
 # a name GNU tar writes as stored can land under another name, or be refused.
 _STRICT_NAMES = "STRICT rewrites the name to a spelling every OS can hold (ADR 0013)"
-STRICT_TRIAGE: dict[str, str] = {
-    "F13-pax-newline-in-path": f"{_STRICT_NAMES}: the newline becomes %0A",
+_STRICT_REFUSES = (
+    "STRICT refuses a name that another OS or reader takes differently (ADR 0013, "
+    "2026-10-31 amendment)"
+)
+DEFAULTS_TRIAGE: dict[str, str] = {
+    "S08-tree-duplicate-file-dir": (
+        "overwrite=ERROR, the default, refuses the second member where GNU tar lets "
+        "the later member win, so the defaults pass this reject case"
+    ),
+    "F13-pax-newline-in-path": f"{_STRICT_REFUSES}: it holds a newline",
     "N10-format-star": f"{_STRICT_NAMES}: the trailing blank is dropped",
     "N12-name-absolute": "STRICT refuses an absolute name (ADR 0013)",
-    "N13-name-backslash": f"{_STRICT_NAMES}: the backslash is a separator",
-    "N15-name-control-character": f"{_STRICT_NAMES}: the newline becomes %0A",
-    "N18-name-not-utf8": f"{_STRICT_NAMES}: the byte 0xE9 becomes %E9",
-    "N24-pax-hdrcharset-binary": f"{_STRICT_NAMES}: the byte 0xE9 becomes %E9",
+    "N13-name-backslash": f"{_STRICT_REFUSES}: Windows reads the backslash as a separator",
+    "N15-name-control-character": f"{_STRICT_REFUSES}: it holds a newline",
+    "N18-name-not-utf8": f"{_STRICT_REFUSES}: the byte 0xE9 is not UTF-8",
+    "N24-pax-hdrcharset-binary": f"{_STRICT_REFUSES}: the byte 0xE9 is not UTF-8",
 }
 
 # Why Archivey, with the safest settings, fails a case's verdict. This is the safety
 # bar, so the reason must justify reading the shape rather than refusing it.
-_PORTABLE_NAME = (
-    "STRICT writes the name in a spelling every OS can hold (ADR 0013) instead of "
-    "refusing it, so the tree is not the expected one, but nothing lands outside the "
-    "destination or under a name another OS reads differently"
-)
 DIAG_TRIAGE: dict[str, str] = {
     "F16-type-unknown": (
         "MEMBER_TYPE_UNKNOWN is deliberately out of DiagnosticPolicy.STRICT: real "
@@ -289,10 +292,6 @@ DIAG_TRIAGE: dict[str, str] = {
         "GNU tar's incremental archives put times in those bytes; under the GNU magic "
         "they are never a prefix"
     ),
-    "N13-name-backslash": f"{_PORTABLE_NAME}: the backslash is a separator",
-    "N15-name-control-character": f"{_PORTABLE_NAME}: the newline becomes %0A",
-    "N18-name-not-utf8": f"{_PORTABLE_NAME}: the byte 0xE9 becomes %E9",
-    "N24-pax-hdrcharset-binary": f"{_PORTABLE_NAME}: the byte 0xE9 becomes %E9",
     "S04-hardlink-to-itself": (
         "27 real tarballs have it (cuDNN binaries in Spack, xscreensaver 6.12); the "
         "file stays as it is"
@@ -537,6 +536,14 @@ def agrees_with_gnu(pin: dict[str, Any], label: str) -> bool:
     return run["gnu_tree"] or run["outcome"] == pin["gnu"]["outcome"] == "rejected"
 
 
+def _reader_agrees_with_gnu(pin: dict[str, Any], key: str) -> bool:
+    """Whether another reader's pinned result (``tar_codec``) is GNU tar's."""
+    run, gnu = pin[key], pin["gnu"]
+    if run["outcome"] == "rejected" or gnu["outcome"] == "rejected":
+        return run["outcome"] == gnu["outcome"]
+    return run["tree"] == gnu["tree"]
+
+
 def differs(pin: dict[str, Any], label: str) -> bool:
     """Whether Archivey's run under ``label`` fails the verdict or is not GNU tar's."""
     return (
@@ -577,20 +584,20 @@ CATEGORIES = {
 
 def needs_reason(pin: dict[str, Any], label: str) -> bool:
     """Whether a run owes a reason. TRUSTED owes one where it fails the verdict or is
-    not GNU tar's result; STRICT only where it also differs from TRUSTED; the safest
+    not GNU tar's result; the defaults only where they also differ from TRUSTED; the safest
     settings wherever they fail the verdict, which is the safety bar."""
     run_passes = pin[label]["outcome"] in pin["passes_with"]
     if label == "strict_diag":
         return not run_passes
-    if label == "strict":
+    if label == "defaults":
         return differs(pin, label) and (
-            not differs(pin, "trusted") or pin["strict"] != pin["trusted"]
+            not differs(pin, "trusted") or pin["defaults"] != pin["trusted"]
         )
     return differs(pin, label)
 
 
 def _reasons() -> dict[str, dict[str, str]]:
-    return {"trusted": TRIAGE, "strict": STRICT_TRIAGE, "strict_diag": DIAG_TRIAGE}
+    return {"trusted": TRIAGE, "defaults": DEFAULTS_TRIAGE, "strict_diag": DIAG_TRIAGE}
 
 
 def case_link(name: str) -> str:
@@ -633,9 +640,10 @@ def render_results(expected: dict[str, Any]) -> str:
             "closest to `tar -x`."
         ),
         (
-            "- **STRICT**: `ExtractionPolicy.STRICT`, `overwrite=REPLACE`, with the "
-            "default `DiagnosticPolicy`, which reports the odd framing shapes but reads "
-            "them. It fails more cases than Safest for that reason."
+            "- **Defaults**: what `extract_all()` does when given nothing: "
+            "`ExtractionPolicy.STRICT`, `overwrite=ERROR` and the default "
+            "`DiagnosticPolicy`, which reports the odd framing shapes but reads them. "
+            "It fails more cases than Safest for that reason."
         ),
         (
             "- **Safest** (STRICT + DiagnosticPolicy.STRICT): the default "
@@ -651,7 +659,7 @@ def render_results(expected: dict[str, Any]) -> str:
             "(another tree). A `reject` case passes only when rejected, a `tolerate` "
             "case when rejected or expected, an `accept` case only when expected. In "
             "the tables ✅ passes and ❌ fails the case's verdict; ≠GNU marks a TRUSTED "
-            "or STRICT run whose result is not GNU tar's (its tree, or a refusal where "
+            "or Defaults run whose result is not GNU tar's (its tree, or a refusal where "
             "GNU tar refuses). No case writes outside the destination: the test fails "
             "if one does."
         ),
@@ -659,7 +667,7 @@ def render_results(expected: dict[str, Any]) -> str:
         (
             "Each case below gives a reason per run that owes one: Safest wherever it "
             "fails the verdict, TRUSTED wherever it fails it or is not GNU tar's "
-            "result, and STRICT only where TRUSTED's reason does not cover it."
+            "result, and Defaults only where TRUSTED's reason does not cover it."
         ),
         "",
         "## Summary",
@@ -669,17 +677,27 @@ def render_results(expected: dict[str, Any]) -> str:
     ]
     for label in POLICIES:
         n_pass = sum(passed(pin, label) for pin in cases.values())
-        same = (
-            f"{sum(agrees_with_gnu(pin, label) for pin in cases.values())} of {total}"
-            if label != "strict_diag"
-            else "not compared"
-        )
-        lines.append(f"| {TITLES[label]} | {n_pass} of {total} | {same} |")
+        same = sum(agrees_with_gnu(pin, label) for pin in cases.values())
+        lines.append(f"| {TITLES[label]} | {n_pass} of {total} | {same} of {total} |")
     for title, key in (("GNU tar 1.35", "gnu"), ("tar-codec", "tar_codec")):
         n_pass = sum(
             pin[key]["outcome"] in pin["passes_with"] for pin in cases.values()
         )
-        lines.append(f"| {title} | {n_pass} of {total} | |")
+        same_cell = (
+            f"{sum(_reader_agrees_with_gnu(pin, key) for pin in cases.values())} "
+            f"of {total}"
+            if key != "gnu"
+            else ""
+        )
+        lines.append(f"| {title} | {n_pass} of {total} | {same_cell} |")
+    lines += [
+        "",
+        (
+            "The safest settings and tar-codec refuse what GNU tar extracts, so a low "
+            "count in the last column is expected for them: they are held to the "
+            "corpus's verdicts, not to GNU tar's trees."
+        ),
+    ]
     explained = {
         name
         for name, pin in cases.items()
@@ -688,6 +706,44 @@ def render_results(expected: dict[str, Any]) -> str:
     safest = [name for name in cases if needs_reason(cases[name], "strict_diag")]
     others = [name for name in cases if name in explained and name not in safest]
     lines += [
+        "",
+        "## Why the safest settings still differ",
+        "",
+        (
+            "The corpus is written for software distribution: a package manager, or a "
+            "scanner that checks a tarball before another tool extracts it. There the "
+            "danger is two readers making different trees of one archive, so a "
+            '"reject" verdict marks any shape some reader takes differently, even '
+            "one that real tarballs use. The corpus's own policy accepts 99.79% of the "
+            "source tarballs it scanned and expects the rest to be allowed one by one, "
+            "by checksum."
+        ),
+        "",
+        (
+            "Archivey's goal is to read every archive the format's own tool reads, so "
+            "it holds the safest settings to the corpus's verdicts except where a "
+            "shape is in real archives and Archivey's reading of it has a single "
+            "answer that keeps every write inside the destination. Each case below "
+            "names the writers that produce it. None of them is a difference we plan "
+            "to fix: Archivey reads each one as GNU tar does, or refuses it, and no "
+            "case writes outside the destination under any run."
+        ),
+        "",
+        (
+            "tar-codec, the corpus's strictest reader, fails 13 cases too, among them "
+            "the duplicate members, the star and GNU prefix layouts and the link name "
+            "on a file: the shapes real tarballs use. Its sources do not say why; the "
+            "likely reason is the same trade, since uv must read the sdists already "
+            "published. The cases where tar-codec refuses and Archivey reads are "
+            "marked 🔴, the ones both read 🟡."
+        ),
+        "",
+        (
+            "What this costs: a caller who scans an archive with Archivey and extracts "
+            "it with another tool can get another tree on these cases, and only "
+            "F16 reports a diagnostic, so `DiagnosticPolicy.PEDANTIC` does not catch "
+            "the others."
+        ),
         "",
         "## Cases the safest settings fail",
         "",
@@ -701,11 +757,11 @@ def render_results(expected: dict[str, Any]) -> str:
     ]
     lines += _entries(cases, safest, codec_mark=True)
     lines += [
-        "## Other cases TRUSTED or STRICT fails or reads unlike GNU tar",
+        "## Other cases TRUSTED or Defaults fails or reads unlike GNU tar",
         "",
         (
-            "Cases the safest settings pass, but where TRUSTED or STRICT fails the "
-            "verdict or does not give GNU tar's result. TRUSTED and STRICT only "
+            "Cases the safest settings pass, but where TRUSTED or Defaults fails the "
+            "verdict or does not give GNU tar's result. TRUSTED and Defaults only "
             "report the framing shapes DiagnosticPolicy.STRICT refuses, so they pass "
             "fewer cases."
         ),
@@ -745,11 +801,11 @@ def render_results(expected: dict[str, Any]) -> str:
         "",
         (
             "Why links to the case's entry above, for a case where any run fails the "
-            "verdict or a TRUSTED or STRICT run is not GNU tar's result."
+            "verdict or a TRUSTED or Defaults run is not GNU tar's result."
         ),
         "",
         (
-            "| Case | Verdict | GNU tar | tar-codec | TRUSTED | STRICT | Safest | "
+            "| Case | Verdict | GNU tar | tar-codec | TRUSTED | Defaults | Safest | "
             "Listing reports | Why |"
         ),
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
@@ -769,7 +825,7 @@ def render_results(expected: dict[str, Any]) -> str:
         lines.append(
             f"| {case_link(name)} `{name.split('-', 1)[1]}` | {pin['verdict']} | "
             f"{tool(pin, 'gnu')} | {tool(pin, 'tar_codec')} | {cell(pin, 'trusted')} | "
-            f"{cell(pin, 'strict')} | {cell(pin, 'strict_diag')} | {codes} | "
+            f"{cell(pin, 'defaults')} | {cell(pin, 'strict_diag')} | {codes} | "
             f"{f'[why](#{_anchor(name)})' if name in explained else ''} |"
         )
     return "\n".join(lines) + "\n"
@@ -798,14 +854,18 @@ def _entries(
                 codec = pin["tar_codec"]["outcome"] in pin["passes_with"]
                 outcomes = f"{'🔴' if codec else '🟡'} {outcomes}"
             lines += [f"#### {name}", "", outcomes, ""]
-            for label in ("strict_diag", "trusted", "strict"):
+            for label in ("strict_diag", "trusted", "defaults"):
                 if needs_reason(pin, label):
                     lines.append(f"- **{_SHORT[label]}**: {_reasons()[label][name]}")
             lines.append("")
     return lines
 
 
-_SHORT = {"trusted": "TRUSTED", "strict": "STRICT", "strict_diag": "Safest"}
+_SHORT = {
+    "trusted": "TRUSTED",
+    "defaults": "Defaults (STRICT)",
+    "strict_diag": "Safest",
+}
 
 
 def _outcomes(name: str, pin: dict[str, Any]) -> str:

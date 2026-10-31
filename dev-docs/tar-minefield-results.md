@@ -8,22 +8,34 @@ Archivey's TAR reader against the [tar-minefield](https://stoppels.ch/tar/) corp
 Archivey runs each case three ways:
 
 - **TRUSTED**: `ExtractionPolicy.TRUSTED`, `overwrite=REPLACE`, the closest to `tar -x`.
-- **STRICT**: `ExtractionPolicy.STRICT`, `overwrite=REPLACE`, with the default `DiagnosticPolicy`, which reports the odd framing shapes but reads them. It fails more cases than Safest for that reason.
+- **Defaults**: what `extract_all()` does when given nothing: `ExtractionPolicy.STRICT`, `overwrite=ERROR` and the default `DiagnosticPolicy`, which reports the odd framing shapes but reads them. It fails more cases than Safest for that reason.
 - **Safest** (STRICT + DiagnosticPolicy.STRICT): the default `ExtractionPolicy.STRICT` and `overwrite=ERROR`, with `DiagnosticPolicy.STRICT`, which refuses every shape in `ARCHIVE_INTEGRITY_CODES`. It is held to tar-codec's bar: every case it fails has a reason below.
 
-An outcome is `expected` (the case's tree), `rejected` (the open failed or a member was not written, an unavailable link target included) or `other` (another tree). A `reject` case passes only when rejected, a `tolerate` case when rejected or expected, an `accept` case only when expected. In the tables ✅ passes and ❌ fails the case's verdict; ≠GNU marks a TRUSTED or STRICT run whose result is not GNU tar's (its tree, or a refusal where GNU tar refuses). No case writes outside the destination: the test fails if one does.
+An outcome is `expected` (the case's tree), `rejected` (the open failed or a member was not written, an unavailable link target included) or `other` (another tree). A `reject` case passes only when rejected, a `tolerate` case when rejected or expected, an `accept` case only when expected. In the tables ✅ passes and ❌ fails the case's verdict; ≠GNU marks a TRUSTED or Defaults run whose result is not GNU tar's (its tree, or a refusal where GNU tar refuses). No case writes outside the destination: the test fails if one does.
 
-Each case below gives a reason per run that owes one: Safest wherever it fails the verdict, TRUSTED wherever it fails it or is not GNU tar's result, and STRICT only where TRUSTED's reason does not cover it.
+Each case below gives a reason per run that owes one: Safest wherever it fails the verdict, TRUSTED wherever it fails it or is not GNU tar's result, and Defaults only where TRUSTED's reason does not cover it.
 
 ## Summary
 
 | Run | Passes | GNU tar's result |
 | --- | --- | --- |
 | TRUSTED | 40 of 81 | 78 of 81 |
-| STRICT | 40 of 81 | 71 of 81 |
-| Safest (STRICT + DiagnosticPolicy.STRICT) | 67 of 81 | not compared |
-| GNU tar 1.35 | 40 of 81 | |
-| tar-codec | 68 of 81 | |
+| Defaults (STRICT) | 46 of 81 | 70 of 81 |
+| Safest (STRICT + DiagnosticPolicy.STRICT) | 71 of 81 | 45 of 81 |
+| GNU tar 1.35 | 40 of 81 |  |
+| tar-codec | 68 of 81 | 45 of 81 |
+
+The safest settings and tar-codec refuse what GNU tar extracts, so a low count in the last column is expected for them: they are held to the corpus's verdicts, not to GNU tar's trees.
+
+## Why the safest settings still differ
+
+The corpus is written for software distribution: a package manager, or a scanner that checks a tarball before another tool extracts it. There the danger is two readers making different trees of one archive, so a "reject" verdict marks any shape some reader takes differently, even one that real tarballs use. The corpus's own policy accepts 99.79% of the source tarballs it scanned and expects the rest to be allowed one by one, by checksum.
+
+Archivey's goal is to read every archive the format's own tool reads, so it holds the safest settings to the corpus's verdicts except where a shape is in real archives and Archivey's reading of it has a single answer that keeps every write inside the destination. Each case below names the writers that produce it. None of them is a difference we plan to fix: Archivey reads each one as GNU tar does, or refuses it, and no case writes outside the destination under any run.
+
+tar-codec, the corpus's strictest reader, fails 13 cases too, among them the duplicate members, the star and GNU prefix layouts and the link name on a file: the shapes real tarballs use. Its sources do not say why; the likely reason is the same trade, since uv must read the sdists already published. The cases where tar-codec refuses and Archivey reads are marked 🔴, the ones both read 🟡.
+
+What this costs: a caller who scans an archive with Archivey and extracts it with another tool can get another tree on these cases, and only F16 reports a diagnostic, so `DiagnosticPolicy.PEDANTIC` does not catch the others.
 
 ## Cases the safest settings fail
 
@@ -35,7 +47,7 @@ Where a member's data ends and which headers belong to it. A shape no real write
 
 #### F16-type-unknown
 
-🔴 [F16](https://stoppels.ch/tar/F16.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ❌ other.
+🔴 [F16](https://stoppels.ch/tar/F16.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ❌ other.
 
 - **Safest**: MEMBER_TYPE_UNKNOWN is deliberately out of DiagnosticPolicy.STRICT: real writers emit vendor typeflags with data (Solaris tar's X extended headers and A ACLs), GNU tar extracts them as files, and Archivey delivers the data as a FILE, so nothing is hidden
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6): an unknown typeflag with data is a file, as GNU tar extracts it, reported with MEMBER_TYPE_UNKNOWN (maintainer ruling 2026-10-17)
@@ -46,49 +58,18 @@ Which field names a member, and how a path is normalized. A name another OS or r
 
 #### N10-format-star
 
-🟡 [N10](https://stoppels.ch/tar/N10.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, STRICT ❌ other, Safest ❌ other.
+🟡 [N10](https://stoppels.ch/tar/N10.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ❌ other.
 
 - **Safest**: star writes this format (berkeley-db 18.1.40, ncurses 5.9); under the POSIX magic the whole field is the prefix, as GNU tar reads it
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6): under the POSIX magic the whole prefix field is the name prefix. Not reported: star writes this format (berkeley-db, ncurses)
-- **STRICT**: STRICT rewrites the name to a spelling every OS can hold (ADR 0013): the trailing blank is dropped
+- **Defaults (STRICT)**: STRICT rewrites the name to a spelling every OS can hold (ADR 0013): the trailing blank is dropped
 
 #### N11-gnu-prefix-field
 
-🟡 [N11](https://stoppels.ch/tar/N11.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, STRICT ❌ other, Safest ❌ other.
+🟡 [N11](https://stoppels.ch/tar/N11.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ❌ other.
 
 - **Safest**: GNU tar's incremental archives put times in those bytes; under the GNU magic they are never a prefix
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6): under the GNU magic those bytes are not a prefix. Not reported: GNU tar writes times there in incremental archives
-
-#### N13-name-backslash
-
-🔴 [N13](https://stoppels.ch/tar/N13.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ❌ other.
-
-- **Safest**: STRICT writes the name in a spelling every OS can hold (ADR 0013) instead of refusing it, so the tree is not the expected one, but nothing lands outside the destination or under a name another OS reads differently: the backslash is a separator
-- **TRUSTED**: TRUSTED keeps a backslash as a character, as GNU tar on POSIX does. Not reported: texi2html and gstreamer-docs tarballs have them
-- **STRICT**: STRICT rewrites the name to a spelling every OS can hold (ADR 0013): the backslash is a separator
-
-#### N15-name-control-character
-
-🔴 [N15](https://stoppels.ch/tar/N15.html), tolerate: GNU tar ✅ expected, tar-codec ✅ rejected, TRUSTED ✅ expected, STRICT ❌ other, Safest ❌ other.
-
-- **Safest**: STRICT writes the name in a spelling every OS can hold (ADR 0013) instead of refusing it, so the tree is not the expected one, but nothing lands outside the destination or under a name another OS reads differently: the newline becomes %0A
-- **STRICT**: STRICT rewrites the name to a spelling every OS can hold (ADR 0013): the newline becomes %0A
-
-#### N18-name-not-utf8
-
-🔴 [N18](https://stoppels.ch/tar/N18.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ❌ other.
-
-- **Safest**: STRICT writes the name in a spelling every OS can hold (ADR 0013) instead of refusing it, so the tree is not the expected one, but nothing lands outside the destination or under a name another OS reads differently: the byte 0xE9 becomes %E9
-- **TRUSTED**: TRUSTED writes the name's bytes, as GNU tar does. Not reported: aspell tarballs have Latin-1 names
-- **STRICT**: STRICT rewrites the name to a spelling every OS can hold (ADR 0013): the byte 0xE9 becomes %E9
-
-#### N24-pax-hdrcharset-binary
-
-🔴 [N24](https://stoppels.ch/tar/N24.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ❌ other.
-
-- **Safest**: STRICT writes the name in a spelling every OS can hold (ADR 0013) instead of refusing it, so the tree is not the expected one, but nothing lands outside the destination or under a name another OS reads differently: the byte 0xE9 becomes %E9
-- **TRUSTED**: TRUSTED writes the name's bytes, as GNU tar does. Not reported: hdrcharset=BINARY is POSIX's way to store them, and readers disagree only on whether to write or skip the file, not on its name
-- **STRICT**: STRICT rewrites the name to a spelling every OS can hold (ADR 0013): the byte 0xE9 becomes %E9
 
 ### Kinds
 
@@ -96,14 +77,14 @@ Whether a member is a file, directory or link. Mixed: decided case by case.
 
 #### K01-kind-trailing-slash-file
 
-🔴 [K01](https://stoppels.ch/tar/K01.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ❌ other.
+🔴 [K01](https://stoppels.ch/tar/K01.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ❌ other.
 
 - **Safest**: v7 tarballs (sendmail 8.18.2, tcp_wrappers 7.6) store directories this way, and GNU tar makes it a directory; refusing it refuses real archives
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6): a regular file named a/ is a directory, as GNU tar's extract.c makes it. Not reported: v7 tarballs (sendmail, tcp_wrappers) store directories this way
 
 #### K02-linkname-on-file
 
-🟡 [K02](https://stoppels.ch/tar/K02.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, STRICT ❌ other, Safest ❌ other.
+🟡 [K02](https://stoppels.ch/tar/K02.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ❌ other.
 
 - **Safest**: bgen 1.1.7 writes it, and the link name of a regular file is never used: only a reader that ignores the typeflag makes a link
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6): a regular file's link name is not used. Not reported: bgen 1.1.7 writes one, and only a reader that goes by the link name reads a link
@@ -114,42 +95,42 @@ Duplicate paths and links between members. Mixed: decided case by case.
 
 #### S04-hardlink-to-itself
 
-🔴 [S04](https://stoppels.ch/tar/S04.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ❌ other.
+🔴 [S04](https://stoppels.ch/tar/S04.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ❌ other.
 
 - **Safest**: 27 real tarballs have it (cuDNN binaries in Spack, xscreensaver 6.12); the file stays as it is
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6): the file stays as it is; 27 real tarballs have the shape
 
 #### S06-hardlink-to-symlink
 
-🔴 [S06](https://stoppels.ch/tar/S06.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ❌ other.
+🔴 [S06](https://stoppels.ch/tar/S06.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ❌ other.
 
 - **Safest**: octa 8.4 has it; the hard link is a second symlink to the same target, checked like the first, never followed
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6): the hard link is a second link to the symlink, not to its target
 
 #### S07-tree-duplicate-file-differs
 
-🟡 [S07](https://stoppels.ch/tar/S07.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, STRICT ❌ other, Safest ❌ other.
+🟡 [S07](https://stoppels.ch/tar/S07.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ❌ other.
 
 - **Safest**: fish 4.7.1 has it: a later file supersedes an earlier file of the same name, as with tar -x, under every OverwritePolicy. A later member that changes the kind at that name (S08, a directory after a file) is not a supersede and goes through overwrite=ERROR, which refuses it
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6): OverwritePolicy.REPLACE, as tar -x, lets the later member win, and the shape is in real tarballs. overwrite=ERROR, the default, refuses the second member instead
 
 #### S09-tree-duplicate-file-identical
 
-🟡 [S09](https://stoppels.ch/tar/S09.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, STRICT ❌ other, Safest ❌ other.
+🟡 [S09](https://stoppels.ch/tar/S09.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ❌ other.
 
 - **Safest**: cabal sdist tarballs have it; the later copy supersedes the earlier one, as for S07
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6): OverwritePolicy.REPLACE, as tar -x, lets the later member win, and the shape is in real tarballs. overwrite=ERROR, the default, refuses the second member instead
 
 #### S10-tree-symlink-then-file
 
-🟡 [S10](https://stoppels.ch/tar/S10.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, STRICT ❌ other, Safest ❌ other.
+🟡 [S10](https://stoppels.ch/tar/S10.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ❌ other.
 
 - **Safest**: The file supersedes the link, as for S07, and is never written through it: the link is replaced, so the write stays in the destination
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6): OverwritePolicy.REPLACE, as tar -x, lets the later member win, and the shape is in real tarballs. overwrite=ERROR, the default, refuses the second member instead. The file replaces the link, never writing through it
 
-## Other cases TRUSTED or STRICT fails or reads unlike GNU tar
+## Other cases TRUSTED or Defaults fails or reads unlike GNU tar
 
-Cases the safest settings pass, but where TRUSTED or STRICT fails the verdict or does not give GNU tar's result. TRUSTED and STRICT only report the framing shapes DiagnosticPolicy.STRICT refuses, so they pass fewer cases.
+Cases the safest settings pass, but where TRUSTED or Defaults fails the verdict or does not give GNU tar's result. TRUSTED and Defaults only report the framing shapes DiagnosticPolicy.STRICT refuses, so they pass fewer cases.
 
 ### Framing
 
@@ -157,98 +138,98 @@ Where a member's data ends and which headers belong to it. A shape no real write
 
 #### F03-end-lone-zero-block
 
-[F03](https://stoppels.ch/tar/F03.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[F03](https://stoppels.ch/tar/F03.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), reported with ARCHIVE_EOF_MARKER_MISSING: real tarballs end this way, and the members before the block are whole
 
 #### F06-checksum-signed
 
-[F06](https://stoppels.ch/tar/F06.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[F06](https://stoppels.ch/tar/F06.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (signed_checksum): GNU tar accepts a header that matches either the unsigned or the signed sum; SunOS 4 and Ultrix tars wrote the signed one, no current writer does
 
 #### F07-end-archive-after
 
-[F07](https://stoppels.ch/tar/F07.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[F07](https://stoppels.ch/tar/F07.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), reported with ARCHIVE_TRAILING_DATA: what follows the end marker is not read, as GNU tar does not read it
 
 #### F09-end-zero-block-then-member
 
-[F09](https://stoppels.ch/tar/F09.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[F09](https://stoppels.ch/tar/F09.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), reported with ARCHIVE_EOF_MARKER_MISSING and ARCHIVE_TRAILING_DATA: the zero block ends the archive, as in GNU tar without --ignore-zeros
 
 #### F10-extended-pax-size-before-gnu-long
 
-[F10](https://stoppels.ch/tar/F10.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[F10](https://stoppels.ch/tar/F10.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (mixed_chain)
 
 #### F11-magic-odd-version
 
-[F11](https://stoppels.ch/tar/F11.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[F11](https://stoppels.ch/tar/F11.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (magic_version): GNU tar reads any POSIX magic as ustar, whatever the version
 
 #### F12-number-size-gap
 
-[F12](https://stoppels.ch/tar/F12.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[F12](https://stoppels.ch/tar/F12.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (field_tail): the size ends at the blank, as in GNU tar
 
 #### F13-pax-newline-in-path
 
-[F13](https://stoppels.ch/tar/F13.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[F13](https://stoppels.ch/tar/F13.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ✅ rejected, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (newline_in_value): a record is framed by its length, as POSIX says, so the newline is a byte of the path. Newlines in xattr and ACL values are real and not reported
-- **STRICT**: STRICT rewrites the name to a spelling every OS can hold (ADR 0013): the newline becomes %0A
+- **Defaults (STRICT)**: STRICT refuses a name that another OS or reader takes differently (ADR 0013, 2026-10-31 amendment): it holds a newline
 
 #### F15-pax-size-on-dir
 
-[F15](https://stoppels.ch/tar/F15.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[F15](https://stoppels.ch/tar/F15.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Not the corpus's GNU tar column, which reads the header after the directory as dir/smuggled: that is upstream GNU tar 1.35, before the fix for CVE-2026-5704 (a member injected past a directory's data). The patched GNU tar 1.35 (Ubuntu 1.35+dfsg-3ubuntu0.4, measured 2026-10-30) skips the blocks the PAX size declares and writes the directory alone, and so does Archivey, reporting MEMBER_DIRECTORY_DATA_IGNORED. Listing and extraction agree on one member either way
 
 #### F19-pax-global-between-extended-and-member
 
-[F19](https://stoppels.ch/tar/F19.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[F19](https://stoppels.ch/tar/F19.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (global_in_chain)
 
 #### F20-pax-global-size
 
-[F20](https://stoppels.ch/tar/F20.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[F20](https://stoppels.ch/tar/F20.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (global_member_field)
 
 #### F26-pax-size-leading-zero
 
-[F26](https://stoppels.ch/tar/F26.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[F26](https://stoppels.ch/tar/F26.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (leading_zero): the size is decimal, as POSIX and GNU tar read it
 
 #### F28-pax-newline-in-comment
 
-[F28](https://stoppels.ch/tar/F28.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[F28](https://stoppels.ch/tar/F28.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (newline_in_value): the newline cannot start a size record, as for F13
 
 #### F33-size-on-dir
 
-[F33](https://stoppels.ch/tar/F33.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[F33](https://stoppels.ch/tar/F33.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (size_on_no_data): the next header is read, as GNU tar reads it (maintainer ruling 2026-10-30 to report it)
 
 #### F34-size-on-hardlink
 
-[F34](https://stoppels.ch/tar/F34.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[F34](https://stoppels.ch/tar/F34.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (size_on_no_data)
 
 #### F35-pax-size-on-hardlink
 
-[F35](https://stoppels.ch/tar/F35.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[F35](https://stoppels.ch/tar/F35.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Not the corpus's GNU tar column, which reads the header after the link as smuggled: Archivey skips the blocks the PAX size declares, as the CVE-2026-5704-patched GNU tar 1.35 does (F15), and reports MEMBER_LINK_DATA_IGNORED
 
@@ -258,68 +239,95 @@ Which field names a member, and how a path is normalized. A name another OS or r
 
 #### N07-symlink-absolute
 
-[N07](https://stoppels.ch/tar/N07.html), tolerate: GNU tar ✅ expected, tar-codec ✅ rejected, TRUSTED ✅ rejected, STRICT ✅ rejected, Safest ✅ rejected.
+[N07](https://stoppels.ch/tar/N07.html), tolerate: GNU tar ✅ expected, tar-codec ✅ rejected, TRUSTED ✅ rejected, Defaults (STRICT) ✅ rejected, Safest ✅ rejected.
 
 - **TRUSTED**: Refused under every policy: an absolute symlink target leads outside the destination, which no ExtractionPolicy writes (GNU tar writes the link as stored). The corpus tolerates a refusal
 
 #### N08-extended-pax-path-and-gnu-long-name
 
-[N08](https://stoppels.ch/tar/N08.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[N08](https://stoppels.ch/tar/N08.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (both_families): the PAX path wins, as in GNU tar
 
 #### N09-extended-two-pax-headers
 
-[N09](https://stoppels.ch/tar/N09.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[N09](https://stoppels.ch/tar/N09.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (repeated): the last x header wins, as in GNU tar
 
 #### N12-name-absolute
 
-[N12](https://stoppels.ch/tar/N12.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ✅ rejected, Safest ✅ rejected.
+[N12](https://stoppels.ch/tar/N12.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ✅ rejected, Safest ✅ rejected.
 
 - **TRUSTED**: TRUSTED re-roots an absolute name inside the destination, as GNU tar strips the leading slash. Nothing is written outside it
-- **STRICT**: STRICT refuses an absolute name (ADR 0013)
+- **Defaults (STRICT)**: STRICT refuses an absolute name (ADR 0013)
+
+#### N13-name-backslash
+
+[N13](https://stoppels.ch/tar/N13.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ✅ rejected, Safest ✅ rejected.
+
+- **TRUSTED**: TRUSTED keeps a backslash as a character, as GNU tar on POSIX does. Not reported: texi2html and gstreamer-docs tarballs have them
+- **Defaults (STRICT)**: STRICT refuses a name that another OS or reader takes differently (ADR 0013, 2026-10-31 amendment): Windows reads the backslash as a separator
 
 #### N14-name-bytes-after-nul
 
-[N14](https://stoppels.ch/tar/N14.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[N14](https://stoppels.ch/tar/N14.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (field_tail): the name ends at the NUL, as in GNU tar
 
+#### N15-name-control-character
+
+[N15](https://stoppels.ch/tar/N15.html), tolerate: GNU tar ✅ expected, tar-codec ✅ rejected, TRUSTED ✅ expected, Defaults (STRICT) ✅ rejected, Safest ✅ rejected.
+
+- **Defaults (STRICT)**: STRICT refuses a name that another OS or reader takes differently (ADR 0013, 2026-10-31 amendment): it holds a newline
+
+#### N18-name-not-utf8
+
+[N18](https://stoppels.ch/tar/N18.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ✅ rejected, Safest ✅ rejected.
+
+- **TRUSTED**: TRUSTED writes the name's bytes, as GNU tar does. Not reported: aspell tarballs have Latin-1 names
+- **Defaults (STRICT)**: STRICT refuses a name that another OS or reader takes differently (ADR 0013, 2026-10-31 amendment): the byte 0xE9 is not UTF-8
+
 #### N19-pax-nul-in-path
 
-[N19](https://stoppels.ch/tar/N19.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[N19](https://stoppels.ch/tar/N19.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (nul_in_value): the value ends at the NUL, as in GNU tar
 
 #### N20-pax-repeated-key
 
-[N20](https://stoppels.ch/tar/N20.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[N20](https://stoppels.ch/tar/N20.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (repeated): the last record wins in an x header, as in GNU tar
 
 #### N21-pax-global-path
 
-[N21](https://stoppels.ch/tar/N21.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[N21](https://stoppels.ch/tar/N21.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (global_member_field)
 
 #### N22-pax-path-empty
 
-[N22](https://stoppels.ch/tar/N22.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[N22](https://stoppels.ch/tar/N22.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (empty_value): the empty path is skipped and the header's name stays, as in GNU tar
 
 #### N23-extended-gnu-long-then-pax
 
-[N23](https://stoppels.ch/tar/N23.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[N23](https://stoppels.ch/tar/N23.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (mixed_chain)
 
+#### N24-pax-hdrcharset-binary
+
+[N24](https://stoppels.ch/tar/N24.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ✅ rejected, Safest ✅ rejected.
+
+- **TRUSTED**: TRUSTED writes the name's bytes, as GNU tar does. Not reported: hdrcharset=BINARY is POSIX's way to store them, and readers disagree only on whether to write or skip the file, not on its name
+- **Defaults (STRICT)**: STRICT refuses a name that another OS or reader takes differently (ADR 0013, 2026-10-31 amendment): the byte 0xE9 is not UTF-8
+
 #### N26-pax-global-path-then-empty
 
-[N26](https://stoppels.ch/tar/N26.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[N26](https://stoppels.ch/tar/N26.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (global_member_field, global_replaced): each g header replaces the global records before it, as in GNU tar
 
@@ -329,7 +337,7 @@ Whether a member is a file, directory or link. Mixed: decided case by case.
 
 #### K03-symlink-trailing-slash
 
-[K03](https://stoppels.ch/tar/K03.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[K03](https://stoppels.ch/tar/K03.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6): the trailing slash is dropped, reported with MEMBER_NAME_NORMALIZED
 
@@ -339,9 +347,10 @@ Duplicate paths and links between members. Mixed: decided case by case.
 
 #### S08-tree-duplicate-file-dir
 
-[S08](https://stoppels.ch/tar/S08.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[S08](https://stoppels.ch/tar/S08.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, Defaults (STRICT) ✅ rejected, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6): OverwritePolicy.REPLACE, as tar -x, lets the later member win, and the shape is in real tarballs. overwrite=ERROR, the default, refuses the second member instead
+- **Defaults (STRICT)**: overwrite=ERROR, the default, refuses the second member where GNU tar lets the later member win, so the defaults pass this reject case
 
 ## Cases Safest refuses that GNU tar extracts
 
@@ -349,14 +358,14 @@ A refusal passes a `reject` or `tolerate` case, 71 of 81, so the pass counts bou
 
 - [F02](https://stoppels.ch/tar/F02.html) `F02-end-data-after` (tolerate; tar-codec expected): `archive_trailing_data`
 - [F04](https://stoppels.ch/tar/F04.html) `F04-end-missing` (tolerate; tar-codec rejected): `archive_eof_marker_missing`
-- [N06](https://stoppels.ch/tar/N06.html) `N06-name-leading-dot-slash` (tolerate; tar-codec expected): `member_name_normalized`
 - [N07](https://stoppels.ch/tar/N07.html) `N07-symlink-absolute` (tolerate; tar-codec rejected): nothing reported
+- [N15](https://stoppels.ch/tar/N15.html) `N15-name-control-character` (tolerate; tar-codec rejected): nothing reported
 
 ## Every case
 
-Why links to the case's entry above, for a case where any run fails the verdict or a TRUSTED or STRICT run is not GNU tar's result.
+Why links to the case's entry above, for a case where any run fails the verdict or a TRUSTED or Defaults run is not GNU tar's result.
 
-| Case | Verdict | GNU tar | tar-codec | TRUSTED | STRICT | Safest | Listing reports | Why |
+| Case | Verdict | GNU tar | tar-codec | TRUSTED | Defaults | Safest | Listing reports | Why |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | [F01](https://stoppels.ch/tar/F01.html) `number-leading-space` | tolerate | ✅ expected | ✅ rejected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
 | [F02](https://stoppels.ch/tar/F02.html) `end-data-after` | tolerate | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ rejected | `archive_trailing_data` |  |
@@ -370,7 +379,7 @@ Why links to the case's entry above, for a case where any run fails the verdict 
 | [F10](https://stoppels.ch/tar/F10.html) `extended-pax-size-before-gnu-long` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#f10-extended-pax-size-before-gnu-long) |
 | [F11](https://stoppels.ch/tar/F11.html) `magic-odd-version` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#f11-magic-odd-version) |
 | [F12](https://stoppels.ch/tar/F12.html) `number-size-gap` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#f12-number-size-gap) |
-| [F13](https://stoppels.ch/tar/F13.html) `pax-newline-in-path` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other ≠GNU | ✅ rejected | `member_header_ambiguous` | [why](#f13-pax-newline-in-path) |
+| [F13](https://stoppels.ch/tar/F13.html) `pax-newline-in-path` | reject | ❌ other | ✅ rejected | ❌ other | ✅ rejected ≠GNU | ✅ rejected | `member_header_ambiguous` | [why](#f13-pax-newline-in-path) |
 | [F14](https://stoppels.ch/tar/F14.html) `pax-size-disagrees` | tolerate | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
 | [F15](https://stoppels.ch/tar/F15.html) `pax-size-on-dir` | reject | ❌ other | ✅ rejected | ❌ other ≠GNU | ❌ other ≠GNU | ✅ rejected | `member_directory_data_ignored` | [why](#f15-pax-size-on-dir) |
 | [F16](https://stoppels.ch/tar/F16.html) `type-unknown` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ❌ other | `member_type_unknown` | [why](#f16-type-unknown) |
@@ -403,25 +412,25 @@ Why links to the case's entry above, for a case where any run fails the verdict 
 | [N03](https://stoppels.ch/tar/N03.html) `pax-long-name` | accept | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
 | [N04](https://stoppels.ch/tar/N04.html) `ustar-prefix` | accept | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
 | [N05](https://stoppels.ch/tar/N05.html) `name-dot` | tolerate | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
-| [N06](https://stoppels.ch/tar/N06.html) `name-leading-dot-slash` | tolerate | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ rejected | `member_name_normalized` |  |
+| [N06](https://stoppels.ch/tar/N06.html) `name-leading-dot-slash` | tolerate | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
 | [N07](https://stoppels.ch/tar/N07.html) `symlink-absolute` | tolerate | ✅ expected | ✅ rejected | ✅ rejected ≠GNU | ✅ rejected ≠GNU | ✅ rejected | nothing | [why](#n07-symlink-absolute) |
 | [N08](https://stoppels.ch/tar/N08.html) `extended-pax-path-and-gnu-long-name` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n08-extended-pax-path-and-gnu-long-name) |
 | [N09](https://stoppels.ch/tar/N09.html) `extended-two-pax-headers` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n09-extended-two-pax-headers) |
 | [N10](https://stoppels.ch/tar/N10.html) `format-star` | reject | ❌ other | ❌ other | ❌ other | ❌ other ≠GNU | ❌ other | nothing | [why](#n10-format-star) |
 | [N11](https://stoppels.ch/tar/N11.html) `gnu-prefix-field` | reject | ❌ other | ❌ other | ❌ other | ❌ other | ❌ other | nothing | [why](#n11-gnu-prefix-field) |
 | [N12](https://stoppels.ch/tar/N12.html) `name-absolute` | reject | ❌ other | ✅ rejected | ❌ other | ✅ rejected ≠GNU | ✅ rejected | nothing | [why](#n12-name-absolute) |
-| [N13](https://stoppels.ch/tar/N13.html) `name-backslash` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other ≠GNU | ❌ other | nothing | [why](#n13-name-backslash) |
+| [N13](https://stoppels.ch/tar/N13.html) `name-backslash` | reject | ❌ other | ✅ rejected | ❌ other | ✅ rejected ≠GNU | ✅ rejected | nothing | [why](#n13-name-backslash) |
 | [N14](https://stoppels.ch/tar/N14.html) `name-bytes-after-nul` | reject | ❌ other | ❌ other | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n14-name-bytes-after-nul) |
-| [N15](https://stoppels.ch/tar/N15.html) `name-control-character` | tolerate | ✅ expected | ✅ rejected | ✅ expected | ❌ other ≠GNU | ❌ other | nothing | [why](#n15-name-control-character) |
+| [N15](https://stoppels.ch/tar/N15.html) `name-control-character` | tolerate | ✅ expected | ✅ rejected | ✅ expected | ✅ rejected ≠GNU | ✅ rejected | nothing | [why](#n15-name-control-character) |
 | [N16](https://stoppels.ch/tar/N16.html) `name-dotdot` | reject | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | nothing |  |
-| [N17](https://stoppels.ch/tar/N17.html) `name-empty` | reject | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | `member_name_normalized` |  |
-| [N18](https://stoppels.ch/tar/N18.html) `name-not-utf8` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other ≠GNU | ❌ other | nothing | [why](#n18-name-not-utf8) |
+| [N17](https://stoppels.ch/tar/N17.html) `name-empty` | reject | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | nothing |  |
+| [N18](https://stoppels.ch/tar/N18.html) `name-not-utf8` | reject | ❌ other | ✅ rejected | ❌ other | ✅ rejected ≠GNU | ✅ rejected | nothing | [why](#n18-name-not-utf8) |
 | [N19](https://stoppels.ch/tar/N19.html) `pax-nul-in-path` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n19-pax-nul-in-path) |
 | [N20](https://stoppels.ch/tar/N20.html) `pax-repeated-key` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n20-pax-repeated-key) |
 | [N21](https://stoppels.ch/tar/N21.html) `pax-global-path` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n21-pax-global-path) |
 | [N22](https://stoppels.ch/tar/N22.html) `pax-path-empty` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n22-pax-path-empty) |
 | [N23](https://stoppels.ch/tar/N23.html) `extended-gnu-long-then-pax` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n23-extended-gnu-long-then-pax) |
-| [N24](https://stoppels.ch/tar/N24.html) `pax-hdrcharset-binary` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other ≠GNU | ❌ other | nothing | [why](#n24-pax-hdrcharset-binary) |
+| [N24](https://stoppels.ch/tar/N24.html) `pax-hdrcharset-binary` | reject | ❌ other | ✅ rejected | ❌ other | ✅ rejected ≠GNU | ✅ rejected | nothing | [why](#n24-pax-hdrcharset-binary) |
 | [N25](https://stoppels.ch/tar/N25.html) `symlink-empty-target` | reject | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | `symlink_target_unavailable` |  |
 | [N26](https://stoppels.ch/tar/N26.html) `pax-global-path-then-empty` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n26-pax-global-path-then-empty) |
 | [N27](https://stoppels.ch/tar/N27.html) `pax-long-symlink` | accept | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
@@ -433,7 +442,7 @@ Why links to the case's entry above, for a case where any run fails the verdict 
 | [S05](https://stoppels.ch/tar/S05.html) `hardlink-to-later-member` | reject | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | nothing |  |
 | [S06](https://stoppels.ch/tar/S06.html) `hardlink-to-symlink` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ❌ other | nothing | [why](#s06-hardlink-to-symlink) |
 | [S07](https://stoppels.ch/tar/S07.html) `tree-duplicate-file-differs` | reject | ❌ other | ❌ other | ❌ other | ❌ other | ❌ other | nothing | [why](#s07-tree-duplicate-file-differs) |
-| [S08](https://stoppels.ch/tar/S08.html) `tree-duplicate-file-dir` | reject | ❌ other | ❌ other | ❌ other | ❌ other | ✅ rejected | nothing | [why](#s08-tree-duplicate-file-dir) |
+| [S08](https://stoppels.ch/tar/S08.html) `tree-duplicate-file-dir` | reject | ❌ other | ❌ other | ❌ other | ✅ rejected ≠GNU | ✅ rejected | nothing | [why](#s08-tree-duplicate-file-dir) |
 | [S09](https://stoppels.ch/tar/S09.html) `tree-duplicate-file-identical` | reject | ❌ other | ❌ other | ❌ other | ❌ other | ❌ other | nothing | [why](#s09-tree-duplicate-file-identical) |
 | [S10](https://stoppels.ch/tar/S10.html) `tree-symlink-then-file` | reject | ❌ other | ❌ other | ❌ other | ❌ other | ❌ other | nothing | [why](#s10-tree-symlink-then-file) |
 | [S11](https://stoppels.ch/tar/S11.html) `tree-through-symlink` | reject | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | nothing |  |

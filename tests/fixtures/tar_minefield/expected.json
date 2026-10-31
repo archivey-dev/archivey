@@ -22,7 +22,7 @@
     "tree": "bf073b7a9ab7edc4",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "expected",
     "tree": "bf073b7a9ab7edc4",
     "gnu_tree": true
@@ -56,7 +56,7 @@
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "expected",
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
@@ -89,7 +89,7 @@
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
@@ -123,7 +123,7 @@
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "expected",
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
@@ -155,7 +155,7 @@
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "expected",
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
@@ -188,7 +188,7 @@
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
@@ -221,7 +221,7 @@
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
@@ -254,7 +254,7 @@
     "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
-   "strict": {
+   "defaults": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -288,7 +288,7 @@
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
@@ -321,7 +321,7 @@
     "tree": "81ef13fb44f466c4",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "81ef13fb44f466c4",
     "gnu_tree": true
@@ -354,7 +354,7 @@
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
@@ -387,7 +387,7 @@
     "tree": "04611c107823da44",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "04611c107823da44",
     "gnu_tree": true
@@ -420,9 +420,9 @@
     "tree": "0c3412c95e921b48",
     "gnu_tree": true
    },
-   "strict": {
-    "outcome": "other",
-    "tree": "7ace3fe773df46f4",
+   "defaults": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
    "strict_diag": {
@@ -452,7 +452,7 @@
     "tree": "04611c107823da44",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "expected",
     "tree": "04611c107823da44",
     "gnu_tree": true
@@ -485,7 +485,7 @@
     "tree": "2af5d96f9fbf41e4",
     "gnu_tree": false
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "2af5d96f9fbf41e4",
     "gnu_tree": false
@@ -518,7 +518,7 @@
     "tree": "15e78f0a85c2ab8b",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "15e78f0a85c2ab8b",
     "gnu_tree": true
@@ -549,7 +549,7 @@
     "tree": "589ba0b3e435fecc",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "expected",
     "tree": "589ba0b3e435fecc",
     "gnu_tree": true
@@ -581,7 +581,7 @@
     "tree": "489ebf9eb6726cf0",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "expected",
     "tree": "489ebf9eb6726cf0",
     "gnu_tree": true
@@ -614,7 +614,7 @@
     "tree": "0b211654f7958127",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "0b211654f7958127",
     "gnu_tree": true
@@ -647,7 +647,7 @@
     "tree": "604c6f06082fcc67",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "604c6f06082fcc67",
     "gnu_tree": true
@@ -680,7 +680,7 @@
     "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
-   "strict": {
+   "defaults": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -713,7 +713,7 @@
     "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
-   "strict": {
+   "defaults": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -746,7 +746,7 @@
     "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
-   "strict": {
+   "defaults": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -779,7 +779,7 @@
     "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
-   "strict": {
+   "defaults": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -812,7 +812,7 @@
     "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
-   "strict": {
+   "defaults": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -845,7 +845,7 @@
     "tree": "1c1df89e7d8fb6c7",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "1c1df89e7d8fb6c7",
     "gnu_tree": true
@@ -878,7 +878,7 @@
     "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
-   "strict": {
+   "defaults": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -911,7 +911,7 @@
     "tree": "04611c107823da44",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "04611c107823da44",
     "gnu_tree": true
@@ -944,7 +944,7 @@
     "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
-   "strict": {
+   "defaults": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -977,7 +977,7 @@
     "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
-   "strict": {
+   "defaults": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -1008,7 +1008,7 @@
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "expected",
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
@@ -1040,7 +1040,7 @@
     "tree": "84eef239717c849f",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "expected",
     "tree": "84eef239717c849f",
     "gnu_tree": true
@@ -1073,7 +1073,7 @@
     "tree": "5c36dd2995967e53",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "5c36dd2995967e53",
     "gnu_tree": true
@@ -1106,7 +1106,7 @@
     "tree": "86e9496900f0cee2",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "86e9496900f0cee2",
     "gnu_tree": true
@@ -1139,7 +1139,7 @@
     "tree": "243ac93737631d3e",
     "gnu_tree": false
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "243ac93737631d3e",
     "gnu_tree": false
@@ -1172,7 +1172,7 @@
     "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
-   "strict": {
+   "defaults": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -1205,7 +1205,7 @@
     "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
-   "strict": {
+   "defaults": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -1236,7 +1236,7 @@
     "tree": "e6df658443a9a7d3",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "e6df658443a9a7d3",
     "gnu_tree": true
@@ -1267,7 +1267,7 @@
     "tree": "8ce6e36c9afbf8d4",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "8ce6e36c9afbf8d4",
     "gnu_tree": true
@@ -1300,7 +1300,7 @@
     "tree": "259e23a23c09490e",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "259e23a23c09490e",
     "gnu_tree": true
@@ -1331,7 +1331,7 @@
     "tree": "801166cfb9a22b6e",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "expected",
     "tree": "801166cfb9a22b6e",
     "gnu_tree": true
@@ -1362,7 +1362,7 @@
     "tree": "fb88a5262ecadb95",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "expected",
     "tree": "fb88a5262ecadb95",
     "gnu_tree": true
@@ -1393,7 +1393,7 @@
     "tree": "801166cfb9a22b6e",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "expected",
     "tree": "801166cfb9a22b6e",
     "gnu_tree": true
@@ -1424,7 +1424,7 @@
     "tree": "38d440b55d035625",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "expected",
     "tree": "38d440b55d035625",
     "gnu_tree": true
@@ -1456,7 +1456,7 @@
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "expected",
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
@@ -1482,23 +1482,21 @@
     "outcome": "expected",
     "tree": "2da7ede53362bf61"
    },
-   "codes": [
-    "member_name_normalized"
-   ],
+   "codes": [],
    "trusted": {
     "outcome": "expected",
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "expected",
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
    },
    "strict_diag": {
-    "outcome": "rejected",
-    "tree": "44136fa355b3678a",
-    "gnu_tree": false
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
    }
   },
   "N07-symlink-absolute": {
@@ -1522,7 +1520,7 @@
     "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
-   "strict": {
+   "defaults": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -1555,7 +1553,7 @@
     "tree": "0b211654f7958127",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "0b211654f7958127",
     "gnu_tree": true
@@ -1588,7 +1586,7 @@
     "tree": "8f56790e970e636a",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "8f56790e970e636a",
     "gnu_tree": true
@@ -1619,7 +1617,7 @@
     "tree": "dd27f332bd4342ce",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "977170ae9aa1a103",
     "gnu_tree": false
@@ -1650,7 +1648,7 @@
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
@@ -1681,7 +1679,7 @@
     "tree": "98885fb055595cba",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -1712,14 +1710,14 @@
     "tree": "57a639ceea372de5",
     "gnu_tree": true
    },
-   "strict": {
-    "outcome": "other",
-    "tree": "5abeb1d352d228ad",
+   "defaults": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
    "strict_diag": {
-    "outcome": "other",
-    "tree": "5abeb1d352d228ad",
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
     "gnu_tree": false
    }
   },
@@ -1745,7 +1743,7 @@
     "tree": "4ad582a97301fabf",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "4ad582a97301fabf",
     "gnu_tree": true
@@ -1777,14 +1775,14 @@
     "tree": "7b883ef927f8ca5d",
     "gnu_tree": true
    },
-   "strict": {
-    "outcome": "other",
-    "tree": "3f80821e3b3e0766",
+   "defaults": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
    "strict_diag": {
-    "outcome": "other",
-    "tree": "3f80821e3b3e0766",
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
     "gnu_tree": false
    }
   },
@@ -1808,7 +1806,7 @@
     "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
-   "strict": {
+   "defaults": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -1833,15 +1831,13 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a"
    },
-   "codes": [
-    "member_name_normalized"
-   ],
+   "codes": [],
    "trusted": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
-   "strict": {
+   "defaults": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -1872,14 +1868,14 @@
     "tree": "6d28dd191238e6f0",
     "gnu_tree": true
    },
-   "strict": {
-    "outcome": "other",
-    "tree": "c6072bd52e96c97c",
+   "defaults": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
    "strict_diag": {
-    "outcome": "other",
-    "tree": "c6072bd52e96c97c",
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
     "gnu_tree": false
    }
   },
@@ -1905,7 +1901,7 @@
     "tree": "ee79d5c11196819c",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "ee79d5c11196819c",
     "gnu_tree": true
@@ -1938,7 +1934,7 @@
     "tree": "8f56790e970e636a",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "8f56790e970e636a",
     "gnu_tree": true
@@ -1971,7 +1967,7 @@
     "tree": "96b91d95cc15c677",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "96b91d95cc15c677",
     "gnu_tree": true
@@ -2004,7 +2000,7 @@
     "tree": "fa7487b64f8887db",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "fa7487b64f8887db",
     "gnu_tree": true
@@ -2037,7 +2033,7 @@
     "tree": "86959ae36926f5d8",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "86959ae36926f5d8",
     "gnu_tree": true
@@ -2068,14 +2064,14 @@
     "tree": "7647e873d0a8c304",
     "gnu_tree": true
    },
-   "strict": {
-    "outcome": "other",
-    "tree": "108ef915c6adf3bd",
+   "defaults": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
    "strict_diag": {
-    "outcome": "other",
-    "tree": "108ef915c6adf3bd",
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
     "gnu_tree": false
    }
   },
@@ -2101,7 +2097,7 @@
     "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
-   "strict": {
+   "defaults": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -2134,7 +2130,7 @@
     "tree": "4b662558548e1770",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "4b662558548e1770",
     "gnu_tree": true
@@ -2165,7 +2161,7 @@
     "tree": "7077d9088bad58af",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "expected",
     "tree": "7077d9088bad58af",
     "gnu_tree": true
@@ -2196,7 +2192,7 @@
     "tree": "9f2abf5c3d3db9e8",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "expected",
     "tree": "9f2abf5c3d3db9e8",
     "gnu_tree": true
@@ -2227,7 +2223,7 @@
     "tree": "99be968445db001c",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "expected",
     "tree": "99be968445db001c",
     "gnu_tree": true
@@ -2258,7 +2254,7 @@
     "tree": "ce2c338b4d6c1165",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "expected",
     "tree": "ce2c338b4d6c1165",
     "gnu_tree": true
@@ -2289,7 +2285,7 @@
     "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
-   "strict": {
+   "defaults": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -2320,7 +2316,7 @@
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "2da7ede53362bf61",
     "gnu_tree": true
@@ -2351,7 +2347,7 @@
     "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
-   "strict": {
+   "defaults": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
     "gnu_tree": false
@@ -2382,7 +2378,7 @@
     "tree": "d1517a9789f09e2b",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "d1517a9789f09e2b",
     "gnu_tree": true
@@ -2413,7 +2409,7 @@
     "tree": "1cf4351d5d7aac03",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "1cf4351d5d7aac03",
     "gnu_tree": true
@@ -2444,10 +2440,10 @@
     "tree": "e6df658443a9a7d3",
     "gnu_tree": true
    },
-   "strict": {
-    "outcome": "other",
-    "tree": "e6df658443a9a7d3",
-    "gnu_tree": true
+   "defaults": {
+    "outcome": "rejected",
+    "tree": "635efa60de524573",
+    "gnu_tree": false
    },
    "strict_diag": {
     "outcome": "rejected",
@@ -2475,7 +2471,7 @@
     "tree": "c9ea737f243cd08d",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "c9ea737f243cd08d",
     "gnu_tree": true
@@ -2506,7 +2502,7 @@
     "tree": "3e140f31efe90819",
     "gnu_tree": true
    },
-   "strict": {
+   "defaults": {
     "outcome": "other",
     "tree": "3e140f31efe90819",
     "gnu_tree": true
@@ -2537,7 +2533,7 @@
     "tree": "5488ad32f700cdd7",
     "gnu_tree": false
    },
-   "strict": {
+   "defaults": {
     "outcome": "rejected",
     "tree": "5488ad32f700cdd7",
     "gnu_tree": false
@@ -2568,7 +2564,7 @@
     "tree": "6eb5e0d4dc2a6073",
     "gnu_tree": false
    },
-   "strict": {
+   "defaults": {
     "outcome": "rejected",
     "tree": "6eb5e0d4dc2a6073",
     "gnu_tree": false
@@ -2601,7 +2597,7 @@
     "tree": "2da7ede53362bf61",
     "gnu_tree": false
    },
-   "strict": {
+   "defaults": {
     "outcome": "rejected",
     "tree": "2da7ede53362bf61",
     "gnu_tree": false
