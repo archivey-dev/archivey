@@ -687,8 +687,8 @@ def test_a_dot_slash_does_not_hide_another_normalization(stored: str) -> None:
 
 def test_a_long_run_of_dot_slashes_is_checked_in_linear_time() -> None:
     """A name of a million ``./`` before ``a``: checking the prefix by slicing once per
-    ``./`` copies the rest of the name each time and takes seconds; by index it takes
-    about a millisecond."""
+    ``./`` copies the rest of the name each time and takes seconds; by index it is
+    linear, about 0.1 s."""
     member = ArchiveMember(name="a", type=MemberType.FILE)
     started = time.perf_counter()
     assert _only_dot_prefix_dropped("./" * 1_000_000 + "a", member)
