@@ -46,8 +46,9 @@ class LazyOptional:
     brotli and rapidgzip are such modules (measured 2026-10-08 on 3.13t, 3.14t and
     3.15t), and so is python-lzo 1.15 (measured 2026-10-30 on 3.14t). Importing them
     when this module loads would re-enable the GIL for every program that imports
-    archivey with them installed, even one that never opens a stream they decode. So :meth:`available` only looks the package up, and the import
-    waits for :meth:`load`, which a codec calls when it opens a stream that needs it.
+    archivey with them installed, even one that never opens a stream they decode. So
+    :meth:`available` only looks the package up, and the import waits for
+    :meth:`load`, which a codec calls when it opens a stream that needs it.
     zstd and lz4 keep the GIL disabled and stay eager imports.
 
     There is no lock: two threads in :meth:`load` at once both get the same module

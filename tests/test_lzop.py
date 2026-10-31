@@ -8,7 +8,6 @@ import datetime
 import io
 import random
 import struct
-import tracemalloc
 import zlib
 from pathlib import Path
 
@@ -37,6 +36,7 @@ from archivey.internal.format_adapter import registration_scope
 from archivey.internal.streams.codecs import lzo_decoder
 from archivey.internal.streams.codecs.decoder_child import POOL
 from tests.lzop_build import make_lzop
+from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO
 from tests.test_format_api import _compressed_archive, _compressed_plugin
 
@@ -166,6 +166,46 @@ def _expanding_lzop(size: int) -> bytes:
     return head + blocks + bytes(block) + bytes(4)
 
 
+def _header_end(data: bytes) -> int:
+    """Where the extra field starts: after a ``make_lzop`` header with no name."""
+    return len(make_lzop(b"")) - 4
+
+
+def test_an_extra_field_is_read_past() -> None:
+    data = make_lzop(b"GOODEVIL", block_size=4, extra=b"note")
+    with open_stream(io.BytesIO(data)) as stream:
+        assert stream.read() == b"GOODEVIL"
+
+
+@pytest.mark.parametrize("damage", ["length", "checksum"])
+def test_an_extra_field_with_a_bad_checksum_is_refused(damage: str) -> None:
+    # A length that grows over the first block would otherwise swallow it: the next
+    # block still matches its own checksum, and the read returns less, with no error.
+    data = bytearray(make_lzop(b"GOODEVIL", block_size=4, extra=b"note"))
+    at = _header_end(bytes(data))
+    if damage == "length":
+        struct.pack_into(">I", data, at, 4 + 4 + 12 + 4)
+    else:
+        data[at + 8] ^= 0xFF
+    with (
+        open_stream(io.BytesIO(bytes(data))) as stream,
+        pytest.raises(CorruptionError, match="extra field checksum"),
+    ):
+        stream.read()
+
+
+def test_an_extra_field_over_max_decoder_memory_is_refused() -> None:
+    data = make_lzop(b"payload", extra=bytes(3 << 20))
+    with open_stream(io.BytesIO(data)) as stream:
+        assert stream.read() == b"payload"
+    config = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=1 << 20))
+    with (
+        open_stream(io.BytesIO(data), config=config) as stream,
+        pytest.raises(ResourceLimitError),
+    ):
+        stream.read()
+
+
 def test_a_block_over_max_decoder_memory_is_refused() -> None:
     data = _expanding_lzop(4 << 20)
     with open_stream(io.BytesIO(data)) as stream:
@@ -173,19 +213,18 @@ def test_a_block_over_max_decoder_memory_is_refused() -> None:
     config = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=1 << 20))
     with (
         open_stream(io.BytesIO(data), config=config) as stream,
-        pytest.raises(ResourceLimitError, match="an lzop block declares"),
+        pytest.raises(
+            ResourceLimitError, match="an lzop block or extra field declares"
+        ),
     ):
         stream.read(10)
 
 
 def test_detection_does_not_decode_a_large_block() -> None:
     data = _expanding_lzop(48 << 20)
-    tracemalloc.start()
-    try:
-        assert detect_format(io.BytesIO(data)).format == ArchiveFormat.LZOP
-        _, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
+    detected: list[ArchiveFormat] = []
+    peak = traced_peak(lambda: detected.append(detect_format(io.BytesIO(data)).format))
+    assert detected == [ArchiveFormat.LZOP]
     # The inner-TAR probe would decode the whole 48 MiB block to read 512 bytes.
     assert peak < 8 << 20
 

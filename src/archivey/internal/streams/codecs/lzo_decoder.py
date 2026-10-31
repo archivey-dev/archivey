@@ -204,7 +204,8 @@ _LZO1X_METHODS = frozenset({1, 2, 3})
 # lzop's MAX_BLOCK_SIZE: it writes 256 KiB blocks (BLOCK_SIZE) and reads up to 64 MiB.
 # A block is decoded whole, so a block's declared size is what it allocates: above
 # 64 MiB lzop itself refuses the file, and archivey does too (CorruptionError). Below
-# it, the codec checks the size against the caller's limits (``LzopCodec.open``).
+# it, the codec checks the size against the caller's limits (``_block_check`` in
+# ``lzo_codec``, which ``LzopCodec.decompressor`` passes to ``LzopDecompressor``).
 LZOP_BLOCK_SIZE = 256 * 1024
 _MAX_BLOCK = 64 * 1024 * 1024
 
@@ -236,11 +237,15 @@ class LzopHeader:
         self.length = length
 
 
-def parse_lzop_header(buf: bytes | bytearray) -> LzopHeader | None:
+def parse_lzop_header(
+    buf: bytes | bytearray, check_size: Callable[[int], None] | None = None
+) -> LzopHeader | None:
     """The header at the start of ``buf``, or ``None`` when ``buf`` ends inside it.
 
     Raises :class:`CorruptionError` for a damaged header and
     :class:`UnsupportedFeatureError` for a method or filter archivey does not decode.
+    ``check_size`` is given an extra field's declared length before the field is
+    waited for, as a block's decoded size is, and raises to refuse it.
     """
     if len(buf) < len(LZOP_MAGIC):
         return None
@@ -326,8 +331,20 @@ def parse_lzop_header(buf: bytes | bytearray) -> LzopHeader | None:
         extra_len = _U32.unpack(extra_len_raw)[0]
         if extra_len > _MAX_BLOCK:
             raise CorruptionError("lzop header extra field is too long")
-        if take(extra_len) is None or take(4) is None:
+        if check_size is not None:
+            check_size(extra_len)
+        extra = take(extra_len)
+        if extra is None:
             return None
+        extra_checksum_raw = take(4)
+        if extra_checksum_raw is None:
+            return None
+        # As lzop's read_header: the checksum covers the length and the field.
+        covered = extra_len_raw + extra
+        expected = _U32.unpack(extra_checksum_raw)[0]
+        actual = zlib.crc32(covered) if flags & _F_H_CRC32 else zlib.adler32(covered)
+        if actual != expected:
+            raise CorruptionError("lzop header extra field checksum mismatch")
     return LzopHeader(
         flags=flags, method=method, mode=mode, mtime=mtime, name=name, length=pos
     )
@@ -337,8 +354,9 @@ class LzopDecompressor:
     """One lzop file, with the ``bz2.BZ2Decompressor`` interface (``FramedDecoder``).
 
     Holds at most one block of input and its output, each at most 64 MiB, the most
-    lzop reads. ``check_block`` is given each block's declared decoded size before
-    anything is allocated for it, and raises to refuse it.
+    lzop reads. ``check_block`` is given each block's declared decoded size, and the
+    header's extra field length, before anything is allocated for it, and raises to
+    refuse it.
     """
 
     def __init__(
@@ -388,7 +406,7 @@ class LzopDecompressor:
         is needed first."""
         buf = self._in
         if self._header is None:
-            header = parse_lzop_header(buf)
+            header = parse_lzop_header(buf, self._check_block)
             if header is None:
                 return False
             self._header = header

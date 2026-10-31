@@ -45,7 +45,8 @@ _HEADER_PEEK = 512
 
 
 def _block_check(config: StreamConfig) -> Callable[[int], None]:
-    """What refuses an lzop block's declared size before it is decoded whole.
+    """What refuses an lzop block's declared size before it is decoded whole, and the
+    header extra field's before it is read.
 
     A read checks it against ``DecoderLimits.max_decoder_memory``, as other codecs
     check a declared dictionary or window. A detection probe reads a few hundred bytes
@@ -59,7 +60,7 @@ def _block_check(config: StreamConfig) -> Callable[[int], None]:
         def check_probe(size: int) -> None:
             if size > ceiling:
                 raise ResourceLimitError(
-                    f"an lzop block declares {size} bytes, over the {ceiling} a "
+                    f"an lzop block or extra field declares {size} bytes, over the {ceiling} a "
                     "detection probe decodes"
                 )
 
@@ -67,7 +68,9 @@ def _block_check(config: StreamConfig) -> Callable[[int], None]:
     limits, usage = config.decoder_limits, config.usage
 
     def check(size: int) -> None:
-        check_decoder_memory(size, limits=limits, what="an lzop block", usage=usage)
+        check_decoder_memory(
+            size, limits=limits, what="an lzop block or extra field", usage=usage
+        )
 
     return check
 

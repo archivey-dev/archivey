@@ -254,8 +254,11 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
                 raw = io.BytesIO(self._read_exact(start, length, "a compressed block"))
                 # LZO1X stores no decoded length: ``size`` is the most it may have.
                 size = limit if method is CompressionAlgorithm.LZO else None
-                with self._context.decompress(raw, method, size=size) as decoded:
-                    data = decoded.read(limit + 1)
+                try:
+                    with self._context.decompress(raw, method, size=size) as decoded:
+                        data = decoded.read(limit + 1)
+                except CorruptionError as exc:
+                    raise CorruptionError(f"the block at {start}: {exc}") from None
                 if len(data) > limit:
                     raise CorruptionError(
                         f"a block at {start} decodes to more than {limit} bytes"
