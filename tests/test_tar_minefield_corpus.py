@@ -92,9 +92,6 @@ _AMBIGUOUS = (
     f"{_AS_GNU}, and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer "
     "produces the shape and another reader can frame or name it differently"
 )
-# A shape the corpus's scan found in no tarball, that Archivey reads as GNU tar does
-# and does not report yet: whether it should be MEMBER_HEADER_AMBIGUOUS is open.
-_OPEN = "Open: no real writer is known to produce it, so it may deserve a report"
 _DUPLICATES = (
     f"{_AS_GNU}: OverwritePolicy.REPLACE, as tar -x, lets the later member win, and "
     "the shape is in real tarballs. overwrite=ERROR, the default, refuses the second "
@@ -106,10 +103,9 @@ TRIAGE: dict[str, str] = {
         "this way, and the members before the block are whole"
     ),
     "F06-checksum-signed": (
-        f"{_AS_GNU}: GNU tar accepts a header that matches either the unsigned or "
-        "the signed sum, since some old tars summed signed bytes. Not reported: "
-        "readers disagree only on whether to accept the header, and none reads "
-        "another name or size from it"
+        f"{_AMBIGUOUS} (signed_checksum): GNU tar accepts a header that matches "
+        "either the unsigned or the signed sum; SunOS 4 and Ultrix tars wrote the "
+        "signed one, no current writer does"
     ),
     "F07-end-archive-after": (
         f"{_AS_GNU}, reported with ARCHIVE_TRAILING_DATA: what follows the end "
@@ -122,18 +118,16 @@ TRIAGE: dict[str, str] = {
     ),
     "F10-extended-pax-size-before-gnu-long": f"{_AMBIGUOUS} (mixed_chain)",
     "F11-magic-odd-version": (
-        f"{_AS_GNU}: GNU tar reads any POSIX magic as ustar, whatever the version. "
-        "Not reported: this case has no prefix, so a reader that takes it as v7 "
-        f"names the member the same. {_OPEN} when the prefix is set"
+        f"{_AMBIGUOUS} (magic_version): GNU tar reads any POSIX magic as ustar, "
+        "whatever the version"
     ),
     "F12-number-size-gap": (
         f"{_AMBIGUOUS} (field_tail): the size ends at the blank, as in GNU tar"
     ),
     "F13-pax-newline-in-path": (
-        f"{_AS_GNU}: a record is framed by its length, as POSIX says, so the "
-        "newline is a byte of the path. Not reported: a newline in a PAX value is "
-        "real in xattrs; a reader that splits records on lines is wrong for those "
-        f"too. {_OPEN} in a path"
+        f"{_AMBIGUOUS} (newline_in_value): a record is framed by its length, as "
+        "POSIX says, so the newline is a byte of the path. Newlines in xattr and ACL "
+        "values are real and not reported"
     ),
     "F15-pax-size-on-dir": (
         "Not the corpus's GNU tar column, which reads the header after the "
@@ -155,9 +149,8 @@ TRIAGE: dict[str, str] = {
         "read it"
     ),
     "F28-pax-newline-in-comment": (
-        f"{_AS_GNU}: a record is framed by its length, so the newline cannot start "
-        "a size record. Not reported, as for F13; a reader that splits on lines "
-        f"frames the next member differently here. {_OPEN}"
+        f"{_AMBIGUOUS} (newline_in_value): the newline cannot start a size record, "
+        "as for F13"
     ),
     "F33-size-on-dir": (
         f"{_AMBIGUOUS} (size_on_no_data): the next header is read, as GNU tar "
@@ -268,28 +261,18 @@ STRICT_TRIAGE: dict[str, str] = {
 
 # Why Archivey, with the safest settings, fails a case's verdict. This is the safety
 # bar, so the reason must justify reading the shape rather than refusing it.
-_OPEN_REPORT = (
-    "Open: no real writer is known to produce the shape, so it should be reported "
-    "with MEMBER_HEADER_AMBIGUOUS, which DiagnosticPolicy.STRICT refuses"
-)
 _PORTABLE_NAME = (
     "STRICT writes the name in a spelling every OS can hold (ADR 0013) instead of "
     "refusing it, so the tree is not the expected one, but nothing lands outside the "
     "destination or under a name another OS reads differently"
 )
 DIAG_TRIAGE: dict[str, str] = {
-    "F06-checksum-signed": f"{_OPEN_REPORT} (a checksum that matches only signed)",
-    "F11-magic-odd-version": f"{_OPEN_REPORT} (a ustar version neither 00 nor NULs)",
-    "F13-pax-newline-in-path": (
-        f"{_OPEN_REPORT} (a newline in a PAX value other than an xattr's)"
-    ),
     "F16-type-unknown": (
         "MEMBER_TYPE_UNKNOWN is deliberately out of DiagnosticPolicy.STRICT: real "
         "writers emit vendor typeflags with data (Solaris tar's X extended headers and "
         "A ACLs), GNU tar extracts them as files, and Archivey delivers the data as a "
         "FILE, so nothing is hidden"
     ),
-    "F28-pax-newline-in-comment": f"{_OPEN_REPORT} (as F13)",
     "K01-kind-trailing-slash-file": (
         "v7 tarballs (sendmail 8.18.2, tcp_wrappers 7.6) store directories this way, "
         "and GNU tar makes it a directory; refusing it refuses real archives"

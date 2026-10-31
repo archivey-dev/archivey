@@ -57,7 +57,7 @@ import threading
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime
-from typing import BinaryIO, Literal, cast
+from typing import BinaryIO, Literal, assert_never, cast
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import (
@@ -1420,6 +1420,11 @@ class TarReader(BaseArchiveReader):
                 f"a global PAX header setting {field}, which then applies to every "
                 "member after it"
             )
+        elif ambiguity is Ambiguity.NUL_IN_VALUE and b"\x00" in key:
+            what = (
+                f"a PAX record whose keyword {field} holds a NUL byte; the whole "
+                "keyword is used"
+            )
         elif ambiguity is Ambiguity.NUL_IN_VALUE:
             what = f"a PAX {field} record holding a NUL byte; the value ends there"
         elif ambiguity is Ambiguity.MIXED_CHAIN:
@@ -1456,17 +1461,39 @@ class TarReader(BaseArchiveReader):
                 "a size on a directory or link header that another header follows; "
                 "the size names no data"
             )
-        else:
+        elif ambiguity is Ambiguity.SIGNED_CHECKSUM:
+            what = (
+                "a header checksum that matches only the signed sum of its bytes; "
+                "it is accepted"
+            )
+        elif ambiguity is Ambiguity.MAGIC_VERSION:
+            what = (
+                "the POSIX magic with a version other than 00 or NULs; the header "
+                "is read as ustar"
+            )
+        elif ambiguity is Ambiguity.NEWLINE_IN_VALUE and b"\n" in key:
+            what = (
+                f"a PAX record whose keyword {field} holds a newline; records are "
+                "framed by their length, so it is part of the keyword"
+            )
+        elif ambiguity is Ambiguity.NEWLINE_IN_VALUE:
+            what = (
+                f"a PAX {field} value holding a newline; records are framed by "
+                "their length, so it is part of the value"
+            )
+        elif ambiguity is Ambiguity.GLOBAL_REPLACED:
             what = (
                 f"a global PAX header that drops the {field} an earlier global header "
                 "set; it no longer applies"
             )
+        else:
+            assert_never(ambiguity)
         self._diagnostics_collector.emit(
             code=DiagnosticCode.MEMBER_HEADER_AMBIGUOUS,
             message=(
                 f"TAR headers of {quoted(member.name)} have {what}, as GNU tar reads "
-                "them. No known writer produces this, and other readers may list "
-                "another name or size."
+                "them. No known writer produces this, and other readers may read "
+                "the headers differently: list another name or size, or refuse them."
             ),
             context=HeaderAmbiguityContext(
                 archive_name=self._archive_name,

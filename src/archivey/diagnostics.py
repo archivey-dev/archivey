@@ -649,7 +649,8 @@ class HeaderAmbiguityContext(_JsonSafeContext):
     - ``"global_member_field"``: a global PAX header sets ``path``, ``linkpath`` or
       ``size`` for every member after it.
     - ``"nul_in_value"``: a PAX ``path``, ``linkpath``, ``uname``, ``gname`` or
-      ``GNU.sparse.name`` holds a NUL byte; the value ends there.
+      ``GNU.sparse.name`` holds a NUL byte; the value ends there. Or a PAX keyword
+      holds one; the whole keyword is used.
     - ``"global_replaced"``: a global header drops a keyword an earlier global header
       set. GNU tar replaces the global records, ``tarfile`` merges them.
     - ``"mixed_chain"``: a GNU long name or link name header and an ``x`` header
@@ -671,9 +672,18 @@ class HeaderAmbiguityContext(_JsonSafeContext):
       extended header overrode does not count.
     - ``"size_on_no_data"``: a directory or link header has a size, and another
       header follows it at once, so the size names no data.
+    - ``"signed_checksum"``: a header's checksum matches only the signed sum of its
+      bytes, as SunOS 4 and Ultrix tars wrote it; a reader that takes the POSIX
+      unsigned sum refuses the header.
+    - ``"magic_version"``: the POSIX magic with a version other than ``00`` or NULs;
+      a reader that takes the header as v7 drops its name prefix.
+    - ``"newline_in_value"``: a PAX value, other than an extended attribute's or an
+      ACL's, or a PAX keyword holds a newline; a reader that splits records on lines
+      reads another record.
 
-    ``field`` is the PAX keyword (the header field's name for ``"field_tail"``, and
-    ``"size"`` for ``"size_on_no_data"``), with ``"path"`` and ``"linkpath"`` standing for GNU
+    ``field`` is the PAX keyword (the header field's name for ``"field_tail"``,
+    ``"size"`` for ``"size_on_no_data"``, ``"chksum"`` for ``"signed_checksum"`` and
+    ``"version"`` for ``"magic_version"``), with ``"path"`` and ``"linkpath"`` standing for GNU
     long name and long link headers, ``"x"`` for a repeated ``x`` header and for
     ``"mixed_chain"``, and ``"g"`` for ``"global_in_chain"``. A global
     header's shape is reported on the member after it.
@@ -695,6 +705,9 @@ class HeaderAmbiguityContext(_JsonSafeContext):
         "leading_zero",
         "field_tail",
         "size_on_no_data",
+        "signed_checksum",
+        "magic_version",
+        "newline_in_value",
     ] = "repeated"
     field: str = ""
 

@@ -21,7 +21,7 @@ Each case below gives a reason per run that owes one: Safest wherever it fails t
 | --- | --- | --- |
 | TRUSTED | 40 of 81 | 78 of 81 |
 | STRICT | 40 of 81 | 71 of 81 |
-| Safest (STRICT + DiagnosticPolicy.STRICT) | 63 of 81 | not compared |
+| Safest (STRICT + DiagnosticPolicy.STRICT) | 67 of 81 | not compared |
 | GNU tar 1.35 | 40 of 81 | |
 | tar-codec | 68 of 81 | |
 
@@ -33,41 +33,12 @@ The safety bar: each case STRICT + DiagnosticPolicy.STRICT fails, 🔴 where tar
 
 Where a member's data ends and which headers belong to it. A shape no real writer produces should be a diagnostic in ARCHIVE_INTEGRITY_CODES, which DiagnosticPolicy.STRICT refuses, unless well justified.
 
-#### F06-checksum-signed
-
-🔴 [F06](https://stoppels.ch/tar/F06.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ❌ other.
-
-- **Safest**: Open: no real writer is known to produce the shape, so it should be reported with MEMBER_HEADER_AMBIGUOUS, which DiagnosticPolicy.STRICT refuses (a checksum that matches only signed)
-- **TRUSTED**: Extracted as GNU tar extracts it (DR-6): GNU tar accepts a header that matches either the unsigned or the signed sum, since some old tars summed signed bytes. Not reported: readers disagree only on whether to accept the header, and none reads another name or size from it
-
-#### F11-magic-odd-version
-
-🔴 [F11](https://stoppels.ch/tar/F11.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ❌ other.
-
-- **Safest**: Open: no real writer is known to produce the shape, so it should be reported with MEMBER_HEADER_AMBIGUOUS, which DiagnosticPolicy.STRICT refuses (a ustar version neither 00 nor NULs)
-- **TRUSTED**: Extracted as GNU tar extracts it (DR-6): GNU tar reads any POSIX magic as ustar, whatever the version. Not reported: this case has no prefix, so a reader that takes it as v7 names the member the same. Open: no real writer is known to produce it, so it may deserve a report when the prefix is set
-
-#### F13-pax-newline-in-path
-
-🔴 [F13](https://stoppels.ch/tar/F13.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ❌ other.
-
-- **Safest**: Open: no real writer is known to produce the shape, so it should be reported with MEMBER_HEADER_AMBIGUOUS, which DiagnosticPolicy.STRICT refuses (a newline in a PAX value other than an xattr's)
-- **TRUSTED**: Extracted as GNU tar extracts it (DR-6): a record is framed by its length, as POSIX says, so the newline is a byte of the path. Not reported: a newline in a PAX value is real in xattrs; a reader that splits records on lines is wrong for those too. Open: no real writer is known to produce it, so it may deserve a report in a path
-- **STRICT**: STRICT rewrites the name to a spelling every OS can hold (ADR 0013): the newline becomes %0A
-
 #### F16-type-unknown
 
 🔴 [F16](https://stoppels.ch/tar/F16.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ❌ other.
 
 - **Safest**: MEMBER_TYPE_UNKNOWN is deliberately out of DiagnosticPolicy.STRICT: real writers emit vendor typeflags with data (Solaris tar's X extended headers and A ACLs), GNU tar extracts them as files, and Archivey delivers the data as a FILE, so nothing is hidden
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6): an unknown typeflag with data is a file, as GNU tar extracts it, reported with MEMBER_TYPE_UNKNOWN (maintainer ruling 2026-10-17)
-
-#### F28-pax-newline-in-comment
-
-🟡 [F28](https://stoppels.ch/tar/F28.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, STRICT ❌ other, Safest ❌ other.
-
-- **Safest**: Open: no real writer is known to produce the shape, so it should be reported with MEMBER_HEADER_AMBIGUOUS, which DiagnosticPolicy.STRICT refuses (as F13)
-- **TRUSTED**: Extracted as GNU tar extracts it (DR-6): a record is framed by its length, so the newline cannot start a size record. Not reported, as for F13; a reader that splits on lines frames the next member differently here. Open: no real writer is known to produce it, so it may deserve a report
 
 ### Names
 
@@ -190,6 +161,12 @@ Where a member's data ends and which headers belong to it. A shape no real write
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), reported with ARCHIVE_EOF_MARKER_MISSING: real tarballs end this way, and the members before the block are whole
 
+#### F06-checksum-signed
+
+[F06](https://stoppels.ch/tar/F06.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+
+- **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (signed_checksum): GNU tar accepts a header that matches either the unsigned or the signed sum; SunOS 4 and Ultrix tars wrote the signed one, no current writer does
+
 #### F07-end-archive-after
 
 [F07](https://stoppels.ch/tar/F07.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
@@ -208,11 +185,24 @@ Where a member's data ends and which headers belong to it. A shape no real write
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (mixed_chain)
 
+#### F11-magic-odd-version
+
+[F11](https://stoppels.ch/tar/F11.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+
+- **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (magic_version): GNU tar reads any POSIX magic as ustar, whatever the version
+
 #### F12-number-size-gap
 
 [F12](https://stoppels.ch/tar/F12.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (field_tail): the size ends at the blank, as in GNU tar
+
+#### F13-pax-newline-in-path
+
+[F13](https://stoppels.ch/tar/F13.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+
+- **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (newline_in_value): a record is framed by its length, as POSIX says, so the newline is a byte of the path. Newlines in xattr and ACL values are real and not reported
+- **STRICT**: STRICT rewrites the name to a spelling every OS can hold (ADR 0013): the newline becomes %0A
 
 #### F15-pax-size-on-dir
 
@@ -237,6 +227,12 @@ Where a member's data ends and which headers belong to it. A shape no real write
 [F26](https://stoppels.ch/tar/F26.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (leading_zero): the size is decimal, as POSIX and GNU tar read it
+
+#### F28-pax-newline-in-comment
+
+[F28](https://stoppels.ch/tar/F28.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+
+- **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (newline_in_value): the newline cannot start a size record, as for F13
 
 #### F33-size-on-dir
 
@@ -367,14 +363,14 @@ Why links to the case's entry above, for a case where any run fails the verdict 
 | [F03](https://stoppels.ch/tar/F03.html) `end-lone-zero-block` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `archive_eof_marker_missing` | [why](#f03-end-lone-zero-block) |
 | [F04](https://stoppels.ch/tar/F04.html) `end-missing` | tolerate | ✅ expected | ✅ rejected | ✅ expected | ✅ expected | ✅ rejected | `archive_eof_marker_missing` |  |
 | [F05](https://stoppels.ch/tar/F05.html) `magic-version-nuls` | tolerate | ✅ expected | ✅ rejected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
-| [F06](https://stoppels.ch/tar/F06.html) `checksum-signed` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ❌ other | nothing | [why](#f06-checksum-signed) |
+| [F06](https://stoppels.ch/tar/F06.html) `checksum-signed` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#f06-checksum-signed) |
 | [F07](https://stoppels.ch/tar/F07.html) `end-archive-after` | reject | ❌ other | ❌ other | ❌ other | ❌ other | ✅ rejected | `archive_trailing_data` | [why](#f07-end-archive-after) |
 | [F08](https://stoppels.ch/tar/F08.html) `end-truncated-in-member` | reject | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | `error: TruncatedError` |  |
 | [F09](https://stoppels.ch/tar/F09.html) `end-zero-block-then-member` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `archive_eof_marker_missing`, `archive_trailing_data` | [why](#f09-end-zero-block-then-member) |
 | [F10](https://stoppels.ch/tar/F10.html) `extended-pax-size-before-gnu-long` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#f10-extended-pax-size-before-gnu-long) |
-| [F11](https://stoppels.ch/tar/F11.html) `magic-odd-version` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ❌ other | nothing | [why](#f11-magic-odd-version) |
+| [F11](https://stoppels.ch/tar/F11.html) `magic-odd-version` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#f11-magic-odd-version) |
 | [F12](https://stoppels.ch/tar/F12.html) `number-size-gap` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#f12-number-size-gap) |
-| [F13](https://stoppels.ch/tar/F13.html) `pax-newline-in-path` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other ≠GNU | ❌ other | nothing | [why](#f13-pax-newline-in-path) |
+| [F13](https://stoppels.ch/tar/F13.html) `pax-newline-in-path` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other ≠GNU | ✅ rejected | `member_header_ambiguous` | [why](#f13-pax-newline-in-path) |
 | [F14](https://stoppels.ch/tar/F14.html) `pax-size-disagrees` | tolerate | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
 | [F15](https://stoppels.ch/tar/F15.html) `pax-size-on-dir` | reject | ❌ other | ✅ rejected | ❌ other ≠GNU | ❌ other ≠GNU | ✅ rejected | `member_directory_data_ignored` | [why](#f15-pax-size-on-dir) |
 | [F16](https://stoppels.ch/tar/F16.html) `type-unknown` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ❌ other | `member_type_unknown` | [why](#f16-type-unknown) |
@@ -389,7 +385,7 @@ Why links to the case's entry above, for a case where any run fails the verdict 
 | [F25](https://stoppels.ch/tar/F25.html) `pax-size-not-ascii-digits` | reject | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | `error: CorruptionError` |  |
 | [F26](https://stoppels.ch/tar/F26.html) `pax-size-leading-zero` | reject | ❌ other | ❌ other | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#f26-pax-size-leading-zero) |
 | [F27](https://stoppels.ch/tar/F27.html) `pax-size-too-large` | reject | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | `error: CorruptionError` |  |
-| [F28](https://stoppels.ch/tar/F28.html) `pax-newline-in-comment` | reject | ❌ other | ❌ other | ❌ other | ❌ other | ❌ other | nothing | [why](#f28-pax-newline-in-comment) |
+| [F28](https://stoppels.ch/tar/F28.html) `pax-newline-in-comment` | reject | ❌ other | ❌ other | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#f28-pax-newline-in-comment) |
 | [F29](https://stoppels.ch/tar/F29.html) `number-size-base256-negative` | reject | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | `error: CorruptionError` |  |
 | [F30](https://stoppels.ch/tar/F30.html) `number-size-base256-too-large` | reject | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | `error: CorruptionError` |  |
 | [F31](https://stoppels.ch/tar/F31.html) `pax-xattr-not-utf8` | accept | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |

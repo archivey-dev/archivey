@@ -180,7 +180,9 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a"
    },
-   "codes": [],
+   "codes": [
+    "member_header_ambiguous"
+   ],
    "trusted": {
     "outcome": "other",
     "tree": "2da7ede53362bf61",
@@ -192,9 +194,9 @@
     "gnu_tree": true
    },
    "strict_diag": {
-    "outcome": "other",
-    "tree": "2da7ede53362bf61",
-    "gnu_tree": true
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "F07-end-archive-after": {
@@ -344,7 +346,9 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a"
    },
-   "codes": [],
+   "codes": [
+    "member_header_ambiguous"
+   ],
    "trusted": {
     "outcome": "other",
     "tree": "2da7ede53362bf61",
@@ -356,9 +360,9 @@
     "gnu_tree": true
    },
    "strict_diag": {
-    "outcome": "other",
-    "tree": "2da7ede53362bf61",
-    "gnu_tree": true
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "F12-number-size-gap": {
@@ -408,7 +412,9 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a"
    },
-   "codes": [],
+   "codes": [
+    "member_header_ambiguous"
+   ],
    "trusted": {
     "outcome": "other",
     "tree": "0c3412c95e921b48",
@@ -420,8 +426,8 @@
     "gnu_tree": false
    },
    "strict_diag": {
-    "outcome": "other",
-    "tree": "7ace3fe773df46f4",
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
     "gnu_tree": false
    }
   },
@@ -897,7 +903,9 @@
     "outcome": "other",
     "tree": "04611c107823da44"
    },
-   "codes": [],
+   "codes": [
+    "member_header_ambiguous"
+   ],
    "trusted": {
     "outcome": "other",
     "tree": "04611c107823da44",
@@ -909,9 +917,9 @@
     "gnu_tree": true
    },
    "strict_diag": {
-    "outcome": "other",
-    "tree": "04611c107823da44",
-    "gnu_tree": true
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
    }
   },
   "F29-number-size-base256-negative": {
