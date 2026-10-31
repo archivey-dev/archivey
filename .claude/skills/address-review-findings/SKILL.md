@@ -386,7 +386,8 @@ Once the round is done, the PR should record what happened to every finding.
 
 - **End every comment, reply and review body with the attribution footer** of the tool
   you run in, written by you; the current posting paths append nothing (`AGENTS.md`
-  §Review workflow). The header's attribution line names the same tool.
+  §Review workflow). The header's attribution line names the same tool, and the model
+  when your session tells you which one it is (`code-review-skill` §6).
 
 Reply once per round, not once per fix.
 

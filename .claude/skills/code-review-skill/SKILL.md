@@ -517,8 +517,11 @@ keeps the raw markdown readable, and it nests a finding's heading under the body
 
 Agents post through the maintainer's account, so the avatar says `davitf` on most
 threads; the header is what makes them scannable. The attribution line names the tool
-you run in, like the footer: the examples say **Claude Code**, and a Cursor review says
-**Cursor**. Keep the attribution to one line; the detail belongs under it.
+you run in, like the footer, and the model behind it when your session tells you which
+one it is: `**Claude Code** · <model> · ...` (leave the model out rather than guess it).
+The examples above say **Claude Code**; a Cursor review says **Cursor**. The model goes
+here, not in the footer, because the footer line is matched verbatim by the posting
+tools. Keep the attribution to one line; the detail belongs under it.
 
 ### Do not re-run the gates — or re-measure what a previous round recorded
 
