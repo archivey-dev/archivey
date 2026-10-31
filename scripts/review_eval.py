@@ -31,6 +31,7 @@ import argparse
 import concurrent.futures
 import json
 import os
+import posixpath
 import shutil
 import subprocess
 import sys
@@ -38,7 +39,7 @@ import time
 import tomllib
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
 EVAL_DIR = ROOT / "dev-docs" / "review-eval"
@@ -282,11 +283,23 @@ def claude(
 
 
 def _shell_read(command: str) -> str | None:
-    """The file a lone `sed`/`cat`/`head`/`tail`/`nl` command prints, or None."""
+    """The one file a lone `sed`/`cat`/`head`/`tail`/`nl` command prints, or None: a
+    second command (on a new line too), a comment or a second file makes it None."""
     words = command.split()
-    if not words or words[0] not in _READERS or any(c in command for c in ";|&<>`$"):
+    if not words or words[0] not in _READERS or any(c in command for c in ";|&<>`$#\n"):
         return None
-    return words[-1].strip("'\"")
+    operands: list[str] = []
+    takes_value = False
+    for word in words[1:]:
+        if takes_value:
+            takes_value = False
+        elif word in ("-n", "-c") and words[0] in ("head", "tail"):
+            takes_value = True
+        elif not word.startswith("-"):
+            operands.append(word)
+    if words[0] == "sed":
+        operands = operands[1:]  # the first is its program
+    return operands[0].strip("'\"") if len(operands) == 1 else None
 
 
 def reads(transcript: Path, root: Path | None = None) -> dict:
@@ -329,8 +342,12 @@ def reads(transcript: Path, root: Path | None = None) -> dict:
                 if isinstance(body, list):
                     body = "".join(b.get("text", "") for b in body)
                 path = pending.pop(part["tool_use_id"])
-                if root and Path(path).is_relative_to(root):
-                    path = str(Path(path).relative_to(root))
+                if not path.startswith("("):
+                    # Lexically, so `./x` and `a/../x` land on `x`; `/` on every OS.
+                    path = posixpath.normpath(path.replace("\\", "/"))
+                    base = root.as_posix() if root else None
+                    if base and PurePosixPath(path).is_relative_to(base):
+                        path = str(PurePosixPath(path).relative_to(base))
                 files[path] = files.get(path, 0) + len(body or "")
     usage = {
         key: totals.get(field, 0)
@@ -367,9 +384,10 @@ def review(
         model=model, cwd=repo, tools=REVIEW_TOOLS, env=env, effort=effort,
         transcript=work / "transcript.jsonl",
     )  # fmt: skip
+    # The review first, so an event `reads` cannot parse does not lose it.
+    (work / "review.md").write_text(result.get("result", ""), encoding="utf-8")
     read = reads(work / "transcript.jsonl", repo)
     (work / "reads.json").write_text(json.dumps(read, indent=2) + "\n")
-    (work / "review.md").write_text(result.get("result", ""), encoding="utf-8")
     meta = {
         "case": case.id,
         "pr": case.pr,

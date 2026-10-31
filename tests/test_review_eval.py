@@ -106,14 +106,31 @@ def test_reads_counts_each_file_and_tool_output_and_takes_the_result_totals(
             {"type": "tool_use", "id": "t3", "name": "Bash",
              "input": {"command": "sed -n '161,437p' CONTRIBUTING.md"}},
             {"type": "tool_use", "id": "t4", "name": "Bash",
-             "input": {"command": "cat CONTRIBUTING.md | head"}}]}},
+             "input": {"command": "cat CONTRIBUTING.md | head"}},
+            # So does a script of two reads, a comment, or two files.
+            {"type": "tool_use", "id": "t6", "name": "Bash", "input": {
+                "command": "head -n 20 src/foo.py\nsed -n '1,40p' CONTRIBUTING.md"}},
+            {"type": "tool_use", "id": "t7", "name": "Bash",
+             "input": {"command": "cat CONTRIBUTING.md # the guide"}},
+            {"type": "tool_use", "id": "t8", "name": "Bash",
+             "input": {"command": "head A B"}},
+            # `./x` and `a/../x` are the same file as `x`.
+            {"type": "tool_use", "id": "t9", "name": "Bash",
+             "input": {"command": "head -n 5 ./CONTRIBUTING.md"}},
+            {"type": "tool_use", "id": "t10", "name": "Read",
+             "input": {"file_path": "/r/foo/../CONTRIBUTING.md"}}]}},
         {"type": "user", "message": {"content": [
             {"type": "tool_result", "tool_use_id": "t1", "content": "abcd"},
             {"type": "tool_result", "tool_use_id": "t2",
              "content": [{"type": "text", "text": "xy"}]},
             {"type": "tool_result", "tool_use_id": "t3", "content": "rules"},
             {"type": "tool_result", "tool_use_id": "t4", "content": "z"},
-            {"type": "tool_result", "tool_use_id": "t5", "content": "whole"}]}},
+            {"type": "tool_result", "tool_use_id": "t5", "content": "whole"},
+            {"type": "tool_result", "tool_use_id": "t6", "content": "MULTI"},
+            {"type": "tool_result", "tool_use_id": "t7", "content": "HASH"},
+            {"type": "tool_result", "tool_use_id": "t8", "content": "AB"},
+            {"type": "tool_result", "tool_use_id": "t9", "content": "DOT"},
+            {"type": "tool_result", "tool_use_id": "t10", "content": "UP"}]}},
         # The streamed events undercount output; the result event has the run's totals.
         {"type": "result", "result": "review", "usage": {
             "input_tokens": 1, "cache_read_input_tokens": 100,
@@ -123,7 +140,7 @@ def test_reads_counts_each_file_and_tool_output_and_takes_the_result_totals(
     transcript.write_text("\n".join(json.dumps(e) for e in events), encoding="utf-8")
     # Under the root, a Read (absolute) and a shell read (relative) of one file add up.
     read = review_eval.reads(transcript, Path("/r"))
-    assert read["files"] == {"SKILL.md": 4, "(Bash)": 3, "CONTRIBUTING.md": 10}
+    assert read["files"] == {"SKILL.md": 4, "(Bash)": 14, "CONTRIBUTING.md": 15}
     assert read["usage"] == {
         "input": 1,
         "cache_read": 100,
