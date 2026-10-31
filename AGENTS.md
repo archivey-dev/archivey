@@ -165,7 +165,8 @@ the rule is in the wrong place.
    Same two skills, sequenced; the loop is the second opinion.
 
 **Nothing from the internal tracker goes into PR text or repo files.** This repository is
-public; the tracker is not. Three rules, and they are about the *internal tracker* only:
+public; the tracker is not. Three rules, and the check that enforces one of them; all
+are about the *internal tracker* only:
 
 - **Never** an internal-tracker URL, anywhere — PR title or body, review or inline
   comment, commit message, or a file in the repo.
@@ -173,6 +174,8 @@ public; the tracker is not. Three rules, and they are about the *internal tracke
   or inline comment, a commit message, or a file in the repo. Write "tracked internally"
   instead: the reader cannot open the ticket, so the key is dead weight to them and it
   publishes the internal layout.
+- `scripts/check_tracker_urls.py` (in `check.sh` and CI) enforces the URL rule for
+  tracked files only. Keys, PR text, comments and commit messages are on you.
 - **GitHub `#nnn` is the public record and is always fine** — in PR text, commits,
   comments and repo files alike. This rule does not touch it.
 

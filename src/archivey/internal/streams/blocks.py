@@ -13,6 +13,7 @@ from collections.abc import Callable
 from typing import BinaryIO
 
 from archivey.exceptions import CorruptionError
+from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     check_read_size,
@@ -58,14 +59,17 @@ class BlockStream(ReadOnlyIOStream):
         """The file's length."""
         return self._size
 
+    @override
     def seekable(self) -> bool:
         return True
 
+    @override
     def tell(self) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
         return self._pos
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
@@ -90,6 +94,7 @@ class BlockStream(ReadOnlyIOStream):
             self._index, self._block = index, data
         return self._block
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         if self.closed:
             raise ValueError("I/O operation on closed file.")

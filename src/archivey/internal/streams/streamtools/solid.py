@@ -32,6 +32,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import BinaryIO, Self
 
+from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 
 _SKIP_CHUNK = 1 << 20  # 1 MiB
@@ -98,6 +99,7 @@ class _MemberSlice(ReadOnlyIOStream):
         self._reader._advance_to(self)
         self._pending = False
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
@@ -124,6 +126,7 @@ class _MemberSlice(ReadOnlyIOStream):
         member's bytes reports back to (``retire_decoder_children``)."""
         return self._reader._block
 
+    @override
     def tell(self) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")

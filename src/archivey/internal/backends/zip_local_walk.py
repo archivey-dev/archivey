@@ -90,6 +90,7 @@ from archivey.internal.backends.zip_parser import (
     step_over_directory,
     zip64_record_matches,
 )
+from archivey.internal.overrides import override
 from archivey.internal.sfx import SFX_MAX, VALIDATOR_PEEK_MAX, HitOutcome
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.internal.streams.streamtools.binaryio import read_exact
@@ -523,6 +524,7 @@ class MemberData(ReadOnlyIOStream):
         self._settled = False
         self._ahead = _READ_AHEAD_FIRST
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         if self._settled:
             raise ValueError("member data read after settle()")
@@ -619,6 +621,7 @@ class _SizedData(MemberData):
         super().__init__(walk, entry)
         self._size = entry.header.compressed_size
 
+    @override
     def _read_some(self, size: int) -> bytes:
         want = min(size, self._size - self.consumed)
         if want <= 0:
@@ -632,6 +635,7 @@ class _SizedData(MemberData):
             )
         return data
 
+    @override
     def _finish(
         self, used: int | None, *, crc: int | None, file_size: int | None
     ) -> DataDescriptor | None:
@@ -668,6 +672,7 @@ class _CodecData(MemberData):
         self._kept: deque[bytes] = deque()
         self._kept_len = 0
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         if n < 0:
             raise ValueError(
@@ -676,13 +681,16 @@ class _CodecData(MemberData):
             )
         return super().read(n)
 
+    @override
     def readall(self) -> bytes:
         return self.read(-1)
 
     @property
+    @override
     def read_end_record(self) -> bool:
         return EOCD_SIGNATURE in b"".join(self._kept)
 
+    @override
     def _read_some(self, size: int) -> bytes:
         data = self._read_ahead(size)
         if data:
@@ -693,6 +701,7 @@ class _CodecData(MemberData):
                 self._kept_len -= len(self._kept.popleft())
         return data
 
+    @override
     def _finish(
         self, used: int | None, *, crc: int | None, file_size: int | None
     ) -> DataDescriptor | None:
@@ -959,6 +968,7 @@ class _ScannedData(MemberData):
             self._scan_crc_end = self.consumed + crc_at
 
     @property
+    @override
     def found_descriptor(self) -> DataDescriptor | None:
         return self._descriptor
 
@@ -994,6 +1004,7 @@ class _ScannedData(MemberData):
         descriptor starts in them, since the signature after it would be in."""
         return max(len(self._buf) - _DESCRIPTOR_LOOKAHEAD + 1, 0)
 
+    @override
     def _read_some(self, size: int) -> bytes:
         while True:
             if self._end_at is None:
@@ -1031,6 +1042,7 @@ class _ScannedData(MemberData):
             f"ZIP stream ends inside {name}'s data, before its data descriptor"
         )
 
+    @override
     def _finish(
         self, used: int | None, *, crc: int | None, file_size: int | None
     ) -> DataDescriptor | None:
@@ -1497,6 +1509,7 @@ class _HeldBytes(ReadOnlyIOStream):
         super().__init__()
         self._parts = deque(part for part in parts if part)
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         out = bytearray()
         while self._parts and (n < 0 or len(out) < n):

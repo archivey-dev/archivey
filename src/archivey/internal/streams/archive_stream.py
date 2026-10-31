@@ -34,6 +34,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.diagnostics_collector import leave_scope, resolve_collector
 from archivey.internal.logs import streams as logger
+from archivey.internal.overrides import override
 from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     retire_decoder_children,
@@ -486,12 +487,14 @@ class ArchiveStreamImpl(ArchiveStream):
             self._ensure_open()
 
     @property
+    @override
     def name(self) -> str:
         if self._member_name is None:
             raise AttributeError("name")
         return self._member_name
 
     @property
+    @override
     def diagnostics(self) -> DiagnosticSummary:
         scope = self._diagnostics_scope
         if scope is None:
@@ -499,6 +502,7 @@ class ArchiveStreamImpl(ArchiveStream):
         return scope.summary()
 
     @property
+    @override
     def size(self) -> int | None:
         """The fsspec-style ``size`` convention (see ``source_byte_size``): the creator may
         supply it up front (a member stream knows ``member.size`` from the archive
@@ -799,6 +803,7 @@ class ArchiveStreamImpl(ArchiveStream):
         finally:
             del e  # this frame is in the raise's traceback (raise_translated)
 
+    @override
     def read(self, n: int | None = -1, /) -> bytes:
         scope = self._diagnostics_scope
         if scope is None:
@@ -859,6 +864,7 @@ class ArchiveStreamImpl(ArchiveStream):
             self._raise_verdict()
         return data
 
+    @override
     def read_ahead(self, need: int, n: int, /) -> bytes:
         scope = self._diagnostics_scope
         if scope is None:
@@ -885,11 +891,13 @@ class ArchiveStreamImpl(ArchiveStream):
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             self._fail_unless_closed(e)
 
+    @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         # Always route through read() so the one-read / stop-on-short policy above
         # (and fused verify) stay consistent — inner.readinto may be up-to-n.
         return readinto_via_read(self, b)
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         scope = self._diagnostics_scope
         if scope is None:
@@ -988,6 +996,7 @@ class ArchiveStreamImpl(ArchiveStream):
         return own.combine(ask_verification_proofs(self._inner))
 
     @property
+    @override
     def verified(self) -> Verification:
         # No high-water mark is kept: every input to ``_level_now`` moves one way. The
         # stream's end flag and the verifier's and the HMAC stage's match flags are
@@ -996,6 +1005,7 @@ class ArchiveStreamImpl(ArchiveStream):
         return self._level_now()
 
     @property
+    @override
     def verifiable(self) -> Verification:
         proofs = self._verification_proofs()
         if proofs.content_possible:
@@ -1021,6 +1031,7 @@ class ArchiveStreamImpl(ArchiveStream):
             return Verification.STRUCTURE
         return Verification.KEY
 
+    @override
     def nearest_resume_offset(self, target: int) -> int | None:
         # Asked of the inner: streams nest over each other.
         return ask_resume_offset(self._inner, target)
@@ -1124,6 +1135,7 @@ class ArchiveStreamImpl(ArchiveStream):
             f"resume point in its index (or was not engaged for this stream)."
         )
 
+    @override
     def tell(self, /) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
@@ -1153,6 +1165,7 @@ class ArchiveStreamImpl(ArchiveStream):
         """
         self._seekable_hint = False
 
+    @override
     def seekable(self) -> bool:
         # readable()/writable()/write() come from ReadOnlyIOStream.
         # Undeclared SEEKABLE forces forward-only even when the inner handle could seek
@@ -1166,6 +1179,7 @@ class ArchiveStreamImpl(ArchiveStream):
             return is_seekable(self._inner)
         return True
 
+    @override
     def close(self) -> None:
         if self.closed:
             return
@@ -1248,6 +1262,7 @@ class ArchiveStreamImpl(ArchiveStream):
             finally:
                 del close_exc, teardown_exc
 
+    @override
     def __repr__(self) -> str:
         return f"<{type(self).__name__} inner={self._inner!r}>"
 

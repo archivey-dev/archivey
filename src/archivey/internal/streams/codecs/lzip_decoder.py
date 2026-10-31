@@ -50,6 +50,7 @@ from archivey.internal.config import (
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.hashing import crc32_combine
+from archivey.internal.overrides import override
 from archivey.internal.resource_usage import ResourceUsageRecorder
 from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
 from archivey.internal.streams.codecs.xz_decoder import lzma_error_to_archivey
@@ -597,10 +598,12 @@ class LzipDecoder(BaseDecoder):
         return self._state.is_finished() and not self._state.truncated
 
     @property
+    @override
     def trailing_bytes(self) -> int | None:
         return self._state.trailing_bytes
 
     @property
+    @override
     def needs_input(self) -> bool:
         return self._state.needs_input
 
@@ -615,6 +618,7 @@ class LzipDecoder(BaseDecoder):
             self._decomp_cursor += decompressed_size
         return points
 
+    @override
     def build_index(
         self, inner: BinaryIO, last_known: SeekPoint
     ) -> tuple[list[SeekPoint], int | None]:

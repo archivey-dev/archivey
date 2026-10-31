@@ -65,6 +65,7 @@ from archivey.internal.diagnostics_collector import (
 )
 from archivey.internal.hashing.blake2sp import Blake2sp
 from archivey.internal.logs import integrity as logger
+from archivey.internal.overrides import override
 from archivey.internal.streams.decompressor_stream import (
     _COMPRESSED_READ_SIZE_MAX,
     retire_decoder_children,
@@ -1010,6 +1011,7 @@ class VerifyingStream(ReadOnlyIOStream):
                 super().close()
             raise
 
+    @override
     def read(self, n: int | None = -1, /) -> bytes:
         try:
             return self._verifier.read(self._inner, n)
@@ -1017,9 +1019,11 @@ class VerifyingStream(ReadOnlyIOStream):
             retire_decoder_children(self._inner)
             raise
 
+    @override
     def seekable(self) -> bool:
         return is_seekable(self._inner)
 
+    @override
     def seek(self, offset: int, whence: int = 0, /) -> int:
         try:
             return self._verifier.seek(self._inner, offset, whence)
@@ -1033,6 +1037,7 @@ class VerifyingStream(ReadOnlyIOStream):
     def _verification_proofs(self) -> VerificationProofs:
         return self._verifier.proofs().combine(ask_verification_proofs(self._inner))
 
+    @override
     def tell(self) -> int:
         return self._verifier.tell(self._inner)
 
@@ -1040,6 +1045,7 @@ class VerifyingStream(ReadOnlyIOStream):
         # Length backstop around a codec stream; preserve the inner's offset space.
         return ask_resume_offset(self._inner, target)
 
+    @override
     def close(self) -> None:
         if self.closed:
             return

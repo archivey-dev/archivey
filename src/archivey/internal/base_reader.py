@@ -33,6 +33,8 @@ from typing import (
     cast,
 )
 
+from archivey.internal.overrides import override
+
 if TYPE_CHECKING:
     from archivey.internal.bomb_tracker import ReadRatioTally
     from archivey.internal.password import _PasswordCandidates
@@ -3270,21 +3272,25 @@ class BaseArchiveReader(ArchiveReader):
             )
 
     @property
+    @override
     def format(self) -> ArchiveFormat:
         self._state.require_open("format")
         return self._format
 
     @property
+    @override
     def format_info(self) -> FormatInfo | None:
         self._state.require_open("format_info")
         return self._format_info
 
     @property
+    @override
     def info(self) -> ArchiveInfo:
         self._state.require_open("info")
         return self._get_archive_info()
 
     @property
+    @override
     def cost(self) -> CostReceipt:
         self._state.require_open("cost")
         return self._cost_receipt()
@@ -3294,6 +3300,7 @@ class BaseArchiveReader(ArchiveReader):
         return self._get_archive_info().cost
 
     @property
+    @override
     def diagnostics(self) -> DiagnosticSummary:
         """Fresh immutable cumulative snapshot of diagnostics for this reader."""
         self._state.require_open("diagnostics")
@@ -3478,6 +3485,7 @@ class BaseArchiveReader(ArchiveReader):
             consumed=None if counter is None else lambda: counter.bytes_read,
         )
 
+    @override
     def __iter__(self) -> MemberPass[ArchiveMember]:
         return MemberPassImpl(self._iter_pass())
 
@@ -3525,6 +3533,7 @@ class BaseArchiveReader(ArchiveReader):
         if report.error is not None:
             raise report.error
 
+    @override
     def members(self) -> list[ArchiveMember]:
         self._require_random_access("members()")
         # Under CONCURRENT, first-touch materialization is coordinated via worker tokens
@@ -3549,6 +3558,7 @@ class BaseArchiveReader(ArchiveReader):
         finally:
             self._state.release_pass(token)
 
+    @override
     def members_report(self) -> MemberListReport:
         self._state.require_open("members_report()")
         if not self._streaming:
@@ -3585,6 +3595,7 @@ class BaseArchiveReader(ArchiveReader):
         finally:
             self._state.release_pass(token)
 
+    @override
     def members_report_if_available(self) -> MemberListReport | None:
         """Return the member-list report if it is available **without scanning**, else
         ``None``. Safe to call on any reader (including a streaming one).
@@ -3638,6 +3649,7 @@ class BaseArchiveReader(ArchiveReader):
             diagnostics=self._diagnostics_collector.snapshot(),
         )
 
+    @override
     def __contains__(self, member: object) -> bool:
         # Identity membership for ArchiveMembers: O(1), no scan, so it works in any
         # access mode. This method must exist even though it is a convenience — without
@@ -3653,6 +3665,7 @@ class BaseArchiveReader(ArchiveReader):
             f"Got {type(member).__name__}.",
         )
 
+    @override
     def get(
         self, name: str, default: ArchiveMember | None = None
     ) -> ArchiveMember | None:
@@ -3678,6 +3691,7 @@ class BaseArchiveReader(ArchiveReader):
         finally:
             self._state.release_worker(token)
 
+    @override
     def open(self, member: str | ArchiveMember) -> ArchiveStreamImpl:
         """Open member for reading. Follows symlinks.
 
@@ -3907,11 +3921,13 @@ class BaseArchiveReader(ArchiveReader):
             opened.append(current)
         return self._open_member_handle(current)
 
+    @override
     def read(self, member: str | ArchiveMember) -> bytes:
         """Read member data as bytes."""
         with self.open(member) as f:
             return f.read()
 
+    @override
     def stream_members(
         self,
         members: MemberSelectorArg = None,
@@ -4095,6 +4111,7 @@ class BaseArchiveReader(ArchiveReader):
         Called before anything is created.
         """
 
+    @override
     def extract_all(
         self,
         dest: str | Path,
@@ -4189,6 +4206,7 @@ class BaseArchiveReader(ArchiveReader):
             _resource_usage=self._resource_usage(),
         )
 
+    @override
     def close(self) -> None:
         """Close the reader.
 
@@ -4320,10 +4338,12 @@ class BaseArchiveReader(ArchiveReader):
                 "closing member streams during reader close failed", failures
             )
 
+    @override
     def __enter__(self) -> Self:
         self._state.require_open("__enter__")
         return self
 
+    @override
     def __exit__(self, *args: object) -> None:
         self.close()
 
@@ -4394,9 +4414,11 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
         self._finished = False
         self._error: BaseException | None = None
 
+    @override
     def __iter__(self) -> _ProgressivePassIterator:
         return self
 
+    @override
     def __next__(self) -> ArchiveMember:
         if self._error is not None:
             # The pass previously failed. A plain retry could step past the end of a

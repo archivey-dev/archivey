@@ -12,6 +12,7 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.decoder_child import (
     DecoderChildStartError,
     isolation_error,
@@ -740,6 +741,7 @@ class PpmdDecoder(BaseDecoder):
         return self._finish_input()
 
     @property
+    @override
     def drains_after_flush(self) -> bool:
         """True while ``flush`` has handed input over and output may still follow."""
         return self._draining and not self.finished and not self._exhausted
@@ -790,6 +792,7 @@ class PpmdDecoder(BaseDecoder):
         return self._decomp is not None and bool(self._decomp.eof)
 
     @property
+    @override
     def needs_input(self) -> bool:
         if self._decomp is None:
             return True
@@ -838,6 +841,7 @@ class PpmdDecoder(BaseDecoder):
             # Teardown hygiene; never raise from close()/__del__.
             pass
 
+    @override
     def spoil_child(self) -> None:
         self._spoiled = True
 
@@ -856,6 +860,7 @@ class PpmdDecoder(BaseDecoder):
             and not self._input_after_end
         )
 
+    @override
     def close(self) -> None:
         decomp = getattr(self, "_decomp", None)
         if isinstance(decomp, ChildPpmdDecoder) and not self._ended_cleanly():

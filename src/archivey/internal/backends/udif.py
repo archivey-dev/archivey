@@ -15,6 +15,7 @@ from archivey.exceptions import UnsupportedFeatureError
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.open_site import OpenSite
+from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
@@ -58,6 +59,7 @@ class UdifBackend(ReadBackend):
     # published spool recipe from copying a file that is refused either way.
     SUPPORTS_STREAMING_NON_SEEKABLE = True
 
+    @override
     def open_read(
         self,
         source: ArchiveSource,

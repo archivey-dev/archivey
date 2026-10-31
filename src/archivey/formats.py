@@ -48,6 +48,7 @@ from archivey.config import ArchiveyConfig, DecoderLimits
 from archivey.diagnostics import DiagnosticCode, DiagnosticContext
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError, TruncatedError
 from archivey.internal.naming import normalize_member_name
+from archivey.internal.overrides import override
 from archivey.internal.streams.blocks import BlockStream
 from archivey.internal.streams.streamtools import ensure_bufferedio
 from archivey.types import (
@@ -735,6 +736,7 @@ class SequentialFormatHandler(FormatHandler):
         raises from the first step of :meth:`SequentialReader.walk`, which archivey
         takes when it opens the archive."""
 
+    @override
     def open(self, source: ReaderSource, context: ReaderContext) -> FormatReader:
         """Not called for a sequential format: archivey calls
         :meth:`open_sequential`."""

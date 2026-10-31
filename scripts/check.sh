@@ -2,9 +2,10 @@
 # Every fast gate CI runs, in one command.
 #
 # This is the "will CI's non-test jobs pass?" answer: it mirrors the `lint` job in
-# .github/workflows/ci.yml and the `docs` and `openspec` jobs in docs-checks.yml. It
-# does not run the test suite — that is scripts/test.sh, which takes minutes rather than
-# seconds, and the two get run at different cadences.
+# .github/workflows/ci.yml and every job in docs-checks.yml, except the docs job's
+# pytest step (tests/test_github_templates.py), which scripts/test.sh runs. It does not
+# run the test suite — that is scripts/test.sh, which takes minutes rather than seconds,
+# and the two get run at different cadences.
 #
 # It exists because the gate is a dozen commands and people were running one of them.
 # Pushing after `ruff` alone, with `pyrefly` or `ty` red, is the most common
@@ -85,6 +86,9 @@ if command -v openspec >/dev/null 2>&1; then
 else
   printf '\n\033[1m=== openspec validate\033[0m\nSKIPPED — `openspec` CLI not on PATH (scripts/setup-dev-env.sh installs it)\n'
 fi
+
+# --- CI job: No tracker URLs (docs-checks.yml) ------------------------------------
+run "tracker URLs" python3 scripts/check_tracker_urls.py
 
 # --- CI job: docs ------------------------------------------------------------------
 # Needs the `docs` group (mkdocs, markdown) rather than the everyday env, so this leg

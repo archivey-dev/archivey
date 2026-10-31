@@ -22,6 +22,7 @@ from archivey.cost import CostReceipt, StreamCapability
 from archivey.exceptions import ArchiveyError
 from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.enum_args import coerce_enum
+from archivey.internal.overrides import override
 
 if TYPE_CHECKING:
     from archivey.diagnostics import Diagnostic
@@ -274,6 +275,7 @@ class ArchiveFormat:
             return self.stream.name
         return f"{self.container.name}_{self.stream.name}"
 
+    @override
     def __repr__(self) -> str:
         name = _FORMAT_NAMES.get(self)
         if name is not None:
@@ -746,30 +748,39 @@ class _ReadOnlyDict(dict[str, str]):
     def _refuse(self, *args: object, **kwargs: object) -> NoReturn:
         raise TypeError("extra['tar.pax_headers'] is read-only; copy it with dict()")
 
+    @override
     def __setitem__(self, key: str, value: str, /) -> NoReturn:
         self._refuse()
 
+    @override
     def __delitem__(self, key: str, /) -> NoReturn:
         self._refuse()
 
+    @override
     def __ior__(self, value: object, /) -> NoReturn:
         self._refuse()
 
+    @override
     def clear(self) -> NoReturn:
         self._refuse()
 
+    @override
     def pop(self, key: object, /, *default: object) -> NoReturn:
         self._refuse()
 
+    @override
     def popitem(self) -> NoReturn:
         self._refuse()
 
+    @override
     def setdefault(self, key: str, default: str = "", /) -> NoReturn:
         self._refuse()
 
+    @override
     def update(self, *args: object, **kwargs: object) -> NoReturn:
         self._refuse()
 
+    @override
     def __reduce__(self) -> tuple[type[dict[str, str]], tuple[dict[str, str]]]:
         return (dict, (dict(self),))
 
@@ -920,6 +931,7 @@ class MemberExtra(dict[str, object]):
     def __getitem__(self, key: Literal["iso.version"], /) -> int: ...
     @overload
     def __getitem__(self, key: str, /) -> object: ...
+    @override
     def __getitem__(self, key: str, /) -> object:
         return super().__getitem__(key)
 
@@ -956,6 +968,7 @@ class ArchiveInfoExtra(dict[str, object]):
     def __getitem__(self, key: Literal["ar.dialect"], /) -> str: ...
     @overload
     def __getitem__(self, key: str, /) -> object: ...
+    @override
     def __getitem__(self, key: str, /) -> object:
         return super().__getitem__(key)
 
