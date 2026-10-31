@@ -952,9 +952,10 @@ def _filename(entry: CorpusEntry, key: str) -> str:
 def publish_cached(tmp: Path, final: Path) -> None:
     """Move a freshly built ``tmp`` onto ``final`` in the shared test cache.
 
-    Parallel workers can build the same entry at once. ``final`` is keyed by content, so
-    any file already there is a finished build of the same bytes, and the loser keeps
-    it. The build is published with a hard link, which never replaces a file: on Windows
+    Parallel workers can build the same entry at once. A file already at ``final`` is
+    kept, so ``final`` must name its bytes: it is keyed by content (`_build`), or its
+    caller skips an existing file before building (`_decode_uu` in the libarchive
+    corpus, whose name is the fixture's). The build is published with a hard link, which never replaces a file: on Windows
     a replace onto ``final`` fails while another worker has it open, and a worker that
     opens ``final`` during someone else's replace gets ``PermissionError`` too. Where
     links are not supported it falls back to ``os.replace``, tolerating that refusal.
