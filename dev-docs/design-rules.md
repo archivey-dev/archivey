@@ -812,15 +812,15 @@ the rulings above.
 - The plugin interface is experimental and outside this rule: `archivey.formats` and the
   names that exist only for it (`PluginContainer`, `PluginStream`,
   `FormatPolicy.replace`, `FormatInfo.from_plugin`) may change or go in any release,
-  with no deprecation release (maintainer, 2026-10-31: it should not freeze before he
-  has reviewed it closely). `scripts/api_surface.py` `EXPERIMENTAL` lists them, and
+  with no deprecation release (maintainer, 2026-10-31: it should not freeze before
+  the maintainer has reviewed it closely). `scripts/api_surface.py` `EXPERIMENTAL` lists them, and
   `release.py notes` does not ask for a minor for a line whose own name is one of them.
   A stable signature that only mentions one (`FormatPolicy`'s constructor with
   `replace=`, `ArchiveFormat`'s `container` field typed `ContainerFormat |
   PluginContainer`) still shows as a minor; the maintainer judges that change.
   `FormatPolicy.plugins` stays stable (maintainer, 2026-10-31): a switch that refuses
-  plugin formats keeps working whatever happens to the interface it refuses. Declaring the interface stable
-  is the maintainer's call.
+  plugin formats keeps working whatever happens to the interface it refuses. Declaring
+  the interface stable is the maintainer's call.
 
 Public docs: `docs/how-it-is-built.md` §Versioning and stability.
 
