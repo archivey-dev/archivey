@@ -1,8 +1,6 @@
 <!-- The prompt for a review-loop round. `.github/workflows/review-loop.yml` fills in
-the braced names and passes the result to the reviewer. {PASS} is empty for an ordinary
-round and holds the Opus pass's paragraph (`OPUS_PASS` in the renderer) for that one;
-{CONDITIONAL} is the exception a standard or deep pull request makes to "conditional"
-(`CONDITIONAL_RE_ROUNDS`), empty otherwise. -->
+the braced names and passes the result to the reviewer. {PASS} is empty, except on an
+Opus round that follows rounds by another reviewer (`OPUS_LATE` in the renderer). -->
 Review pull request #{PR} in {REPOSITORY}.
 This is review round {ROUND}. Your verdict decides
 whether the closing comment asks for another round; the implementer adds
@@ -62,7 +60,7 @@ whether another round is asked for, so match it to what you actually wrote:
   Neither asks for another round; the findings are still posted in full and
   the implementer still works through them. The two differ only in the
   label the pull request is left with, so pick the one that matches your
-  verdict line.{CONDITIONAL}
+  verdict line.
 - "findings" for 🔄 Request Changes — a 🔴 stands, or a fix wants a look once
   it lands. That is what asks for the next round.
 

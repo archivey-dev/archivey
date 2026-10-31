@@ -3,7 +3,8 @@
 Atheris lives in the PEP 735 `fuzz` dependency group (`atheris`) and runs via
 `.github/workflows/atheris-fuzz.yml` — same shape as the benchmark wall split:
 
-- **Merge queue:** short partitioned budgets over all targets, called from `ci.yml`
+- **Merge queue:** short partitioned budgets over all targets on each group that changes a
+  library, test, dependency or CI path (`scripts/ci_scope.py`), called from `ci.yml`
   (`workflow_call` with `short: true`), whose `CI gate` needs it, so a crash takes the
   pull request out of the queue. Sharded across parallel jobs because each target pays a
   large Atheris cold-start. Pull request pushes do not fuzz.

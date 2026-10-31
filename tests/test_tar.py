@@ -2196,9 +2196,9 @@ def test_link_with_size_and_no_blocks_lists_whole(
 ) -> None:
     # A link header whose size field is set but whose blocks are not there: the next
     # member header follows at once, so the size names no data. GNU tar, tarfile and
-    # bsdtar list every member, and so does archivey, with nothing to report, as for
-    # a DIRTYPE header with a size (PR 763). Skipping by the size would hide after.txt,
-    # as 7-Zip hides it behind a symlink.
+    # bsdtar list every member, and so does archivey, as for a DIRTYPE header with a
+    # size (PR 763). Skipping by the size would hide after.txt, as 7-Zip hides it
+    # behind a symlink, so the link is reported (size_on_no_data).
     data = _tar_link_with_data(typeflag, b"", size=600)
     assert [(n, t) for n, t, _ in _stream_all(data, streaming)] == [
         ("a.txt", MemberType.FILE),
@@ -2207,7 +2207,9 @@ def test_link_with_size_and_no_blocks_lists_whole(
     ]
     with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
         assert ar.members()[1].size is None
-        assert dict(ar.diagnostics.counts) == {}
+        assert dict(ar.diagnostics.counts) == {
+            DiagnosticCode.MEMBER_HEADER_AMBIGUOUS: 1
+        }
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -2233,7 +2235,9 @@ def test_link_with_size_and_no_blocks_before_a_pax_header_lists_whole(
     ]
     with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
         assert ar.members()[2].extra["tar.pax_headers"]["comment"] == "x" * 600
-        assert dict(ar.diagnostics.counts) == {}
+        assert dict(ar.diagnostics.counts) == {
+            DiagnosticCode.MEMBER_HEADER_AMBIGUOUS: 1
+        }
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -2466,8 +2470,9 @@ def test_dirtype_with_size_spanned_by_global_header_lists_whole(
 ) -> None:
     # A DIRTYPE header whose size field declares exactly the bytes a PAX global header
     # and its record occupy, then the trailer: the walk read past the whole declared
-    # span before it stopped, so nothing can hide behind the directory and nothing is
-    # reported. GNU tar 1.35 lists d/ and exits 0 with no warning.
+    # span before it stopped, so nothing can hide behind the directory: only the size
+    # itself is reported (size_on_no_data). GNU tar 1.35 lists d/ and exits 0 with no
+    # warning.
     data = _tar_entry_with_data(
         tarfile.DIRTYPE,
         data=b"",
@@ -2477,7 +2482,9 @@ def test_dirtype_with_size_spanned_by_global_header_lists_whole(
     assert _stream_all(data, streaming) == [("d/", MemberType.DIRECTORY, None)]
     with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
         assert ar.members()[0].size is None
-        assert dict(ar.diagnostics.counts) == {}
+        assert dict(ar.diagnostics.counts) == {
+            DiagnosticCode.MEMBER_HEADER_AMBIGUOUS: 1
+        }
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -2499,8 +2506,11 @@ def test_dirtype_zero_block_inside_span_after_header_chain_is_reported(
         member = ar.members()[0]
         assert member.size is None
         assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED] == 1
+        # The L chain right after the header is a header, so the size is also
+        # reported as naming no data.
         assert [d.code for d in member.diagnostics] == [
-            DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+            DiagnosticCode.MEMBER_HEADER_AMBIGUOUS,
+            DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED,
         ]
 
 
