@@ -728,6 +728,23 @@ jobs:
         (QUIET.replace('echo "${{ github.sha', 'echo "#" "${{ secrets.X'), False),
         (None, False),
         ("jobs: {}\n", False),
+        # Spellings the readers do not follow fail closed (round 1, K1).
+        (QUIET.replace("  contents: read", "  contents: 'write'"), False),
+        (QUIET.replace("  contents: read", "  contents: 'read'"), False),
+        (
+            QUIET.replace(
+                "permissions:\n  contents: read", "permissions: {contents: write}"
+            ),
+            False,
+        ),
+        (QUIET.replace("${{ inputs.ref }}", "${{ secrets['OAUTH_TOKEN'] }}"), False),
+        (QUIET.replace("${{ inputs.ref }}", "${{ toJSON(secrets) }}"), False),
+        (QUIET.replace("${{ inputs.ref }}", "${{ secrets['GITHUB_TOKEN'] }}"), True),
+        (QUIET.replace("${{ inputs.ref }}", "${{ secrets.GITHUB_TOKEN_2 }}"), False),
+        (QUIET.replace("  schedule:\n", '  "push":\n  schedule:\n'), False),
+        (QUIET.replace("  schedule:\n", "  - push\n  schedule:\n"), False),
+        (QUIET + "on: push\n", False),  # two `on:` keys
+        ("on: {push: {}}\npermissions: {}\n", False),
     ],
 )
 def test_quiet_workflow(text: str | None, quiet: bool) -> None:
@@ -744,7 +761,11 @@ def test_a_quiet_workflow_is_standard_and_keeps_the_security_pass(
     _git(tmp_path, "checkout", "-qb", "pr")
     _write(
         tmp_path,
-        {".github/workflows/bench.yml": QUIET, "benchmarks/compare.py": "x = 1\n"},
+        {
+            ".github/workflows/bench.yml": QUIET,
+            "benchmarks/compare.py": "x = 1\n",
+            **{f"src/archivey/m{i}.py": "x = 1\n" for i in range(6)},
+        },
     )
     _git(tmp_path, "add", "-A")
     _git(tmp_path, "commit", "-qm", "pr")
@@ -752,11 +773,15 @@ def test_a_quiet_workflow_is_standard_and_keeps_the_security_pass(
     t = prep.review_tier("main", "pr")
     assert (t.name, t.quiet_workflows) == ("standard", [".github/workflows/bench.yml"])
     report = prep.tier_report(t)
-    assert report[:2] == [
+    assert report[:3] == [
         "tier: standard",
         (
             "  quiet workflow (dispatch or schedule, read-only token):"
             " .github/workflows/bench.yml"
+        ),
+        (
+            "  not light because of: src/archivey/m0.py, src/archivey/m1.py,"
+            " src/archivey/m2.py, src/archivey/m3.py, src/archivey/m4.py (+1 more)"
         ),
     ]
     assert "security pass: yes" in report
