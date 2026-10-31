@@ -660,11 +660,11 @@ both of which refuse a taken name. `ERROR` then raises its clash and `SKIP` reco
 `NOT_OVERWRITTEN`, as if the entry had been there at the check. `RENAME` lands on the
 next free derived name instead, without decoding the member again, and the result
 reports that name as `path`; after 100 names taken in a row the member fails. A SYMLINK
-or DIRECTORY whose name is taken after the check gets the same outcome under `ERROR`
-and `SKIP`, and under `RENAME` fails with `ExtractionError` "Destination already
-exists": it is created at its final name, and the entry there SHALL NOT be removed. Where `link()` fails for another reason (a filesystem without hard links,
-the link-count limit), the landing SHALL fall back to `os.replace()`, which does not
-see such a writer.
+or DIRECTORY whose name is taken after the check gets the same outcome under `ERROR` and
+`SKIP`, and under `RENAME` fails with `ExtractionError` "Destination already exists": it
+is created at its final name, and the entry there SHALL NOT be removed. Where `link()`
+fails for another reason (a filesystem without hard links, the link-count limit), the
+landing SHALL fall back to `os.replace()`, which does not see such a writer.
 
 SYMLINK and DIRECTORY replacement SHALL remove the existing entry and create fresh,
 because neither can be staged: a symlink MUST be created at its final name for the
