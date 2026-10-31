@@ -15,7 +15,6 @@ import sys
 from pathlib import Path
 
 import pytest
-import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "ci_scope.py"
@@ -101,7 +100,9 @@ def test_every_script_the_workflows_run_is_a_full_path() -> None:
 
 def test_the_queue_only_jobs_wait_on_scope_and_run_when_it_did_not() -> None:
     """Each queue-only job needs `scope` and runs unless it said `full=false`, so a
-    skipped scope (the daily run, a dispatch) or a failed one runs them."""
+    skipped scope (the daily run, a dispatch) or a failed one runs them. PyYAML is a dev
+    dependency, so the core-only legs skip this one; the others run it."""
+    yaml = pytest.importorskip("yaml")
     jobs = yaml.safe_load(CI.read_text())["jobs"]
     assert jobs["scope"]["if"] == "github.event_name == 'merge_group'"
     for name in QUEUE_ONLY:
