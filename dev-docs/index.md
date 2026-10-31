@@ -13,6 +13,7 @@ site: everything under `docs/` is for users, and everything here is not.
 | [Design rules](design-rules.md) | The maintainer's recurring rulings as rules: principles, how to weigh consistency against the official tool, and what still needs a decision. Read before asking a design question |
 | [Threat model](threat-model.md) | Attackers, trust boundaries, defended properties, accepted non-guarantees, open design gaps |
 | [Compression-library analysis](library-analysis.md) | Per-codec backend choice and rationale |
+| [tar-minefield results](tar-minefield-results.md) | Archivey's TAR reader on the 81 tar-minefield cases next to GNU tar and tar-codec, per policy, with the reason for each difference. Generated and kept current by `tests/test_tar_minefield_corpus.py` |
 | [Known issues](known-issues.md) | Live archivey defects and live upstream bugs archivey works around: symptom, what archivey does, what remains, and a link to the evidence |
 | [Writing English](writing-english.md) | Plain-English guidance for repo prose, PR text and comments. Advice, not a gate |
 | [Fuzzing](fuzzing.md) | The Atheris coverage-guided fuzz: CI cadence, local smoke, deepening one target |

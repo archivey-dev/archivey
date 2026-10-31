@@ -162,6 +162,7 @@ often they turn out to be the right place:
 | What is the authoritative agent/CI contract? | `openspec/specs/<capability>/spec.md` — capability map in `openspec/project.md` (not the primary human reading surface) |
 | Why was this chosen? (legacy / repo-wide) | `dev-docs/decisions/` (ADR log, `index.md` first); new answers prefer handbook pages |
 | Something went red or broke (a scheduled job, a dependency, a new CPython), or a security report or issue arrived: what is the smallest next step? | `dev-docs/maintenance.md` |
+| How does the TAR reader do on crafted archives, next to GNU tar and tar-codec? | [`tar-minefield-results.md`](tar-minefield-results.md): 81 cases, per policy, with a reason per difference |
 | Is this a known defect / upstream bug? | `dev-docs/known-issues.md`, `dev-docs/investigations/` |
 | Where does listing time go, and how do I measure it? | [`investigations/listing-speed.md`](investigations/listing-speed.md); `benchmarks/zip_listing_baseline.py`, `benchmarks/tar_listing_baseline.py` |
 | Is this a known unfixed gap? | `dev-docs/known-issues.md` for defects, `dev-docs/threat-model.md` §5 for open design gaps, §7 of the format page for open questions, `docs/security.md` §"Where the guarantees stop" and `docs/formats.md` for what users are told |
