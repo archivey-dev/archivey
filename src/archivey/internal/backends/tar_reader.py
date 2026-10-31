@@ -1402,7 +1402,11 @@ class TarReader(BaseArchiveReader):
             self._emit_member_type_unknown(member, index, entry.typeflag)
         if entry.old_style_directory:
             self._emit_readers_disagree(member, index, "file_named_as_directory")
-        elif member_type is MemberType.FILE and entry.header.linkname:
+        elif member_type is MemberType.FILE and (
+            entry.header.linkname
+            or (entry.pax and _pax_text(entry, b"linkpath") is not None)
+        ):
+            # In the header field or a PAX linkpath: neither applies to a file.
             self._emit_readers_disagree(member, index, "link_name_on_file")
         if (
             entry.header.prefix_shape is not None
@@ -1425,7 +1429,8 @@ class TarReader(BaseArchiveReader):
             )
         elif shape == "link_name_on_file":
             what = (
-                "is a regular file that also stores a link name: the link name is not "
+                "is a regular file that also stores a link name, in its header or a "
+                "PAX linkpath: the link name is not "
                 "used, as GNU tar ignores it; a reader that goes by the link name "
                 "makes a link"
             )

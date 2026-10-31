@@ -232,3 +232,53 @@ def test_the_report_names_both_members() -> None:
         earlier_type="symlink",
         member_type="file",
     )
+
+
+def test_a_pax_linkpath_on_a_file_is_reported() -> None:
+    """The PAX spelling of K02: a PAX writer stores a link name in linkpath."""
+    archive = pax({"linkpath": "elsewhere"}) + _file(b"a") + END
+    assert _reported(archive) == [("a", _DISAGREE, "link_name_on_file")]
+
+
+def _zip_with_local_names(central: tuple[str, str], local: tuple[str, str]) -> bytes:
+    """Two members, named ``central`` in the directory and ``local`` in their
+    local headers (each pair of names the same length)."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr(central[0], b"one")
+        if central[0] == central[1]:
+            with pytest.warns(UserWarning, match="Duplicate name"):
+                zf.writestr(central[1], b"two")
+        else:
+            zf.writestr(central[1], b"two")
+    data = bytearray(buffer.getvalue())
+    at = 0
+    for name in local:
+        at = data.index(b"PK\x03\x04", at)
+        length = int.from_bytes(data[at + 26 : at + 28], "little")
+        assert length == len(name)
+        data[at + 30 : at + 30 + length] = name.encode()
+        at += 30
+    return bytes(data)
+
+
+@pytest.mark.parametrize(
+    ("central", "local", "expected"),
+    [
+        # The directory's names collide: reported however the ZIP is read.
+        (("a.txt", "a.txt"), ("a.txt", "b.txt"), [("a.txt", _DUPLICATE, "0")]),
+        # Only the local names collide: the listing has no duplicate.
+        (("a.txt", "b.txt"), ("a.txt", "a.txt"), []),
+    ],
+)
+@pytest.mark.parametrize("pipe", [False, True])
+def test_a_zip_duplicate_is_decided_on_the_directory_names(
+    central: tuple[str, str],
+    local: tuple[str, str],
+    expected: list[tuple[str, str, str]],
+    pipe: bool,
+) -> None:
+    """A ZIP read from a pipe names its members from the directory, read last, so
+    it compares those names, as a file read does."""
+    archive = _zip_with_local_names(central, local)
+    assert _reported(archive, streaming=pipe) == expected

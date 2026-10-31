@@ -520,7 +520,7 @@ sending side when the ZIP is done.
 - Hardlinks are extracted as hardlinks. An `extract_all` with no filter resolves them in one pass.
 - **Shapes real tarballs use, which other readers take differently**, are read as GNU tar reads
   them and reported with `MEMBER_READERS_DISAGREE`: a regular file named `a/` (a directory, as v7
-  tars store them), a link name on a regular file (not used), a star header whose prefix runs past
+  tars store them), a link name on a regular file, in the header or a PAX `linkpath` (not used), a star header whose prefix runs past
   star's 131 bytes, old GNU times where ustar keeps the prefix, and a hard link to a symlink. A
   member with the name of an earlier one is reported with `MEMBER_NAME_DUPLICATE`, in every
   format. Neither is in `STRICT`, which would refuse archives GNU tar extracts; a caller who checks

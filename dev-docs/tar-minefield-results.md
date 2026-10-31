@@ -63,7 +63,7 @@ Which field names a member, and how a path is normalized. A name another OS or r
 🟡 [N10](https://stoppels.ch/tar/N10.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ❌ other, Corpus bar ✅ rejected.
 
 - **Safest**: star writes this format (berkeley-db 18.1.40, ncurses 5.9); under the POSIX magic the whole field is the prefix, as GNU tar reads it
-- **TRUSTED**: Extracted as GNU tar extracts it (DR-6): under the POSIX magic the whole prefix field is the name prefix. Not reported: star writes this format (berkeley-db, ncurses)
+- **TRUSTED**: Extracted as GNU tar extracts it (DR-6): under the POSIX magic the whole prefix field is the name prefix, reported with MEMBER_READERS_DISAGREE, which is advisory: star writes this format (berkeley-db, ncurses)
 - **Defaults (STRICT)**: STRICT rewrites the name to a spelling every OS can hold (ADR 0013): the trailing blank is dropped
 
 #### N11-gnu-prefix-field
@@ -71,7 +71,7 @@ Which field names a member, and how a path is normalized. A name another OS or r
 🟡 [N11](https://stoppels.ch/tar/N11.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ❌ other, Corpus bar ✅ rejected.
 
 - **Safest**: GNU tar's incremental archives put times in those bytes; under the GNU magic they are never a prefix
-- **TRUSTED**: Extracted as GNU tar extracts it (DR-6): under the GNU magic those bytes are not a prefix. Not reported: GNU tar writes times there in incremental archives
+- **TRUSTED**: Extracted as GNU tar extracts it (DR-6): under the GNU magic those bytes are not a prefix, reported with MEMBER_READERS_DISAGREE, which is advisory: GNU tar writes times there in incremental archives
 
 ### Kinds
 
@@ -82,14 +82,14 @@ Whether a member is a file, directory or link. Mixed: decided case by case.
 🔴 [K01](https://stoppels.ch/tar/K01.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ❌ other, Corpus bar ✅ rejected.
 
 - **Safest**: v7 tarballs (sendmail 8.18.2, tcp_wrappers 7.6) store directories this way, and GNU tar makes it a directory; refusing it refuses real archives
-- **TRUSTED**: Extracted as GNU tar extracts it (DR-6): a regular file named a/ is a directory, as GNU tar's extract.c makes it. Not reported: v7 tarballs (sendmail, tcp_wrappers) store directories this way
+- **TRUSTED**: Extracted as GNU tar extracts it (DR-6): a regular file named a/ is a directory, as GNU tar's extract.c makes it, reported with MEMBER_READERS_DISAGREE, which is advisory: v7 tarballs (sendmail, tcp_wrappers) store directories this way
 
 #### K02-linkname-on-file
 
 🟡 [K02](https://stoppels.ch/tar/K02.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ❌ other, Corpus bar ✅ rejected.
 
 - **Safest**: bgen 1.1.7 writes it, and the link name of a regular file is never used: only a reader that ignores the typeflag makes a link
-- **TRUSTED**: Extracted as GNU tar extracts it (DR-6): a regular file's link name is not used. Not reported: bgen 1.1.7 writes one, and only a reader that goes by the link name reads a link
+- **TRUSTED**: Extracted as GNU tar extracts it (DR-6): a regular file's link name is not used, reported with MEMBER_READERS_DISAGREE, which is advisory: bgen 1.1.7 writes one, and only a reader that goes by the link name reads a link
 
 ### Order and state
 

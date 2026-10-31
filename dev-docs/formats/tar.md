@@ -470,7 +470,8 @@ extract can refuse them with `PEDANTIC` or `raise_on=`). `_to_member` emits the 
 
 - `file_named_as_directory`: an old-style directory, a regular-file header whose final
   name ends in `/` (tar-minefield K01; v7 tars of sendmail and tcp_wrappers).
-- `link_name_on_file`: a regular file whose header stores a link name (K02; bgen 1.1.7).
+- `link_name_on_file`: a regular file whose header field or PAX `linkpath` stores a link
+  name (K02; bgen 1.1.7 writes the header field).
 - `star_prefix`: a ustar header with star's `tar\0` at 508 whose prefix runs past star's
   131 bytes (N10; star's archives of berkeley-db and ncurses). `parse_header_block` sets
   `HeaderBlock.prefix_shape`; only a name taken from the header counts.

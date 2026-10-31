@@ -988,9 +988,9 @@ class ReaderDisagreementContext(_JsonSafeContext):
     - ``"file_named_as_directory"``: a TAR regular-file header whose name ends in
       ``/``. It is a directory, as GNU tar extracts it (v7 tars store directories this
       way); other readers make an empty file of it or refuse it.
-    - ``"link_name_on_file"``: a TAR regular file that also stores a link name. The
-      link name is not used, as GNU tar ignores it; a reader that goes by the link
-      name makes a link.
+    - ``"link_name_on_file"``: a TAR regular file that also stores a link name, in
+      its header's field or a PAX ``linkpath``. The link name is not used, as GNU tar
+      ignores it; a reader that goes by the link name makes a link.
     - ``"star_prefix"``: a ustar header with star's ``tar\\0`` mark whose prefix runs
       past star's 131 bytes. GNU tar joins the whole field to the name; star reads the
       bytes after 131 as times.

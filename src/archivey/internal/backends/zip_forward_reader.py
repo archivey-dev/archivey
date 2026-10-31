@@ -1738,6 +1738,8 @@ class ZipForwardReader(ZipReader):
 
     # The member list exists only once the walk has passed every member.
     _MEMBER_LIST_UPFRONT = False
+    # Names come from the central directory, read last (_read_directory).
+    _NAMES_FINAL_AT_REGISTRATION = False
     _REVISES_YIELDED_MEMBERS = True
 
     @override
@@ -2236,6 +2238,8 @@ class ZipForwardReader(ZipReader):
         self._kept_heap = []
         self._kept_bytes = 0
         self._report_unlisted(unlisted)
+        # The names are the directory's now, and the unlisted members are gone.
+        self._emit_name_duplicates(order)
         for finding in () if damage is not None else walk.findings:
             self._emit_walk_finding(finding)
         # The kept bytes end where the stream does, so the last ``trailing`` of them

@@ -184,12 +184,13 @@ TRIAGE: dict[str, str] = {
     ),
     "K01-kind-trailing-slash-file": (
         f"{_AS_GNU}: a regular file named a/ is a directory, as GNU tar's "
-        "extract.c makes it. Not reported: v7 tarballs (sendmail, tcp_wrappers) "
-        "store directories this way"
+        "extract.c makes it, reported with MEMBER_READERS_DISAGREE, which is "
+        "advisory: v7 tarballs (sendmail, tcp_wrappers) store directories this way"
     ),
     "K02-linkname-on-file": (
-        f"{_AS_GNU}: a regular file's link name is not used. Not reported: bgen "
-        "1.1.7 writes one, and only a reader that goes by the link name reads a link"
+        f"{_AS_GNU}: a regular file's link name is not used, reported with "
+        "MEMBER_READERS_DISAGREE, which is advisory: bgen 1.1.7 writes one, and only "
+        "a reader that goes by the link name reads a link"
     ),
     "K03-symlink-trailing-slash": (
         f"{_AS_GNU}: the trailing slash is dropped, reported with "
@@ -208,11 +209,13 @@ TRIAGE: dict[str, str] = {
     ),
     "N10-format-star": (
         f"{_AS_GNU}: under the POSIX magic the whole prefix field is the name "
-        "prefix. Not reported: star writes this format (berkeley-db, ncurses)"
+        "prefix, reported with MEMBER_READERS_DISAGREE, which is advisory: star "
+        "writes this format (berkeley-db, ncurses)"
     ),
     "N11-gnu-prefix-field": (
-        f"{_AS_GNU}: under the GNU magic those bytes are not a prefix. Not "
-        "reported: GNU tar writes times there in incremental archives"
+        f"{_AS_GNU}: under the GNU magic those bytes are not a prefix, reported with "
+        "MEMBER_READERS_DISAGREE, which is advisory: GNU tar writes times there in "
+        "incremental archives"
     ),
     "N12-name-absolute": (
         "TRUSTED re-roots an absolute name inside the destination, as GNU tar "

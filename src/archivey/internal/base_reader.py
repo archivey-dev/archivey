@@ -642,6 +642,10 @@ class BaseArchiveReader(ArchiveReader):
     # (ZIP, 7z, RAR 4)? Such a link reads ``member_state_final=False`` until that read.
     # Elsewhere the target is set while the member is typed, so nothing is left to read.
     _LINK_TARGETS_IN_DATA: bool = False
+    # Is a member's name final when the walk registers it? A ZIP read from a pipe
+    # renames members from the central directory at the end; it reports duplicate
+    # names then (``_emit_name_duplicates``), not at registration.
+    _NAMES_FINAL_AT_REGISTRATION: bool = True
     # Does a forward pass change members it has already yielded, once the walk ends (a
     # ZIP read from a pipe, whose central directory comes last)? ``extract_all`` then
     # stages each such member's data and places the members only once the walk has
@@ -2319,7 +2323,11 @@ class BaseArchiveReader(ArchiveReader):
             # Both lookups read only the members before this one: it is indexed after
             # registration. A hard link is looked up only when it is one, so the
             # common member pays two dict lookups.
-            earlier = self._earlier_same_name(member)
+            earlier = (
+                self._earlier_same_name(member)
+                if self._NAMES_FINAL_AT_REGISTRATION
+                else None
+            )
             to_symlink = (
                 member.type is MemberType.HARDLINK
                 and bool(member.link_target)
@@ -2384,6 +2392,35 @@ class BaseArchiveReader(ArchiveReader):
         ):
             return None
         return found
+
+    def _emit_name_duplicates(self, members: Sequence[ArchiveMember]) -> None:
+        """Report ``MEMBER_NAME_DUPLICATE`` over ``members``, in the archive's index
+        order, for a backend whose names are not final when the walk registers them
+        (``_NAMES_FINAL_AT_REGISTRATION``): the same rule as
+        :meth:`_earlier_same_name`, decided once the names are.
+
+        The backend calls it once, after the last rename. Every member here is
+        compared: such a backend lists no superseded versions of its own.
+        """
+        # By name: the position in ``members`` of the latest member so far, and it.
+        latest: dict[str, tuple[int, ArchiveMember]] = {}
+        for position, member in enumerate(members):
+            name = member.name
+            found = max(
+                (
+                    latest[key]
+                    for key in (name, name[:-1] if name.endswith("/") else name + "/")
+                    if key in latest
+                ),
+                default=None,
+                key=lambda entry: entry[0],
+            )
+            latest[name] = (position, member)
+            if found is not None and not (
+                found[1].type is MemberType.DIRECTORY
+                and member.type is MemberType.DIRECTORY
+            ):
+                self._emit_presentation_shapes(member, found[1], to_symlink=False)
 
     def _hardlink_names_symlink(self, member: ArchiveMember) -> bool:
         """Whether the hard link ``member`` names a symlink listed before it
