@@ -333,8 +333,9 @@ the right weight.
   blocks are skipped so the members after them stay listed, and
   `MEMBER_LINK_DATA_IGNORED` reports it (a warning; strict refuses), with the weight
   of the directory case (2026-10-17, "skip and report"). A member header right after
-  the link header means the size names no data: nothing is skipped or reported, as for
-  a `DIRTYPE` header with a size (PR 763).
+  the link header means the size names no data: nothing is skipped, as for a `DIRTYPE`
+  header with a size (PR 763), and both are reported with `MEMBER_HEADER_AMBIGUOUS`
+  (`size_on_no_data`; 2026-10-30, as no real writer puts a size there).
 
 **Reopen if** a real producer writes the extra bytes routinely (then check DR-6).
 

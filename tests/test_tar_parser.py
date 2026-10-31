@@ -1983,6 +1983,55 @@ _AMBIGUOUS = {
         "real",
         ("leading_zero", "GNU.sparse.realsize"),
     ),
+    # tar-minefield F12: 0 to GNU tar, 512 to a reader that skips the blank.
+    "digits after the blank that ends the size": (
+        _block(patch=_field(124, 136, b"0000000 1000")),
+        "f",
+        ("field_tail", "size"),
+    ),
+    # tar-minefield N14.
+    "bytes after the NUL that ends the name": (
+        _block(patch=_field(0, 100, b"a\x00b")),
+        "a",
+        ("field_tail", "name"),
+    ),
+    "bytes after the NUL that ends the link name": (
+        _block(b"s", typeflag=b"2", patch=_field(157, 257, b"t\x00u")),
+        "s",
+        ("field_tail", "linkname"),
+    ),
+    # A blank is a byte of a name, so it is a tail after the NUL.
+    "a blank after the NUL that ends the name": (
+        _block(patch=_field(0, 100, b"a\x00 ")),
+        "a",
+        ("field_tail", "name"),
+    ),
+    # A reader that takes the whole field lists "dir\x00junk/a".
+    "bytes after the NUL that ends the prefix": (
+        _block(b"a", prefix=b"dir\x00junk"),
+        "dir/a",
+        ("field_tail", "prefix"),
+    ),
+    # A reader that skips the blank reads 512 bytes, the member header among them,
+    # as the long name.
+    "digits after the blank that ends an L header's size": (
+        _block(b"././@LongLink", typeflag=b"L", patch=_field(124, 136, b"0000005 1000"))
+        + _data(b"long\x00")
+        + _file(),
+        "long",
+        ("field_tail", "L size"),
+    ),
+    "digits after the blank that ends an x header's size": (
+        _block(
+            b"PaxHeader",
+            typeflag=b"x",
+            patch=_field(124, 136, b"%07o 1000" % len(_rec(b"path", b"pax"))),
+        )
+        + _data(_rec(b"path", b"pax"))
+        + _file(),
+        "pax",
+        ("field_tail", "x size"),
+    ),
 }
 
 
@@ -2080,6 +2129,78 @@ def test_a_global_shape_is_reported_on_the_next_member_only() -> None:
         "first": [DiagnosticCode.MEMBER_HEADER_AMBIGUOUS],
         "second": [],
     }
+
+
+def _shapes(data: bytes) -> dict[str, list[tuple[str, str]]]:
+    with open_archive(io.BytesIO(data + _END), format=ArchiveFormat.TAR) as ar:
+        return {
+            m.name: [
+                (d.context.ambiguity, d.context.field)
+                for d in m.diagnostics
+                if isinstance(d.context, HeaderAmbiguityContext)
+            ]
+            for m in ar.members()
+        }
+
+
+@pytest.mark.parametrize(
+    ("data", "names"),
+    [
+        # tar-minefield F33: GNU tar lists d/ and d/smuggled.
+        (
+            _block(b"d/", typeflag=b"5", size=512) + _file(b"d/smuggled"),
+            ["d/", "d/smuggled"],
+        ),
+        # tar-minefield F34.
+        (
+            _file(b"a")
+            + _block(b"h", typeflag=b"1", size=512, linkname=b"a")
+            + _file(b"smuggled"),
+            ["a", "h", "smuggled"],
+        ),
+        (
+            _block(b"s", typeflag=b"2", size=512, linkname=b"t") + _file(b"smuggled"),
+            ["s", "smuggled"],
+        ),
+    ],
+    ids=["directory", "hard link", "symlink"],
+)
+def test_a_size_that_names_no_data_is_reported(data: bytes, names: list[str]) -> None:
+    """GNU tar reads the header after it next, as the walk does; a reader that skips
+    the size would read that header as data."""
+    shapes = _shapes(data)
+    assert list(shapes) == names
+    assert shapes[names[-2]] == [("size_on_no_data", "size")]
+    assert shapes[names[-1]] == []
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        # A PAX size gives the directory a data area: MEMBER_DIRECTORY_DATA_IGNORED.
+        _pax({"size": "1"}) + _block(b"d/", typeflag=b"5") + _data(b"x"),
+        # The link's blocks are data, skipped: MEMBER_LINK_DATA_IGNORED.
+        _block(b"s", typeflag=b"2", size=1, linkname=b"t") + _data(b"x"),
+        # The name a GNU long name overrode is not used, so its tail is not either.
+        _long(b"L", b"long") + _block(patch=_field(0, 100, b"a\x00b")),
+        # The PAX size frames the member, not the header's size field.
+        _pax({"size": "3"})
+        + _block(patch=_field(124, 136, b"0000000 1000"))
+        + _data(b"abc"),
+        # The GNU magic joins no prefix: those bytes hold other fields.
+        _block(b"a", magic=b"ustar  \x00", prefix=b"dir\x00junk"),
+    ],
+    ids=[
+        "PAX size on a directory",
+        "link data skipped",
+        "overridden name",
+        "overridden size",
+        "GNU magic",
+    ],
+)
+def test_a_field_the_member_does_not_use_is_not_reported(data: bytes) -> None:
+    (shapes,) = _shapes(data).values()
+    assert not {s for s, _ in shapes} & {"size_on_no_data", "field_tail"}
 
 
 def test_strict_refuses_an_ambiguous_header() -> None:

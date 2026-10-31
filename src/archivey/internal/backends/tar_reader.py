@@ -1439,6 +1439,23 @@ class TarReader(BaseArchiveReader):
             )
         elif ambiguity is Ambiguity.LEADING_ZERO:
             what = f"a PAX {field} with a leading zero; it is read as decimal"
+        elif ambiguity is Ambiguity.FIELD_TAIL:
+            # An extended header's size comes as "x size", "L size", ...
+            typeflag, _, header_field = field.rpartition(" ")
+            where = (
+                f"the {header_field} field of the {typeflag} header before it"
+                if typeflag
+                else f"a {field} field"
+            )
+            what = (
+                f"{where}, with bytes after the NUL or blank that ends it; "
+                "they are ignored"
+            )
+        elif ambiguity is Ambiguity.SIZE_ON_NO_DATA:
+            what = (
+                "a size on a directory or link header that another header follows; "
+                "the size names no data"
+            )
         else:
             what = (
                 f"a global PAX header that drops the {field} an earlier global header "

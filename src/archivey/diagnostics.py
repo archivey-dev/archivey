@@ -664,8 +664,16 @@ class HeaderAmbiguityContext(_JsonSafeContext):
     - ``"leading_zero"``: a PAX ``size``, ``GNU.sparse.size`` or
       ``GNU.sparse.realsize`` with a leading zero, read as decimal (a reader that
       takes it as octal frames or sizes the member differently).
+    - ``"field_tail"``: the member header's ``size``, ``name``, ``prefix`` or
+      ``linkname`` field, or the size field of an extended header before it
+      (``field`` ``"x size"``, ``"g size"``, ``"L size"`` or ``"K size"``), has bytes
+      after the NUL or blank that ends it, which are ignored. A member field an
+      extended header overrode does not count.
+    - ``"size_on_no_data"``: a directory or link header has a size, and another
+      header follows it at once, so the size names no data.
 
-    ``field`` is the PAX keyword, with ``"path"`` and ``"linkpath"`` standing for GNU
+    ``field`` is the PAX keyword (the header field's name for ``"field_tail"``, and
+    ``"size"`` for ``"size_on_no_data"``), with ``"path"`` and ``"linkpath"`` standing for GNU
     long name and long link headers, ``"x"`` for a repeated ``x`` header and for
     ``"mixed_chain"``, and ``"g"`` for ``"global_in_chain"``. A global
     header's shape is reported on the member after it.
@@ -685,6 +693,8 @@ class HeaderAmbiguityContext(_JsonSafeContext):
         "global_in_chain",
         "empty_value",
         "leading_zero",
+        "field_tail",
+        "size_on_no_data",
     ] = "repeated"
     field: str = ""
 
