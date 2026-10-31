@@ -49,7 +49,13 @@ from typing import Any
 
 import pytest
 
-from archivey import ArchiveyConfig, DiagnosticPolicy, open_archive
+from archivey import (
+    ARCHIVE_INTEGRITY_CODES,
+    ArchiveyConfig,
+    DiagnosticCode,
+    DiagnosticPolicy,
+    open_archive,
+)
 from archivey.exceptions import ArchiveyError
 from archivey.types import ExtractionPolicy, OverwritePolicy
 
@@ -59,7 +65,14 @@ EXPECTED_PATH = Path(__file__).parent / "fixtures" / "tar_minefield" / "expected
 RESULTS_PATH = REPO_ROOT / "dev-docs" / "tar-minefield-results.md"
 # The runs: (extraction policy, overwrite policy, diagnostic policy). "trusted" is the
 # one closest to tar -x; "strict_diag" is the safest settings, the defaults with
-# DiagnosticPolicy.STRICT, which refuses every shape in ARCHIVE_INTEGRITY_CODES.
+# DiagnosticPolicy.STRICT, which refuses every shape in ARCHIVE_INTEGRITY_CODES;
+# "corpus" also refuses the advisory codes for shapes other readers take differently,
+# which is the corpus's own bar.
+_CORPUS_CODES = ARCHIVE_INTEGRITY_CODES | {
+    DiagnosticCode.MEMBER_NAME_DUPLICATE,
+    DiagnosticCode.MEMBER_READERS_DISAGREE,
+    DiagnosticCode.MEMBER_TYPE_UNKNOWN,
+}
 POLICIES: dict[str, tuple[ExtractionPolicy, OverwritePolicy, DiagnosticPolicy]] = {
     "trusted": (ExtractionPolicy.TRUSTED, OverwritePolicy.REPLACE, DiagnosticPolicy()),
     "defaults": (ExtractionPolicy.STRICT, OverwritePolicy.ERROR, DiagnosticPolicy()),
@@ -68,11 +81,17 @@ POLICIES: dict[str, tuple[ExtractionPolicy, OverwritePolicy, DiagnosticPolicy]] 
         OverwritePolicy.ERROR,
         DiagnosticPolicy.STRICT,
     ),
+    "corpus": (
+        ExtractionPolicy.STRICT,
+        OverwritePolicy.ERROR,
+        DiagnosticPolicy(raise_on=_CORPUS_CODES),
+    ),
 }
 TITLES = {
     "trusted": "TRUSTED",
     "defaults": "Defaults (STRICT)",
     "strict_diag": "Safest (STRICT + DiagnosticPolicy.STRICT)",
+    "corpus": "Corpus bar (Safest + three advisory codes)",
 }
 # The corpus's column for Astral's tar-codec (as in uv), the safety yardstick for
 # strict_diag.
@@ -587,7 +606,7 @@ def needs_reason(pin: dict[str, Any], label: str) -> bool:
     not GNU tar's result; the defaults only where they also differ from TRUSTED; the safest
     settings wherever they fail the verdict, which is the safety bar."""
     run_passes = pin[label]["outcome"] in pin["passes_with"]
-    if label == "strict_diag":
+    if label in ("strict_diag", "corpus"):
         return not run_passes
     if label == "defaults":
         return differs(pin, label) and (
@@ -597,7 +616,13 @@ def needs_reason(pin: dict[str, Any], label: str) -> bool:
 
 
 def _reasons() -> dict[str, dict[str, str]]:
-    return {"trusted": TRIAGE, "defaults": DEFAULTS_TRIAGE, "strict_diag": DIAG_TRIAGE}
+    return {
+        "trusted": TRIAGE,
+        "defaults": DEFAULTS_TRIAGE,
+        "strict_diag": DIAG_TRIAGE,
+        # The corpus bar owes a reason wherever it fails a verdict, and fails none.
+        "corpus": {},
+    }
 
 
 def case_link(name: str) -> str:
@@ -633,7 +658,7 @@ def render_results(expected: dict[str, Any]) -> str:
             "Each case links to its page on the corpus's site."
         ),
         "",
-        "Archivey runs each case three ways:",
+        "Archivey runs each case four ways:",
         "",
         (
             "- **TRUSTED**: `ExtractionPolicy.TRUSTED`, `overwrite=REPLACE`, the "
@@ -651,6 +676,15 @@ def render_results(expected: dict[str, Any]) -> str:
             "`DiagnosticPolicy.STRICT`, which refuses every shape in "
             "`ARCHIVE_INTEGRITY_CODES`. It is held to tar-codec's bar: every case it "
             "fails has a reason below."
+        ),
+        (
+            "- **Corpus bar**: Safest, with `MEMBER_NAME_DUPLICATE`, "
+            "`MEMBER_READERS_DISAGREE` and `MEMBER_TYPE_UNKNOWN` added to `raise_on`: "
+            "`DiagnosticPolicy(raise_on=ARCHIVE_INTEGRITY_CODES | {...})`. It refuses "
+            "the shapes Safest reads because real archives use them, which is the "
+            "corpus's own policy, and it passes every case. `DiagnosticPolicy.PEDANTIC` "
+            "gives the same results here, but raises on every code, also on ones no "
+            "case reports, such as a password passed to an unencrypted archive."
         ),
         "",
         (
@@ -693,9 +727,9 @@ def render_results(expected: dict[str, Any]) -> str:
     lines += [
         "",
         (
-            "The safest settings and tar-codec refuse what GNU tar extracts, so a low "
-            "count in the last column is expected for them: they are held to the "
-            "corpus's verdicts, not to GNU tar's trees."
+            "The safest settings, the corpus bar and tar-codec refuse what GNU tar "
+            "extracts, so a low count in the last column is expected for them: they are "
+            "held to the corpus's verdicts, not to GNU tar's trees."
         ),
     ]
     explained = {
@@ -743,7 +777,7 @@ def render_results(expected: dict[str, Any]) -> str:
             "another tool can still refuse every one of them: each reports a "
             "diagnostic outside `ARCHIVE_INTEGRITY_CODES` (MEMBER_TYPE_UNKNOWN, "
             "MEMBER_READERS_DISAGREE or MEMBER_NAME_DUPLICATE), which "
-            "`DiagnosticPolicy.PEDANTIC` or `raise_on=` turns into a refusal. The "
+            "`raise_on=` turns into a refusal (the Corpus bar run below). The "
             "codes column of the table shows which."
         ),
         "",
@@ -808,14 +842,18 @@ def render_results(expected: dict[str, Any]) -> str:
         "",
         (
             "| Case | Verdict | GNU tar | tar-codec | TRUSTED | Defaults | Safest | "
-            "Listing reports | Why |"
+            "Corpus bar | Listing reports | Why |"
         ),
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
 
     def cell(pin: dict[str, Any], label: str) -> str:
         run = pin[label]
-        mark = "" if label == "strict_diag" or agrees_with_gnu(pin, label) else " ≠GNU"
+        mark = (
+            ""
+            if label in ("strict_diag", "corpus") or agrees_with_gnu(pin, label)
+            else " ≠GNU"
+        )
         return f"{_mark(passed(pin, label))} {run['outcome']}{mark}"
 
     def tool(pin: dict[str, Any], key: str) -> str:
@@ -827,7 +865,8 @@ def render_results(expected: dict[str, Any]) -> str:
         lines.append(
             f"| {case_link(name)} `{name.split('-', 1)[1]}` | {pin['verdict']} | "
             f"{tool(pin, 'gnu')} | {tool(pin, 'tar_codec')} | {cell(pin, 'trusted')} | "
-            f"{cell(pin, 'defaults')} | {cell(pin, 'strict_diag')} | {codes} | "
+            f"{cell(pin, 'defaults')} | {cell(pin, 'strict_diag')} | "
+            f"{cell(pin, 'corpus')} | {codes} | "
             f"{f'[why](#{_anchor(name)})' if name in explained else ''} |"
         )
     return "\n".join(lines) + "\n"
@@ -856,7 +895,7 @@ def _entries(
                 codec = pin["tar_codec"]["outcome"] in pin["passes_with"]
                 outcomes = f"{'🔴' if codec else '🟡'} {outcomes}"
             lines += [f"#### {name}", "", outcomes, ""]
-            for label in ("strict_diag", "trusted", "defaults"):
+            for label in ("corpus", "strict_diag", "trusted", "defaults"):
                 if needs_reason(pin, label):
                     lines.append(f"- **{_SHORT[label]}**: {_reasons()[label][name]}")
             lines.append("")
@@ -867,6 +906,7 @@ _SHORT = {
     "trusted": "TRUSTED",
     "defaults": "Defaults (STRICT)",
     "strict_diag": "Safest",
+    "corpus": "Corpus bar",
 }
 
 
