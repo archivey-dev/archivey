@@ -15,6 +15,7 @@ from archivey.internal.detection_workspace import (
     DETECTION_LIMIT,
     PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE,
 )
+from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import RewindWarning
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.base import (
@@ -56,9 +57,11 @@ class BrotliCodec(StreamCodec):
         OptionalLibrary.BROTLI, "pip install archivey[recommended]", ("brotli",)
     )
 
+    @override
     def _backend_present(self) -> bool:
         return deps.brotli.available()
 
+    @override
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
@@ -76,6 +79,7 @@ class BrotliCodec(StreamCodec):
             natives=natives,
         )
 
+    @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
         # brotli raises its own brotli.error for corrupt data; a truncated stream doesn't
         # raise here (the decompressor just never reports finished), so the base
@@ -89,9 +93,11 @@ class BrotliCodec(StreamCodec):
             )
         return None
 
+    @override
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         return RewindWarning("brotli")
 
+    @override
     def content_probe(
         self,
         prefix: bytes,

@@ -37,11 +37,13 @@ gate; it lists docs still naming what your branch removed or moved, fails on lin
 far wider than their file, and its `red-on-base` subcommand checks a "fails on `main`"
 claim (`.claude/skills/address-review-findings/SKILL.md` §5).
 
-`check.sh` mirrors CI's `lint`, `docs` and `openspec` jobs: ruff, **`pyrefly`**,
-**`ty`**, the OpenSpec checks, the docs-tree and link checks, the strict docs build and
-the check on what that build rendered. The script itself is the list. It runs every gate
-even after one fails and lists what failed at the end, so a single run tells you
-everything that is wrong. Without `--fix` it writes nothing and answers "will CI pass?".
+`check.sh` mirrors CI's `lint` job and every job in `docs-checks.yml`: ruff,
+**`pyrefly`**, **`ty`**, the OpenSpec checks, the docs-tree and link checks, the strict
+docs build, the check on what that build rendered and the tracker-URL check. The one
+exception is the docs job's pytest step (`tests/test_github_templates.py`), which
+`test.sh` runs. The script itself is the list. It runs every gate even after one fails
+and lists what failed at the end, so a single run tells you everything that is wrong.
+Without `--fix` it writes nothing and answers "will CI pass?".
 
 `test.sh` passes extra arguments through to pytest (`./scripts/test.sh tests/test_zip.py
 -k roundtrip`), and `--all-configs` runs the full before-pushing gate described below.
@@ -204,6 +206,11 @@ maintainer.
 
 - **Keep it simple and well typed.** Prefer straightforward code over cleverness; type
   everything that's part of, or feeds, the public API.
+- **Mark every override with `@override`** from `archivey.internal.overrides`, and only
+  overrides (`__init__`, `__new__`, `__init_subclass__` and `__post_init__` need none).
+  `ty check` enforces both over the library sources, so a renamed base method cannot
+  strand an override there. It does not check `tests/`, the CLI or the plugin packages;
+  `pyproject.toml` names the plugin hook that leaves unprotected.
 - **Share code that must agree; copy code that agrees by coincidence** (DR-23a). Before
   factoring out duplicated code, ask whether a change to one copy must reach the other.
 - **Don't accumulate debt — clean as you go** (DR-23). When you touch something, leave it

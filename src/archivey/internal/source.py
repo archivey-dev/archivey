@@ -74,6 +74,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 
 from archivey.internal.arg_checks import raise_if_text_stream
+from archivey.internal.overrides import override
 
 # ``archive_stream`` imports nothing back from the source boundary (this module, the
 # detection workspace, ``volumes``), so :func:`seek_is_expensive` can type-test it here
@@ -242,6 +243,7 @@ class _ArrivedView(ReadOnlyIOStream):
         super().__init__()
         self._source = source
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
@@ -571,6 +573,7 @@ class ArchiveSource(ReadOnlyIOStream):
         return self._seek_is_expensive
 
     @property
+    @override
     def name(self) -> str:  # pyrefly: ignore[bad-override]  # ty: ignore[invalid-property-type-override]  # base is Never; a source has a path when the caller gave one
         """The source's path, or raise :exc:`AttributeError` if it has none.
 
@@ -583,6 +586,7 @@ class ArchiveSource(ReadOnlyIOStream):
 
     # --- stream surface ------------------------------------------------------------------
 
+    @override
     def seekable(self) -> bool:
         return self._seekable
 
@@ -603,6 +607,7 @@ class ArchiveSource(ReadOnlyIOStream):
         # or is not a regular file) stays a non-fact: reads step.
         return handle
 
+    @override
     def read(self, n: int | None = -1, /) -> bytes:
         if n is None or n < 0:
             return self._read_all()
@@ -700,6 +705,7 @@ class ArchiveSource(ReadOnlyIOStream):
             self._pos += len(rest)
         return head + rest if head else rest
 
+    @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         # The caller already allocated ``b``, so only the clamp matters here, not the
         # step. A replayed prefix or the gathering strategy goes through ``read``.
@@ -838,12 +844,14 @@ class ArchiveSource(ReadOnlyIOStream):
             replay.extend(read_arrived(self._stream(), missing))
         return bytes(replay[start:n])
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if not self._seekable:
             raise io.UnsupportedOperation("seek")
         self._pos = self._stream().seek(offset, whence)
         return self._pos
 
+    @override
     def tell(self, /) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
@@ -855,6 +863,7 @@ class ArchiveSource(ReadOnlyIOStream):
         # and answering that must not open it.
         return self._pos
 
+    @override
     def fileno(self) -> int:
         """Forward ``fileno`` for a file or a caller's buffered stream.
 
@@ -918,6 +927,7 @@ class ArchiveSource(ReadOnlyIOStream):
             return
         self._close_callbacks = (*self._close_callbacks, callback)
 
+    @override
     def close(self) -> None:
         if self.closed:
             return
@@ -951,6 +961,7 @@ class ArchiveSource(ReadOnlyIOStream):
                 self._full_count = None
                 super().close()
 
+    @override
     def __repr__(self) -> str:
         if self._is_directory:
             return f"ArchiveSource(directory={self._path!r})"

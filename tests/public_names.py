@@ -32,13 +32,17 @@ def _imported_names(path: Path) -> Iterator[tuple[str, str]]:
 
 def assert_only_public_archivey(module_file: str | None) -> None:
     """Every archivey name the module imports is public, apart from the call that
-    registers it as a built-in format."""
+    registers it as a built-in format and ``override``, the typing decorator every
+    library source carries (a format from outside would take ``typing.override``)."""
     assert module_file is not None
     for module, name in _imported_names(Path(module_file)):
         if module.split(".")[0] != "archivey":
             continue
         if module == "archivey.internal.format_adapter":
             assert name == "register_builtin_format", name
+            continue
+        if module == "archivey.internal.overrides":
+            assert name == "override", name
             continue
         assert module in _PUBLIC, module
         assert name in _PUBLIC[module], (module, name)

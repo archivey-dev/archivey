@@ -27,6 +27,7 @@ import tempfile
 from collections.abc import Callable
 from typing import BinaryIO, Literal
 
+from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.internal.streams.streamtools.binaryio import read_blocking
 from archivey.internal.streams.streamtools.slice import SlicingStream
@@ -80,6 +81,7 @@ class _TeeBlock(DelegatingStream):
         self._feed = feed
         self._at = 0
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         data = read_blocking(self._inner, n)
         if data:

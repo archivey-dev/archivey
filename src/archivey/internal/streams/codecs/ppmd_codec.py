@@ -16,6 +16,7 @@ from archivey.internal.config import (
     StreamConfig,
     check_decoder_memory,
 )
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.base import (
     Codec,
@@ -74,9 +75,11 @@ class PpmdCodec(StreamCodec):
         reason=deps.unused_reason(OptionalLibrary.PYPPMD),
     )
 
+    @override
     def _backend_present(self) -> bool:
         return deps.pyppmd.available()
 
+    @override
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
@@ -145,6 +148,7 @@ class PpmdCodec(StreamCodec):
             isolation=config.process_isolation,
         )
 
+    @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if (eof := self._eof_truncation(exc, "PPMd")) is not None:
             return eof

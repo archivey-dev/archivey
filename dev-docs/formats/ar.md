@@ -136,8 +136,8 @@ memory a header can ask for:
 - **Built in, not a separate package.** The maintainer's call (2026-10-28): with
   explicit `register_format()` and no entry-point autoload, a package needs an install
   and a registration call, which breaks one library for every format. The reader still
-  imports only public names (apart from `register_builtin_format`), so it stays an
-  example of a format written against `archivey.formats`.
+  imports only public names (apart from `register_builtin_format` and the `override`
+  decorator), so it stays an example of a format written against `archivey.formats`.
 - **The dialect goes in `extra["ar.dialect"]`, not `format_version`.** A dialect is not
   a version, and TAR, whose dialects (v7, ustar, GNU, PAX) are the nearest precedent,
   reports `format_version=None`.

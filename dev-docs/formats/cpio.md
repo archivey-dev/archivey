@@ -148,7 +148,8 @@ header can ask for:
 ## 6. Decisions
 
 - **Built in, not a separate package.** The maintainer's call (2026-10-28), as for ar.
-  The reader still imports only public names (apart from `register_builtin_format`).
+  The reader still imports only public names (apart from `register_builtin_format` and
+  the `override` decorator).
 - **The variant goes in `extra["cpio.variant"]`, not `format_version`.** A header
   variant is not a version; TAR and ar report `format_version=None` for the same reason.
 - **In newc and crc, the link with the data is listed first, as the `FILE`.** Hard links

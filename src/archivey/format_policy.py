@@ -17,6 +17,7 @@ from archivey.exceptions import _UsageTypeError, _UsageValueError
 from archivey.internal.arg_checks import check_instance
 from archivey.internal.enum_args import coerce_enum_collection
 from archivey.internal.excluded_libraries import is_excluded_module
+from archivey.internal.overrides import override
 from archivey.types import (
     ArchiveFormat,
     ContainerFormat,
@@ -158,18 +159,23 @@ class _Replacements(Mapping[ContainerFormat, "type[FormatHandler]"]):
     def __init__(self, items: Mapping[ContainerFormat, type[FormatHandler]]) -> None:
         self._items = dict(items)
 
+    @override
     def __getitem__(self, key: ContainerFormat) -> type[FormatHandler]:
         return self._items[key]
 
+    @override
     def __iter__(self) -> Iterator[ContainerFormat]:
         return iter(self._items)
 
+    @override
     def __len__(self) -> int:
         return len(self._items)
 
+    @override
     def __hash__(self) -> int:
         return hash(frozenset(self._items.items()))
 
+    @override
     def __repr__(self) -> str:
         return repr(self._items)
 

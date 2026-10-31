@@ -122,7 +122,8 @@ Measured with `ncompress` 5.0, as listed on [`single-file.md`](single-file.md) �
 | A 16-bit file cut at 200 even points | 100 `TruncatedError`, 100 read short with no error |
 | A 12-bit file cut at 200 even points | 131 `TruncatedError`, 69 read short with no error |
 | A zero-byte `.Z` | `TruncatedError` |
-| `compress -b9` | Reads, unless the file hit a bug in ncompress 5.0 that writes a code that does not fit in 9 bits. Such a file reads without error but returns wrong bytes, as in `7z` up to 26.04 and `unar`; see below |
+| `compress -b9` (compress 4.0, 1985) | Reads, as GNU gzip and 7-Zip 26.05 do; see below |
+| `compress -b9` (ncompress 5.0) | Reads, unless the file hit a bug in ncompress 5.0 that writes a code that does not fit in 9 bits. Such a file reads without error but returns wrong bytes, as in `7z` up to 26.04 and `unar`; see below |
 
 **9-bit files from ncompress 5.0 can be damaged.** When `compress -b9` fills the table
 partway through a string, ncompress 5.0 adds one entry too many, code 512, and can later
@@ -135,21 +136,44 @@ already sets the 9-bit limit one too high. It was fixed in its repository in Feb
 release carries the fix yet. A build of that commit writes 9-bit files that archivey,
 `7z` up to 26.04 and `unar` read back to their input.
 
-ncompress 5.0 and GNU gzip 1.12 refuse every 9-bit file, damaged or not. Their decoders
-move to 10-bit codes when the table fills, even when the header says 9, which is the other
-half of the same ncompress fix. So their refusal is not evidence against a file.
+**9-bit files come in two layouts.** Once a 9-bit table fills, the original `compress`
+pads to the end of the group of eight codes and writes the rest 10 bits wide; the values
+stay below 512, since the table holds 511 entries. A build of compress 4.0 (1985,
+ncompress repository commit `6235344`, which builds with `gcc -std=gnu89`) writes it
+for `-b9` in block mode and without (`-C`), and reads it back. GNU gzip 1.12, ncompress
+5.0's decoder and 7-Zip 26.05 read it too. 7-Zip 26.05's decoder calls this path
+`Z7_ZDECODER_BIT9_COMPAT`, "compatible with original Z decoder", and says 7-Zip up to
+26.04 "can't unpack some old bit9 archives correctly". ncompress 4.2 to 5.0 instead keep
+9-bit codes and no padding, which `unar`, 7-Zip up to 26.04 and ncompress `3303f31` read,
+and which ncompress 5.0's own decoder, GNU gzip and 7-Zip 26.05 refuse (`Data Error`).
 
-7-Zip 26.05 (2026-10-21) sides with the original decoder. Its rewritten decoder adds a
-9-bit path, `Z7_ZDECODER_BIT9_COMPAT` in `ZDecoder.cpp`, which its source describes as
-"compatible with original Z decoder": once a 9-bit table fills, it skips the code-group
-padding and reads codes 10 bits wide, whose values stay below 512. Its comment says 7-Zip
-up to 26.04 "can't unpack some old bit9 archives correctly". So 26.05 reads the shape the
-original `compress` wrote and ncompress 5.0 and GNU gzip read. It reports `Data Error`
-on every 9-bit file that keeps 9-bit codes after the table fills, the shape ncompress
-`3303f31` writes and archivey, `unar` and 7-Zip up to 26.04 read. The 9-bit `7z`
-comparisons in `tests/test_codecs.py` skip where `7z` is 26.05 or later; archivey's own
-9-bit checks run everywhere, and one test pins 26.05's refusal so a later change shows
-up. Which shape archivey should read is open (§7).
+Nothing in the header tells them apart, so archivey reads the 64 bytes after the fill
+both ways and looks for a code that layout could not have written. In compress 4.0's
+layout that is a 10-bit code with bit 9 set, since no value reaches 512. In either, a
+CLEAR sends the stream back to 9-bit codes with a near-empty table, so after it a first
+code that is not a literal, or any code past the next free one, rules the reading out.
+The layout that holds wins; if both break, the one that held out longer. If both hold, a
+CLEAR inside the 64 bytes decides: the reading that went through one and then met at
+least four codes above 256, all within the growing table, and more of them than the
+other reading, wins. Literals are no evidence there: on low-variety data a reading one
+byte off from where the CLEAR's padding ends turns literals into other literals and
+holds. Otherwise compress 4.0's layout wins. Every ncompress-layout stream measured
+without a CLEAR broke the 10-bit reading within the first seven codes. The layout found
+at the first fill holds for the rest of the stream, a seek included.
+
+One case is known to go wrong, on ncompress-layout files, ending on compress 4.0's
+layout. A source that ends inside the 64 bytes is decided on what it has: a whole byte
+left over after the last 10-bit code, or padding cut short, means 9 bits, and otherwise
+both readings hold. So a file that ends fewer than about 32 codes after its table filled
+can return wrong bytes. A CLEAR so late in the 64 bytes that fewer than four codes above
+256 follow it inside them is also a tie, but then the reading without the CLEAR has had
+the rest of the window to break, and no measured ncompress-layout stream reached the tie
+that way. Before this, archivey read only the ncompress layout: a compress 4.0 `-b9`
+file raised `CorruptionError`, or decoded with no error to wrong bytes.
+
+The test encoder writes both layouts. In block mode its compress 4.0 layout matched
+compress 4.0's output byte for byte; without block mode it differs only in the padding
+bytes, which compress 4.0 fills with what was left in its group buffer.
 
 Without block mode (`compress -C`) no installed tool writes files, so the tests carry
 their own encoder, which writes both modes. GNU gzip 1.12 reads its output like archivey at 10 to 16 bits. The
@@ -194,6 +218,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A backward seek re-decodes from the start | **format** | No CLEAR codes in this file, or a non-seekable source |
 | `member.size` is `None` | **format** | No size field |
 | A `compress -b9` file reads with no error but returns wrong bytes | **format** | No checksum to show the damage; ncompress 5.0 writes such files (§3) |
+| An ncompress-layout `-b9` file that ends just after its table fills reads with no error to wrong bytes | **archivey** | When the layout probe cannot tell the two 9-bit layouts apart, compress 4.0's wins (§3) |
 
 ## 6. Decisions
 
@@ -205,13 +230,11 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Report a cut only where there is evidence | Calling every file that ends on a code boundary truncated would refuse every valid file | Guessing |
 | A zero-byte source is `TruncatedError` (PR #420) | Every other codec raises on an empty source, and a `.Z` without its header is cut | An empty member |
 | Merge consecutive empty CLEAR points (PR #116) | Several points at one offset broke the seek table's invariant | Asserting |
+| Read both 9-bit layouts, found from the codes after the table fills; on a tie, the layout tools wrote historically (maintainer, 2026-10-30) | compress 4.0 wrote the 10-bit layout, and gzip and 7-Zip 26.05 read it; ncompress 4.2 to 5.0 wrote the 9-bit one. The probe reads both ways and drops the reading that meets a code its layout could not write | One layout only |
 
 ## 7. Open questions
 
-- **Which 9-bit shape to read.** Once a 9-bit table fills, archivey keeps 9-bit codes
-  (ncompress `3303f31`, `unar`, 7-Zip up to 26.04). The original `compress`, ncompress
-  5.0, GNU gzip and 7-Zip 26.05 move to 10-bit-wide codes (§3). Which shape real `-b9`
-  files carry, and whether archivey should read both, is not settled.
+None.
 
 The truncation gap is the format's, not an open question;
 [`docs/formats.md`](../../docs/formats.md) tells users it is best-effort.
@@ -233,7 +256,12 @@ The truncation gap is the format's, not an open question;
 | One call's output is bounded |
 | The table stays under about 19 MiB, 21 MiB on a free-threaded build (§4) |
 | Files written without block mode decode like GNU `gzip -d` at 10 to 16 bits |
-| 9-bit files, in block mode with and without CLEAR codes and without block mode, decode to their input; like `7z` where it is 26.04 or earlier |
+| 9-bit files in both layouts, in block mode with and without CLEAR codes and without block mode, decode to their input at every feed size |
+| compress 4.0's 9-bit layout decodes like GNU gzip, and like 7-Zip where it is 26.05 or later |
+| ncompress's 9-bit layout decodes like `7z` where it is 26.04 or earlier |
+| A source that ends soon after a 9-bit table fills still reads compress 4.0's layout |
+| A CLEAR inside the layout probe that leaves four or more codes above 256 after it leaves both layouts readable, on low-variety payloads too |
+| In compress 4.0's 10-bit era, code 512 is corrupt; a seek back keeps the layout |
 | A 9-bit file with ncompress 5.0's damage reads with no error to wrong bytes; the same as `7z` where it is 26.04 or earlier |
 | 7-Zip 26.05 or later refuses a 9-bit file that keeps 9-bit codes, and reads a 16-bit one |
 | Linked long entries decode exactly |

@@ -11,6 +11,7 @@ from archivey.exceptions import (
     exception_detail,
 )
 from archivey.internal.config import StreamConfig
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.base import (
     Codec,
@@ -34,9 +35,11 @@ class Deflate64Codec(StreamCodec):
         reason=deps.unused_reason(OptionalLibrary.INFLATE64),
     )
 
+    @override
     def _backend_present(self) -> bool:
         return deps.inflate64.available()
 
+    @override
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
@@ -51,6 +54,7 @@ class Deflate64Codec(StreamCodec):
             natives=natives,
         )
 
+    @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, (ValueError, zlib.error)):
             return CorruptionError(

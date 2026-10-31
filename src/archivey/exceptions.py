@@ -34,6 +34,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from archivey.internal.overrides import override
 from archivey.terminal import escape_control_chars
 
 if TYPE_CHECKING:
@@ -131,10 +132,12 @@ class ArchiveyError(Exception):
         self.link_target = link_target
         self.format_unconfirmed = format_unconfirmed
 
+    @override
     def __reduce__(self) -> tuple[object, ...]:
         # Pickle and copy without re-running __init__; see _restore_exception.
         return (_restore_exception, (type(self), self.args, self.__dict__))
 
+    @override
     def __str__(self) -> str:
         parts = [self.message]
         if self.archive_name:
@@ -444,10 +447,12 @@ class ArchiveyUsageError(Exception):
         self.message = message
         self.refused_member_type = refused_member_type
 
+    @override
     def __reduce__(self) -> tuple[object, ...]:
         # Pickle and copy without re-running __init__; see _restore_exception.
         return (_restore_exception, (type(self), self.args, self.__dict__))
 
+    @override
     def __str__(self) -> str:
         return self.message
 

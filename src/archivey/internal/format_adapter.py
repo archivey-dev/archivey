@@ -76,6 +76,7 @@ from archivey.internal.format_args import (
 from archivey.internal.logs import detection as detection_logger
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
 from archivey.internal.open_site import OpenSite
+from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.source import ArchiveSource
@@ -371,6 +372,7 @@ class _PluginAdapter(BaseArchiveReader):
             member_id=self._member_id(member),
         )
 
+    @override
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         # A plugin that broke the interface is a plugin bug, not a fault in the
         # archive: not offered to the plugin's translator, which may map every
@@ -451,6 +453,7 @@ class _PluginAdapter(BaseArchiveReader):
             f"named {digest.name!r}, {reason}"
         )
 
+    @override
     def _get_archive_info(self) -> ArchiveInfo:
         with self._translated_errors(), self._handle_guard():
             info = self._reader.archive_info()
@@ -495,6 +498,7 @@ class _PluginAdapter(BaseArchiveReader):
             # dropped by extraction, as for a built-in format (data model, DR-3).
             self._emit_directory_data_ignored(member, index)
 
+    @override
     def _close_archive(self) -> None:
         try:
             with self._translated_errors(), self._handle_guard():
@@ -508,6 +512,7 @@ class IndexedReaderAdapter(_PluginAdapter):
     """Serves an :class:`~archivey.formats.IndexedReader` through the internal reader
     contract."""
 
+    @override
     def _open_reader(self, context: ReaderContext) -> IndexedReader[Any]:
         source = self._source
         assert source is not None
@@ -525,6 +530,7 @@ class IndexedReaderAdapter(_PluginAdapter):
         self._MEMBER_LIST_UPFRONT = reader.member_list_upfront
         return reader
 
+    @override
     def _cost(self, info: ReaderArchiveInfo) -> CostReceipt:
         return CostReceipt(
             listing_cost=(
@@ -537,6 +543,7 @@ class IndexedReaderAdapter(_PluginAdapter):
             solid_block_count=None,
         )
 
+    @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
         # One boundary and one guard for the whole walk: both are reusable, and
         # building them per member is a measurable part of listing a large archive.
@@ -589,6 +596,7 @@ class IndexedReaderAdapter(_PluginAdapter):
             stream = LockedStream(stream, self._handle_lock)
         return data, stream
 
+    @override
     def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         data, stream = self._plugin_member_data(member)
         # Until the parts take the stream over, a raise here (a refused digest name,
@@ -815,6 +823,7 @@ class _ForwardInput(ReadOnlyIOStream):
         # layer) or a BufferedReader over the source's arrived view.
         self._stream = stream
 
+    @override
     def read(self, n: int | None = -1, /) -> bytes:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
@@ -846,11 +855,13 @@ class _SpanWindow(ReadOnlyIOStream):
         self._what = what
         self._done = 0
 
+    @override
     def tell(self) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
         return self._done
 
+    @override
     def read(self, n: int | None = -1, /) -> bytes:
         if self.closed:
             raise ValueError("read from a closed member stream")
@@ -885,11 +896,13 @@ class _DecodedWindow(ReadOnlyIOStream):
         self._decoded = decoded
         self._done = 0
 
+    @override
     def tell(self) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
         return self._done
 
+    @override
     def read(self, n: int | None = -1, /) -> bytes:
         if self.closed:
             raise ValueError("read from a closed member stream")
@@ -946,14 +959,17 @@ class _DataWalkStream(ReadOnlyIOStream):
         self._window = _DecodedWindow(decoded)
         super().__init__()
 
+    @override
     def tell(self) -> int:
         return self._window.tell()
 
+    @override
     def read(self, n: int | None = -1, /) -> bytes:
         if self.closed:
             raise ValueError("read from a closed member stream")
         return self._window.read(n)
 
+    @override
     def close(self) -> None:
         adapter, self._adapter = self._adapter, None
         if adapter is not None:
@@ -969,6 +985,7 @@ class SequentialReaderAdapter(_PluginAdapter):
 
     _MEMBER_LIST_UPFRONT = False
 
+    @override
     def _open_reader(self, context: ReaderContext) -> SequentialReader:
         plugin = self._plugin
         assert isinstance(plugin, SequentialFormatHandler)
@@ -1214,6 +1231,7 @@ class SequentialReaderAdapter(_PluginAdapter):
         walk.layer = layer
         return layer.forward
 
+    @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
         boundary = self._translated_errors()
         guard = self._handle_guard()
@@ -1363,12 +1381,14 @@ class SequentialReaderAdapter(_PluginAdapter):
                 member.link_target = target.decode("utf-8", errors="surrogateescape")
         return member
 
+    @override
     def _pass_reads_through_walk(self) -> bool:
         """A random-access pass reads through the walk until it ends, so a
         compressed archive (``.cpio.gz``, or one a walk decompresses part-way) is
         decoded once for the headers and the data, not once for each."""
         return True
 
+    @override
     def _open_member_in_walk(self, member: ArchiveMember) -> MemberStreamParts:
         record = member._raw
         assert isinstance(record, _Span), "a sequential member is missing its span"
@@ -1414,6 +1434,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             )
         return self._span_parts(member, record, stream)
 
+    @override
     def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         record = member._raw
         assert isinstance(record, _Span), "a sequential member is missing its span"
@@ -1701,6 +1722,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             custom_digests=record.custom,
         )
 
+    @override
     def _cost(self, info: ReaderArchiveInfo) -> CostReceipt:
         assert self._source is not None
         capability = (
@@ -1775,6 +1797,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                         codec, self._codec_stream = self._codec_stream, None
                         codec.close()
 
+    @override
     def _close_archive(self) -> None:
         # A walk taken at open and never listed is still suspended in the plugin's
         # walk(): finish it first, so its own cleanup runs before close() and over an
@@ -1822,6 +1845,7 @@ class _PluginBackend(ReadBackend):
 
     PLUGIN: ClassVar[type[FormatHandler]]
 
+    @override
     def open_read(
         self,
         source: ArchiveSource,
