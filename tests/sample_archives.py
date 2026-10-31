@@ -952,18 +952,24 @@ def _filename(entry: CorpusEntry, key: str) -> str:
 def publish_cached(tmp: Path, final: Path) -> None:
     """Move a freshly built ``tmp`` onto ``final`` in the shared test cache.
 
-    Parallel workers can build the same entry at once. On Windows ``os.replace`` onto a
-    file another worker has open fails with ``PermissionError``, which is why this
-    exists. The refusal is tolerated on every platform: ``final`` is keyed by content and
-    only ever appears through this atomic replace, so any file already there is a
-    finished build of the same bytes, and the loser keeps it.
+    Parallel workers can build the same entry at once. ``final`` is keyed by content, so
+    any file already there is a finished build of the same bytes, and the loser keeps
+    it. The build is published with a hard link, which never replaces a file: on Windows
+    a replace onto ``final`` fails while another worker has it open, and a worker that
+    opens ``final`` during someone else's replace gets ``PermissionError`` too. Where
+    links are not supported it falls back to ``os.replace``, tolerating that refusal.
     """
     try:
-        os.replace(tmp, final)
-    except PermissionError:
-        if not final.exists():
-            raise
-        tmp.unlink(missing_ok=True)
+        os.link(tmp, final)
+    except FileExistsError:
+        pass
+    except OSError:
+        try:
+            os.replace(tmp, final)
+        except PermissionError:
+            if not final.exists():
+                raise
+    tmp.unlink(missing_ok=True)
 
 
 def corpus_archive_path(entry: CorpusEntry, key: str, tmp_path: Path) -> Path:
