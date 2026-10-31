@@ -384,8 +384,9 @@ Once the round is done, the PR should record what happened to every finding.
   A reply on one finding's thread is headed by that finding instead —
   `### K6 · fixed in \`5afdbb5\``.
 
-- **End every comment, reply and review body with the attribution footer**, written by
-  you; the current posting paths append nothing (`AGENTS.md` §Review workflow).
+- **End every comment, reply and review body with the attribution footer** of the tool
+  you run in, written by you; the current posting paths append nothing (`AGENTS.md`
+  §Review workflow). The header's attribution line names the same tool.
 
 Reply once per round, not once per fix.
 
