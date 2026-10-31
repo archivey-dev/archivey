@@ -707,6 +707,44 @@ def render_results(expected: dict[str, Any]) -> str:
     others = [name for name in cases if name in explained and name not in safest]
     lines += [
         "",
+        "## Why the safest settings still differ",
+        "",
+        (
+            "The corpus is written for software distribution: a package manager, or a "
+            "scanner that checks a tarball before another tool extracts it. There the "
+            "danger is two readers making different trees of one archive, so a "
+            '"reject" verdict marks any shape some reader takes differently, even '
+            "one that real tarballs use. The corpus's own policy accepts 99.79% of the "
+            "source tarballs it scanned and expects the rest to be allowed one by one, "
+            "by checksum."
+        ),
+        "",
+        (
+            "Archivey's goal is to read every archive the format's own tool reads, so "
+            "it holds the safest settings to the corpus's verdicts except where a "
+            "shape is in real archives and Archivey's reading of it has a single "
+            "answer that keeps every write inside the destination. Each case below "
+            "names the writers that produce it. None of them is a difference we plan "
+            "to fix: Archivey reads each one as GNU tar does, or refuses it, and no "
+            "case writes outside the destination under any run."
+        ),
+        "",
+        (
+            "tar-codec, the corpus's strictest reader, fails 13 cases too, among them "
+            "the duplicate members, the star and GNU prefix layouts and the link name "
+            "on a file: the shapes real tarballs use. Its sources do not say why; the "
+            "likely reason is the same trade, since uv must read the sdists already "
+            "published. The cases where tar-codec refuses and Archivey reads are "
+            "marked 🔴, the ones both read 🟡."
+        ),
+        "",
+        (
+            "What this costs: a caller who scans an archive with Archivey and extracts "
+            "it with another tool can get another tree on these cases, and only "
+            "F16 reports a diagnostic, so `DiagnosticPolicy.PEDANTIC` does not catch "
+            "the others."
+        ),
+        "",
         "## Cases the safest settings fail",
         "",
         (
