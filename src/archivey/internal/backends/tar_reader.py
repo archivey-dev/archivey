@@ -74,6 +74,7 @@ from archivey.diagnostics import (
     HeaderAmbiguityContext,
     LinkDataContext,
     MemberHeaderRecordContext,
+    ReaderDisagreementContext,
     UnknownMemberTypeContext,
 )
 from archivey.exceptions import (
@@ -232,6 +233,12 @@ _KNOWN_TYPES = (
     | _VOLUME_TYPES
     | {_SYMLINK_TYPE, _HARDLINK_TYPE}
 )
+
+
+# The MEMBER_READERS_DISAGREE shapes a TAR header can take.
+_TarDisagreement = Literal[
+    "file_named_as_directory", "link_name_on_file", "star_prefix", "gnu_prefix_bytes"
+]
 
 
 def _member_type(entry: TarEntry) -> MemberType:
@@ -1393,7 +1400,60 @@ class TarReader(BaseArchiveReader):
             self._emit_header_ambiguous(member, index, ambiguity, key)
         if entry.typeflag not in _KNOWN_TYPES:
             self._emit_member_type_unknown(member, index, entry.typeflag)
+        if entry.old_style_directory:
+            self._emit_readers_disagree(member, index, "file_named_as_directory")
+        elif member_type is MemberType.FILE and entry.header.linkname:
+            self._emit_readers_disagree(member, index, "link_name_on_file")
+        if (
+            entry.header.prefix_shape is not None
+            and entry.name_source is NameSource.HEADER
+        ):
+            self._emit_readers_disagree(member, index, entry.header.prefix_shape)
         return member
+
+    def _emit_readers_disagree(
+        self, member: ArchiveMember, member_id: int, shape: _TarDisagreement
+    ) -> None:
+        """Report ``MEMBER_READERS_DISAGREE`` for a header shape real writers produce
+        that other readers make another tree of. Advisory: the member is read as GNU
+        tar reads it."""
+        if shape == "file_named_as_directory":
+            what = (
+                "is a regular file whose name ends in '/': it is listed as a "
+                "directory, as GNU tar extracts it (v7 tars store directories this "
+                "way); another reader may make an empty file of it"
+            )
+        elif shape == "link_name_on_file":
+            what = (
+                "is a regular file that also stores a link name: the link name is not "
+                "used, as GNU tar ignores it; a reader that goes by the link name "
+                "makes a link"
+            )
+        elif shape == "star_prefix":
+            what = (
+                "has star's layout, with a prefix longer than star's 131 bytes: the "
+                "whole prefix field is part of the name, as GNU tar reads it; star "
+                "reads its end as times and names the member differently"
+            )
+        else:
+            what = (
+                "has an old GNU header with times where ustar keeps the name prefix: "
+                "they are not part of the name, as GNU tar reads it; a reader that "
+                "joins the prefix for any magic names the member after them"
+            )
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_READERS_DISAGREE,
+            message=f"TAR member {quoted(member.name)} {what}.",
+            context=ReaderDisagreementContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=member_id,
+                shape=shape,
+            ),
+            member=member,
+            attach_to_member=True,
+            logger=integrity_logger,
+        )
 
     def _emit_header_ambiguous(
         self, member: ArchiveMember, member_id: int, ambiguity: Ambiguity, key: bytes

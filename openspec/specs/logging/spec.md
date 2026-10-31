@@ -50,8 +50,10 @@ Every WARNING advisory SHALL originate as a `Diagnostic`; logging MUST NOT be a
 second source of truth. For `COLLECT` and `RAISE`, the WARNING SHALL emit after
 counts/retention update and before callback/escalation. For `IGNORE`, no WARNING
 record SHALL emit. The codes in `archivey.diagnostics._INFO_LOG_CODES`
-(`STREAM_REWIND_REDECOMPRESSES` only) SHALL log at INFO instead of WARNING, in the same
-order: they report the caller's access pattern, not the archive. An INFO record is
+(`STREAM_REWIND_REDECOMPRESSES`, `MEMBER_NAME_DUPLICATE` and
+`MEMBER_READERS_DISAGREE`) SHALL log at INFO instead of WARNING, in the same order: the
+first reports the caller's access pattern, not the archive, and the other two report
+shapes of ordinary archives that only a caller comparing readers asks for. An INFO record is
 below the default level of `logging.basicConfig()` and of the CLI without `-v`, so such
 a code reaches a caller there only through `reader.diagnostics`, `on_diagnostic` or a
 handler set to INFO.

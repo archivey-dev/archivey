@@ -1128,6 +1128,9 @@ def test_archive_integrity_codes_are_all_real_codes() -> None:
         DiagnosticCode.MEMBER_SIZE_WRAPPED,
         # GNU tar extracts an unknown TAR typeflag as a file; the data is delivered.
         DiagnosticCode.MEMBER_TYPE_UNKNOWN,
+        # Shapes real archives have, read as the format's own tool reads them.
+        DiagnosticCode.MEMBER_NAME_DUPLICATE,
+        DiagnosticCode.MEMBER_READERS_DISAGREE,
     }
 
 

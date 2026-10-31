@@ -297,9 +297,9 @@ def test_niche_names_live_only_in_their_submodule() -> None:
     )
     assert unlisted == []
     contexts = [name for name in archivey.diagnostics.__all__ if is_payload(name)]
-    # The 26 payload classes the module defines; update the count when one is added
+    # The 28 payload classes the module defines; update the count when one is added
     # or removed, so the loop below cannot pass on a shrunken list.
-    assert len(contexts) == 26, contexts
+    assert len(contexts) == 28, contexts
     gates = [
         "INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE",
         "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE",

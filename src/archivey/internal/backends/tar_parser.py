@@ -101,6 +101,10 @@ READ_STEP = 64 * 1024
 DATA_READ_STEP = _COMPRESSED_READ_SIZE_MAX
 
 POSIX_MAGIC = b"ustar\x00"
+# star writes "tar\0" at 508 and keeps only 131 bytes of the 155-byte prefix field,
+# with atime and ctime after them.
+_STAR_MARK = b"tar\x00"
+_STAR_PREFIX_LENGTH = 131
 GNU_MAGIC = b"ustar  \x00"
 # The version bytes after POSIX_MAGIC that writers use: "00", and NULs, which some Java
 # archivers write. Any other is MAGIC_VERSION.
@@ -203,6 +207,9 @@ class HeaderBlock:
     device_number_fault: str | None = None
     # The checksum matches only the signed sum (_checksum_matches).
     signed_checksum: bool = False
+    # ``"star_prefix"`` or ``"gnu_prefix_bytes"`` when the bytes at 345.. read as
+    # another name to another reader (_prefix_shape); ``None`` otherwise.
+    prefix_shape: Literal["star_prefix", "gnu_prefix_bytes"] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,13 +447,27 @@ def parse_header_block(
                 "any file's size",
             )
         sparse_extended = block[482] != 0
-    elif header_format is HeaderFormat.USTAR:
+    prefix_shape: Literal["star_prefix", "gnu_prefix_bytes"] | None = None
+    if header_format is HeaderFormat.USTAR:
         # GNU tar joins the prefix for any "ustar\0" magic, whatever the version
         # bytes, and never for old GNU or v7 headers, whose bytes 345.. hold other
         # fields or nothing. (tarfile joins it for every header but GNU types.)
         prefix = _cut_nul(block[345:500])
         if prefix:
             name = prefix + b"/" + name
+            if len(prefix) > _STAR_PREFIX_LENGTH and block[508:512] == _STAR_MARK:
+                # star's own layout: a 131-byte prefix, then atime and ctime. GNU tar
+                # joins the whole field; star reads the rest as times (N10).
+                prefix_shape = "star_prefix"
+    elif (
+        header_format is HeaderFormat.GNU
+        and block[345] != 0
+        and typeflag != SPARSE_TYPE
+    ):
+        # Old GNU times (incremental archives) where ustar keeps the prefix. GNU tar
+        # never joins them; tarfile joins the prefix for any magic but its GNU types,
+        # and names the member after the time (N11).
+        prefix_shape = "gnu_prefix_bytes"
     return HeaderBlock(
         offset=offset,
         format=header_format,
@@ -462,6 +483,7 @@ def parse_header_block(
         sparse_extended=sparse_extended,
         sparse_realsize=sparse_realsize,
         signed_checksum=checksum == "signed",
+        prefix_shape=prefix_shape,
         mode=mode,
         uid=uid,
         gid=gid,
