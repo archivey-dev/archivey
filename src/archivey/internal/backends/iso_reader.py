@@ -48,15 +48,17 @@ import re
 import stat
 import struct
 import zlib
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta, timezone
 from types import ModuleType
 from typing import (
     TYPE_CHECKING,
     BinaryIO,
+    Literal,
     NamedTuple,
     TypeGuard,
+    TypeVar,
     cast,
 )
 
@@ -78,6 +80,7 @@ from archivey.diagnostics import (
     MemberHeaderRecordContext,
     MemberTimestampContext,
     NameEncodingContext,
+    ReaderDisagreementContext,
     raw_name_to_base64,
 )
 from archivey.exceptions import (
@@ -498,6 +501,27 @@ class _ParseBudget:
                 f"the last came from {source}"
             ),
         )
+
+
+# How many files only another tree holds are reported per tree
+# (``IsoReader._report_files_in_other_trees``).
+_OTHER_TREE_REPORTS = 16
+# A UDF File Entry's ICB flags (ECMA-167 4/14.6.8, low three bits) for data held inside
+# the entry itself, with no extent of its own.
+_UDF_INLINE_DATA = 3
+# What ``IsoReader._report_unlisted`` decodes a reported file's name from: a directory
+# record, or a UDF File Identifier.
+_NameSource = TypeVar("_NameSource")
+
+
+def _udf_text(ident: UDFFileIdentifierDescriptor) -> str:
+    """A UDF File Identifier's name as text; never raises. pycdlib keeps the stored
+    bytes and the encoding their compression ID names: UTF-16BE (16), decoded as a
+    Joliet name is, or Latin-1 (8)."""
+    raw = bytes(ident.fi)
+    return (
+        _decode_joliet(raw) if ident.encoding == "utf-16_be" else raw.decode("latin-1")
+    )
 
 
 # The key the UDF tree is counted under in ``_ParseBudget``: pycdlib walks one UDF file
@@ -1963,7 +1987,11 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         # extent through ``_cdfp`` and takes the handle guard itself. The
         # Joliet name fallback reads nothing either: ``has_joliet()`` tests a parsed
         # descriptor, ``get_record(joliet_path="/")`` looks among parsed records, and
-        # ``_yield_children`` on the Joliet tree walks them. Following a link target
+        # ``_yield_children`` on the Joliet tree walks them. The comparison after the walk
+        # (``_report_files_in_other_trees``) reads nothing either: it walks the Joliet
+        # and plain ISO 9660 trees with ``get_record`` and ``_yield_children``, and the
+        # UDF tree through the parsed File Entries' ``fi_descs`` and ``alloc_descs``,
+        # all built inside ``open_fp``. Following a link target
         # (``_rock_ridge_child``) is the walk's own ``_yield_children`` over Rock Ridge
         # records already parsed, and ``_nm_name`` reads the parsed ``NM`` records
         # (``dr_entries``/``ce_entries``). Any other image read added to listing needs
@@ -1971,13 +1999,164 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         # lock the complete call.
         # ``index`` is each member's position in the walk, the id registration
         # stamps, so a diagnostic raised while typing can name it.
+        listed_extents: set[int] = set()
         for index, (ns_path, raw_path, record, superseded) in enumerate(
             self._walk_records()
         ):
+            if not record.is_dir() and record.data_length:
+                listed_extents.add(record.extent_location())
             member, stored_name = self._make_member(
                 ns_path, raw_path, record, index, superseded=superseded
             )
             yield MemberRecord(member, record, stored_name=stored_name)
+        self._report_files_in_other_trees(listed_extents)
+
+    # --- the image's other trees ---------------------------------------------------
+
+    def _report_files_in_other_trees(self, listed_extents: set[int]) -> None:
+        """Report a file that a tree this reader does not list holds and the listed
+        tree does not: ``MEMBER_READERS_DISAGREE``, ``file_only_in_joliet``,
+        ``file_only_in_iso9660`` or ``file_only_in_udf``.
+
+        An image carries up to three name trees over one set of file data. Linux and
+        xorriso read Rock Ridge, Windows and 7-Zip read Joliet (and Windows UDF first,
+        on an image that has it), and a reader without Joliet support reads the plain
+        ISO 9660 tree, so a file put in one tree only is seen by some readers and
+        hidden from the others. archivey lists one tree (Rock Ridge, else Joliet, else
+        plain ISO 9660) and compares every other one: Joliet unless it is listed, the
+        plain tree when Joliet is listed (Rock Ridge names ride the plain records, so
+        listing Rock Ridge covers them), and UDF. Files are matched by the data each
+        points at, not by name, since a Joliet name is cut at 64 characters and a plain
+        one is 8.3. Empty files are left out: they share one extent, so they cannot be
+        told apart.
+
+        pycdlib parsed every tree in ``open_fp``, within the listing budget, so this
+        walks records already in memory and reads nothing from the image. At most
+        ``_OTHER_TREE_REPORTS`` files are reported per tree.
+        """
+        if self._namespace != "joliet" and self._iso.has_joliet():
+            self._report_unlisted(
+                "Joliet",
+                "file_only_in_joliet",
+                self._record_tree_files("joliet_path"),
+                self._joliet_text,
+                listed_extents,
+            )
+        if self._namespace == "joliet":
+            self._report_unlisted(
+                "ISO 9660",
+                "file_only_in_iso9660",
+                self._record_tree_files("iso_path"),
+                self._plain_text,
+                listed_extents,
+            )
+        if self._iso.has_udf():
+            self._report_unlisted(
+                "UDF",
+                "file_only_in_udf",
+                self._udf_tree_files(),
+                _udf_text,
+                listed_extents,
+            )
+
+    def _report_unlisted(
+        self,
+        tree: str,
+        shape: Literal[
+            "file_only_in_joliet", "file_only_in_iso9660", "file_only_in_udf"
+        ],
+        files: Iterator[tuple[int | None, str, _NameSource]],
+        name_of: Callable[[_NameSource], str],
+        listed_extents: set[int],
+    ) -> None:
+        """Report the files of ``files``, ``(extent, directory path, name source)``,
+        whose extent no listed file has. A name is decoded only for a file reported."""
+        reported = 0
+        for extent, dirpath, name_source in files:
+            if extent is not None and extent in listed_extents:
+                continue
+            path = dirpath + name_of(name_source)
+            reported += 1
+            cap = (
+                f" No more than {_OTHER_TREE_REPORTS} such files are reported per tree."
+                if reported == _OTHER_TREE_REPORTS
+                else ""
+            )
+            self._context.report(
+                DiagnosticCode.MEMBER_READERS_DISAGREE,
+                (
+                    f"The image's {tree} tree holds the file {quoted(path)}, which the "
+                    f"{self._namespace.replace('_', ' ')} tree archivey lists does not: "
+                    f"a reader of the {tree} tree sees it, and it is not a member "
+                    f"here.{cap}"
+                ),
+                ReaderDisagreementContext(
+                    archive_name=self._archive_name,
+                    member_name=path,
+                    member_id=None,
+                    shape=shape,
+                ),
+            )
+            if reported == _OTHER_TREE_REPORTS:
+                return
+
+    def _record_tree_files(
+        self, path_kw: Literal["joliet_path", "iso_path"]
+    ) -> Iterator[tuple[int | None, str, DirectoryRecord]]:
+        """``(extent, directory path, record)`` of every non-empty file in the Joliet
+        or plain ISO 9660 tree."""
+        root = self._iso.get_record(**{path_kw: "/"})
+        name_of = self._joliet_text if path_kw == "joliet_path" else self._plain_text
+        seen = {root.extent_location()}
+        stack: list[tuple[str, DirectoryRecord]] = [("", root)]
+        while stack:
+            dirpath, directory = stack.pop()
+            for child in _yield_children(directory, False):
+                extent = child.extent_location()
+                if child.is_dir():
+                    if extent not in seen:
+                        seen.add(extent)
+                        stack.append((f"{dirpath}{name_of(child)}/", child))
+                elif child.data_length:
+                    yield extent, dirpath, child
+
+    @staticmethod
+    def _plain_text(record: DirectoryRecord) -> str:
+        """A plain ISO 9660 identifier as text, without its version; never raises."""
+        name = bytes(record.file_identifier()).decode("latin-1")
+        return name if record.is_dir() else _strip_version(name, iso9660=True)[0]
+
+    def _udf_tree_files(
+        self,
+    ) -> Iterator[tuple[int | None, str, UDFFileIdentifierDescriptor]]:
+        """``(extent, directory path, File Identifier)`` of every non-empty file in the
+        UDF tree. The extent is made absolute, like an ISO 9660 one; it is ``None``
+        for data held inside the File Entry (ICB flags 3), which no ISO 9660 record can
+        point at."""
+        root = self._iso.get_record(udf_path="/")
+        part_start = self._iso.udf_main_descs.partitions[0].part_start_location
+        seen = {id(root)}
+        stack: list[tuple[str, UDFFileEntry]] = [("", root)]
+        while stack:
+            dirpath, directory = stack.pop()
+            for ident in directory.fi_descs.values():
+                entry = ident.file_entry
+                if ident.is_parent() or entry is None:
+                    continue
+                if ident.is_dir():
+                    if id(entry) not in seen:
+                        seen.add(id(entry))
+                        stack.append((f"{dirpath}{_udf_text(ident)}/", entry))
+                elif entry.is_file() and entry.get_data_length():
+                    # pycdlib reads alloc_descs[0] itself for every such entry inside
+                    # open_fp, so the list is not empty here.
+                    inline = entry.icb_tag.flags & 0x7 == _UDF_INLINE_DATA
+                    extent = (
+                        None
+                        if inline
+                        else part_start + entry.alloc_descs[0].log_block_num
+                    )
+                    yield extent, dirpath, ident
 
     def _make_member(
         self,

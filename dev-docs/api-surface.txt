@@ -856,12 +856,12 @@ field archivey.diagnostics.OffsetWrapContext.stored_offset: int = 0
 method archivey.diagnostics.OffsetWrapContext.to_dict(self) -> dict[str, object]
 reexport archivey.diagnostics.OnDiagnostic = archivey.OnDiagnostic
 class archivey.diagnostics.ReaderDisagreementContext(_JsonSafeContext)
-init archivey.diagnostics.ReaderDisagreementContext(kind: Literal['reader_disagreement'] = 'reader_disagreement', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, shape: Literal['file_named_as_directory', 'link_name_on_file', 'star_prefix', 'gnu_prefix_bytes', 'hardlink_to_symlink', 'nul_in_name', 'directory_attribute_without_slash'] = 'file_named_as_directory') -> None
+init archivey.diagnostics.ReaderDisagreementContext(kind: Literal['reader_disagreement'] = 'reader_disagreement', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, shape: Literal['file_named_as_directory', 'link_name_on_file', 'star_prefix', 'gnu_prefix_bytes', 'hardlink_to_symlink', 'nul_in_name', 'directory_attribute_without_slash', 'file_only_in_joliet', 'file_only_in_iso9660', 'file_only_in_udf'] = 'file_named_as_directory') -> None
 field archivey.diagnostics.ReaderDisagreementContext.archive_name: str | None = None
 field archivey.diagnostics.ReaderDisagreementContext.kind: Literal['reader_disagreement'] = 'reader_disagreement'
 field archivey.diagnostics.ReaderDisagreementContext.member_id: int | None = None
 field archivey.diagnostics.ReaderDisagreementContext.member_name: str = ''
-field archivey.diagnostics.ReaderDisagreementContext.shape: Literal['file_named_as_directory', 'link_name_on_file', 'star_prefix', 'gnu_prefix_bytes', 'hardlink_to_symlink', 'nul_in_name', 'directory_attribute_without_slash'] = 'file_named_as_directory'
+field archivey.diagnostics.ReaderDisagreementContext.shape: Literal['file_named_as_directory', 'link_name_on_file', 'star_prefix', 'gnu_prefix_bytes', 'hardlink_to_symlink', 'nul_in_name', 'directory_attribute_without_slash', 'file_only_in_joliet', 'file_only_in_iso9660', 'file_only_in_udf'] = 'file_named_as_directory'
 method archivey.diagnostics.ReaderDisagreementContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.ScanRaceContext(_JsonSafeContext)
 init archivey.diagnostics.ScanRaceContext(kind: Literal['scan_race'] = 'scan_race', archive_name: str | None = None, relative_path: str = '', entry_kind: Literal['directory', 'entry'] = 'entry') -> None
