@@ -57,6 +57,23 @@ def test_loading_the_worker_imports_nothing_new() -> None:
     assert not {m for m in new if m.split(".")[0] in {"archivey", "pyppmd"}}
 
 
+def test_loading_the_rapidgzip_worker_imports_no_archivey() -> None:
+    """The child loads ``rapidgzip_worker.py`` by path with ``decoder_worker`` as
+    ``__main__``. An ``archivey`` import there loads the whole library into every
+    child, which ran unnoticed because the child's interpreter can import it."""
+    worker = str(decoder_child.WORKER)
+    rapidgzip = str(decoder_child.WORKER.with_name("rapidgzip_worker.py"))
+    new = _modules_added_by(
+        "import importlib.util; "
+        f"d = importlib.util.spec_from_file_location('d', {worker!r}); "
+        "dw = importlib.util.module_from_spec(d); d.loader.exec_module(dw); "
+        "sys.modules['__main__'] = dw; "
+        f"r = importlib.util.spec_from_file_location('r', {rapidgzip!r}); "
+        "r.loader.exec_module(importlib.util.module_from_spec(r))"
+    )
+    assert not {m for m in new if m.split(".")[0] in {"archivey", "rapidgzip"}}, new
+
+
 def test_turning_off_core_dumps_survives_a_python_without_ctypes() -> None:
     """A Python built without ``_ctypes`` (no libffi at build time, some minimal images)
     still runs the worker: turning dumps off is best effort, so a missing ``ctypes``

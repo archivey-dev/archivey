@@ -84,9 +84,20 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from archivey.internal.overrides import override
+# Not archivey.internal.overrides: in the child this file is loaded by path, and an
+# ``archivey`` import there loads the whole library into every child (about 0.3 s each,
+# which doubled an accelerated .tar.gz read). tests/test_worker_scripts.py holds it.
+if TYPE_CHECKING:
+    from typing_extensions import override
+elif sys.version_info >= (3, 12):
+    from typing import override
+else:
+
+    def override(method: Callable[..., object], /) -> Callable[..., object]:
+        return method
+
 
 if __package__:
     from archivey.internal.streams.codecs import decoder_worker as shared
