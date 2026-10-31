@@ -306,6 +306,20 @@ def test_the_review_rules_are_deep_and_the_gate_goes_to_the_maintainer() -> None
         ]
 
 
+def test_an_edit_to_the_merge_rule_goes_to_the_maintainer() -> None:
+    """The prose the merging agent follows: a pull request that rewrites it must not
+    merge under the rewritten rule."""
+    for path in prep.MERGE_RULE_FILES:
+        rewrite = _diff(
+            path, added=["Merge once CI is green."], removed=["Run the script."]
+        )
+        assert prep.maintainer_decisions([rewrite]) == [
+            f"edits the merge rule: {path}"
+        ], path
+        assert prep.maintainer_decisions([_diff(path, added=["A typo fixed."])]) == []
+    assert prep.tier(["dev-docs/review-loop.md"]).name == "standard"
+
+
 def test_tier_is_deep_on_a_safety_path_and_on_workflows() -> None:
     safety = prep.tier(["src/archivey/internal/extraction.py", "docs/x.md"])
     assert safety.name == "deep"
@@ -412,6 +426,23 @@ def test_maintainer_decisions_in_config_workflows_and_decisions() -> None:
     assert prep.maintainer_decisions([config]) == [
         f"changes a default in {prep.CONFIG}: max_ratio"
     ]
+    # A changed annotation keeps the default; a method's parameter is not a field.
+    retyped = _diff(
+        prep.CONFIG,
+        added=[
+            "    max_ratio: int | None = 800.0",
+            "        input_size: int | None = 5,",
+        ],
+        removed=[
+            "    max_ratio: float | None = 800.0",
+            "        input_size: int | None = None,",
+        ],
+    )
+    assert prep.maintainer_decisions([retyped]) == []
+    new_field = _diff(prep.CONFIG, added=["    max_depth: int | None = 4"])
+    assert prep.maintainer_decisions([new_field]) == [
+        f"changes a default in {prep.CONFIG}: max_depth"
+    ]
     wf = ".github/workflows/ci.yml"
     assert prep.maintainer_decisions([_diff(wf, added=["      - run: make"])]) == []
     # Fields of the github context nobody outside chooses stay quiet.
@@ -430,6 +461,10 @@ def test_maintainer_decisions_in_config_workflows_and_decisions() -> None:
         "          echo \"${{ github['event'].pull_request.title }}\"",
         "          echo ${{github.actor}}",
         "          gh api -H 'x: ${{ github.token }}'",
+        "    secrets: inherit",
+        "  pull_request_review:",
+        "  pull_request_review_comment:",
+        '          echo "${{ toJSON(github.event.pull_request.title) }}"',
     ):
         assert prep.maintainer_decisions([_diff(wf, added=[line])]) == [
             f"changes a workflow's permissions, secrets or triggers: {wf}"
@@ -448,7 +483,16 @@ def test_maintainer_decisions_in_config_workflows_and_decisions() -> None:
         )
         == []
     )
-    assert prep.maintainer_decisions([_diff(wf, added=["      - uses: ./local"])]) == []
+    # A local action or reusable workflow is new code too, and may take secrets.
+    assert prep.maintainer_decisions([_diff(wf, added=["      - uses: ./local"])]) == [
+        f"adds an action: ./local ({wf})"
+    ]
+    # A new workflow file is a decision whatever it holds: without a permissions key
+    # its job gets the repository's default token.
+    new_wf = ".github/workflows/new.yml"
+    assert prep.maintainer_decisions([_diff(new_wf)], added=[new_wf]) == [
+        f"adds a workflow: {new_wf}"
+    ]
     assert prep.maintainer_decisions([_diff(wf, removed=["    name: CI gate"])]) == [
         f"changes a required check: CI gate ({wf})"
     ]
@@ -483,9 +527,13 @@ def test_maintainer_decisions_in_dependencies() -> None:
         "adds a runtime dependency: new-dep",
         "adds a runtime dependency: lz4 (a)",
     ]
-    # A file that does not parse costs the dependency check, not the whole report.
-    (found,) = prep.maintainer_decisions([], pyprojects=(before, "not = = toml\n"))
-    assert found.startswith("pyproject.toml changed: check its dependencies by hand (")
+    # A file that does not parse, or a requirement that is not a string, costs the
+    # dependency check, not the whole report.
+    for bad in ("not = = toml\n", "[project]\ndependencies = [1]\n"):
+        (found,) = prep.maintainer_decisions([], pyprojects=(before, bad))
+        assert found.startswith(
+            "pyproject.toml changed: check its dependencies by hand ("
+        )
 
 
 def test_maintainer_decisions_in_the_threat_model() -> None:
@@ -503,6 +551,17 @@ def test_maintainer_decisions_in_the_threat_model() -> None:
     cut = THREAT_BASE.replace("two\nthree\n", "")
     assert prep.maintainer_decisions([], threat_models=(THREAT_BASE, cut)) == [
         "cuts down a defended property: Bounded (3 -> 1 lines)"
+    ]
+    # More than a third, in integers: 9 lines kept at 6 is a rewrap, at 5 a cut.
+    nine = (
+        "## 3. Defended properties\n### P\n"
+        + "x\n" * 9
+        + "## 4. Accepted non-guarantees\n"
+    )
+    six, five = nine.replace("x\n" * 9, "x\n" * 6), nine.replace("x\n" * 9, "x\n" * 5)
+    assert prep.maintainer_decisions([], threat_models=(nine, six)) == []
+    assert prep.maintainer_decisions([], threat_models=(nine, five)) == [
+        "cuts down a defended property: P (9 -> 5 lines)"
     ]
     longer = THREAT_BASE.replace("one\ntwo", "one, now longer\ntwo\nmore")
     assert prep.maintainer_decisions([], threat_models=(THREAT_BASE, longer)) == []
@@ -568,6 +627,7 @@ def test_review_tier_reads_adds_renames_and_texts_from_git(
     assert t.maintainer == [
         "drops or renames a defended property: Stays inside",
         "accepts a new non-guarantee: X",
+        "adds a workflow: .github/workflows/docs.yml",
         "adds an architecture decision: dev-docs/decisions/0099-x.md",
         "adds a runtime dependency: b",
     ]

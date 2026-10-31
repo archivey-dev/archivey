@@ -366,6 +366,7 @@ NOT_LIGHT = (
     "dev-docs/design-rules.md",
     "dev-docs/threat-model.md",
     "dev-docs/api-surface.txt",
+    "dev-docs/review-loop.md",
     # Gates
     "tests/conftest.py",
     "benchmarks/wall_baseline.py",
@@ -439,15 +440,23 @@ MAINTAINER_FILES = {
     ".github/workflows/review-loop.yml": "touches the merge gate",
     ".github/workflows/risk-label.yml": "touches the merge gate",
 }
+# The prose that says who merges: a changed line there that talks about merging moves
+# the rule the script and the merging agent follow.
+MERGE_RULE_FILES = (
+    "AGENTS.md",
+    ".claude/skills/address-review-findings/SKILL.md",
+    "dev-docs/review-loop.md",
+    "dev-docs/design-rules.md",
+)
+_MERGE_WORD_RE = re.compile(r"\bmerg(?:e|es|ed|ing)\b", re.IGNORECASE)
 DECISIONS_DIR = "dev-docs/decisions/"
 # Most threat model edits describe a new defence. The maintainer's call is a defended
 # property dropped or cut down, or a non-guarantee accepted: each is a `###` section
 # under one of these two `##` headings.
 THREAT_MODEL = "dev-docs/threat-model.md"
 _DEFENDED, _ACCEPTED = "Defended properties", "Accepted non-guarantees"
-# A defended property whose body loses more than this share of its non-blank lines was
-# cut down, not rewrapped.
-_SHRINK = 1 / 3
+# A defended property whose body loses more than a third of its non-blank lines was cut
+# down, not rewrapped (compared in integers: kept * 3 < before * 2).
 CONFIG = "src/archivey/config.py"
 WORKFLOWS = ".github/workflows/"
 # The checks `main` requires before a merge (the repository's ruleset).
@@ -457,9 +466,9 @@ REQUIRED_CHECKS = (
     "OpenSpec spec prose",
     "OpenSpec changes archived",
 )
-# A workflow line that grants a token scope, reads a secret, runs on the base
-# repository's trust with its token and secrets (`pull_request_target`, `workflow_run`,
-# `issue_comment`), or reads the `github` context in an expression: any field but a few
+# A workflow line that grants a token scope, reads or passes on a secret (`secrets.`,
+# `secrets: inherit`), runs on the base repository's trust with its token and secrets
+# (`pull_request_target`, `workflow_run`, and the comment and review triggers), or reads the `github` context in an expression: any field but a few
 # fixed ones can carry text someone outside chose (a title, a branch, an actor's name).
 # A new `run:` step with no expression is not matched; the Opus pass and Cursor review
 # it.
@@ -469,16 +478,20 @@ _GITHUB_FIXED = (
     "|base_ref|ref_type|action_path|workspace|retention_days"
 )
 _WORKFLOW_POWER_RE = re.compile(
-    r"\bpermissions\s*:|\bsecrets\.|\b(?:pull_request_target|workflow_run|issue_comment)\b"
+    r"\bpermissions\s*:|\bsecrets\s*[.:]"
+    r"|\b(?:pull_request_target|workflow_run|issue_comment|pull_request_review"
+    r"|pull_request_review_comment|discussion_comment)\b"
     rf"|\$\{{\{{[^}}]*\bgithub\s*(?:\[|\.\s*(?!(?:{_GITHUB_FIXED})\b)\w)"
     r"|^\s*(?:actions|attestations|checks|contents|deployments|discussions|id-token"
     r"|issues|models|packages|pages|pull-requests|repository-projects|security-events"
     r"|statuses)\s*:\s*(?:read|write|none)\b"
 )
-# An action a step runs; a new one is new code with the job's token.
+# An action or reusable workflow a step runs; a new one is new code with the job's token,
+# a local one (`./`) included, since it may be a workflow that takes secrets.
 _USES_RE = re.compile(r"^\s*(?:-\s*)?uses:\s*([^@\s]+)")
-# A dataclass field with a default, as config.py writes its limits and options.
-_DEFAULT_RE = re.compile(r"^\s+([a-z_]\w*)\s*:[^=]*=\s*\S")
+# A dataclass field with a default, as config.py writes its limits and options: one
+# indent level, so a method's parameters (deeper) are not fields.
+_DEFAULT_RE = re.compile(r"^ {4}([a-z_]\w*)\s*:[^=]*=\s*(.*\S)")
 _API_KEY_RE = re.compile(r" \[| = |(?<=\w)\(|: ")
 _CALLABLES = {"function", "method", "init", "classmethod", "staticmethod"}
 # A new name at these places is one the maintainer picks: a module, a class, function,
@@ -574,18 +587,22 @@ def _requirement_names(pyproject: str | None) -> dict[str, set[str]]:
         return {}
     import tomllib  # 3.11+; the caller says so on 3.10
 
+    def names(reqs: object) -> set[str]:
+        if not isinstance(reqs, list):
+            raise TypeError(f"not a list of requirements: {reqs!r}")
+        found = set()
+        for req in reqs:
+            if not isinstance(req, str):
+                raise TypeError(f"not a requirement string: {req!r}")
+            if m := name.match(req):
+                found.add(re.sub(r"[-_.]+", "-", m.group(1)).lower())
+        return found
+
     project = tomllib.loads(pyproject).get("project", {})
     groups = {"": project.get("dependencies", [])}
     groups.update(project.get("optional-dependencies", {}))
     name = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
-    return {
-        group: {
-            re.sub(r"[-_.]+", "-", m.group(1)).lower()
-            for req in reqs
-            if (m := name.match(req))
-        }
-        for group, reqs in groups.items()
-    }
+    return {group: names(reqs) for group, reqs in groups.items()}
 
 
 def _threat_sections(text: str | None) -> dict[str, dict[str, int]]:
@@ -597,6 +614,7 @@ def _threat_sections(text: str | None) -> dict[str, dict[str, int]]:
         if line.startswith("## "):
             current = re.sub(r"^##\s+[\d.]*\s*", "", line).strip()
             heading = ""
+            sections.setdefault(current, {})
         elif line.startswith("### "):
             heading = line[4:].strip()
             sections.setdefault(current, {})[heading] = 0
@@ -618,7 +636,7 @@ def _threat_changes(before_text: str | None, after_text: str | None) -> list[str
     for h in sorted(defended_before):
         if h not in defended_after:
             found.append(f"drops or renames a defended property: {h}")
-        elif defended_after[h] < defended_before[h] * (1 - _SHRINK):
+        elif defended_after[h] * 3 < defended_before[h] * 2:
             found.append(
                 f"cuts down a defended property: {h}"
                 f" ({defended_before[h]} -> {defended_after[h]} lines)"
@@ -651,14 +669,24 @@ def maintainer_decisions(
         if f.path == API_SURFACE:
             found += _api_changes(removed, added_lines)
         if f.path == CONFIG:
-            names = sorted(
-                {
-                    m.group(1)
-                    for t in removed + added_lines
-                    if (m := _DEFAULT_RE.match(t))
-                }
-            )
-            found += [f"changes a default in {CONFIG}: {n}" for n in names]
+            # A changed value, or a new field with one; a changed annotation is not.
+            old = {
+                m.group(1): m.group(2) for t in removed if (m := _DEFAULT_RE.match(t))
+            }
+            new = {
+                m.group(1): m.group(2)
+                for t in added_lines
+                if (m := _DEFAULT_RE.match(t))
+            }
+            found += [
+                f"changes a default in {CONFIG}: {n}"
+                for n in sorted(new)
+                if old.get(n) != new[n]
+            ]
+        if f.path in MERGE_RULE_FILES and any(
+            _MERGE_WORD_RE.search(t) for t in removed + added_lines
+        ):
+            found.append(f"edits the merge rule: {f.path}")
         if f.path.startswith(WORKFLOWS):
             if any(_WORKFLOW_POWER_RE.search(t) for t in removed + added_lines):
                 found.append(
@@ -669,10 +697,12 @@ def maintainer_decisions(
                 for a in sorted(
                     _actions(added_lines) - _actions(removed) - known_actions
                 )
-                if not a.startswith("./")
             ]
             gone = [c for c in REQUIRED_CHECKS if any(c in t for t in removed)]
             found += [f"changes a required check: {c} ({f.path})" for c in gone]
+    found += [
+        f"adds a workflow: {p}" for p in sorted(set(added)) if p.startswith(WORKFLOWS)
+    ]
     found += [
         f"adds an architecture decision: {p}"
         for p in sorted(set(added))
@@ -684,6 +714,7 @@ def maintainer_decisions(
         except (
             ImportError,
             ValueError,
+            TypeError,
         ) as e:  # no tomllib (3.10), or a TOMLDecodeError
             found.append(
                 f"pyproject.toml changed: check its dependencies by hand ({e})"

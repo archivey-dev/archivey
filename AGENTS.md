@@ -230,11 +230,13 @@ rulings on the handbook page, and general ones in `dev-docs/design-rules.md`.
   `address-review-findings` §7 shows: "merge: the maintainer merges this one" and the
   decisions it found (a public name, parameter or fixed value removed, or a top-level
   name added, `design-rules.md` DR-12a; a config default; a defended property dropped or
-  cut down, or a non-guarantee accepted; a new ADR, runtime dependency or workflow
-  action; a workflow's permissions, secrets, triggers or event text; the release path;
-  the merge gate). So do the decisions a script cannot see, which the review lists in
-  its maintainer decisions block: a behaviour trade-off, a design reversal, a new
-  subsystem, anything an open decision touches.
+  cut down, or a non-guarantee accepted; a new ADR, runtime dependency, workflow or
+  workflow action; a workflow's permissions, secrets, triggers or event text; the
+  release path; the merge gate, and an edit about merging in this paragraph or the
+  other files that state the rule). So do the decisions a script cannot see, which the
+  review lists in its maintainer decisions block: a behaviour trade-off, a design
+  reversal, a new subsystem, anything an open decision touches. Size alone is not one
+  of them: a large diff an agent may merge like any other.
 - `main` refuses a merge while any review thread is open, so every thread needs its
   reply and its resolution first (`address-review-findings` §7).
 - The PR body is the record of a piece of work. Do not commit working plans to the repo.

@@ -24,8 +24,9 @@ prints "security pass: yes". When unsure, yes: the review runs a security pass
 Merge: the "merge:" line the tier command prints. It names the decisions in the diff
 that are the maintainer's call (a public name, parameter or fixed value removed, or a
 top-level name added; a config default; a defended property dropped or cut down, or a
-non-guarantee accepted; a new ADR, runtime dependency or workflow action; a workflow's
-permissions, secrets, triggers or event text; the release path or the merge gate). Add any it cannot see: a new subsystem, a reversed ruling. -->
+non-guarantee accepted; a new ADR, runtime dependency, workflow or workflow action; a
+workflow's permissions, secrets, triggers or event text; the release path or the merge
+gate). Add any it cannot see: a new subsystem, a reversed ruling. -->
 
 ## Tests
 

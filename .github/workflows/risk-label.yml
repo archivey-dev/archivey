@@ -50,6 +50,10 @@ jobs:
           # The base branch's copy of the script, not the pull request's: the path
           # lists that decide the tier live in it, and a pull request must not be able
           # to lower its own tier by editing them.
+          # A branch name can hold `$(...)`; only a plain one reaches the commands below.
+          if ! [[ "$BASE" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "Unexpected base branch name: refusing it" >&2; exit 1
+          fi
           git show "origin/$BASE:scripts/review_prep.py" > scripts/review_prep.py
           report="$(python3 scripts/review_prep.py --base "origin/$BASE" tier)"
           tier="$(sed -n 's/^tier: //p' <<< "$report")"

@@ -412,14 +412,16 @@ do not spend a round on fixes the review already described.
 
 **After an approving verdict with CI green**, you may merge a straightforward PR (on
 standard and deep, after the Opus pass approves; on deep, Cursor too); a tricky one goes
-to the maintainer. Decide with the base branch's copy of the tier script, never the
-pull request's, and never from the labels alone (a label can be removed, and a fork's
-pull request gets none):
+to the maintainer. Decide with the tier script as the pull request's base branch has it
+(the same ref `risk-label.yml` uses), never the pull request's copy, and never from the
+labels alone (a label can be removed, and a fork's pull request gets none):
 
 ```bash
-git fetch origin main
-git show origin/main:scripts/review_prep.py > scripts/.review_prep_base.py
-python3 scripts/.review_prep_base.py --base origin/main tier; rm scripts/.review_prep_base.py
+base=main  # the pull request's base branch
+git fetch origin "$base"
+git show "origin/$base:scripts/review_prep.py" > scripts/.review_prep_base.py
+python3 scripts/.review_prep_base.py --base "origin/$base" tier
+rm scripts/.review_prep_base.py
 ```
 
 It is tricky when that prints "merge: the maintainer merges this one", when the review's

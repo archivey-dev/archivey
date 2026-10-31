@@ -242,13 +242,15 @@ the three `risk:` labels.
   come from the pull request's checkout. So a pull request can edit the rules its own
   review runs under, and `claude-code-action` does not refuse it as it does an edited
   workflow file. Instead, those files are deep (`review_prep.py` `DEEP_PROCESS`), and
-the gate's own (`review_loop_gate.py`, `review_loop_close.sh`, `review_prep.py`,
+  the gate's own (`review_loop_gate.py`, `review_loop_close.sh`, `review_prep.py`,
   `review-loop.yml`, `risk-label.yml`) make the maintainer merge. The tier and the merge
   line come from the base branch's script (the merging agent runs that copy,
   `address-review-findings` §7), so the pull request cannot take itself off either list
   (davitf, 2026-10-29). Since 2026-10-31 an edit to the prompt or the skill merges like
   the rest of the deep tier, after the Opus pass and Cursor; only the files that decide
-  whether a round runs and approves, and who merges, stay with the maintainer.
+  whether a round runs and approves, and who merges, stay with the maintainer, and so
+  does an edit that talks about merging in the prose the merging agent follows
+  (`MERGE_RULE_FILES`).
 - **Whether Cursor answers the workflow's comment is untested.** The Opus pass asks
   Cursor with a comment from `github-actions[bot]`; if Cursor only answers people, the
   Opus pass still runs and Cursor has to be asked by hand.
