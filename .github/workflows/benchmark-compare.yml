@@ -1,0 +1,117 @@
+name: Benchmark compare
+
+# Wall time of two refs measured on the same runner, for release notes and for
+# "did this change make it slower?". A shared runner's speed moves between jobs and
+# between days, so numbers from two different runs (or from a session container)
+# do not compare well. Here both refs run on one machine in the same job,
+# alternating, several rounds each, and benchmarks/compare_refs.py keeps the fastest
+# run of each side per case.
+#
+# Each ref runs its own harness against its own library (separate checkouts and
+# environments), so the baseline can be an old release. Cases only one side has are
+# listed apart. Manual only, never on PRs; the job reports and never fails on a
+# timing. The nightly drift tracker is benchmark-wall.yml.
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_ref:
+        description: "Baseline ref (tag, branch or SHA), for example v0.2.1"
+        type: string
+        required: true
+      candidate_ref:
+        description: "Candidate ref; empty means the ref this run was started on"
+        type: string
+        default: ""
+      rounds:
+        description: "Harness runs per side, alternating (fastest run wins)"
+        type: choice
+        options: ["1", "2", "3", "4"]
+        default: "3"
+
+concurrency:
+  group: benchmark-compare
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    name: Wall time, baseline vs candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      # This run's own ref: compare_refs.py comes from here.
+      - uses: actions/checkout@v4
+        with:
+          path: tools
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.baseline_ref }}
+          path: baseline
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_ref || github.sha }}
+          path: candidate
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            baseline/uv.lock
+            candidate/uv.lock
+      - name: Set up Python
+        run: uv python install 3.11
+      - name: Sync both checkouts (dev + all extras)
+        run: |
+          for side in baseline candidate; do
+            (cd "$side" && uv sync --group dev --extra all)
+          done
+      # Same as ci.yml benchmark: RAR data cases need RARLAB unrar on the runner.
+      - name: Install unrar (RAR data cases)
+        run: sudo apt-get update && sudo apt-get install -y unrar
+
+      - name: Run the harness, alternating sides
+        env:
+          ROUNDS: ${{ inputs.rounds }}
+        run: |
+          mkdir -p results
+          for round in $(seq 1 "$ROUNDS"); do
+            for side in baseline candidate; do
+              echo "::group::round $round, $side"
+              out="$GITHUB_WORKSPACE/results/$side-$round.json"
+              # The harness exits 1 on its own wall-time gates; only a missing
+              # JSON is a failure here.
+              (cd "$side" && uv run --no-sync python -m benchmarks.harness \
+                --mode full --scale realistic --warmup \
+                --json-out "$out" --text-out "${out%.json}.md") || true
+              test -f "$out" || { echo "::error::$side round $round wrote no JSON"; exit 1; }
+              echo "::endgroup::"
+            done
+          done
+
+      - name: Compare
+        env:
+          BASELINE_LABEL: ${{ inputs.baseline_ref }}
+          CANDIDATE_LABEL: ${{ inputs.candidate_ref || github.ref_name }}
+        run: |
+          python3 tools/benchmarks/compare_refs.py \
+            --baseline results/baseline-*.json \
+            --candidate results/candidate-*.json \
+            --baseline-label "$BASELINE_LABEL" \
+            --candidate-label "$CANDIDATE_LABEL" \
+            --md-out results/compare.md
+          {
+            cat results/compare.md
+            echo
+            echo "Runner: $(nproc) cores, $(python3 -c 'import platform; print(platform.platform())')."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-compare
+          path: results/
+          if-no-files-found: warn
