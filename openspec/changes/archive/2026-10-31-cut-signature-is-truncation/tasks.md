@@ -5,4 +5,4 @@
 
 ## 2. Tests
 
-- [x] 2.1 `tests/test_sfx.py`: every cut length of each signature, from a file and streaming; bytes that are not a cut signature stay `CorruptionError`
+- [x] 2.1 `tests/test_sfx.py`: the two helpers; every cut length of each signature, an empty file included; the forward ZIP reader; bytes that are not a cut signature, a stub before one included, stay `CorruptionError`

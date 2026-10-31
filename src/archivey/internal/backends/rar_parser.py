@@ -1203,6 +1203,10 @@ def _find_sfx_header(source: BinaryIO, start: int) -> tuple[int, int]:
     candidate that fails :func:`~archivey.internal.backends.rar_detect.validate_rar_main_header`
     is skipped while a later ``VALID`` hit is sought; if none validate, the first
     identified candidate is used so a damaged payload still reaches the parser.
+
+    Raises ``TruncatedError`` when the source ends before a whole signature, every
+    byte of it matching (:func:`~archivey.internal.sfx.is_cut_signature`), and
+    ``CorruptionError`` when no signature is found.
     """
     source.seek(start)
     # Fast path: magic at current position.
@@ -1211,6 +1215,8 @@ def _find_sfx_header(source: BinaryIO, start: int) -> tuple[int, int]:
         return 5, 0
     if head.startswith(RAR_ID):
         return 4, 0
+    # A source that ends inside the signature it starts with was cut short, not a
+    # stub to scan past.
     if is_cut_signature(head, (RAR5_ID, RAR_ID)):
         raise cut_signature_error("RAR", len(head))
 

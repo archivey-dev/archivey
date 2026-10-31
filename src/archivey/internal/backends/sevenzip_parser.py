@@ -575,8 +575,9 @@ def find_signature_offset(fp: BinaryIO, *, limit: int = SFX_MAX) -> int:
     identified candidate is used so a damaged or empty payload still reaches the
     parser.
 
-    Raises :class:`CorruptionError` on a miss (no needle, or the rejected-candidate
-    cap). A source with no 7z magic in the window fails loudly rather than opening
+    Raises :class:`TruncatedError` when the source ends before a whole signature,
+    every byte of it matching (:func:`~archivey.internal.sfx.is_cut_signature`), and
+    :class:`CorruptionError` on a miss (no needle, or the rejected-candidate cap). A source with no 7z magic in the window fails loudly rather than opening
     as an empty archive; a source that has one opens or names its damage.
     ``fp`` is restored to its starting position.
     """

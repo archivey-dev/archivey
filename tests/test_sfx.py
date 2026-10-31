@@ -67,7 +67,9 @@ from archivey.internal.sfx import (
     MagicHit,
     ScanMiss,
     ScanNeedle,
+    cut_signature_error,
     executable_cue,
+    is_cut_signature,
     scan_for_magic,
 )
 from archivey.internal.source import ArchiveSource
@@ -2303,26 +2305,68 @@ _SIGNATURES = {
 }
 
 
+@pytest.mark.parametrize(
+    ("head", "magics", "cut"),
+    [
+        (b"", (b"PK\x03\x04",), True),  # an empty file
+        (b"PK\x03", (b"PK\x03\x04",), True),
+        (b"PK\x03\x04", (b"PK\x03\x04",), False),  # the whole signature
+        (b"PK\x03\x04\x00", (b"PK\x03\x04",), False),  # longer than it
+        (b"PKx", (b"PK\x03\x04",), False),
+        (b"Rar!\x1a\x07\x01", (RAR5_ID, RAR_ID), True),  # a prefix of one of several
+    ],
+)
+def test_is_cut_signature(head: bytes, magics: tuple[bytes, ...], cut: bool) -> None:
+    assert is_cut_signature(head, magics) is cut
+
+
+@pytest.mark.parametrize(
+    ("held", "message"),
+    [
+        (0, "ZIP archive is truncated: the file is empty"),
+        (1, "ZIP archive is truncated: it holds 1 byte, the start of its signature"),
+        (2, "ZIP archive is truncated: it holds 2 bytes, the start of its signature"),
+    ],
+)
+def test_cut_signature_error_wording(held: int, message: str) -> None:
+    error = cut_signature_error("ZIP", held)
+    assert isinstance(error, TruncatedError)
+    assert str(error) == message
+
+
 def _cut_signatures() -> Iterator[tuple[str, bytes]]:
     for ext, magic in _SIGNATURES.items():
-        for held in range(1, len(magic)):
+        for held in range(len(magic)):
             yield ext, magic[:held]
     # RAR4's signature is RAR5's but one byte shorter, with a different last byte.
     yield "rar", b"Rar!\x1a\x07"
 
 
-@pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize(("ext", "head"), list(_cut_signatures()))
 def test_a_file_cut_inside_its_signature_is_truncated(
-    tmp_path: Path, ext: str, head: bytes, streaming: bool
+    tmp_path: Path, ext: str, head: bytes
 ) -> None:
-    """A file holding only the start of its format's signature ends where a download
-    cut off would: ``TruncatedError``, not "Not a … archive"."""
+    """A file holding only the start of its format's signature, or nothing, ends where
+    a download cut off would: ``TruncatedError``, not "Not a … archive"."""
     path = tmp_path / f"cut.{ext}"
     path.write_bytes(head)
+    expected = "the start of its signature" if head else "the file is empty"
     with (
-        pytest.raises(TruncatedError, match="the start of its signature"),
-        open_archive(path, streaming=streaming) as reader,
+        pytest.raises(TruncatedError, match=expected),
+        open_archive(path) as reader,
+    ):
+        list(reader.iter_members())
+
+
+@pytest.mark.parametrize("held", range(4))
+def test_a_zip_read_forward_cut_inside_its_signature_is_truncated(held: int) -> None:
+    """The forward ZIP reader, which a source that cannot seek gets, decides the same
+    way in its own scan for the first local header. (7z refuses such a source, and
+    RAR reads it through the same parser as a file.)"""
+    source = NonSeekableBytesIO(b"PK\x03\x04"[:held])
+    with (
+        pytest.raises(TruncatedError, match="ZIP archive is truncated"),
+        open_archive(source, streaming=True, format=ArchiveFormat.ZIP) as reader,
     ):
         list(reader.iter_members())
 
@@ -2333,7 +2377,10 @@ def test_a_file_cut_inside_its_signature_is_truncated(
         ("zip", b"PKx"),  # not the start of a ZIP signature
         ("7z", b"7y"),
         ("rar", b"Rar?"),
-        ("zip", b"MZ" + b"\0" * 64 + b"PK\x03"),  # a stub, then a cut signature
+        # A stub, then a cut signature: a stub can hold any bytes.
+        ("zip", b"MZ" + b"\0" * 64 + b"PK\x03"),
+        ("7z", b"MZ" + b"\0" * 64 + b"7z\xbc\xaf\x27"),
+        ("rar", b"MZ" + b"\0" * 64 + b"Rar!\x1a\x07"),
     ],
 )
 def test_bytes_that_are_not_a_cut_signature_are_not_an_archive(
