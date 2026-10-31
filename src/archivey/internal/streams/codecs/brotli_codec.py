@@ -16,7 +16,6 @@ from archivey.internal.detection_workspace import (
     PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE,
 )
 from archivey.internal.overrides import override
-from archivey.internal.streams.archive_stream import RewindWarning
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.base import (
     Codec,
@@ -33,7 +32,7 @@ from archivey.internal.streams.codecs.brotli_framing import (
     probe_bytes_at,
     walk_chain,
 )
-from archivey.internal.streams.codecs.isolated import BrotliChildError, natives_for
+from archivey.internal.streams.codecs.isolated import BrotliChildError
 from archivey.types import (
     MissingComponent,
     OptionalLibrary,
@@ -66,11 +65,11 @@ class BrotliCodec(StreamCodec):
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
         excluded = config.excluded_libraries
-        natives = natives_for(config.process_isolation)
+        natives = config.natives
         if self.excluded_by(excluded) or not natives.package_available(deps.brotli):
             raise self._missing("Brotli streams", excluded=excluded)
         # Brotli has no random-access index; a backward seek re-decodes from the start (the
-        # outer ArchiveStream warns — see rewind_warning).
+        # outer ArchiveStream warns; the default rewind_warning names this codec).
         return BrotliDecompressorStream(
             source,
             collector=config.collector,
@@ -92,10 +91,6 @@ class BrotliCodec(StreamCodec):
                 f"Error reading brotli stream: {exception_detail(exc)}"
             )
         return None
-
-    @override
-    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
-        return RewindWarning("brotli")
 
     @override
     def content_probe(

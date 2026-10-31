@@ -22,7 +22,6 @@ from archivey.internal.streams.codecs.base import (
 from archivey.internal.streams.codecs.deflate64_decoder import (
     Deflate64DecompressorStream,
 )
-from archivey.internal.streams.codecs.isolated import natives_for
 from archivey.types import MissingComponent, OptionalLibrary
 
 
@@ -44,7 +43,7 @@ class Deflate64Codec(StreamCodec):
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
         excluded = config.excluded_libraries
-        natives = natives_for(config.process_isolation)
+        natives = config.natives
         if self.excluded_by(excluded) or not natives.package_available(deps.inflate64):
             raise self._missing("Deflate64 streams", excluded=excluded)
         return Deflate64DecompressorStream(

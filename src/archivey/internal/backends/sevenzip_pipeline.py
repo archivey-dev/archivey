@@ -87,7 +87,7 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64
 from archivey.internal.streams.codecs.bcj2_filter import Bcj2DecoderStream
-from archivey.internal.streams.codecs.isolated import IN_PROCESS, natives_for
+from archivey.internal.streams.codecs.isolated import IN_PROCESS
 from archivey.internal.streams.codecs.lzma_filter_decoder import FilterStream
 from archivey.internal.streams.codecs.riscv_filter import FILTER_RISCV
 from archivey.internal.streams.codecs.zstd_framing import (
@@ -869,7 +869,7 @@ def _execute_stage(
         unpack_size=stage.unpack_size,
         seekable=seekable,
         owns_inner=owns_input,
-        natives=natives_for(stream_config.process_isolation),
+        natives=stream_config.natives,
     )
 
 

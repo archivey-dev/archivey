@@ -1960,13 +1960,13 @@ def test_brotli_reports_a_rewind(caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.seek(0) == 0
             assert stream.read(10) == REWIND_CONTENT[:10]
-    assert (
-        sum(
-            "restarts from the start of the stream" in r.getMessage()
-            for r in caplog.records
-        )
-        == 1
-    )
+    rewinds = [
+        r.getMessage()
+        for r in caplog.records
+        if "restarts from the start of the stream" in r.getMessage()
+    ]
+    assert len(rewinds) == 1
+    assert "brotli stream" in rewinds[0]
 
 
 @requires("lz4")

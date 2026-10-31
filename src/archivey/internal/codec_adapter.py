@@ -46,8 +46,14 @@ if TYPE_CHECKING:
     from archivey.formats import CodecCall, CodecHandler, Decompressor
 
 
-class HandlerCodec(StreamCodec):
-    """The base of the codec class :func:`codec_class` builds for each handler."""
+class PluginCodec(StreamCodec):
+    """A plugin's codec in the registry: the :class:`StreamCodec` that decodes with a
+    :class:`~archivey.formats.CodecHandler` (``handler``). :func:`plugin_codec_class`
+    builds one subclass per handler, when ``register_codec`` adds it.
+
+    The public class a plugin writes is the handler; this is archivey's side of it,
+    as ``format_adapter``'s readers are for a :class:`~archivey.formats.FormatHandler`.
+    """
 
     handler: CodecHandler
 
@@ -135,7 +141,7 @@ def _content_probe(probe: Callable[[bytes], bool]) -> Callable[..., bool]:
     return content_probe
 
 
-def codec_class(handler: type[CodecHandler]) -> type[HandlerCodec]:
+def plugin_codec_class(handler: type[CodecHandler]) -> type[PluginCodec]:
     """The :class:`StreamCodec` subclass that decodes with ``handler``."""
     stream_format = handler.stream_format
     fmt = ArchiveFormat(ContainerFormat.RAW_STREAM, stream_format)
@@ -150,7 +156,7 @@ def codec_class(handler: type[CodecHandler]) -> type[HandlerCodec]:
     }
     if handler.probe is not None:
         attrs["content_probe"] = _content_probe(handler.probe)
-    return type(f"{handler.__name__}Codec", (HandlerCodec,), attrs)
+    return type(f"{handler.__name__}Codec", (PluginCodec,), attrs)
 
 
 def _check_handler(handler: type[CodecHandler]) -> PluginStream:
@@ -234,7 +240,7 @@ def _spelled(pair: ArchiveFormat) -> bool:
 def register_plugin_codec(handler: type[CodecHandler]) -> None:
     """Add ``handler``'s codec to the registry (``register_codec``)."""
     stream = _check_handler(handler)
-    add_stream_codec(codec_class(handler)())
+    add_stream_codec(plugin_codec_class(handler)())
     registry = get_registry()
     registry.codecs_changed()
     add_plugin_spellings(ArchiveFormat(ContainerFormat.RAW_STREAM, stream))
@@ -244,4 +250,4 @@ def register_plugin_codec(handler: type[CodecHandler]) -> None:
             add_plugin_spellings(pair)
 
 
-__all__ = ["HandlerCodec", "codec_class", "register_plugin_codec"]
+__all__ = ["PluginCodec", "plugin_codec_class", "register_plugin_codec"]

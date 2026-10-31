@@ -43,7 +43,6 @@ from archivey.internal.streams.codecs.framed_decoder import (
 from archivey.internal.streams.codecs.isolated import (
     IN_PROCESS,
     Natives,
-    natives_for,
 )
 from archivey.internal.streams.codecs.lzip_decoder import LzipDecompressorStream
 from archivey.internal.streams.codecs.xz_decoder import (
@@ -122,7 +121,7 @@ class XzCodec(_SizedLzmaCodec):
             return open_xz_head(
                 source,
                 config.probe_read_bound,
-                natives_for(config.process_isolation),
+                config.natives,
             )
         return XzDecompressorStream(
             source,
@@ -132,7 +131,7 @@ class XzCodec(_SizedLzmaCodec):
             report_trailing_data=config.report_trailing_data,
             refuse_input_after_end=config.refuse_input_after_end,
             initial_index=config.seek_index,
-            natives=natives_for(config.process_isolation),
+            natives=config.natives,
         )
 
 
@@ -153,7 +152,7 @@ class LzipCodec(_SizedLzmaCodec):
             decoder_limits=config.decoder_limits,
             report_trailing_data=config.report_trailing_data,
             probe_read_bound=config.probe_read_bound,
-            natives=natives_for(config.process_isolation),
+            natives=config.natives,
             usage=config.usage,
         )
 
@@ -373,7 +372,7 @@ class LzmaAloneCodec(_LzmaErrorCodec):
         return _new_alone_decompressor(
             config.probe_read_bound,
             config.decoder_limits,
-            natives_for(config.process_isolation),
+            config.natives,
         )
 
     @override
@@ -509,7 +508,7 @@ class _RawLzmaCodec(_LzmaErrorCodec):
         # there and DataAfterEndError here. ``LZMAFile`` would instead have started
         # a second raw stream on those bytes and delivered it as content. Raw LZMA
         # is container-only, so the stream always refuses them (``refuse_input_after_end``).
-        natives = natives_for(config.process_isolation)
+        natives = config.natives
         if params.unpack_size is None:
             return FramedDecompressorStream(
                 source,

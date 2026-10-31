@@ -26,6 +26,7 @@ from archivey.types import OptionalLibrary
 if TYPE_CHECKING:
     from archivey.internal.diagnostics_collector import DiagnosticCollector
     from archivey.internal.resource_usage import ResourceUsageRecorder
+    from archivey.internal.streams.codecs.isolated import Natives
     from archivey.internal.streams.decompressor_stream import PrebuiltIndex
 
 # Only the names other modules import from here. ``ArchiveyConfig`` and
@@ -95,7 +96,7 @@ class StreamConfig:
     ``window_log_max``). Past the bound the stream may end or fail, so the probe reads
     no further. ``process_isolation`` is the caller's
     :class:`~archivey.config.ProcessIsolation`: a codec builds its native decoder
-    through :func:`~archivey.internal.streams.codecs.isolated.natives_for` with it.
+    through :attr:`natives`, which that setting selects.
     ``seek_index`` is an xz index scan the single-file reader already
     made over this same source; the xz stream uses it in place of its own scan. Like
     ``collector`` it is left out of equality. So is ``usage``, the reader's
@@ -124,6 +125,15 @@ class StreamConfig:
     seek_index: PrebuiltIndex | None = field(default=None, compare=False)
     usage: ResourceUsageRecorder | None = field(default=None, compare=False)
     excluded_libraries: frozenset[OptionalLibrary] = NO_EXCLUSIONS
+
+    @property
+    def natives(self) -> Natives:
+        """The native decoders ``process_isolation`` selects: in a child process
+        under ``NATIVE_DECODERS``, else in this one."""
+        # Imported here: the codecs package imports this module.
+        from archivey.internal.streams.codecs.isolated import natives_for
+
+        return natives_for(self.process_isolation)
 
 
 def stream_config_from_archivey(

@@ -21,7 +21,6 @@ from archivey.internal.streams.codecs.base import (
     MetadataContext,
     StreamCodec,
 )
-from archivey.internal.streams.codecs.isolated import natives_for
 from archivey.internal.streams.codecs.lzo_decoder import (
     LZOP_BLOCK_SIZE,
     LZOP_MAGIC,
@@ -91,9 +90,7 @@ class LzopCodec(StreamCodec):
     @override
     def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
         return LzopDecompressor(
-            lzo1x_decompressor(
-                config.excluded_libraries, natives_for(config.process_isolation)
-            ),
+            lzo1x_decompressor(config.excluded_libraries, config.natives),
             _block_check(config),
         )
 
@@ -160,9 +157,7 @@ class Lzo1xCodec(StreamCodec):
             what="a raw LZO1X block's size",
             usage=config.usage,
         )
-        decode_block = lzo1x_decompressor(
-            config.excluded_libraries, natives_for(config.process_isolation)
-        )
+        decode_block = lzo1x_decompressor(config.excluded_libraries, config.natives)
         return DecompressorStream(
             source,
             make_decoder=lambda _p, _i: Lzo1xDecoder(decode_block, size),

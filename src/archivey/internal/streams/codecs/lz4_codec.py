@@ -22,7 +22,6 @@ from archivey.internal.streams.codecs.framed_decoder import (
     StreamStart,
     stream_magic,
 )
-from archivey.internal.streams.codecs.isolated import natives_for
 from archivey.internal.streams.codecs.lz4_legacy import LEGACY_MAGIC, Lz4Decompressor
 from archivey.internal.streams.decompressor_stream import _StreamChecksumError
 from archivey.types import (
@@ -68,7 +67,7 @@ class Lz4Codec(StreamCodec):
     @override
     def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
         # A frame or a legacy stream, whichever the data starts with.
-        return Lz4Decompressor(natives_for(config.process_isolation))
+        return Lz4Decompressor(config.natives)
 
     @override
     def stream_start(self, params: CodecParams) -> StreamStart:

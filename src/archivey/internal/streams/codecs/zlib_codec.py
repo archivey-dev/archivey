@@ -32,7 +32,7 @@ from archivey.internal.streams.codecs.base import (
 from archivey.internal.streams.codecs.deflate_decoder import ZlibDecompressorStream
 from archivey.internal.streams.codecs.deflate_family_codec import _DeflateFamilyCodec
 from archivey.internal.streams.codecs.deflate_resume import stream_end
-from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives, natives_for
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
 from archivey.internal.streams.codecs.stdlib_takeover import (
     _DRAIN_CHUNK,
     _drain_into,
@@ -92,7 +92,7 @@ def _stdlib_zlib(
         collector=config.collector,
         report_trailing_data=config.report_trailing_data,
         refuse_input_after_end=config.refuse_input_after_end,
-        natives=natives_for(config.process_isolation),
+        natives=config.natives,
     )
 
 
@@ -563,7 +563,7 @@ class DeflateCodec(_ZlibErrorCodec):
         views: _SourceViews,
     ) -> Callable[[_StdlibOnAcceleratorError], BinaryIO] | None:
         refuse = config.refuse_input_after_end
-        natives = natives_for(config.process_isolation)
+        natives = config.natives
         return lambda stream: _DeflateEndCheckStream(
             stream, views=views, refuse_input_after_end=refuse, natives=natives
         )
@@ -641,7 +641,7 @@ class ZlibCodec(_ZlibErrorCodec):
         # that back, since an AUTO open whose child cannot start decodes from it.
         with _restoring_position(source):
             trailer = _zlib_adler_trailer(accel_source)
-        natives = natives_for(config.process_isolation)
+        natives = config.natives
         return lambda stream: _ZlibAdlerCheckStream(
             stream, views=views, trailer=trailer, natives=natives
         )
