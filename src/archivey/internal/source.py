@@ -563,7 +563,7 @@ class ArchiveSource(ReadOnlyIOStream):
     @property
     def bytes_pulled(self) -> int | None:
         """How many bytes this source has taken from a non-seekable stream so far, or
-        ``None`` for a seekable source.
+        ``None`` for a seekable source and for a directory, which has no stream.
 
         What was consumed plus the replay prefix detection peeked and nothing has read
         yet: every byte the pipe has given up. The live ratio denominator of an archive
@@ -573,7 +573,7 @@ class ArchiveSource(ReadOnlyIOStream):
         source it is the whole size.
         """
         replay = self._replay
-        if replay is None:
+        if replay is None or self._is_directory:
             return None
         return self._pos + len(replay)
 

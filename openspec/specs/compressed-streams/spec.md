@@ -577,16 +577,20 @@ compressed bytes consumed from the underlying source, such as
 pipes, and MUST NOT perturb bytes read or decompressed.
 
 Archive readers SHALL surface the running total for a single outer compressed
-source as `compressed_bytes_consumed`, returning `None` when no single compressed
-source exists (uncompressed container, directory). When solid/streamed member
-streams share that outer source, the count is cumulative across the archive.
+source as `compressed_bytes_consumed`. An uncompressed container read from a
+non-seekable source with no trusted size reports the bytes its source has taken from
+that stream instead, the live ratio denominator (`safe-extraction`). It is `None` when
+the source size is trusted (the static ratio applies) and for a directory. When
+solid/streamed member streams share that outer source, the count is cumulative across
+the archive.
 
 #### Scenario: compressed-byte counter matrix
 
 | Case | Expected |
 | --- | --- |
 | `.gz` read incrementally from non-seekable source | Count increases monotonically and is readable mid-stream |
-| Uncompressed container or directory | `compressed_bytes_consumed is None` |
+| Uncompressed container from a path or a seekable stream with a cheap size, or a directory | `compressed_bytes_consumed is None` |
+| Uncompressed container from a non-seekable source | `compressed_bytes_consumed` is the bytes taken from the source so far |
 | Count is observed repeatedly during extraction | Decompressed output is byte-for-byte unchanged |
 
 ### Requirement: An accelerator preserves the error contract of the path it replaces

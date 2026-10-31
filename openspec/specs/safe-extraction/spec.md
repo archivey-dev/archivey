@@ -1440,7 +1440,7 @@ SHALL raise `ResourceLimitError`.
 | Small `.tar.gz` file with known source size expands past `max_ratio` after threshold | `ResourceLimitError` during extraction |
 | Compressed tar from non-seekable pipe, with or without a `size` attribute | Static archive-wide ratio skipped; live ratio and cumulative byte limit still apply |
 | Plain `.tar` from a path or a seekable stream with a cheap size | No meaningful compressed denominator; archive-wide ratio does not trip, except on copies of a hard-link source written past the filesystem's link-count limit |
-| Plain tar or ZIP from a non-seekable stream, with or without a `size` attribute | Static archive-wide ratio skipped; the live ratio counts the bytes taken from the stream, and the cumulative byte limit still applies |
+| Uncompressed container (plain tar, ZIP, CPIO, ar) from a non-seekable stream, with or without a `size` attribute | Static archive-wide ratio skipped; the live ratio counts the bytes taken from the stream, and the cumulative byte limit still applies |
 | ZIP member has known `compressed_size` | Per-member ratio applies; archive-wide ratio does not replace it |
 | Nested archive opened from an Archivey member/codec stream with cheap size | Cheap source size may serve as archive-wide denominator; it is the container's unchecked declaration, so `max_extracted_bytes` is the bound that holds |
 
@@ -1532,8 +1532,9 @@ This covers archives from non-seekable pipes, a pipe that carries a
 `size` attribute included, and seekable opaque compressed streams whose size is not
 cheaply knowable. A backend that decompresses a stream source wraps it in
 the counting reader exactly when the static denominator is absent; an archive read
-straight from a pipe with no such counter (a plain TAR, a ZIP) counts the bytes its
-source has taken from the pipe instead.
+straight from a pipe with no such counter (an uncompressed container: a plain TAR, a
+ZIP, a sequential format such as CPIO or ar) counts the bytes its source has taken
+from the pipe instead. A 7z cannot be read from a pipe, so it has no such case.
 
 The ratio SHALL be `archive_output / compressed_bytes_consumed`, with
 `archive_output` as in the static archive-wide requirement (decoded output plus
@@ -1564,7 +1565,7 @@ weakening the guard, but never causing a false positive.
 | `.tar.gz` from a pipe whose member is 64 MiB of zeros then 8 MiB of data, default limits | Extracts, as it does from a file; the blank start is under `live_ratio_activation_threshold` |
 | Same shape with a blank start longer than `live_ratio_activation_threshold` | Live ratio may raise `ResourceLimitError` from a pipe though the file passes; the documented trade-off |
 | Live ratio exceeded under `OnError.CONTINUE` | `ResourceLimitError` propagates and extraction halts |
-| Plain uncompressed `.tar` or a ZIP from a pipe | The bytes the source has taken from the pipe are the live denominator, so a sparse member or many small compressed ZIP members past `max_ratio` raise `ResourceLimitError` after both floors |
+| Uncompressed container (plain `.tar`, ZIP, CPIO, ar) from a pipe | The bytes the source has taken from the pipe are the live denominator, so a sparse member or many small compressed ZIP members past `max_ratio` raise `ResourceLimitError` after both floors |
 | `.tar.gz` has cheap `compressed_source_size` | Static archive-wide ratio is used; live path is not engaged/double-counted |
 | Seekable opaque compressed stream has no cheap size/`size`/`try_get_size()`/O(1) end seek | Source is counted live; archive is not left with only the byte cap |
 

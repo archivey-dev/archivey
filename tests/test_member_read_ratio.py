@@ -203,6 +203,31 @@ def test_a_piped_zip_of_stored_data_passes_the_live_ratio(tmp_path: Path) -> Non
     assert total == 12 * _MIB
 
 
+def test_measurement_reports_the_piped_count(tmp_path: Path) -> None:
+    from archivey.internal.measurement import enable_measurement
+
+    data = _small_bzip2_members(tmp_path)
+    with (
+        enable_measurement(),
+        open_archive(NonSeekableBytesIO(data), streaming=True) as reader,
+    ):
+        for _member, stream in reader.stream_members():
+            assert stream is not None
+            _drain(stream)
+        stats = reader.io_stats()
+        assert stats is not None
+        assert stats.compressed_bytes_consumed == reader.compressed_bytes_consumed
+        assert stats.compressed_bytes_consumed is not None
+
+
+def test_a_directory_counts_nothing(tmp_path: Path) -> None:
+    # A directory source cannot seek, but it has no stream to count.
+    (tmp_path / "d").mkdir()
+    (tmp_path / "d" / "f").write_bytes(b"x")
+    with open_archive(tmp_path / "d") as reader:
+        assert reader.compressed_bytes_consumed is None
+
+
 def test_a_seekable_zip_keeps_the_static_ratio(tmp_path: Path) -> None:
     data = _small_bzip2_members(tmp_path)
     with open_archive(io.BytesIO(data)) as reader:

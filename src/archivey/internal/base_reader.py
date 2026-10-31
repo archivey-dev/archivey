@@ -3510,9 +3510,9 @@ class BaseArchiveReader(ArchiveReader):
         whitelisted O(1)-seek type nor ``.size``-advertising). A backend that
         decompresses a *stream* source wraps it in a ``CountingReader`` and records it
         here; readers with a knowable source size (a path, a sizable stream) leave it
-        ``None`` and rely on the cheaper static ratio instead. An archive read straight
-        from a pipe (a ZIP, TAR or 7z outside any compression stream) has no such
-        counter: the bytes its source has taken from the pipe stand in
+        ``None`` and rely on the cheaper static ratio instead. An uncompressed container
+        read straight from a pipe (a plain TAR, a ZIP, a sequential format such as CPIO
+        or ar) has no such counter: the bytes its source has taken from the pipe stand in
         (:attr:`ArchiveSource.bytes_pulled`), so its reads and its extraction are held
         to the ratio as well.
         """
@@ -3538,6 +3538,8 @@ class BaseArchiveReader(ArchiveReader):
             source is None
             or source.seekable()
             or self._trusted_source_size() is not None
+            # A directory source cannot seek either, but it has no stream to count.
+            or source.bytes_pulled is None
         ):
             return None
         return lambda: source.bytes_pulled or 0
@@ -4558,12 +4560,10 @@ class BaseArchiveReader(ArchiveReader):
         """
         if not self._measure:
             return None
-        c_bytes = self._compressed_input_counter
+        consumed = self._live_consumed()
         return IoStats(
             bytes_decompressed=self.bytes_decompressed,
-            compressed_bytes_consumed=c_bytes.bytes_read
-            if c_bytes is not None
-            else None,
+            compressed_bytes_consumed=consumed() if consumed is not None else None,
             source_seek_count=self.source_seek_count,
         )
 
