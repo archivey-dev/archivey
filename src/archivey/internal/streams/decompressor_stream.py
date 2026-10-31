@@ -1464,9 +1464,10 @@ class DecompressorStream(ReadOnlyIOStream):
         if self._refuse_input_after_end:
             if not self._eof:
                 self._eof = True
+                # Every byte the decoder produced, wherever it waits to be read:
+                # ``_buffer``, or a list ``readall`` or ``_gather`` holds.
                 self._surplus = input_after_end_error(
-                    self._codec_name or "compressed",
-                    self._pos + len(self._buffer) + len(data),
+                    self._codec_name or "compressed", self._decoder_pos
                 )
             return data
         if not self._eof:
@@ -1594,7 +1595,20 @@ class DecompressorStream(ReadOnlyIOStream):
                 ):
                     self._pos += len(chunk)
                     return chunk
-                self._buffer.extend(chunk)
+                if len(chunk) < need:
+                    # A short chunk: gather the rest of ``need`` in a list and join
+                    # it once, as ``readall`` does. Staging a large bounded read
+                    # through ``_buffer`` costs two more full copies of the output
+                    # (extend, then slice). The list holds the only reference, so a
+                    # raise inside does not pin a second copy on this frame.
+                    parts = [chunk]
+                    chunk = b""
+                    data = self._gather(parts, need, n, pending)
+                    if data is not None:
+                        self._pos += len(data)
+                        return data
+                else:
+                    self._buffer.extend(chunk)
                 # ``_buffer`` holds it now. A raise below keeps this frame alive on
                 # its traceback, which must not pin a second copy of the bytes.
                 chunk = b""
@@ -1617,6 +1631,54 @@ class DecompressorStream(ReadOnlyIOStream):
         if not data and self._end_error() is not None:
             self._raise_deferred()
         return data
+
+    def _gather(
+        self,
+        parts: list[bytes],
+        need: int,
+        n: int,
+        pending: Callable[[], Exception | None],
+    ) -> bytes | None:
+        """Decode on from ``parts`` to ``need`` bytes; ``None`` leaves it to the loop.
+
+        Returns the joined bytes, at most ``n`` of them, when the decode ran clean:
+        no held raise, no restart, and something to give back. Otherwise everything
+        decoded so far goes to ``_buffer``, as the buffered loop in :meth:`_read`
+        would have left it, and that loop finishes the read. A decoder error raised
+        on the way leaves the decoded bytes in ``_buffer`` too, for the next read.
+        """
+        got = sum(len(p) for p in parts)
+        try:
+            while (
+                got < need
+                and not self._eof
+                and self._spent is None
+                and not self._restart_pending
+                and pending() is None
+            ):
+                more = self._read_decompressed_chunk(n - got)
+                if more:
+                    parts.append(more)
+                    got += len(more)
+                more = b""
+        except BaseException:
+            self._stage(parts)
+            raise
+        if not got or self._restart_pending or pending() is not None:
+            self._stage(parts)
+            return None
+        data = b"".join(parts)
+        parts.clear()
+        if len(data) > n:
+            self._buffer.extend(memoryview(data)[n:])
+            data = data[:n]
+        return data
+
+    def _stage(self, parts: list[bytes]) -> None:
+        """Move ``parts`` into ``_buffer`` one at a time, dropping each as it goes."""
+        parts.reverse()
+        while parts:
+            self._buffer.extend(parts.pop())
 
     def _raise_deferred(self) -> NoReturn:
         """Raise the decoder's deferred end-of-stream error, and keep raising it.

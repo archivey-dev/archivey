@@ -247,6 +247,33 @@ class _FailsOnFeed(BaseDecoder):
         return True
 
 
+class _BigThenFails(_FailsOnFeed):
+    """Emits 1 MiB on its first feed, then raises on the second."""
+
+    def __init__(self) -> None:
+        super().__init__(2)
+
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> _BigThenFails:
+        del point, inner
+        return _BigThenFails()
+
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        out = super().feed(chunk, max_length)
+        return DecodeOut(bytes(1 << 20)) if self._feeds == 1 else out
+
+
+def test_a_decoder_error_after_a_short_chunk_does_not_keep_the_chunk_alive() -> None:
+    """As above, for a decoder error on the decode after a short chunk: the raise's
+    frames hold no second copy, and the chunk comes back on the next read."""
+    stream = DecompressorStream(
+        io.BytesIO(_DATA), make_decoder=lambda point, inner: _BigThenFails()
+    )
+    with pytest.raises(OSError, match="Invalid data stream") as caught:
+        stream.read(4 << 20)
+    assert _largest_library_local(caught.value) < 4096
+    assert stream.read(4 << 20) == bytes(1 << 20)
+
+
 def test_a_spent_decoder_is_restarted_by_a_seek_to_the_same_place() -> None:
     # The decoder raises on its first feed, so the stream is still at 0 and seek(0)
     # moves nothing. It must restart the decoder anyway: the spent one would answer
