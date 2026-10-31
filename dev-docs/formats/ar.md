@@ -112,8 +112,11 @@ ar names are archive-controlled bytes like any format's, and go through the same
 extraction rules ([`threat-model.md`](../threat-model.md)). The format-specific surface is
 memory a header can ask for:
 
-- The `//` long-name table is held for the whole walk, so it is charged to
-  `ListingLimits.max_metadata_bytes`: a larger table raises `ResourceLimitError`.
+- The `//` long-name table is held for the whole walk, so it is capped at
+  `ListingLimits.max_metadata_bytes` on its own: a larger table raises
+  `ResourceLimitError`. The cap is a separate check, not a share of the listing's
+  running count: the table is held beside the member names, which the listing
+  counts as usual.
 - A BSD name is read into memory before the member, so it is bounded: over 64 KiB, or
   longer than its member, is `CorruptionError` before it is read.
 - Size fields are parsed but never allocated; member data is streamed by the framework.

@@ -513,6 +513,12 @@ sending side when the ZIP is done.
 - With `concurrent_operations=True`, member reads share one file handle and take turns on it, so
   reads from several threads are safe but not parallel. ISO works the same way.
 - Hardlinks are extracted as hardlinks. An `extract_all` with no filter resolves them in one pass.
+- **Headers are read as GNU tar reads them.** Where tools disagree on a member's name, link target
+  or size, archivey gives GNU tar's answer. When the headers take a shape no known writer produces
+  (a GNU long name and a PAX `path` for one member, a field set twice, a global header setting a
+  name or size or dropping an earlier one's values, a NUL inside a PAX name), the member is also reported with
+  `MEMBER_HEADER_AMBIGUOUS`, because another tool may list it under another name or size.
+  `STRICT` refuses the archive.
 - A tar from macOS `tar` can hold `._name` sidecar files
   ([macOS sidecar files](#macos-sidecar-files)).
 
@@ -564,8 +570,10 @@ On a compressed tar, the stream's own checksum adds three cases:
 - **A device or FIFO header with data** (typeflag `3`, `4` or `6` with a non-zero size) raises
   `CorruptionError` at that header, before the end-of-archive checks run. Such an entry has no data,
   and GNU tar skips the header as damaged. Reading on from the next block, an all-zero payload would
-  look like the end of the archive and drop every member after it.
-- **A directory header (typeflag `5`) with data** has no data area either, so the next header is
+  look like the end of the archive and drop every member after it. A PAX `size` on such a header,
+  the member's own or a global one, is refused the same way. GNU tar skips the bytes it declares
+  and extracts the entry; archivey refuses a shape only a crafted archive has.
+- **A directory header (typeflag `5`) with data in its own size field** has no data area either, so the next header is
   read straight after it. When that header parses, the directory lists with no size, as GNU tar,
   bsdtar and 7-Zip list it. When the walk ends instead on a zero block inside the declared span,
   the directory lists with no size and `MEMBER_DIRECTORY_DATA_IGNORED` is reported (`STRICT`
@@ -576,14 +584,17 @@ On a compressed tar, the stream's own checksum adds three cases:
   `stream_members()` yields no stream for it, since its bytes cannot be told from the end marker. A
   block that is neither a header nor zero where the data would begin raises `CorruptionError`
   naming the directory header. A walk that gets past the declared span (extended headers filled it)
-  has read all it could hide, and nothing is reported.
+  has read all it could hide, and nothing is reported. A PAX `size`, the member's own or a global
+  one, is different: GNU tar skips the bytes it declares, and so does archivey. The directory then
+  keeps that `size` and is reported and read as an old-style directory with data is, below.
 - **An old-style directory with data:** a regular-file header (typeflag NUL, `0` or contiguous `7`)
   whose name ends in `/` is a directory, as GNU tar reads it; 7-Zip agrees for NUL and `0`. When
   its size is not zero, the directory keeps that `size` and `MEMBER_DIRECTORY_DATA_IGNORED` is
   reported. Extraction creates the directory and skips the blocks, as GNU tar does, and `read()` on
   the directory returns them, as does the stream `stream_members()` yields for it, in both access
   modes. `STRICT` refuses the archive.
-- **A symlink or hard link header (typeflag `2` or `1`) with data** has no data area either. When
+- **A symlink or hard link header (typeflag `2` or `1`) with data in its own size field** has no
+  data area either. When
   a member header follows it at once, the size names no data, and the link lists with nothing
   reported, as GNU tar and `tarfile` read it. Otherwise the declared blocks are skipped, so a zero
   block among them does not end the archive, and `MEMBER_LINK_DATA_IGNORED` reports the link
@@ -591,7 +602,10 @@ On a compressed tar, the stream's own checksum adds three cases:
   dropping the later members. When the declared blocks are all zeros and no member header follows
   them, they are also the end marker of a link whose blocks were never written: the end checks then
   read them as the end marker, as after a file, so an intact one gets no warning, and the link is
-  reported the same way. Extraction creates the link.
+  reported the same way. Extraction creates the link. A PAX `size`, the member's own or a global
+  one, always frames the declared blocks, as GNU tar skips them: they are skipped whatever follows,
+  and `MEMBER_LINK_DATA_IGNORED` reports the link. An archive that ends inside them raises
+  `TruncatedError`, and one that ends right after them reports `ARCHIVE_EOF_MARKER_MISSING`.
 
 ### Member types and fields
 
@@ -599,6 +613,8 @@ On a compressed tar, the stream's own checksum adds three cases:
   numbers in `extra["tar.devmajor"]` and `extra["tar.devminor"]`. A device number field that is not
   a number is dropped and reported as `MEMBER_HEADER_RECORD_SKIPPED`, as GNU tar lists such a
   device too.
+- **A header time of only NUL bytes or blanks is no time.** Unless a PAX record carries the time,
+  the member has no `modified` and nothing is reported, where GNU tar and `tarfile` show 1970-01-01.
 - **A member of an unknown type is a file when it has data.** A header whose type byte archivey
   does not know (such as `9`) and that declares data is a `FILE` of that size, which reads and
   extracts like any file, as GNU tar extracts it. One that declares no data is `OTHER`, and its
@@ -792,17 +808,19 @@ that mask select the wrong members, or none:
   `open()` or `read()`, and the error says how many bytes it would have cost. On a solid archive
   those bytes are already part of `AccessCost.SOLID`, so the error names the flag instead. Setting
   `ArchiveyConfig.rar_allow_glob_member_concatenation=True` reads it anyway. Two cases are not
-  affected: a name that matches no other member (an accidental `report*.pdf` beside `report1.pdf`)
-  reads with no flag, and a solid `stream_members()` pass reads everything, because it builds no
-  mask at all.
+  affected: a name that matches no earlier member with data (an accidental `report*.pdf` stored
+  before `report1.pdf`) reads with no flag, and a solid `stream_members()` pass reads everything,
+  because it builds no mask at all.
 - **`*` or `?` in a directory part of the name, or a backslash in it:** `unrar` cannot read the
   member, and the flag does not change that. The one exception is a backslash in a RAR5 name
   written on Windows, which `unrar` on Linux and macOS reads as `_`.
 - **Several members under one name** (two members with the same name, or two names `unrar` reads
-  the same way): `unrar` writes every member a name selects, in archive order, and archivey skips to
-  the one you asked for, so each read returns that member's own bytes. A RAR5 name that is not valid
-  UTF-8 is cut by `unrar` at its first invalid byte, and is read through that shorter name the same
-  way.
+  the same way): `unrar` would decode every earlier member with that name first, as for a `*` name,
+  so reading a later one raises `UnsupportedFeatureError` naming the same flag, unless every
+  earlier one is empty. With
+  `rar_allow_glob_member_concatenation=True`, archivey skips the earlier members' bytes, so each
+  read returns that member's own bytes. A RAR5 name that is not valid UTF-8 is cut by `unrar` at
+  its first invalid byte, and is handled through that shorter name the same way.
 - **A name `unrar` reads as empty** raises `UnsupportedFeatureError`, and so does a name `unrar`
   reads but that cannot be handed back to it as a mask.
 - **A name ending in `.`, or with a `.` before a `\`:** `unrar` up to 7.30 beta 1 lets the mask
@@ -1069,7 +1087,7 @@ misread the archive.
 - A blank time, owner or mode field is `None`.
 - A thin archive (`!<thin>`) only names files kept outside it, and raises
   `UnsupportedFeatureError`.
-- The long-name table counts against `ListingLimits.max_metadata_bytes`.
+- The long-name table may be no larger than `ListingLimits.max_metadata_bytes`.
 
 ## Disk images
 

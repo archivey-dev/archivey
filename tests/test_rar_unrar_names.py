@@ -25,7 +25,7 @@ import pytest
 
 from archivey import ArchiveyConfig, open_archive
 from archivey.exceptions import ArchiveyError, UnsupportedFeatureError
-from archivey.internal.backends import rar_unrar
+from archivey.internal.backends import rar_reader, rar_unrar
 from archivey.internal.backends.rar_reader import RarReader
 from archivey.internal.backends.rar_unrar import (
     _member_include_switch,
@@ -47,6 +47,11 @@ from tests.test_audit_rar_iso_dir import (
 )
 
 _UNRAR_ONLY = ArchiveyConfig(rar_decompressor="unrar")
+# A name that selects earlier members too is refused by default; these tests read
+# through the shared mask on purpose.
+_UNRAR_SHARED = ArchiveyConfig(
+    rar_decompressor="unrar", rar_allow_glob_member_concatenation=True
+)
 _LINUX_ONLY = pytest.mark.skipif(
     not sys.platform.startswith("linux"),
     reason="the expected selections are measured against unrar on Linux",
@@ -272,7 +277,7 @@ def test_every_rar5_member_reads_its_own_bytes_or_is_refused(
     path = tmp_path / "nocrc.rar"
     path.write_bytes(_rar5_build(blocks))
     outcomes: dict[int, str] = {}
-    with open_archive(path, config=_UNRAR_ONLY) as reader:
+    with open_archive(path, config=_UNRAR_SHARED) as reader:
         for index, member in enumerate(reader.members()):
             assert not member.hashes
             try:
@@ -292,12 +297,8 @@ def test_every_rar5_member_reads_its_own_bytes_or_is_refused(
     assert refused == expected, outcomes
 
 
-@requires_binary("unrar")
-@pytest.mark.parametrize("solid", [False, True], ids=["nonsolid", "solid"])
-def test_duplicate_names_read_by_position(tmp_path: Path, solid: bool) -> None:
-    """Three members with one name: each read returns its own bytes."""
-    source = _fixture("hostile_argv__.rar")
-    blocks = _rar5_parse(source.read_bytes())
+def _duplicate_names(tmp_path: Path, *, solid: bool) -> Path:
+    blocks = _rar5_parse(_fixture("hostile_argv__.rar").read_bytes())
     files = [block for block in blocks if block["type"] == 2]
     for block in files:
         block["name"] = b"same.txt"
@@ -308,14 +309,93 @@ def test_duplicate_names_read_by_position(tmp_path: Path, solid: bool) -> None:
         main["body"] = bytes([main["body"][0] | 0x04]) + main["body"][1:]
     path = tmp_path / "dup.rar"
     path.write_bytes(_rar5_build(blocks))
-    with open_archive(source, config=_UNRAR_ONLY) as reader:
+    return path
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize("solid", [False, True], ids=["nonsolid", "solid"])
+def test_duplicate_names_read_by_position(tmp_path: Path, solid: bool) -> None:
+    """Three members with one name: each read returns its own bytes."""
+    path = _duplicate_names(tmp_path, solid=solid)
+    with open_archive(_fixture("hostile_argv__.rar"), config=_UNRAR_ONLY) as reader:
         expected = [reader.read(member) for member in reader.members()]
-    with open_archive(path, config=_UNRAR_ONLY) as reader:
+    with open_archive(path, config=_UNRAR_SHARED) as reader:
         members = reader.members()
         assert [member.name for member in members] == ["same.txt"] * 3
         assert [reader.read(member) for member in reversed(members)] == list(
             reversed(expected)
         )
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize("solid", [False, True], ids=["nonsolid", "solid"])
+def test_a_name_that_selects_earlier_members_is_refused_by_default(
+    tmp_path: Path, solid: bool
+) -> None:
+    """A duplicate name costs unrar the same decode of earlier members as a glob, and
+    is refused the same way. The first member selects nothing before it and reads."""
+    with open_archive(_duplicate_names(tmp_path, solid=solid), config=_UNRAR_ONLY) as r:
+        members = r.members()
+        assert r.read(members[0])
+        match = (
+            "is refused: its name, as unrar is given it, also selects earlier"
+            if solid
+            else r"would decompress \d+ bytes of earlier members first"
+        )
+        with pytest.raises(
+            UnsupportedFeatureError, match="rar_allow_glob_member_concatenation"
+        ) as refused:
+            r.read(members[2])
+        assert refused.match(match)
+
+
+@requires_binary("unrar")
+def test_a_name_that_selects_only_empty_earlier_members_reads(tmp_path: Path) -> None:
+    """The refusal counts the bytes unrar would decode first: earlier members with the
+    same name and no data cost nothing, so the last one reads with no flag."""
+    with open_archive(_fixture("hostile_argv__.rar"), config=_UNRAR_ONLY) as reader:
+        expected = reader.read(reader.members()[2])
+    blocks = _rar5_parse(_fixture("hostile_argv__.rar").read_bytes())
+    files = [block for block in blocks if block["type"] == 2]
+    for block in files:
+        block["name"] = b"same.txt"
+    for block in files[:2]:
+        block["data"] = b""
+        block["unpacked"] = 0
+        block["crc"] = struct.pack("<I", 0)
+        block["cinfo"] &= ~(7 << 7)  # stored
+    path = tmp_path / "empty-dup.rar"
+    path.write_bytes(_rar5_build(blocks))
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
+        members = reader.members()
+        assert [m.size for m in members] == [0, 0, len(expected)]
+        assert reader.read(members[2]) == expected
+
+
+@requires_binary("unrar", "unar")
+def test_auto_reads_a_name_that_selects_earlier_members_with_unar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """unar names entries by index, so under AUTO a shared name needs no flag: the
+    refused members go to unar, with no password on its command line, and the first,
+    which selects nothing before it, still goes to unrar."""
+    with open_archive(_fixture("hostile_argv__.rar"), config=_UNRAR_ONLY) as reader:
+        expected = [reader.read(member) for member in reader.members()]
+    unar_indexes: list[list[int]] = []
+    unar_passwords: list[object] = []
+    original = rar_reader.open_unar_stdout
+
+    def spy(path: Path, indexes: list[int], **kwargs: object) -> Any:
+        unar_indexes.append(list(indexes))
+        unar_passwords.append(kwargs.get("password"))
+        return original(path, indexes, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_reader, "open_unar_stdout", spy)
+    with open_archive(_duplicate_names(tmp_path, solid=False)) as reader:
+        assert [reader.read(member) for member in reader.members()] == expected
+    assert unar_indexes, "no read went to unar"
+    assert {i for indexes in unar_indexes for i in indexes} == {1, 2}
+    assert unar_passwords == [None] * len(unar_indexes)
 
 
 @requires_binary("unrar")
@@ -333,7 +413,7 @@ def test_invalid_utf8_name_reads_through_the_prefix_unrar_sees(tmp_path: Path) -
         block["crc"] = None
     path = tmp_path / "prefix.rar"
     path.write_bytes(_rar5_build(blocks))
-    with open_archive(path, config=_UNRAR_ONLY) as reader:
+    with open_archive(path, config=_UNRAR_SHARED) as reader:
         members = reader.members()
         assert [reader.read(member) for member in reversed(members)] == list(
             reversed(expected)
@@ -748,7 +828,7 @@ def test_reader_asks_for_the_dot_rule_only_when_it_changes_the_read(
 
     monkeypatch.setattr(RarReader, "_unrar_selection", spy)
     real = unrar_dot_rule()
-    with open_archive(path, config=_UNRAR_ONLY) as reader:
+    with open_archive(path, config=_UNRAR_SHARED) as reader:
         first, second = reader.members()
         assert reader.read(first) == _payload(0)
         assert asked == [], "the mask ab selects the same members under both rules"

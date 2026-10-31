@@ -4499,11 +4499,11 @@ class RarReader(BaseArchiveReader):
         self, member: ArchiveMember, raw: RarMemberInfo
     ) -> Callable[[str | None, bool], BinaryIO]:
         """:meth:`_unrar_spawner`, with the refusals about naming the member raised as
-        :class:`_UnrarCannotAddress`: a name ``unrar`` cannot be given, an include mask
-        that also matches earlier members (``rar_allow_glob_member_concatenation``), a
-        mask that does not select the member, an earlier name ``unrar`` reads
-        differently on this host, or a selection that depends on a dot rule the binary
-        did not report.
+        :class:`_UnrarCannotAddress`: a name ``unrar`` cannot be given, a name whose
+        mask also selects earlier members with data, glob or not
+        (``rar_allow_glob_member_concatenation``), a mask that does not select the
+        member, an earlier name ``unrar`` reads differently on this host, or a selection
+        that depends on a dot rule the binary did not report.
         """
         # unrar addresses the member by name (``path`` or ``path;n``) through a ``-n``
         # include mask (see open_unrar_p); a history row needs ``-ver``. The mask is
@@ -4537,11 +4537,7 @@ class RarReader(BaseArchiveReader):
         glob_prefix, shares_mask, dictionary_cost = self._unrar_selection(
             member, mask.mask_view, version_control=version_control
         )
-        if (
-            mask.is_glob
-            and glob_prefix
-            and not self._config.rar_allow_glob_member_concatenation
-        ):
+        if glob_prefix and not self._config.rar_allow_glob_member_concatenation:
             # unrar decompresses every earlier match before the target and emits
             # them concatenated. The skip below returns the right bytes, but the
             # decode has already happened and ExtractionLimits do not reach
@@ -4571,20 +4567,25 @@ class RarReader(BaseArchiveReader):
             # the mask itself. This bounds the payload, not the match.
             #
             # A mask with no glob that still selects earlier members (a duplicate
-            # name, or two names unrar reads the same way) is read by position
-            # without this refusal: its name is not an include mask.
+            # name, or two names unrar reads the same way) costs the same decode and
+            # is refused the same way (maintainer decision, 2026-10-29). Under AUTO
+            # both go to unar, which selects by index, when it can read the member.
             #
             # The predicate is deliberately `_unrar_selection`'s own answer and
             # not a second walk: which siblings match is decided by the mask
             # actually handed to unrar, which that function owns. Recomputing it
             # from the presented name here would refuse archives that read fine
             # under the mask unrar is given.
+            why = (
+                "is an include mask that also matches"
+                if mask.is_glob
+                else "also selects"
+            )
             if self._archive.is_solid:
                 message = (
                     f"Reading RAR member {quoted(member.name)} is refused: its "
-                    "name, as unrar is given it, is an include mask that also "
-                    "matches earlier members. Names like this are almost always "
-                    "constructed. Set "
+                    f"name, as unrar is given it, {why} earlier members. Names "
+                    "like this are almost always constructed. Set "
                     "ArchiveyConfig.rar_allow_glob_member_concatenation=True "
                     "to read it anyway."
                 )
@@ -4592,8 +4593,7 @@ class RarReader(BaseArchiveReader):
                 message = (
                     f"Reading RAR member {quoted(member.name)} would decompress "
                     f"{glob_prefix} bytes of earlier members first: its name, as "
-                    "unrar is given it, is an include mask that also matches them. "
-                    "Set "
+                    f"unrar is given it, {why} them. Set "
                     "ArchiveyConfig.rar_allow_glob_member_concatenation=True to "
                     "read it anyway."
                 )
