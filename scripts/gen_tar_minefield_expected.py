@@ -12,7 +12,7 @@ read from its ``contrib/matrix/matrix.json``), writes
 from the pins already there, which needs no clone: do that after editing a reason.
 
 A new difference then fails ``test_every_difference_has_a_reason`` until the test's
-``TRIAGE`` or ``STRICT_TRIAGE`` gives it a reason.
+``TRIAGE`` or ``DEFAULTS_TRIAGE`` gives it a reason.
 """
 
 from __future__ import annotations
