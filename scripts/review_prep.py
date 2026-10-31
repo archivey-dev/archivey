@@ -479,10 +479,10 @@ _GITHUB_FIXED = (
     "|base_ref|ref_type|action_path|workspace|retention_days"
 )
 _WORKFLOW_POWER_RE = re.compile(
-    r"\bpermissions\s*:|\bsecrets\s*[.:\[)]"
+    r"\bpermissions\s*:|(?i:\bsecrets\s*[.:\[)])"
     r"|\b(?:pull_request_target|workflow_run|issue_comment|pull_request_review"
     r"|pull_request_review_comment|discussion_comment)\b"
-    rf"|\$\{{\{{[^}}]*\bgithub\s*(?:\[|\.\s*(?!(?:{_GITHUB_FIXED})\b)\w)"
+    rf"|(?i:\$\{{\{{[^}}]*\bgithub\s*(?:\[|\.\s*(?!(?:{_GITHUB_FIXED})\b)\w))"
     r"|^\s*(?:actions|attestations|checks|contents|deployments|discussions|id-token"
     r"|issues|models|packages|pages|pull-requests|repository-projects|security-events"
     r"|statuses)\s*:\s*(?:['\"]?(?:read|write|none)\b|[>|]|$)"
@@ -807,7 +807,8 @@ _READ_SCOPE_RE = re.compile(r"^\s+[\w-]+\s*:\s*(?:read|none)\s*(?:#.*)?$")
 # The job's own token, which `permissions:` bounds; any other mention of `secrets`
 # (another secret, `secrets: inherit`, `toJSON(secrets)`) is not quiet.
 _JOB_TOKEN_RE = re.compile(
-    r"""\bsecrets\s*(?:\.\s*GITHUB_TOKEN|\[\s*(['"])GITHUB_TOKEN\1\s*\])(?![\w-])"""
+    r"""\bsecrets\s*(?:\.\s*GITHUB_TOKEN|\[\s*(['"])GITHUB_TOKEN\1\s*\])(?![\w-])""",
+    re.IGNORECASE,  # an expression's context names ignore case: `SECRETS.X` reads X
 )
 
 
@@ -941,7 +942,10 @@ def quiet_workflow(text: str | None) -> bool:
         return False
     # Comments are read too: a `#` inside a `run:` string would otherwise hide the rest
     # of its line, and a comment that names a secret only costs a deep review.
-    return not any(re.search(r"\bsecrets\b", _JOB_TOKEN_RE.sub("", t)) for t in lines)
+    return not any(
+        re.search(r"\bsecrets\b", _JOB_TOKEN_RE.sub("", t), re.IGNORECASE)
+        for t in lines
+    )
 
 
 def review_tier(base: str, head: str) -> Tier:

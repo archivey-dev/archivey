@@ -745,6 +745,19 @@ jobs:
         (QUIET.replace("  schedule:\n", "  - push\n  schedule:\n"), False),
         (QUIET + "on: push\n", False),  # two `on:` keys
         ("on: {push: {}}\npermissions: {}\n", False),
+        # Context names ignore case in an expression (round 2, K6).
+        (QUIET.replace("${{ inputs.ref }}", "${{ SECRETS.FOO }}"), False),
+        (QUIET.replace("${{ inputs.ref }}", "${{ Secrets['FOO'] }}"), False),
+        (QUIET.replace("${{ inputs.ref }}", "${{ SECRETS.GITHUB_TOKEN }}"), True),
+        # Quoted multi-line `name` holding a `permissions:` block (Cursor, C1 on 467e99e).
+        (
+            'name: "x\npermissions:\n  contents: read\n"\non: workflow_dispatch\njobs: {}\n',
+            False,
+        ),
+        (
+            "name: 'x\npermissions:\n  contents: read\n'\non: workflow_dispatch\njobs: {}\n",
+            False,
+        ),
         # Cursor round 1, C1: forms only a YAML parse reads right.
         (
             'name: "bench\npermissions:\n"\n'
