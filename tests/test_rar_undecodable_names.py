@@ -98,7 +98,7 @@ def test_rar5_undecodable_names_each_read_their_own_bytes(
 @pytest.mark.parametrize(
     ("policy", "written"),
     [
-        (ExtractionPolicy.STRICT, ["a%FFq.txt", "a%FEq.txt"]),
+        # STRICT refuses a name that is not UTF-8 instead of writing it.
         (ExtractionPolicy.STANDARD, ["a%FFq.txt", "a%FEq.txt"]),
         (ExtractionPolicy.TRUSTED, ["a\udcffq.txt", "a\udcfeq.txt"]),
     ],
@@ -151,9 +151,9 @@ def test_rar3_undefined_bytes_extract_escaped(tmp_path: Path) -> None:
             open_archive(source, config=_UNRAR_ONLY) as archive,
             pytest.raises(UnsupportedFeatureError, match="also selects them"),
         ):
-            archive.extract_all(tmp_path / "refused")
+            archive.extract_all(tmp_path / "refused", policy=ExtractionPolicy.STANDARD)
         config = _UNRAR_SHARED
     with open_archive(source, config=config) as archive:
-        archive.extract_all(dest)
+        archive.extract_all(dest, policy=ExtractionPolicy.STANDARD)
     assert (dest / "b%81.txt").read_bytes() == expected[0]
     assert (dest / "b%8D.txt").read_bytes() == expected[1]

@@ -217,8 +217,9 @@ they would over a tar. The format-shaped outcomes are these.
   skipped by the filter, as for any archive. So a tree that points outside itself does not
   extract those links.
 - **`OTHER` members** are skipped with "Special file (device/FIFO/socket) not allowed".
-- **Undecodable names** from POSIX extract with each escaped byte as `%XX` (`bad%FF.txt`),
-  the shared filter's rule for surrogate escapes.
+- **Undecodable names** from POSIX are refused under `STRICT` and extract under `STANDARD`
+  with each escaped byte as `%XX` (`bad%FF.txt`), the shared filter's rule for surrogate
+  escapes.
 - **Limits** apply with `compressed_size` equal to the listed size, so the per-member
   ratio is 1:1. A file resized since the walk never reaches them: the open refuses it
   (§2.3). The exception is a member listed at size 0, which the size check exempts: its

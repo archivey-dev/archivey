@@ -115,6 +115,9 @@ is reject/raise, with one rewrite:
   `archive-reading`, "Link targets stored as member data are read only when
   configured") gets the same rewrite, because `extract_all` calls the filter again once
   the target is read. It returns the member unchanged when nothing needs rewriting.
+  It does not rewrite a `\`, a control character 0x01–0x1F, a non-UTF-8 byte or a lone
+  surrogate, so it does not rescue a name `STRICT` refuses for one ("Names other readers
+  take differently"); `STANDARD`, or a caller filter, writes those.
 
 The implementation SHALL enforce defense in depth: first a string check rejects
 absolute paths, Windows drive/UNC roots, any `..` component split on `/` or `\`,
@@ -218,7 +221,7 @@ read back.
 | `"../evil"` with `filter=sanitize_names` | Extracted at `dest/evil`, all policies |
 | `"a/../b"` with `filter=sanitize_names` | Extracted at `dest/b`, all policies |
 | Earlier member creates symlink `foo` outside `dest`; later member writes `foo/x` | Parent resolution rejects `foo/x` with `FilterRejectionError` |
-| Name with a lone surrogate outside U+DC80–U+DCFF (`hi\ud800`) | Extracts: `hi%ED%A0%80` under `STRICT`/`STANDARD`; under `TRUSTED` POSIX writes `hi` + `ed a0 80`, Windows the exact name; never raw `UnicodeEncodeError` |
+| Name with a lone surrogate outside U+DC80–U+DCFF (`hi\ud800`) | `STRICT`: `FilterRejectionError`, `BLOCKED`; `STANDARD`: `hi%ED%A0%80`; under `TRUSTED` POSIX writes `hi` + `ed a0 80`, Windows the exact name; never raw `UnicodeEncodeError` |
 | SYMLINK `link_target` with `\x00` | `FilterRejectionError`; never raw `ValueError` |
 | SYMLINK `link_target` `C:/Windows`, `C:/abs/y`, `t:stream` or `//srv/share`, any policy, any OS | `FilterRejectionError` ("Symlink target is a Windows drive or UNC path"); no link written |
 | SYMLINK `link_target` `\foo`, any policy, POSIX | Extracted: a link to the file `\foo` beside it |
@@ -286,7 +289,7 @@ of this requirement — it belongs to the future opt-in `SANITIZE` extraction po
 #### Scenario: UTF-8-enforcing filesystem refuses a surrogateescape name
 
 - **WHEN** a member whose name carries undecodable bytes (`surrogateescape`) is extracted
-  to a filesystem that enforces valid UTF-8 names
+  under `TRUSTED` to a filesystem that enforces valid UTF-8 names
 - **THEN** extraction raises a typed `ExtractionError` whose cause is the filesystem's
   `OSError` with `EILSEQ` (never a raw `OSError`), or records a failure result under
   `OnError.CONTINUE`
@@ -303,30 +306,32 @@ A member name or link target can hold a surrogate without its partner (U+D800–
 any unit in a name. Listing and reading keep the unit in the name under every policy, and
 the rule below is the same for every format.
 
-Under `STRICT` and `STANDARD` such a name is not portable, and the portable-name rule
-(O7) SHALL escape it as it escapes undecodable bytes: each lone surrogate outside
+Such a name is not portable. Under `STRICT` it SHALL be refused with
+`FilterRejectionError` ("Names other readers take differently"). Under `STANDARD` the
+portable-name rule (O7) SHALL escape it as it escapes undecodable bytes: each lone surrogate outside
 U+DC80–U+DCFF is taken as its three UTF-8 bytes (`surrogatepass`) and each byte is
 written `%XX`, so `hi\ud800` is written `hi%ED%A0%80` on every OS and
 `presented_name` records the stored name. Under `TRUSTED` extraction SHALL write the
 name as 7-Zip 23.01 does: on POSIX each such surrogate as its three-byte UTF-8 form
 (U+D800 becomes the bytes `ed a0 80`), on Windows the exact name. That on-disk spelling
 is not a rename, so `presented_name` stays unset for it. A link target is written the
-`TRUSTED` way under every policy, as O7 does not rewrite link targets. Under `STRICT`
-and `STANDARD` a link to a member whose name was escaped therefore points at the
+`TRUSTED` way under every policy, as O7 does not rewrite link targets. Under
+`STANDARD` a link to a member whose name was escaped therefore points at the
 unescaped spelling and dangles, as it already does for undecodable bytes; on a
 filesystem that accepts only UTF-8, such as APFS, creating that link fails.
 
 U+DC80–U+DCFF SHALL keep its `surrogateescape` meaning, one undecodable byte, for every
-format: it is written as that byte, or percent-escaped by the portable-name rule. The
+format: it is written as that byte, refused under `STRICT`, or percent-escaped by the
+portable-name rule. The
 path checks run on the name the disk spelling gives, before the portable-name rule, and
 a rejection by them names the stored member name. An error raised while writing the
 member, a deferred hardlink included, names the name from before the disk spelling:
-the stored name under `TRUSTED`, the escaped one under `STRICT` and `STANDARD`. Every
+the stored name under `TRUSTED`, the escaped one under `STANDARD`. Every
 error names a link target as stored, never in its disk spelling. The collision key and
 the overwrite policy see the spelling that reaches disk. Under every policy a lone
 U+D800 and a name whose undecodable bytes are `ed a0 80` are therefore one file: both
-are `hi%ED%A0%80` under `STRICT` and `STANDARD`, and both are the bytes under
-`TRUSTED`. A name that cannot be encoded even so is a `FilterRejectionError`, never a
+are `hi%ED%A0%80` under `STANDARD` (both refused under `STRICT`), and both are the
+bytes under `TRUSTED`. A name that cannot be encoded even so is a `FilterRejectionError`, never a
 raw `UnicodeEncodeError`.
 
 #### Scenario: lone surrogate matrix
@@ -337,11 +342,12 @@ the same tree.
 
 | Case | Expected |
 | --- | --- |
-| `hi\ud800.txt` under `STRICT` / `STANDARD`, any OS | Written `hi%ED%A0%80.txt`; `EXTRACTED`; `presented_name == "hi\ud800.txt"` |
+| `hi\ud800.txt` under `STRICT`, any OS | `FilterRejectionError`; `BLOCKED`; nothing written |
+| `hi\ud800.txt` under `STANDARD`, any OS | Written `hi%ED%A0%80.txt`; `EXTRACTED`; `presented_name == "hi\ud800.txt"` |
 | `hi\ud800.txt` under `TRUSTED` on POSIX | Written as `hi` + `ed a0 80` + `.txt`, as 7-Zip writes it; `presented_name` unset |
 | `hi\ud800.txt` under `TRUSTED` on Windows | Written under the exact name |
-| `hi\ud800` and `hi\udced\udca0\udc80` in one archive, any policy | One file; the second goes through the `OverwritePolicy` |
-| `lo\udc80.txt` | `lo%80.txt` under `STRICT` / `STANDARD`; the byte `0x80` under `TRUSTED`, where 7-Zip writes `ed b2 80` |
+| `hi\ud800` and `hi\udced\udca0\udc80` in one archive, `STANDARD` or `TRUSTED` | One file; the second goes through the `OverwritePolicy` |
+| `lo\udc80.txt` | Refused under `STRICT`; `lo%80.txt` under `STANDARD`; the byte `0x80` under `TRUSTED`, where 7-Zip writes `ed b2 80` |
 | `\ud800/../x` | `FilterRejectionError` whose `member_name` is `\ud800/../x` |
 
 ### Requirement: Skip non-current members by default
@@ -1630,9 +1636,21 @@ rejected under `STRICT` and `STANDARD` (Win32 would merge `a/.../b` into `a/b`).
 `STANDARD` and `TRUSTED` SHALL otherwise keep the trailing dot/space faithful (written if
 the OS allows).
 
-**Separators.** Under `STRICT` and `STANDARD`, a `\` that a member name keeps as a
+**Names other readers take differently (STRICT).** Under `STRICT`, a member name holding
+a `\`, a control character 0x01–0x1F, a byte that is not UTF-8 (a surrogateescape char
+U+DC80–U+DCFF) or a lone surrogate SHALL be refused with `FilterRejectionError`
+(`BLOCKED`), in every format and on every platform. Each names a different file on
+another OS or in another reader: `\` is a separator on Windows and a character on POSIX,
+a newline splits a listing line, and undecodable bytes have no spelling every OS shares.
+The message names the character and says `STANDARD` writes a portable spelling. A link
+target is not refused for these; it is rewritten as below. This reverses, for `STRICT`
+only, ADR 0013's choice to rewrite these names (maintainer ruling 2026-10-31, from the
+tar-minefield corpus, which rejects them).
+
+**Separators.** Under `STANDARD`, a `\` that a member name keeps as a
 literal character (TAR) SHALL be written as `/` on every platform, as Windows writes it, and
-recorded as `ExtractionResult.presented_name`. A link target gets the same rewrite, so a
+recorded as `ExtractionResult.presented_name`. Under `STRICT` and `STANDARD`, a link target
+with a `\` gets the same rewrite, so a
 symlink to another member names the path that member was written at, and a target such as
 `..\x` is checked as the `../x` it becomes. A hard link still resolves to the member the
 reader matched to its stored target; the rewrite does not change which member that is. The
@@ -1657,7 +1675,10 @@ and a literal `%` escaped as `%25` — applied on **every** platform, collision-
 above, and recorded as `ExtractionResult.presented_name`. The characters Win32 refuses in a
 name, `<`, `>`, `"`, `|`, `?`, `*` and the controls 0x01–0x1F, SHALL be escaped the same
 way, as `%XX` of their code point (`a?b` → `a%3Fb`), so a name POSIX could store gives the
-tree Windows gives. A `%` is escaped only in a name the scheme rewrites. The scheme SHALL
+tree Windows gives. Under `STRICT` only `<>"|?*` reach this rule; a `\`, a control
+character 0x01–0x1F, a non-UTF-8 byte and a lone surrogate are refused instead ("Names
+other readers take differently"). Everything else in this paragraph, the `%25` escape,
+`presented_name` and the NFC/NFD exclusion, applies under both. A `%` is escaped only in a name the scheme rewrites. The scheme SHALL
 touch nothing else; valid-but-non-portable Unicode (NFC/NFD forms) SHALL NOT be rewritten
 (its cross-platform folding is the O2 collision concern). `TRUSTED` SHALL attempt the
 faithful bytes and let the OS decide. The reversibility SHALL be a documented property; a
@@ -1684,10 +1705,11 @@ rewritten name then collides and is renamed).
 | Trailing dot/space (`foo.`, `foo `) | `STRICT` strips to portable spelling (`foo`), `presented_name="foo."`, `rewrites == {PORTABLE_NAME}`; `STANDARD` keeps faithful; either way `foo.` beside `foo` is a collision event on all platforms | Written if the OS allows |
 | Segment of only dots/spaces (`.../x`) | Rejected on all platforms (no portable spelling) | Written if the OS allows |
 | Name containing `:` (`file:hidden`) | Rejected on all platforms | Local OS behavior (NTFS ADS) |
-| TAR name `a\b` | Written as directory `a` and file `b`; `presented_name="a\b"` | Local OS behavior (a file `a\b` on POSIX) |
+| TAR name `a\b` | `STRICT`: `FilterRejectionError`, `BLOCKED`; `STANDARD`: written as directory `a` and file `b`, `presented_name="a\b"` | Local OS behavior (a file `a\b` on POSIX) |
 | SYMLINK whose `link_target` has a segment with `:` (`file:stream`) or a reserved name (`sub/NUL`) | Rejected on all platforms | Local OS behavior |
-| Surrogateescape `caf\udce9.txt` | Sanitized to `caf%E9.txt`; `presented_name` keeps the pre-rewrite spelling; collision-tracked | Faithful bytes attempted; OS decides |
-| `what?.txt`, `a*b`, a name with a control byte | Written as `what%3F.txt`, `a%2Ab`, `%XX` per control; `presented_name` keeps the stored name | Written if the OS allows (refused on Windows) |
+| Surrogateescape `caf\udce9.txt` | `STRICT`: `FilterRejectionError`, `BLOCKED`; `STANDARD`: sanitized to `caf%E9.txt`, `presented_name` keeps the pre-rewrite spelling, collision-tracked | Faithful bytes attempted; OS decides |
+| `what?.txt`, `a*b` | Written as `what%3F.txt`, `a%2Ab`; `presented_name` keeps the stored name | Written if the OS allows (refused on Windows) |
+| A name with a control byte (`line\nbreak`) | `STRICT`: `FilterRejectionError`, `BLOCKED`; `STANDARD`: `%XX` per control (`line%0Abreak`), `presented_name` keeps the stored name | Written if the OS allows (refused on Windows) |
 | Symlink `l -> sub/file` (on Windows) | Created with target `sub\file`; resolves as on POSIX | Same |
 | A member stored `0o444`, then a later member of the same name under `REPLACE` | Replaced on every OS | Same |
 | `REPLACE` with a casefold collision | Not a silent merge; earlier member revised to `OVERWRITTEN` | Local OS behavior |

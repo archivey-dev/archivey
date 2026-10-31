@@ -49,6 +49,9 @@ from tests.extract_util import lock_directories_at_once, open_and_extract
 _PORTABLE = pytest.mark.parametrize(
     "policy", [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD]
 )
+# STRICT refuses a name holding a backslash or a control character, so only STANDARD
+# writes the portable spelling these tests check.
+_REWRITES = pytest.mark.parametrize("policy", [ExtractionPolicy.STANDARD])
 _POSIX_SYMLINKS = pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
 
 
@@ -92,7 +95,7 @@ def _tree(root: Path) -> list[str]:
 # --- A backslash in a TAR name is a separator --------------------------------------
 
 
-@_PORTABLE
+@_REWRITES
 def test_tar_backslash_is_written_as_a_separator(
     tmp_path: Path, policy: ExtractionPolicy
 ) -> None:
@@ -119,7 +122,7 @@ def test_tar_backslash_is_literal_under_trusted(tmp_path: Path) -> None:
     assert _tree(tmp_path / "out") == ["a\\b"]
 
 
-@_PORTABLE
+@_REWRITES
 def test_tar_backslash_meets_a_file_of_the_same_name_as_a_slash_does(
     tmp_path: Path, policy: ExtractionPolicy
 ) -> None:
@@ -144,13 +147,17 @@ def test_tar_backslash_meets_a_file_of_the_same_name_as_a_slash_does(
 
 
 @_PORTABLE
-def test_hardlink_target_backslash_becomes_a_separator(
-    tmp_path: Path, policy: ExtractionPolicy
-) -> None:
+def test_link_target_backslash_becomes_a_separator(policy: ExtractionPolicy) -> None:
     for type in (MemberType.HARDLINK, MemberType.SYMLINK):
         member = _member("h", type=type, link_target="d\\f")
         assert apply_name_policy(member, policy).link_target == "d/f"
 
+
+@_REWRITES
+def test_hardlink_target_backslash_becomes_a_separator(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    """The member names hold a ``\\`` too, which STRICT refuses."""
     archive = _tar([("file", "d\\f", b"data"), ("hard", "h\\g", "d\\f")])
     report = open_and_extract(io.BytesIO(archive), tmp_path / "out", policy=policy)
     assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 2
@@ -179,7 +186,7 @@ def test_hardlink_resolves_by_its_stored_target(
 
 
 @_POSIX_SYMLINKS
-@_PORTABLE
+@_REWRITES
 def test_symlink_to_a_member_named_with_a_backslash_resolves(
     tmp_path: Path, policy: ExtractionPolicy
 ) -> None:
@@ -265,6 +272,10 @@ def test_rewritten_name_is_checked_where_it_is_written(
 def test_windows_invalid_characters_are_escaped(
     name: str, written: str, policy: ExtractionPolicy
 ) -> None:
+    if policy is ExtractionPolicy.STRICT and any(c < " " for c in name):
+        with pytest.raises(FilterRejectionError, match="control character"):
+            apply_name_policy(_member(name), policy)
+        return
     out = apply_name_policy(_member(name), policy)
     assert out.name == written
 

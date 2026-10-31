@@ -1528,16 +1528,20 @@ class ExtractionPolicy(Enum):
     STRICT = "strict"
     """The default, for archives from anywhere. A name is rewritten to a spelling every
     supported OS stores the same way, or refused when that is not possible: absolute
-    names, Windows reserved names such as ``CON``, names with ``:``, and names with
-    characters that reorder how they display are refused. Files keep their permissions
+    names, Windows reserved names such as ``CON``, names with ``:``, names with
+    characters that reorder how they display, and names another OS or reader takes
+    differently (a ``\\``, a control character, bytes that are not UTF-8) are refused.
+    Files keep their permissions
     without the setuid, setgid and sticky bits and without write access for group and
     others, and a file its owner cannot execute is executable by nobody. Directories
     are ``rwxr-xr-x``, and owners are not applied."""
     STANDARD = "standard"
     """For archives you mostly trust, such as your own. As ``STRICT``, but trailing dots
     and spaces are kept (a folder named only dots or spaces, such as ``...``, is still
-    refused), an absolute name is extracted inside the destination
-    (``/etc/x`` as ``etc/x``, as tar and unzip do), and permissions are kept as stored
+    refused), a ``\\``, a control character or bytes that are not UTF-8 are written in
+    a portable spelling (``a\\b`` as ``a/b``, ``caf\\xe9`` as ``caf%E9``), an absolute
+    name is extracted inside the destination (``/etc/x`` as ``etc/x``, as tar and unzip
+    do), and permissions are kept as stored
     without the setuid, setgid and sticky bits."""
     TRUSTED = "trusted"
     """For archives you trust, to reproduce them faithfully. Names are written as
@@ -1701,10 +1705,11 @@ class NameRewrite(StrEnum):
 
     PORTABLE_NAME = "portable_name"
     """The name was respelled so that every supported OS stores it the same way: a
-    ``\\`` written as ``/``, a byte that is not UTF-8 or a character Windows refuses
-    (``<>"|?*`` and 0x01-0x1F) written as ``%XX``, and, under ``STRICT`` only, a
-    trailing dot or space removed from each segment. ``TRUSTED`` never rewrites a
-    name."""
+    character Windows refuses (``<>"|?*``) written as ``%XX``; under ``STANDARD`` a
+    ``\\`` written as ``/`` and a byte that is not UTF-8 or a control character
+    0x01-0x1F written as ``%XX`` (``STRICT`` refuses those names); and, under ``STRICT``
+    only, a trailing dot or space removed from each segment. ``TRUSTED`` never rewrites
+    a name."""
 
 
 @dataclass
