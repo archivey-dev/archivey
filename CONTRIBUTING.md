@@ -214,6 +214,9 @@ maintainer.
   `ty check` enforces both over the library sources, so a renamed base method cannot
   strand an override there. It does not check `tests/`, the CLI or the plugin packages;
   `pyproject.toml` names the plugin hook that leaves unprotected.
+  The exception is the decoder worker scripts a child loads by path (`decoder_worker.py`,
+  `rapidgzip_worker.py`): they may not import `archivey` or `typing`, so they keep
+  their own stand-in (`tests/test_worker_scripts.py`).
 - **Share code that must agree; copy code that agrees by coincidence** (DR-23a). Before
   factoring out duplicated code, ask whether a change to one copy must reach the other.
 - **Don't accumulate debt — clean as you go** (DR-23). When you touch something, leave it
