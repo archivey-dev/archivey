@@ -479,6 +479,19 @@ def test_a_name_that_is_not_utf8_follows_encoding(tmp_path: Path) -> None:
         assert [m.name for m in reader.members()] == ["café.txt"]
 
 
+@pytest.mark.parametrize("compressed", [False, True], ids=["plain", "gz"])
+def test_the_cost_follows_the_compression_layer(compressed: bool) -> None:
+    """Plain CPIO is scanned and direct; inside a compressor, as a compressed TAR is."""
+    data = (DATA / "gnu-newc.cpio").read_bytes()
+    with open_archive(io.BytesIO(gzip.compress(data) if compressed else data)) as r:
+        cost = r.info.cost
+    assert (cost.listing_cost, cost.access_cost) == (
+        (archivey.ListingCost.REQUIRES_DECOMPRESSION, archivey.AccessCost.SOLID)
+        if compressed
+        else (archivey.ListingCost.REQUIRES_SCANNING, archivey.AccessCost.DIRECT)
+    )
+
+
 def test_hostile_headers(tmp_path: Path) -> None:
     def opened(data: bytes) -> None:
         with open_archive(_archive(tmp_path, data), format="cpio") as reader:

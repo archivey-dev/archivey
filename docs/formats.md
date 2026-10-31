@@ -46,7 +46,8 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 - **ISO 9660:** `[recommended]` (`pycdlib`). Listing: from its index. Members: direct. Needs a
   source that can seek.
 - **CPIO** (`.cpio`, initramfs, RPM payloads): core. Listing: header by header. Members:
-  direct. Reads from a pipe, and inside any compressor TAR reads inside (`.cpio.gz`, …).
+  direct. Reads from a pipe. Inside any compressor TAR reads inside (`.cpio.gz`, …), as a
+  compressed TAR is: listing needs decompression, members are solid.
 - **ar** (`.a`, `.lib`, the outer layer of a `.deb`): core. Listing: header by header. Members:
   direct. Reads from a pipe. Inside any compressor TAR reads inside (`.a.gz`, …), as a
   compressed TAR is: listing needs decompression, members are solid.
@@ -1023,7 +1024,8 @@ misread the archive.
 ## CPIO
 
 - **Needs:** nothing.
-- **Listing:** header by header, in one pass, up to the `TRAILER!!!` member.
+- **Listing:** header by header, in one pass, up to the `TRAILER!!!` member; inside a compressor,
+  it needs decompression, as in a compressed TAR.
 - **Reading members:** direct; inside a compressor, solid, as in a compressed TAR.
 - **From a pipe:** yes, with `streaming=True`.
 - All four header variants read: binary (either byte order), odc, newc and crc, and afio's
