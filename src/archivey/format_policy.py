@@ -247,7 +247,10 @@ class FormatPolicy:
     plugins: bool
     """Whether registered plugin formats and plugin codecs may open. Use ``False``
     with ``exclude``; under ``only`` a plugin opens only when its container (or its
-    :class:`~archivey.PluginStream`, for a codec) is listed."""
+    :class:`~archivey.PluginStream`, for a codec) is listed.
+
+    Stable, unlike the experimental plugin interface it refuses: ``plugins=False``
+    keeps working whatever happens to that interface."""
 
     replace: Mapping[ContainerFormat, type[FormatHandler]]
     """Built-in containers read by a plugin instead of the built-in reader.

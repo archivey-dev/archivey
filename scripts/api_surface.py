@@ -72,8 +72,10 @@ OPEN_ENUMS = frozenset(
 #: The experimental names: the format and codec plugin interface, and the names that
 #: exist only for it. The stability policy leaves them out (``docs/how-it-is-built.md``
 #: §Versioning and stability): any release may change or remove them, with no
-#: deprecation release, so a change to one never makes a release a minor. Each entry
-#: covers the name and everything under it.
+#: deprecation release. A line whose own name is one of them (or under one) never makes
+#: a release a minor; a stable line that only mentions one in a signature still does,
+#: and the maintainer judges it (see :func:`classify`). ``tests/test_api_surface.py``
+#: pins the list: adding a name takes away a promise to callers.
 EXPERIMENTAL = (
     "archivey.formats",
     "archivey.PluginContainer",
@@ -416,11 +418,13 @@ def classify(old: list[str], new: list[str]) -> tuple[list[str], list[str]]:
     """Split the changes into (needs a minor release, allowed in a patch).
 
     Each entry is a ``+`` or ``-`` line. A removed or changed line needs a minor
-    release. An added line is allowed in a patch only when it adds a value to an
-    open-ended enum or a diagnostic code string (DR-12a). Anything else added (a name,
-    a parameter, a field, an item of ``ARCHIVE_INTEGRITY_CODES``, a CLI option) needs a
-    minor release. A change of any kind to an experimental name
-    (:func:`is_experimental`) is allowed in a patch.
+    release, unless the line's own name is experimental (:func:`is_experimental`). An
+    added line is allowed in a patch only when its own name is experimental, or it adds
+    a value to an open-ended enum or a diagnostic code string (DR-12a). Anything else
+    added (a name, a parameter, a field, an item of ``ARCHIVE_INTEGRITY_CODES``, a CLI
+    option) needs a minor release. A stable line that only mentions an experimental
+    name, such as ``FormatPolicy``'s constructor with its ``replace=`` parameter, is
+    judged as a stable line: the maintainer then decides whether the change is a minor.
     """
     old_set, new_set = set(old), set(new)
     open_enums = {

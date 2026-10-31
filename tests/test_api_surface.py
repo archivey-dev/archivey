@@ -103,6 +103,25 @@ def test_removed_enum_value_needs_a_minor() -> None:
     assert _classify(new) == (["- value archivey.DiagnosticCode.A = 'a'"], [])
 
 
+def test_experimental_names_are_pinned() -> None:
+    # A change to these never needs a minor. Adding one takes away a promise to callers.
+    assert api_surface.EXPERIMENTAL == (
+        "archivey.formats",
+        "archivey.PluginContainer",
+        "archivey.PluginStream",
+        "archivey.FormatPolicy.replace",
+        "archivey.FormatInfo.from_plugin",
+    )
+
+
+def test_a_stable_signature_naming_an_experimental_type_still_needs_a_minor() -> None:
+    old = "init archivey.FormatPolicy(*, replace: Mapping | None = None) -> None"
+    new = "init archivey.FormatPolicy(*) -> None"
+    minor, patch = api_surface.classify([old], [new])
+    assert minor == [f"- {old}", f"+ {new}"]
+    assert patch == []
+
+
 def test_a_change_to_an_experimental_name_fits_a_patch() -> None:
     old = [
         *_OLD,

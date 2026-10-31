@@ -114,8 +114,9 @@ class PluginContainer(StrEnum):
 
         LHA = ArchiveFormat(LhaContainer.LHA, StreamFormat.UNCOMPRESSED)
 
-    Experimental, with the rest of ``archivey.formats``: any release may change it. Code that matches on
-    ``ArchiveFormat.container`` needs a default case once a plugin is registered.
+    Experimental, with the rest of ``archivey.formats``: any release may change it.
+    Code that matches on ``ArchiveFormat.container`` needs a default case once a plugin
+    is registered.
     """
 
 
@@ -134,8 +135,9 @@ class PluginStream(StrEnum):
     LzhamStream.LZHAM)`` for a single ``.lzham`` file, ``ArchiveFormat(TAR, ...)`` for
     a ``.tar.lzham``.
 
-    Experimental, with the rest of ``archivey.formats``: any release may change it. Code that matches on
-    ``ArchiveFormat.stream`` needs a default case once a codec is registered.
+    Experimental, with the rest of ``archivey.formats``: any release may change it.
+    Code that matches on ``ArchiveFormat.stream`` needs a default case once a codec is
+    registered.
     """
 
 
