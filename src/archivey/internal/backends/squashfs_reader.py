@@ -48,6 +48,7 @@ from archivey.formats import (
 from archivey.internal.backends import squashfs_lzo as lzo
 from archivey.internal.excluded_libraries import as_reported
 from archivey.internal.format_adapter import register_builtin_format
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.isolated import Natives, natives_for
 from archivey.internal.streams.codecs.lz4_codec import LZ4_REQUIREMENT
@@ -551,6 +552,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
                 return True
         return False
 
+    @override
     def iter_members(self) -> Iterator[MemberRecord[FileLocation | None]]:
         self._block_list_bytes = 0
         root = self._sb.root_inode
@@ -616,6 +618,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
                     member.extra["special_file_type"] = _SPECIAL[kind]
             yield MemberRecord(member, location)
 
+    @override
     def open_member(
         self, member: ArchiveMember, locator: FileLocation | None
     ) -> MemberData:
@@ -645,6 +648,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
 
         return block_stream(location.size, block_size, read_block)
 
+    @override
     def archive_info(self) -> ReaderArchiveInfo:
         return ReaderArchiveInfo(
             format_version="4.0",
@@ -701,6 +705,7 @@ class SquashfsHandler(FormatHandler):
     magic = (Magic(0, MAGIC), Magic(0, _SWAPPED_MAGIC))
     uses_encoding = True
 
+    @override
     def open(self, source: ReaderSource, context: ReaderContext) -> SquashfsReader:
         return SquashfsReader(source, context)
 

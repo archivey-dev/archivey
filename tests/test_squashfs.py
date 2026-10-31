@@ -412,6 +412,7 @@ def test_the_internal_names_the_reader_imports() -> None:
         "archivey.internal.backends.squashfs_lzo",
         "archivey.internal.excluded_libraries.as_reported",
         "archivey.internal.format_adapter.register_builtin_format",
+        "archivey.internal.overrides.override",
         "archivey.internal.streams.codecs.deps",
         "archivey.internal.streams.codecs.isolated.Natives",
         "archivey.internal.streams.codecs.isolated.natives_for",
