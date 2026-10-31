@@ -745,6 +745,8 @@ jobs:
         (QUIET.replace("  schedule:\n", "  - push\n  schedule:\n"), False),
         (QUIET + "on: push\n", False),  # two `on:` keys
         ("on: {push: {}}\npermissions: {}\n", False),
+        # An alias is refused before the load expands it (Cursor, C4).
+        (QUIET + "  x:\n    env:\n      a: &a [1, 2]\n      b: [*a, *a]\n", False),
         # Context names ignore case in an expression (round 2, K6).
         (QUIET.replace("${{ inputs.ref }}", "${{ SECRETS.FOO }}"), False),
         (QUIET.replace("${{ inputs.ref }}", "${{ Secrets['FOO'] }}"), False),

@@ -897,6 +897,10 @@ def _parsed_quiet(text: str) -> bool:
     except ImportError:
         return False
     try:
+        # An alias is refused before the load expands it: nested aliases grow
+        # exponentially, and Actions rejects them anyway.
+        if any(isinstance(e, yaml.AliasEvent) for e in yaml.parse(text)):
+            return False
         doc = yaml.safe_load(text)
     except yaml.YAMLError:
         return False
