@@ -363,6 +363,11 @@ def test_maintainer_decisions_in_the_api_surface() -> None:
             "method archivey.R.open(self, name: str | bytes, *, mode: str = 'r') -> X",
             # A removed parameter, a narrowed choice, a renamed wire string do.
             "method archivey.R.get(self, name: str) -> X",
+            # Moving a positional parameter, or putting a new one before it, breaks a
+            # positional call; a new keyword-only one does not.
+            "method archivey.R.swap(self, b: int, a: int) -> X",
+            "method archivey.R.ins(self, new: int, a: int) -> X",
+            "method archivey.R.kw(self, a: int, *, new: int = 0) -> X",
             "cli-option extract --overwrite [action=Store choices={error, rename}]",
             "value archivey.AbortOn.BLOCKED_MEMBER = 'blocked'",
             "alias archivey.AbortOnStr = Literal['blocked']",
@@ -373,6 +378,9 @@ def test_maintainer_decisions_in_the_api_surface() -> None:
             "# a comment",
             "method archivey.R.open(self, name: str) -> X",
             "method archivey.R.get(self, name: str, default: X | None = None) -> X",
+            "method archivey.R.swap(self, a: int, b: int) -> X",
+            "method archivey.R.ins(self, a: int) -> X",
+            "method archivey.R.kw(self, a: int) -> X",
             "cli-option extract --overwrite [action=Store choices={error, rename, skip}]",
             "value archivey.AbortOn.BLOCKED_MEMBER = 'blocked_member'",
             "alias archivey.AbortOnStr = Literal['blocked_member']",
@@ -383,6 +391,8 @@ def test_maintainer_decisions_in_the_api_surface() -> None:
         "removes a public value: alias archivey.AbortOnStr blocked_member",
         "removes a public value: cli-option extract --overwrite skip",
         "removes a parameter: method archivey.R.get default",
+        "reorders positional parameters: method archivey.R.ins",
+        "reorders positional parameters: method archivey.R.swap",
         "removes a public value: value archivey.AbortOn.BLOCKED_MEMBER 'blocked_member'",
         "adds a top-level name: class archivey.NewThing",
         "adds a top-level name: cli-verb verify",
@@ -404,6 +414,9 @@ def test_maintainer_decisions_in_config_workflows_and_decisions() -> None:
     ]
     wf = ".github/workflows/ci.yml"
     assert prep.maintainer_decisions([_diff(wf, added=["      - run: make"])]) == []
+    # Fields of the github context nobody outside chooses stay quiet.
+    fixed = "      - run: echo ${{ github.sha }} ${{ github.repository }} ${{ github.run_id }}"
+    assert prep.maintainer_decisions([_diff(wf, added=[fixed])]) == []
     for line in (
         "      contents: write",
         "permissions:",
@@ -413,6 +426,10 @@ def test_maintainer_decisions_in_config_workflows_and_decisions() -> None:
         "  issue_comment:",
         '          echo "${{ github.event.pull_request.title }}"',
         "          git checkout ${{ github.head_ref }}",
+        '          echo "${{ github.ref_name }}"',
+        "          echo \"${{ github['event'].pull_request.title }}\"",
+        "          echo ${{github.actor}}",
+        "          gh api -H 'x: ${{ github.token }}'",
     ):
         assert prep.maintainer_decisions([_diff(wf, added=[line])]) == [
             f"changes a workflow's permissions, secrets or triggers: {wf}"

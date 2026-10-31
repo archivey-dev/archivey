@@ -459,10 +459,18 @@ REQUIRED_CHECKS = (
 )
 # A workflow line that grants a token scope, reads a secret, runs on the base
 # repository's trust with its token and secrets (`pull_request_target`, `workflow_run`,
-# `issue_comment`), or puts text from the event into the job.
+# `issue_comment`), or reads the `github` context in an expression: any field but a few
+# fixed ones can carry text someone outside chose (a title, a branch, an actor's name).
+# A new `run:` step with no expression is not matched; the Opus pass and Cursor review
+# it.
+_GITHUB_FIXED = (
+    "sha|repository|repository_id|repository_owner|repository_owner_id|run_id"
+    "|run_number|run_attempt|workflow|job|server_url|api_url|graphql_url|event_name"
+    "|base_ref|ref_type|action_path|workspace|retention_days"
+)
 _WORKFLOW_POWER_RE = re.compile(
     r"\bpermissions\s*:|\bsecrets\.|\b(?:pull_request_target|workflow_run|issue_comment)\b"
-    r"|\$\{\{\s*github\.(?:event\b|head_ref\b)"
+    rf"|\$\{{\{{[^}}]*\bgithub\s*(?:\[|\.\s*(?!(?:{_GITHUB_FIXED})\b)\w)"
     r"|^\s*(?:actions|attestations|checks|contents|deployments|discussions|id-token"
     r"|issues|models|packages|pages|pull-requests|repository-projects|security-events"
     r"|statuses)\s*:\s*(?:read|write|none)\b"
@@ -510,6 +518,17 @@ def _params(line: str) -> list[str]:
     return [m.group(1) for n in names if (m := re.match(r"\s*(\*{0,2}\w+|\*|/)", n))]
 
 
+def _positional(line: str) -> list[str]:
+    """The parameters a caller can pass by position: those before `*` or `*args`."""
+    names: list[str] = []
+    for p in _params(line):
+        if p.startswith("*"):
+            break
+        if p != "/":
+            names.append(p)
+    return names
+
+
 def _literals(line: str) -> set[str]:
     """The fixed strings a line offers: a `Literal[...]` alias's members, a CLI option's
     choices, an enum value's wire string."""
@@ -532,6 +551,11 @@ def _api_changes(removed: Iterable[str], added: Iterable[str]) -> list[str]:
         if key.split(" ", 1)[0] in _CALLABLES:
             gone = [p for p in _params(before) if p not in _params(after)]
             found += [f"removes a parameter: {key} {p}" for p in gone]
+            # A caller passing them positionally breaks when they move or one is put
+            # before them.
+            old_pos, new_pos = _positional(before), _positional(after)
+            if not gone and new_pos[: len(old_pos)] != old_pos:
+                found.append(f"reorders positional parameters: {key}")
         found += [
             f"removes a public value: {key} {v}"
             for v in sorted(_literals(before) - _literals(after))
