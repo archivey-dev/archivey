@@ -460,9 +460,11 @@ leading `/` or collapse `..` components, because those rewrites hide unsafe
 stored names. Such names are rejected by `safe-extraction`, not re-rooted at read
 time. When normalization changes the presented path, Archivey SHALL emit the
 documented normalization diagnostic/log event, except when the only changes are
-dropping a leading `./` and appending a directory's `/`: `tar czf a.tar.gz .`
-writes that on every member, every reader strips it, and reporting it would make
-`DiagnosticPolicy.STRICT` refuse ordinary archives (maintainer ruling 2026-10-31).
+dropping a leading `./`, appending a directory's `/`, dropping the `/` a ZIP
+directory reparse point is stored with, or a leading `./` with either of the other
+two. `tar czf a.tar.gz .` writes the `./` on every member, every reader strips it,
+and reporting it would make `DiagnosticPolicy.STRICT` refuse ordinary archives
+(maintainer ruling 2026-10-31).
 
 Normalization SHALL apply in order:
 

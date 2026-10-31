@@ -128,6 +128,70 @@ def test_no_warning_for_directory_trailing_slash_only(
     assert collector.snapshot().total_count == 0
 
 
+@pytest.mark.parametrize(
+    ("member_type", "name", "presented", "link_stored_as_directory", "reports"),
+    [
+        # A leading ``./`` alone, or with a directory's added ``/``, is not reported.
+        (MemberType.FILE, "a.txt", "./a.txt", False, False),
+        (MemberType.FILE, "a.txt", "././a.txt", False, False),
+        (MemberType.DIRECTORY, "d/", "./d", False, False),
+        (MemberType.DIRECTORY, ".", "./", False, False),
+        # It combines with the link-stored-as-directory rule (a ZIP reparse point).
+        (MemberType.SYMLINK, "s", "./s/", True, False),
+        # A TAR link named ``s/`` keeps its report, with or without ``./``.
+        (MemberType.SYMLINK, "s", "./s/", False, True),
+        (MemberType.FILE, "a/b", "./a//b", False, True),
+        (MemberType.FILE, "a.txt", ".//a.txt", False, True),
+    ],
+)
+def test_a_dot_prefix_combines_with_the_other_suppressions(
+    member_type: MemberType,
+    name: str,
+    presented: str,
+    link_stored_as_directory: bool,
+    reports: bool,
+) -> None:
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.internal.naming import emit_member_name_normalized
+    from archivey.types import ArchiveMember
+
+    member = ArchiveMember(type=member_type, name=name, raw_name=None)
+    collector = DiagnosticCollector()
+    emit_member_name_normalized(
+        collector,
+        member=member,
+        presented_name=presented,
+        link_stored_as_directory=link_stored_as_directory,
+    )
+    assert collector.snapshot().total_count == (1 if reports else 0)
+
+
+def test_a_zip_member_with_a_leading_dot_slash_is_not_reported(tmp_path: Path) -> None:
+    import zipfile
+
+    from archivey import open_archive
+
+    path = tmp_path / "a.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("./a.txt", b"x")
+    with open_archive(path) as reader:
+        assert [m.name for m in reader.members()] == ["a.txt"]
+        assert reader.diagnostics.total_count == 0
+
+
+def test_a_long_run_of_dot_slashes_is_stripped_in_linear_time() -> None:
+    """A million ``./`` before ``a``: stripping by index is linear (about 0.1 s, 0.3 s
+    under branch coverage). Slicing once per ``./`` copied the rest of the name each
+    time and ran past the pytest timeout; the bound leaves room for a loaded runner."""
+    import time
+
+    from archivey.internal.naming import _without_dot_prefix
+
+    started = time.perf_counter()
+    assert _without_dot_prefix("./" * 1_000_000 + "a") == "a"
+    assert time.perf_counter() - started < 5
+
+
 def test_link_target_backslash_is_literal() -> None:
     # A link target follows the same backslash rule as member names: the backend already
     # converted separators where the format treats "\" as one, so here it is a literal

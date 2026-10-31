@@ -384,32 +384,19 @@ def normalize_member_name(
     return name
 
 
-def _only_dot_prefix_dropped(presented_name: str, member: ArchiveMember) -> bool:
-    """Whether normalization only dropped a leading ``./`` (and, for a directory, added
-    the trailing ``/``): what ``tar czf a.tar.gz .`` writes for every member, with the
-    bare ``./`` root among them.
+def _without_dot_prefix(presented_name: str) -> str:
+    """``presented_name`` without its leading run of ``./``.
 
-    Every reader strips the prefix the same way, so the report would only make a
-    strict policy refuse ordinary archives (maintainer ruling 2026-10-31). A ``//``,
-    a ``/./`` inside the name or a trailing ``/`` on a link is still reported.
+    ``tar czf a.tar.gz .`` names every member ``./...``, and every reader strips the
+    prefix the same way, so the report would only make a strict policy refuse ordinary
+    archives (maintainer ruling 2026-10-31).
     """
     # Find the prefix's end by index: slicing once per `./` would copy the rest of
     # the name each time, quadratic in a name of many `./`.
     end = 0
     while presented_name.startswith("./", end):
         end += 2
-    if end == 0:
-        return False
-    rest = presented_name[end:]
-    if rest in ("", ".") or member.name == ".":
-        return member.name == "." and rest in ("", ".")
-    if member.name == rest:
-        return True
-    return (
-        member.type is MemberType.DIRECTORY
-        and member.name == rest + "/"
-        and not rest.endswith("/")
-    )
+    return presented_name[end:]
 
 
 def emit_member_name_normalized(
@@ -448,19 +435,27 @@ def emit_member_name_normalized(
     # that reports equal names would not reach their members.
     if member.name == presented_name:
         return
+    # The rules below are checked on the name past its leading ``./`` run, so a
+    # dropped prefix combines with each of them. A ``//``, a ``/./`` inside the name
+    # or a trailing ``/`` on a link is still reported.
+    rest = _without_dot_prefix(presented_name)
+    if rest in ("", "."):
+        # The bare root ``./`` (or ``././``) presents as ``.``.
+        if member.name == ".":
+            return
+    elif member.name == rest:
+        return
     if (
         member.type is MemberType.DIRECTORY
-        and presented_name + "/" == member.name
-        and not presented_name.endswith("/")
+        and rest + "/" == member.name
+        and not rest.endswith("/")
     ):
         return
     if (
         link_stored_as_directory
-        and presented_name == member.name + "/"
+        and rest == member.name + "/"
         and not member.name.endswith("/")
     ):
-        return
-    if _only_dot_prefix_dropped(presented_name, member):
         return
     collector.emit(
         code=DiagnosticCode.MEMBER_NAME_NORMALIZED,
