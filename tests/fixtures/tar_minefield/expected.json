@@ -421,8 +421,8 @@
     "gnu_tree": true
    },
    "strict": {
-    "outcome": "other",
-    "tree": "7ace3fe773df46f4",
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
    "strict_diag": {
@@ -1482,9 +1482,7 @@
     "outcome": "expected",
     "tree": "2da7ede53362bf61"
    },
-   "codes": [
-    "member_name_normalized"
-   ],
+   "codes": [],
    "trusted": {
     "outcome": "expected",
     "tree": "2da7ede53362bf61",
@@ -1496,9 +1494,9 @@
     "gnu_tree": true
    },
    "strict_diag": {
-    "outcome": "rejected",
-    "tree": "44136fa355b3678a",
-    "gnu_tree": false
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
    }
   },
   "N07-symlink-absolute": {
@@ -1713,13 +1711,13 @@
     "gnu_tree": true
    },
    "strict": {
-    "outcome": "other",
-    "tree": "5abeb1d352d228ad",
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
    "strict_diag": {
-    "outcome": "other",
-    "tree": "5abeb1d352d228ad",
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
     "gnu_tree": false
    }
   },
@@ -1778,13 +1776,13 @@
     "gnu_tree": true
    },
    "strict": {
-    "outcome": "other",
-    "tree": "3f80821e3b3e0766",
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
    "strict_diag": {
-    "outcome": "other",
-    "tree": "3f80821e3b3e0766",
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
     "gnu_tree": false
    }
   },
@@ -1833,9 +1831,7 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a"
    },
-   "codes": [
-    "member_name_normalized"
-   ],
+   "codes": [],
    "trusted": {
     "outcome": "rejected",
     "tree": "44136fa355b3678a",
@@ -1873,13 +1869,13 @@
     "gnu_tree": true
    },
    "strict": {
-    "outcome": "other",
-    "tree": "c6072bd52e96c97c",
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
    "strict_diag": {
-    "outcome": "other",
-    "tree": "c6072bd52e96c97c",
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
     "gnu_tree": false
    }
   },
@@ -2069,13 +2065,13 @@
     "gnu_tree": true
    },
    "strict": {
-    "outcome": "other",
-    "tree": "108ef915c6adf3bd",
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
     "gnu_tree": false
    },
    "strict_diag": {
-    "outcome": "other",
-    "tree": "108ef915c6adf3bd",
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
     "gnu_tree": false
    }
   },

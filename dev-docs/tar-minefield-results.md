@@ -20,8 +20,8 @@ Each case below gives a reason per run that owes one: Safest wherever it fails t
 | Run | Passes | GNU tar's result |
 | --- | --- | --- |
 | TRUSTED | 40 of 81 | 78 of 81 |
-| STRICT | 40 of 81 | 71 of 81 |
-| Safest (STRICT + DiagnosticPolicy.STRICT) | 67 of 81 | not compared |
+| STRICT | 45 of 81 | 71 of 81 |
+| Safest (STRICT + DiagnosticPolicy.STRICT) | 71 of 81 | not compared |
 | GNU tar 1.35 | 40 of 81 | |
 | tar-codec | 68 of 81 | |
 
@@ -58,37 +58,6 @@ Which field names a member, and how a path is normalized. A name another OS or r
 
 - **Safest**: GNU tar's incremental archives put times in those bytes; under the GNU magic they are never a prefix
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6): under the GNU magic those bytes are not a prefix. Not reported: GNU tar writes times there in incremental archives
-
-#### N13-name-backslash
-
-🔴 [N13](https://stoppels.ch/tar/N13.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ❌ other.
-
-- **Safest**: STRICT writes the name in a spelling every OS can hold (ADR 0013) instead of refusing it, so the tree is not the expected one, but nothing lands outside the destination or under a name another OS reads differently: the backslash is a separator
-- **TRUSTED**: TRUSTED keeps a backslash as a character, as GNU tar on POSIX does. Not reported: texi2html and gstreamer-docs tarballs have them
-- **STRICT**: STRICT rewrites the name to a spelling every OS can hold (ADR 0013): the backslash is a separator
-
-#### N15-name-control-character
-
-🔴 [N15](https://stoppels.ch/tar/N15.html), tolerate: GNU tar ✅ expected, tar-codec ✅ rejected, TRUSTED ✅ expected, STRICT ❌ other, Safest ❌ other.
-
-- **Safest**: STRICT writes the name in a spelling every OS can hold (ADR 0013) instead of refusing it, so the tree is not the expected one, but nothing lands outside the destination or under a name another OS reads differently: the newline becomes %0A
-- **STRICT**: STRICT rewrites the name to a spelling every OS can hold (ADR 0013): the newline becomes %0A
-
-#### N18-name-not-utf8
-
-🔴 [N18](https://stoppels.ch/tar/N18.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ❌ other.
-
-- **Safest**: STRICT writes the name in a spelling every OS can hold (ADR 0013) instead of refusing it, so the tree is not the expected one, but nothing lands outside the destination or under a name another OS reads differently: the byte 0xE9 becomes %E9
-- **TRUSTED**: TRUSTED writes the name's bytes, as GNU tar does. Not reported: aspell tarballs have Latin-1 names
-- **STRICT**: STRICT rewrites the name to a spelling every OS can hold (ADR 0013): the byte 0xE9 becomes %E9
-
-#### N24-pax-hdrcharset-binary
-
-🔴 [N24](https://stoppels.ch/tar/N24.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ❌ other.
-
-- **Safest**: STRICT writes the name in a spelling every OS can hold (ADR 0013) instead of refusing it, so the tree is not the expected one, but nothing lands outside the destination or under a name another OS reads differently: the byte 0xE9 becomes %E9
-- **TRUSTED**: TRUSTED writes the name's bytes, as GNU tar does. Not reported: hdrcharset=BINARY is POSIX's way to store them, and readers disagree only on whether to write or skip the file, not on its name
-- **STRICT**: STRICT rewrites the name to a spelling every OS can hold (ADR 0013): the byte 0xE9 becomes %E9
 
 ### Kinds
 
@@ -199,10 +168,10 @@ Where a member's data ends and which headers belong to it. A shape no real write
 
 #### F13-pax-newline-in-path
 
-[F13](https://stoppels.ch/tar/F13.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
+[F13](https://stoppels.ch/tar/F13.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ✅ rejected, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (newline_in_value): a record is framed by its length, as POSIX says, so the newline is a byte of the path. Newlines in xattr and ACL values are real and not reported
-- **STRICT**: STRICT rewrites the name to a spelling every OS can hold (ADR 0013): the newline becomes %0A
+- **STRICT**: STRICT refuses a name that another OS or reader takes differently (ADR 0013, 2026-10-31 amendment): it holds a newline
 
 #### F15-pax-size-on-dir
 
@@ -281,11 +250,31 @@ Which field names a member, and how a path is normalized. A name another OS or r
 - **TRUSTED**: TRUSTED re-roots an absolute name inside the destination, as GNU tar strips the leading slash. Nothing is written outside it
 - **STRICT**: STRICT refuses an absolute name (ADR 0013)
 
+#### N13-name-backslash
+
+[N13](https://stoppels.ch/tar/N13.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ✅ rejected, Safest ✅ rejected.
+
+- **TRUSTED**: TRUSTED keeps a backslash as a character, as GNU tar on POSIX does. Not reported: texi2html and gstreamer-docs tarballs have them
+- **STRICT**: STRICT refuses a name that another OS or reader takes differently (ADR 0013, 2026-10-31 amendment): Windows reads the backslash as a separator
+
 #### N14-name-bytes-after-nul
 
 [N14](https://stoppels.ch/tar/N14.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (field_tail): the name ends at the NUL, as in GNU tar
+
+#### N15-name-control-character
+
+[N15](https://stoppels.ch/tar/N15.html), tolerate: GNU tar ✅ expected, tar-codec ✅ rejected, TRUSTED ✅ expected, STRICT ✅ rejected, Safest ✅ rejected.
+
+- **STRICT**: STRICT refuses a name that another OS or reader takes differently (ADR 0013, 2026-10-31 amendment): it holds a newline
+
+#### N18-name-not-utf8
+
+[N18](https://stoppels.ch/tar/N18.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ✅ rejected, Safest ✅ rejected.
+
+- **TRUSTED**: TRUSTED writes the name's bytes, as GNU tar does. Not reported: aspell tarballs have Latin-1 names
+- **STRICT**: STRICT refuses a name that another OS or reader takes differently (ADR 0013, 2026-10-31 amendment): the byte 0xE9 is not UTF-8
 
 #### N19-pax-nul-in-path
 
@@ -316,6 +305,13 @@ Which field names a member, and how a path is normalized. A name another OS or r
 [N23](https://stoppels.ch/tar/N23.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ❌ other, Safest ✅ rejected.
 
 - **TRUSTED**: Extracted as GNU tar extracts it (DR-6), and reported with MEMBER_HEADER_AMBIGUOUS, since no real writer produces the shape and another reader can frame or name it differently (mixed_chain)
+
+#### N24-pax-hdrcharset-binary
+
+[N24](https://stoppels.ch/tar/N24.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, STRICT ✅ rejected, Safest ✅ rejected.
+
+- **TRUSTED**: TRUSTED writes the name's bytes, as GNU tar does. Not reported: hdrcharset=BINARY is POSIX's way to store them, and readers disagree only on whether to write or skip the file, not on its name
+- **STRICT**: STRICT refuses a name that another OS or reader takes differently (ADR 0013, 2026-10-31 amendment): the byte 0xE9 is not UTF-8
 
 #### N26-pax-global-path-then-empty
 
@@ -349,8 +345,8 @@ A refusal passes a `reject` or `tolerate` case, 71 of 81, so the pass counts bou
 
 - [F02](https://stoppels.ch/tar/F02.html) `F02-end-data-after` (tolerate; tar-codec expected): `archive_trailing_data`
 - [F04](https://stoppels.ch/tar/F04.html) `F04-end-missing` (tolerate; tar-codec rejected): `archive_eof_marker_missing`
-- [N06](https://stoppels.ch/tar/N06.html) `N06-name-leading-dot-slash` (tolerate; tar-codec expected): `member_name_normalized`
 - [N07](https://stoppels.ch/tar/N07.html) `N07-symlink-absolute` (tolerate; tar-codec rejected): nothing reported
+- [N15](https://stoppels.ch/tar/N15.html) `N15-name-control-character` (tolerate; tar-codec rejected): nothing reported
 
 ## Every case
 
@@ -370,7 +366,7 @@ Why links to the case's entry above, for a case where any run fails the verdict 
 | [F10](https://stoppels.ch/tar/F10.html) `extended-pax-size-before-gnu-long` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#f10-extended-pax-size-before-gnu-long) |
 | [F11](https://stoppels.ch/tar/F11.html) `magic-odd-version` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#f11-magic-odd-version) |
 | [F12](https://stoppels.ch/tar/F12.html) `number-size-gap` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#f12-number-size-gap) |
-| [F13](https://stoppels.ch/tar/F13.html) `pax-newline-in-path` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other ≠GNU | ✅ rejected | `member_header_ambiguous` | [why](#f13-pax-newline-in-path) |
+| [F13](https://stoppels.ch/tar/F13.html) `pax-newline-in-path` | reject | ❌ other | ✅ rejected | ❌ other | ✅ rejected ≠GNU | ✅ rejected | `member_header_ambiguous` | [why](#f13-pax-newline-in-path) |
 | [F14](https://stoppels.ch/tar/F14.html) `pax-size-disagrees` | tolerate | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
 | [F15](https://stoppels.ch/tar/F15.html) `pax-size-on-dir` | reject | ❌ other | ✅ rejected | ❌ other ≠GNU | ❌ other ≠GNU | ✅ rejected | `member_directory_data_ignored` | [why](#f15-pax-size-on-dir) |
 | [F16](https://stoppels.ch/tar/F16.html) `type-unknown` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ❌ other | `member_type_unknown` | [why](#f16-type-unknown) |
@@ -403,25 +399,25 @@ Why links to the case's entry above, for a case where any run fails the verdict 
 | [N03](https://stoppels.ch/tar/N03.html) `pax-long-name` | accept | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
 | [N04](https://stoppels.ch/tar/N04.html) `ustar-prefix` | accept | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
 | [N05](https://stoppels.ch/tar/N05.html) `name-dot` | tolerate | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
-| [N06](https://stoppels.ch/tar/N06.html) `name-leading-dot-slash` | tolerate | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ rejected | `member_name_normalized` |  |
+| [N06](https://stoppels.ch/tar/N06.html) `name-leading-dot-slash` | tolerate | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
 | [N07](https://stoppels.ch/tar/N07.html) `symlink-absolute` | tolerate | ✅ expected | ✅ rejected | ✅ rejected ≠GNU | ✅ rejected ≠GNU | ✅ rejected | nothing | [why](#n07-symlink-absolute) |
 | [N08](https://stoppels.ch/tar/N08.html) `extended-pax-path-and-gnu-long-name` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n08-extended-pax-path-and-gnu-long-name) |
 | [N09](https://stoppels.ch/tar/N09.html) `extended-two-pax-headers` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n09-extended-two-pax-headers) |
 | [N10](https://stoppels.ch/tar/N10.html) `format-star` | reject | ❌ other | ❌ other | ❌ other | ❌ other ≠GNU | ❌ other | nothing | [why](#n10-format-star) |
 | [N11](https://stoppels.ch/tar/N11.html) `gnu-prefix-field` | reject | ❌ other | ❌ other | ❌ other | ❌ other | ❌ other | nothing | [why](#n11-gnu-prefix-field) |
 | [N12](https://stoppels.ch/tar/N12.html) `name-absolute` | reject | ❌ other | ✅ rejected | ❌ other | ✅ rejected ≠GNU | ✅ rejected | nothing | [why](#n12-name-absolute) |
-| [N13](https://stoppels.ch/tar/N13.html) `name-backslash` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other ≠GNU | ❌ other | nothing | [why](#n13-name-backslash) |
+| [N13](https://stoppels.ch/tar/N13.html) `name-backslash` | reject | ❌ other | ✅ rejected | ❌ other | ✅ rejected ≠GNU | ✅ rejected | nothing | [why](#n13-name-backslash) |
 | [N14](https://stoppels.ch/tar/N14.html) `name-bytes-after-nul` | reject | ❌ other | ❌ other | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n14-name-bytes-after-nul) |
-| [N15](https://stoppels.ch/tar/N15.html) `name-control-character` | tolerate | ✅ expected | ✅ rejected | ✅ expected | ❌ other ≠GNU | ❌ other | nothing | [why](#n15-name-control-character) |
+| [N15](https://stoppels.ch/tar/N15.html) `name-control-character` | tolerate | ✅ expected | ✅ rejected | ✅ expected | ✅ rejected ≠GNU | ✅ rejected | nothing | [why](#n15-name-control-character) |
 | [N16](https://stoppels.ch/tar/N16.html) `name-dotdot` | reject | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | nothing |  |
-| [N17](https://stoppels.ch/tar/N17.html) `name-empty` | reject | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | `member_name_normalized` |  |
-| [N18](https://stoppels.ch/tar/N18.html) `name-not-utf8` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other ≠GNU | ❌ other | nothing | [why](#n18-name-not-utf8) |
+| [N17](https://stoppels.ch/tar/N17.html) `name-empty` | reject | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | nothing |  |
+| [N18](https://stoppels.ch/tar/N18.html) `name-not-utf8` | reject | ❌ other | ✅ rejected | ❌ other | ✅ rejected ≠GNU | ✅ rejected | nothing | [why](#n18-name-not-utf8) |
 | [N19](https://stoppels.ch/tar/N19.html) `pax-nul-in-path` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n19-pax-nul-in-path) |
 | [N20](https://stoppels.ch/tar/N20.html) `pax-repeated-key` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n20-pax-repeated-key) |
 | [N21](https://stoppels.ch/tar/N21.html) `pax-global-path` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n21-pax-global-path) |
 | [N22](https://stoppels.ch/tar/N22.html) `pax-path-empty` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n22-pax-path-empty) |
 | [N23](https://stoppels.ch/tar/N23.html) `extended-gnu-long-then-pax` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n23-extended-gnu-long-then-pax) |
-| [N24](https://stoppels.ch/tar/N24.html) `pax-hdrcharset-binary` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other ≠GNU | ❌ other | nothing | [why](#n24-pax-hdrcharset-binary) |
+| [N24](https://stoppels.ch/tar/N24.html) `pax-hdrcharset-binary` | reject | ❌ other | ✅ rejected | ❌ other | ✅ rejected ≠GNU | ✅ rejected | nothing | [why](#n24-pax-hdrcharset-binary) |
 | [N25](https://stoppels.ch/tar/N25.html) `symlink-empty-target` | reject | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | `symlink_target_unavailable` |  |
 | [N26](https://stoppels.ch/tar/N26.html) `pax-global-path-then-empty` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n26-pax-global-path-then-empty) |
 | [N27](https://stoppels.ch/tar/N27.html) `pax-long-symlink` | accept | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |

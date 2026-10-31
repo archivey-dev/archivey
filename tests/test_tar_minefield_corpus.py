@@ -249,23 +249,22 @@ TRIAGE: dict[str, str] = {
 # say why already. STRICT writes a name in a spelling every OS can hold (ADR 0013), so
 # a name GNU tar writes as stored can land under another name, or be refused.
 _STRICT_NAMES = "STRICT rewrites the name to a spelling every OS can hold (ADR 0013)"
+_STRICT_REFUSES = (
+    "STRICT refuses a name that another OS or reader takes differently (ADR 0013, "
+    "2026-10-31 amendment)"
+)
 STRICT_TRIAGE: dict[str, str] = {
-    "F13-pax-newline-in-path": f"{_STRICT_NAMES}: the newline becomes %0A",
+    "F13-pax-newline-in-path": f"{_STRICT_REFUSES}: it holds a newline",
     "N10-format-star": f"{_STRICT_NAMES}: the trailing blank is dropped",
     "N12-name-absolute": "STRICT refuses an absolute name (ADR 0013)",
-    "N13-name-backslash": f"{_STRICT_NAMES}: the backslash is a separator",
-    "N15-name-control-character": f"{_STRICT_NAMES}: the newline becomes %0A",
-    "N18-name-not-utf8": f"{_STRICT_NAMES}: the byte 0xE9 becomes %E9",
-    "N24-pax-hdrcharset-binary": f"{_STRICT_NAMES}: the byte 0xE9 becomes %E9",
+    "N13-name-backslash": f"{_STRICT_REFUSES}: Windows reads the backslash as a separator",
+    "N15-name-control-character": f"{_STRICT_REFUSES}: it holds a newline",
+    "N18-name-not-utf8": f"{_STRICT_REFUSES}: the byte 0xE9 is not UTF-8",
+    "N24-pax-hdrcharset-binary": f"{_STRICT_REFUSES}: the byte 0xE9 is not UTF-8",
 }
 
 # Why Archivey, with the safest settings, fails a case's verdict. This is the safety
 # bar, so the reason must justify reading the shape rather than refusing it.
-_PORTABLE_NAME = (
-    "STRICT writes the name in a spelling every OS can hold (ADR 0013) instead of "
-    "refusing it, so the tree is not the expected one, but nothing lands outside the "
-    "destination or under a name another OS reads differently"
-)
 DIAG_TRIAGE: dict[str, str] = {
     "F16-type-unknown": (
         "MEMBER_TYPE_UNKNOWN is deliberately out of DiagnosticPolicy.STRICT: real "
@@ -289,10 +288,6 @@ DIAG_TRIAGE: dict[str, str] = {
         "GNU tar's incremental archives put times in those bytes; under the GNU magic "
         "they are never a prefix"
     ),
-    "N13-name-backslash": f"{_PORTABLE_NAME}: the backslash is a separator",
-    "N15-name-control-character": f"{_PORTABLE_NAME}: the newline becomes %0A",
-    "N18-name-not-utf8": f"{_PORTABLE_NAME}: the byte 0xE9 becomes %E9",
-    "N24-pax-hdrcharset-binary": f"{_PORTABLE_NAME}: the byte 0xE9 becomes %E9",
     "S04-hardlink-to-itself": (
         "27 real tarballs have it (cuDNN binaries in Spack, xscreensaver 6.12); the "
         "file stays as it is"
