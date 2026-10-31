@@ -155,7 +155,19 @@ to recover its declared length.
 `pycdlib` saw Rock Ridge entries in the PVD tree and an `ER` record naming RRIP; entries
 without the `ER` are treated as a false positive. From then on every name comes from that namespace and that tree
 (§1). 7-Zip prefers Joliet over Rock Ridge, so the two tools can list different names —
-and, on an image built with `-hide` or `-hide-joliet`, different files.
+and, on an image built with `-hide` or `-hide-joliet`, different files. After the walk,
+`_report_files_in_other_trees` compares the trees not listed (Joliet, unless it is the
+listed one, and UDF, which Windows reads first) with the listed one by the extent each
+non-empty file points at, not by name (Joliet cuts names at 64 characters, plain ISO
+9660 names are 8.3), and reports a file only another tree holds as
+`MEMBER_READERS_DISAGREE` (`file_only_in_joliet`, `file_only_in_udf`), named by its path
+in that tree, with no member id, at most 16 per tree. A UDF extent is made absolute with
+the partition start; a file whose data sits inside its UDF File Entry has no extent and
+always counts as unlisted. Empty files share one extent and are not compared. The reverse
+shape, a listed file another tree lacks, is not reported: everything archivey lists is
+in view. pycdlib parsed every tree in `open_fp`, so the comparison reads nothing; on a
+20 100-file Rock Ridge + Joliet image (xorriso) it costs about 0.5% of open and list, and
+1.1% with a UDF tree as well (2026-10-31).
 
 **The walk follows records, not names** (`_walk_records`). `PyCdlib.walk()` yields names,
 and turning a name back into a record fails when a Rock Ridge name holds `/` or two

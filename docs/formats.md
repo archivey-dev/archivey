@@ -1025,6 +1025,12 @@ misread the archive.
   That includes a file and its associated file (such as the resource fork on a Mac hybrid image),
   which list as two members with one name and nothing to tell the fork apart. Entries in a directory
   list in the order of their records on the disc.
+- An image carries up to three name trees over one set of files: Rock Ridge, which Linux reads
+  and archivey lists; Joliet, which 7-Zip and Windows read; and UDF, which Windows reads first.
+  A file that only Joliet or UDF holds is not a member, so it is reported with
+  `MEMBER_READERS_DISAGREE` (`file_only_in_joliet`, `file_only_in_udf`), naming its path in that
+  tree, up to 16 per tree. It is advisory: `DiagnosticPolicy.PEDANTIC` or `raise_on=` refuses
+  such an image.
 
 ### Contents
 
