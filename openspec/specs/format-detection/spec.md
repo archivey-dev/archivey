@@ -242,6 +242,7 @@ Exact matches only (no fuzzy/weak magic). Recognised:
 | 7-Zip | `37 7A BC AF 27 1C` |
 | RAR 4.x / 5.x | `52 61 72 21 1A 07 00` / `… 01 00` |
 | ISO 9660 | `CD001` at 32769 |
+| SquashFS | `hsqs` at 0 (little-endian SquashFS 4); `sqsh` at 0 (big-endian SquashFS 3 and older, claimed so `format-squashfs` can refuse it by name) |
 | ISO 9660, raw CD sector image | `00 FF×10 00` sector sync at 0 (claimed so `format-iso` can refuse it by name) |
 | UDIF | `6B 6F 6C 79 00 00 00 04 00 00 02 00` (`koly`, version 4, header size 512) at offset 0, or at the start of the last 512 bytes |
 | TAR | `ustar` at 257 |

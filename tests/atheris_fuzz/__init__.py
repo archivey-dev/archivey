@@ -20,6 +20,7 @@ DEFAULT_BUDGETS: dict[str, int] = {
     "zip": 25,
     "tar": 10,
     "iso": 8,
+    "squashfs": 8,
     "ar": 6,
     "cpio": 8,
     "rar_header": 30,

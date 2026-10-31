@@ -12,6 +12,7 @@ Module map:
 - :mod:`.iso_reader` — ISO 9660 (``pycdlib``, ``[recommended]``)
 - :mod:`.ar_reader` — Unix ar, written against ``archivey.formats`` like ISO
 - :mod:`.cpio_reader` — CPIO (binary, odc, newc, crc, afio), the same way
+- :mod:`.squashfs_reader` — SquashFS 4.0, the same way
 - :mod:`.directory_reader` — filesystem directory as a pseudo-archive
 - :mod:`.single_file_reader` — bare ``.gz`` / ``.xz`` / … as a one-member archive
 - :mod:`.sevenzip_methods` / ``sevenzip_parser`` / ``sevenzip_pipeline`` /
@@ -40,6 +41,7 @@ from archivey.internal.backends import (
     rar_reader as _rar_reader,  # noqa: F401
     sevenzip_reader as _sevenzip_reader,  # noqa: F401
     single_file_reader as _single_file_reader,  # noqa: F401
+    squashfs_reader as _squashfs_reader,  # noqa: F401
     tar_reader as _tar_reader,  # noqa: F401
     udif as _udif,  # noqa: F401
     zip_reader as _zip_reader,  # noqa: F401

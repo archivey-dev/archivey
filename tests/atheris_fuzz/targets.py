@@ -70,6 +70,7 @@ from tests.atheris_fuzz.seeds import (
     open_detected_seeds,
     rar_seeds,
     sevenzip_seeds,
+    squashfs_seeds,
     tar_seeds,
     unix_compress_seeds,
     xz_seeds,
@@ -251,6 +252,20 @@ def iso_open_one(data: bytes) -> None:
     try:
         with open_archive(
             io.BytesIO(data), format=ArchiveFormat.ISO, config=_FUZZ_CONFIG
+        ) as arc:
+            _sample_seekable(
+                arc, max_reads=_MAX_MEMBER_READS, max_bytes=_MAX_ZIP_READ_BYTES
+            )
+    except ArchiveyError:
+        return
+
+
+def squashfs_open_one(data: bytes) -> None:
+    """List a SquashFS image and read the first files: the superblock, the tables and
+    the directory walk, then data and fragment blocks."""
+    try:
+        with open_archive(
+            io.BytesIO(data), format=ArchiveFormat.SQUASHFS, config=_FUZZ_CONFIG
         ) as arc:
             _sample_seekable(
                 arc, max_reads=_MAX_MEMBER_READS, max_bytes=_MAX_ZIP_READ_BYTES
@@ -866,6 +881,13 @@ def iter_target_specs() -> list[dict]:
             "seeds": iso_seeds,
             "fixup": None,
             "per_input_timeout": iso_per_input_timeout(),
+        },
+        {
+            "name": "squashfs",
+            "fn": squashfs_open_one,
+            "seeds": squashfs_seeds,
+            "fixup": None,
+            "per_input_timeout": stream_timeout,
         },
         {
             "name": "ar",

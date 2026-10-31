@@ -914,6 +914,10 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
         ),
     ),
     (
+        "squashfs",
+        "no corpus builder (needs mksquashfs); tests/test_squashfs.py seeks in a file",
+    ),
+    (
         "cpio",
         "no corpus builder; tests/test_cpio.py seeks inside members, plain and gzip",
     ),
@@ -927,6 +931,7 @@ _UNTESTED_FORMATS = {
     ArchiveFormat.DMG: "udif",
     **{ArchiveFormat(ContainerFormat.AR, stream): "ar" for stream in StreamFormat},
     **{ArchiveFormat(ContainerFormat.CPIO, s): "cpio" for s in StreamFormat},
+    ArchiveFormat.SQUASHFS: "squashfs",
 }
 
 

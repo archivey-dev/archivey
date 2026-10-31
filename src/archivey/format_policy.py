@@ -252,11 +252,11 @@ class FormatPolicy:
     replace: Mapping[ContainerFormat, type[FormatHandler]]
     """Built-in containers read by a plugin instead of the built-in reader.
 
-    A key is ``ContainerFormat.ZIP``, ``SEVEN_Z``, ``RAR`` or ``ISO``. Its plugin is a
-    ``archivey.formats.FormatHandler`` that is not registered: its ``format`` is
-    the built-in one (``ArchiveFormat.ZIP``), and it declares no ``extensions``,
-    ``magic`` or ``probe``, because the file is found by the built-in detection. The
-    reader's ``format`` is the built-in format and ``format_info.from_plugin`` is
+    A key is ``ContainerFormat.ZIP``, ``SEVEN_Z``, ``RAR``, ``ISO`` or ``SQUASHFS``.
+    Its plugin is a ``archivey.formats.FormatHandler`` that is not registered: its
+    ``format`` is the built-in one (``ArchiveFormat.ZIP``), and it declares no
+    ``extensions``, ``magic`` or ``probe``, because the file is found by the built-in
+    detection. The reader's ``format`` is the built-in format and ``format_info.from_plugin`` is
     false. The plugin gets what any indexed plugin gets, a seekable source from the
     start of the archive, so a multi-volume set and an archive behind a
     self-extracting stub are refused with :class:`~archivey.UnsupportedFeatureError`,
@@ -305,8 +305,8 @@ class FormatPolicy:
         if StreamFormat.UNCOMPRESSED in exclude_parsed:
             raise _UsageValueError(
                 f"{_CALL} got StreamFormat.UNCOMPRESSED in exclude=, which would turn "
-                "off ZIP, TAR, 7z, RAR, ISO and directories alike. List the containers "
-                "to refuse instead."
+                "off every container (ZIP, TAR, 7z and the rest) and directories alike. "
+                "List the containers to refuse instead."
             )
         if only_parsed is not None:
             both = only_parsed & exclude_parsed

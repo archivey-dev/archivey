@@ -1,18 +1,17 @@
-"""archivey-squashfs against images written by mksquashfs (``data/make-images.sh``)."""
+"""The SquashFS reader against images written by mksquashfs
+(``fixtures/squashfs/make-images.sh``)."""
 
 from __future__ import annotations
 
 import ast
+import dataclasses
 import importlib.util
 import io
 import random
 import struct
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from archivey_squashfs import SQUASHFS, SquashfsHandler
-from archivey_squashfs.reader import SquashfsReader
 
 import archivey
 from archivey import (
@@ -22,17 +21,19 @@ from archivey import (
     MemberType,
     OptionalLibrary,
     PackageNotInstalledError,
+    StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
     detect_format,
     open_archive,
 )
-from archivey.formats import register_format
+from archivey.internal.backends import squashfs_reader
+from archivey.internal.backends.squashfs_reader import SquashfsReader
 from archivey.internal.excluded_libraries import EXCLUDED_REASON
-from archivey.internal.streams.codecs import lzo_decoder as archivey_lzo
+from archivey.internal.streams.codecs import deps, lzo_decoder as archivey_lzo
 
-DATA = Path(__file__).parent / "data"
-PACKAGE = Path(__file__).parents[1] / "src" / "archivey_squashfs"
+SQUASHFS = archivey.ArchiveFormat.SQUASHFS
+DATA = Path(__file__).parent / "fixtures" / "squashfs"
 
 # The tree make-images.sh writes, as ``archivey`` lists it.
 CONTENT = {
@@ -78,11 +79,6 @@ IMAGES = [
 ]
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _registered() -> None:
-    register_format(SquashfsHandler)
-
-
 def _image(tmp_path: Path, data: bytes, name: str = "t.sqfs") -> Path:
     path = tmp_path / name
     path.write_bytes(data)
@@ -105,6 +101,8 @@ def test_lists_and_reads_every_member(image: str) -> None:
         assert members["fifo"].extra["special_file_type"] == "fifo"
         assert members["blk"].mode == 0o600
         assert members["a.txt"].mode == 0o644
+        # Two of sparse.bin's four blocks are stored with size 0, under a basic inode.
+        assert {n for n, m in members.items() if m.is_sparse} == {"sparse.bin"}
         assert members["a.txt"].uid == members["a.txt"].gid == 0
         assert archive.info.format == SQUASHFS
         assert archive.info.format_version == "4.0"
@@ -113,7 +111,7 @@ def test_lists_and_reads_every_member(image: str) -> None:
 
 @pytest.fixture(params=["python", pytest.param("python-lzo", marks=_PYTHON_LZO)])
 def lzo_decoder(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
-    """Each LZO decoder in turn: the package's own, and liblzo through python-lzo."""
+    """Each LZO decoder in turn: archivey's in Python, and liblzo through python-lzo."""
     if request.param == "python":
         monkeypatch.setattr(archivey_lzo, "_python_lzo", lambda *_: None)
     return request.param
@@ -140,7 +138,7 @@ def test_a_damaged_lzo_block(tmp_path: Path, lzo_decoder: str) -> None:
 def test_detected_by_magic_and_by_name(tmp_path: Path) -> None:
     info = detect_format(DATA / "gzip.sqfs")
     assert info.format == SQUASHFS
-    assert info.from_plugin
+    assert not info.from_plugin
     renamed = _image(tmp_path, (DATA / "gzip.sqfs").read_bytes(), "image.bin")
     assert detect_format(renamed).format == SQUASHFS
 
@@ -213,6 +211,27 @@ def _inode_offset(data: bytes, name: bytes) -> int:
     return table + 2 + offset  # one block: its 2-byte header, then the inodes
 
 
+class _Pipe(io.RawIOBase):
+    """A source that cannot seek, as a pipe."""
+
+    def __init__(self, data: bytes) -> None:
+        self._inner = io.BytesIO(data)
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b) -> int:  # type: ignore[override]
+        return self._inner.readinto(b)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_pipe_is_refused_with_the_reason(streaming: bool) -> None:
+    """The tables come after the data, so not even a streaming pass reads a pipe."""
+    data = (DATA / "gzip.sqfs").read_bytes()
+    with pytest.raises(StreamNotSeekableError, match="inode tables come after"):
+        open_archive(_Pipe(data), streaming=streaming)
+
+
 def test_a_truncated_image(tmp_path: Path) -> None:
     data = (DATA / "gzip.sqfs").read_bytes()
     with pytest.raises(TruncatedError):
@@ -229,12 +248,13 @@ def test_a_truncated_image(tmp_path: Path) -> None:
     ],
 )
 def test_a_bad_superblock(
-    tmp_path: Path, offset: int, value: bytes, error: type[Exception], match: str
+    offset: int, value: bytes, error: type[Exception], match: str
 ) -> None:
+    """From a stream with no name, so the magic alone selects the reader."""
     data = _uncompressed()
     data[offset : offset + len(value)] = value
     with pytest.raises(error, match=match):
-        open_archive(_image(tmp_path, bytes(data)))
+        open_archive(io.BytesIO(bytes(data)))
 
 
 def test_a_directory_listed_inside_itself(tmp_path: Path) -> None:
@@ -260,6 +280,18 @@ def test_a_name_with_a_slash(tmp_path: Path) -> None:
         archive.members()
 
 
+def test_a_name_that_is_not_utf8_follows_encoding(tmp_path: Path) -> None:
+    """SquashFS declares no name encoding, so ``encoding=`` replaces the escape fallback."""
+    data = _uncompressed()
+    entry = _entry_offset(data, b"a.txt")
+    data[entry + 8 : entry + 13] = b"\xe9.txt"
+    path = _image(tmp_path, bytes(data))
+    with open_archive(path) as archive:
+        assert "\udce9.txt" in {m.name.rpartition("/")[2] for m in archive.members()}
+    with open_archive(path, encoding="latin-1") as archive:
+        assert "\xe9.txt" in {m.name.rpartition("/")[2] for m in archive.members()}
+
+
 def test_an_entry_whose_inode_has_another_type(tmp_path: Path) -> None:
     data = _uncompressed()
     entry = _entry_offset(data, b"a.txt")
@@ -267,6 +299,28 @@ def test_an_entry_whose_inode_has_another_type(tmp_path: Path) -> None:
     with (
         open_archive(_image(tmp_path, bytes(data))) as archive,
         pytest.raises(CorruptionError, match="listed as type 1"),
+    ):
+        archive.members()
+
+
+def test_a_block_list_of_holes_larger_than_the_table_on_disk() -> None:
+    """A 1 GiB file of holes: its 32 KiB list of zeros compresses to far less, so the
+    bound on the lists is the decoded table, not the bytes it takes in the image."""
+    with open_archive(DATA / "large-sparse.sqfs") as archive:
+        members = {m.name: m for m in archive.members()}
+        assert members["holes.bin"].size == 1 << 30
+        assert members["holes.bin"].is_sparse
+        assert not members["data.bin"].is_sparse
+
+
+def test_a_block_list_longer_than_the_inode_table(tmp_path: Path) -> None:
+    """A size that needs more blocks than the table holds is refused before the scan."""
+    data = _uncompressed()
+    inode = _inode_offset(data, b"a.txt")  # extended: the size follows the start
+    data[inode + 24 : inode + 32] = struct.pack("<Q", 1 << 40)
+    with (
+        open_archive(_image(tmp_path, bytes(data))) as archive,
+        pytest.raises(CorruptionError, match="block lists"),
     ):
         archive.members()
 
@@ -347,19 +401,29 @@ def test_a_symlink_target_longer_than_the_kernel_allows(tmp_path: Path) -> None:
 # ── The package ────────────────────────────────────────────────────────────────────
 
 
-def _imports(path: Path) -> Iterator[str]:
-    for node in ast.walk(ast.parse(path.read_text())):
-        if isinstance(node, ast.Import):
-            yield from (alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            yield node.module
-
-
-def test_the_package_uses_only_public_archivey() -> None:
-    """The point of the package: a format added from outside, through the plugin API."""
-    used = {name for path in PACKAGE.rglob("*.py") for name in _imports(path)}
-    archivey_modules = {name for name in used if name.split(".")[0] == "archivey"}
-    assert archivey_modules == {"archivey", "archivey.formats"}
+def test_the_internal_names_the_reader_imports() -> None:
+    """The reader uses archivey's own lz4 handling, which a plugin cannot reach; any
+    other internal name it starts to import is a choice to make here, not by accident."""
+    tree = ast.parse(Path(squashfs_reader.__file__).read_text())
+    internal = {
+        f"{node.module}.{alias.name}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module
+        and node.module.startswith("archivey.")
+        and node.module.split(".")[1] in ("internal", "terminal")
+        for alias in node.names
+    }
+    assert internal == {
+        "archivey.internal.excluded_libraries.as_reported",
+        "archivey.internal.format_adapter.register_builtin_format",
+        "archivey.internal.overrides.override",
+        "archivey.internal.streams.codecs.deps",
+        "archivey.internal.streams.codecs.isolated.Natives",
+        "archivey.internal.streams.codecs.isolated.natives_for",
+        "archivey.internal.streams.codecs.lz4_codec.LZ4_REQUIREMENT",
+        "archivey.terminal.quoted",
+    }
 
 
 def test_the_reader_is_an_indexed_reader() -> None:
@@ -378,17 +442,17 @@ def test_lz4_turned_off_by_the_policy_reads_as_not_installed() -> None:
         archive.read("a.txt")
     (component,) = e.value.missing
     assert component.name is OptionalLibrary.LZ4
-    # The plugin's copy of archivey's wording: a reword of either fails here.
     assert component.reason == EXCLUDED_REASON
 
 
 def test_lz4_under_pypy_gives_the_reason_not_install_advice(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from archivey_squashfs import reader as reader_module
-
-    reason = "archivey-squashfs does not use lz4 under PyPy, for the test"
-    monkeypatch.setattr(reader_module, "_LZ4_UNUSED_REASON", reason)
+    reason = "archivey does not use lz4 under PyPy, for the test"
+    # What deps does under PyPy: no lz4.block, and the reason on the requirement.
+    monkeypatch.setattr(deps, "lz4_block", None)
+    requirement = dataclasses.replace(squashfs_reader.LZ4_REQUIREMENT, reason=reason)
+    monkeypatch.setattr(squashfs_reader, "LZ4_REQUIREMENT", requirement)
     with (
         pytest.raises(PackageNotInstalledError, match="for the test") as exc_info,
         open_archive(DATA / "lz4.sqfs") as archive,

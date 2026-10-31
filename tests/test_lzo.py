@@ -1,5 +1,5 @@
 """archivey's LZO1X decoder in Python, on streams written by liblzo and on damaged
-ones. (The SquashFS images are the plugin package's test data.)"""
+ones, among them the metadata blocks of the SquashFS test images."""
 
 from __future__ import annotations
 
@@ -17,9 +17,7 @@ from archivey.internal.streams.codecs.lzo_decoder import (
 
 # Each written by python-lzo (liblzo2 2.10): ``lzo.compress(data, level, False)``.
 _END = b"\x11\x00\x00"
-_SQUASHFS_DATA = (
-    Path(__file__).parent.parent / "packages" / "archivey-squashfs" / "tests" / "data"
-)
+_SQUASHFS_DATA = Path(__file__).parent / "fixtures" / "squashfs"
 
 
 def test_only_the_end_marker_is_empty() -> None:

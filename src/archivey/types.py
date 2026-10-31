@@ -86,6 +86,9 @@ class ContainerFormat(StrEnum):
     """A CPIO archive in any of its variants (binary, odc, newc, crc): an initramfs or
     an RPM payload, for example. Read in one forward pass, so from a pipe and inside a
     compression stream too."""
+    SQUASHFS = "squashfs"
+    """A SquashFS 4.0 filesystem image: a snap package or a live system's root, for
+    example. Needs a source that can seek."""
     DMG = "dmg"
     """An Apple disk image. archivey recognises one so that opening it can refuse it by
     name, but cannot read it."""
@@ -240,6 +243,7 @@ class ArchiveFormat:
     ISO: ClassVar[ArchiveFormat]
     AR: ClassVar[ArchiveFormat]
     CPIO: ClassVar[ArchiveFormat]
+    SQUASHFS: ClassVar[ArchiveFormat]
     DMG: ClassVar[ArchiveFormat]
     DIRECTORY: ClassVar[ArchiveFormat]
     UNKNOWN: ClassVar[ArchiveFormat]
@@ -321,6 +325,9 @@ ArchiveFormat.RAR = ArchiveFormat(ContainerFormat.RAR, StreamFormat.UNCOMPRESSED
 ArchiveFormat.ISO = ArchiveFormat(ContainerFormat.ISO, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.AR = ArchiveFormat(ContainerFormat.AR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.CPIO = ArchiveFormat(ContainerFormat.CPIO, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.SQUASHFS = ArchiveFormat(
+    ContainerFormat.SQUASHFS, StreamFormat.UNCOMPRESSED
+)
 ArchiveFormat.DMG = ArchiveFormat(ContainerFormat.DMG, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DIRECTORY = ArchiveFormat(
     ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED
@@ -974,6 +981,8 @@ class ArchiveInfoExtra(dict[str, object]):
     * ``ar.symbol_table`` (``bool``)
     * ``ar.dialect`` (``str``)
     * ``cpio.variant`` (``str``)
+    * ``squashfs.compressor`` (``str``)
+    * ``squashfs.block_size`` (``int``)
     """
 
     __slots__ = ()
@@ -992,6 +1001,10 @@ class ArchiveInfoExtra(dict[str, object]):
     def __getitem__(self, key: Literal["ar.dialect"], /) -> str: ...
     @overload
     def __getitem__(self, key: Literal["cpio.variant"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["squashfs.compressor"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["squashfs.block_size"], /) -> int: ...
     @overload
     def __getitem__(self, key: str, /) -> object: ...
     @override

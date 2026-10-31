@@ -174,6 +174,12 @@ more indexed plugin, 2026-10-27).
       `lz4.block` itself) and LZO, each capped at the block size by the package rather
       than by archivey's decoder limits. Extended attributes and the export table are
       not read.
+- [x] 3b.7 Moved into the library as a built-in format (the maintainer's choice,
+      2026-10-28): `src/archivey/internal/backends/squashfs_reader.py`, registered
+      with `register_builtin_format`. LZ4 blocks now go through archivey's own `lz4`
+      handling (process isolation, `exclude_libraries`, the PyPy rule), and LZO blocks
+      through archivey's LZO codec (`ReaderContext.decompress`). The package and its CI
+      job are gone.
 
 ## 4. Docs and specs
 

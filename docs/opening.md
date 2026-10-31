@@ -121,9 +121,9 @@ and U+DCFF.
 
 If you know the encoding, pass it as `encoding=`, and archivey uses it in place of that default for
 names that aren't valid UTF-8: a Latin-1 `café.txt` in a TAR lists as `'caf\udce9.txt'` without it
-and `'café.txt'` with `encoding="latin-1"`. Only ZIP, TAR, ISO, RAR, CPIO and ar read `encoding=`.
-The other formats decode names their own way, and a value passed to them is ignored and noted in the
-diagnostics.
+and `'café.txt'` with `encoding="latin-1"`. Only ZIP, TAR, ISO, RAR, CPIO, ar and SquashFS read
+`encoding=`. The other formats decode names their own way, and a value passed to them is ignored and
+noted in the diagnostics.
 
 ??? note "Why does valid UTF-8 win over `encoding=`?"
     Text in another encoding almost never happens to be valid UTF-8. `café`, `Müller` and `Größe`,
@@ -197,4 +197,4 @@ and any other name is refused, so a typo can't leave a package on. The setting o
 made with that config: other calls in the same program, on any thread, still use the package.
 `format_availability(fmt, config=...)` and `list_supported_formats(config=...)` answer with the
 excluded packages counted as missing. A plugin reader that imports a package itself honours the setting
-only if it checks `config.formats.exclude_libraries`, as `archivey-squashfs` does for `lz4`.
+only if it checks `config.formats.exclude_libraries` itself.
