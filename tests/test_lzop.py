@@ -10,6 +10,7 @@ import random
 import struct
 import zlib
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -113,20 +114,31 @@ def test_a_tar_inside_is_found(decoder: str, tmp_path: Path) -> None:
             assert reader.read("dir/two.txt") == _TEXT[:5000]
 
 
-def test_python_lzo_can_be_excluded(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[frozenset[object]] = []
-    real = lzo_decoder._python_lzo
+@pytest.mark.parametrize("exclude", [False, True])
+def test_python_lzo_can_be_excluded(
+    exclude: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With python-lzo installed, ``exclude_libraries={"lzo"}`` makes the read use the
+    Python decoder and never python-lzo; without it, python-lzo decodes every block."""
+    lzo = pytest.importorskip("lzo")
+    used: list[str] = []
+    real_lzo, real_python = lzo.decompress, lzo_decoder.lzo1x_decompress_python
 
-    def spy(excluded: frozenset[object], *rest: object) -> object:
-        calls.append(excluded)
-        return real(excluded, *rest)  # type: ignore[arg-type]
+    def spy_lzo(*args: Any) -> bytes:
+        used.append("python-lzo")
+        return real_lzo(*args)
 
-    monkeypatch.setattr(lzo_decoder, "_python_lzo", spy)
-    config = ArchiveyConfig(formats=FormatPolicy(exclude_libraries={"lzo"}))
+    def spy_python(data: bytes, limit: int) -> bytes:
+        used.append("python")
+        return real_python(data, limit)
+
+    monkeypatch.setattr(lzo, "decompress", spy_lzo)
+    monkeypatch.setattr(lzo_decoder, "lzo1x_decompress_python", spy_python)
+    excluded = {"lzo"} if exclude else set()
+    config = ArchiveyConfig(formats=FormatPolicy(exclude_libraries=excluded))
     with open_stream(_DATA / "text.txt.lzo", config=config) as stream:
         assert stream.read() == _TEXT
-    assert calls and all("lzo" in excluded for excluded in calls)
-    assert real(frozenset({"lzo"})) is None  # type: ignore[arg-type]
+    assert used and set(used) == {"python" if exclude else "python-lzo"}
 
 
 def test_python_lzo_runs_in_a_child_under_native_decoders() -> None:
