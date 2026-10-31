@@ -1,22 +1,20 @@
-"""archivey-cpio against archives written by GNU cpio and bsdcpio
-(``data/make-archives.sh``), read from a file and from a pipe."""
+"""The CPIO reader against archives written by GNU cpio and bsdcpio
+(``fixtures/cpio/make-archives.sh``), read from a file and from a pipe."""
 
 from __future__ import annotations
 
-import ast
 import gzip
 import io
 import lzma
 import os
 import random
+import struct
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from archivey_cpio import CPIO, CpioHandler, CpioReader
-from archivey_cpio.reader import MAX_NAME_BYTES
 
 import archivey
 from archivey import (
@@ -29,10 +27,13 @@ from archivey import (
     open_archive,
 )
 from archivey.diagnostics import DiagnosticCode
-from archivey.formats import SequentialReader, register_format
+from archivey.formats import SequentialReader
+from archivey.internal.backends import cpio_reader
+from archivey.internal.backends.cpio_reader import MAX_NAME_BYTES, CpioReader
+from tests.public_names import assert_only_public_archivey
 
-DATA = Path(__file__).parent / "data"
-PACKAGE = Path(__file__).parents[1] / "src" / "archivey_cpio"
+CPIO = archivey.ArchiveFormat.CPIO
+DATA = Path(__file__).parent / "fixtures" / "cpio"
 
 # The tree make-archives.sh writes, as archivey lists it.
 CONTENT = {
@@ -70,11 +71,6 @@ ARCHIVES = {
     "bsd-odc": "odc",
     "bsd-newc": "newc",
 }
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _registered() -> None:
-    register_format(CpioHandler)
 
 
 class _Pipe(io.RawIOBase):
@@ -123,7 +119,8 @@ def test_list_and_read(name: str) -> None:
     variant = ARCHIVES[name]
     with open_archive(DATA / f"{name}.cpio") as reader:
         assert reader.format == CPIO
-        assert reader.info.format_version == variant
+        assert reader.info.format_version is None
+        assert reader.info.extra["cpio.variant"] == variant
         members = reader.members()
         _check_listing(members, variant)
         for member_name, data in CONTENT.items():
@@ -203,7 +200,7 @@ def test_detection() -> None:
         info = detect_format(io.BytesIO((DATA / f"{name}.cpio").read_bytes()))
         assert info.format == CPIO, name
         assert info.detected_by == "magic"
-        assert info.from_plugin
+        assert not info.from_plugin
     # The binary variant has no ASCII magic: the probe finds it where probes run.
     probing = archivey.ArchiveyConfig(always_probe_content=True)
     data = (DATA / "gnu-bin.cpio").read_bytes()
@@ -212,6 +209,85 @@ def test_detection() -> None:
     not_cpio = io.BytesIO(b"\xc7\x71" + bytes(40))
     with pytest.raises(archivey.FormatDetectionError):
         detect_format(not_cpio, config=probing)
+
+
+@pytest.mark.parametrize(
+    ("stream", "compress", "suffix"),
+    [
+        (archivey.StreamFormat.GZIP, lambda d: gzip.compress(d, mtime=0), ".gz"),
+        (archivey.StreamFormat.XZ, lzma.compress, ".xz"),
+    ],
+    ids=["gz", "xz"],
+)
+def test_a_compressed_binary_archive_is_found_by_its_probe(
+    tmp_path: Path,
+    stream: archivey.StreamFormat,
+    compress: Callable[[bytes], bytes],
+    suffix: str,
+) -> None:
+    """GNU cpio's default output, compressed: the binary probe runs on the decoded
+    bytes where the name says ``.cpio.gz`` or the config asks for every probe, and
+    nowhere else, as on an uncompressed source."""
+    data = compress((DATA / "gnu-bin.cpio").read_bytes())
+    fmt = archivey.ArchiveFormat(CPIO.container, stream)
+    named = tmp_path / f"t.cpio{suffix}"
+    named.write_bytes(data)
+    with open_archive(named) as reader:
+        assert reader.format == fmt
+        _check_listing(reader.members(), "bin")
+    probing = archivey.ArchiveyConfig(always_probe_content=True)
+    assert detect_format(io.BytesIO(data), config=probing).format == fmt
+    bare = archivey.ArchiveFormat(archivey.ContainerFormat.RAW_STREAM, stream)
+    assert detect_format(io.BytesIO(data)).format == bare
+    other = tmp_path / f"t.tar{suffix}"
+    other.write_bytes(data)
+    assert detect_format(other).format == bare
+
+
+def _binary(name: bytes) -> bytes:
+    """A little-endian binary archive of one empty file, then the trailer."""
+    out = b""
+    for stored in (name + b"\0", b"TRAILER!!!\0"):
+        # magic, dev, ino, mode, uid, gid, nlink, rdev, mtime (2), namesize, filesize (2)
+        fields = (0o070707, 0, 1, 0o100644, 0, 0, 1, 0, 0, 0, len(stored), 0, 0)
+        out += struct.pack("<13H", *fields) + stored + b"\0" * (len(stored) & 1)
+    return out
+
+
+def test_a_big_endian_binary_archive() -> None:
+    """GNU cpio writes the binary header in host order; a big-endian host's archive
+    starts ``71 C7`` and reads the same, as ``bin-be``."""
+    out = b""
+    for stored, data in ((b"hello\0", b"hi!\n"), (b"TRAILER!!!\0", b"")):
+        # magic, dev, ino, mode, uid, gid, nlink, rdev, mtime (2), namesize, filesize (2)
+        fields = (0o070707, 0, 1, 0o100644, 0, 0, 1, 0, 0, 0, len(stored), 0, len(data))
+        out += struct.pack(">13H", *fields) + stored + b"\0" * (len(stored) & 1)
+        out += data + b"\0" * (len(data) & 1)
+    assert out[:2] == b"\x71\xc7"
+    with open_archive(io.BytesIO(out), format=CPIO) as reader:
+        assert [m.name for m in reader.members()] == ["hello"]
+        assert reader.info.extra["cpio.variant"] == "bin-be"
+        assert reader.read("hello") == b"hi!\n"
+
+
+@pytest.mark.parametrize(("name_size", "found"), [(400, True), (600, False)])
+def test_a_compressed_binary_archive_needs_its_first_name_in_512_bytes(
+    tmp_path: Path, name_size: int, found: bool
+) -> None:
+    """Inside a compressor the probe sees the first 512 decoded bytes, so a first name
+    that ends past them is not found there; uncompressed, the same archive is."""
+    data = _binary(b"n" * name_size)
+    plain = tmp_path / "t.cpio"
+    plain.write_bytes(data)
+    assert detect_format(plain).format == CPIO
+    packed = tmp_path / "t.cpio.gz"
+    packed.write_bytes(gzip.compress(data, mtime=0))
+    pair = archivey.ArchiveFormat(CPIO.container, archivey.StreamFormat.GZIP)
+    assert detect_format(packed).format == (
+        pair if found else archivey.ArchiveFormat.GZ
+    )
+    with open_archive(packed, format="cpio.gz") as reader:
+        assert [m.name for m in reader.members()] == ["n" * name_size]
 
 
 @pytest.mark.parametrize(
@@ -240,6 +316,50 @@ def test_inside_a_compression_stream(
             if member.name in CONTENT and member_stream is not None:
                 assert member_stream.read() == CONTENT[member.name], member.name
     _check_listing(members, "newc")
+
+
+@pytest.mark.parametrize(
+    ("spelling", "stream", "compress"),
+    [
+        ("cpio.gz", archivey.StreamFormat.GZIP, lambda d: gzip.compress(d, mtime=0)),
+        ("cpio.xz", archivey.StreamFormat.XZ, lzma.compress),
+    ],
+    ids=["gz", "xz"],
+)
+def test_a_compressed_pair_is_spelled_like_a_plugins(
+    tmp_path: Path,
+    spelling: str,
+    stream: archivey.StreamFormat,
+    compress: Callable[[bytes], bytes],
+) -> None:
+    """``format="cpio.gz"`` names the pair, which has no named constant;
+    ``format="cpio"`` on the same bytes reads them as plain CPIO and refuses them."""
+    path = tmp_path / "t.bin"
+    path.write_bytes(compress((DATA / "gnu-newc.cpio").read_bytes()))
+    with open_archive(path, format=spelling) as reader:
+        assert reader.format == archivey.ArchiveFormat(CPIO.container, stream)
+        _check_listing(reader.members(), "newc")
+    with pytest.raises(CorruptionError, match="No CPIO header"):
+        open_archive(path, format="cpio").close()
+
+
+@pytest.mark.parametrize("compressed", [False, True], ids=["plain", "gz"])
+def test_seeks_inside_a_member(tmp_path: Path, compressed: bool) -> None:
+    """With ``seekable_members=True`` a member stream seeks, plain and inside a
+    compression stream (the shared seek matrix has no CPIO row)."""
+    data = (DATA / "gnu-newc.cpio").read_bytes()
+    path = tmp_path / ("t.cpio.gz" if compressed else "t.cpio")
+    path.write_bytes(gzip.compress(data, mtime=0) if compressed else data)
+    content = CONTENT["dir/blocks.bin"]
+    with (
+        open_archive(path, seekable_members=True) as reader,
+        reader.open("dir/blocks.bin") as stream,
+    ):
+        assert stream.seekable()
+        stream.seek(5000)
+        assert stream.read(100) == content[5000:5100]
+        stream.seek(10)
+        assert stream.read() == content[10:]
 
 
 def _offset_of(data: bytes, content: bytes) -> int:
@@ -366,6 +486,28 @@ def test_a_held_link_keeps_its_stored_name(tmp_path: Path) -> None:
         reader.members()
 
 
+def test_a_name_that_is_not_utf8_follows_encoding(tmp_path: Path) -> None:
+    """CPIO declares no name encoding, so ``encoding=`` replaces the escape fallback."""
+    path = _archive(tmp_path, _newc((b"caf\xe9.txt", _FILE, 1, 1, b"x")))
+    with open_archive(path) as reader:
+        assert [m.name for m in reader.members()] == ["caf\udce9.txt"]
+    with open_archive(path, encoding="latin-1") as reader:
+        assert [m.name for m in reader.members()] == ["café.txt"]
+
+
+@pytest.mark.parametrize("compressed", [False, True], ids=["plain", "gz"])
+def test_the_cost_follows_the_compression_layer(compressed: bool) -> None:
+    """Plain CPIO is scanned and direct; inside a compressor, as a compressed TAR is."""
+    data = (DATA / "gnu-newc.cpio").read_bytes()
+    with open_archive(io.BytesIO(gzip.compress(data) if compressed else data)) as r:
+        cost = r.info.cost
+    assert (cost.listing_cost, cost.access_cost) == (
+        (archivey.ListingCost.REQUIRES_DECOMPRESSION, archivey.AccessCost.SOLID)
+        if compressed
+        else (archivey.ListingCost.REQUIRES_SCANNING, archivey.AccessCost.DIRECT)
+    )
+
+
 def test_hostile_headers(tmp_path: Path) -> None:
     def opened(data: bytes) -> None:
         with open_archive(_archive(tmp_path, data), format="cpio") as reader:
@@ -395,7 +537,13 @@ def _odc_member(name: bytes, data: bytes, *, ino: int, uid: int = 0) -> bytes:
 
 
 def _afio_large_member(
-    name: bytes, data: bytes, *, ino: int, uid: int, xsize: int = 0
+    name: bytes,
+    data: bytes,
+    *,
+    ino: int,
+    uid: int,
+    xsize: int = 0,
+    mtime: int = 0x4B694A10,
 ) -> bytes:
     """A member under afio's large header, its fields laid out as libarchive reads
     them: dev, ino, 'm', mode (octal), uid, gid, nlink, rdev, mtime, 'n', namesize,
@@ -409,7 +557,7 @@ def _afio_large_member(
         0,
         1,
         0,
-        0x4B694A10,
+        mtime,
         len(stored),
         0,
         xsize,
@@ -438,7 +586,7 @@ def test_afio_large_headers(tmp_path: Path) -> None:
             got = [
                 (m.name, m.uid, m.size, s.read()) for m, s in reader.stream_members()
             ]
-            assert reader.info.format_version == "odc"
+            assert reader.info.extra["cpio.variant"] == "odc"
         assert got == [
             ("file1", 0, 17, b"0123456789abcdef\n"),
             ("file2", 65536, 17, b"0123456789abcdef\n"),
@@ -451,6 +599,15 @@ def test_afio_large_headers(tmp_path: Path) -> None:
     assert detect_format(io.BytesIO(first_large)).format == CPIO
     with open_archive(io.BytesIO(first_large)) as reader:
         assert [(m.name, m.uid) for m in reader.members()] == [("big", 1 << 20)]
+
+
+@pytest.mark.parametrize("mtime", [0xFFFFFFFFFFFFFFFF, 10**12, 2**40])
+def test_an_afio_time_past_the_datetime_range(mtime: int) -> None:
+    """16 hexadecimal digits reach past what a datetime holds: no time, not a raw
+    OverflowError or ValueError."""
+    data = _afio_large_member(b"f", b"x", ino=1, uid=0, mtime=mtime) + _odc_trailer()
+    with open_archive(io.BytesIO(data)) as reader:
+        assert [m.modified for m in reader.members()] == [None]
 
 
 def test_afio_large_header_damage(tmp_path: Path) -> None:
@@ -472,19 +629,9 @@ def test_afio_large_header_damage(tmp_path: Path) -> None:
         opened(extra)
 
 
-def _imports(path: Path) -> Iterator[str]:
-    for node in ast.walk(ast.parse(path.read_text())):
-        if isinstance(node, ast.Import):
-            yield from (alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            yield node.module
-
-
-def test_the_package_uses_only_public_archivey() -> None:
-    """The point of the package: a format added from outside, through the plugin API."""
-    used = {name for path in PACKAGE.rglob("*.py") for name in _imports(path)}
-    archivey_modules = {name for name in used if name.split(".")[0] == "archivey"}
-    assert archivey_modules == {"archivey", "archivey.diagnostics", "archivey.formats"}
+def test_the_reader_uses_only_public_archivey() -> None:
+    """Written as a format added from outside would be."""
+    assert_only_public_archivey(cpio_reader.__file__)
 
 
 def test_the_reader_is_a_sequential_reader() -> None:

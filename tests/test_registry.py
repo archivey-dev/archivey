@@ -414,11 +414,12 @@ class _NonSeekable(io.RawIOBase):
 # The documented table, written out rather than derived, so a backend that flips
 # SUPPORTS_STREAMING_NON_SEEKABLE has to change this list too instead of silently
 # agreeing with itself.
-# TAR, ar, ZIP and the raw codecs read from a pipe. DMG reports the same shape so the
+# TAR, ar, CPIO, ZIP and the raw codecs read from a pipe. DMG reports the same shape so the
 # spool recipe does not copy a file that open refuses from either shape.
 _FORWARD_ONLY_CONTAINERS = {
     ContainerFormat.TAR,
     ContainerFormat.AR,
+    ContainerFormat.CPIO,
     ContainerFormat.ZIP,
     ContainerFormat.RAW_STREAM,
     ContainerFormat.DMG,

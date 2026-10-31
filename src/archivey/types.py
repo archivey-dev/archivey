@@ -82,6 +82,10 @@ class ContainerFormat(StrEnum):
     """A Unix ar archive: a static library (``.a``, ``.lib``) or the outer layer of a
     ``.deb`` package. Read in one forward pass, so from a pipe and inside a compression
     stream too."""
+    CPIO = "cpio"
+    """A CPIO archive in any of its variants (binary, odc, newc, crc): an initramfs or
+    an RPM payload, for example. Read in one forward pass, so from a pipe and inside a
+    compression stream too."""
     DMG = "dmg"
     """An Apple disk image. archivey recognises one so that opening it can refuse it by
     name, but cannot read it."""
@@ -102,10 +106,10 @@ class PluginContainer(StrEnum):
     A plugin subclasses it with one member per container it adds, and builds its
     :class:`~archivey.ArchiveFormat` from that member::
 
-        class CpioContainer(PluginContainer):
-            CPIO = "cpio"
+        class LhaContainer(PluginContainer):
+            LHA = "lha"
 
-        CPIO = ArchiveFormat(CpioContainer.CPIO, StreamFormat.UNCOMPRESSED)
+        LHA = ArchiveFormat(LhaContainer.LHA, StreamFormat.UNCOMPRESSED)
 
     Provisional, with the rest of ``archivey.formats``. Code that matches on
     ``ArchiveFormat.container`` needs a default case once a plugin is registered.
@@ -235,6 +239,7 @@ class ArchiveFormat:
     RAR: ClassVar[ArchiveFormat]
     ISO: ClassVar[ArchiveFormat]
     AR: ClassVar[ArchiveFormat]
+    CPIO: ClassVar[ArchiveFormat]
     DMG: ClassVar[ArchiveFormat]
     DIRECTORY: ClassVar[ArchiveFormat]
     UNKNOWN: ClassVar[ArchiveFormat]
@@ -315,6 +320,7 @@ ArchiveFormat.SEVEN_Z = ArchiveFormat(
 ArchiveFormat.RAR = ArchiveFormat(ContainerFormat.RAR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.ISO = ArchiveFormat(ContainerFormat.ISO, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.AR = ArchiveFormat(ContainerFormat.AR, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.CPIO = ArchiveFormat(ContainerFormat.CPIO, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DMG = ArchiveFormat(ContainerFormat.DMG, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DIRECTORY = ArchiveFormat(
     ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED
@@ -967,6 +973,7 @@ class ArchiveInfoExtra(dict[str, object]):
     * ``7z.volume_count`` (``int``)
     * ``ar.symbol_table`` (``bool``)
     * ``ar.dialect`` (``str``)
+    * ``cpio.variant`` (``str``)
     """
 
     __slots__ = ()
@@ -983,6 +990,8 @@ class ArchiveInfoExtra(dict[str, object]):
     def __getitem__(self, key: Literal["ar.symbol_table"], /) -> bool: ...
     @overload
     def __getitem__(self, key: Literal["ar.dialect"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["cpio.variant"], /) -> str: ...
     @overload
     def __getitem__(self, key: str, /) -> object: ...
     @override

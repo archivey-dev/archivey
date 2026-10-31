@@ -14,10 +14,7 @@ from archivey.internal.format_adapter import registration_scope
 from archivey.internal.registry import get_registry
 
 # Module and class of each plugin in packages/. A new plugin goes here.
-PLUGINS = (
-    ("archivey_cpio", "CpioHandler"),
-    ("archivey_squashfs", "SquashfsHandler"),
-)
+PLUGINS = (("archivey_squashfs", "SquashfsHandler"),)
 
 
 @contextmanager

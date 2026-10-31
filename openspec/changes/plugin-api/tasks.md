@@ -122,6 +122,9 @@ The test of the sequential shape, as the ISO port is of the indexed one (maintai
       in the tests.*
 - [x] 3.3 A test that fails if the package imports `archivey.internal`.
 - [x] 3.4 CI job that installs the package and runs its tests.
+- [x] 3.5 Moved into the library as a built-in format (the maintainer's choice,
+      2026-10-28): `src/archivey/internal/backends/cpio_reader.py`, registered with
+      `register_builtin_format`. The package and its CI job are gone.
 
 ## 3a. ar package
 

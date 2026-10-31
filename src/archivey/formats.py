@@ -255,7 +255,7 @@ class ReaderArchiveInfo(NamedTuple):
     comment: str | None = None
     extra: Mapping[str, object] = {}
     """Format-specific values, under keys that start with the format's name
-    (``"cpio.variant"``)."""
+    (``"lha.method"``)."""
 
 
 class ReaderSource:
@@ -678,8 +678,8 @@ class FormatHandler(ABC):
     ``ArchiveFormat.ZIP``, and is not registered."""
 
     extensions: ClassVar[tuple[str, ...]] = ()
-    """File extensions with the dot (``".cpio"``). An extension a built-in format
-    uses is refused at registration. A replacement plugin declares none: the
+    """File extensions with the dot (``".lha"``). An extension a built-in format uses
+    (``".cpio"``) is refused at registration. A replacement plugin declares none: the
     built-in detection finds its files."""
 
     magic: ClassVar[tuple[Magic, ...]] = ()
@@ -730,7 +730,10 @@ class SequentialFormatHandler(FormatHandler):
     so on, with each extension followed by the compressor's (``.cpio.gz``). The walk
     reads the decoded bytes. Detection finds the format inside a compressor by its
     :attr:`~FormatHandler.magic` in the first 512 decoded bytes, so each magic must end
-    within them."""
+    within them. A format with no reliable magic is found there by its
+    :attr:`~FormatHandler.probe` on those same 512 bytes, where the extension names it
+    inside the compressor (``.lha.gz``) or ``always_probe_content`` is set, as on an
+    uncompressed source."""
 
     @abstractmethod
     def open_sequential(self, context: ReaderContext) -> SequentialReader:

@@ -392,7 +392,7 @@ class ReadBackend(ABC):
 
     FORMATS: tuple[ArchiveFormat, ...]
     # Whether the backend also reads each of its ``FORMATS`` inside every single-file
-    # compression stream: TAR's ``.tar.gz``, a sequential plugin's ``.cpio.gz``. The
+    # compression stream: TAR's ``.tar.gz``, CPIO's ``.cpio.gz``. The
     # registry makes those pairs when asked, from the codecs registered then, so a
     # codec registered later reaches them too; ``FORMATS`` does not list them.
     STREAM_PAIRS: ClassVar[bool] = False
@@ -3426,7 +3426,7 @@ class BaseArchiveReader(ArchiveReader):
         member_streams: MemberStreams,
     ) -> BinaryIO:
         """The decoded bytes of an archive inside a compression stream (a ``.tar.gz``,
-        or a sequential plugin format's ``.cpio.xz``): archivey's codec stream over
+        or a sequential format-API format's ``.cpio.xz``): archivey's codec stream over
         ``source``, which the caller closes.
 
         A file goes to the codec as its path, as for a bare compressed file: the codec

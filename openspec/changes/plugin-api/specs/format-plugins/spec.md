@@ -13,10 +13,10 @@ The system SHALL let a package outside archivey add a read-only format by subcla
 
 | Case | Expected |
 | --- | --- |
-| A CPIO plugin is registered; `open_archive("a.cpio")` | Reader with `format.container` the plugin's `PluginContainer` member; `members()`, `open()`, `stream_members()`, `extract_all()` work |
-| Same, `detect_format("a.cpio")` | The plugin format |
-| Same, `format_availability("cpio")` | `FULL` |
-| No plugin registered, `open_archive("a.cpio")` | `FormatDetectionError`, as today |
+| An LHA plugin is registered; `open_archive("a.lha")` | Reader with `format.container` the plugin's `PluginContainer` member; `members()`, `open()`, `stream_members()`, `extract_all()` work |
+| Same, `detect_format("a.lha")` | The plugin format |
+| Same, `format_availability("lha")` | `FULL` |
+| No plugin registered, `open_archive("a.lha")` | `FormatDetectionError`, as today |
 
 ### Requirement: Plugin containers subclass PluginContainer
 
@@ -71,8 +71,8 @@ without an `open_member` from the plugin.
 
 | Case | Expected |
 | --- | --- |
-| A CPIO archive piped to `open_archive(stream, streaming=True)`; `stream_members()` | Every member with its data, in one pass |
-| `x.cpio.gz` from a file; `open(member)` on the third member | Its data |
+| An archive of a sequential plugin format piped to `open_archive(stream, streaming=True)`; `stream_members()` | Every member with its data, in one pass |
+| `x.lha.gz` from a file; `open(member)` on the third member | Its data |
 | A caller reads half of a member's stream and advances | The next member's header and data are read correctly |
 
 ### Requirement: Sequential plugins may hand over decoded member data
@@ -101,14 +101,19 @@ members in the same order.
 Detection SHALL check registered sequential plugins' magic inside any single-file
 compression stream archivey decodes (gzip, bzip2, xz, zstd and the rest, the set a
 compressed TAR has) after TAR, within the prefix and budget the inner-TAR probe uses
-today.
+today. A plugin with no magic SHALL be found there by its probe, run on the same decoded
+prefix under the rule its probe follows on an uncompressed source: where the extension
+names the plugin's format inside the compressor (`x.lha.gz`), or `always_probe_content`
+is set.
 
 #### Scenario: compressed plugin format
 
 | Case | Expected |
 | --- | --- |
-| `x.cpio.gz` from a file; `detect_format` | `ArchiveFormat(CpioContainer.CPIO, StreamFormat.GZIP)` |
-| No plugin registered; `x.cpio.gz` | Detects as `GZ`, as today |
+| `x.lha.gz` from a file, a sequential plugin for LHA registered; `detect_format` | `ArchiveFormat(LhaContainer.LHA, StreamFormat.GZIP)` |
+| No plugin registered; `x.lha.gz` | Detects as `GZ`, as today |
+| A sequential LHA plugin with a probe and no magic; gzip of an archive it matches, named `x.lha.gz` | `ArchiveFormat(LhaContainer.LHA, StreamFormat.GZIP)` |
+| The same bytes named `x.gz`, default config | `GZ`: the name does not let the probe run |
 
 ### Requirement: FormatInfo marks plugin formats
 
@@ -119,7 +124,7 @@ and false for every built-in format.
 
 | Case | Expected |
 | --- | --- |
-| `format_availability` / `FormatInfo` for the registered CPIO plugin | `from_plugin` is `True` |
+| `format_availability` / `FormatInfo` for a registered plugin | `from_plugin` is `True` |
 | The same for `ArchiveFormat.ZIP` | `from_plugin` is `False` |
 
 ### Requirement: A package adds a compression format through register_codec
@@ -145,7 +150,7 @@ codec off, and `FormatInfo.from_plugin` SHALL be true for a format that uses it.
 | --- | --- |
 | `x.toy` with the codec's magic; `open_archive` | `ArchiveFormat(RAW_STREAM, ToyStream.TOY)`, one member, decoded bytes |
 | A TAR inside the codec, no name | `ArchiveFormat(TAR, ToyStream.TOY)` by the inner probe |
-| A sequential plugin registered after the codec; `x.cpio.toy` | `ArchiveFormat(CpioContainer.CPIO, ToyStream.TOY)` |
+| A sequential plugin registered after the codec; `x.lha.toy` | `ArchiveFormat(LhaContainer.LHA, ToyStream.TOY)` |
 | The stream cut short | `TruncatedError` |
 | `ReaderContext.decompress(data, ToyStream.TOY, size=n, properties=p)` | the decoder's `CodecCall` has `size=n`, `properties=p` and the caller's limits |
 | The inner-TAR probe decodes the codec | `CodecCall.probe_bound` set; `None` on a read |

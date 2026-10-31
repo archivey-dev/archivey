@@ -12,7 +12,8 @@ The variants differ only in the header and the padding:
   ``070707``. No padding. afio writes odc too, but switches a member to its *large*
   header (``070727``, 116 bytes of mostly hexadecimal fields, as libarchive reads it)
   as afio(1) says, for a file over 2 GB, a uid or gid over 65535, or an archive of
-  more than 64K hard-linked files. That header has odc's rules otherwise, so the archive is still ``odc``.
+  more than 64K hard-linked files. That header has odc's rules otherwise, so the
+  archive is still ``odc``.
 - **newc** (``-H newc``, SVR4) and **crc** (``-H crc``): 110 bytes of hexadecimal ASCII
   fields after ``070701`` or ``070702``. Name and data are padded to 4 bytes. In crc,
   the header's ``check`` field is the 32-bit sum of the data bytes.
@@ -29,6 +30,11 @@ data arrives, yields that one as the ``FILE``, then the held ones as ``HARDLINK`
 members to it. The member order is then not quite the archive's. A group whose data
 never arrives (all its links empty, as for an empty file) is yielded at the trailer:
 the first as an empty ``FILE``, the rest as links to it.
+
+The reader is written against ``archivey.formats`` and archivey's public names only,
+as a format added from outside would be; ``register_builtin_format`` is the one
+internal name it uses (``tests/test_cpio.py`` checks). Handbook page:
+``dev-docs/formats/cpio.md``.
 """
 
 from __future__ import annotations
@@ -39,28 +45,31 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 
-from archivey import (
-    ArchiveMember,
-    CorruptionError,
-    MemberType,
-    ResourceLimitError,
-    TruncatedError,
-    UnsupportedFeatureError,
-)
 from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
     SpecialFileDataContext,
     UnknownMemberTypeContext,
 )
+from archivey.exceptions import (
+    CorruptionError,
+    ResourceLimitError,
+    TruncatedError,
+    UnsupportedFeatureError,
+)
 from archivey.formats import (
     ForwardStream,
+    Magic,
     MemberDigest,
     MemberSpan,
     ReaderArchiveInfo,
     ReaderContext,
+    SequentialFormatHandler,
     SequentialReader,
 )
+from archivey.internal.format_adapter import register_builtin_format
+from archivey.internal.overrides import override
+from archivey.types import ArchiveFormat, ArchiveInfoExtra, ArchiveMember, MemberType
 
 TRAILER = b"TRAILER!!!"
 # A stored name longer than this is damage: no file system takes a path this long, and
@@ -199,15 +208,18 @@ class CpioReader(SequentialReader):
         self._context = context
         self._variant: Variant | None = None
 
+    @override
     def archive_info(self) -> ReaderArchiveInfo:
         variant = self._variant
-        return ReaderArchiveInfo(
-            format_version=None if variant is None else variant.value,
-            extra={} if variant is None else {"cpio.variant": variant.value},
-        )
+        extra = ArchiveInfoExtra({})
+        if variant is not None:
+            extra["cpio.variant"] = variant.value
+        # A header variant is not a version: like TAR's, it is not in format_version.
+        return ReaderArchiveInfo(extra=extra)
 
     # The walk ---------------------------------------------------------------------
 
+    @override
     def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
         groups: dict[tuple[tuple[int, int], int], _LinkGroup] = {}
         held = 0
@@ -456,7 +468,7 @@ class CpioReader(SequentialReader):
             name=context.normalize_name(stored, member_type),
             raw_name=raw,
             size=size if member_type is MemberType.FILE else None,
-            modified=datetime.fromtimestamp(header.mtime, UTC),
+            modified=_time(header.mtime),
             mode=header.mode & 0o7777,
             uid=header.uid,
             gid=header.gid,
@@ -521,3 +533,50 @@ class CpioReader(SequentialReader):
                 )
                 return
             scanned += len(chunk)
+
+
+def _time(mtime: int) -> datetime | None:
+    """The modification time, or None past what a ``datetime`` holds: afio's large
+    header has 16 hexadecimal digits for it. The other variants' fields stop at the
+    year 2242 (odc's 11 octal digits) or before."""
+    try:
+        return datetime.fromtimestamp(mtime, UTC)
+    except (OverflowError, ValueError, OSError):
+        return None
+
+
+def _binary_probe(prefix: bytes) -> bool:
+    """A binary CPIO header: the two-byte magic alone is too weak a signature, so the
+    header must also hold a name of the size it declares, ending in a NUL."""
+    if len(prefix) < 26:
+        return False
+    for order, magic in (("<", _BINARY_LE), (">", _BINARY_BE)):
+        if prefix[:2] != magic:
+            continue
+        name_size = struct.unpack_from(f"{order}H", prefix, 20)[0]
+        end = 26 + name_size
+        return 1 < name_size and end <= len(prefix) and prefix[end - 1] == 0
+    return False
+
+
+class CpioHandler(SequentialFormatHandler):
+    """CPIO archives in the binary, odc, newc and crc variants: ``.cpio``."""
+
+    format = ArchiveFormat.CPIO
+    extensions = (".cpio",)
+    magic = (
+        Magic(0, _ODC),
+        Magic(0, _NEWC),
+        Magic(0, _CRC),
+        # afio's large header, on an archive whose first member needs it.
+        Magic(0, _AFIO_LARGE),
+    )
+    probe = staticmethod(_binary_probe)
+    uses_encoding = True
+
+    @override
+    def open_sequential(self, context: ReaderContext) -> CpioReader:
+        return CpioReader(context)
+
+
+CpioReadBackend = register_builtin_format(CpioHandler)

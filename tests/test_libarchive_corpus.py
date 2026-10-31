@@ -16,9 +16,9 @@ the ``LIBARCHIVE`` variable names, so a build of the clone can be used without
 installing it (``cmake -S libarchive -B build -DENABLE_TEST=OFF``, then
 ``LIBARCHIVE=build/libarchive/libarchive.so``).
 
-The format plugins in ``packages/`` (CPIO, SquashFS) are registered when they
-are installed (``uv pip install -e packages/archivey-cpio``), so their fixtures are
-compared too; without them those fixtures are skipped as unknown formats.
+The SquashFS plugin in ``packages/`` is registered when it is installed
+(``uv pip install -e packages/archivey-squashfs``), so its fixtures are compared too;
+without it they are skipped as unknown formats.
 
 Reference ``.uu`` blobs are decoded into ``ARCHIVEY_TEST_CACHE`` on first use.
 Skips archives libarchive cannot open, non-primary split volumes, libarchive
@@ -41,9 +41,9 @@ Triage (2026-07, rerun 2026-10-28 against libarchive 3.9.0dev with the plugins)
 
 **TAR / sparse / nested**
 * **GAP** GNU sparse variants / PAX edge headers that stdlib ``tarfile`` rejects.
-* **NESTED** ``*.iso.Z`` / ``*.cpio.gz`` (and the other compressed ``*.cpio.*``)
-  — outer compress around a non-TAR container Archivey does not compose yet
-  (skipped, not xfail).
+* **NESTED** ``*.iso.Z`` — outer compress around ISO, which Archivey does not compose
+  (skipped, not xfail). A compressed ``*.cpio.*`` is composed, ``(CPIO, <stream>)``,
+  and compared.
 * **POLICY** a V7 directory (a regular-file header whose name ends in ``/``) with a
   size: Archivey skips the data the size declares, as GNU tar does; libarchive
   reads none and so lists one more member.
@@ -54,13 +54,17 @@ Triage (2026-07, rerun 2026-10-28 against libarchive 3.9.0dev with the plugins)
 * **GAP** some RAR5 extra-field / crypt-only headers; multi-volume sets need
   sibling volumes (skipped like other split volumes).
 
-**CPIO** (with archivey-cpio installed)
+**CPIO**
 * **POLICY** in a newc or crc link group the data comes with the last name: Archivey
   lists that member as the file and the earlier names as hard links to it, where
   libarchive lists the first name as the file.
-* **SKIP** compressed ``*.cpio.*``, RPM packages (not read), the afio fixtures
-  libarchive does not open on their own, and names in legacy encodings, which
-  ``python-libarchive-c`` cannot return.
+* Compressed ``*.cpio.*`` are compared: on 2026-10-30, against libarchive 3.7.2, every
+  one Archivey decodes matched (``.Z``, ``.bz2``, ``.gz``, ``.lz``, ``.lz4``,
+  ``.lzma``, ``.xz``, ``.zst``, and ``test_write_disk_appledouble.cpio.gz``).
+* **SKIP** compressed ``*.cpio.*`` in a codec Archivey does not decode (``.grz``,
+  ``.lrz``, ``.lzo``), RPM packages (not read), the afio fixtures libarchive does not
+  open on their own, and names in legacy encodings, which ``python-libarchive-c``
+  cannot return.
 """
 
 from __future__ import annotations
@@ -130,7 +134,7 @@ _SKIP_NAMES = frozenset(
         # RAR5 multiarchive fixtures need sibling volumes beside part01.
         "test_read_format_rar5_multiarchive.part01.rar",
         "test_read_format_rar5_multiarchive_solid.part01.rar",
-        # Nested: outer unix-compress / gzip around ISO or cpio (no composed format).
+        # Nested: outer unix-compress around ISO (no composed format).
         "test_read_format_iso.iso.Z",
         "test_read_format_iso_2.iso.Z",
         "test_read_format_iso_3.iso.Z",
@@ -146,7 +150,6 @@ _SKIP_NAMES = frozenset(
         "test_read_format_iso_rockridge_rr_moved.iso.Z",
         "test_read_format_iso_xorriso.iso.Z",
         "test_read_format_iso_zisofs.iso.Z",
-        "test_write_disk_appledouble.cpio.gz",
         # GNU sparse skip-entry OOMs/segfaults the process — skip rather than xfail.
         "test_read_format_gtar_sparse_skip_entry.tar.Z",
         # One volume of a split .Z: not an archive, and the parts are not joined.
@@ -226,7 +229,7 @@ _XFAIL: dict[str, tuple[bool, str]] = {
         True,
         "POLICY: repeated separators in names are normalized",
     ),
-    # --- CPIO (the archivey-cpio plugin) ---
+    # --- CPIO ---
     **dict.fromkeys(
         (
             "test_gcpio_compat_ref.newc",
@@ -348,11 +351,11 @@ def _materialize_archive(uu_path: Path) -> tuple[Path, FormatInfo] | None:
         if dest.exists():
             dest.unlink(missing_ok=True)
         return None
-    # Nested outer-compress around ISO/cpio: detect as bare compressor, not a
-    # composed Archivey format. Skip rather than compare against libarchive's
-    # multi-filter open.
-    if info.format.container is ContainerFormat.RAW_STREAM and (
-        base.lower().endswith(".iso.z") or ".cpio." in base.lower()
+    # Nested outer-compress around ISO: detects as a bare compressor, not a composed
+    # Archivey format. Skip rather than compare against libarchive's multi-filter open.
+    # A compressed CPIO is composed, so it is compared.
+    if info.format.container is ContainerFormat.RAW_STREAM and base.lower().endswith(
+        ".iso.z"
     ):
         return None
     return dest, info

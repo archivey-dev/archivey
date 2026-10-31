@@ -21,9 +21,9 @@ normal suite: every file where Archivey and CC disagree must have a reason in
 ``_TRIAGE``, so a rewrite of the pins that brings a new divergence fails until someone
 reads it.
 
-The format plugins in ``packages/`` (CPIO, SquashFS) are registered when they are
-installed (``uv pip install -e packages/archivey-cpio``). The pins assume both, so
-without one the comparison is skipped.
+The SquashFS plugin in ``packages/`` is registered when it is installed
+(``uv pip install -e packages/archivey-squashfs``). The pins assume it, so without it
+the comparison is skipped.
 
 Triage (2026-10-28, CC master ``0c20ded``, 1.29.0-SNAPSHOT), in the report's groups:
 

@@ -57,7 +57,7 @@ on:
 # (the `scope` job). Every job below runs on pull requests unless it says otherwise. On
 # a pull request: lint, the `test` legs (Linux 3.11 and 3.14 [all], Linux 3.11
 # core-only, Windows 3.14 [all]), free-threaded 3.13t, the structural benchmark and the
-# three plugin jobs. Only past it: the `test-queue` legs (the other Pythons, 3.14
+# SquashFS plugin job. Only past it: the `test-queue` legs (the other Pythons, 3.14
 # core-only, the minimum versions, macOS, Windows 3.11), 3.15t, the distribution unar
 # packages, PyPy and the short Atheris fuzz. A failure there takes the pull request out
 # of the queue. The split exists because the organization's runners are shared (20 jobs
@@ -96,9 +96,9 @@ jobs:
         # the everyday recommended install; core-only is covered by the test matrix.
         run: uv sync --group dev --extra all
       - name: Ruff lint
-        run: uv run ruff check src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/ packages/archivey-cpio/
+        run: uv run ruff check src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/
       - name: Ruff format
-        run: uv run ruff format --check src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/ packages/archivey-cpio/
+        run: uv run ruff format --check src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/
       - name: Pyrefly
         run: uv run pyrefly check
       - name: ty
@@ -866,30 +866,6 @@ jobs:
           uv run --no-sync pytest packages/archivey-squashfs/tests tests/test_lzo.py
           tests/test_lzop.py -q --no-cov -rs
 
-  # The CPIO reader in packages/archivey-cpio: a format read in one forward pass, added
-  # from outside the library through the public plugin API only. Its own tests, against
-  # archives GNU cpio and bsdcpio wrote (tests/data/make-archives.sh), from a file and
-  # from a pipe.
-  cpio-plugin:
-    name: archivey-cpio plugin
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - name: Set up Python
-        run: uv python install 3.11
-      - name: Sync, then install the package over it
-        run: |
-          uv sync --group dev
-          uv pip install -e packages/archivey-cpio --no-deps
-      - name: Pytest
-        run: uv run --no-sync pytest packages/archivey-cpio/tests -q --no-cov -rs
-
   # The short Atheris fuzz (atheris-fuzz.yml in its short mode, three shards), in the
   # merge queue only. The nightly and dispatched full runs stay in that workflow.
   atheris:
@@ -907,7 +883,7 @@ jobs:
   gate:
     name: CI gate
     if: ${{ always() && github.event_name == 'merge_group' }}
-    needs: [scope, lint, test, test-queue, unar-distro-packages, free-threaded-concurrency, pypy, benchmark, squashfs-plugin, cpio-plugin, atheris]
+    needs: [scope, lint, test, test-queue, unar-distro-packages, free-threaded-concurrency, pypy, benchmark, squashfs-plugin, atheris]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

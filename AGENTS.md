@@ -30,7 +30,7 @@ session needs and points at the rest.
 ## What this repo is
 
 This repo (`archivey`) is the clean-slate **v2** of the Archivey archive library: read,
-stream, and safely extract ZIP / TAR / RAR / 7z / ISO / ar / directory /
+stream, and safely extract ZIP / TAR / RAR / 7z / ISO / CPIO / ar / directory /
 single-file-compressed archives behind one uniform interface. The previous v1 tree is
 [`davitf/archivey-old`](https://github.com/davitf/archivey-old).
 
@@ -39,7 +39,7 @@ It is a **pure Python library** — no server and no web UI. It does ship a CLI
 application" normally means exercising the library API:
 `archivey.open_archive(path)` / `reader.extract_all(dest)` plus the detection
 helpers (`detect_format`, `format_availability`, `list_supported_formats`).
-All backends ship: ZIP, TAR, **7z**, **RAR**, ISO, ar, directory, and
+All backends ship: ZIP, TAR, **7z**, **RAR**, ISO, CPIO, ar, directory, and
 single-file-compressed (gz/bz2/xz/lzip/LZMA Alone/zstd/lz4/zlib/Brotli/.Z).
 
 7z and RAR are read with **native** parsers, not `py7zr` / `rarfile`, which are test

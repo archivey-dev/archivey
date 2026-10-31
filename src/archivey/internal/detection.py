@@ -403,6 +403,8 @@ def _probe_inner_container(
     workspace: PrefixWorkspace | None = None,
     *,
     view_arrived: bool = False,
+    named: ArchiveFormat | None = None,
+    always_probe: bool = False,
 ) -> ArchiveFormat | None:
     """The container decompressing the source yields, as its uncompressed format, or
     ``None``.
@@ -412,12 +414,15 @@ def _probe_inner_container(
     TAR's ``ustar`` at offset 257 first, then the magic of each registered sequential
     plugin, which registration keeps within those 512 bytes. A v7 tar has no magic, so
     when none matches, a first TAR header that checks itself
-    (``ReadBackend.HEADER_CHECKS``) still finds it. So a tarball, or a plugin's
-    sequential archive, wrapped in the compressor is found the same way, and a plugin
-    cannot make the probe decode more. The decoder reads from a bounded, non-consuming
-    view of the source (:class:`_BoundedPeekReader` over ``peek_more``), so it pulls
-    exactly as much compressed input as it needs to decode those 512 bytes and no
-    more.
+    (``ReadBackend.HEADER_CHECKS``) still finds it. A container with no reliable magic
+    (binary CPIO) is found by its content probe on those bytes, run only when ``named``,
+    the uncompressed format the extension names inside the compressor (``.cpio.gz``), is
+    that container, or when ``always_probe`` is set: the same rule :func:`_probe_named`
+    keeps for an uncompressed source. So a tarball, or a plugin's sequential archive,
+    wrapped in the compressor is found the same way, and a plugin cannot make the probe
+    decode more. The decoder reads from a bounded, non-consuming view of the source
+    (:class:`_BoundedPeekReader` over ``peek_more``), so it pulls exactly as much
+    compressed input as it needs to decode those 512 bytes and no more.
 
     Accelerators are forced ``OFF`` on both paths: a declared seek demand must not flip
     AUTO rapidgzip / IndexedBzip2File on for a short detection peek. Decoder limits are
@@ -541,21 +546,38 @@ def _probe_inner_container(
         # Not decodable as this codec, or truncated before a full block: no inner
         # container.
         pass
-    found = next(
-        (
-            sig.format
-            for sig in get_registry().inner_magic_entries()
-            if head[sig.offset : sig.offset + len(sig.magic)] == sig.magic
-        ),
-        None,
-    ) or next(
-        # A first header that checks itself: a v7 tar has no magic.
-        (
-            fmt
-            for fmt, check in get_registry().header_checks()
-            if fmt.container is ContainerFormat.TAR and check(head)
-        ),
-        None,
+    found = (
+        next(
+            (
+                sig.format
+                for sig in get_registry().inner_magic_entries()
+                if head[sig.offset : sig.offset + len(sig.magic)] == sig.magic
+            ),
+            None,
+        )
+        or next(
+            # A first header that checks itself: a v7 tar has no magic.
+            (
+                fmt
+                for fmt, check in get_registry().header_checks()
+                if fmt.container is ContainerFormat.TAR and check(head)
+            ),
+            None,
+        )
+        or next(
+            # A container with no reliable magic, found by its own probe where the name
+            # says it is that container (the rule and its scope are on _probe_named).
+            # Prefix only: the decoded head is all there is.
+            (
+                fmt
+                for fmt, probe in get_registry().content_probes()
+                if fmt.container is not ContainerFormat.RAW_STREAM
+                and (always_probe or fmt == named)
+                and head
+                and probe(head)
+            ),
+            None,
+        )
     )
     if workspace is not None:
         # Charged on every path: a decode that ran and then failed did the work too.
@@ -681,11 +703,14 @@ def _probe_named(
 ) -> bool:
     """Whether the source's extension allows ``fmt``'s content probe to run.
 
-    A built-in probe is keyed by its stream, so ``.tlz`` can name two. Every plugin
-    format shares the ``UNCOMPRESSED`` stream with ZIP, TAR and the rest, so its probe
-    runs only when the extension names that format itself.
+    A single-file codec's probe is keyed by its stream, so ``.tlz`` can name two. A
+    container's probe (binary CPIO, or a plugin's) shares the ``UNCOMPRESSED`` stream
+    with ZIP, TAR and the rest, so it runs only when the extension names that format
+    itself. Only a format with no reliable magic declares a container probe (today
+    binary CPIO and any plugin); ZIP, TAR, 7z, RAR and ISO declare exact magic and no
+    probe, so a built-in container that adds one later takes this rule on purpose.
     """
-    if isinstance(fmt.container, PluginContainer):
+    if fmt.container is not ContainerFormat.RAW_STREAM:
         return ext_match is not None and ext_match[0] == fmt
     return fmt.stream in _streams_named_by(ext_match)
 
@@ -717,6 +742,7 @@ def _resolve_single_file_or_tar(
     ext_match: tuple[ArchiveFormat, str] | None = None,
     workspace: PrefixWorkspace | None = None,
     view_arrived: bool = False,
+    always_probe: bool = False,
 ) -> FormatInfo:
     """Upgrade a single-file-compressor match to its container combo when the payload
     is a tarball or a sequential plugin's archive.
@@ -731,9 +757,17 @@ def _resolve_single_file_or_tar(
     non-consuming view of the source to decode from; ``view_arrived`` says it is a
     view that returns what has arrived (:class:`_BoundedPeekReader`).
     """
+    named = None
+    if ext_match is not None and ext_match[0].stream is fmt.stream:
+        named = ArchiveFormat(ext_match[0].container, StreamFormat.UNCOMPRESSED)
     inner = (
         _probe_inner_container(
-            fmt.stream, peek_more, workspace, view_arrived=view_arrived
+            fmt.stream,
+            peek_more,
+            workspace,
+            view_arrived=view_arrived,
+            named=named,
+            always_probe=always_probe,
         )
         if fmt.container == ContainerFormat.RAW_STREAM
         and fmt.stream != StreamFormat.UNCOMPRESSED
@@ -762,7 +796,7 @@ def _is_deferred_inner_container(
     deferred case: the inner-container probe could not run (codec backend absent) or
     found no magic, so the bare compressor is reported and the inner determination is
     left to open time. That is not a real conflict, so it must not emit a warning. A
-    sequential plugin's ``foo.cpio.gz`` is the same case.
+    ``foo.cpio.gz``, or a sequential plugin's ``foo.lha.gz``, is the same case.
     """
     return (
         resolved.container == ContainerFormat.RAW_STREAM
@@ -1346,6 +1380,7 @@ def _detect_format_body(
                 ext_match=ext_match,
                 workspace=workspace,
                 view_arrived=arrived,
+                always_probe=always_probe,
             )
             return conclude(info, _ConflictEvidence.MAGIC)
 
@@ -1511,6 +1546,7 @@ def _detect_format_body(
                         peek_more,
                         ext_match=ext_match,
                         workspace=workspace,
+                        always_probe=always_probe,
                     )
                     return conclude(info, _ConflictEvidence.CONTENT_PROBE)
 
