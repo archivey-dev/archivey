@@ -115,7 +115,8 @@ class FormatInfo:
         """Whether ``format`` is one a plugin added (``archivey.formats``), not a
         built-in one: its container or its compression stream. A plugin's parser or
         decoder is not covered by archivey's limits, so a caller that reads untrusted
-        input can refuse such a format."""
+        input can refuse such a format. Experimental, with ``archivey.formats``: any
+        release may change it."""
         return isinstance(self.format.container, PluginContainer) or isinstance(
             self.format.stream, PluginStream
         )

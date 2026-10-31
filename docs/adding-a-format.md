@@ -15,9 +15,13 @@ directories) are written directly against archivey's internal reader classes. Th
 is for formats that do not fit this model, or that need special features or more speed,
 and it is not public.
 
-!!! warning "Provisional"
-    `archivey.formats` can change in a minor release until a plugin outside archivey has
-    used it. Pin the archivey version your plugin is tested with.
+!!! warning "Experimental"
+    `archivey.formats` is experimental and outside the
+    [stability policy](how-it-is-built.md#versioning-and-stability): any release, a patch
+    release included, may change or remove it with no deprecation warning first. So may
+    the names that exist only for it: `PluginContainer`, `PluginStream`,
+    `FormatPolicy.replace` and `FormatInfo.from_plugin`. Pin the exact archivey version
+    your plugin is tested with (`archivey==X.Y.Z`).
 
 A format reader reads one of two kinds of format:
 

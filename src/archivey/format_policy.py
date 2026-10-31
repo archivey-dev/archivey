@@ -252,6 +252,8 @@ class FormatPolicy:
     replace: Mapping[ContainerFormat, type[FormatHandler]]
     """Built-in containers read by a plugin instead of the built-in reader.
 
+    Experimental, with ``archivey.formats``: any release may change it.
+
     A key is ``ContainerFormat.ZIP``, ``SEVEN_Z``, ``RAR``, ``ISO`` or ``SQUASHFS``.
     Its plugin is a ``archivey.formats.FormatHandler`` that is not registered: its
     ``format`` is the built-in one (``ArchiveFormat.ZIP``), and it declares no

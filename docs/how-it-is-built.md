@@ -149,6 +149,11 @@ A few things you can see aren't part of the API either, and can change in any re
   - `accelerator` in a stream rewind's diagnostic context, and `scan` and `error_type`
     in a seek index's. The diagnostic codes, and the other fields of those contexts, are
     part of the API.
+- The experimental plugin interface: the `archivey.formats` module and the names that exist
+  only for it (`PluginContainer`, `PluginStream`, `FormatPolicy.replace` and
+  `FormatInfo.from_plugin`). Any release may change or remove them, with no deprecation
+  warning first, until the interface is declared stable. See
+  [Adding a format](adding-a-format.md).
 - Where a compressed stream can resume after a backward seek, which
   `ArchiveStream.nearest_resume_offset()` reports, and so which seeks report
   `STREAM_REWIND_REDECOMPRESSES`. It depends on the decoder.

@@ -809,6 +809,13 @@ the rulings above.
   minor release. A minor release may add a verb, which then wins over a file of that
   name; `archivey list <path>` and `./<path>` always reach the file (`cli` spec).
 - `archivey.internal` is not public and changes freely.
+- The plugin interface is experimental and outside this rule: `archivey.formats` and the
+  names that exist only for it (`PluginContainer`, `PluginStream`,
+  `FormatPolicy.replace`, `FormatInfo.from_plugin`) may change or go in any release,
+  with no deprecation release (maintainer, 2026-10-31: it should not freeze before he
+  has reviewed it closely). `scripts/api_surface.py` `EXPERIMENTAL` lists them, so a
+  change to one never makes a release a minor. Declaring it stable is the
+  maintainer's call.
 
 Public docs: `docs/how-it-is-built.md` §Versioning and stability.
 
