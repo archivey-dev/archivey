@@ -227,6 +227,8 @@ def open_member(self, member: ArchiveMember, locator: Locator) -> MemberData:
 - bzip2;
 - Zstandard and LZ4 frames;
 - Brotli;
+- raw LZO1X, with `size` as the most it may decode to (the call raises
+  `UnsupportedFeatureError` without it);
 - raw LZMA and LZMA2, with the `properties` bytes the format stores;
 - XZ, for `.xz` data kept inside a member, as ZIP method 95 keeps it;
 - `STORED`, for data kept as is, so a format with a per-member method can pass every
@@ -276,8 +278,8 @@ for each index, wherever the format stores them.
 **Your own decoder.** For a method archivey does not decode, wrap the view in your
 library's decoder, or one of your own. Such a decoder is outside archivey's decoder
 limits, so it must stop at the size the format allows: pass the expected output size and
-refuse anything longer. The SquashFS package does this for its LZ4 and LZO blocks, which
-can never be larger than one block.
+refuse anything longer. The SquashFS package does this for its LZ4 blocks, which can
+never be larger than one block.
 
 ### Seeking and short reads
 

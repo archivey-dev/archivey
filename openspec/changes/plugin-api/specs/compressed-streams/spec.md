@@ -23,5 +23,6 @@ An lzop method other than LZO1X (1 to 3), or a filter, SHALL raise
 | A changed byte under the header checksum | `CorruptionError` |
 | `ReaderContext.decompress(data, CompressionAlgorithm.LZO)` with no `size` | `UnsupportedFeatureError` |
 | An lzop block that declares more than 64 MiB | `CorruptionError` |
+| Raw LZO1X input longer than any LZO1X stream that decodes to `size` (`size + size // 7 + 67` bytes) | `CorruptionError`, before the input is held |
 | An lzop block over `DecoderLimits.max_decoder_memory` | `ResourceLimitError` |
 | Detection meeting an lzop block larger than its probe decodes | Not decoded; the probe can't tell |
