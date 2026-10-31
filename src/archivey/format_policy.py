@@ -247,10 +247,15 @@ class FormatPolicy:
     plugins: bool
     """Whether registered plugin formats and plugin codecs may open. Use ``False``
     with ``exclude``; under ``only`` a plugin opens only when its container (or its
-    :class:`~archivey.PluginStream`, for a codec) is listed."""
+    :class:`~archivey.PluginStream`, for a codec) is listed.
+
+    Stable, unlike the experimental plugin interface it refuses: ``plugins=False``
+    keeps working whatever happens to that interface."""
 
     replace: Mapping[ContainerFormat, type[FormatHandler]]
     """Built-in containers read by a plugin instead of the built-in reader.
+
+    Experimental, with ``archivey.formats``: any release may change it.
 
     A key is ``ContainerFormat.ZIP``, ``SEVEN_Z``, ``RAR``, ``ISO`` or ``SQUASHFS``.
     Its plugin is a ``archivey.formats.FormatHandler`` that is not registered: its

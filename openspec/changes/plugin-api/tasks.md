@@ -1,3 +1,10 @@
+**Stability (maintainer, 2026-10-31).** The interface is now *experimental*, not
+provisional: any release, a patch included, may change or remove `archivey.formats`,
+`PluginContainer`, `PluginStream`, `FormatPolicy.replace` and `FormatInfo.from_plugin`
+with no deprecation release (DR-12a in `dev-docs/design-rules.md`). This reverses the
+2026-10-25 "provisional" call that `brief.md`, `proposal.md` and `design.md` still
+record. `FormatPolicy.plugins` stays stable.
+
 No task starts until the maintainer approves the 2026-10-25 revision of `design.md`. Each numbered group is one PR, except group 1, which lands in stages, in this order: **1a**, the indexed shape with tests and the user page; **#1052**, asked for while 1a was in review: `ReaderContext.decompress`, seekable members over a plugin stream that reads forward only, and plugin-supplied digests (1.2d to 1.2f); the ISO port (group 2); then **1b**, the sequential shape: 1.2a, 1.2b, the rest of 1.2c, 1.3, 1.4 and 1.6. Only 1b waits for the ISO port. `ForwardStream.decompress` (1.2c) is the sequential shape's decoder, not `ReaderContext.decompress`. No spec delta lands before group 4 (4.2).
 
 ## 1. Format identity, registry, detection and the adapter

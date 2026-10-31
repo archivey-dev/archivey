@@ -69,6 +69,20 @@ OPEN_ENUMS = frozenset(
         "archivey.DiagnosticCode",
     }
 )
+#: The experimental names: the format and codec plugin interface, and the names that
+#: exist only for it. The stability policy leaves them out (``docs/how-it-is-built.md``
+#: §Versioning and stability): any release may change or remove them, with no
+#: deprecation release. A line whose own name is one of them (or under one) never makes
+#: a release a minor; a stable line that only mentions one in a signature still does,
+#: and the maintainer judges it (see :func:`classify`). ``tests/test_api_surface.py``
+#: pins the list: adding a name takes away a promise to callers.
+EXPERIMENTAL = (
+    "archivey.formats",
+    "archivey.PluginContainer",
+    "archivey.PluginStream",
+    "archivey.FormatPolicy.replace",
+    "archivey.FormatInfo.from_plugin",
+)
 #: The literal type that lists every diagnostic code string, which grows with them.
 CODE_LITERALS = frozenset({"archivey.diagnostics.DiagnosticCodeStr"})
 
@@ -390,14 +404,27 @@ def _owner(line: str) -> str:
     return target.rsplit(".", 1)[0] if line.startswith("value ") else target
 
 
+def is_experimental(line: str) -> bool:
+    """Whether ``line`` describes a name under :data:`EXPERIMENTAL`."""
+    parts = line.split(" ", 2)
+    if len(parts) < 2:
+        return False
+    # ``init archivey.X(...)`` and ``function archivey.f(...)`` carry their signature.
+    target = parts[1].split("(", 1)[0].rstrip(":")
+    return any(target == name or target.startswith(name + ".") for name in EXPERIMENTAL)
+
+
 def classify(old: list[str], new: list[str]) -> tuple[list[str], list[str]]:
     """Split the changes into (needs a minor release, allowed in a patch).
 
     Each entry is a ``+`` or ``-`` line. A removed or changed line needs a minor
-    release. An added line is allowed in a patch only when it adds a value to an
-    open-ended enum or a diagnostic code string (DR-12a). Anything else added (a name,
-    a parameter, a field, an item of ``ARCHIVE_INTEGRITY_CODES``, a CLI option) needs a
-    minor release.
+    release, unless the line's own name is experimental (:func:`is_experimental`). An
+    added line is allowed in a patch only when its own name is experimental, or it adds
+    a value to an open-ended enum or a diagnostic code string (DR-12a). Anything else
+    added (a name, a parameter, a field, an item of ``ARCHIVE_INTEGRITY_CODES``, a CLI
+    option) needs a minor release. A stable line that only mentions an experimental
+    name, such as ``FormatPolicy``'s constructor with its ``replace=`` parameter, is
+    judged as a stable line: the maintainer then decides whether the change is a minor.
     """
     old_set, new_set = set(old), set(new)
     open_enums = {
@@ -407,12 +434,14 @@ def classify(old: list[str], new: list[str]) -> tuple[list[str], list[str]]:
     patch: list[str] = []
     for line in old:
         if line not in new_set:
-            minor.append("- " + line)
+            (patch if is_experimental(line) else minor).append("- " + line)
     for line in new:
         if line in old_set:
             continue
-        allowed = (line.startswith("value ") and _owner(line) in open_enums) or (
-            line.startswith("code-literal ")
+        allowed = (
+            (line.startswith("value ") and _owner(line) in open_enums)
+            or line.startswith("code-literal ")
+            or is_experimental(line)
         )
         (patch if allowed else minor).append("+ " + line)
     return minor, patch
@@ -425,7 +454,7 @@ def report(old: list[str], new: list[str]) -> str:
         out.append("The public API changed in a way a patch release may not:")
         out.extend("  " + line for line in minor)
     if patch:
-        out.append("Additions a patch release may make:")
+        out.append("Changes a patch release may make:")
         out.extend("  " + line for line in patch)
     if not minor and not patch:
         out.append("The public API did not change.")

@@ -103,6 +103,63 @@ def test_removed_enum_value_needs_a_minor() -> None:
     assert _classify(new) == (["- value archivey.DiagnosticCode.A = 'a'"], [])
 
 
+def test_experimental_names_are_pinned() -> None:
+    # A change to these never needs a minor. Adding one takes away a promise to callers.
+    assert api_surface.EXPERIMENTAL == (
+        "archivey.formats",
+        "archivey.PluginContainer",
+        "archivey.PluginStream",
+        "archivey.FormatPolicy.replace",
+        "archivey.FormatInfo.from_plugin",
+    )
+
+
+def test_a_stable_signature_naming_an_experimental_type_still_needs_a_minor() -> None:
+    old = "init archivey.FormatPolicy(*, replace: Mapping | None = None) -> None"
+    new = "init archivey.FormatPolicy(*) -> None"
+    minor, patch = api_surface.classify([old], [new])
+    assert minor == [f"- {old}", f"+ {new}"]
+    assert patch == []
+
+
+def test_a_change_to_an_experimental_name_fits_a_patch() -> None:
+    old = [
+        *_OLD,
+        "module archivey.formats",
+        "class archivey.formats.FormatHandler(ABC)",
+        "function archivey.formats.register_format(handler: type) -> None",
+        "field archivey.FormatPolicy.replace: Mapping[ContainerFormat, type]",
+    ]
+    new = [
+        *_OLD,
+        "module archivey.formats",
+        "function archivey.formats.register_format(handler: type, *, x: int) -> None",
+        "class archivey.PluginContainer(StrEnum)",
+    ]
+    minor, patch = api_surface.classify(old, new)
+    assert minor == []
+    assert len(patch) == 5
+
+
+def test_a_stable_name_beside_an_experimental_one_still_needs_a_minor() -> None:
+    # A prefix match covers the name and what is under it, not every name it begins.
+    for line in (
+        "function archivey.formats_list() -> list",
+        "field archivey.FormatPolicy.replace_all: bool",
+        "field archivey.FormatPolicy.only: frozenset",
+    ):
+        assert not api_surface.is_experimental(line), line
+        assert _classify([*_OLD, line]) == ([f"+ {line}"], [])
+
+
+def test_every_experimental_entry_names_something() -> None:
+    lines = api_surface.parse(api_surface.SURFACE_FILE.read_text(encoding="utf-8"))
+    for name in api_surface.EXPERIMENTAL:
+        assert any(
+            api_surface.is_experimental(line) and name in line for line in lines
+        ), name
+
+
 def test_open_enums_are_pinned() -> None:
     # A patch release may add values to these. Adding one is a promise to callers.
     lines = api_surface.parse(api_surface.SURFACE_FILE.read_text(encoding="utf-8"))

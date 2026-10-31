@@ -1,7 +1,10 @@
 """The shared structures archivey reads formats with, open to formats from outside.
 
-**Provisional.** This interface may change in a minor release until a plugin outside
-this repository has used it. Pin the archivey version a plugin is tested with.
+**Experimental.** This interface, and the names that exist only for it
+(:class:`~archivey.PluginContainer`, :class:`~archivey.PluginStream`,
+``FormatPolicy.replace`` and ``FormatInfo.from_plugin``), is outside the stability
+policy: any release may change or remove it, a patch release included, with no
+deprecation warning first. Pin the exact archivey version a plugin is tested with.
 
 A format that fits the model is two classes, whether it is built in (ISO 9660) or added
 by a program or a separate package (a plugin). A :class:`FormatHandler` subclass
