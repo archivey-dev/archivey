@@ -746,6 +746,9 @@ class Tier:
     new_parsers: list[str] = field(default_factory=list)
     # What makes the maintainer merge it (maintainer_decisions); empty: an agent merges.
     maintainer: list[str] = field(default_factory=list)
+    # Workflows that would make it deep but run on nobody else's input with a read-only
+    # token (quiet_workflow): standard instead, and the security pass still runs.
+    quiet_workflows: list[str] = field(default_factory=list)
 
 
 def tier(paths: Iterable[str], added: Iterable[str] = ()) -> Tier:
@@ -790,9 +793,87 @@ def added_paths(base: str, head: str) -> list[str]:
     return [paths[0] for status, *paths in _name_status(base, head) if status == "A"]
 
 
+# The triggers a quiet workflow may have: someone with write access starts it, or the
+# clock does. Nothing a fork or an issue author chose reaches it.
+_QUIET_TRIGGERS = frozenset({"workflow_dispatch", "schedule"})
+_ON_RE = re.compile(r"""^(?:on|"on"|'on'|true)\s*:\s*(.*?)\s*(?:#.*)?$""")
+_KEY_RE = re.compile(r"^(\s+)([\w-]+)\s*:")
+# `secrets: inherit` or any secret but the job's token, which `permissions:` bounds.
+_SECRET_RE = re.compile(r"\bsecrets\s*(?::|\.\s*(?!GITHUB_TOKEN\b))")
+_SCOPE_WRITE_RE = re.compile(r"^\s*[\w-]+\s*:\s*write\b|\bwrite-all\b")
+
+
+def _triggers(text: str) -> set[str] | None:
+    """The event names under a workflow's top-level ``on:``, or None where the script
+    cannot tell (no ``on:``, or a form it does not read)."""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        m = _ON_RE.match(line)
+        if not m:
+            continue
+        inline = m.group(1)
+        if inline:
+            names = inline.strip("[]").split(",")
+            found = {n.strip().strip("\"'") for n in names if n.strip()}
+            return found if all(re.fullmatch(r"[\w-]+", n) for n in found) else None
+        found, indent = set(), None
+        for nxt in lines[i + 1 :]:
+            if not nxt.strip() or nxt.lstrip().startswith("#"):
+                continue
+            if not nxt[0].isspace():
+                break
+            k = _KEY_RE.match(nxt)
+            if k is None:
+                if indent is None:
+                    return None  # `on:` followed by a list or a scalar: not read here
+                continue
+            if indent is None:
+                indent = k.group(1)
+            if k.group(1) == indent:
+                found.add(k.group(2))
+        return found or None
+    return None
+
+
+def quiet_workflow(text: str | None) -> bool:
+    """A workflow that only a dispatch or the schedule starts, with an explicit token
+    scope that writes nothing and no secret but the job's own token. Every `github`
+    field it reads was then set by someone with write access or by the repository, so
+    its reviewer has no outside attacker to model and it is not deep for its own sake.
+    A new one, or a change to its triggers or token, still goes to the maintainer
+    (maintainer_decisions)."""
+    if text is None:
+        return False
+    triggers = _triggers(text)
+    if not triggers or not triggers <= _QUIET_TRIGGERS:
+        return False
+    lines = text.splitlines()
+    if not any(re.match(r"^permissions\s*:", t) for t in lines):
+        return False  # the repository's default token, whatever that is set to
+    # Comments are read too: a `#` inside a `run:` string would otherwise hide the rest
+    # of its line, and a comment that names a secret only costs a deep review.
+    return not any(_SCOPE_WRITE_RE.search(t) or _SECRET_RE.search(t) for t in lines)
+
+
 def review_tier(base: str, head: str) -> Tier:
     paths, added = changed_paths(base, head), added_paths(base, head)
     t = tier(paths, added)
+    quiet = [
+        p
+        for p in t.reasons
+        if p.startswith(WORKFLOWS)
+        and p not in MAINTAINER_FILES
+        and quiet_workflow(base_text(head, p))
+    ]
+    if t.name == "deep" and quiet and len(quiet) == len(t.reasons):
+        rest = tier([p for p in paths if p not in quiet], added)
+        t = Tier(
+            "standard",
+            quiet + rest.reasons,
+            t.api_changed,
+            t.new_parsers,
+            quiet_workflows=quiet,
+        )
     files = parse_diff(git("diff", "-U0", "-M", f"{base}...{head}"))
     # `base...head` diffs from the merge base, so the "before" texts come from there too.
     fork = git("merge-base", base, head).strip()
@@ -815,13 +896,21 @@ def tier_report(t: Tier) -> list[str]:
     lines = [f"tier: {t.name}"]
     if t.name == "deep":
         lines += [f"  deep path: {p}" for p in t.reasons]
+    elif t.quiet_workflows:
+        lines += [
+            f"  quiet workflow (dispatch or schedule, read-only token): {p}"
+            for p in t.quiet_workflows
+        ]
+        rest = t.reasons[len(t.quiet_workflows) :]
+        if rest:
+            lines.append(f"  not light because of: {', '.join(rest[:5])}")
     elif t.name == "standard" and not t.reasons:
         lines.append("  no committed changes against the base")
     elif t.name == "standard":
         shown = t.reasons[:5]
         more = f" (+{len(t.reasons) - len(shown)} more)" if len(t.reasons) > 5 else ""
         lines.append(f"  not light because of: {', '.join(shown)}{more}")
-    if t.name == "deep" or t.new_parsers:
+    if t.name == "deep" or t.new_parsers or t.quiet_workflows:
         lines.append("security pass: yes")
         lines += [
             f"  new file under a parser or codec directory: {p}" for p in t.new_parsers

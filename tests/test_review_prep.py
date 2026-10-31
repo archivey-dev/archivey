@@ -663,3 +663,108 @@ def test_tier_reports_a_public_api_change() -> None:
     t = prep.tier(["src/archivey/core.py", "dev-docs/api-surface.txt"])
     assert t.api_changed
     assert "public API: changed (dev-docs/api-surface.txt)" in prep.tier_report(t)
+
+
+QUIET = """\
+name: Bench
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        type: string
+  schedule:
+    - cron: "7 3 * * *"
+permissions:
+  contents: read
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - run: echo "${{ github.sha }}"
+"""
+
+
+@pytest.mark.parametrize(
+    ("text", "quiet"),
+    [
+        (QUIET, True),
+        (QUIET.replace("  schedule:\n", "  push:\n  schedule:\n"), False),
+        (
+            QUIET.replace("on:\n  workflow_dispatch:", "on:\n  pull_request_target:"),
+            False,
+        ),
+        (
+            "on: [workflow_dispatch, schedule]\n" + QUIET.split("permissions:", 1)[1],
+            False,
+        ),
+        (
+            "on: [workflow_dispatch, schedule]\npermissions:"
+            + QUIET.split("permissions:", 1)[1],
+            True,
+        ),
+        ("on: workflow_dispatch\npermissions: {}\njobs: {}\n", True),
+        ("on: pull_request\npermissions: {}\njobs: {}\n", False),
+        # No `permissions:` at all: the repository's default token.
+        (QUIET.replace("permissions:\n  contents: read\n", ""), False),
+        (QUIET.replace("contents: read", "contents: write"), False),
+        (QUIET.replace("contents: read", "write-all"), False),
+        # A job-level scope that writes.
+        (QUIET + "    permissions:\n      pull-requests: write\n", False),
+        (QUIET.replace("${{ inputs.ref }}", "${{ secrets.TOKEN }}"), False),
+        # The job's own token is bounded by `permissions:`; a dispatcher's fields are
+        # theirs to choose, since they can push anyway.
+        (QUIET.replace("${{ inputs.ref }}", "${{ secrets.GITHUB_TOKEN }}"), True),
+        (QUIET.replace("github.sha", "github.event.inputs.ref"), True),
+        (
+            QUIET
+            + "  call:\n    uses: ./.github/workflows/x.yml\n    secrets: inherit\n",
+            False,
+        ),
+        # A `#` inside a string does not hide the rest of the line.
+        (QUIET.replace('echo "${{ github.sha', 'echo "#" "${{ secrets.X'), False),
+        (None, False),
+        ("jobs: {}\n", False),
+    ],
+)
+def test_quiet_workflow(text: str | None, quiet: bool) -> None:
+    assert prep.quiet_workflow(text) is quiet
+
+
+def test_a_quiet_workflow_is_standard_and_keeps_the_security_pass(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _write(tmp_path, {"README.md": "x\n", ".github/workflows/ci.yml": "on: push\n"})
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "base")
+    _git(tmp_path, "checkout", "-qb", "pr")
+    _write(
+        tmp_path,
+        {".github/workflows/bench.yml": QUIET, "benchmarks/compare.py": "x = 1\n"},
+    )
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "pr")
+    monkeypatch.setattr(prep, "ROOT", tmp_path)
+    t = prep.review_tier("main", "pr")
+    assert (t.name, t.quiet_workflows) == ("standard", [".github/workflows/bench.yml"])
+    report = prep.tier_report(t)
+    assert report[:2] == [
+        "tier: standard",
+        (
+            "  quiet workflow (dispatch or schedule, read-only token):"
+            " .github/workflows/bench.yml"
+        ),
+    ]
+    assert "security pass: yes" in report
+    # A new workflow is still the maintainer's to merge.
+    assert (
+        "  maintainer decision: adds a workflow: .github/workflows/bench.yml" in report
+    )
+    # With a workflow that is not quiet next to it, the pull request stays deep.
+    _write(tmp_path, {".github/workflows/ci.yml": "on: push\njobs: {}\n"})
+    _git(tmp_path, "commit", "-qam", "ci too")
+    assert prep.review_tier("main", "pr").name == "deep"
