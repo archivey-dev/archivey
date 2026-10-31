@@ -71,6 +71,11 @@ def test_loading_the_rapidgzip_worker_imports_no_archivey() -> None:
         f"r = importlib.util.spec_from_file_location('r', {rapidgzip!r}); "
         "r.loader.exec_module(importlib.util.module_from_spec(r))"
     )
+    allowed = _modules_added_by(
+        "import importlib.util, __future__, marshal, signal, struct, enum, "
+        "functools, io, os, queue, threading, time"
+    )
+    assert new <= allowed, sorted(new - allowed)
     assert not {m for m in new if m.split(".")[0] in {"archivey", "rapidgzip"}}, new
 
 

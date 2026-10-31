@@ -83,19 +83,24 @@ import struct
 import sys
 import threading
 import time
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
 
-# Not archivey.internal.overrides: in the child this file is loaded by path, and an
-# ``archivey`` import there loads the whole library into every child (about 0.3 s each,
-# which doubled an accelerated .tar.gz read). tests/test_worker_scripts.py holds it.
+# Not ``typing.TYPE_CHECKING``, and not archivey.internal.overrides: in the child this
+# file is loaded by path, where importing ``typing`` costs a few ms per child start and
+# an ``archivey`` import loads the whole library (about 0.3 s, which doubled an
+# accelerated .tar.gz read). tests/test_worker_scripts.py holds both. ``override`` is a
+# copy of archivey.internal.overrides' stand-in: change how one is obtained, change both.
+TYPE_CHECKING = False
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from typing import Any, TypeVar
+
     from typing_extensions import override
-elif sys.version_info >= (3, 12):
-    from typing import override
+
+    _F = TypeVar("_F", bound=Callable[..., object])
 else:
 
-    def override(method: Callable[..., object], /) -> Callable[..., object]:
+    def override(method: _F, /) -> _F:
+        """Return ``method`` unchanged (``typing.override`` only sets an attribute)."""
         return method
 
 

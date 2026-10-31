@@ -13,6 +13,9 @@ stand-in below would hide the decorator from them. ``typing_extensions`` is read
 the checker's bundled stubs; nothing imports it at run time. The cost is that neither
 checker reads the stand-in any more; the Python 3.11 test jobs, which import it, are
 what keep it working.
+
+The decoder worker scripts a child loads by path may import neither ``archivey`` nor
+``typing``; ``rapidgzip_worker.py`` keeps a copy of the stand-in for that reason.
 """
 
 from __future__ import annotations
