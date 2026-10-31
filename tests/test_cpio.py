@@ -254,6 +254,22 @@ def _binary(name: bytes) -> bytes:
     return out
 
 
+def test_a_big_endian_binary_archive() -> None:
+    """GNU cpio writes the binary header in host order; a big-endian host's archive
+    starts ``71 C7`` and reads the same, as ``bin-be``."""
+    out = b""
+    for stored, data in ((b"hello\0", b"hi!\n"), (b"TRAILER!!!\0", b"")):
+        # magic, dev, ino, mode, uid, gid, nlink, rdev, mtime (2), namesize, filesize (2)
+        fields = (0o070707, 0, 1, 0o100644, 0, 0, 1, 0, 0, 0, len(stored), 0, len(data))
+        out += struct.pack(">13H", *fields) + stored + b"\0" * (len(stored) & 1)
+        out += data + b"\0" * (len(data) & 1)
+    assert out[:2] == b"\x71\xc7"
+    with open_archive(io.BytesIO(out), format=CPIO) as reader:
+        assert [m.name for m in reader.members()] == ["hello"]
+        assert reader.info.extra["cpio.variant"] == "bin-be"
+        assert reader.read("hello") == b"hi!\n"
+
+
 @pytest.mark.parametrize(("name_size", "found"), [(400, True), (600, False)])
 def test_a_compressed_binary_archive_needs_its_first_name_in_512_bytes(
     tmp_path: Path, name_size: int, found: bool

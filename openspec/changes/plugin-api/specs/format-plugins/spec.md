@@ -150,7 +150,7 @@ codec off, and `FormatInfo.from_plugin` SHALL be true for a format that uses it.
 | --- | --- |
 | `x.toy` with the codec's magic; `open_archive` | `ArchiveFormat(RAW_STREAM, ToyStream.TOY)`, one member, decoded bytes |
 | A TAR inside the codec, no name | `ArchiveFormat(TAR, ToyStream.TOY)` by the inner probe |
-| A sequential plugin registered after the codec; `x.cpio.toy` | `ArchiveFormat(CpioContainer.CPIO, ToyStream.TOY)` |
+| A sequential plugin registered after the codec; `x.lha.toy` | `ArchiveFormat(LhaContainer.LHA, ToyStream.TOY)` |
 | The stream cut short | `TruncatedError` |
 | `ReaderContext.decompress(data, ToyStream.TOY, size=n, properties=p)` | the decoder's `CodecCall` has `size=n`, `properties=p` and the caller's limits |
 | The inner-TAR probe decodes the codec | `CodecCall.probe_bound` set; `None` on a read |

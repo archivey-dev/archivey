@@ -455,8 +455,8 @@ class ArchiveEofContext(_JsonSafeContext):
       header and its last packed stream, ``"rar"`` for a RAR volume's end-of-archive
       block, ``"iso"`` for the furthest of an ISO image's volume space, the partitions
       its MBR or GPT lists and the GPT backup header, ``"zip"`` for the end of a ZIP's
-      end-of-central-directory record and its declared comment; a format plugin names
-      its own format (``"cpio"`` for the CPIO trailer). ``observed_bytes`` is
+      end-of-central-directory record and its declared comment, ``"cpio"`` for the
+      CPIO trailer; a format plugin names its own format. ``observed_bytes`` is
       that byte's offset past the end. RAR emits one per volume, and its offset counts from that
       volume's end block, unlike member offsets, which count across the whole set; the
       message names the volume.

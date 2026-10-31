@@ -83,34 +83,43 @@ each path is on its list, live in that script.
   the handbook and the domain checklist only for what a change reaches into. Finding
   discipline does not change: what you find is still reported and labeled. The verdict
   is 🔄 only for a 🔴 (§4), so a light PR ends in one round otherwise.
-- **Standard** — the review this skill and its reference docs describe, unchanged.
+- **Standard** — the review this skill and its reference docs describe, unchanged. A
+  standard PR can still get the security pass (below, under Deep).
 - **Deep** — a path where one bug breaks a safety guarantee for every format, or a
   workflow or release file. Format parsers and codecs stay standard by design; the script
   says why. This tier is not a commissioned deep review: `deep-reviews.md` does not apply.
   Everything in Standard, plus [`threat-model.md`](../../../dev-docs/threat-model.md) and
   [`security-review-guide.md`](reference/security-review-guide.md), and the security
   pass below. On a fix round, trace every fix outward (`fix-round.md`), not only the ones
-  that moved a contract. When the script says the maintainer merges, say so in block 1.
+  that moved a contract.
 
   **Every round on a deep pull request ends with a security pass**, done after the rest
   of the review and reported on its own. Safe handling of hostile input is what the deep
   paths carry, so it gets its own attention rather than whatever is left after the
-  general review (maintainer, 2026-10-30). The script's two lists set the attacker:
+  general review (maintainer, 2026-10-30). Format code reads hostile bytes too, so a
+  pull request of any tier gets the pass when the script prints `security pass: yes`
+  (a new reader, parser or codec file), when its Risk section's `Security:` line says
+  yes, or when the change meets one of that line's rules in
+  `.github/pull_request_template.md` whatever the line says (maintainer, 2026-10-31).
+  The line can be raised, never lowered: run the pass, and a "no" on a change the rules
+  cover is 🟢, like a wrong tier line. The script's two lists set the attacker:
 
-  - *A library path* (`DEEP_SECURITY`): the attacker controls the archive or the
-    directory source. Take each defended property in `threat-model.md` §3 the path
-    carries, or, where §3 names none for it, the guarantee every deep library path
-    carries: writes stay inside the destination, resources stay bounded, and
-    archive-supplied input reaches a command line or a terminal only as inert text. Try
-    to break it with a crafted name, size, offset, link target or member order, a
-    truncated or concatenated stream, or a hostile directory source. Build each attempt
-    and its destination in a fresh temporary directory outside the checkout. Run it
-    under the library configuration the pull request ships (the defaults, unless the
-    diff changes them), never a tighter one; keep a bomb that works cheap from outside
-    the library instead: a small fixture, a `timeout`, a capped `ulimit -v`. Where a
-    `tests/test_cve_regressions*.py` case sits near the change, read it for the shape of
-    a known attack and take its result from CI, or say CI has none yet.
-  - *The release's and the review loop's own files* (`DEEP_MAINTAINER`: workflows, the
+  - *A library path* (`DEEP_SECURITY`, and format or codec code the rules above cover):
+    the attacker controls the archive or the directory source. Take each defended
+    property in `threat-model.md` §3 the path carries, or, where §3 names none for it,
+    the guarantee every library path carries: writes stay inside the destination,
+    resources stay bounded, and archive-supplied input reaches a command line or a
+    terminal only as inert text. Try to break it with a crafted name, size, offset, link
+    target or member order, a truncated or concatenated stream, or a hostile directory
+    source. Build each attempt and its destination in a fresh temporary directory
+    outside the checkout. Run it under the library configuration the pull request ships
+    (the defaults, unless the diff changes them), never a tighter one; keep a bomb that
+    works cheap from outside the library instead: a small fixture, a `timeout`, a capped
+    `ulimit -v`. Where a `tests/test_cve_regressions*.py` case sits near the change,
+    read it for the shape of a known attack and take its result from CI, or say CI has
+    none yet. A pull request below deep that gets the pass also reads `threat-model.md`
+    for it.
+  - *The release's and the review loop's own files* (`DEEP_PROCESS`: workflows, the
     release script, the loop's prompt and scripts, this skill): the attacker is whoever
     can open a pull request or write its title, body, branch name, label or a comment.
     Try whether that text can reach a `run:` line, a token with more scope than the job
@@ -266,10 +275,10 @@ For the maintainer skimming without the code open. Half a screen unless the chan
   (`POST .../pulls/{n}/comments` returns each comment's `html_url`, and §6 records that
   a review body cannot be edited afterwards through the MCP tools). A finding whose thread
   URL you genuinely cannot get is listed with its `file:line` alone rather than held back.
-- **Snapshot** — one line: size (approx. lines / small|medium|large), the tier (§1), the
-  scope you reviewed, and gates (CI status, §6). The verdict is already in the header, so the
-  Snapshot does not restate it.
-- **Security pass** — every round on a deep PR (§1): one short line per property or
+- **Snapshot** — one line: size (approx. lines / small|medium|large), the tier (§1), who
+  merges (the script's `merge:` line), the scope you reviewed, and gates (CI status,
+  §6). The verdict is already in the header, so the Snapshot does not restate it.
+- **Security pass** — every round that gets the pass (§1): one short line per property or
   file, `Security pass: <property or file>: <what you tried> → <what happened>`, with the
   finding ID where it found one. A fix round's lines cover what its fixes change and
   reach.
@@ -316,7 +325,10 @@ index; a thread is ranked by where it sits in the file.
 **Only** items that need a human call — this block is the maintainer UI; block 2 is worker
 mail for whoever addresses the PR. Use the canonical decision packet in
 [`dev-docs/pair-workflow.md`](../../../dev-docs/pair-workflow.md) §Decision packet —
-same six fields, same cold-start test. Do not invent a shorter parallel list. Routine
+same six fields, same cold-start test. Do not invent a shorter parallel list. List here
+what makes the maintainer merge that the tier script cannot see: a new subsystem or
+public concept, a reversed ruling, a behaviour trade-off, a weakened gate (a job dropped
+from `CI gate`'s `needs:`), a weakened defence the threat model still claims. Routine
 "please add a test for X" fixes belong in block 2. Nothing to decide → `None.` Do not
 invent filler questions, and do not drop a real decision gap to keep the section empty.
 

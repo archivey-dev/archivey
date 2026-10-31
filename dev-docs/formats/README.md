@@ -22,7 +22,7 @@ Formats:
 - [`squashfs.md`](squashfs.md) — a compressed filesystem image, its index after the
   data, its blocks decoded by archivey's codecs.
 - [`cpio.md`](cpio.md) — initramfs and RPM payloads, four header variants, and hard
-  links whose data comes with the last name.
+  links whose data, in newc and crc, comes with the last name.
 - [`ar.md`](ar.md) — static libraries and `.deb`, a built-in written against
   `archivey.formats`.
 - [`dmg.md`](dmg.md) — a UDIF image, recognised by the `koly` block and refused.

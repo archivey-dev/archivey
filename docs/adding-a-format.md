@@ -54,12 +54,13 @@ same way it does for a built-in format: it normalizes member names, checks them,
 the listing limits, resolves links, checks each member's size and checksum as it is read,
 and extracts safely.
 
-Two complete readers in the repository, both read in one pass, use only
-`archivey.formats` and archivey's public names, apart from the call that registers each
-as a built-in format, so they read as a plugin would:
-[`cpio_reader.py`](https://github.com/archivey-dev/archivey/blob/main/src/archivey/internal/backends/cpio_reader.py)
-and
-[`ar_reader.py`](https://github.com/archivey-dev/archivey/blob/main/src/archivey/internal/backends/ar_reader.py).
+Two complete readers in the repository, the built-in CPIO reader
+([`cpio_reader.py`](https://github.com/archivey-dev/archivey/blob/main/src/archivey/internal/backends/cpio_reader.py))
+and the built-in ar reader
+([`ar_reader.py`](https://github.com/archivey-dev/archivey/blob/main/src/archivey/internal/backends/ar_reader.py)),
+each read an archive in one pass. Each imports only `archivey.formats` and archivey's
+public names, apart from the call that registers it as a built-in format, so they read
+as a plugin would.
 [`squashfs_reader.py`](https://github.com/archivey-dev/archivey/blob/main/src/archivey/internal/backends/squashfs_reader.py)
 shows a format with an index through the same API, but it also uses archivey's internal
 lz4 handling, which a plugin cannot import.
@@ -229,6 +230,8 @@ def open_member(self, member: ArchiveMember, locator: Locator) -> MemberData:
 - bzip2;
 - Zstandard and LZ4 frames;
 - Brotli;
+- raw LZO1X, with `size` as the most it may decode to (the call raises
+  `UnsupportedFeatureError` without it);
 - raw LZMA and LZMA2, with the `properties` bytes the format stores;
 - XZ, for `.xz` data kept inside a member, as ZIP method 95 keeps it;
 - `STORED`, for data kept as is, so a format with a per-member method can pass every
