@@ -11,8 +11,7 @@ decoded block.
 The reader trusts nothing it reads: every size is checked against what the format
 allows, the directory walk is a loop that refuses a directory reached twice, and every
 compressed block goes through ``ReaderContext.decompress``, so archivey's decoder limits
-apply, or through a decoder capped at the block's size: ``lz4.block`` for LZ4, and
-:mod:`.squashfs_lzo` for LZO.
+apply, or, for LZ4, through ``lz4.block`` capped at the block's size.
 
 The reader is written against ``archivey.formats``. Beyond it, it uses archivey's own
 handling of the ``lz4`` package (the PyPy rule, ``exclude_libraries`` and process
@@ -45,7 +44,6 @@ from archivey.formats import (
     ReaderSource,
     block_stream,
 )
-from archivey.internal.backends import squashfs_lzo as lzo
 from archivey.internal.excluded_libraries import as_reported
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
@@ -85,6 +83,8 @@ _DECODED_AS: dict[str, CompressionAlgorithm | StreamFormat] = {
     "lzma": StreamFormat.LZMA_ALONE,
     "xz": StreamFormat.XZ,
     "zstd": CompressionAlgorithm.ZSTD,
+    # Raw LZO1X, which archivey decodes with liblzo2 through python-lzo, or in Python.
+    "lzo": CompressionAlgorithm.LZO,
 }
 
 # Inode types; an extended type is the basic one plus 7.
@@ -258,8 +258,13 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
                 # Every caller has checked ``length`` first: at most 8 KiB for a
                 # metadata block, the block size (1 MiB at most) for data.
                 raw = io.BytesIO(self._read_exact(start, length, "a compressed block"))
-                with self._context.decompress(raw, method) as decoded:
-                    data = decoded.read(limit + 1)
+                # LZO1X stores no decoded length: ``size`` is the most it may have.
+                size = limit if method is CompressionAlgorithm.LZO else None
+                try:
+                    with self._context.decompress(raw, method, size=size) as decoded:
+                        data = decoded.read(limit + 1)
+                except CorruptionError as exc:
+                    raise CorruptionError(f"the block at {start}: {exc}") from None
                 if len(data) > limit:
                     raise CorruptionError(
                         f"a block at {start} decodes to more than {limit} bytes"
@@ -279,16 +284,6 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
                     raise CorruptionError(f"the LZ4 block at {start}: {exc}") from None
 
             return lz4_block
-        if compressor == "lzo":
-
-            def lzo_block(start: int, length: int, limit: int) -> bytes:
-                raw = self._read_exact(start, length, "an LZO block")
-                try:
-                    return lzo.decompress(raw, limit)
-                except lzo.LzoError as exc:
-                    raise CorruptionError(f"the LZO block at {start}: {exc}") from None
-
-            return lzo_block
         raise UnsupportedFeatureError(
             f"{compressor.upper()}-compressed SquashFS is not supported"
         )

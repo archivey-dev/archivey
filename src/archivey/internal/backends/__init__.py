@@ -12,8 +12,7 @@ Module map:
 - :mod:`.iso_reader` — ISO 9660 (``pycdlib``, ``[recommended]``)
 - :mod:`.ar_reader` — Unix ar, written against ``archivey.formats`` like ISO
 - :mod:`.cpio_reader` — CPIO (binary, odc, newc, crc, afio), the same way
-- :mod:`.squashfs_reader` — SquashFS 4.0, the same way, with its LZO decoder in
-  :mod:`.squashfs_lzo`
+- :mod:`.squashfs_reader` — SquashFS 4.0, the same way
 - :mod:`.directory_reader` — filesystem directory as a pseudo-archive
 - :mod:`.single_file_reader` — bare ``.gz`` / ``.xz`` / … as a one-member archive
 - :mod:`.sevenzip_methods` / ``sevenzip_parser`` / ``sevenzip_pipeline`` /

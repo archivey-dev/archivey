@@ -10,12 +10,12 @@ registered as a built-in the way ISO, CPIO and ar are.
 
 | | |
 | --- | --- |
-| Read | Yes. `internal/backends/squashfs_reader.py`, a `SquashfsHandler` (`FormatHandler`) and a `SquashfsReader` (`IndexedReader`), registered with `register_builtin_format`; the LZO decoder is `internal/backends/squashfs_lzo.py` |
+| Read | Yes. `internal/backends/squashfs_reader.py`, a `SquashfsHandler` (`FormatHandler`) and a `SquashfsReader` (`IndexedReader`), registered with `register_builtin_format` |
 | Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
 | Source | A file or a stream that can seek. Not a pipe: the directory and inode tables come after the data |
 | Listing cost | From the index (the inode and directory tables) |
 | Access cost | `DIRECT`. Small files share a fragment block, which is decoded once and kept (four at a time) |
-| Core dependencies | None for gzip, xz, LZMA and LZO images. Zstandard images need what a `.zst` file needs; LZ4 images need `lz4` (`[recommended]`). LZO is decoded in Python |
+| Core dependencies | None for gzip, xz, LZMA and LZO images. Zstandard images need what a `.zst` file needs; LZ4 images need `lz4` (`[recommended]`). LZO is decoded as a `.lzo` file is: liblzo2 through `python-lzo` in a child process when it is installed, otherwise Python |
 | Encryption | None |
 | Name encoding | Bytes. UTF-8 first, then `encoding=`, then escaped, as in every format |
 | Checksums | None. A damaged block is found only when it does not decode to its length |
@@ -72,10 +72,12 @@ level or variant the same decoder reads.
 ### 2.3 Member data
 
 Every compressed block goes through `ReaderContext.decompress`, so archivey's decoder
-limits apply, or through a decoder capped at the block's size: `lz4.block` for LZ4, and
-`squashfs_lzo` for LZO. `squashfs_lzo` follows the Linux kernel's
-`lzo1x_decompress_safe`, without LZO-RLE, which SquashFS does not write. `python-lzo`
-(liblzo2) is not used, even when installed (§6).
+limits apply, or, for LZ4, through `lz4.block` capped at the block's size. LZO blocks
+are raw LZO1X (`CompressionAlgorithm.LZO`), decoded by the codec a `.lzo` file uses:
+liblzo2 through `python-lzo` when it is installed, in a child process under
+`NATIVE_DECODERS`, and otherwise archivey's port of the kernel's
+`lzo1x_decompress_safe`. LZO1X stores no decoded length, so the block size is passed as
+the most it may decode to (§6).
 
 `FormatPolicy(exclude_libraries={OptionalLibrary.LZ4})` makes an LZ4 image read as if
 `lz4` were missing. Under PyPy the reader does not use `lz4`, as the rest of archivey
@@ -122,8 +124,8 @@ offsets the image declares:
   the table is read. The table's size on disk is no bound: it is compressed, and a
   list of holes compresses to almost nothing.
 - Every decoder is bounded by the block size, so a block cannot expand past it. The LZO
-  decoder refuses a stream that would read past its input, write past the block size, or
-  copy from before the start of the output.
+  decoder in Python refuses a stream that would read past its input, write past the
+  block size, or copy from before the start of the output.
 - Decoded blocks are kept in two bounded caches, 64 metadata blocks and four fragment
   blocks (about 4.5 MiB at the largest block size). They are caches, not limits: a block
   that is not kept is decoded again.
@@ -147,13 +149,13 @@ offsets the image declares:
   A test pins the internal names it imports.
 - **SquashFS 4 only.** Big-endian images from SquashFS 3 and older have another layout;
   they are claimed by magic (`sqsh`) so the refusal names them, from a stream too.
-- **LZO is decoded in Python only.** `python-lzo` is GPL, so it is never a dependency,
-  and an LZO image should open without it. Using it when installed would put a native
-  decoder in the caller's process that neither `exclude_libraries` nor process
-  isolation reaches. The tests compare the Python decoder with it when it is installed,
-  which the `LZO against liblzo2` CI job and the session setup script do.
-  A shared LZO codec that declares `python-lzo` as an optional library, under both
-  controls, is separate work.
+- **LZO goes through archivey's LZO codec.** `python-lzo` is GPL, so it is never a
+  dependency, and an LZO image opens without it. When it is installed it decodes in a
+  child process under `NATIVE_DECODERS`, so `exclude_libraries` and process isolation
+  reach it as they reach every native decoder. An earlier version of this reader kept
+  its own Python-only decoder for that reason; the shared codec made it unnecessary.
+  The tests read the LZO images with each decoder, and the `LZO against liblzo2` CI job
+  and the session setup script install `python-lzo` so that both run.
 - **Extended attributes are not read.** archivey's members have no field for them.
 - **`is_sparse` comes from the block list.** Reading it costs a scan of each file's
   list during the listing; the list sits in the inode table next to the inode, which the
@@ -167,14 +169,13 @@ None are open.
 ## 8. Verify
 
 ```bash
-./scripts/test.sh tests/test_squashfs.py tests/test_squashfs_lzo.py
+./scripts/test.sh tests/test_squashfs.py tests/test_lzo.py
 ```
 
 The fixtures in `tests/fixtures/squashfs/` were written by `mksquashfs` 4.6.1, one per
 compressor and a few layouts (no fragments, tail ends, uncompressed);
 `tests/fixtures/squashfs/make-images.sh` writes them again. Damaged images are built in
-the tests. The tests also check that the LZO decoder imports only archivey's public
-names, and pin the internal names the reader imports. The Atheris target `squashfs`
+the tests. The tests also pin the internal names the reader imports. The Atheris target `squashfs`
 fuzzes the image walk and block reads.
 
 ## 9. References
@@ -182,5 +183,5 @@ fuzzes the image walk and block reads.
 - The SquashFS 4.0 layout: the Linux kernel's
   [`squashfs.rst`](https://docs.kernel.org/filesystems/squashfs.html) and `fs/squashfs/`,
   and squashfs-tools.
-- The kernel's `lib/lzo/lzo1x_decompress_safe.c`, which `squashfs_lzo` follows.
+- The kernel's `lib/lzo/lzo1x_decompress_safe.c`, which archivey's LZO decoder follows.
 - `openspec/changes/plugin-api/tasks.md` §3b, the reader's history as a plugin.

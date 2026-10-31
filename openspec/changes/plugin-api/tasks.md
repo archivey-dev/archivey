@@ -175,10 +175,11 @@ more indexed plugin, 2026-10-27).
       than by archivey's decoder limits. Extended attributes and the export table are
       not read.
 - [x] 3b.7 Moved into the library as a built-in format (the maintainer's choice,
-      2026-10-28): `src/archivey/internal/backends/squashfs_reader.py` and
-      `squashfs_lzo.py`, registered with `register_builtin_format`. LZ4 blocks now go
-      through archivey's own `lz4` handling (process isolation, `exclude_libraries`,
-      the PyPy rule). The package and its CI job are gone.
+      2026-10-28): `src/archivey/internal/backends/squashfs_reader.py`, registered
+      with `register_builtin_format`. LZ4 blocks now go through archivey's own `lz4`
+      handling (process isolation, `exclude_libraries`, the PyPy rule), and LZO blocks
+      through archivey's LZO codec (`ReaderContext.decompress`). The package and its CI
+      job are gone.
 
 ## 4. Docs and specs
 
@@ -204,9 +205,8 @@ more indexed plugin, 2026-10-27).
       sequential plugin pairs, by the inner-container probe and by
       `ReaderContext.decompress`. The pair, extension and codec tables become
       computed on demand instead of at import.
-- [ ] 5.2 LZO as a built-in codec (the lzop stream and raw LZO1X as a member method),
-      python-lzo optional with the pure-Python decoder as the fallback, when SquashFS
-      becomes built-in.
+- [x] 5.2 LZO as a built-in codec (the lzop stream and raw LZO1X as a member method),
+      python-lzo optional with the pure-Python decoder as the fallback.
 
 ## 6. Names
 

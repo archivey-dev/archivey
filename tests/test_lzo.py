@@ -1,4 +1,5 @@
-"""The SquashFS reader's LZO1X decoder, on streams written by liblzo and on damaged ones."""
+"""archivey's LZO1X decoder in Python, on streams written by liblzo and on damaged
+ones, among them the metadata blocks of the SquashFS test images."""
 
 from __future__ import annotations
 
@@ -9,19 +10,23 @@ from pathlib import Path
 
 import pytest
 
-from archivey.internal.backends.squashfs_lzo import LzoError, decompress
+from archivey.internal.streams.codecs.lzo_decoder import (
+    LzoError,
+    lzo1x_decompress_python as decompress_python,
+)
 
 # Each written by python-lzo (liblzo2 2.10): ``lzo.compress(data, level, False)``.
 _END = b"\x11\x00\x00"
+_SQUASHFS_DATA = Path(__file__).parent / "fixtures" / "squashfs"
 
 
 def test_only_the_end_marker_is_empty() -> None:
-    assert decompress(_END, 0) == b""
+    assert decompress_python(_END, 0) == b""
 
 
 def test_a_first_literal_run() -> None:
     # 17 + 6: six literals, then the end marker.
-    assert decompress(b"\x17hello\n" + _END, 6) == b"hello\n"
+    assert decompress_python(b"\x17hello\n" + _END, 6) == b"hello\n"
 
 
 def test_an_overlapping_match_repeats_its_bytes() -> None:
@@ -29,7 +34,7 @@ def test_an_overlapping_match_repeats_its_bytes() -> None:
     # the length - 33, and the distance - 1 shifted left 2.
     stream = b"\x13ab" + bytes([32, 98 - 33]) + ((2 - 1) << 2).to_bytes(2, "little")
     data = b"ab" * 50
-    assert decompress(stream + _END, len(data)) == data
+    assert decompress_python(stream + _END, len(data)) == data
 
 
 @pytest.mark.parametrize(
@@ -45,12 +50,12 @@ def test_an_overlapping_match_repeats_its_bytes() -> None:
 )
 def test_damage_raises(stream: bytes, match: str) -> None:
     with pytest.raises(LzoError, match=match):
-        decompress(stream, 1 << 16)
+        decompress_python(stream, 1 << 16)
 
 
 def test_the_limit_is_kept() -> None:
     with pytest.raises(LzoError, match="more than 5 bytes"):
-        decompress(b"\x17hello\n" + _END, 5)
+        decompress_python(b"\x17hello\n" + _END, 5)
 
 
 def test_matches_liblzo() -> None:
@@ -61,12 +66,12 @@ def test_matches_liblzo() -> None:
         data = bytes(rng.choice(alphabet) for _ in range(rng.randrange(20000)))
         for level in (1, 9):
             stream = lzo.compress(data, level, False)
-            assert decompress(stream, len(data)) == data
+            assert decompress_python(stream, len(data)) == data
 
 
 def _metadata_blocks(name: str) -> list[bytes]:
     """The compressed metadata blocks of an LZO image: its inode and directory tables."""
-    image = (Path(__file__).parent / "fixtures" / "squashfs" / name).read_bytes()
+    image = (_SQUASHFS_DATA / name).read_bytes()
     fields = struct.unpack_from("<IIIIIHHHHHHQQQQQQQQ", image)
     inodes, directories = fields[15], fields[16]
     end = min(v for v in fields[13:19] if directories < v != 0xFFFF_FFFF_FFFF_FFFF)
@@ -99,7 +104,7 @@ def test_damaged_blocks_raise_only_lzo_error() -> None:
                 stream[at:at] = bytes([rng.randrange(256)])
         limit = rng.choice([64, 512, 8192])
         try:
-            decoded = decompress(bytes(stream), limit)
+            decoded = decompress_python(bytes(stream), limit)
         except LzoError:
             continue
         assert len(decoded) <= limit
@@ -108,14 +113,15 @@ def test_damaged_blocks_raise_only_lzo_error() -> None:
 def test_an_over_long_match_is_refused_before_it_is_copied() -> None:
     # Two literals, then a match whose length field is 2000 zero bytes long: it asks
     # for ~510 000 bytes. The limit refuses it before the copy, so the decoder never
-    # holds more than the limit (shown to fail with the check in ``match`` removed).
+    # holds more than the limit (shown to fail with
+    # ``if len(out) + length > limit`` removed from ``lzo_decoder.py``).
     stream = (
         b"\x13ab" + b"\x20" + bytes(2000) + b"\x01" + (1 << 2).to_bytes(2, "little")
     )
     tracemalloc.start()
     try:
         with pytest.raises(LzoError, match="more than 4096 bytes"):
-            decompress(stream + _END, 4096)
+            decompress_python(stream + _END, 4096)
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()

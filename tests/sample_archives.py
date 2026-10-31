@@ -162,6 +162,7 @@ FORMAT_KEYS: dict[str, ArchiveFormat] = {
     "tar.lz": ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZIP),
     "tar.zz": ArchiveFormat(ContainerFormat.TAR, StreamFormat.ZLIB),
     "tar.br": ArchiveFormat(ContainerFormat.TAR, StreamFormat.BROTLI),
+    "tar.lzo": ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZOP),
     "dir": ArchiveFormat.DIRECTORY,
     "iso": ArchiveFormat.ISO,
     # Same format, second builder variant (as gz-meta is to gz): Joliet names with no
@@ -176,6 +177,7 @@ FORMAT_KEYS: dict[str, ArchiveFormat] = {
     "lz": ArchiveFormat.LZIP,
     "zz": ArchiveFormat.ZLIB,
     "br": ArchiveFormat.BROTLI,
+    "lzo": ArchiveFormat.LZOP,
     "7z": ArchiveFormat.SEVEN_Z,
     # Phase 6 native RAR reader is registered; corpus builders still need the ``rar`` CLI.
     "rar": ArchiveFormat.RAR,
@@ -192,7 +194,7 @@ _ALL_TAR = (
     "tar.zz",
     "tar.br",
 )
-_SINGLE_FILE = ("gz", "bz2", "xz", "zst", "lz4", "lz", "zz", "br")
+_SINGLE_FILE = ("gz", "bz2", "xz", "zst", "lz4", "lz", "zz", "br", "lzo")
 
 
 def _rand(size: int, seed: int) -> bytes:
@@ -368,6 +370,9 @@ CORPUS: tuple[CorpusEntry, ...] = (
     CorpusEntry(
         "basic", _BASIC, ("zip", *_ALL_TAR, "dir", "iso", "iso-joliet", "7z", "rar")
     ),
+    # Its own entry: adding a format to ``basic`` would change the definition its
+    # committed RAR fixture was built from.
+    CorpusEntry("basic-lzo", _BASIC, ("tar.lzo",)),
     CorpusEntry(
         "comments",
         (
@@ -505,6 +510,11 @@ def _compress(data: bytes, key: str) -> bytes:
         from tests.streams_util import make_lzip_member
 
         return make_lzip_member(data)
+    if codec == "lzo":
+        from tests.lzop_build import make_lzop
+
+        # Stored blocks: no LZO1X compressor is needed to build the corpus.
+        return make_lzop(data)
     raise ValueError(f"no compressor for {key!r}")
 
 

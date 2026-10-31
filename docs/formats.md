@@ -34,7 +34,8 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
   3.14. Listing: from its index; from a pipe, header by header. Members: direct. Reads from a pipe.
 - **TAR:** core. Listing: header by header. Members: direct. Reads from a pipe.
 - **Compressed TAR** (`.tar.gz`, `.tar.bz2`, `.tar.xz`, `.tar.lz`, `.tar.lzma`, `.tar.zz`,
-  `.tar.Z`, `.tar.zst`, `.tar.lz4`, `.tar.br`): needs what its compressor needs (below).
+  `.tar.Z`, `.tar.zst`, `.tar.lz4`, `.tar.br`, `.tar.lzo`): needs what its compressor needs
+  (below).
   Listing: needs decompression. Members: solid. Reads from a pipe.
 - **7z:** core for LZMA, LZMA2, Deflate, BZip2, Delta and the executable filters (BCJ, BCJ2,
   ARM64, RISC-V and the others); `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, AES, and Zstandard
@@ -56,7 +57,7 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
   direct. Reads from a pipe. Inside any compressor TAR reads inside (`.a.gz`, …), as a
   compressed TAR is: listing needs decompression, members are solid.
 - **Directory:** core. Listing: walks the tree. Members: direct.
-- **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib and `.Z` in core;
+- **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z` and `.lzo` in core;
   Zstandard in core on Python 3.14 and later, otherwise `[recommended]`; LZ4 and Brotli need
   `[recommended]`. One member. Members: direct. Reads from a pipe. Seeking inside the member
   needs `seekable_members=True` ([Seeking inside a member](reading.md#seeking-inside-a-member)).
@@ -1047,7 +1048,8 @@ misread the archive.
 
 - **Needs:** nothing for gzip, xz, LZMA and LZO images. A Zstandard image needs what a `.zst`
   file needs ([below](#single-file-compressors)), and an LZ4 image needs `[recommended]`
-  (`lz4`). LZO is decoded in Python.
+  (`lz4`). LZO is decoded as a `.lzo` file is ([below](#single-file-compressors)): with
+  liblzo2 when `python-lzo` is installed, and otherwise in Python.
 - **Listing:** from the image's inode and directory tables.
 - **Reading members:** direct. Small files share a fragment block, which is decoded once for
   all of them.
@@ -1144,9 +1146,12 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
 
 ## Single-file compressors
 
-- **Needs:** gzip, bzip2, xz, lzip, LZMA Alone, zlib and `.Z` are in core (`.Z` with archivey's own
-  LZW decoder). Zstandard is in core on Python 3.14 and later, and needs `[recommended]` before.
-  LZ4 and Brotli need `[recommended]`.
+- **Needs:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z` and `.lzo` are in core (`.Z` with
+  archivey's own LZW decoder). Zstandard is in core on Python 3.14 and later, and needs
+  `[recommended]` before. LZ4 and Brotli need `[recommended]`. `.lzo`, the format `lzop` writes,
+  decodes LZO1X with liblzo2 when the `python-lzo` package is installed, and otherwise in Python,
+  more than 25 times slower on text. `python-lzo` is not in an extra: it is GPL, and has no Linux
+  wheels, so installing it needs the liblzo2 headers.
 - **Listing:** one synthetic member, named from the source path, or `data` for a source with no
   name. `encoding=` has no effect, and passing it reports `ENCODING_ARGUMENT_UNUSED`.
 - **Reading:** forward only, until you pass `seekable_members=True`
@@ -1174,6 +1179,8 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   at open. A `.xz` or `.lz` opened from another archive's member stream reads neither, seekable or
   not: it never reports the CRC-32, and its size arrives only from a full read.
 - `.gz` may expose `extra["gzip.original_filename"]` when the header carries a name (`FNAME`).
+- `.lzo` exposes `extra["lzop.original_filename"]` when its header stores a name, and the
+  modification time and permission bits the header stores.
 - `.gz` exposes `extra["gzip.isize"]`, the trailer's size field, when the file's end is cheap to
   reach (a path or an in-memory stream; not a pipe or another archive's member). It is the size
   modulo 2^32 only for a file of one gzip member with nothing after it. A file of several members

@@ -27,11 +27,10 @@ from archivey import (
     detect_format,
     open_archive,
 )
-from archivey.internal.backends import squashfs_lzo as lzo, squashfs_reader
+from archivey.internal.backends import squashfs_reader
 from archivey.internal.backends.squashfs_reader import SquashfsReader
 from archivey.internal.excluded_libraries import EXCLUDED_REASON
-from archivey.internal.streams.codecs import deps
-from tests.public_names import assert_only_public_archivey
+from archivey.internal.streams.codecs import deps, lzo_decoder as archivey_lzo
 
 SQUASHFS = archivey.ArchiveFormat.SQUASHFS
 DATA = Path(__file__).parent / "fixtures" / "squashfs"
@@ -59,6 +58,9 @@ TYPES = {
 }
 
 _LZ4 = importlib.util.find_spec("lz4") is not None
+_PYTHON_LZO = pytest.mark.skipif(
+    importlib.util.find_spec("lzo") is None, reason="needs python-lzo"
+)
 _ZSTD = archivey.format_availability(archivey.ArchiveFormat.ZST).support is not (
     archivey.FormatSupport.NONE
 )
@@ -107,14 +109,22 @@ def test_lists_and_reads_every_member(image: str) -> None:
         assert archive.info.extra["squashfs.block_size"] == 4096
 
 
+@pytest.fixture(params=["python", pytest.param("python-lzo", marks=_PYTHON_LZO)])
+def lzo_decoder(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Each LZO decoder in turn: archivey's in Python, and liblzo through python-lzo."""
+    if request.param == "python":
+        monkeypatch.setattr(archivey_lzo, "_python_lzo", lambda *_: None)
+    return request.param
+
+
 @pytest.mark.parametrize("image", ["lzo", "lzo1x-1"])
-def test_lzo_images(image: str) -> None:
+def test_lzo_images_with_each_decoder(lzo_decoder: str, image: str) -> None:
     with open_archive(DATA / f"{image}.sqfs") as archive:
         for name, data in CONTENT.items():
             assert archive.read(name) == data
 
 
-def test_a_damaged_lzo_block(tmp_path: Path) -> None:
+def test_a_damaged_lzo_block(tmp_path: Path, lzo_decoder: str) -> None:
     data = bytearray((DATA / "lzo.sqfs").read_bytes())
     # The inode table's one metadata block, which LZO compresses: a changed first
     # byte changes its first instruction.
@@ -391,10 +401,6 @@ def test_a_symlink_target_longer_than_the_kernel_allows(tmp_path: Path) -> None:
 # ── The package ────────────────────────────────────────────────────────────────────
 
 
-def test_the_lzo_decoder_uses_only_public_archivey() -> None:
-    assert_only_public_archivey(lzo.__file__)
-
-
 def test_the_internal_names_the_reader_imports() -> None:
     """The reader uses archivey's own lz4 handling, which a plugin cannot reach; any
     other internal name it starts to import is a choice to make here, not by accident."""
@@ -409,7 +415,6 @@ def test_the_internal_names_the_reader_imports() -> None:
         for alias in node.names
     }
     assert internal == {
-        "archivey.internal.backends.squashfs_lzo",
         "archivey.internal.excluded_libraries.as_reported",
         "archivey.internal.format_adapter.register_builtin_format",
         "archivey.internal.overrides.override",

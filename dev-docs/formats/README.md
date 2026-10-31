@@ -20,7 +20,7 @@ Formats:
   why a walk ended.
 - [`iso.md`](iso.md) — a filesystem read through a library written to author it.
 - [`squashfs.md`](squashfs.md) — a compressed filesystem image, its index after the
-  data, with LZO decoded in Python.
+  data, its blocks decoded by archivey's codecs.
 - [`cpio.md`](cpio.md) — initramfs and RPM payloads, four header variants, and hard
   links whose data comes with the last name.
 - [`ar.md`](ar.md) — static libraries and `.deb`, a built-in written against

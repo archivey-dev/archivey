@@ -28,8 +28,8 @@ pipe SHALL be refused with `StreamNotSeekableError`: the directory and inode tab
 after the file data. `ArchiveInfo.format_version` SHALL be `"4.0"`, and
 `extra["squashfs.compressor"]` and `extra["squashfs.block_size"]` SHALL name the
 compressor and the data block size. Every compressed block SHALL be decoded through
-archivey's decoder limits, or through a decoder capped at the block's size (LZ4, LZO).
-LZ4 SHALL follow archivey's own `lz4` rules: process isolation, `exclude_libraries`, and
+archivey's decoder limits (LZO too, through archivey's LZO codec), or for LZ4 through a
+decoder capped at the block's size. LZ4 SHALL follow archivey's own `lz4` rules: process isolation, `exclude_libraries`, and
 the PyPy rule. A big-endian image (SquashFS 3 and older, magic `sqsh`) or a version
 other than 4.0 SHALL raise `UnsupportedFeatureError`.
 

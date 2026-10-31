@@ -784,8 +784,8 @@ jobs:
       - name: Pytest structural gate + measurement unit tests
         run: uv run --no-sync pytest tests/test_benchmark_gate.py tests/test_measurement.py -q
 
-  # archivey's LZO decoder against liblzo2 through python-lzo, which archivey does not
-  # use (GPL, no Linux wheels) but the tests compare with when it is installed.
+  # archivey's LZO decoder against liblzo2 through python-lzo, which archivey uses in a
+  # child process when it is installed but never depends on (GPL, no Linux wheels).
   lzo-oracle:
     name: LZO against liblzo2
     runs-on: ubuntu-latest
@@ -808,7 +808,11 @@ jobs:
           uv pip install python-lzo
           uv run --no-sync python -c "import lzo"
       - name: Pytest
-        run: uv run --no-sync pytest tests/test_squashfs_lzo.py tests/test_squashfs.py -q --no-cov -rs
+        # This is the job with python-lzo, so the comparison with liblzo2 and the
+        # decode in a child process run nowhere else.
+        run: >-
+          uv run --no-sync pytest tests/test_squashfs.py tests/test_lzo.py
+          tests/test_lzop.py -q --no-cov -rs
 
   # The short Atheris fuzz (atheris-fuzz.yml in its short mode, three shards), in the
   # merge queue only. The nightly and dispatched full runs stay in that workflow.

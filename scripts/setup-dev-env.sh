@@ -157,8 +157,8 @@ fi
 
 log "python dependencies"
 uv sync --group dev --extra all
-# python-lzo: the liblzo2 oracle tests/test_squashfs_lzo.py compares archivey's LZO
-# decoder with. Not a dependency (GPL, no Linux wheels), so a later `uv sync` removes it.
+# python-lzo: the liblzo2 oracle tests/test_lzo.py and tests/test_squashfs.py compare
+# archivey's LZO decoder with. Not a dependency (GPL, no Linux wheels), so a later `uv sync` removes it.
 uv pip install python-lzo >/dev/null 2>&1 || echo "! python-lzo did not build" >&2
 
 log "git hooks"
@@ -233,7 +233,7 @@ try:
     import lzo  # noqa: F401
 except ImportError:
     print(
-        "MISSING python-lzo: tests/test_squashfs_lzo.py skips its liblzo2 comparison. "
+        "MISSING python-lzo: tests/test_lzo.py skips its liblzo2 comparison. "
         "Install: apt-get install liblzo2-dev && uv pip install python-lzo"
     )
 else:

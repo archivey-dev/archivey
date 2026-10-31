@@ -52,6 +52,7 @@ attribute archivey.ArchiveFormat.ISO = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.LZ4 = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.LZIP = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.LZMA_ALONE = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.LZOP = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.RAR = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.SEVEN_Z = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.SQUASHFS = ArchiveFormat(...)
@@ -200,6 +201,7 @@ value archivey.CompressionAlgorithm.BCJ2 = 'bcj2'
 value archivey.CompressionAlgorithm.DELTA = 'delta'
 value archivey.CompressionAlgorithm.SHRINK = 'shrink'
 value archivey.CompressionAlgorithm.IMPLODE = 'implode'
+value archivey.CompressionAlgorithm.LZO = 'lzo'
 value archivey.CompressionAlgorithm.RAR = 'rar'
 value archivey.CompressionAlgorithm.UNKNOWN = 'unknown'
 class archivey.CompressionMethod()
@@ -500,6 +502,7 @@ value archivey.OptionalLibrary.COMPRESSION_ZSTD = 'compression.zstd'
 value archivey.OptionalLibrary.RAPIDGZIP = 'rapidgzip'
 value archivey.OptionalLibrary.PYCDLIB = 'pycdlib'
 value archivey.OptionalLibrary.CRYPTOGRAPHY = 'cryptography'
+value archivey.OptionalLibrary.LZO = 'lzo'
 class archivey.OverwritePolicy(Enum)
 enum archivey.OverwritePolicy
 value archivey.OverwritePolicy.ERROR = 'error'
@@ -557,6 +560,7 @@ value archivey.StreamFormat.LZMA_ALONE = 'lzma'
 value archivey.StreamFormat.ZLIB = 'zz'
 value archivey.StreamFormat.BROTLI = 'br'
 value archivey.StreamFormat.UNIX_COMPRESS = 'Z'
+value archivey.StreamFormat.LZOP = 'lzo'
 class archivey.StreamNotSeekableError(OpenError)
 init archivey.StreamNotSeekableError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
 class archivey.TruncatedError(CorruptionError)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import subprocess
 import sys
@@ -88,3 +89,88 @@ def _have_in(repo: Path, sha: str) -> bool:
         stderr=subprocess.DEVNULL,
     )
     return probe.returncode == 0
+
+
+def test_reads_counts_each_file_and_tool_output_and_takes_the_result_totals(
+    tmp_path: Path,
+) -> None:
+    partial = {"input_tokens": 1, "cache_read_input_tokens": 100, "output_tokens": 2}
+    events = [
+        {"type": "assistant", "message": {"id": "m1", "usage": partial, "content": [
+            {"type": "tool_use", "id": "t1", "name": "Read",
+             "input": {"file_path": "/r/SKILL.md"}},
+            {"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "ls"}},
+            {"type": "tool_use", "id": "t5", "name": "Read",
+             "input": {"file_path": "/r/CONTRIBUTING.md"}},
+            # A lone shell read counts for its file; one inside a longer command does not.
+            {"type": "tool_use", "id": "t3", "name": "Bash",
+             "input": {"command": "sed -n '161,437p' CONTRIBUTING.md"}},
+            {"type": "tool_use", "id": "t4", "name": "Bash",
+             "input": {"command": "cat CONTRIBUTING.md | head"}},
+            # So does a script of two reads, a comment, or two files.
+            {"type": "tool_use", "id": "t6", "name": "Bash", "input": {
+                "command": "head -n 20 src/foo.py\nsed -n '1,40p' CONTRIBUTING.md"}},
+            {"type": "tool_use", "id": "t7", "name": "Bash",
+             "input": {"command": "cat CONTRIBUTING.md # the guide"}},
+            {"type": "tool_use", "id": "t8", "name": "Bash",
+             "input": {"command": "head A B"}},
+            # `./x` and `a/../x` are the same file as `x`.
+            {"type": "tool_use", "id": "t9", "name": "Bash",
+             "input": {"command": "head -n 5 ./CONTRIBUTING.md"}},
+            {"type": "tool_use", "id": "t10", "name": "Read",
+             "input": {"file_path": "/r/foo/../CONTRIBUTING.md"}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "abcd"},
+            {"type": "tool_result", "tool_use_id": "t2",
+             "content": [{"type": "text", "text": "xy"}]},
+            {"type": "tool_result", "tool_use_id": "t3", "content": "rules"},
+            {"type": "tool_result", "tool_use_id": "t4", "content": "z"},
+            {"type": "tool_result", "tool_use_id": "t5", "content": "whole"},
+            {"type": "tool_result", "tool_use_id": "t6", "content": "MULTI"},
+            {"type": "tool_result", "tool_use_id": "t7", "content": "HASH"},
+            {"type": "tool_result", "tool_use_id": "t8", "content": "AB"},
+            {"type": "tool_result", "tool_use_id": "t9", "content": "DOT"},
+            {"type": "tool_result", "tool_use_id": "t10", "content": "UP"}]}},
+        # The streamed events undercount output; the result event has the run's totals.
+        {"type": "result", "result": "review", "usage": {
+            "input_tokens": 1, "cache_read_input_tokens": 100,
+            "cache_creation_input_tokens": 7, "output_tokens": 900}},
+    ]  # fmt: skip
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text("\n".join(json.dumps(e) for e in events), encoding="utf-8")
+    # Under the root, a Read (absolute) and a shell read (relative) of one file add up.
+    read = review_eval.reads(transcript, Path("/r"))
+    assert read["files"] == {"SKILL.md": 4, "(Bash)": 14, "CONTRIBUTING.md": 15}
+    assert read["usage"] == {
+        "input": 1,
+        "cache_read": 100,
+        "cache_write": 7,
+        "output": 900,
+    }
+
+
+def test_claude_keeps_the_transcript_of_a_run_that_timed_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs["timeout"], output="partial\n")
+
+    monkeypatch.setattr(review_eval.subprocess, "run", run)
+    transcript = tmp_path / "transcript.jsonl"
+    with pytest.raises(subprocess.TimeoutExpired):
+        review_eval.claude(
+            "p", model="m", cwd=tmp_path, tools="", env={}, transcript=transcript
+        )
+    assert transcript.read_text(encoding="utf-8") == "partial\n"
+
+
+def test_summary_totals_turns_and_guide_reads(tmp_path: Path) -> None:
+    case = CASES[0]
+    work = tmp_path / case.id
+    work.mkdir()
+    (work / "meta.json").write_text(json.dumps({"turns": 9, "seconds": 60}))
+    (work / "judge.json").write_text(json.dumps({"caught": "yes"}))
+    files = {"CONTRIBUTING.md": 5, "dev-docs/x.md": 2, "src/a.py": 40, "(Bash)": 70}
+    (work / "reads.json").write_text(json.dumps({"files": files}))
+    text = review_eval.summary([case], tmp_path)
+    assert "Turns: 9. Guide characters read: 7, of them `CONTRIBUTING.md`: 5." in text

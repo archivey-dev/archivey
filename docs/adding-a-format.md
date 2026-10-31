@@ -278,8 +278,8 @@ for each index, wherever the format stores them.
 **Your own decoder.** For a method archivey does not decode, wrap the view in your
 library's decoder, or one of your own. Such a decoder is outside archivey's decoder
 limits, so it must stop at the size the format allows: pass the expected output size and
-refuse anything longer. The SquashFS reader does this for its LZ4 and LZO blocks, which
-can never be larger than one block.
+refuse anything longer. The SquashFS reader does this for its LZ4 blocks, which can
+never be larger than one block.
 
 ### Seeking and short reads
 

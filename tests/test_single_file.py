@@ -46,6 +46,7 @@ from archivey.internal.hashing import crc32_digest
 from archivey.types import HashAlgorithm
 from tests.conftest import requires, requires_zstd, zstd_backend
 from tests.corruption_util import raises_corruption_not_truncation
+from tests.lzop_build import make_lzop
 from tests.streams_util import (
     MemberSeek,
     NonSeekableBytesIO,
@@ -1051,7 +1052,7 @@ def _lz4_compress(data: bytes) -> bytes:
     return lz4.frame.compress(data)
 
 
-# suffix -> (compressor, skip marks). The ten single-file codecs.
+# suffix -> (compressor, skip marks). The eleven single-file codecs.
 _SINGLE_FILE_CODECS = {
     ".gz": (gzip.compress, ()),
     ".bz2": (bz2.compress, ()),
@@ -1063,6 +1064,7 @@ _SINGLE_FILE_CODECS = {
     ".br": (_brotli_compress, (requires("brotli"),)),
     ".lz4": (_lz4_compress, (requires("lz4"),)),
     ".Z": (make_unix_compress, (requires("ncompress"),)),
+    ".lzo": (make_lzop, ()),
 }
 
 _NOT_A_STREAM = {"zeros": b"\x00" * 40_000, "zero-byte": b""}
