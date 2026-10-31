@@ -219,7 +219,9 @@ the filter does, and a link pointing outside is refused unless the filter also c
 `archivey.sanitize_names` is a ready-made filter for this, passed as `filter=` to `extract_all`. It
 drops a leading `/` or drive letter, resolves or drops `..`, removes those reordering characters,
 and adds `_` to names Windows reserves, such as `CON`. In a symlink's target it makes only the
-character and reserved-name fixes, and it leaves a hard link's target as stored.
+character and reserved-name fixes, and it leaves a hard link's target as stored. It does not
+rewrite a `\`, a control character or bytes that are not UTF-8, which `STRICT` refuses: extract
+with `policy="standard"` to have those written under a portable spelling.
 
 A hard link gets the contents of the file it points to in the archive, whatever happens to that
 file's name. If a filter renamed that file, the link points to the new name. If the file was left

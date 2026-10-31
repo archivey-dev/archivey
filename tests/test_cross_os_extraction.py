@@ -146,14 +146,18 @@ def test_tar_backslash_meets_a_file_of_the_same_name_as_a_slash_does(
     assert slash[1][0] is ExtractionStatus.FAILED
 
 
-@_REWRITES
-def test_hardlink_target_backslash_becomes_a_separator(
-    tmp_path: Path, policy: ExtractionPolicy
-) -> None:
+@_PORTABLE
+def test_link_target_backslash_becomes_a_separator(policy: ExtractionPolicy) -> None:
     for type in (MemberType.HARDLINK, MemberType.SYMLINK):
         member = _member("h", type=type, link_target="d\\f")
         assert apply_name_policy(member, policy).link_target == "d/f"
 
+
+@_REWRITES
+def test_hardlink_target_backslash_becomes_a_separator(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    """The member names hold a ``\\`` too, which STRICT refuses."""
     archive = _tar([("file", "d\\f", b"data"), ("hard", "h\\g", "d\\f")])
     report = open_and_extract(io.BytesIO(archive), tmp_path / "out", policy=policy)
     assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 2

@@ -115,6 +115,9 @@ is reject/raise, with one rewrite:
   `archive-reading`, "Link targets stored as member data are read only when
   configured") gets the same rewrite, because `extract_all` calls the filter again once
   the target is read. It returns the member unchanged when nothing needs rewriting.
+  It does not rewrite a `\`, a control character 0x01–0x1F, a non-UTF-8 byte or a lone
+  surrogate, so it does not rescue a name `STRICT` refuses for one ("Names other readers
+  take differently"); `STANDARD`, or a caller filter, writes those.
 
 The implementation SHALL enforce defense in depth: first a string check rejects
 absolute paths, Windows drive/UNC roots, any `..` component split on `/` or `\`,
@@ -285,8 +288,8 @@ of this requirement — it belongs to the future opt-in `SANITIZE` extraction po
 
 #### Scenario: UTF-8-enforcing filesystem refuses a surrogateescape name
 
-- **WHEN** a member whose name carries undecodable bytes (`surrogateescape`) is extracted under `TRUSTED`
-  to a filesystem that enforces valid UTF-8 names
+- **WHEN** a member whose name carries undecodable bytes (`surrogateescape`) is extracted
+  under `TRUSTED` to a filesystem that enforces valid UTF-8 names
 - **THEN** extraction raises a typed `ExtractionError` whose cause is the filesystem's
   `OSError` with `EILSEQ` (never a raw `OSError`), or records a failure result under
   `OnError.CONTINUE`
@@ -1645,7 +1648,7 @@ directory this run wrote read-only, extraction SHALL clear the read-only attribu
 so `REPLACE` gives the result it gives on POSIX. The attribute is put back on a file's other
 hard links. A read-only entry that was in the destination before the run is not changed.
 
-**Portable-name representability (O7).** Under `STANDARD`, a name carrying
+**Portable-name representability (O7).** Under `STRICT` and `STANDARD`, a name carrying
 bytes that cannot be represented portably on the destination filesystem SHALL be normalized
 to a deterministic, reversible portable spelling — each non-UTF-8 byte (a surrogateescape
 char U+DC80–U+DCFF mapping to raw byte 0x80–0xFF) percent-escaped as `%XX` (uppercase hex),
@@ -1653,9 +1656,10 @@ and a literal `%` escaped as `%25` — applied on **every** platform, collision-
 above, and recorded as `ExtractionResult.presented_name`. The characters Win32 refuses in a
 name, `<`, `>`, `"`, `|`, `?`, `*` and the controls 0x01–0x1F, SHALL be escaped the same
 way, as `%XX` of their code point (`a?b` → `a%3Fb`), so a name POSIX could store gives the
-tree Windows gives. Under `STRICT` the same escape applies to `<>"|?*`; the other
-characters this paragraph names are refused there ("Names other readers take
-differently"). A `%` is escaped only in a name the scheme rewrites. The scheme SHALL
+tree Windows gives. Under `STRICT` only `<>"|?*` reach this rule; a `\`, a control
+character 0x01–0x1F, a non-UTF-8 byte and a lone surrogate are refused instead ("Names
+other readers take differently"). Everything else in this paragraph, the `%25` escape,
+`presented_name` and the NFC/NFD exclusion, applies under both. A `%` is escaped only in a name the scheme rewrites. The scheme SHALL
 touch nothing else; valid-but-non-portable Unicode (NFC/NFD forms) SHALL NOT be rewritten
 (its cross-platform folding is the O2 collision concern). `TRUSTED` SHALL attempt the
 faithful bytes and let the OS decide. The reversibility SHALL be a documented property; a

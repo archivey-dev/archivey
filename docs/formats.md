@@ -226,10 +226,10 @@ lists every member, as 7-Zip does. The CLI shows the name escaped, as `hi\ud800`
 
 Under the `STRICT` extraction policy, extraction refuses the member (`BLOCKED`), as it refuses
 any name that is not portable. Under `STANDARD` it escapes the surrogate's UTF-8 bytes:
-`hi\ud800` is written `hi%ED%A0%80` on every OS, and `presented_name` holds the stored name. Under `TRUSTED` it writes what 7-Zip writes. On
-Linux and other POSIX systems that is the three-byte UTF-8 form, `hi` followed by `ed a0 80`; a
-filesystem that accepts only valid UTF-8, such as APFS, refuses those bytes, and the member fails
-with `ExtractionError`. On Windows it is the exact name. One exception: a unit from U+DC80 to
+`hi\ud800` is written `hi%ED%A0%80` on every OS, and `presented_name` holds the stored name.
+Under `TRUSTED` it writes what 7-Zip writes. On Linux and other POSIX systems that is the
+three-byte UTF-8 form, `hi` followed by `ed a0 80`; a filesystem that accepts only valid UTF-8,
+such as APFS, refuses those bytes, and the member fails with `ExtractionError`. On Windows it is the exact name. One exception: a unit from U+DC80 to
 U+DCFF looks the same as an undecodable byte (see
 [Names in other encodings](opening.md#names-in-other-encodings)), so extraction writes it as that
 byte, where 7-Zip writes three bytes.

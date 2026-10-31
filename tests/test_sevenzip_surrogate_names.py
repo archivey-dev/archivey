@@ -324,8 +324,8 @@ def test_a_surrogate_name_and_its_utf8_bytes_collide(
     """``hi\\ud800`` and a name whose undecodable bytes are ``ed a0 80`` name one file.
 
     ``STANDARD`` escapes both to ``hi%ED%A0%80`` (``STRICT`` refuses both);
-    ``TRUSTED`` writes both as the bytes. The second is resolved by the overwrite policy, not written
-    over the first.
+    ``TRUSTED`` writes both as the bytes. The second is resolved by the overwrite policy,
+    not written over the first.
     """
     archive = tmp_path / "pair.7z"
     archive.write_bytes(

@@ -179,7 +179,8 @@ def resolve_smart_dest(
 
 
 # Characters the library's name policy does not write as stored: it escapes them as
-# ``%XX``, writes ``\`` as ``/``, or refuses the member (``:``).
+# ``%XX``, writes ``\`` as ``/``, or refuses the member (``:`` always; a ``\``, a
+# control character or a non-UTF-8 byte under STRICT).
 _REWRITTEN_CHARS = frozenset('<>:"|?*\\')
 
 
@@ -1306,10 +1307,10 @@ def _escaped_where(result: ExtractionResult, target: Path, moves: _Moves | None)
     """The destination to report for a member that did not keep it, terminal-safe.
 
     ``requested_path`` is built from the member's own name. STRICT refuses the controls
-    0x01-0x1F and STANDARD writes them as ``%XX``, but other non-printable characters (DEL, the C1
-    controls, U+2028) pass through, and TRUSTED writes every name as stored. Printing it
-    raw is the line-spoofing vector ``escape_member_name`` exists to close, so both the
-    path and the name fallback go through it.
+    0x01-0x1F and STANDARD writes them as ``%XX``, but other non-printable characters
+    (DEL, the C1 controls, U+2028) pass through, and TRUSTED writes every name as
+    stored. Printing it raw is the line-spoofing vector ``escape_member_name`` exists
+    to close, so both the path and the name fallback go through it.
 
     Rendered relative to the extraction root first, matching ``name rewritten:``. That is
     not only for brevity: ``escape_member_name`` escapes backslashes, so handing it a

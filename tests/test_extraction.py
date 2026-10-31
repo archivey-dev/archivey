@@ -4277,7 +4277,7 @@ def test_o7_percent_escaped_when_sanitizing(tmp_path: Path) -> None:
     "stored,what",
     [
         (b"caf\xe9.txt".decode("utf-8", errors="surrogateescape"), "not UTF-8"),
-        ("hi\ud800", "not UTF-8"),
+        ("hi\ud800", "a lone surrogate"),
         ("line\nbreak", "U+000A"),
         ("bell\x01", "U+0001"),
         ("dir\\file", "a backslash"),
@@ -4295,6 +4295,9 @@ def test_strict_blocks_a_name_other_readers_take_differently(
     with pytest.raises(FilterRejectionError, match=re.escape(what)) as caught:
         apply_name_policy(member, ExtractionPolicy.STRICT)
     assert "STANDARD writes a portable spelling" in caught.value.message
+    # The name is shown once, by ``member=``, not again in the message.
+    assert caught.value.member_name == stored
+    assert stored not in caught.value.message
     assert apply_name_policy(member, ExtractionPolicy.STANDARD).name != stored
     assert apply_name_policy(member, ExtractionPolicy.TRUSTED).name == stored
 
