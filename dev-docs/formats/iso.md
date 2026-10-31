@@ -157,13 +157,15 @@ without the `ER` are treated as a false positive. From then on every name comes 
 (§1). 7-Zip prefers Joliet over Rock Ridge, so the two tools can list different names —
 and, on an image built with `-hide` or `-hide-joliet`, different files. After the walk,
 `_report_files_in_other_trees` compares the trees not listed (Joliet, unless it is the
-listed one, and UDF, which Windows reads first) with the listed one by the extent each
+listed one; the plain ISO 9660 tree when Joliet is listed, since Rock Ridge rides the
+plain records; and UDF, which Windows reads first) with the listed one by the extent each
 non-empty file points at, not by name (Joliet cuts names at 64 characters, plain ISO
 9660 names are 8.3), and reports a file only another tree holds as
-`MEMBER_READERS_DISAGREE` (`file_only_in_joliet`, `file_only_in_udf`), named by its path
-in that tree, with no member id, at most 16 per tree. A UDF extent is made absolute with
-the partition start; a file whose data sits inside its UDF File Entry has no extent and
-always counts as unlisted. Empty files share one extent and are not compared. The reverse
+`MEMBER_READERS_DISAGREE` (`file_only_in_joliet`, `file_only_in_iso9660`,
+`file_only_in_udf`), named by its path in that tree (a UDF name decoded by its own
+compression ID, UTF-16BE or Latin-1), with no member id, at most 16 per tree. A UDF
+extent is made absolute with the partition start; a file whose data sits inside its UDF
+File Entry (ICB flags 3) has no extent and always counts as unlisted. Empty files share one extent and are not compared. The reverse
 shape, a listed file another tree lacks, is not reported: everything archivey lists is
 in view. pycdlib parsed every tree in `open_fp`, so the comparison reads nothing; on a
 20 100-file Rock Ridge + Joliet image (xorriso) it costs about 0.5% of open and list, and

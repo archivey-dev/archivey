@@ -45,8 +45,10 @@ def _image(
         joliet=3,
         udf="2.60" if udf else None,
     )
+    iso_path_names: list[str] = []
     for name, (data, trees) in files.items():
-        iso_path = f"/{name.upper()}.;1"
+        iso_path = f"/F{len(iso_path_names):02}.;1"
+        iso_path_names.append(name)
         kwargs: dict[str, str] = {"joliet_path": f"/{name}"}
         if rock_ridge:
             kwargs["rr_name"] = name
@@ -66,14 +68,20 @@ def _image(
 
 
 def _reported(image: bytes) -> tuple[list[str], list[tuple[str, str]]]:
+    return _reports(image)[:2]  # type: ignore[return-value]
+
+
+def _reports(image: bytes) -> tuple[list[str], list[tuple[str, str]], list[str]]:
     with open_archive(io.BytesIO(image)) as reader:
         names = sorted(m.name for m in reader.members())
-        found = [
-            (d.context.member_name, d.context.shape)
+        retained = [
+            d
             for d in reader.diagnostics.retained
             if isinstance(d.context, ReaderDisagreementContext)
         ]
-    return names, sorted(found)
+        found = [(d.context.member_name, d.context.shape) for d in retained]
+        messages = [d.message for d in retained]
+    return names, sorted(found), messages
 
 
 ALL = {"iso", "joliet", "udf"}
@@ -118,12 +126,32 @@ def test_joliet_listed_compares_udf_only() -> None:
     assert _reported(image) == (["both"], [("hidden", "file_only_in_udf")])
 
 
-def test_the_reports_stop_at_sixteen_per_tree() -> None:
+@pytest.mark.parametrize("hidden", [16, 20])
+def test_the_reports_stop_at_sixteen_per_tree(hidden: int) -> None:
     files = {"both": (b"both", ALL)} | {
-        f"h{i:02}": (f"hidden {i}".encode(), {"joliet"}) for i in range(20)
+        f"h{i:02}": (f"hidden {i}".encode(), {"joliet"}) for i in range(hidden)
     }
-    _, found = _reported(_image(files))
+    _, found, messages = _reports(_image(files))
     assert len(found) == 16
+    # Worded as the cap, true whether or not a seventeenth file exists.
+    assert messages[-1].endswith("No more than 16 such files are reported per tree.")
+    assert not any("No more than" in m for m in messages[:-1])
+
+
+def test_a_file_only_in_the_plain_tree_is_reported() -> None:
+    """Without Rock Ridge archivey lists Joliet; ``-hide-joliet`` leaves a file in the
+    plain tree a reader without Joliet sees."""
+    image = _image(
+        {"both": (b"both", ALL), "plain": (b"plain only", {"iso"})}, rock_ridge=False
+    )
+    assert _reported(image) == (["both"], [("F01", "file_only_in_iso9660")])
+
+
+@pytest.mark.parametrize("name", ["café", "日本"])
+def test_a_udf_name_is_decoded_by_its_own_encoding(name: str) -> None:
+    """pycdlib stores a UDF name as Latin-1 (8) or UTF-16BE (16) bytes."""
+    image = _image({"both": (b"both", ALL), name: (b"hidden", {"udf"})}, udf=True)
+    assert _reported(image) == (["both"], [(name, "file_only_in_udf")])
 
 
 def test_advisory_info_and_pedantic_refuses(caplog: pytest.LogCaptureFixture) -> None:

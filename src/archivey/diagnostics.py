@@ -1010,10 +1010,11 @@ class ReaderDisagreementContext(_JsonSafeContext):
       directory mode, or the DOS directory bit) mark it a directory, named without the
       final ``/``. It is a directory, as 7-Zip and libarchive extract it and as
       APPNOTE 4.4.15 marks it; unzip and ``zipfile`` go by the name and write a file.
-    - ``"file_only_in_joliet"`` and ``"file_only_in_udf"``: an ISO image whose Joliet
-      or UDF tree holds a file the tree archivey lists does not (Rock Ridge, else
-      Joliet). Windows and 7-Zip read those trees and see the file; Linux and
-      xorriso read Rock Ridge. ``member_name`` is the file's path in that tree and
+    - ``"file_only_in_joliet"``, ``"file_only_in_iso9660"`` and ``"file_only_in_udf"``:
+      an ISO image whose Joliet, plain ISO 9660 or UDF tree holds a file the tree
+      archivey lists does not (Rock Ridge, else Joliet). Windows and 7-Zip read Joliet
+      and UDF, a reader without Joliet the plain tree, Linux and xorriso Rock Ridge;
+      each sees the files of its own tree. ``member_name`` is the file's path in that tree and
       ``member_id`` is ``None``: it is not a member. Files are matched by the data
       they point at; at most 16 are reported per tree.
     """
@@ -1031,6 +1032,7 @@ class ReaderDisagreementContext(_JsonSafeContext):
         "nul_in_name",
         "directory_attribute_without_slash",
         "file_only_in_joliet",
+        "file_only_in_iso9660",
         "file_only_in_udf",
     ] = "file_named_as_directory"
 
