@@ -89,9 +89,8 @@ when the entry has no data stream, even where the format's own tool writes it as
 empty regular file (unzip, 7-Zip): an empty file in its place would hide what the
 archive said it was. An entry whose mode names a special file but that owns a data
 stream (ZIP, 7z, RAR, ISO) SHALL be `MemberType.FILE` with
-`MEMBER_SPECIAL_FILE_HAS_DATA` reported: the stream is the structure and the mode an
-attribute, and `OTHER` would hide bytes every official tool writes out (design rule
-DR-25). In TAR the typeflag is the structure and GNU tar ignores the size field of a
+`MEMBER_SPECIAL_FILE_HAS_DATA` reported: the data contradicts the mode, and
+`OTHER` would hide bytes every official tool writes out (design rule DR-25). In TAR the typeflag is the structure and GNU tar ignores the size field of a
 device or FIFO header, so a header of typeflag `3`, `4` or `6` with a non-zero size
 SHALL be refused as `CorruptionError`. A TAR typeflag the reader does not know is not a
 special file: with a non-zero size it SHALL be `MemberType.FILE`, as GNU tar extracts it,
