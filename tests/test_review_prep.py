@@ -745,10 +745,29 @@ jobs:
         (QUIET.replace("  schedule:\n", "  - push\n  schedule:\n"), False),
         (QUIET + "on: push\n", False),  # two `on:` keys
         ("on: {push: {}}\npermissions: {}\n", False),
+        # Cursor round 1, C1: forms only a YAML parse reads right.
+        (
+            'name: "bench\npermissions:\n"\n'
+            + QUIET.split("permissions:\n  contents: read\n")[0].split("\n", 1)[1]
+            + QUIET.split("permissions:\n  contents: read\n")[1],
+            False,
+        ),
+        ('name: "x\non: workflow_dispatch\n"\n' + QUIET.split("\n", 1)[1], False),
+        (QUIET.replace("  contents: read", "  id-token: >-\n    write"), False),
+        (QUIET.replace("  contents: read", '  contents: "write"'), False),
+        (
+            QUIET + "  other:\n    runs-on: x\n    permissions: {id-token: write}\n",
+            False,
+        ),
     ],
 )
 def test_quiet_workflow(text: str | None, quiet: bool) -> None:
     assert prep.quiet_workflow(text) is quiet
+
+
+def test_without_pyyaml_no_workflow_is_quiet(monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "yaml", None)
+    assert prep.quiet_workflow(QUIET) is False
 
 
 def test_a_quiet_workflow_is_standard_and_keeps_the_security_pass(

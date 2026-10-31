@@ -485,7 +485,7 @@ _WORKFLOW_POWER_RE = re.compile(
     rf"|\$\{{\{{[^}}]*\bgithub\s*(?:\[|\.\s*(?!(?:{_GITHUB_FIXED})\b)\w)"
     r"|^\s*(?:actions|attestations|checks|contents|deployments|discussions|id-token"
     r"|issues|models|packages|pages|pull-requests|repository-projects|security-events"
-    r"|statuses)\s*:\s*['\"]?(?:read|write|none)\b"
+    r"|statuses)\s*:\s*(?:['\"]?(?:read|write|none)\b|[>|]|$)"
 )
 # An action or reusable workflow a step runs; a new one is new code with the job's token,
 # a local one (`./`) included, since it may be a workflow that takes secrets.
@@ -878,6 +878,50 @@ def _read_only_permissions(lines: list[str]) -> bool:
     return top  # without one, the repository's default token, whatever that is set to
 
 
+def _read_only_grant(value: object) -> bool:
+    if value in ("read-all", {}):
+        return True
+    return isinstance(value, dict) and all(
+        isinstance(k, str) and v in ("read", "none") for k, v in value.items()
+    )
+
+
+def _parsed_quiet(text: str) -> bool:
+    """The line readers again, on the document Actions loads: a multi-line string can
+    hold a line that looks like `on:` or `permissions:`, and a folded scalar can hold
+    `write`. Both answers must be quiet. Without PyYAML (the runner image ships it)
+    nothing is quiet, which is the tier this script gave before."""
+    try:
+        import yaml  # only workflows need it; the script runs on a bare python3
+    except ImportError:
+        return False
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return False
+    if not isinstance(doc, dict):
+        return False
+    # YAML 1.1 reads a bare `on` key as the boolean true; Actions takes either.
+    on = [doc[k] for k in (True, "on") if k in doc]
+    if len(on) != 1:
+        return False
+    events = on[0]
+    if isinstance(events, str):
+        events = [events]
+    if not events or not set(events) <= _QUIET_TRIGGERS:
+        return False
+    if "permissions" not in doc or not _read_only_grant(doc["permissions"]):
+        return False
+    jobs = doc.get("jobs") or {}
+    if not isinstance(jobs, dict):
+        return False
+    return all(
+        isinstance(job, dict)
+        and ("permissions" not in job or _read_only_grant(job["permissions"]))
+        for job in jobs.values()
+    )
+
+
 def quiet_workflow(text: str | None) -> bool:
     """A workflow that only a dispatch or the schedule starts, with an explicit token
     scope that writes nothing and no secret but the job's own token. Every `github`
@@ -893,7 +937,7 @@ def quiet_workflow(text: str | None) -> bool:
     if not triggers or not triggers <= _QUIET_TRIGGERS:
         return False
     lines = text.splitlines()
-    if not _read_only_permissions(lines):
+    if not _read_only_permissions(lines) or not _parsed_quiet(text):
         return False
     # Comments are read too: a `#` inside a `run:` string would otherwise hide the rest
     # of its line, and a comment that names a secret only costs a deep review.
