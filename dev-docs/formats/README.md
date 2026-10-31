@@ -20,7 +20,7 @@ Formats:
   why a walk ended.
 - [`iso.md`](iso.md) — a filesystem read through a library written to author it.
 - [`cpio.md`](cpio.md) — initramfs and RPM payloads, four header variants, and hard
-  links whose data comes with the last name.
+  links whose data, in newc and crc, comes with the last name.
 - [`ar.md`](ar.md) — static libraries and `.deb`, a built-in written against
   `archivey.formats`.
 - [`dmg.md`](dmg.md) — a UDIF image, recognised by the `koly` block and refused.

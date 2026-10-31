@@ -29,7 +29,8 @@ the `TRAILER!!!` member. It SHALL name the variant in `ArchiveInfo.extra["cpio.v
 as GNU cpio's `-H` option does (`bin`, `bin-be`, `odc`, `newc`, `crc`).
 `ArchiveInfo.format_version` SHALL be `None`: a header variant is not a version. A
 variant that changes mid-archive SHALL raise `CorruptionError`. In a crc archive each
-member's data SHALL be checked against the header's sum as it is read.
+regular file's data SHALL be checked against the header's sum as it is read; a
+symlink's target is not, since GNU cpio stores no sum for it.
 
 #### Scenario: CPIO variants
 
@@ -37,7 +38,8 @@ member's data SHALL be checked against the header's sum as it is read.
 | --- | --- |
 | Archives written by GNU cpio with `-H bin`, `odc`, `newc`, `crc` | Same members and data; `extra["cpio.variant"]` names the variant |
 | A newc header followed by a crc header | `CorruptionError` naming both variants |
-| A crc member whose data does not match its sum | `CorruptionError` while it is read |
+| A crc regular file whose data does not match its sum | `CorruptionError` while it is read |
+| A big-endian binary archive (magic `71 C7`) | Read as the host-order one; `extra["cpio.variant"] == "bin-be"` |
 | An afio large header whose 16-digit mtime is past what `datetime` holds (`0xFFFFFFFFFFFFFFFF`) | The member lists with `modified is None`, never a raw `OverflowError` or `ValueError` |
 | The newc archive gzipped, opened with `format="cpio.gz"` | `ArchiveFormat(CPIO, GZIP)`; `format="cpio"` on those bytes raises `CorruptionError` |
 | A plain archive, opened | `cost.listing_cost=REQUIRES_SCANNING`; `cost.access_cost=DIRECT` |
