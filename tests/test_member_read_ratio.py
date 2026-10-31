@@ -27,6 +27,8 @@ from archivey.internal.bomb_tracker import (
     ReadRatioTally,
 )
 from archivey.types import MemberType
+from tests.streams_util import NonSeekableBytesIO, SizedNonSeekable
+from tests.test_audit_tar_streams import _TRAILER, _gnu_sparse
 
 _MIB = 2**20
 
@@ -116,6 +118,95 @@ def test_small_members_together_past_the_ratio_stop_the_reader(tmp_path: Path) -
         for _member, stream in reader.stream_members():
             assert stream is not None
             _drain(stream)
+
+
+# A ZIP, TAR or 7z read straight from a pipe has no size to divide by and no codec
+# input counter: the bytes its source takes from the pipe are the live denominator.
+# The live floor is lowered so the test decodes megabytes, not the default 256 MiB.
+_LOW_LIVE_FLOOR = ArchiveyConfig(
+    decoder_limits=DecoderLimits(live_ratio_activation_threshold=8 * _MIB)
+)
+
+
+def _small_bzip2_members(tmp_path: Path) -> bytes:
+    # Each member stays under the 5 MiB per-member floor; together they are 24 MiB.
+    path = _zip(tmp_path / "many.zip", [(f"z{i}", bytes(4 * _MIB)) for i in range(6)])
+    return path.read_bytes()
+
+
+@pytest.mark.parametrize("sized", [False, True], ids=["bare", "size-claim"])
+def test_a_piped_zip_pass_is_held_to_the_live_ratio(
+    tmp_path: Path, sized: bool
+) -> None:
+    # A pipe's size attribute is the caller's claim and does not count as the
+    # archive's size, so the live denominator holds there too.
+    data = _small_bzip2_members(tmp_path)
+    pipe = SizedNonSeekable(data, len(data)) if sized else NonSeekableBytesIO(data)
+    with (
+        open_archive(pipe, streaming=True, config=_LOW_LIVE_FLOOR) as reader,
+        pytest.raises(AlwaysStopResourceLimitError, match="Live decompression ratio"),
+    ):
+        for _member, stream in reader.stream_members():
+            assert stream is not None
+            _drain(stream)
+
+
+def test_a_piped_zip_extraction_is_held_to_the_live_ratio(tmp_path: Path) -> None:
+    data = _small_bzip2_members(tmp_path)
+    with (
+        open_archive(
+            NonSeekableBytesIO(data), streaming=True, config=_LOW_LIVE_FLOOR
+        ) as reader,
+        pytest.raises(AlwaysStopResourceLimitError, match="Live decompression ratio"),
+    ):
+        reader.extract_all(tmp_path / "out")
+
+
+def test_a_piped_sparse_tar_is_held_to_the_live_ratio() -> None:
+    # 30 MiB of holes in a member that stores no data: the archive is 2.5 KiB.
+    member = _gnu_sparse("holes", [(30 * _MIB, 0)], 30 * _MIB, b"")
+    data = member + _TRAILER
+    with (
+        open_archive(
+            NonSeekableBytesIO(data), streaming=True, config=_LOW_LIVE_FLOOR
+        ) as reader,
+        pytest.raises(AlwaysStopResourceLimitError, match="Live decompression ratio"),
+    ):
+        for _member, stream in reader.stream_members():
+            if stream is not None:
+                _drain(stream)
+
+
+def test_a_piped_zip_counts_the_bytes_taken_from_the_pipe(tmp_path: Path) -> None:
+    data = _small_bzip2_members(tmp_path)
+    with open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
+        for _member, stream in reader.stream_members():
+            assert stream is not None
+            _drain(stream)
+        consumed = reader.compressed_bytes_consumed
+    assert consumed is not None
+    assert 0 < consumed <= len(data)
+
+
+def test_a_piped_zip_of_stored_data_passes_the_live_ratio(tmp_path: Path) -> None:
+    path = tmp_path / "stored.zip"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as zf:
+        for i in range(3):
+            zf.writestr(f"s{i}", bytes(4 * _MIB))
+    with open_archive(
+        NonSeekableBytesIO(path.read_bytes()), streaming=True, config=_LOW_LIVE_FLOOR
+    ) as reader:
+        total = 0
+        for _member, stream in reader.stream_members():
+            assert stream is not None
+            total += _drain(stream)
+    assert total == 12 * _MIB
+
+
+def test_a_seekable_zip_keeps_the_static_ratio(tmp_path: Path) -> None:
+    data = _small_bzip2_members(tmp_path)
+    with open_archive(io.BytesIO(data)) as reader:
+        assert reader.compressed_bytes_consumed is None
 
 
 def test_a_member_read_again_counts_once(tmp_path: Path) -> None:
