@@ -92,39 +92,29 @@ reports too: a fork's pull request gets none, a cancelled run leaves it stale, a
 label can be removed by hand, so the merging agent runs the base branch's script itself
 (`address-review-findings` §7).
 
-**The reviewer is Sonnet, with the project installed.** The round installs the project
-at the pull request's own lockfile (`uv sync --frozen --group dev --extra all`, what
-`scripts/setup-dev-env.sh` installs) and runs `claude-sonnet-5-5`, so it can measure
-with the optional accelerators and codecs a change is about. Opus reviewed until
-2026-10-29; on the [review-eval](review-eval/README.md) set Sonnet caught as many of
-the bugs the loop had missed at about an eighth of the cost.
+**Opus reads a pull request once, first; Sonnet re-reads the fixes.** The round
+installs the project at the pull request's own lockfile (`uv sync --frozen --group dev
+--extra all`, what `scripts/setup-dev-env.sh` installs), so the reviewer can measure with
+the optional accelerators and codecs a change is about. The first round that reaches a
+verdict on a `standard` or `deep` pull request runs `claude-opus-5`: a full first look,
+and its closing comment's marker carries `pass=opus`, which is how later rounds know it
+ran. Every other round runs `claude-sonnet-5-5`: the rounds that re-read fixes, and
+every round of a `light` pull request. An Opus round that dies before its verdict is
+not counted, so the next round is Opus again. The tier comes from the base branch's
+`review_prep.py`, as for the risk label, before the gate runs; a failure to compute it
+makes the round Sonnet's. `OPUS_PASS_TIERS` in the gate holds the rule.
 
-**Once Sonnet approves, Opus reads the pull request once.** Sonnet's rounds clear the
-straightforward findings first. When a round on a `standard` or `deep` pull request
-ends `clean` or `approved`, the same workflow run starts one Opus round, the Opus pass.
-When it ends `conditional`, the implementer fixes the findings, pushes and adds the
-label as usual, and that round is the Opus pass instead of a Sonnet round, so Opus
-reads the fixed code and nobody re-reads the fixes first (davitf, 2026-10-29). The pass
-reads the change as a first look, skips the findings already on the pull
-request, and looks hardest at what they missed and at severities rated too low. On a
-`deep` pull request it also asks Cursor for a full review (an `@cursoragent`
-comment). A `light` pull request gets neither. The reason is the 2026-10-21 comparison
-of the three reviewers on five pull requests: Sonnet found about as many
-issues as Opus, but missed an important one in a single format's code and rated two
-important ones as nits, and the verdict rests on severity.
+Why this order (davitf, 2026-10-30): for one day Sonnet reviewed first and Opus read the
+pull request once Sonnet approved. On the ten pull requests that ran that way, Sonnet's
+first rounds took about two minutes and raised 1 blocking and 7 important findings; the
+Opus pass after them raised 4 blocking and about 30 important, nearly all fixed. Sonnet
+in front only delayed Opus by a round. Sonnet re-reading fixes did catch a regression
+that one fix introduced, at about a twentieth of an Opus round's cost. Before that, Opus
+reviewed every round until 2026-10-29, and on the [review-eval](review-eval/README.md)
+set Sonnet caught as many of the bugs the loop had missed, at about an eighth of the
+cost; the day of live rounds showed that it reads far less deeply on a first look.
 
-The Opus pass is a counted round: its closing comment's marker carries `pass=opus`,
-which is how later rounds know it ran, and it never runs twice. A conditional
-approval's marker carries `next=opus`, which is how the next label's round knows it is
-the pass. With no agent round left for that, a conditional approval starts the pass in
-the same run instead, so it is never skipped. The pass runs whether or not the agent cap is spent (an
-approving round 5 is followed by the pass as round 6), but never past the ceiling.
-While it is still to come, the approving round puts no outcome label on; the pass's
-own close does. Its findings, and Cursor's, then go through the ordinary rounds. The
-tier comes from the base branch's `review_prep.py`, as for the risk label, and a
-failure to compute it only loses the pass; `finish()` in the gate holds the rule.
-
-The prompt both reviewers get is
+The prompt every round gets is
 [`.github/review-loop-prompt.md`](../.github/review-loop-prompt.md), filled in by
 `scripts/review_loop_prompt.py`; both closes run `scripts/review_loop_close.sh`.
 
@@ -156,9 +146,12 @@ can fall out of step with what actually ran:
   comments are read.
 - If the workflow fails before deciding, it says so on the pull request, and nothing is
   counted.
-- Nothing ever runs without a fresh label, except the Opus pass, which follows an
-  approving round in the same run and only once, so a failed step cannot make a round
+- Nothing ever runs without a fresh label, so a failed step cannot make a round
   repeat by itself.
+- An agent's label at the commit the last round already read is refused, unless that
+  round stopped for a decision: with nothing pushed there is nothing new to read, and
+  the answer to a decision is new even when it needed no code. A person's label reviews
+  it again as is.
 
 ## Who is asking
 
@@ -174,10 +167,8 @@ evidence for it.
   five verdicts. `clean`, `approved` and `conditional` mean it does not need to see the
   result: `approved` is a plain "✅ Approve", and `conditional` covers "✅ Approve,
   conditional on the listed fixes" and "💬 Comment". The findings are still posted in
-  full and still fixed, but the closing comment does not ask for another round. One
-  exception: before its Opus pass, a standard or deep pull request's `conditional`
-  asks for the pass as the next round (§How it works). `findings` (🔄 Request Changes)
-  asks for one.
+  full and still fixed, but the closing comment does not ask for another round.
+  `findings` (🔄 Request Changes) asks for one.
   `decision` stops until the maintainer answers. `VERDICT_STOPS` in
   [`scripts/review_loop_gate.py`](../scripts/review_loop_gate.py) holds the mapping.
 - **The verdict advises; it does not refuse.** After a verdict that needs no other
@@ -187,8 +178,7 @@ evidence for it.
 - **Five rounds an agent can ask for, then a person.** Past `MAX_ROUNDS` an agent's
   label is refused, with a comment saying so, and a person's label still runs a round.
   Past `MAX_FORCED_ROUNDS` (eight) nothing runs, so the bound holds even if the person
-  check were ever misread. The Opus pass is the one round past the agent cap that no
-  label starts. The cap is the backstop against two agents going back and
+  check were ever misread. The cap is the backstop against two agents going back and
   forth, not the mechanism: on the rounds recorded in full (#380: nine findings, then
   three, then two; #389: five, three, two) the verdict stopped both at round 3.
 - **A decision.** If block 3 of the review holds a packet
@@ -223,7 +213,7 @@ assistant, answers only people.
   and add the score to its results.
 - **Counting what it found.** `review-tally.yml` runs `scripts/review_tally.py` each
   Monday over the week's merged pull requests: rounds per pull request, findings by
-  severity and by who raised them (a loop round or the Opus pass), each finding's
+  severity and by who raised them (the Opus round or a Sonnet round), each finding's
   disposition, findings an earlier fix caused, and rounds whose posts missed the posting
   shape. The report is the run's job summary.
   Run the script by hand for any window (`--since`, `--pr`).
@@ -254,7 +244,7 @@ the three `risk:` labels.
   reviewer that remembers proposing a fix is a poor judge of that fix. Keeping one warm
   session across rounds was considered and rejected (davitf, 2026-09-19).
 - **The pull request under review supplies its own gate and prompt.** The tier is read
-  from the base branch, but `review_loop_gate.py` (which tiers get the Opus pass),
+  from the base branch, but `review_loop_gate.py` (which tiers get the Opus round),
   `review_loop_close.sh`, the prompt template and its renderer, and the review skill all
   come from the pull request's checkout. So a pull request can edit the rules its own
   review runs under, and `claude-code-action` does not refuse it as it does an edited
@@ -268,9 +258,12 @@ the three `risk:` labels.
   whether a round runs and approves, and who merges, stay with the maintainer, and so
   does an edit that talks about merging in the prose the merging agent follows
   (`MERGE_RULE_FILES`).
-- **Whether Cursor answers the workflow's comment is untested.** The Opus pass asks
-  Cursor with a comment from `github-actions[bot]`; if Cursor only answers people, the
-  Opus pass still runs and Cursor has to be asked by hand.
+- **Cursor reviews a deep pull request's Opus round.** The workflow posts an
+  `@cursoragent` request when that round starts, with the `CURSOR_TRIGGER_TOKEN`
+  secret: a fine-grained personal token limited to pull request comments on this
+  repository. Cursor drops comments from bots and GitHub Apps, so the request posted
+  as `github-actions[bot]` went unanswered on five pull requests. Without the secret
+  the step skips and says so in the job summary; ask Cursor by hand then.
 
 ## What this replaced
 

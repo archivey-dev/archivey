@@ -17,7 +17,7 @@ those use the AI plan's quota.
 
 | Workflow | When it runs | Uses AI quota | What a red run means |
 | --- | --- | --- | --- |
-| `review-loop.yml` | each time the `review` label is added | **yes**, one Sonnet session per round, plus one Opus pass once Sonnet approves a standard or deep PR (and an `@cursoragent` request on a deep one): up to 5 rounds an agent can ask for (the Opus pass can be a sixth), 8 if a person keeps adding the label ([Review loop](review-loop.md)) | the review itself failed to post; re-add the label once |
+| `review-loop.yml` | each time the `review` label is added | **yes**, one session per round: Opus for a standard or deep PR's first round, Sonnet for every other; up to 5 rounds an agent can ask for, 8 if a person keeps adding the label ([Review loop](review-loop.md)) | the review itself failed to post; re-add the label once |
 | `risk-label.yml` | each PR opened, pushed or retargeted (same-repository branches only) | no | the tier script failed; the `risk:` label stays as it was ([Review loop](review-loop.md)) |
 | `review-tally.yml` | weekly (Monday 06:17 UTC) and on demand | no | it could not read the week's pull requests; the report is the run's job summary ([Review loop](review-loop.md)) |
 | `claude.yml` | an `@claude` mention by a person on an issue or PR | **yes**, one session per mention | nothing, unless you asked for something |

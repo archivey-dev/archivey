@@ -28,36 +28,29 @@ ENV = {
 def test_an_ordinary_round_fills_every_placeholder() -> None:
     text, rnd, final = prompt.render(ENV)
     assert (rnd, final) == (2, False)
-    for name in ("PR", "REPOSITORY", "ROUND", "MAX_ROUNDS", "PASS", "CONDITIONAL"):
+    for name in ("PR", "REPOSITORY", "ROUND", "MAX_ROUNDS", "PASS"):
         assert "{" + name + "}" not in text
     assert "archivey-dev/archivey" in text
-    assert "Opus pass" not in text
+    assert "Opus" not in text
     # The editors' header stays out of the reviewer's prompt.
     assert not text.startswith("<!--")
 
 
-def test_the_opus_pass_after_an_approval_is_the_round_after_the_gate_s() -> None:
-    text, rnd, final = prompt.render(ENV | {"PASS": "opus-after", "TIER": "standard"})
-    assert rnd == 3
-    assert final is False
-    assert "This round is the Opus pass." in text
-    assert "Cursor" not in text
+def test_the_opus_round_as_the_first_is_an_ordinary_first_look() -> None:
+    text, rnd, _ = prompt.render(ENV | {"ROUND": "1", "PASS": "opus"})
+    assert rnd == 1
+    assert "Opus" not in text
 
 
-def test_the_opus_pass_after_the_fixes_is_the_gate_s_own_round() -> None:
-    text, rnd, _ = prompt.render(ENV | {"PASS": "opus", "TIER": "standard"})
+def test_an_opus_round_after_other_rounds_reads_past_them() -> None:
+    text, rnd, _ = prompt.render(ENV | {"PASS": "opus"})
     assert rnd == 2
-    assert "This round is the Opus pass." in text
+    assert "one review by Opus" in text
+    assert "Number your findings on from the" in text
 
 
-def test_on_a_deep_pull_request_the_pass_leaves_cursor_alone() -> None:
-    for pass_ in ("opus", "opus-after"):
-        text, _, _ = prompt.render(ENV | {"PASS": pass_, "TIER": "deep"})
-        assert "leave its comments alone" in text
-
-
-def test_an_opus_pass_at_the_cap_is_the_last_round() -> None:
-    _, rnd, final = prompt.render(ENV | {"ROUND": "4", "PASS": "opus-after"})
+def test_the_last_round_is_final() -> None:
+    _, rnd, final = prompt.render(ENV | {"ROUND": "5"})
     assert (rnd, final) == (5, True)
 
 
@@ -75,17 +68,3 @@ def test_the_output_is_one_multiline_value_and_two_plain_ones() -> None:
     body, _, tail = rest.partition(f"\n{delimiter}\n")
     assert delimiter not in body
     assert tail == "round=2\nfinal=false\n"
-
-
-def test_a_standard_or_deep_round_is_told_what_follows_an_approval() -> None:
-    told = "an approval is followed by that pass"
-    for tier in ("standard", "deep"):
-        text, _, _ = prompt.render(ENV | {"TIER": tier})
-        assert told in text
-    for tier in ("light", ""):
-        text, _, _ = prompt.render(ENV | {"TIER": tier})
-        assert told not in text
-    # The pass itself is past that rule.
-    text, _, _ = prompt.render(ENV | {"TIER": "standard", "PASS": "opus"})
-    assert told not in text
-    assert "Number your findings on from the highest" in text
