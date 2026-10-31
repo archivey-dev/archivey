@@ -245,6 +245,13 @@ jobs:
           TIER: ${{ steps.tier.outputs.tier }}
         run: python3 scripts/review_loop_prompt.py >> "$GITHUB_OUTPUT"
 
+      # The prompt names the built-in read-only `Explore` subagent. A file in
+      # `.claude/agents/` with that name would replace it, and the checkout is the pull
+      # request's tree, so the review runs with none.
+      - name: Use only the built-in subagents
+        if: steps.gate.outputs.run == 'true'
+        run: rm -rf .claude/agents
+
       # The review has its own timeout inside the job's, so a slow one leaves the close
       # its time.
       - name: Claude review
@@ -263,9 +270,11 @@ jobs:
           # Opus for a standard or deep pull request's first round, which finds most
           # of what matters; Sonnet, at about an eighth of the cost, for a light pull
           # request and for every round that re-reads fixes (`OPUS_PASS_TIERS`).
+          # `Task` (`Agent` in newer CLIs) lets the reviewer start subagents. They get
+          # this same allowlist and environment, so narrowing `Bash` here narrows them too.
           claude_args: |
             --model ${{ steps.gate.outputs.opus_pass == 'true' && 'claude-opus-5' || 'claude-sonnet-5-5' }}
-            --allowedTools Read,Grep,Glob,WebFetch,Bash
+            --allowedTools Read,Grep,Glob,WebFetch,Bash,Task,Agent
           prompt: ${{ steps.prompt.outputs.prompt }}
 
       # `always()` so that a review that died still says so, rather than leaving a pull

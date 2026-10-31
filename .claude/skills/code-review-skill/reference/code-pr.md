@@ -66,6 +66,34 @@ first, only five findings carried the documentation-debt label, and some of thos
 filed at 🟢 or 💡 (maintainer decision, davitf, 2026-09-24). A cold read that found nothing
 says `nothing` — that is an answer, not an omission.
 
+## Reading outside the diff: send a subagent
+
+The bugs a review misses sit mostly where the diff meets code it did not change: a
+caller, a sibling codec, shared state, the tests of a touched function. Look there, in
+both passes. But every file you read stays in your context for every later turn, so a
+file read at turn 5 is paid for some 50 times. **So read the immediate surroundings
+yourself and send the wider search to subagents.** Read yourself the diff, the rest of
+each changed function and its docstring, the helpers in the same file it calls, the code
+next to it that a new helper may duplicate, the tests of a touched function, the lines
+a finding will cite, and the review's own instructions and contracts: this skill and
+this doc, `CONTRIBUTING.md`, the deep-tier docs, and the narrative and contracts pass 2
+opens. Callers across the tree, sibling formats and codecs, shared state in other
+modules and history go through the subagent tool (`Task`, called `Agent` in newer
+versions):
+
+- Pass `model: "sonnet"` and `subagent_type: "Explore"`, which cannot edit files. When
+  the question needs a command run, use `general-purpose` and say in its task text not
+  to edit files, run the gates or post anything: a subagent sees only the text you give
+  it, not this review's rules. One narrow question per agent; send independent
+  questions in one message so they run in parallel. Expect to send several per review.
+- Ask what the code does, not whether your suspicion holds: "which callers of `X` can
+  pass `size=None`, and what do they do with the result?", not "confirm that `X` breaks
+  on `None`".
+- Ask for the answer as `file:line` facts, each with the few lines that show it, and
+  for anything the agent looked for and did not find.
+- Re-read the lines a finding cites before you file it: an agent's summary is a lead,
+  not evidence.
+
 ## Pass 2 — whole context (do not skip)
 
 Now open the narrative and contracts:
