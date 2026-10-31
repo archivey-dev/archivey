@@ -423,25 +423,31 @@ DEEP_PROCESS = (
 # --- who merges: the decisions the maintainer keeps ------------------------------------
 
 # A pull request of any tier that makes one of these decisions goes to the maintainer to
-# merge; an agent merges the rest once the review approves and CI is green, and a deep
-# one once the Opus pass and Cursor approve too (maintainer, 2026-10-31: "I'm tired of
-# having to merge all deep PRs, I don't actually look at them"). The reviewer adds what
-# a script cannot see, such as a new subsystem or a reversed ruling, in its maintainer
-# decisions block. The tier is read from the base branch, and this script is on the
+# merge; an agent merges the rest once the review approves and CI is green (maintainer,
+# 2026-10-31: "I'm tired of having to merge all deep PRs, I don't actually look at
+# them"). The reviewer adds what a script cannot see, such as a new subsystem or a
+# reversed ruling, in its maintainer decisions block. The merging agent runs the base
+# branch's copy of this script (address-review-findings §7), and this script is on the
 # gate list, so a pull request cannot take itself off the list.
 MAINTAINER_FILES = {
     "scripts/release.py": "touches the release path",
     ".github/workflows/publish.yml": "touches the release path",
-    # The merge gate: who approves, when the loop stops, and who merges.
+    # The merge gate: whether a round runs and approves, when the loop stops, who merges.
     "scripts/review_loop_gate.py": "touches the merge gate",
     "scripts/review_loop_close.sh": "touches the merge gate",
     "scripts/review_prep.py": "touches the merge gate",
+    ".github/workflows/review-loop.yml": "touches the merge gate",
+    ".github/workflows/risk-label.yml": "touches the merge gate",
 }
 DECISIONS_DIR = "dev-docs/decisions/"
-# Most threat model edits describe a new defence; the maintainer's call is a defended
-# property dropped (§3) or a non-guarantee accepted (§4), each one a `###` heading.
+# Most threat model edits describe a new defence. The maintainer's call is a defended
+# property dropped or cut down, or a non-guarantee accepted: each is a `###` section
+# under one of these two `##` headings.
 THREAT_MODEL = "dev-docs/threat-model.md"
-_DEFENDED, _ACCEPTED = "## 3.", "## 4."
+_DEFENDED, _ACCEPTED = "Defended properties", "Accepted non-guarantees"
+# A defended property whose body loses more than this share of its non-blank lines was
+# cut down, not rewrapped.
+_SHRINK = 1 / 3
 CONFIG = "src/archivey/config.py"
 WORKFLOWS = ".github/workflows/"
 # The checks `main` requires before a merge (the repository's ruleset).
@@ -451,17 +457,22 @@ REQUIRED_CHECKS = (
     "OpenSpec spec prose",
     "OpenSpec changes archived",
 )
-# A workflow line that grants a token scope, reads a secret or runs on the base
-# repository's trust (`pull_request_target`).
+# A workflow line that grants a token scope, reads a secret, runs on the base
+# repository's trust with its token and secrets (`pull_request_target`, `workflow_run`,
+# `issue_comment`), or puts text from the event into the job.
 _WORKFLOW_POWER_RE = re.compile(
-    r"\bpermissions\s*:|\bsecrets\.|\bpull_request_target\b"
+    r"\bpermissions\s*:|\bsecrets\.|\b(?:pull_request_target|workflow_run|issue_comment)\b"
+    r"|\$\{\{\s*github\.(?:event\b|head_ref\b)"
     r"|^\s*(?:actions|attestations|checks|contents|deployments|discussions|id-token"
     r"|issues|models|packages|pages|pull-requests|repository-projects|security-events"
     r"|statuses)\s*:\s*(?:read|write|none)\b"
 )
+# An action a step runs; a new one is new code with the job's token.
+_USES_RE = re.compile(r"^\s*(?:-\s*)?uses:\s*([^@\s]+)")
 # A dataclass field with a default, as config.py writes its limits and options.
 _DEFAULT_RE = re.compile(r"^\s+([a-z_]\w*)\s*:[^=]*=\s*\S")
 _API_KEY_RE = re.compile(r" \[| = |(?<=\w)\(|: ")
+_CALLABLES = {"function", "method", "init", "classmethod", "staticmethod"}
 # A new name at these places is one the maintainer picks: a module, a class, function,
 # constant or alias exported from `archivey` itself, a CLI verb.
 _TOP_LEVEL_RE = re.compile(
@@ -469,10 +480,68 @@ _TOP_LEVEL_RE = re.compile(
 )
 
 
+def _actions(lines: Iterable[str]) -> set[str]:
+    return {m.group(1) for t in lines if (m := _USES_RE.match(t))}
+
+
 def _api_key(line: str) -> str:
     """An api-surface line without its signature, type or value: what names it."""
     kind, _, rest = line.partition(" ")
     return f"{kind} {_API_KEY_RE.split(rest, maxsplit=1)[0]}"
+
+
+def _params(line: str) -> list[str]:
+    """The parameter names of a callable's api-surface line, without types or defaults."""
+    start = line.find("(")
+    names, depth, item = [], 0, ""
+    for ch in line[start + 1 :] if start >= 0 else "":
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0:
+                break
+            depth -= 1
+        if ch == "," and depth == 0:
+            names.append(item)
+            item = ""
+        else:
+            item += ch
+    names.append(item)
+    return [m.group(1) for n in names if (m := re.match(r"\s*(\*{0,2}\w+|\*|/)", n))]
+
+
+def _literals(line: str) -> set[str]:
+    """The fixed strings a line offers: a `Literal[...]` alias's members, a CLI option's
+    choices, an enum value's wire string."""
+    found = set(re.findall(r"'([^']*)'", line)) if "Literal[" in line else set()
+    if m := re.search(r"choices=\{([^}]*)\}", line):
+        found |= {c.strip() for c in m.group(1).split(",")}
+    if line.startswith("value ") and " = " in line:
+        found.add(line.split(" = ", 1)[1])
+    return found
+
+
+def _api_changes(removed: Iterable[str], added: Iterable[str]) -> list[str]:
+    """Names, parameters and fixed strings the api-surface diff takes away, and the new
+    top-level names it adds. A changed type or a new optional parameter is neither."""
+    old = {_api_key(t): t for t in removed if t and t[0] != "#"}
+    new = {_api_key(t): t for t in added if t and t[0] != "#"}
+    found = [f"removes or renames a public name: {k}" for k in sorted(old.keys() - new)]
+    for key in sorted(old.keys() & new.keys()):
+        before, after = old[key], new[key]
+        if key.split(" ", 1)[0] in _CALLABLES:
+            gone = [p for p in _params(before) if p not in _params(after)]
+            found += [f"removes a parameter: {key} {p}" for p in gone]
+        found += [
+            f"removes a public value: {key} {v}"
+            for v in sorted(_literals(before) - _literals(after))
+        ]
+    found += [
+        f"adds a top-level name: {k}"
+        for k in sorted(new.keys() - old)
+        if _TOP_LEVEL_RE.match(k)
+    ]
+    return found
 
 
 def _requirement_names(pyproject: str | None) -> dict[str, set[str]]:
@@ -495,17 +564,44 @@ def _requirement_names(pyproject: str | None) -> dict[str, set[str]]:
     }
 
 
-def _threat_headings(text: str | None) -> dict[str, set[str]]:
-    """The `###` headings under each `## N.` section of the threat model."""
-    sections: dict[str, set[str]] = {}
-    current = ""
+def _threat_sections(text: str | None) -> dict[str, dict[str, int]]:
+    """Each `###` heading under a `##` section of the threat model, keyed by the section's
+    title without its number, with the count of non-blank lines in its body."""
+    sections: dict[str, dict[str, int]] = {}
+    current, heading = "", ""
     for line in (text or "").splitlines():
         if line.startswith("## "):
-            current = line.split()[1] if len(line.split()) > 1 else ""
-            current = f"## {current}"
+            current = re.sub(r"^##\s+[\d.]*\s*", "", line).strip()
+            heading = ""
         elif line.startswith("### "):
-            sections.setdefault(current, set()).add(line[4:].strip())
+            heading = line[4:].strip()
+            sections.setdefault(current, {})[heading] = 0
+        elif heading and line.strip():
+            sections[current][heading] += 1
     return sections
+
+
+def _threat_changes(before_text: str | None, after_text: str | None) -> list[str]:
+    before, after = _threat_sections(before_text), _threat_sections(after_text)
+    found: list[str] = []
+    if before_text and (_DEFENDED not in after or _ACCEPTED not in after):
+        # A renamed section would hide every change below it.
+        return [f"renames or drops a section of {THREAT_MODEL}"]
+    defended_before, defended_after = (
+        before.get(_DEFENDED, {}),
+        after.get(_DEFENDED, {}),
+    )
+    for h in sorted(defended_before):
+        if h not in defended_after:
+            found.append(f"drops or renames a defended property: {h}")
+        elif defended_after[h] < defended_before[h] * (1 - _SHRINK):
+            found.append(
+                f"cuts down a defended property: {h}"
+                f" ({defended_before[h]} -> {defended_after[h]} lines)"
+            )
+    accepted = after.get(_ACCEPTED, {}).keys() - before.get(_ACCEPTED, {}).keys()
+    found += [f"accepts a new non-guarantee: {h}" for h in sorted(accepted)]
+    return found
 
 
 def maintainer_decisions(
@@ -513,52 +609,45 @@ def maintainer_decisions(
     added: Iterable[str] = (),
     pyprojects: tuple[str | None, str | None] | None = None,
     threat_models: tuple[str | None, str | None] | None = None,
+    known_actions: Iterable[str] = (),
 ) -> list[str]:
     """What in this diff is the maintainer's call. ``pyprojects`` and ``threat_models``
-    are those files at the base and the head, when the diff touches them."""
+    are those files at the base and the head, when the diff touches them;
+    ``known_actions`` are the actions the base's workflows already run."""
+    known_actions = set(known_actions)
     found: list[str] = []
     if threat_models is not None:
-        before, after = (_threat_headings(t) for t in threat_models)
-        found += [
-            f"drops or renames a defended property: {h}"
-            for h in sorted(before.get(_DEFENDED, set()) - after.get(_DEFENDED, set()))
-        ]
-        found += [
-            f"accepts a new non-guarantee: {h}"
-            for h in sorted(after.get(_ACCEPTED, set()) - before.get(_ACCEPTED, set()))
-        ]
+        found += _threat_changes(*threat_models)
     for f in files:
         paths = [f.path] + ([f.renamed_from] if f.renamed_from else [])
         for path in paths:
             if path in MAINTAINER_FILES:
                 found.append(f"{MAINTAINER_FILES[path]}: {path}")
+        removed, added_lines = [t for _, t in f.removed], [t for _, t in f.added]
         if f.path == API_SURFACE:
-            old = {_api_key(t) for _, t in f.removed if t and t[0] != "#"}
-            new = {_api_key(t) for _, t in f.added if t and t[0] != "#"}
-            found += [
-                f"removes or renames a public name: {k}" for k in sorted(old - new)
-            ]
-            found += [
-                f"adds a top-level name: {k}"
-                for k in sorted(new - old)
-                if _TOP_LEVEL_RE.match(k)
-            ]
+            found += _api_changes(removed, added_lines)
         if f.path == CONFIG:
             names = sorted(
                 {
                     m.group(1)
-                    for t in [t for _, t in f.removed] + [t for _, t in f.added]
+                    for t in removed + added_lines
                     if (m := _DEFAULT_RE.match(t))
                 }
             )
             found += [f"changes a default in {CONFIG}: {n}" for n in names]
         if f.path.startswith(WORKFLOWS):
-            lines = [t for _, t in f.removed] + [t for _, t in f.added]
-            if any(_WORKFLOW_POWER_RE.search(t) for t in lines):
+            if any(_WORKFLOW_POWER_RE.search(t) for t in removed + added_lines):
                 found.append(
                     f"changes a workflow's permissions, secrets or triggers: {f.path}"
                 )
-            gone = [c for c in REQUIRED_CHECKS if any(c in t for _, t in f.removed)]
+            found += [
+                f"adds an action: {a} ({f.path})"
+                for a in sorted(
+                    _actions(added_lines) - _actions(removed) - known_actions
+                )
+                if not a.startswith("./")
+            ]
+            gone = [c for c in REQUIRED_CHECKS if any(c in t for t in removed)]
             found += [f"changes a required check: {c} ({f.path})" for c in gone]
     found += [
         f"adds an architecture decision: {p}"
@@ -568,9 +657,12 @@ def maintainer_decisions(
     if pyprojects is not None:
         try:
             before, after = (_requirement_names(t) for t in pyprojects)
-        except ImportError:
+        except (
+            ImportError,
+            ValueError,
+        ) as e:  # no tomllib (3.10), or a TOMLDecodeError
             found.append(
-                "pyproject.toml changed: check its dependencies by hand (Python 3.10)"
+                f"pyproject.toml changed: check its dependencies by hand ({e})"
             )
         else:
             for group, names in after.items():
@@ -653,8 +745,12 @@ def review_tier(base: str, head: str) -> Tier:
         for path in ("pyproject.toml", THREAT_MODEL)
         if path in paths
     }
+    known: set[str] = set()
+    if any(p.startswith(WORKFLOWS) for p in paths):
+        for wf in git("ls-tree", "--name-only", f"{fork}:{WORKFLOWS}").split():
+            known |= _actions((base_text(fork, WORKFLOWS + wf) or "").splitlines())
     t.maintainer = maintainer_decisions(
-        files, added, both.get("pyproject.toml"), both.get(THREAT_MODEL)
+        files, added, both.get("pyproject.toml"), both.get(THREAT_MODEL), known
     )
     return t
 
@@ -690,6 +786,11 @@ def tier_report(t: Tier) -> list[str]:
     elif t.name == "deep":
         lines.append(
             "merge: an agent merges once the Opus pass and Cursor approve and CI is green"
+        )
+    elif t.name == "standard":
+        # review_loop_gate.py OPUS_PASS_TIERS: standard and deep get the Opus pass.
+        lines.append(
+            "merge: an agent merges once the Opus pass approves and CI is green"
         )
     else:
         lines.append("merge: an agent merges once the review approves and CI is green")

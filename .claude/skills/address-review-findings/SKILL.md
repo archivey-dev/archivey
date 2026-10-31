@@ -410,10 +410,21 @@ or a decision that turned into a new code path or a redesign, and say so in your
 disposition comment. The workflow lets that label through and trusts your judgement, so
 do not spend a round on fixes the review already described.
 
-**After an approving verdict with CI green**, you may merge a straightforward PR (a deep
-one after the Opus pass and Cursor approve too); a tricky one goes to the maintainer. It
-is tricky when it carries the `merge: maintainer` label, when the review's maintainer
-decisions block names one, or by `AGENTS.md` §Working with the maintainer. Any verdict leaves threads open, a conditional approval most of all: fix the
+**After an approving verdict with CI green**, you may merge a straightforward PR (on
+standard and deep, after the Opus pass approves; on deep, Cursor too); a tricky one goes
+to the maintainer. Decide with the base branch's copy of the tier script, never the
+pull request's, and never from the labels alone (a label can be removed, and a fork's
+pull request gets none):
+
+```bash
+git fetch origin main
+git show origin/main:scripts/review_prep.py > scripts/.review_prep_base.py
+python3 scripts/.review_prep_base.py --base origin/main tier; rm scripts/.review_prep_base.py
+```
+
+It is tricky when that prints "merge: the maintainer merges this one", when the review's
+maintainer decisions block names a decision, or by `AGENTS.md` §Working with the
+maintainer. Any verdict leaves threads open, a conditional approval most of all: fix the
 conditioned findings, reply on every thread the review opened, and resolve each one, or
 the merge queue will not take the PR (the rule is in the list above). A thread you cannot
 resolve yet, such as an escalated question, keeps the PR out of the queue until it is

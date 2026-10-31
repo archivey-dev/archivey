@@ -3,8 +3,11 @@ name: Risk label
 # Labels each pull request with its review tier, `risk: light`, `risk: standard` or
 # `risk: deep`, so the pull request list shows how deep a review it gets. The tier comes
 # from the changed paths alone (`python3 scripts/review_prep.py tier`); the review skill's
-# §1 says what each tier asks of a reviewer. Like the outcome labels the review loop
-# leaves, this one only reports: nothing reads it.
+# §1 says what each tier asks of a reviewer. It also adds `merge: maintainer` when the
+# script names a decision of the maintainer's. Like the outcome labels the review loop
+# leaves, both only report: the agent that merges runs the base branch's script itself
+# (.claude/skills/address-review-findings/SKILL.md §7), since this job skips forks, a
+# cancelled run leaves a stale label, and a label can be removed by hand.
 #
 # It runs again on every push and on a change of base, since either can change the
 # paths and so the tier.

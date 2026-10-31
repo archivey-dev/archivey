@@ -276,8 +276,8 @@ For the maintainer skimming without the code open. Half a screen unless the chan
   a review body cannot be edited afterwards through the MCP tools). A finding whose thread
   URL you genuinely cannot get is listed with its `file:line` alone rather than held back.
 - **Snapshot** — one line: size (approx. lines / small|medium|large), the tier (§1), who
-  merges (the script's `merge:` line), the scope you reviewed, and gates (CI status, §6). The verdict is already in the header, so the
-  Snapshot does not restate it.
+  merges (the script's `merge:` line), the scope you reviewed, and gates (CI status,
+  §6). The verdict is already in the header, so the Snapshot does not restate it.
 - **Security pass** — every round that gets the pass (§1): one short line per property or
   file, `Security pass: <property or file>: <what you tried> → <what happened>`, with the
   finding ID where it found one. A fix round's lines cover what its fixes change and

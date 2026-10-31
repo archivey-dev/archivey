@@ -87,7 +87,10 @@ cannot lower its own tier by editing the path lists. It only reports, like the o
 labels. A deep pull request's rounds end with a security pass, and so do those of a pull
 request whose format or codec code the template's `Security:` rules cover (skill §1).
 The same step adds `merge: maintainer` when the script's `merge:` line names a decision
-of the maintainer's, and takes it off when a push removes the last one.
+of the maintainer's, and takes it off when a push removes the last one. That label
+reports too: a fork's pull request gets none, a cancelled run leaves it stale, and a
+label can be removed by hand, so the merging agent runs the base branch's script itself
+(`address-review-findings` §7).
 
 **The reviewer is Sonnet, with the project installed.** The round installs the project
 at the pull request's own lockfile (`uv sync --frozen --group dev --extra all`, what
@@ -239,12 +242,13 @@ the three `risk:` labels.
   come from the pull request's checkout. So a pull request can edit the rules its own
   review runs under, and `claude-code-action` does not refuse it as it does an edited
   workflow file. Instead, those files are deep (`review_prep.py` `DEEP_PROCESS`), and
-  the gate's own (`review_loop_gate.py`, `review_loop_close.sh`, `review_prep.py`) make
-  the maintainer merge; since the tier and the `merge: maintainer` label come from the
-  base branch's script, the pull request cannot take itself off either list (davitf,
-  2026-10-29). Since 2026-10-31 an edit to the prompt or the skill merges like the
-  rest of the deep tier, after the Opus pass and Cursor; only the files that decide
-  whether a round approves and who merges stay with the maintainer.
+the gate's own (`review_loop_gate.py`, `review_loop_close.sh`, `review_prep.py`,
+  `review-loop.yml`, `risk-label.yml`) make the maintainer merge. The tier and the merge
+  line come from the base branch's script (the merging agent runs that copy,
+  `address-review-findings` §7), so the pull request cannot take itself off either list
+  (davitf, 2026-10-29). Since 2026-10-31 an edit to the prompt or the skill merges like
+  the rest of the deep tier, after the Opus pass and Cursor; only the files that decide
+  whether a round runs and approves, and who merges, stay with the maintainer.
 - **Whether Cursor answers the workflow's comment is untested.** The Opus pass asks
   Cursor with a comment from `github-actions[bot]`; if Cursor only answers people, the
   Opus pass still runs and Cursor has to be asked by hand.

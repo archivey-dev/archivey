@@ -24,6 +24,13 @@ prep = importlib.util.module_from_spec(_spec)
 # `scripts/` is not a package; `@dataclass` looks its module up by name while executing.
 sys.modules["review_prep"] = prep
 _spec.loader.exec_module(prep)
+_gate_spec = importlib.util.spec_from_file_location(
+    "review_loop_gate", ROOT / "scripts" / "review_loop_gate.py"
+)
+assert _gate_spec is not None and _gate_spec.loader is not None
+gate = importlib.util.module_from_spec(_gate_spec)
+sys.modules.setdefault("review_loop_gate", gate)
+_gate_spec.loader.exec_module(gate)
 
 BEFORE = {
     "src/archivey/a.py": """\
@@ -278,8 +285,8 @@ def test_required_checks_are_job_names_in_the_workflows() -> None:
 
 def test_the_review_rules_are_deep_and_the_gate_goes_to_the_maintainer() -> None:
     """A pull request is reviewed under its own copy of these. The prompt and the skill
-    merge like any deep pull request; the files that decide approval and who merges go
-    to the maintainer."""
+    merge like any deep pull request; the files that decide whether a round runs and
+    approves, and who merges, go to the maintainer."""
     for rules in (
         ".github/review-loop-prompt.md",
         ".claude/skills/code-review-skill/SKILL.md",
@@ -290,6 +297,8 @@ def test_the_review_rules_are_deep_and_the_gate_goes_to_the_maintainer() -> None
         "scripts/review_loop_gate.py",
         "scripts/review_loop_close.sh",
         "scripts/review_prep.py",
+        ".github/workflows/review-loop.yml",
+        ".github/workflows/risk-label.yml",
     ):
         assert prep.tier([gate]).name == "deep", gate
         assert prep.maintainer_decisions([prep.FileDiff(gate)]) == [
@@ -307,9 +316,6 @@ def test_tier_is_deep_on_a_safety_path_and_on_workflows() -> None:
         "tier: deep",
         "  deep path: .github/workflows/ci.yml",
     ]
-    assert prep.tier_report(workflow)[-1] == (
-        "merge: an agent merges once the Opus pass and Cursor approve and CI is green"
-    )
     # A directory entry matches by prefix, a file entry only exactly.
     assert prep.tier(["src/archivey/paths.pyi"]).name == "standard"
 
@@ -322,10 +328,17 @@ def test_the_merge_line_names_the_maintainers_decisions() -> None:
         "merge: the maintainer merges this one",
         "  maintainer decision: touches the release path: scripts/release.py",
     ]
-    light = prep.tier(["docs/x.md"])
-    assert prep.tier_report(light)[-1] == (
-        "merge: an agent merges once the review approves and CI is green"
-    )
+    # With no decision, the line names what must approve first: the Opus pass runs on
+    # the tiers review_loop_gate.py lists, and Cursor on deep alone.
+    assert gate.OPUS_PASS_TIERS == {"standard", "deep"}
+    for paths, line in (
+        ([".github/workflows/ci.yml"], "the Opus pass and Cursor approve"),
+        (["src/archivey/core.py"], "the Opus pass approves"),
+        (["docs/x.md"], "the review approves"),
+    ):
+        assert prep.tier_report(prep.tier(paths))[-1] == (
+            f"merge: an agent merges once {line} and CI is green"
+        ), paths
 
 
 def _diff(path: str, added: list[str] = (), removed: list[str] = ()) -> prep.FileDiff:
@@ -346,15 +359,31 @@ def test_maintainer_decisions_in_the_api_surface() -> None:
             "method archivey.AbortOn.helper(self) -> None",  # not top level
             "module archivey.extras",
             "cli-verb verify",
+            # A widened type and a new optional parameter take nothing away.
+            "method archivey.R.open(self, name: str | bytes, *, mode: str = 'r') -> X",
+            # A removed parameter, a narrowed choice, a renamed wire string do.
+            "method archivey.R.get(self, name: str) -> X",
+            "cli-option extract --overwrite [action=Store choices={error, rename}]",
+            "value archivey.AbortOn.BLOCKED_MEMBER = 'blocked'",
+            "alias archivey.AbortOnStr = Literal['blocked']",
         ],
         removed=[
             "class archivey.AbortOn(StrEnum)",
             "field archivey.Member.size: int",
             "# a comment",
+            "method archivey.R.open(self, name: str) -> X",
+            "method archivey.R.get(self, name: str, default: X | None = None) -> X",
+            "cli-option extract --overwrite [action=Store choices={error, rename, skip}]",
+            "value archivey.AbortOn.BLOCKED_MEMBER = 'blocked_member'",
+            "alias archivey.AbortOnStr = Literal['blocked_member']",
         ],
     )
     assert prep.maintainer_decisions([api]) == [
         "removes or renames a public name: field archivey.Member.size",
+        "removes a public value: alias archivey.AbortOnStr blocked_member",
+        "removes a public value: cli-option extract --overwrite skip",
+        "removes a parameter: method archivey.R.get default",
+        "removes a public value: value archivey.AbortOn.BLOCKED_MEMBER 'blocked_member'",
         "adds a top-level name: class archivey.NewThing",
         "adds a top-level name: cli-verb verify",
         "adds a top-level name: module archivey.extras",
@@ -380,10 +409,29 @@ def test_maintainer_decisions_in_config_workflows_and_decisions() -> None:
         "permissions:",
         "      TOKEN: ${{ secrets.X }}",
         "  pull_request_target:",
+        "  workflow_run:",
+        "  issue_comment:",
+        '          echo "${{ github.event.pull_request.title }}"',
+        "          git checkout ${{ github.head_ref }}",
     ):
         assert prep.maintainer_decisions([_diff(wf, added=[line])]) == [
             f"changes a workflow's permissions, secrets or triggers: {wf}"
         ], line
+    # An action new to the repository's workflows; a version bump or one already run
+    # elsewhere is not.
+    step = "      - uses: some/action@v1"
+    assert prep.maintainer_decisions([_diff(wf, added=[step])]) == [
+        f"adds an action: some/action ({wf})"
+    ]
+    bump = _diff(wf, added=[step], removed=["      - uses: some/action@v0"])
+    assert prep.maintainer_decisions([bump]) == []
+    assert (
+        prep.maintainer_decisions(
+            [_diff(wf, added=[step])], known_actions={"some/action"}
+        )
+        == []
+    )
+    assert prep.maintainer_decisions([_diff(wf, added=["      - uses: ./local"])]) == []
     assert prep.maintainer_decisions([_diff(wf, removed=["    name: CI gate"])]) == [
         f"changes a required check: CI gate ({wf})"
     ]
@@ -398,7 +446,16 @@ def test_maintainer_decisions_in_config_workflows_and_decisions() -> None:
     )
 
 
-def test_maintainer_decisions_in_dependencies_and_the_threat_model() -> None:
+THREAT_BASE = (
+    "## 3. Defended properties\n"
+    "### Stays inside\none\n"
+    "### Bounded\none\ntwo\nthree\n"
+    "## 4. Accepted non-guarantees\n"
+    "### No CPU bound\n"
+)
+
+
+def test_maintainer_decisions_in_dependencies() -> None:
     pytest.importorskip("tomllib")
     before = '[project]\ndependencies = []\n[project.optional-dependencies]\na = ["Py_PPMd>=1"]\n'
     after = (
@@ -409,27 +466,63 @@ def test_maintainer_decisions_in_dependencies_and_the_threat_model() -> None:
         "adds a runtime dependency: new-dep",
         "adds a runtime dependency: lz4 (a)",
     ]
-    old = "## 3. Defended\n### Stays inside\n### Bounded\n## 4. Accepted\n### No CPU bound\n"
-    new = "## 3. Defended\n### Bounded\nnew text\n## 4. Accepted\n### No CPU bound\n### X\n"
-    assert prep.maintainer_decisions([], threat_models=(old, new)) == [
+    # A file that does not parse costs the dependency check, not the whole report.
+    (found,) = prep.maintainer_decisions([], pyprojects=(before, "not = = toml\n"))
+    assert found.startswith("pyproject.toml changed: check its dependencies by hand (")
+
+
+def test_maintainer_decisions_in_the_threat_model() -> None:
+    new = (
+        THREAT_BASE.replace("### Stays inside\none\n", "").replace(
+            "two\nthree\n", "two\nthree\nfour\n"
+        )
+        + "### X\n"
+    )
+    assert prep.maintainer_decisions([], threat_models=(THREAT_BASE, new)) == [
         "drops or renames a defended property: Stays inside",
         "accepts a new non-guarantee: X",
     ]
-    # A new defence or a rewritten paragraph is not the maintainer's call.
-    assert prep.maintainer_decisions([], threat_models=(old, old + "more\n")) == []
+    # A property emptied under its heading is cut down; a rewrap or a new defence is not.
+    cut = THREAT_BASE.replace("two\nthree\n", "")
+    assert prep.maintainer_decisions([], threat_models=(THREAT_BASE, cut)) == [
+        "cuts down a defended property: Bounded (3 -> 1 lines)"
+    ]
+    longer = THREAT_BASE.replace("one\ntwo", "one, now longer\ntwo\nmore")
+    assert prep.maintainer_decisions([], threat_models=(THREAT_BASE, longer)) == []
+    # A renumbered section is not twelve dropped properties; a renamed one is reported.
+    renumbered = THREAT_BASE.replace("## 3.", "## 4.").replace("## 4. Acc", "## 5. Acc")
+    assert prep.maintainer_decisions([], threat_models=(THREAT_BASE, renumbered)) == []
+    renamed = THREAT_BASE.replace("Defended properties", "Properties")
+    assert prep.maintainer_decisions([], threat_models=(THREAT_BASE, renamed)) == [
+        f"renames or drops a section of {prep.THREAT_MODEL}"
+    ]
 
 
-def test_review_tier_reads_adds_and_renames_from_git(
+def test_the_threat_model_has_the_sections_the_check_reads() -> None:
+    sections = prep._threat_sections((ROOT / prep.THREAT_MODEL).read_text())
+    assert sections.get(prep._DEFENDED) and sections.get(prep._ACCEPTED)
+
+
+def test_review_tier_reads_adds_renames_and_texts_from_git(
     tmp_path: Path, monkeypatch
 ) -> None:
     """The git wiring: a renamed parser is no new parser whatever ``diff.renames``
-    says, an added one is, and a new ADR is the maintainer's."""
+    says, an added one is, and the before and after texts come from the merge base and
+    the head in that order (swap them and a dropped property reads as a new one)."""
+    pytest.importorskip("tomllib")
     _git(tmp_path, "init", "-q", "-b", "main")
     _git(tmp_path, "config", "diff.renames", "false")
     backends = "src/archivey/internal/backends"
     body = "\n".join(f"line {i}" for i in range(40)) + "\n"
+    pyproject = '[project]\ndependencies = ["a"]\n'
     _write(
-        tmp_path, {f"{backends}/zip_parser.py": body, "dev-docs/threat-model.md": "x\n"}
+        tmp_path,
+        {
+            f"{backends}/zip_parser.py": body,
+            prep.THREAT_MODEL: THREAT_BASE,
+            "pyproject.toml": pyproject,
+            ".github/workflows/ci.yml": "jobs:\n  - uses: actions/checkout@v4\n",
+        },
     )
     _git(tmp_path, "add", "-A")
     _git(tmp_path, "commit", "-qm", "base")
@@ -437,15 +530,29 @@ def test_review_tier_reads_adds_and_renames_from_git(
     _git(tmp_path, "mv", f"{backends}/zip_parser.py", f"{backends}/zip2_parser.py")
     _write(
         tmp_path,
-        {f"{backends}/cab_reader.py": "new\n", "dev-docs/decisions/0099-x.md": "adr\n"},
+        {
+            f"{backends}/cab_reader.py": "new\n",
+            "dev-docs/decisions/0099-x.md": "adr\n",
+            prep.THREAT_MODEL: THREAT_BASE.replace("### Stays inside\none\n", "")
+            + "### X\n",
+            "pyproject.toml": pyproject.replace('"a"', '"a", "b"'),
+            ".github/workflows/docs.yml": "jobs:\n  - uses: actions/checkout@v5\n",
+        },
     )
     _git(tmp_path, "add", "-A")
     _git(tmp_path, "commit", "-qm", "pr")
+    # main moves on after the fork: the "before" texts must not come from its tip.
+    _git(tmp_path, "checkout", "-q", "main")
+    _write(tmp_path, {"pyproject.toml": pyproject.replace('"a"', '"a", "b"')})
+    _git(tmp_path, "commit", "-qam", "main moves")
     monkeypatch.setattr(prep, "ROOT", tmp_path)
     t = prep.review_tier("main", "pr")
     assert t.new_parsers == [f"{backends}/cab_reader.py"]
     assert t.maintainer == [
-        "adds an architecture decision: dev-docs/decisions/0099-x.md"
+        "drops or renames a defended property: Stays inside",
+        "accepts a new non-guarantee: X",
+        "adds an architecture decision: dev-docs/decisions/0099-x.md",
+        "adds a runtime dependency: b",
     ]
     assert f"{backends}/zip_parser.py" in prep.changed_paths("main", "pr")
 
