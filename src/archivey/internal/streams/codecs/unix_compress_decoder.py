@@ -287,24 +287,29 @@ class LzwState:
     def _process(
         self, *, eof: bool, max_length: int = -1
     ) -> tuple[bytes, list[tuple[int, int]]]:
-        output = bytearray()
+        # Each step's output is kept as it comes and joined once: almost every call
+        # is one step, and a step can be megabytes (a run of zeros), so copying it
+        # into a buffer and out again doubled the decode time.
+        parts: list[bytes] = []
+        got = 0
         units: list[tuple[int, int]] = []
-        stepped = False
         # A 9-bit table fill ends a step; settle its layout and go on while the buffer
         # and the budget allow.
         while not self._at_nine_bit_fill or self._settle_nine_bit_fill(eof):
-            if stepped and 0 <= max_length <= len(output):
+            if parts and 0 <= max_length <= got:
                 break
             more, more_units = self._process_step(
                 eof=eof,
-                max_length=-1 if max_length < 0 else max_length - len(output),
+                max_length=-1 if max_length < 0 else max_length - got,
             )
-            output += more
+            parts.append(more)
+            got += len(more)
             units += more_units
-            stepped = True
             if not self._at_nine_bit_fill:
                 break
-        return bytes(output), units
+        if len(parts) == 1:
+            return parts[0], units
+        return b"".join(parts), units
 
     def _settle_nine_bit_fill(self, eof: bool) -> bool:
         """Apply the layout at a full 9-bit table; False while the probe needs input."""
