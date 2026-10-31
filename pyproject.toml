@@ -285,7 +285,8 @@ missing-override-decorator = "error"
 
 [[tool.ty.overrides]]
 # The CLI and the plugin packages use only archivey's public API, which has no
-# ``override`` (tests/test_cli_uses_public_api.py). The CLI's overrides are of stdlib
+# ``override``. tests/test_cli_uses_public_api.py checks that for the CLI; no test
+# checks it for the plugin packages. The CLI's overrides are of stdlib
 # classes, which an archivey rename cannot strand. The plugins' are of archivey's own
 # hooks, and one is unprotected: ``FormatReader.archive_info`` has a default, so a
 # rename leaves each plugin's override silently unused. The packages are being folded

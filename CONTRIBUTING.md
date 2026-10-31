@@ -208,8 +208,10 @@ maintainer.
 - **Keep it simple and well typed.** Prefer straightforward code over cleverness; type
   everything that's part of, or feeds, the public API.
 - **Mark every override with `@override`** from `archivey.internal.overrides`, and only
-  overrides. `ty check` enforces both over the library sources (not `tests/`, the CLI or
-  the plugin packages), so a renamed base method cannot strand its overrides.
+  overrides (`__init__`, `__new__`, `__init_subclass__` and `__post_init__` need none).
+  `ty check` enforces both over the library sources, so a renamed base method cannot
+  strand an override there. It does not check `tests/`, the CLI or the plugin packages;
+  `pyproject.toml` names the plugin hook that leaves unprotected.
 - **Share code that must agree; copy code that agrees by coincidence** (DR-23a). Before
   factoring out duplicated code, ask whether a change to one copy must reach the other.
 - **Don't accumulate debt — clean as you go** (DR-23). When you touch something, leave it
