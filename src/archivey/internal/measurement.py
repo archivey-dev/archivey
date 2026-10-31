@@ -96,10 +96,11 @@ class IoStats:
     out member by member."""
 
     compressed_bytes_consumed: int | None
-    """Compressed bytes pulled from the archive's outer source so far, or ``None``
-    when no live counter is installed — either because the source size is statically
-    known and the static ratio is used instead, or because the reader never wraps a
-    compressed input (an uncompressed container, or the directory backend)."""
+    """What the reader's ``compressed_bytes_consumed`` reports: the live ratio
+    denominator, compressed bytes pulled from the archive's outer source so far (or,
+    for an uncompressed container read from a pipe, the bytes taken from the pipe).
+    ``None`` when the source size is statically known and the static ratio is used
+    instead, and for the directory backend, which has no stream."""
 
     source_seek_count: int
     """Number of ``seek()`` calls on the instrumented archive source."""

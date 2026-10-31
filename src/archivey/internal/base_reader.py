@@ -1163,9 +1163,9 @@ class BaseArchiveReader(ArchiveReader):
         limits = self._ratio_limits()
         if limits.max_ratio is None:
             return
-        counter = self._compressed_input_counter
         tally = self._read_ratio_tally
         static_size = self._trusted_source_size()
+        consumed = self._live_consumed()
         stream._hold_inner(
             lambda inner: MemberRatioGuard(
                 inner,
@@ -1173,7 +1173,7 @@ class BaseArchiveReader(ArchiveReader):
                 member=member,
                 tally=tally,
                 static_size=static_size,
-                consumed=None if counter is None else lambda: counter.bytes_read,
+                consumed=consumed,
             )
         )
 
@@ -3510,11 +3510,39 @@ class BaseArchiveReader(ArchiveReader):
         whitelisted O(1)-seek type nor ``.size``-advertising). A backend that
         decompresses a *stream* source wraps it in a ``CountingReader`` and records it
         here; readers with a knowable source size (a path, a sizable stream) leave it
-        ``None`` and rely on the cheaper static ratio instead.
+        ``None`` and rely on the cheaper static ratio instead. An uncompressed container
+        read straight from a pipe (a plain TAR, a ZIP, a sequential format such as CPIO
+        or ar) has no such counter: the bytes its source has taken from the pipe stand in
+        (:attr:`ArchiveSource.bytes_pulled`), so its reads and its extraction are held
+        to the ratio as well.
         """
         self._state.require_open("compressed_bytes_consumed")
-        c = self._compressed_input_counter
-        return c.bytes_read if c is not None else None
+        consumed = self._live_consumed()
+        return consumed() if consumed is not None else None
+
+    def _live_consumed(self) -> Callable[[], int] | None:
+        """The live ratio denominator as a callable, or ``None`` when the static one
+        (:meth:`_trusted_source_size`) applies or nothing can be counted.
+
+        The codec input counter when a backend installed one
+        (:meth:`_wrap_compressed_input`); otherwise, for a source with no trusted size
+        that cannot seek (a pipe), the bytes the source has taken from it. Both count
+        the same forward-only bytes, so a guard built before a backend installs its
+        counter loses nothing by keeping the source's count.
+        """
+        counter = self._compressed_input_counter
+        if counter is not None:
+            return lambda: counter.bytes_read
+        source = self._source
+        if (
+            source is None
+            or source.seekable()
+            or self._trusted_source_size() is not None
+            # A directory source cannot seek either, but it has no stream to count.
+            or source.bytes_pulled is None
+        ):
+            return None
+        return lambda: source.bytes_pulled or 0
 
     def _wrap_compressed_input(self, source: BinaryIO) -> BinaryIO:
         """Wrap a stream source **whose byte size is not cheaply knowable** in a
@@ -3626,12 +3654,11 @@ class BaseArchiveReader(ArchiveReader):
         limits = self._ratio_limits()
         if limits.max_ratio is None:
             return decoded
-        counter = self._compressed_input_counter
         return DecodeRatioGuard(
             decoded,
             limits=limits,
             static_size=self._trusted_source_size(),
-            consumed=None if counter is None else lambda: counter.bytes_read,
+            consumed=self._live_consumed(),
         )
 
     @override
@@ -4533,12 +4560,10 @@ class BaseArchiveReader(ArchiveReader):
         """
         if not self._measure:
             return None
-        c_bytes = self._compressed_input_counter
+        consumed = self._live_consumed()
         return IoStats(
             bytes_decompressed=self.bytes_decompressed,
-            compressed_bytes_consumed=c_bytes.bytes_read
-            if c_bytes is not None
-            else None,
+            compressed_bytes_consumed=consumed() if consumed is not None else None,
             source_seek_count=self.source_seek_count,
         )
 

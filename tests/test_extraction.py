@@ -2816,11 +2816,13 @@ def test_streaming_plain_tar_no_live_ratio_trip(tmp_path: Path) -> None:
     raw = _tar_bytes([("file", "a.bin", payload)], mode="w")
     dest = tmp_path / "out"
     with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
-        assert r.compressed_bytes_consumed is None  # uncompressed: nothing counted
+        # Uncompressed: the live denominator is what the pipe gave, so the output
+        # stays near 1:1 of it and the ratio never trips.
         r.extract_all(
             dest,
             limits=ExtractionLimits(max_ratio=10.0, ratio_activation_threshold=1024),
         )
+        assert r.compressed_bytes_consumed == len(raw)
     assert (dest / "a.bin").read_bytes() == payload
 
 
@@ -2939,14 +2941,17 @@ def test_non_seekable_member_stream_keeps_its_declared_size(tmp_path: Path) -> N
             assert inner_ar.compressed_bytes_consumed is None
 
 
-def test_plain_tar_from_sized_pipe_has_no_archive_wide_denominator() -> None:
-    # Pins the documented gap: a plain tar from a non-seekable caller stream has no
-    # trusted size, and only a compressed container installs the live counter, so
-    # neither archive-wide denominator exists and only max_extracted_bytes applies.
+def test_plain_tar_from_sized_pipe_counts_what_the_pipe_gave() -> None:
+    # A plain tar from a non-seekable caller stream has no trusted size (its ``size``
+    # is the caller's claim) and no codec counter: the live denominator is what the
+    # source has taken from the pipe, the whole archive once it is read to its end.
     raw = _tar_bytes([("file", "a.bin", b"x" * 4096)])
     with open_archive(SizedNonSeekable(raw, size=len(raw)), streaming=True) as r:
         assert r.compressed_source_size is None
-        assert r.compressed_bytes_consumed is None
+        for _member, stream in r.stream_members():
+            if stream is not None:
+                stream.read()
+        assert r.compressed_bytes_consumed == len(raw)
 
 
 def test_forged_member_declaration_is_refused_only_after_the_decode(

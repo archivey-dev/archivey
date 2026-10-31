@@ -771,9 +771,10 @@ link-count limit is written as a copy, so a declared link count drives real writ
 copy of the source per limit's worth of links (1024 names on NTFS, 65000 on ext4).
 `BombTracker.count_copy` counts those copies toward `max_extracted_bytes` and the
 archive-wide `max_ratio` (maintainer ruling, 2026-10-07), so a small archive declaring
-many links to one member trips the ratio when the archive has a denominator. A plain tar
-read from a non-seekable stream has none (no trusted size, and the live counter is
-installed only for a compressed container), so there only `max_extracted_bytes` applies. A cross-device copy counts toward
+many links to one member trips the ratio. An archive read from a non-seekable stream has
+no trusted size: a compressed container counts what its decoder pulls, and a plain ZIP or
+TAR counts what its source has taken from the pipe (`ArchiveSource.bytes_pulled`), so the
+live ratio holds there too. A cross-device copy counts toward
 `max_extracted_bytes` only: it depends on the destination, not the archive.
 From a source of unknown size the archive-wide ratio waits for
 `live_ratio_activation_threshold` (256 MiB), so a bomb read from a pipe writes about that
@@ -787,7 +788,10 @@ much before the ratio refuses it, where it wrote about 5 MiB before that floor e
 `::test_pipe_size_claim_does_not_switch_off_live_ratio`,
 `::test_live_ratio_waits_for_its_own_floor`,
 `::test_live_ratio_default_floor`, `::test_piped_blank_start_passes_like_a_file`,
-`::test_plain_tar_from_sized_pipe_has_no_archive_wide_denominator`,
+`::test_plain_tar_from_sized_pipe_counts_what_the_pipe_gave`,
+`tests/test_member_read_ratio.py::test_a_piped_zip_pass_is_held_to_the_live_ratio`,
+`::test_a_piped_zip_extraction_is_held_to_the_live_ratio`,
+`::test_a_piped_sparse_tar_is_held_to_the_live_ratio`,
 `::test_forged_member_declaration_is_refused_only_after_the_decode`,
 `::test_link_limit_copies_count_toward_the_archive_wide_ratio`,
 `::test_recorded_size_refuses_a_member_before_its_data`,

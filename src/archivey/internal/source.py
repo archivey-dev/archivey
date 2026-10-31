@@ -561,6 +561,23 @@ class ArchiveSource(ReadOnlyIOStream):
         return self._size
 
     @property
+    def bytes_pulled(self) -> int | None:
+        """How many bytes this source has taken from a non-seekable stream so far, or
+        ``None`` for a seekable source and for a directory, which has no stream.
+
+        What was consumed plus the replay prefix detection peeked and nothing has read
+        yet: every byte the pipe has given up. The live ratio denominator of an archive
+        read straight from a pipe, where no codec input counter stands in
+        (``BaseArchiveReader.compressed_bytes_consumed``). A forward-only source never
+        re-reads, so this is exactly the archive bytes read, and at the end of the
+        source it is the whole size.
+        """
+        replay = self._replay
+        if replay is None or self._is_directory:
+            return None
+        return self._pos + len(replay)
+
+    @property
     def seek_is_expensive(self) -> bool:
         """Whether a seek on this source may re-decode what it skips.
 
