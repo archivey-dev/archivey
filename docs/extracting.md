@@ -101,11 +101,15 @@ existing folder is a conflict like any other.
 
 A file that something else writes to the same name while the extraction runs, such as a
 second extraction into the same folder, is not replaced either, except under
-`"replace"`. Under `"error"` and `"skip"` the member fails or is skipped as if the file
-had been there from the start, and under `"rename"` it is written under the next free
-name. On Linux and macOS this needs a filesystem with hard links; on one without them
-(FAT, some network drives), or when a hard-linked file has used up the link slots the
-filesystem allows, the later writer replaces the earlier one's file.
+`"replace"`. archivey writes each file under a temporary name and then gives it its real
+name in one step that the system refuses when the name is taken: a hard link on Linux
+and macOS, a rename on Windows. There is no gap between a check and the move for another
+writer to slip into. When the name turns out to be taken, `"error"` fails the member and
+`"skip"` skips it, as if the file had been there from the start, and `"rename"` gives
+the written file the next free name, without extracting it again. On Linux and macOS
+this needs a filesystem with hard links; on one without them (FAT, some network drives),
+or when a hard-linked file has used up the link slots the filesystem allows, the later
+writer replaces the earlier one's file.
 
 `on_error` decides what a failed member does to the rest of the extraction:
 
