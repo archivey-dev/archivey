@@ -486,10 +486,15 @@ class Lzo1xDecoder(BaseDecoder):
     def __init__(self, decode_block: Callable[[bytes, int], bytes], size: int) -> None:
         self._decode_block = decode_block
         self._size = size
-        # The most LZO1X can take to store ``size`` bytes (liblzo2's
-        # ``lzo1x_worst_compress``): longer input is not a block of that size, and is
-        # refused as it arrives rather than held.
-        self._max_input = size + size // 16 + 64 + 3
+        # The most input any decodable LZO1X stream takes for ``size`` bytes, so longer
+        # input is refused as it arrives rather than held. Only a literal run's
+        # instruction byte takes input that is not output; a run (4 bytes or more,
+        # after the first) is always followed by a match of 3 bytes or more, which
+        # takes no more input than it writes. So at most one byte in 7 is extra, plus
+        # the first run's byte and the 3-byte end marker. liblzo2's
+        # ``lzo1x_worst_compress`` (``size // 16``) bounds what its compressor writes,
+        # not what its decoder accepts, and a valid stream can be longer.
+        self._max_input = size + size // 7 + 64 + 3
         self._in = bytearray()
         self._done = False
 
@@ -514,14 +519,15 @@ class Lzo1xDecoder(BaseDecoder):
         if self._done:
             return DecodeOut(b"")
         self._done = True
+        # Released before the decode, so the input is not held twice while it runs.
+        data = bytes(self._in)
+        self._in = bytearray()
         # The container stores the block's length, so input that ends inside an
         # instruction is a damaged block, not a cut-off one.
         try:
-            out = self._decode_block(bytes(self._in), self._size)
+            out = self._decode_block(data, self._size)
         except LzoError as exc:
             raise CorruptionError(f"LZO block: {exc}") from None
-        finally:
-            self._in = bytearray()
         return DecodeOut(out)
 
     @property
