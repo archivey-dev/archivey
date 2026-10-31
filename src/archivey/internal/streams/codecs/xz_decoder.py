@@ -31,7 +31,7 @@ import struct
 import zlib
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.diagnostics import DiagnosticCode, DigestContext, SeekIndexContext
 from archivey.exceptions import (
@@ -47,7 +47,7 @@ from archivey.internal.diagnostics_collector import (
     resolve_collector,
 )
 from archivey.internal.logs import streams as logger
-from archivey.internal.streams.codecs.isolated import IN_PROCESS, Decompressor, Natives
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
 from archivey.internal.streams.decompressor_stream import (
     TRAILING_DATA_CANDIDATES,
     TRAILING_DATA_SEARCH,
@@ -64,6 +64,9 @@ from archivey.internal.streams.decompressor_stream import (
     release_decoder,
     truncated_message,
 )
+
+if TYPE_CHECKING:
+    from archivey.formats import Decompressor
 
 _XZ_STREAM_MAGIC = b"\xfd7zXZ\x00"
 _XZ_FOOTER_MAGIC = b"YZ"

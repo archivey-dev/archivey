@@ -37,7 +37,7 @@ from archivey.internal import password as password_module, password_confirm
 from archivey.internal.backends import zip_reader, zipcrypto
 from archivey.internal.password import is_wrong_password
 from archivey.internal.password_confirm import PASSWORD_CONFIRM_PREFIX_BYTES
-from tests.conftest import requires, requires_zstd, zstd_backend
+from tests.conftest import assert_raised_again, requires, requires_zstd, zstd_backend
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import NonSeekableBytesIO
 from tests.zip_aes_fixture import build_aes_zip
@@ -441,7 +441,7 @@ def test_unverified_zipcrypto_error_keeps_raising_after_a_seek_back() -> None:
         stream.seek(0)
         with pytest.raises(EncryptionError) as again:
             stream.read()
-        assert again.value is first.value
+        assert_raised_again(again.value, first.value)
 
 
 def test_stored_crc_floor_counts_the_body_not_the_declared_size(

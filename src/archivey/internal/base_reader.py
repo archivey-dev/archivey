@@ -177,6 +177,7 @@ from archivey.types import (
     OptionalLibrary,
     OverwritePolicy,
     OverwritePolicyStr,
+    PluginStream,
     StreamFormat,
     TrailerSignature,
 )
@@ -388,6 +389,19 @@ class ReadBackend(ABC):
     """
 
     FORMATS: tuple[ArchiveFormat, ...]
+    # Whether the backend also reads each of its ``FORMATS`` inside every single-file
+    # compression stream: TAR's ``.tar.gz``, a sequential plugin's ``.cpio.gz``. The
+    # registry makes those pairs when asked, from the codecs registered then, so a
+    # codec registered later reaches them too; ``FORMATS`` does not list them.
+    STREAM_PAIRS: ClassVar[bool] = False
+    # The extensions a stream's own is appended to for those pairs: ``.tar`` gives
+    # ``.tar.gz``, ``.tar.xz``, and so on. Each must also be an ``EXTENSIONS`` key,
+    # which names the container. Other pair spellings (``.tgz``) go in ``EXTENSIONS``.
+    PAIR_EXTENSIONS: ClassVar[tuple[str, ...]] = ()
+    # Whether this is the backend for a single compressed file, with no container:
+    # ``ArchiveFormat(RAW_STREAM, <stream>)`` for every single-file codec, made when
+    # asked like the pairs above. Only ``SingleFileBackend`` sets it.
+    RAW_STREAMS: ClassVar[bool] = False
     # ".gz" -> ArchiveFormat.GZ
     EXTENSIONS: Mapping[str, ArchiveFormat] = {}
     # Exact magic-byte signals as data (offset, bytes, format), accepted on the byte match.
@@ -2302,7 +2316,9 @@ class BaseArchiveReader(ArchiveReader):
                 self._present_member(idx, member)
             self._walk_presented = idx + 1
         is_symlink = member.type is MemberType.SYMLINK
-        if is_symlink and member.link_target == "":
+        if member.link_target == "" and (
+            is_symlink or member.type is MemberType.HARDLINK
+        ):
             # A target the header carries (TAR, RAR5, ISO Rock Ridge) is set while the
             # member is typed, so this is the first place every backend's passes share.
             # Emit first and clear after: a strict policy that raises here leaves the
@@ -2354,10 +2370,11 @@ class BaseArchiveReader(ArchiveReader):
         self._presenting = None
 
     def _emit_empty_link_target(self, member: ArchiveMember) -> None:
-        """Report a symlink whose stored target is the empty string.
+        """Report a symlink or hard link whose stored target is the empty string.
 
-        No filesystem takes an empty path as a link target, so the archive records no
-        target for this link, the same as a writer that stored none. It is presented
+        No filesystem takes an empty path as a link target, and an empty name matches
+        no member, so the archive records no target for this link, the same as a
+        writer that stored none. It is presented
         the same way: ``link_target`` unset, and extraction records
         ``LINK_TARGET_UNAVAILABLE`` for it instead of passing ``""`` to ``os.symlink``.
         """
@@ -2365,7 +2382,8 @@ class BaseArchiveReader(ArchiveReader):
             member,
             reason="target_empty",
             message=(
-                f"The symlink target of {quoted(member.name)} is stored as an empty "
+                f"The {'symlink' if member.type is MemberType.SYMLINK else 'hard link'} "
+                f"target of {quoted(member.name)} is stored as an empty "
                 f"string; leaving link_target unset."
             ),
             target_in_archive=False,
@@ -3395,7 +3413,7 @@ class BaseArchiveReader(ArchiveReader):
     def _open_outer_codec_stream(
         self,
         source: ArchiveSource,
-        stream_format: StreamFormat,
+        stream_format: StreamFormat | PluginStream,
         streaming: bool,
         *,
         member_streams: MemberStreams,
