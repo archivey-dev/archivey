@@ -52,7 +52,8 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 - **CPIO** (`.cpio`, initramfs, RPM payloads): core. Listing: header by header. Members:
   direct. Reads from a pipe, and inside any compressor TAR reads inside (`.cpio.gz`, …).
 - **ar** (`.a`, `.lib`, the outer layer of a `.deb`): core. Listing: header by header. Members:
-  direct. Reads from a pipe, and inside any compressor TAR reads inside (`.a.gz`, …).
+  direct. Reads from a pipe. Inside any compressor TAR reads inside (`.a.gz`, …), as a
+  compressed TAR is: listing needs decompression, members are solid.
 - **Directory:** core. Listing: walks the tree. Members: direct.
 - **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib and `.Z` in core;
   Zstandard in core on Python 3.14 and later, otherwise `[recommended]`; LZ4 and Brotli need
@@ -1072,8 +1073,8 @@ misread the archive.
 ## ar
 
 - **Needs:** nothing.
-- **Listing:** header by header, in one pass. Every member is a file: ar has no directories or
-  links.
+- **Listing:** header by header, in one pass; inside a compressor, it needs decompression, as in a
+  compressed TAR. Every member is a file: ar has no directories or links.
 - **Reading members:** direct; inside a compressor, solid, as in a compressed TAR.
 - **From a pipe:** yes, with `streaming=True`.
 - Both dialects read. GNU (System V, also Windows `.lib`) keeps long names in a `//` member;
