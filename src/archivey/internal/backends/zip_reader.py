@@ -73,6 +73,7 @@ from archivey.diagnostics import (
     LocalHeaderContext,
     MemberHeaderRecordContext,
     OffsetWrapContext,
+    ReaderDisagreementContext,
     SizeWrapContext,
     raw_name_to_base64,
 )
@@ -146,7 +147,7 @@ from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.hashing import crc32_digest
-from archivey.internal.logs import backends as logger
+from archivey.internal.logs import backends as logger, integrity as integrity_logger
 from archivey.internal.naming import (
     emit_member_name_normalized,
     normalize_member_name,
@@ -1251,6 +1252,29 @@ def _stored_as_directory(name: str, create_system: CreateSystem) -> bool:
     """
     return name.endswith("/") or (
         create_system in _BACKSLASH_SEPARATOR_SYSTEMS and name.endswith("\\")
+    )
+
+
+# The MS-DOS directory attribute, in the low byte of a DOS/Windows creator's
+# ``external_attr`` (APPNOTE 4.4.15).
+_DOS_DIRECTORY_ATTRIBUTE = 0x10
+
+
+def _marked_directory(
+    external_attr: int, full_mode: int, create_system: CreateSystem
+) -> bool:
+    """Whether the entry's attributes mark it a directory: a Unix creator's directory
+    mode, or a DOS/Windows creator's directory attribute bit.
+
+    APPNOTE never says a directory's name ends in ``/``; that is Info-ZIP's
+    convention, and unzip, ``zipfile`` and Java's ``ZipEntry`` go by the name alone.
+    The spec marks the type in the attributes (4.4.15), and 7-Zip and libarchive
+    read it there, so an entry these mark is a directory with or without the slash.
+    """
+    if create_system is CreateSystem.UNIX:
+        return stat.S_ISDIR(full_mode)
+    return create_system in _DOS_ATTRIBUTE_SYSTEMS and bool(
+        external_attr & _DOS_DIRECTORY_ATTRIBUTE
     )
 
 
@@ -2473,6 +2497,14 @@ class ZipReader(BaseArchiveReader):
             member_type = MemberType.OTHER
         else:
             member_type = MemberType.FILE
+        # A directory by its attributes whose name lacks the final "/": a directory,
+        # as 7-Zip and libarchive extract it, even over data (APPNOTE 4.3.8 gives a
+        # directory none; the bytes are reported below, as for a "d/" entry's).
+        directory_by_attribute = member_type is MemberType.FILE and _marked_directory(
+            external_attr, full_mode, create_system
+        )
+        if directory_by_attribute:
+            member_type = MemberType.DIRECTORY
         # Convert "\\" to "/" only for DOS/Windows-origin entries (where it is a separator);
         # a Unix (or other) entry keeps a backslash as a literal filename character.
         backslash_is_separator = host in _BACKSLASH_SEPARATOR_HOSTS
@@ -2765,6 +2797,25 @@ class ZipReader(BaseArchiveReader):
             self._emit_offset_wrapped(member, entry, index)
         if size_wrapped:
             self._emit_size_wrapped(member, entry, index)
+        if directory_by_attribute:
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_READERS_DISAGREE,
+                message=(
+                    f"ZIP entry {quoted(name_source)} is a directory by its "
+                    "attributes but its name has no final '/': it is listed as the "
+                    f"directory {quoted(member.name)}, as 7-Zip and bsdtar extract "
+                    "it; unzip and zipfile go by the name and write a file."
+                ),
+                context=ReaderDisagreementContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=index,
+                    shape="directory_attribute_without_slash",
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=integrity_logger,
+            )
         if member.type is MemberType.DIRECTORY and _zip_directory_stores_data(entry):
             # APPNOTE 4.3.8 gives a directory no data; unzip, 7-Zip and bsdtar create
             # the directory and drop the bytes silently. Say so; a read delivers them.

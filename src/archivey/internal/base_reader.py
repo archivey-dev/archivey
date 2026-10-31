@@ -2323,18 +2323,21 @@ class BaseArchiveReader(ArchiveReader):
             # Both lookups read only the members before this one: it is indexed after
             # registration. A hard link is looked up only when it is one, so the
             # common member pays two dict lookups.
-            earlier = (
-                self._earlier_same_name(member)
-                if self._NAMES_FINAL_AT_REGISTRATION
-                else None
-            )
+            names_final = self._NAMES_FINAL_AT_REGISTRATION
+            earlier = self._earlier_same_name(member) if names_final else None
+            nul_in_name = names_final and "\x00" in member.name
             to_symlink = (
                 member.type is MemberType.HARDLINK
                 and bool(member.link_target)
                 and self._hardlink_names_symlink(member)
             )
-            if name_controls_possible(member) or earlier is not None or to_symlink:
-                self._present_member(idx, member, earlier, to_symlink)
+            if (
+                name_controls_possible(member)
+                or earlier is not None
+                or to_symlink
+                or nul_in_name
+            ):
+                self._present_member(idx, member, earlier, to_symlink, nul_in_name)
             self._walk_presented = idx + 1
         is_symlink = member.type is MemberType.SYMLINK
         if member.link_target == "" and (
@@ -2416,11 +2419,19 @@ class BaseArchiveReader(ArchiveReader):
                 key=lambda entry: entry[0],
             )
             latest[name] = (position, member)
-            if found is not None and not (
+            if found is not None and (
                 found[1].type is MemberType.DIRECTORY
                 and member.type is MemberType.DIRECTORY
             ):
-                self._emit_presentation_shapes(member, found[1], to_symlink=False)
+                found = None
+            nul_in_name = "\x00" in name
+            if found is not None or nul_in_name:
+                self._emit_presentation_shapes(
+                    member,
+                    None if found is None else found[1],
+                    to_symlink=False,
+                    nul_in_name=nul_in_name,
+                )
 
     def _hardlink_names_symlink(self, member: ArchiveMember) -> bool:
         """Whether the hard link ``member`` names a symlink listed before it
@@ -2433,10 +2444,30 @@ class BaseArchiveReader(ArchiveReader):
         member: ArchiveMember,
         earlier: ArchiveMember | None,
         to_symlink: bool,
+        nul_in_name: bool = False,
     ) -> None:
-        """Report a name an earlier member has and a hard link to a symlink: shapes
-        every format can hold, which readers make different trees of."""
+        """Report a name an earlier member has, a hard link to a symlink and a NUL in
+        a name: shapes every format can hold, which readers make different trees of."""
         collector = self._diagnostics_collector
+        if nul_in_name:
+            collector.emit(
+                code=DiagnosticCode.MEMBER_READERS_DISAGREE,
+                message=(
+                    f"{member.type.value.capitalize()} {quoted(member.name)} has a NUL "
+                    "in its name: it is listed with the whole stored name, and "
+                    "extraction skips it, since no filesystem takes one; unzip writes "
+                    "the name up to the NUL and 7-Zip refuses the archive."
+                ),
+                context=ReaderDisagreementContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=member._member_id,
+                    shape="nul_in_name",
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=integrity_logger,
+            )
         if earlier is not None:
             collector.emit(
                 code=DiagnosticCode.MEMBER_NAME_DUPLICATE,
@@ -2485,6 +2516,7 @@ class BaseArchiveReader(ArchiveReader):
         member: ArchiveMember,
         earlier: ArchiveMember | None = None,
         to_symlink: bool = False,
+        nul_in_name: bool = False,
     ) -> None:
         """Run the name and link-target checks for the member at ``idx``, and report
         the shapes :meth:`_emit_presentation_shapes` names.
@@ -2503,7 +2535,7 @@ class BaseArchiveReader(ArchiveReader):
             emit_link_target_controls(
                 collector, member=member, archive_name=self._archive_name
             )
-            self._emit_presentation_shapes(member, earlier, to_symlink)
+            self._emit_presentation_shapes(member, earlier, to_symlink, nul_in_name)
             return
         if self._presenting is None or self._presenting[0] != idx:
             self._presenting = (idx, EmitLog())
@@ -2517,7 +2549,7 @@ class BaseArchiveReader(ArchiveReader):
             emit_link_target_controls(
                 collector, member=member, archive_name=self._archive_name
             )
-            self._emit_presentation_shapes(member, earlier, to_symlink)
+            self._emit_presentation_shapes(member, earlier, to_symlink, nul_in_name)
         self._presenting = None
 
     def _emit_empty_link_target(self, member: ArchiveMember) -> None:

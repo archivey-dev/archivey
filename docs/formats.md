@@ -232,6 +232,13 @@ an entry that does store data is a `FILE`, with `MEMBER_SPECIAL_FILE_HAS_DATA` r
 section for ZIP, 7z, RAR and ISO says when its mode is trusted; TAR reads the typeflag instead
 ([TAR](#tar-and-compressed-tar)).
 
+### Names with a NUL
+
+ZIP and CPIO store a name's length, so a name can hold a NUL (`a\0b.txt`). Archivey lists the
+whole name and reports `MEMBER_READERS_DISAGREE`; extraction skips the member under every policy,
+since no filesystem takes the name. unzip writes the name up to the NUL (`a`), and 7-Zip refuses
+the archive.
+
 ### Names with an unpaired surrogate
 
 A UTF-16 name (in 7z, in RAR 1.5-4, and in Joliet on an ISO) can hold a surrogate without its
@@ -498,6 +505,11 @@ sending side when the ZIP is done.
   HMAC check them, so nothing is reported. A directory that declares size 0 over a body larger than
   an empty one of its method is reported too (`read()` has nothing to return for it). The Java
   `jar` tool's deflated empty directory body (compressed size 2, size 0) is not.
+- **An entry whose attributes mark it a directory but whose name has no final `/`** (a Unix
+  directory mode, or the DOS directory bit) is a directory, as 7-Zip and libarchive read it and
+  as APPNOTE marks it; unzip and `zipfile` go by the name and write a file. The name gains its
+  `/`, and `MEMBER_READERS_DISAGREE` is reported. Data on such an entry is a directory's data,
+  as above.
 
 ## TAR (and compressed TAR)
 

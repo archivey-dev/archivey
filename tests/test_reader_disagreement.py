@@ -4,12 +4,16 @@ which archivey reads as the format's own tool does and other readers read otherw
 Both codes are advisory (out of ``ARCHIVE_INTEGRITY_CODES``, logged at INFO), so the
 default and ``STRICT`` policies read the archive and ``PEDANTIC`` refuses it. The TAR
 cases follow tar-minefield K01, K02, N10, N11, S04, S06, S07, S08, S09 and S10.
+The ZIP and CPIO cases carry two of them to other formats: a NUL in a name (N14's
+shape) and a ZIP directory marked by its attributes alone (K01's, reversed).
 """
 
 from __future__ import annotations
 
 import io
 import logging
+import pathlib
+import stat
 import zipfile
 
 import pytest
@@ -19,6 +23,7 @@ from archivey import (
     ArchiveyConfig,
     DiagnosticCode,
     DiagnosticPolicy,
+    MemberType,
     open_archive,
 )
 from archivey.diagnostics import NameDuplicateContext, ReaderDisagreementContext
@@ -282,3 +287,114 @@ def test_a_zip_duplicate_is_decided_on_the_directory_names(
     it compares those names, as a file read does."""
     archive = _zip_with_local_names(central, local)
     assert _reported(archive, streaming=pipe) == expected
+
+
+def _zip_with_nul_name() -> bytes:
+    """One member, its stored name ``a\\0b.txt`` in both the directory and the local
+    header (``zipfile`` cannot write a NUL itself)."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr("aaaaaaa", b"one")
+    data = bytearray(buffer.getvalue())
+    for signature, fixed in ((b"PK\x03\x04", 30), (b"PK\x01\x02", 46)):
+        at = data.index(signature)
+        data[at + fixed : at + fixed + 7] = b"a\x00b.txt"
+    return bytes(data)
+
+
+def _newc(name: bytes, payload: bytes, mode: int = 0o100644, ino: int = 1) -> bytes:
+    fields = [ino, mode, 0, 0, 1, 0, len(payload), 0, 0, 0, 0, len(name) + 1, 0]
+    header = b"070701" + b"".join(b"%08X" % value for value in fields) + name + b"\0"
+    header += b"\0" * (-len(header) % 4)
+    return header + payload + b"\0" * (-len(payload) % 4)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_nul_in_a_zip_name_is_reported(streaming: bool) -> None:
+    """unzip writes the name up to the NUL and 7-Zip refuses the archive."""
+    assert _reported(_zip_with_nul_name(), streaming=streaming) == [
+        ("a\x00b.txt", _DISAGREE, "nul_in_name")
+    ]
+
+
+def test_a_nul_in_a_cpio_name_is_reported() -> None:
+    archive = _newc(b"a\x00b.txt", b"one") + _newc(b"TRAILER!!!", b"", 0, 0)
+    assert _reported(archive) == [("a\x00b.txt", _DISAGREE, "nul_in_name")]
+
+
+def test_a_member_named_with_a_nul_is_not_extracted(tmp_path: pathlib.Path) -> None:
+    with open_archive(io.BytesIO(_zip_with_nul_name())) as ar:
+        ar.extract_all(tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+_DOS = 0  # "version made by" host: MS-DOS / FAT
+_UNIX = 3
+
+
+def _zip_entry(
+    name: str, *, host: int, external_attr: int, payload: bytes = b""
+) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        info = zipfile.ZipInfo(name)
+        info.create_system = host
+        info.external_attr = external_attr
+        zf.writestr(info, payload)
+    return buffer.getvalue()
+
+
+_DIRECTORY_BY_ATTRIBUTE = {
+    "dos directory bit": _zip_entry("d", host=_DOS, external_attr=0x10),
+    "unix directory mode": _zip_entry(
+        "d", host=_UNIX, external_attr=(stat.S_IFDIR | 0o755) << 16
+    ),
+}
+
+
+@pytest.mark.parametrize("label", list(_DIRECTORY_BY_ATTRIBUTE))
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_zip_directory_by_attribute_is_a_directory(
+    label: str, streaming: bool, tmp_path: pathlib.Path
+) -> None:
+    """APPNOTE 4.4.15 marks the type in the attributes; 7-Zip and libarchive make a
+    directory, unzip a file."""
+    archive = _DIRECTORY_BY_ATTRIBUTE[label]
+    assert _reported(archive, streaming=streaming) == [
+        ("d/", _DISAGREE, "directory_attribute_without_slash")
+    ]
+    source = NonSeekableBytesIO(archive) if streaming else io.BytesIO(archive)
+    with open_archive(source, streaming=streaming) as ar:
+        ar.extract_all(tmp_path)
+    assert (tmp_path / "d").is_dir()
+
+
+def test_a_zip_directory_by_attribute_with_data_drops_it() -> None:
+    """7-Zip makes a directory of it too; the bytes are a directory's data."""
+    archive = _zip_entry("d", host=_DOS, external_attr=0x10, payload=b"data")
+    with open_archive(io.BytesIO(archive)) as ar:
+        (member,) = ar.members()
+    assert member.type is MemberType.DIRECTORY
+    assert [d.code for d in member.diagnostics] == [
+        DiagnosticCode.MEMBER_READERS_DISAGREE,
+        DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("host", "external_attr"),
+    [
+        # The DOS bit means nothing from a Unix creator, whose mode is a file's.
+        (_UNIX, (stat.S_IFREG | 0o644) << 16 | 0x10),
+        # Nor from a host whose low word is not a DOS attribute word.
+        (7, 0x10),
+        # A DOS creator without the bit.
+        (_DOS, 0x20),
+    ],
+)
+def test_other_zip_attributes_leave_a_file(host: int, external_attr: int) -> None:
+    archive = _zip_entry("d", host=host, external_attr=external_attr)
+    with open_archive(io.BytesIO(archive)) as ar:
+        (member,) = ar.members()
+    assert member.type is MemberType.FILE
+    assert _reported(archive) == []
