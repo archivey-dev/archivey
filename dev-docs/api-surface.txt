@@ -742,8 +742,8 @@ field archivey.diagnostics.FormatConflictContext.kind: Literal['format_conflict'
 field archivey.diagnostics.FormatConflictContext.source_name: str | None = None
 method archivey.diagnostics.FormatConflictContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.HeaderAmbiguityContext(_JsonSafeContext)
-init archivey.diagnostics.HeaderAmbiguityContext(kind: Literal['header_ambiguity'] = 'header_ambiguity', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, ambiguity: Literal['both_families', 'repeated', 'global_member_field', 'nul_in_value', 'global_replaced'] = 'repeated', field: str = '') -> None
-field archivey.diagnostics.HeaderAmbiguityContext.ambiguity: Literal['both_families', 'repeated', 'global_member_field', 'nul_in_value', 'global_replaced'] = 'repeated'
+init archivey.diagnostics.HeaderAmbiguityContext(kind: Literal['header_ambiguity'] = 'header_ambiguity', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, ambiguity: Literal['both_families', 'repeated', 'global_member_field', 'nul_in_value', 'global_replaced', 'mixed_chain', 'global_in_chain', 'empty_value', 'leading_zero'] = 'repeated', field: str = '') -> None
+field archivey.diagnostics.HeaderAmbiguityContext.ambiguity: Literal['both_families', 'repeated', 'global_member_field', 'nul_in_value', 'global_replaced', 'mixed_chain', 'global_in_chain', 'empty_value', 'leading_zero'] = 'repeated'
 field archivey.diagnostics.HeaderAmbiguityContext.archive_name: str | None = None
 field archivey.diagnostics.HeaderAmbiguityContext.field: str = ''
 field archivey.diagnostics.HeaderAmbiguityContext.kind: Literal['header_ambiguity'] = 'header_ambiguity'
