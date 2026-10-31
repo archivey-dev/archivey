@@ -104,8 +104,10 @@ each path is on its list, live in that script.
     archive-supplied input reaches a command line or a terminal only as inert text. Try
     to break it with a crafted name, size, offset, link target or member order, a
     truncated or concatenated stream, or a hostile directory source. Build each attempt
-    and its destination in a fresh temporary directory outside the checkout, with limits
-    low enough that a bomb that works stays cheap. Where a
+    and its destination in a fresh temporary directory outside the checkout. Run it
+    under the library configuration the pull request ships (the defaults, unless the
+    diff changes them), never a tighter one; keep a bomb that works cheap from outside
+    the library instead: a small fixture, a `timeout`, a capped `ulimit -v`. Where a
     `tests/test_cve_regressions*.py` case sits near the change, read it for the shape of
     a known attack and take its result from CI, or say CI has none yet.
   - *The release's and the review loop's own files* (`DEEP_MAINTAINER`: workflows, the
