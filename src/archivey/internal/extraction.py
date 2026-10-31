@@ -107,6 +107,10 @@ _TMP_PREFIX = ".archivey-tmp-"
 # Names ``_new_temp_file`` tries before it gives up. A bound, not a count it is expected
 # to reach: the names carry this run's own random token, so a taken one is rare.
 _TEMP_ATTEMPTS = 10000
+# Names a FILE or HARDLINK landing under ``OverwritePolicy.RENAME`` tries when other
+# writers keep taking the next free name first (``_land_on_free_name``). Each one was
+# free a moment before, so reaching the bound takes that many races lost in a row.
+_LANDING_ATTEMPTS = 100
 
 # A module attribute, not ``os.name`` at each use, so a test can take the Windows path
 # on POSIX.
@@ -300,6 +304,13 @@ class _AbortExtraction(Exception):
     def __init__(self, error: ArchiveyError) -> None:
         super().__init__(str(error))
         self.error = error
+
+
+class _NameTakenSince(Exception):
+    """Under ``OverwritePolicy.SKIP``, a landing found its name taken after the
+    existence check, by another writer into the same folder. The member is skipped
+    as the check would have skipped it: the caller reports it ``NOT_OVERWRITTEN``.
+    A plain ``Exception``, so the per-member handlers let it through to that caller."""
 
 
 class _PassedData(io.RawIOBase):
@@ -671,6 +682,10 @@ class _MemberState:
     # is handled so it can replace one atomically: path -> index of the superseded
     # result. See ``_park_earlier_copies``.
     parked: dict[Path, int] = field(default_factory=dict)
+    # Under RENAME, the name collision resolution derived from (or kept): a FILE or
+    # HARDLINK landing that finds its name taken since derives the next one from it,
+    # so the numbering goes on from ``name (1)`` rather than ``name (1) (1)``.
+    rename_base: Path | None = None
 
 
 class ExtractionCoordinator:
@@ -2054,6 +2069,10 @@ class ExtractionCoordinator:
             result = self._dispatch_write(
                 original, transformed, stream, dest_path, result_index
             )
+        except _NameTakenSince:
+            result = ExtractionResult(
+                original, None, ExtractionStatus.NOT_OVERWRITTEN, None
+            )
         except (ArchiveyError, OSError):
             # A write that failed after clearing the destination (only the non-atomic
             # landings clear it first) has still removed the earlier member's content,
@@ -2145,7 +2164,7 @@ class ExtractionCoordinator:
                 # that turned into a file is not this member's name being taken.
                 if not self._taken_after_check(dest_path, atomic=False):
                     raise
-                raise self._already_exists(dest_path, transformed) from exc
+                raise self._refusal(dest_path, transformed) from exc
             kept_mode: int | None = None
             if callers:
                 # A directory the caller already had, the destination root included
@@ -2293,6 +2312,7 @@ class ExtractionCoordinator:
         if collided is not None:
             self._check_collision_abort(original, collided, directory=prior is None)
         if self._overwrite is OverwritePolicy.RENAME:
+            self._current.rename_base = requested
             if prior is not None or self._occupied(requested):
                 is_dir = transformed.type == MemberType.DIRECTORY
                 free = self._derive_free_name(requested, is_dir=is_dir)
@@ -2848,7 +2868,7 @@ class ExtractionCoordinator:
                     member_name=original.name,
                 )
             with contextlib.closing(reader._lazy_member_stream(original)) as reopened:
-                self._write_file_atomic(reopened, dest_path, transformed)
+                dest_path = self._write_file_atomic(reopened, dest_path, transformed)
         elif (
             written_source := self._open_written_source(original, dest_path)
         ) is not None:
@@ -2858,11 +2878,15 @@ class ExtractionCoordinator:
             # read its stream to the end through the source's digest and size checks,
             # and a write that failed them recorded no identity to copy from.
             with written_source:
-                self._write_file_atomic(written_source, dest_path, transformed)
+                dest_path = self._write_file_atomic(
+                    written_source, dest_path, transformed
+                )
         else:
             state.streaming_now = id(original) if stream is not None else None
             try:
-                self._write_file_atomic(stream, dest_path, transformed, staged=staged)
+                dest_path = self._write_file_atomic(
+                    stream, dest_path, transformed, staged=staged
+                )
             finally:
                 state.streaming_now = None
         if self._dry is None and id(original) in state.declined:
@@ -2986,7 +3010,7 @@ class ExtractionCoordinator:
             # landing (``_swap_into_place``).
             if not self._taken_after_check(dest_path, atomic=False):
                 raise
-            raise self._already_exists(dest_path, transformed) from exc
+            raise self._refusal(dest_path, transformed) from exc
         self._resolutions_changed()
 
         # Resolve the link now that it exists, through the real filesystem, and remove
@@ -3167,7 +3191,9 @@ class ExtractionCoordinator:
             declined = self._make_room(original, transformed, dest_path, atomic=True)
             if declined is not None:
                 return declined
-            self._place_link(source.member_id, candidates, dest_path, transformed)
+            dest_path = self._place_link(
+                source.member_id, candidates, dest_path, transformed
+            )
             return ExtractionResult(
                 original, dest_path, ExtractionStatus.EXTRACTED, None
             )
@@ -3430,16 +3456,22 @@ class ExtractionCoordinator:
                 source_step = True
                 self._state.tracker.check_recorded_size()
                 source_step = False
-                self._write_file_atomic(
-                    stream, resolved, orphan.transformed, copy_begins=copy_begins
-                )
-                self._state.written_paths.add(resolved)
-                self._state.source_paths.setdefault(source_member.member_id, []).append(
-                    resolved
-                )
-                result = ExtractionResult(
-                    orphan.original, resolved, ExtractionStatus.EXTRACTED, None
-                )
+                try:
+                    resolved = self._write_file_atomic(
+                        stream, resolved, orphan.transformed, copy_begins=copy_begins
+                    )
+                except _NameTakenSince:
+                    result = ExtractionResult(
+                        orphan.original, None, ExtractionStatus.NOT_OVERWRITTEN, None
+                    )
+                else:
+                    self._state.written_paths.add(resolved)
+                    self._state.source_paths.setdefault(
+                        source_member.member_id, []
+                    ).append(resolved)
+                    result = ExtractionResult(
+                        orphan.original, resolved, ExtractionStatus.EXTRACTED, None
+                    )
             result = self._settle_placement(
                 result,
                 requested=orphan.dest_path,
@@ -3499,11 +3531,19 @@ class ExtractionCoordinator:
                 orphan.original, orphan.transformed, resolved, atomic=True
             )
             if result is None:
-                self._place_link(source_id, candidates, resolved, orphan.transformed)
-                self._state.written_paths.add(resolved)
-                result = ExtractionResult(
-                    orphan.original, resolved, ExtractionStatus.EXTRACTED, None
-                )
+                try:
+                    resolved = self._place_link(
+                        source_id, candidates, resolved, orphan.transformed
+                    )
+                except _NameTakenSince:
+                    result = ExtractionResult(
+                        orphan.original, None, ExtractionStatus.NOT_OVERWRITTEN, None
+                    )
+                else:
+                    self._state.written_paths.add(resolved)
+                    result = ExtractionResult(
+                        orphan.original, resolved, ExtractionStatus.EXTRACTED, None
+                    )
             result = self._settle_placement(
                 result,
                 requested=orphan.dest_path,
@@ -3967,7 +4007,7 @@ class ExtractionCoordinator:
         *,
         staged: Path | None = None,
         copy_begins: Callable[[], None] | None = None,
-    ) -> None:
+    ) -> Path:
         """Write a FILE by streaming into a temp sibling, applying ``member``'s metadata,
         then ``os.replace()``-ing it onto ``dest_path`` — atomic, so a mid-stream failure
         never truncates or removes an existing destination (only the temp is discarded),
@@ -3992,11 +4032,13 @@ class ExtractionCoordinator:
         ``copy_begins`` is called once the temp file exists, just before the first
         read of ``stream``: the orphan pass blames a failure from then on on the
         source, not the link (``_materialize_at``). A staged write copies nothing, so
-        the two are never passed together."""
+        the two are never passed together.
+
+        Returns the name the file landed on: ``dest_path``, or under RENAME another
+        free name when another writer took ``dest_path`` first (``_land_on_free_name``)."""
         assert copy_begins is None or staged is None
         if staged is not None:
-            self._land_staged(staged, dest_path, member)
-            return
+            return self._land_staged(staged, dest_path, member)
         # Every check that could still skip the member has passed, so a member whose
         # recorded size is already over the ratio is refused before any temp file
         # exists.
@@ -4021,7 +4063,7 @@ class ExtractionCoordinator:
                     emit_progress=self._current.emit_progress,
                 )
             self._apply_metadata(tmp, member)
-            self._swap_into_place(tmp, dest_path, member, fresh=True)
+            return self._swap_into_place(tmp, dest_path, member, fresh=True)
         except BaseException:
             # os.replace consumes the temp on success; on any earlier failure remove it so
             # no .archivey-tmp-* file is left behind (the existing destination is untouched).
@@ -4041,16 +4083,15 @@ class ExtractionCoordinator:
 
     def _land_staged(
         self, staged: Path, dest_path: Path, member: ArchiveMember
-    ) -> None:
-        """Land the staged file ``staged`` on ``dest_path`` (``_write_file_atomic``)."""
+    ) -> Path:
+        """Land the staged file ``staged`` on ``dest_path`` (``_write_file_atomic``),
+        returning the name it landed on."""
         self._apply_metadata(staged, member)
         try:
-            self._swap_into_place(staged, dest_path, member)
+            return self._swap_into_place(staged, dest_path, member)
         except OSError as exc:
             if exc.errno != errno.EXDEV:
                 raise
-        else:
-            return
         tmp = self._temp_sibling(dest_path.parent)
         try:
             with (
@@ -4063,13 +4104,14 @@ class ExtractionCoordinator:
                 os.chmod(
                     long_path(tmp), stat.S_IMODE(os.stat(long_path(staged)).st_mode)
                 )
-            self._swap_into_place(tmp, dest_path, member)
+            landed = self._swap_into_place(tmp, dest_path, member)
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(long_path(tmp))
             raise
         with contextlib.suppress(OSError):
             os.unlink(long_path(staged))
+        return landed
 
     @staticmethod
     def _copy_to_fileobj(
@@ -4111,7 +4153,7 @@ class ExtractionCoordinator:
         candidates: list[Path],
         new_path: Path,
         member: ArchiveMember,
-    ) -> None:
+    ) -> Path:
         """Create ``new_path`` as a hardlink to the source's content, trying
         ``candidates`` (the source's recorded on-disk paths, taken before
         ``_make_room`` cleared ``new_path``) newest first; when none takes the link for
@@ -4141,14 +4183,16 @@ class ExtractionCoordinator:
         a FILE write lands: ``os.link`` needs a free name, so the alternative is to
         unlink an existing destination first and leave a hole if the link then fails.
         ``os.replace`` moves the link itself and never follows the entry it replaces, so
-        a destination symlink is replaced rather than written through."""
+        a destination symlink is replaced rather than written through. Returns the name
+        the link landed on, which under RENAME can be another free name
+        (``_land_on_free_name``); that is the name recorded."""
         if new_path in candidates and _is_regular_file(new_path):
             # The link landed on a path that already holds its source's content (a
             # case-folded name under REPLACE). The callers' ``_make_room`` ran with
             # ``atomic=True``, which leaves an existing file for the swap rather than
             # unlinking it, so the file is still in place and there is nothing to link.
             self._state.source_paths.setdefault(source_id, []).append(new_path)
-            return
+            return new_path
         # Each path was a regular file this run wrote, and ``_forget_source_path``
         # drops one once another member replaces it. ``candidates`` was taken before
         # the callers' ``_make_room``, so the one path that can be stale here is
@@ -4206,12 +4250,13 @@ class ExtractionCoordinator:
                 # Applied before the swap, so the final name never appears with the
                 # source's metadata instead of this member's.
                 self._apply_metadata(tmp, member)
-            self._swap_into_place(tmp, new_path, member)
+            landed = self._swap_into_place(tmp, new_path, member)
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(long_path(tmp))
             raise
-        self._state.source_paths.setdefault(source_id, []).append(new_path)
+        self._state.source_paths.setdefault(source_id, []).append(landed)
+        return landed
 
     def _already_exists(self, dest: Path, member: ArchiveMember) -> ExtractionError:
         """The error ``OverwritePolicy.ERROR`` raises for an entry at ``dest``, from the
@@ -4221,35 +4266,46 @@ class ExtractionCoordinator:
             member_name=member.name,
         )
 
+    def _refusal(self, dest: Path, member: ArchiveMember) -> Exception:
+        """What a landing raises when ``dest`` was taken after the existence check
+        (``_taken_after_check``): ERROR's clash, or ``_NameTakenSince`` under SKIP, which
+        skips the member."""
+        if self._overwrite is OverwritePolicy.SKIP:
+            return _NameTakenSince()
+        return self._already_exists(dest, member)
+
     def _taken_after_check(self, dest: Path, *, atomic: bool) -> bool:
-        """Whether, under ``OverwritePolicy.ERROR``, ``dest`` is now taken by something
+        """Whether, under ``OverwritePolicy.ERROR`` or ``SKIP``, ``dest`` is now taken by something
         that was not there at the existence check: another writer into the same folder,
         such as a second extraction. Asked by every landing whose creation refuses a
         taken name: the ``os.replace`` of a FILE or HARDLINK (``atomic``), and the
         ``os.symlink`` of a SYMLINK and the ``os.makedirs`` of a DIRECTORY.
 
-        Under ERROR the check lets a member through only to a free name, to a copy this
-        run parked (``_park_earlier_copies``), or, for a DIRECTORY member, to an existing
+        Under ERROR and SKIP the check lets a member through only to a free name, to a
+        copy this run parked (``_park_earlier_copies``), or, for a DIRECTORY member, to an existing
         directory. An atomic landing replaces a parked copy where it stands, so that
         copy does not count (``_occupied``); the other landings removed it in
         ``_prepare_destination``. ``os.makedirs(exist_ok=True)`` never raises for an
         existing directory, so a ``FileExistsError`` there means a non-directory. So
         anything a landing is refused over appeared after the check. Under the other
         policies a landing that fails this way is not handled: its error goes out as it
-        is."""
-        if self._overwrite is not OverwritePolicy.ERROR:
+        is. (RENAME's FILE and HARDLINK landings take another name instead, in
+        ``_land_on_free_name``.)"""
+        if self._overwrite not in (OverwritePolicy.ERROR, OverwritePolicy.SKIP):
             return False
         return self._occupied(dest) if atomic else os.path.lexists(long_path(dest))
 
     def _swap_into_place(
         self, tmp: Path, dest: Path, member: ArchiveMember, *, fresh: bool = False
-    ) -> None:
+    ) -> Path:
         """Move the staged temp ``tmp`` onto ``dest``, the last step of every atomic
-        write (``_write_file_atomic``, ``_land_staged``, ``_place_link``). How depends on
-        the policy: under ERROR, a ``dest`` the existence check found free lands with
-        ``_land_on_free_name``, which refuses a name taken since. Every other landing
-        uses ``os.replace``: the other policies, a copy this run parked, and the
-        ``_land_on_free_name`` fallback on a filesystem without hard links.
+        write (``_write_file_atomic``, ``_land_staged``, ``_place_link``), and return
+        the name it landed on. How depends on the policy: under ERROR, SKIP and RENAME,
+        a ``dest`` the existence check found free lands with ``_land_on_free_name``,
+        which does not replace a name taken since. Every other landing uses
+        ``os.replace``: REPLACE, a copy this run parked, and the ``_land_on_free_name``
+        fallback on a filesystem without hard links. Only RENAME can land elsewhere
+        than ``dest``.
 
         On the ``os.replace`` routes, POSIX ``rename(2)`` does nothing, and reports
         success, when ``tmp`` and ``dest`` are already names of the same file. That
@@ -4269,70 +4325,89 @@ class ExtractionCoordinator:
         ``dest``'s file, and in the same-file case the temp is one of them, so an unlink
         after the block would fail.
 
-        Under ERROR, an ``os.replace`` refused onto an entry that appeared after the
-        existence check is the clash that check reports, and raises its error
-        (``_taken_after_check``). This route reaches it on POSIX after the hard-link
-        landing failed for another reason, in a sticky directory where someone else owns
-        the entry; elsewhere POSIX ``os.replace`` replaces the entry, which is why ERROR
-        lands with ``_land_on_free_name`` first."""
+        Under ERROR and SKIP, an ``os.replace`` refused onto an entry that appeared
+        after the existence check is the clash that check reports (``_taken_after_check``,
+        ``_refusal``). This route reaches it on POSIX after the hard-link landing failed
+        for another reason, in a sticky directory where someone else owns the entry;
+        elsewhere POSIX ``os.replace`` replaces the entry, which is why those policies
+        land with ``_land_on_free_name`` first."""
         with self._readonly_cleared(dest):
-            if (
-                self._overwrite is OverwritePolicy.ERROR
-                and dest not in self._current.parked
-                and self._land_on_free_name(tmp, dest, member)
+            if self._overwrite is not OverwritePolicy.REPLACE and (
+                dest not in self._current.parked
             ):
-                return
+                landed = self._land_on_free_name(tmp, dest, member)
+                if landed is not None:
+                    return landed
             try:
                 os.replace(long_path(tmp), long_path(dest))
             except PermissionError as exc:
                 if not self._taken_after_check(dest, atomic=True):
                     raise
-                raise self._already_exists(dest, member) from exc
+                raise self._refusal(dest, member) from exc
             if fresh and not _WINDOWS:
-                return
+                return dest
             with contextlib.suppress(OSError):
                 os.unlink(long_path(tmp))
+            return dest
 
-    def _land_on_free_name(self, tmp: Path, dest: Path, member: ArchiveMember) -> bool:
-        """Move ``tmp`` onto ``dest`` only if ``dest`` is still free, under ERROR when
-        the existence check found the name free; return whether it was moved.
+    def _land_on_free_name(
+        self, tmp: Path, dest: Path, member: ArchiveMember
+    ) -> Path | None:
+        """Move ``tmp`` onto ``dest`` only if ``dest`` is still free, when the existence
+        check found it free under ERROR, SKIP or RENAME; return the name it landed on,
+        or ``None`` to hand the landing back to ``os.replace``.
 
-        Under ERROR such a ``dest`` must still be free when the member lands, so an
-        entry there now is another writer's (a second extraction into the same folder)
-        and raises the ERROR clash, rather than being replaced as ``os.replace`` would
-        on POSIX. Windows ``os.rename`` refuses a taken name. POSIX has no rename that
-        refuses one in the standard library, so the temp is hard-linked to ``dest``
-        (``link`` refuses a taken name; every ``tmp`` here is a regular file this run
-        created, so there is nothing to follow) and its temp name removed: about 2 µs
-        more than a rename,
-        against hundreds per member. Where the filesystem has no hard links (FAT, some
-        network and FUSE mounts) the link fails with another error, and ``False``
-        hands the landing back to ``os.replace``, which does not see such a race.
+        Under those policies such a ``dest`` must still be free when the member lands,
+        so an entry there now is another writer's (a second extraction into the same
+        folder), and is not replaced as ``os.replace`` would on POSIX. ERROR raises its
+        clash and SKIP skips the member (``_refusal``). RENAME takes the next free
+        ``name (N)`` (``_derive_free_name``, from ``rename_base``) and tries again, up to
+        ``_LANDING_ATTEMPTS`` names; the result reports the name it landed on. Each
+        attempt only moves or links the finished temp, so nothing is decoded again.
 
-        Under ERROR, ``dest`` is never a name of ``tmp``'s own file here: that happens
-        only when a member lands on an earlier copy, which the existence check refuses
-        unless this run parked it.
+        Windows ``os.rename`` refuses a taken name. POSIX has no rename that refuses
+        one in the standard library, so the temp is hard-linked to ``dest`` (``link``
+        refuses a taken name; every ``tmp`` here is a regular file this run created, so
+        there is nothing to follow) and its temp name removed: about 2 µs more than a
+        rename, against hundreds per member. Where the filesystem has no hard links
+        (FAT, some network and FUSE mounts) the link fails with another error, and
+        ``None`` hands the landing back to ``os.replace``, which does not see such a
+        race.
+
+        ``dest`` is never a name of ``tmp``'s own file here: that happens only when a
+        member lands on an earlier copy, which the existence check refuses under these
+        policies unless this run parked it.
         """
-        try:
-            if _WINDOWS:
-                os.rename(long_path(tmp), long_path(dest))
-                return True
-            os.link(long_path(tmp), long_path(dest))
-        except FileExistsError as exc:
-            raise self._already_exists(dest, member) from exc
-        except OSError as exc:
-            if not _WINDOWS:
-                return False
-            # Access denied on an entry another writer just made (see
-            # ``_swap_into_place``) is the same clash.
-            if isinstance(exc, PermissionError) and self._taken_after_check(
-                dest, atomic=True
-            ):
-                raise self._already_exists(dest, member) from exc
-            raise
-        with contextlib.suppress(OSError):
-            os.unlink(long_path(tmp))
-        return True
+        taken: OSError | None = None
+        base = self._current.rename_base or dest
+        for _ in range(_LANDING_ATTEMPTS):
+            try:
+                if _WINDOWS:
+                    os.rename(long_path(tmp), long_path(dest))
+                    return dest
+                os.link(long_path(tmp), long_path(dest))
+            except FileExistsError as exc:
+                taken = exc
+            except OSError as exc:
+                if not _WINDOWS:
+                    return None
+                # Access denied on an entry another writer just made (see
+                # ``_swap_into_place``) is the same clash.
+                if not (isinstance(exc, PermissionError) and self._occupied(dest)):
+                    raise
+                taken = exc
+            else:
+                with contextlib.suppress(OSError):
+                    os.unlink(long_path(tmp))
+                return dest
+            if self._overwrite is not OverwritePolicy.RENAME:
+                raise self._refusal(dest, member) from taken
+            dest = self._derive_free_name(base, is_dir=False)
+        raise ExtractionError(
+            f"No free name found for {display_path(self._shown(base))}: other writers "
+            f"took {_LANDING_ATTEMPTS} in a row",
+            member_name=member.name,
+        ) from taken
 
     def _new_temp_file(self, parent: Path) -> tuple[int, Path]:
         """Create a new ``.archivey-tmp-*`` file in ``parent`` at mode 0o600 and return

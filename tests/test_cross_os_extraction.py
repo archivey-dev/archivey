@@ -1596,7 +1596,10 @@ _UNMAPPED = {
     "kind",
     ["file", "hard", pytest.param("sym", marks=_POSIX_SYMLINKS), "dir"],
 )
-@pytest.mark.parametrize("overwrite", [OverwritePolicy.ERROR, OverwritePolicy.REPLACE])
+@pytest.mark.parametrize(
+    "overwrite",
+    [OverwritePolicy.ERROR, OverwritePolicy.SKIP, OverwritePolicy.REPLACE],
+)
 def test_landing_on_a_name_taken_after_the_check(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1604,8 +1607,10 @@ def test_landing_on_a_name_taken_after_the_check(
     overwrite: OverwritePolicy,
 ) -> None:
     """Another writer takes ``b.txt`` between the existence check and the landing.
-    Under ERROR that is the clash the check reports, for every member kind; the other
-    policies do not handle it, and the landing's own error goes out as it is."""
+    Under ERROR that is the clash the check reports, for every member kind, and under
+    SKIP the member is skipped as the check would skip it; REPLACE does not handle it,
+    and the landing's own error goes out as it is. (RENAME is
+    ``test_a_landing_under_rename_takes_the_next_free_name``'s.)"""
     dest = tmp_path / "out"
     _another_writer_takes(monkeypatch, "b.txt")
     second: tuple[str, str, bytes | str | None] = {
@@ -1615,28 +1620,37 @@ def test_landing_on_a_name_taken_after_the_check(
         "dir": ("dir", "b.txt", None),
     }[kind]
     archive = _tar([("file", "a.txt", b"first"), second])
-    raised = ExtractionError if overwrite is OverwritePolicy.ERROR else _UNMAPPED[kind]
-    with pytest.raises(raised) as excinfo:
-        open_and_extract(io.BytesIO(archive), dest, overwrite=overwrite)
-    if raised is ExtractionError:
-        assert "Destination already exists" in str(excinfo.value)
+    if overwrite is OverwritePolicy.SKIP:
+        report = open_and_extract(io.BytesIO(archive), dest, overwrite=overwrite)
+        assert [(r.status, r.path) for r in report.results] == [
+            (ExtractionStatus.EXTRACTED, dest / "a.txt"),
+            (ExtractionStatus.NOT_OVERWRITTEN, None),
+        ]
+    else:
+        raised = (
+            ExtractionError if overwrite is OverwritePolicy.ERROR else _UNMAPPED[kind]
+        )
+        with pytest.raises(raised) as excinfo:
+            open_and_extract(io.BytesIO(archive), dest, overwrite=overwrite)
+        if raised is ExtractionError:
+            assert "Destination already exists" in str(excinfo.value)
     assert (dest / "b.txt").read_bytes() == _OTHER_WRITER
     assert _tree(dest) == ["a.txt", "b.txt"]
 
 
 def _another_writer_takes_before_the_landing(
-    monkeypatch: pytest.MonkeyPatch, name: str
+    monkeypatch: pytest.MonkeyPatch, *names: str
 ) -> None:
-    """Another writer creates ``name`` just before the landing call, which then runs
-    for real: unlike ``_another_writer_takes``, ``os.replace`` is not patched, so on
-    POSIX it would replace the other writer's file without a word."""
+    """Another writer creates each of ``names`` just before the landing call, which
+    then runs for real: unlike ``_another_writer_takes``, ``os.replace`` is not
+    patched, so on POSIX it would replace the other writer's file without a word."""
     real_link = os.link
     real_rename = os.rename
     real_replace = os.replace
 
     def take_first(real: Callable[..., None]) -> Callable[..., None]:
         def call(src: str, dst: str, **kwargs: object) -> None:
-            if os.path.basename(str(dst)) == name:
+            if os.path.basename(str(dst)) in names:
                 Path(dst).write_bytes(_OTHER_WRITER)
             real(src, dst, **kwargs)
 
@@ -1647,24 +1661,103 @@ def _another_writer_takes_before_the_landing(
     monkeypatch.setattr(os, "replace", take_first(real_replace))
 
 
+_SECOND = {
+    "file": ("file", "b.txt", b"ours"),
+    "hard": ("hard", "b.txt", "a.txt"),
+}
+
+
 @pytest.mark.parametrize("kind", ["file", "hard"])
-def test_a_landing_under_error_never_replaces_another_writers_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+@pytest.mark.parametrize("overwrite", [OverwritePolicy.ERROR, OverwritePolicy.SKIP])
+def test_a_landing_never_replaces_another_writers_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    overwrite: OverwritePolicy,
 ) -> None:
-    """Under ERROR a FILE or HARDLINK lands only on a free name, so a file another
-    writer put there after the existence check is the clash, on POSIX too, where a
-    rename would replace it."""
+    """Under ERROR and SKIP a FILE or HARDLINK lands only on a free name, so a file
+    another writer put there after the existence check is the clash, or a skip, on
+    POSIX too, where a rename would replace it."""
     dest = tmp_path / "out"
     _another_writer_takes_before_the_landing(monkeypatch, "b.txt")
-    second: tuple[str, str, bytes | str] = {
-        "file": ("file", "b.txt", b"ours"),
-        "hard": ("hard", "b.txt", "a.txt"),
-    }[kind]
-    archive = _tar([("file", "a.txt", b"first"), second])
-    with pytest.raises(ExtractionError, match="Destination already exists"):
-        open_and_extract(io.BytesIO(archive), dest)
+    archive = _tar([("file", "a.txt", b"first"), _SECOND[kind]])
+    if overwrite is OverwritePolicy.ERROR:
+        with pytest.raises(ExtractionError, match="Destination already exists"):
+            open_and_extract(io.BytesIO(archive), dest, overwrite=overwrite)
+    else:
+        report = open_and_extract(io.BytesIO(archive), dest, overwrite=overwrite)
+        assert report.results[1].status is ExtractionStatus.NOT_OVERWRITTEN
     assert (dest / "b.txt").read_bytes() == _OTHER_WRITER
     assert _tree(dest) == ["a.txt", "b.txt"]
+
+
+@pytest.mark.parametrize("kind", ["file", "hard"])
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_landing_under_rename_takes_the_next_free_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, streaming: bool
+) -> None:
+    """Under RENAME a FILE or HARDLINK whose free name another writer takes first lands
+    on the next free name, numbered from the name the member asked for, and the result
+    reports where it went."""
+    dest = tmp_path / "out"
+    _another_writer_takes_before_the_landing(monkeypatch, "b.txt", "b (1).txt")
+    archive = _tar([("file", "a.txt", b"first"), _SECOND[kind]])
+    report = open_and_extract(
+        io.BytesIO(archive), dest, streaming=streaming, overwrite=OverwritePolicy.RENAME
+    )
+    result = report.results[1]
+    assert (result.status, result.requested_path, result.path) == (
+        ExtractionStatus.EXTRACTED,
+        dest / "b.txt",
+        dest / "b (2).txt",
+    )
+    assert result.collided_with is None
+    assert (dest / "b.txt").read_bytes() == _OTHER_WRITER
+    assert (dest / "b (1).txt").read_bytes() == _OTHER_WRITER
+    assert (dest / "b (2).txt").read_bytes() == (
+        b"ours" if kind == "file" else b"first"
+    )
+    if kind == "hard":
+        assert os.path.samefile(dest / "a.txt", dest / "b (2).txt")
+    assert _tree(dest) == ["a.txt", "b (1).txt", "b (2).txt", "b.txt"]
+
+
+def test_a_renamed_member_landing_on_a_taken_name_goes_on_counting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A member already given ``b (1).txt`` by a collision that finds it taken at the
+    landing takes ``b (2).txt``, not ``b (1) (1).txt``."""
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "b.txt").write_bytes(b"callers")
+    _another_writer_takes_before_the_landing(monkeypatch, "b (1).txt")
+    report = open_and_extract(
+        io.BytesIO(_tar([("file", "b.txt", b"ours")])),
+        dest,
+        overwrite=OverwritePolicy.RENAME,
+    )
+    assert report.results[0].path == dest / "b (2).txt"
+    assert (dest / "b (2).txt").read_bytes() == b"ours"
+    assert _tree(dest) == ["b (1).txt", "b (2).txt", "b.txt"]
+
+
+def test_a_rename_landing_gives_up_after_its_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another writer that takes every name first fails the member after
+    ``_LANDING_ATTEMPTS`` names, rather than holding the extraction forever."""
+    monkeypatch.setattr(extraction, "_LANDING_ATTEMPTS", 3)
+    _another_writer_takes_before_the_landing(
+        monkeypatch, "b.txt", "b (1).txt", "b (2).txt"
+    )
+    dest = tmp_path / "out"
+    with pytest.raises(ExtractionError, match="No free name found"):
+        open_and_extract(
+            io.BytesIO(_tar([("file", "b.txt", b"ours")])),
+            dest,
+            overwrite=OverwritePolicy.RENAME,
+        )
+    assert _tree(dest) == ["b (1).txt", "b (2).txt", "b.txt"]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows lands with os.rename")

@@ -94,9 +94,10 @@ permissions gets written as it is:
 A folder member merges into a folder that's already there. A file member whose path is an
 existing folder is a conflict like any other.
 
-Under `"error"`, a file that something else writes to the same name while the extraction
-runs, such as a second extraction into the same folder, is not replaced either: the member
-fails as if the file had been there from the start. On Linux and macOS this needs a
+A file that something else writes to the same name while the extraction runs, such as a
+second extraction into the same folder, is not replaced either, except under `"replace"`.
+Under `"error"` and `"skip"` the member fails or is skipped as if the file had been there
+from the start, and under `"rename"` it is written under the next free name. On Linux and macOS this needs a
 filesystem with hard links; on one without them (FAT, some network drives), or when a
 hard-linked file has used up the link slots the filesystem allows, the later writer
 replaces the earlier one's file.

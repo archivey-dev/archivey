@@ -24,13 +24,18 @@ applied to it, and `os.replace()` moves it onto the destination. A failure part-
 through preserves the existing entry and discards only the temp. `os.replace()`
 moves the entry itself, so a destination symlink is replaced rather than followed.
 
-Under `ERROR`, a FILE or HARDLINK whose name the existence check found free SHALL land
-only while the name is still free, so an entry another writer creates there after the
-check (a second extraction into the same folder) is the `ERROR` clash, never replaced:
-on POSIX by `link()` then removing the temp name, on Windows by `os.rename()`, both of
-which refuse a taken name. Where `link()` fails for another reason (a filesystem
-without hard links, the link-count limit), the landing SHALL fall back to
-`os.replace()`, which does not see such a writer.
+Under `ERROR`, `SKIP` and `RENAME`, a FILE or HARDLINK whose name the existence check
+found free SHALL land only while the name is still free, so an entry another writer
+creates there after the check (a second extraction into the same folder) is never
+replaced: on POSIX by `link()` then removing the temp name, on Windows by `os.rename()`,
+both of which refuse a taken name. `ERROR` then raises its clash and `SKIP` records
+`NOT_OVERWRITTEN`, as if the entry had been there at the check. `RENAME` lands on the
+next free derived name instead, without decoding the member again, and the result
+reports that name as `path`; after 100 names taken in a row the member fails. A SYMLINK
+or DIRECTORY whose name is taken after the check gets the same outcome under `ERROR`
+and `SKIP`. Where `link()` fails for another reason (a filesystem without hard links,
+the link-count limit), the landing SHALL fall back to `os.replace()`, which does not
+see such a writer.
 
 SYMLINK and DIRECTORY replacement SHALL remove the existing entry and create fresh,
 because neither can be staged: a symlink MUST be created at its final name for the
@@ -134,6 +139,8 @@ name-safety requirement.
 | Existing path under `SKIP` | `ExtractionResult.status == NOT_OVERWRITTEN`, `path=None`, no exception |
 | Symlink for which the archive records no target | `ExtractionResult.status == LINK_TARGET_UNAVAILABLE`, `path=None`, no exception, under either `OnError` |
 | Under `ERROR`, another writer creates the member's free name after the existence check (FILE or HARDLINK) | `ExtractionError` "Destination already exists"; the other writer's file stays |
+| The same under `SKIP` | `NOT_OVERWRITTEN`, `path=None`; the other writer's file stays |
+| The same under `RENAME` | `EXTRACTED` at the next free `name (N)`, reported as `path`; the other writer's file stays |
 | Same, POSIX filesystem whose `link()` fails with `EPERM` | Lands with `os.replace()`; the member is written |
 | Existing file under `REPLACE` | Fresh file is written via temp file + `os.replace()` |
 | Existing entry replaced by a HARDLINK under `REPLACE` | Link is built at a temp sibling and `os.replace()`d in; a failure leaves the existing entry intact |
