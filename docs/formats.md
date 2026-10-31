@@ -1030,8 +1030,8 @@ misread the archive.
   UDF, which Windows reads first. Without Rock Ridge archivey lists Joliet, and a reader without
   Joliet reads the plain tree. A file that only an unlisted tree holds is not a member, so it is
   reported with `MEMBER_READERS_DISAGREE` (`file_only_in_joliet`, `file_only_in_iso9660`,
-  `file_only_in_udf`), naming its path in that tree, up to 16 per tree. It is advisory: `DiagnosticPolicy.PEDANTIC` or `raise_on=` refuses
-  such an image.
+  `file_only_in_udf`), naming its path in that tree, up to 16 per tree. It is advisory:
+  `DiagnosticPolicy.PEDANTIC` or `raise_on=` refuses such an image.
 
 ### Contents
 

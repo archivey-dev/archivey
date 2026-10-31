@@ -1014,9 +1014,9 @@ class ReaderDisagreementContext(_JsonSafeContext):
       an ISO image whose Joliet, plain ISO 9660 or UDF tree holds a file the tree
       archivey lists does not (Rock Ridge, else Joliet). Windows and 7-Zip read Joliet
       and UDF, a reader without Joliet the plain tree, Linux and xorriso Rock Ridge;
-      each sees the files of its own tree. ``member_name`` is the file's path in that tree and
-      ``member_id`` is ``None``: it is not a member. Files are matched by the data
-      they point at; at most 16 are reported per tree.
+      each sees the files of its own tree. ``member_name`` is the file's path in that
+      tree and ``member_id`` is ``None``: it is not a member. Files are matched by the
+      data they point at; at most 16 are reported per tree.
     """
 
     kind: Literal["reader_disagreement"] = "reader_disagreement"

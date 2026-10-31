@@ -165,9 +165,9 @@ non-empty file points at, not by name (Joliet cuts names at 64 characters, plain
 `file_only_in_udf`), named by its path in that tree (a UDF name decoded by its own
 compression ID, UTF-16BE or Latin-1), with no member id, at most 16 per tree. A UDF
 extent is made absolute with the partition start; a file whose data sits inside its UDF
-File Entry (ICB flags 3) has no extent and always counts as unlisted. Empty files share one extent and are not compared. The reverse
-shape, a listed file another tree lacks, is not reported: everything archivey lists is
-in view. pycdlib parsed every tree in `open_fp`, so the comparison reads nothing; on a
+File Entry (ICB flags 3) has no extent and always counts as unlisted. Empty files share
+one extent and are not compared. The reverse shape, a listed file another tree lacks, is
+not reported: everything archivey lists is in view. pycdlib parsed every tree in `open_fp`, so the comparison reads nothing; on a
 20 100-file Rock Ridge + Joliet image (xorriso) it costs about 0.5% of open and list, and
 1.1% with a UDF tree as well (2026-10-31).
 
