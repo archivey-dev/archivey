@@ -55,6 +55,7 @@ from tests.atheris_fuzz.seeds import (
     accel_deflate_seeds,
     accel_gzip_seeds,
     accel_zlib_seeds,
+    ar_seeds,
     brotli_seeds,
     bzip2_seeds,
     deflate64_seeds,
@@ -245,6 +246,26 @@ def iso_open_one(data: bytes) -> None:
             _sample_seekable(
                 arc, max_reads=_MAX_MEMBER_READS, max_bytes=_MAX_ZIP_READ_BYTES
             )
+    except ArchiveyError:
+        return
+
+
+def ar_open_one(data: bytes) -> None:
+    """Walk an ar archive, plain or inside a compression stream, and read the first
+    members' data."""
+    try:
+        with open_archive(io.BytesIO(data), config=_FUZZ_CONFIG) as arc:
+            if arc.format.container is not ContainerFormat.AR:
+                return
+            for i, (member, stream) in enumerate(arc.stream_members()):
+                if i >= _MAX_MEMBERS:
+                    break
+                _ = member.name
+                if stream is not None and i < _MAX_TAR_READ_MEMBERS:
+                    try:
+                        stream.read(_MAX_TAR_READ_BYTES)
+                    except ArchiveyError:
+                        continue
     except ArchiveyError:
         return
 
@@ -826,6 +847,13 @@ def iter_target_specs() -> list[dict]:
             "seeds": iso_seeds,
             "fixup": None,
             "per_input_timeout": iso_per_input_timeout(),
+        },
+        {
+            "name": "ar",
+            "fn": ar_open_one,
+            "seeds": ar_seeds,
+            "fixup": None,
+            "per_input_timeout": stream_timeout,
         },
         {
             "name": "rar_header",

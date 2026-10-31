@@ -31,6 +31,7 @@ from archivey.internal.config import (
 )
 from archivey.internal.detection_workspace import DETECTION_LIMIT
 from archivey.internal.excluded_libraries import NO_EXCLUSIONS, as_excluded
+from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
@@ -89,6 +90,8 @@ class Codec(Enum):
     DEFLATE64 = "deflate64"
     SHRINK = "shrink"  # ZIP method 1 (LZW)
     IMPLODE = "implode"  # ZIP method 6 (LZ77 + Shannon-Fano)
+    LZOP = "lzop"  # the .lzo file format
+    LZO = "lzo"  # raw LZO1X (a SquashFS block)
     # Filter-only (composed with raw LZMA; see LZMA_FILTER_IDS).
     DELTA = "delta"
     BCJ_X86 = "bcj_x86"
@@ -321,6 +324,7 @@ class _ProbeSample(io.BytesIO):
     milliseconds.
     """
 
+    @override
     def read(self, size: int | None = -1, /) -> bytes:
         if size is None or size < 0 or size > _PROBE_PREFIX:
             size = _PROBE_PREFIX

@@ -20,7 +20,11 @@ from archivey.internal.excluded_libraries import (
     is_excluded_module,
 )
 from archivey.internal.format_adapter import prefix_probe
-from archivey.internal.format_args import add_plugin_spellings, plugin_spelling_clash
+from archivey.internal.format_args import (
+    PAIR_SPELLED_CONTAINERS,
+    add_plugin_spellings,
+    plugin_spelling_clash,
+)
 from archivey.internal.overrides import override
 from archivey.internal.registry import _optional, get_registry
 from archivey.internal.streams.codecs.base import (
@@ -179,7 +183,7 @@ def _check_handler(handler: type[CodecHandler]) -> PluginStream:
     pairs = [
         ArchiveFormat(base.container, stream) for base in registry.stream_pair_bases()
     ]
-    for each in (raw, *(p for p in pairs if not _builtin(p))):
+    for each in (raw, *(p for p in pairs if _spelled(p))):
         clash = plugin_spelling_clash(each)
         if clash is not None:
             spelling, owner = clash
@@ -217,9 +221,14 @@ def _check_handler(handler: type[CodecHandler]) -> PluginStream:
     return stream
 
 
-def _builtin(fmt: ArchiveFormat) -> bool:
-    """Whether ``fmt``'s container is built in, whose pairs take no plugin spelling."""
-    return isinstance(fmt.container, ContainerFormat)
+def _spelled(pair: ArchiveFormat) -> bool:
+    """Whether a codec's pair with ``pair.container`` takes a spelling (``lha.toy``,
+    ``ar.toy``): a plugin container's does, and a built-in's only when its pairs are
+    spelled that way already (``PAIR_SPELLED_CONTAINERS``), which TAR's are not."""
+    return (
+        not isinstance(pair.container, ContainerFormat)
+        or pair.container in PAIR_SPELLED_CONTAINERS
+    )
 
 
 def register_plugin_codec(handler: type[CodecHandler]) -> None:
@@ -231,7 +240,7 @@ def register_plugin_codec(handler: type[CodecHandler]) -> None:
     add_plugin_spellings(ArchiveFormat(ContainerFormat.RAW_STREAM, stream))
     for base in registry.stream_pair_bases():
         pair = ArchiveFormat(base.container, stream)
-        if not _builtin(pair):
+        if _spelled(pair):
             add_plugin_spellings(pair)
 
 

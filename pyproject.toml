@@ -250,8 +250,8 @@ extend-immutable-calls = [
 "src/archivey/internal/backends/iso_reader.py" = ["B009", "B010"]
 
 [tool.pyrefly]
-search-path = ["src", "packages/archivey-squashfs/src", "packages/archivey-cpio/src", "packages/archivey-ar/src"]
-project-includes = ["src", "packages/archivey-squashfs/src", "packages/archivey-cpio/src", "packages/archivey-ar/src"]
+search-path = ["src", "packages/archivey-squashfs/src", "packages/archivey-cpio/src"]
+project-includes = ["src", "packages/archivey-squashfs/src", "packages/archivey-cpio/src"]
 python_version = "3.11"
 
 # pycdlib is py.typed but declares its signatures in PEP 484 type comments
@@ -270,12 +270,30 @@ untyped-def-behavior = "skip-and-infer-return-any"
 # is kept clean on both ty and Pyrefly.
 [tool.ty.environment]
 python-version = "3.11"
-root = ["src", "packages/archivey-squashfs/src", "packages/archivey-cpio/src", "packages/archivey-ar/src"]
+root = ["src", "packages/archivey-squashfs/src", "packages/archivey-cpio/src"]
 
 [tool.ty.src]
 # Type-check the library and the in-repo plugin packages, mirroring pyrefly's
 # `project-includes`, so a bare `uv run ty check` is the gate with no path arguments.
-include = ["src", "packages/archivey-squashfs/src", "packages/archivey-cpio/src", "packages/archivey-ar/src"]
+include = ["src", "packages/archivey-squashfs/src", "packages/archivey-cpio/src"]
+
+[tool.ty.rules]
+# Every method that overrides one of a base class carries ``@override``
+# (archivey.internal.overrides); ``invalid-explicit-override``, on by default, refuses
+# the decorator on a method that overrides nothing.
+missing-override-decorator = "error"
+
+[[tool.ty.overrides]]
+# The CLI and the plugin packages use only archivey's public API, which has no
+# ``override``. tests/test_cli_uses_public_api.py checks that for the CLI; no test
+# checks it for the plugin packages. The CLI's overrides are of stdlib
+# classes, which an archivey rename cannot strand. The plugins' are of archivey's own
+# hooks, and one is unprotected: ``FormatReader.archive_info`` has a default, so a
+# rename leaves each plugin's override silently unused. The packages are being folded
+# into the library, where the rule covers their readers.
+include = ["src/archivey/cli/**", "packages/**"]
+[tool.ty.overrides.rules]
+missing-override-decorator = "ignore"
 
 [tool.coverage.run]
 source = ["archivey"]

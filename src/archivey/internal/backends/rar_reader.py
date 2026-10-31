@@ -151,6 +151,7 @@ from archivey.internal.naming import (
     resolve_link_target_name,
 )
 from archivey.internal.open_site import OpenSite
+from archivey.internal.overrides import override
 from archivey.internal.password import (
     _PasswordCandidates,
     _PasswordCandidatesExhausted,
@@ -919,10 +920,12 @@ class _UnrarOwnedStream(ProcessOutputStream):
         self._saw_eof = False
         super().__init__(stdout, proc)
 
+    @override
     def _at_eof(self) -> None:
         self._saw_eof = True
         super()._at_eof()
 
+    @override
     def tell(self, /) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
@@ -930,6 +933,7 @@ class _UnrarOwnedStream(ProcessOutputStream):
         # read() (readinto_passthrough is off), so the count is the position.
         return self._bytes_read
 
+    @override
     def _raise_for_returncode(self, rc: int) -> None:
         """Map an unrar exit code to an archivey error, or return quietly."""
         # RARLAB unrar exit codes: 11 bad password, 3 CRC/corrupt data, 2 fatal
@@ -2562,6 +2566,7 @@ class RarReader(BaseArchiveReader):
                 with volume.open("rb") as src, dest.open("wb") as out:
                     budget.copy(src, out)
 
+    @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield from self._members
         if self._archive.truncated is not None:
@@ -3097,6 +3102,7 @@ class RarReader(BaseArchiveReader):
             return MemberType.OTHER
         return MemberType.FILE
 
+    @override
     def _iter_with_data(
         self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
     ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
@@ -3330,6 +3336,7 @@ class RarReader(BaseArchiveReader):
             cleanup=_cleanup,
         )
 
+    @override
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, EOFError):
             return TruncatedError("RAR solid stream ended before the requested member")
@@ -3760,6 +3767,7 @@ class RarReader(BaseArchiveReader):
             return self._shared.view(info.data_offset, 0)
         return JoinedViews(views)
 
+    @override
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         if member.type != MemberType.SYMLINK or member.link_target is not None:
             return
@@ -4066,6 +4074,7 @@ class RarReader(BaseArchiveReader):
             source_format=ArchiveFormat.RAR,
         )
 
+    @override
     def _solid_run(self, member: ArchiveMember) -> SolidRun | None:
         # Each open() of a solid member runs a fresh process. Through its include
         # mask, unrar decodes the archive from its first payload member. unar decodes
@@ -4265,6 +4274,7 @@ class RarReader(BaseArchiveReader):
             costs[id(member)] = peak
         return costs
 
+    @override
     def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         raw = member._raw
         assert isinstance(raw, RarMemberInfo)
@@ -4933,6 +4943,7 @@ class RarReader(BaseArchiveReader):
 
         yield from self._drive_solid_pass(copies, _spawn, _plan)
 
+    @override
     def _get_archive_info(self) -> ArchiveInfo:
         is_solid = self._archive.is_solid
         cost = CostReceipt(
@@ -4967,6 +4978,7 @@ class RarReader(BaseArchiveReader):
             extra=info_extra,
         )
 
+    @override
     def _close_archive(self) -> None:
         with self._materialize_lock:
             self._shared.close()
@@ -5020,12 +5032,14 @@ class RarReadBackend(ReadBackend):
     OPTIONAL_DEPENDENCY = None
 
     @classmethod
+    @override
     def missing_programs(cls) -> tuple[MissingComponent, ...]:
         # Independent of ``rar_decompressor``: the query reads only the format policy
         # from a config, so it answers for the default ``AUTO``, which uses unrar when
         # one is usable.
         return rarlab_unrar_missing()
 
+    @override
     def open_read(
         self,
         source: ArchiveSource,

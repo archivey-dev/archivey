@@ -120,6 +120,7 @@ from archivey.internal.diagnostics_collector import (
 )
 from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.logs import detection as logger
+from archivey.internal.overrides import override
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.sfx import (
     MAX_VALIDATED_CANDIDATES,
@@ -251,15 +252,19 @@ class _BoundedPeekReader(ReadOnlyIOStream):
         # bound (not the end of the source) cut the read short.
         self.hit_limit = False
 
+    @override
     def readable(self) -> bool:
         return True
 
+    @override
     def seekable(self) -> bool:
         return True
 
+    @override
     def tell(self, /) -> int:
         return self._offset
 
+    @override
     def seek(self, offset: int, whence: int = 0, /) -> int:
         if whence == 0:  # SEEK_SET
             new_pos = offset
@@ -275,6 +280,7 @@ class _BoundedPeekReader(ReadOnlyIOStream):
         self._offset = min(new_pos, self._limit)
         return self._offset
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         past_limit = n < 0 or self._offset + n > self._limit
         end = self._limit if n < 0 else min(self._offset + n, self._limit)

@@ -31,6 +31,7 @@ from archivey.internal.excluded_libraries import (
     NO_EXCLUSIONS,
     as_reported,
 )
+from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import RewindWarning
 from archivey.internal.streams.child_process import mark_no_verdict
 from archivey.internal.streams.codecs import deps
@@ -292,6 +293,7 @@ class _StdlibSeekContract(DelegatingStream):
         # The position when a seek went past the end, which the stream below cannot hold.
         self._past_end: int | None = None
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         # tell() can be a round trip to the child: ask only when the seek is relative.
         pos = self.tell() if whence == io.SEEK_CUR else 0
@@ -305,6 +307,7 @@ class _StdlibSeekContract(DelegatingStream):
         """Return the size, by seeking the stream below to its end."""
         return self._inner.seek(0, io.SEEK_END)
 
+    @override
     def tell(self, /) -> int:
         if self._past_end is not None:
             return self._past_end

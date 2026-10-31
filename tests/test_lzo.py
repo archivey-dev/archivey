@@ -1,4 +1,5 @@
-"""The package's LZO1X decoder, on streams written by liblzo and on damaged ones."""
+"""archivey's LZO1X decoder in Python, on streams written by liblzo and on damaged
+ones. (The SquashFS images are the plugin package's test data.)"""
 
 from __future__ import annotations
 
@@ -8,10 +9,17 @@ import tracemalloc
 from pathlib import Path
 
 import pytest
-from archivey_squashfs.lzo import LzoError, decompress_python
+
+from archivey.internal.streams.codecs.lzo_decoder import (
+    LzoError,
+    lzo1x_decompress_python as decompress_python,
+)
 
 # Each written by python-lzo (liblzo2 2.10): ``lzo.compress(data, level, False)``.
 _END = b"\x11\x00\x00"
+_SQUASHFS_DATA = (
+    Path(__file__).parent.parent / "packages" / "archivey-squashfs" / "tests" / "data"
+)
 
 
 def test_only_the_end_marker_is_empty() -> None:
@@ -65,7 +73,7 @@ def test_matches_liblzo() -> None:
 
 def _metadata_blocks(name: str) -> list[bytes]:
     """The compressed metadata blocks of an LZO image: its inode and directory tables."""
-    image = (Path(__file__).parent / "data" / name).read_bytes()
+    image = (_SQUASHFS_DATA / name).read_bytes()
     fields = struct.unpack_from("<IIIIIHHHHHHQQQQQQQQ", image)
     inodes, directories = fields[15], fields[16]
     end = min(v for v in fields[13:19] if directories < v != 0xFFFF_FFFF_FFFF_FFFF)
@@ -107,7 +115,8 @@ def test_damaged_blocks_raise_only_lzo_error() -> None:
 def test_an_over_long_match_is_refused_before_it_is_copied() -> None:
     # Two literals, then a match whose length field is 2000 zero bytes long: it asks
     # for ~510 000 bytes. The limit refuses it before the copy, so the decoder never
-    # holds more than the limit (shown to fail with the check in ``match`` removed).
+    # holds more than the limit (shown to fail with
+    # ``if len(out) + length > limit`` removed from ``lzo_decoder.py``).
     stream = (
         b"\x13ab" + b"\x20" + bytes(2000) + b"\x01" + (1 << 2).to_bytes(2, "little")
     )

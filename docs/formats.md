@@ -7,6 +7,7 @@ the same order: what it needs, how it lists and reads, and its quirks.
 The maintainer handbook has more depth on
 [7z](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/7z.md),
 [ISO](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/iso.md),
+[ar](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/ar.md),
 [RAR](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/rar.md),
 [TAR](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/tar.md) and
 [ZIP](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/zip.md), and on the single-file
@@ -31,7 +32,8 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
   3.14. Listing: from its index; from a pipe, header by header. Members: direct. Reads from a pipe.
 - **TAR:** core. Listing: header by header. Members: direct. Reads from a pipe.
 - **Compressed TAR** (`.tar.gz`, `.tar.bz2`, `.tar.xz`, `.tar.lz`, `.tar.lzma`, `.tar.zz`,
-  `.tar.Z`, `.tar.zst`, `.tar.lz4`, `.tar.br`): needs what its compressor needs (below).
+  `.tar.Z`, `.tar.zst`, `.tar.lz4`, `.tar.br`, `.tar.lzo`): needs what its compressor needs
+  (below).
   Listing: needs decompression. Members: solid. Reads from a pipe.
 - **7z:** core for LZMA, LZMA2, Deflate, BZip2, Delta and the executable filters (BCJ, BCJ2,
   ARM64, RISC-V and the others); `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, AES, and Zstandard
@@ -43,8 +45,11 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
   solid, otherwise direct. Needs a source that can seek.
 - **ISO 9660:** `[recommended]` (`pycdlib`). Listing: from its index. Members: direct. Needs a
   source that can seek.
+- **ar** (`.a`, `.lib`, the outer layer of a `.deb`): core. Listing: header by header. Members:
+  direct. Reads from a pipe. Inside any compressor TAR reads inside (`.a.gz`, …), as a
+  compressed TAR is: listing needs decompression, members are solid.
 - **Directory:** core. Listing: walks the tree. Members: direct.
-- **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib and `.Z` in core;
+- **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z` and `.lzo` in core;
   Zstandard in core on Python 3.14 and later, otherwise `[recommended]`; LZ4 and Brotli need
   `[recommended]`. One member. Members: direct. Reads from a pipe. Seeking inside the member
   needs `seekable_members=True` ([Seeking inside a member](reading.md#seeking-inside-a-member)).
@@ -161,7 +166,7 @@ A CRC-32 is four big-endian bytes, so a CRC you computed compares as
 - **RAR5:** `crc32`, `blake2sp`, or both, for files that store them.
 - **`.lz`:** `crc32`, from a source that can seek. A file of several lzip members gets one value,
   combined from each member's CRC, equal to the CRC-32 of the whole payload.
-- **TAR, directory, and every other single compressed file:** none.
+- **TAR, ar, directory, and every other single compressed file:** none.
 
 When a format stores none, compute a digest while reading. A first-pass dedupe index can take the
 best one available:
@@ -1028,6 +1033,28 @@ misread the archive.
   `UnsupportedFeatureError` naming the sector layout. Convert one to a plain `.iso` first (for
   example with `bchunk` or `bin2iso`).
 
+## ar
+
+- **Needs:** nothing.
+- **Listing:** header by header, in one pass; inside a compressor, it needs decompression, as in a
+  compressed TAR. Every member is a file: ar has no directories or links.
+- **Reading members:** direct; inside a compressor, solid, as in a compressed TAR.
+- **From a pipe:** yes, with `streaming=True`.
+- Both dialects read. GNU (System V, also Windows `.lib`) keeps long names in a `//` member;
+  BSD and macOS keep a long name at the start of the member's data (`#1/N`).
+  `ArchiveInfo.extra["ar.dialect"]` is `"gnu"` or `"bsd"`, and absent for an archive with no
+  members. `ArchiveInfo.format_version` is `None`: ar has no versions.
+- The symbol table (`/`, `/SYM64/`, `__.SYMDEF`) is the linker's index, not a file. It is not
+  listed, and `ArchiveInfo.extra["ar.symbol_table"]` says whether there was one. During a
+  streaming pass both keys say what the walk has seen so far, and are final once it ends.
+- macOS ar pads each member with newlines so the next header starts on 8 bytes, and counts the
+  padding in the member's size. The padding is then part of the member, as llvm-ar and bsdtar
+  extract it.
+- A blank time, owner or mode field is `None`.
+- A thin archive (`!<thin>`) only names files kept outside it, and raises
+  `UnsupportedFeatureError`.
+- The long-name table may be no larger than `ListingLimits.max_metadata_bytes`.
+
 ## Disk images
 
 A UDIF image (`.dmg`) is recognised by its `koly` block, in its last 512 bytes, or its first 12 when
@@ -1060,9 +1087,12 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
 
 ## Single-file compressors
 
-- **Needs:** gzip, bzip2, xz, lzip, LZMA Alone, zlib and `.Z` are in core (`.Z` with archivey's own
-  LZW decoder). Zstandard is in core on Python 3.14 and later, and needs `[recommended]` before.
-  LZ4 and Brotli need `[recommended]`.
+- **Needs:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z` and `.lzo` are in core (`.Z` with
+  archivey's own LZW decoder). Zstandard is in core on Python 3.14 and later, and needs
+  `[recommended]` before. LZ4 and Brotli need `[recommended]`. `.lzo`, the format `lzop` writes,
+  decodes LZO1X with liblzo2 when the `python-lzo` package is installed, and otherwise in Python,
+  more than 25 times slower on text. `python-lzo` is not in an extra: it is GPL, and has no Linux
+  wheels, so installing it needs the liblzo2 headers.
 - **Listing:** one synthetic member, named from the source path, or `data` for a source with no
   name. `encoding=` has no effect, and passing it reports `ENCODING_ARGUMENT_UNUSED`.
 - **Reading:** forward only, until you pass `seekable_members=True`
@@ -1090,6 +1120,8 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   at open. A `.xz` or `.lz` opened from another archive's member stream reads neither, seekable or
   not: it never reports the CRC-32, and its size arrives only from a full read.
 - `.gz` may expose `extra["gzip.original_filename"]` when the header carries a name (`FNAME`).
+- `.lzo` exposes `extra["lzop.original_filename"]` when its header stores a name, and the
+  modification time and permission bits the header stores.
 - `.gz` exposes `extra["gzip.isize"]`, the trailer's size field, when the file's end is cheap to
   reach (a path or an in-memory stream; not a pipe or another archive's member). It is the size
   modulo 2^32 only for a file of one gzip member with nothing after it. A file of several members

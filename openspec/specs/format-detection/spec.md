@@ -245,6 +245,7 @@ Exact matches only (no fuzzy/weak magic). Recognised:
 | ISO 9660, raw CD sector image | `00 FF×10 00` sector sync at 0 (claimed so `format-iso` can refuse it by name) |
 | UDIF | `6B 6F 6C 79 00 00 00 04 00 00 02 00` (`koly`, version 4, header size 512) at offset 0, or at the start of the last 512 bytes |
 | TAR | `ustar` at 257 |
+| ar | `!<arch>\n` at 0; `!<thin>\n` at 0 (claimed so `format-ar` can refuse it by name) |
 | LZ4 | `04 22 4D 18` (frame); `02 21 4C 18` (legacy stream, `lz4 -l`) |
 | lzip | `LZIP` |
 | unix-compress | `1F 9D` |

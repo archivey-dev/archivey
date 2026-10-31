@@ -259,6 +259,7 @@ COMPRESSED_TAR_SHORT_SUFFIXES: dict[str, StreamFormat] = {
     ".txz": StreamFormat.XZ,
     ".tzst": StreamFormat.ZSTD,
     ".tlz": StreamFormat.LZIP,
+    ".tzo": StreamFormat.LZOP,
 }
 
 

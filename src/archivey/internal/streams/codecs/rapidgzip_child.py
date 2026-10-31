@@ -52,6 +52,7 @@ from archivey.exceptions import (
     TruncatedError,
     exception_detail,
 )
+from archivey.internal.overrides import override
 from archivey.internal.streams.child_process import (
     REAP_TIMEOUT,
     describe_exit,
@@ -1096,6 +1097,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             return None
         return SeekPoint(decoded, bit // 8, DeflateResume(bit % 8, bytes(window)))
 
+    @override
     def read(self, n: int | None = -1, /) -> bytes:
         # Before the buffer: a closed or dead stream raises even with read-ahead left.
         self._raise_if_unusable()
@@ -1180,12 +1182,15 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._pos += len(result)
         return result
 
+    @override
     def readall(self) -> bytes:
         return self.read(-1)
 
+    @override
     def seekable(self) -> bool:
         return True
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         self._raise_if_unusable()
         if whence in (io.SEEK_SET, io.SEEK_CUR):
@@ -1230,6 +1235,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._moved_to(position)
         return position
 
+    @override
     def tell(self) -> int:
         self._raise_if_unusable()
         if self._pos is None:
@@ -1312,6 +1318,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._known_offsets = dict(offsets)
         return offsets
 
+    @override
     def close(self) -> None:
         if self.closed:
             return

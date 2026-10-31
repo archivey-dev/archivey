@@ -43,6 +43,7 @@ from archivey.internal.streams.codecs.lzma_codec import (
     LzmaCodec,
     XzCodec,
 )
+from archivey.internal.streams.codecs.lzo_codec import Lzo1xCodec, LzopCodec
 from archivey.internal.streams.codecs.ppmd_codec import PpmdCodec
 from archivey.internal.streams.codecs.stored_codec import StoredCodec
 from archivey.internal.streams.codecs.unix_compress_codec import UnixCompressCodec
@@ -91,6 +92,8 @@ _STREAM_CODECS: list[StreamCodec] = [
     Deflate64Codec(),
     ShrinkCodec(),
     ImplodeCodec(),
+    LzopCodec(),
+    Lzo1xCodec(),
 ]
 
 _BY_CODEC: dict[CodecId, StreamCodec] = {c.codec: c for c in _STREAM_CODECS}

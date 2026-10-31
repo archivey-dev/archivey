@@ -158,6 +158,18 @@ def iso_seeds() -> list[bytes]:
         return tiny + _corpus_seeds("iso", Path(tmp)) + _adversarial_seeds(".iso")
 
 
+def ar_seeds() -> list[bytes]:
+    """Tiny magics, the GNU, BSD and macOS archives in tests/fixtures/ar, and each
+    of them gzip-compressed, so the walk also runs inside a decoded stream."""
+    tiny = [b"", b"!<arch>\n", b"!<thin>\n", b"!<arch>\n//" + b" " * 46 + b"`\n"]
+    fixtures = [
+        path.read_bytes()
+        for path in sorted((_REPO_ROOT / "tests" / "fixtures" / "ar").glob("*.a"))
+    ]
+    compressed = [gzip.compress(data, mtime=0) for data in fixtures]
+    return tiny + fixtures + compressed
+
+
 def rar_seeds() -> list[bytes]:
     """Tiny magics + on-disk RAR fixtures (RAR3/RAR5, solid, links, volumes, …)."""
     from archivey.internal.backends.rar_parser import RAR5_ID, RAR_ID

@@ -68,10 +68,15 @@ from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.detection import INNER_CONTAINER_PROBE_BYTES
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.format_args import add_plugin_spellings, plugin_spelling_clash
+from archivey.internal.format_args import (
+    add_plugin_spellings,
+    add_sequential_container,
+    plugin_spelling_clash,
+)
 from archivey.internal.logs import detection as detection_logger
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
 from archivey.internal.open_site import OpenSite
+from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.source import ArchiveSource
@@ -293,6 +298,15 @@ class _PluginAdapter(BaseArchiveReader):
                 # Raw LZMA1 may have no end marker: it stops at the stored size.
                 unpack_size=size if codec is Codec.LZMA else None,
             )
+        if codec is Codec.LZO:
+            if size is None:
+                raise UnsupportedFeatureError(
+                    "ReaderContext.decompress() needs size= for LZO: raw LZO1X does "
+                    "not store its decoded length",
+                    source_format=self._format,
+                    archive_name=self._archive_name,
+                )
+            params = CodecParams(unpack_size=size)
         # Per call, as ZIP fills them per member (``_member_decoder_config``): the
         # output size, and the input size while ``data`` is at its start. The
         # accelerators choose by them, and rapidgzip's length check needs the first.
@@ -367,6 +381,7 @@ class _PluginAdapter(BaseArchiveReader):
             member_id=self._member_id(member),
         )
 
+    @override
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         # A plugin that broke the interface is a plugin bug, not a fault in the
         # archive: not offered to the plugin's translator, which may map every
@@ -447,6 +462,7 @@ class _PluginAdapter(BaseArchiveReader):
             f"named {digest.name!r}, {reason}"
         )
 
+    @override
     def _get_archive_info(self) -> ArchiveInfo:
         with self._translated_errors(), self._handle_guard():
             info = self._reader.archive_info()
@@ -490,6 +506,7 @@ class _PluginAdapter(BaseArchiveReader):
             # dropped by extraction, as for a built-in format (data model, DR-3).
             self._emit_directory_data_ignored(member, index)
 
+    @override
     def _close_archive(self) -> None:
         try:
             with self._translated_errors(), self._handle_guard():
@@ -503,6 +520,7 @@ class IndexedReaderAdapter(_PluginAdapter):
     """Serves an :class:`~archivey.formats.IndexedReader` through the internal reader
     contract."""
 
+    @override
     def _open_reader(self, context: ReaderContext) -> IndexedReader[Any]:
         source = self._source
         assert source is not None
@@ -520,6 +538,7 @@ class IndexedReaderAdapter(_PluginAdapter):
         self._MEMBER_LIST_UPFRONT = reader.member_list_upfront
         return reader
 
+    @override
     def _cost(self, info: ReaderArchiveInfo) -> CostReceipt:
         return CostReceipt(
             listing_cost=(
@@ -532,6 +551,7 @@ class IndexedReaderAdapter(_PluginAdapter):
             solid_block_count=None,
         )
 
+    @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
         # One boundary and one guard for the whole walk: both are reusable, and
         # building them per member is a measurable part of listing a large archive.
@@ -584,6 +604,7 @@ class IndexedReaderAdapter(_PluginAdapter):
             stream = LockedStream(stream, self._handle_lock)
         return data, stream
 
+    @override
     def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         data, stream = self._plugin_member_data(member)
         # Until the parts take the stream over, a raise here (a refused digest name,
@@ -810,6 +831,7 @@ class _ForwardInput(ReadOnlyIOStream):
         # layer) or a BufferedReader over the source's arrived view.
         self._stream = stream
 
+    @override
     def read(self, n: int | None = -1, /) -> bytes:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
@@ -841,11 +863,13 @@ class _SpanWindow(ReadOnlyIOStream):
         self._what = what
         self._done = 0
 
+    @override
     def tell(self) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
         return self._done
 
+    @override
     def read(self, n: int | None = -1, /) -> bytes:
         if self.closed:
             raise ValueError("read from a closed member stream")
@@ -880,11 +904,13 @@ class _DecodedWindow(ReadOnlyIOStream):
         self._decoded = decoded
         self._done = 0
 
+    @override
     def tell(self) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
         return self._done
 
+    @override
     def read(self, n: int | None = -1, /) -> bytes:
         if self.closed:
             raise ValueError("read from a closed member stream")
@@ -941,14 +967,17 @@ class _DataWalkStream(ReadOnlyIOStream):
         self._window = _DecodedWindow(decoded)
         super().__init__()
 
+    @override
     def tell(self) -> int:
         return self._window.tell()
 
+    @override
     def read(self, n: int | None = -1, /) -> bytes:
         if self.closed:
             raise ValueError("read from a closed member stream")
         return self._window.read(n)
 
+    @override
     def close(self) -> None:
         adapter, self._adapter = self._adapter, None
         if adapter is not None:
@@ -964,6 +993,7 @@ class SequentialReaderAdapter(_PluginAdapter):
 
     _MEMBER_LIST_UPFRONT = False
 
+    @override
     def _open_reader(self, context: ReaderContext) -> SequentialReader:
         plugin = self._plugin
         assert isinstance(plugin, SequentialFormatHandler)
@@ -1209,6 +1239,7 @@ class SequentialReaderAdapter(_PluginAdapter):
         walk.layer = layer
         return layer.forward
 
+    @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
         boundary = self._translated_errors()
         guard = self._handle_guard()
@@ -1358,12 +1389,14 @@ class SequentialReaderAdapter(_PluginAdapter):
                 member.link_target = target.decode("utf-8", errors="surrogateescape")
         return member
 
+    @override
     def _pass_reads_through_walk(self) -> bool:
         """A random-access pass reads through the walk until it ends, so a
         compressed archive (``.cpio.gz``, or one a walk decompresses part-way) is
         decoded once for the headers and the data, not once for each."""
         return True
 
+    @override
     def _open_member_in_walk(self, member: ArchiveMember) -> MemberStreamParts:
         record = member._raw
         assert isinstance(record, _Span), "a sequential member is missing its span"
@@ -1409,6 +1442,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             )
         return self._span_parts(member, record, stream)
 
+    @override
     def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         record = member._raw
         assert isinstance(record, _Span), "a sequential member is missing its span"
@@ -1696,6 +1730,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             custom_digests=record.custom,
         )
 
+    @override
     def _cost(self, info: ReaderArchiveInfo) -> CostReceipt:
         assert self._source is not None
         capability = (
@@ -1770,6 +1805,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                         codec, self._codec_stream = self._codec_stream, None
                         codec.close()
 
+    @override
     def _close_archive(self) -> None:
         # A walk taken at open and never listed is still suspended in the plugin's
         # walk(): finish it first, so its own cleanup runs before close() and over an
@@ -1809,6 +1845,7 @@ _PLUGIN_CODECS: dict[CompressionAlgorithm, Codec] = {
     CompressionAlgorithm.LZMA: Codec.LZMA,
     CompressionAlgorithm.LZMA2: Codec.LZMA2,
     CompressionAlgorithm.XZ: Codec.XZ,
+    CompressionAlgorithm.LZO: Codec.LZO,
 }
 
 
@@ -1817,6 +1854,7 @@ class _PluginBackend(ReadBackend):
 
     PLUGIN: ClassVar[type[FormatHandler]]
 
+    @override
     def open_read(
         self,
         source: ArchiveSource,
@@ -2086,9 +2124,16 @@ def _backend_class(
         "INNER_MAGIC": magic if sequential else (),
         "CONTENT_PROBES": (((fmt, prefix_probe(probe)),) if probe is not None else ()),
         "USES_ENCODING": bool(plugin.uses_encoding),
-        "NON_SEEKABLE_REASON": "its reader needs random access to the archive",
-        # A sequential format reads a pipe in a streaming pass.
+        # A sequential format reads a pipe in a streaming pass, so it has no reason
+        # to refuse one.
         "SUPPORTS_STREAMING_NON_SEEKABLE": sequential,
+        **(
+            {}
+            if sequential
+            else {
+                "NON_SEEKABLE_REASON": "its reader needs random access to the archive"
+            }
+        ),
         "INSTALL_HINT": plugin.install_hint,
         "REQUIRED_MODULES": tuple(plugin.requires),
         **overrides,
@@ -2118,11 +2163,22 @@ def register_builtin_format(
 
     The format keeps its built-in container, extensions, magic and place among the
     built-in backends, so detection does not change and ``FormatInfo.from_plugin`` is
-    false. ``overrides`` sets backend attributes a plugin cannot declare
+    false. A sequential format's compressed pairs are spelled as a plugin's are
+    (``"ar.gz"``). ``overrides`` sets backend attributes a plugin cannot declare
     (``NON_SEEKABLE_REASON``, ``OPTIONAL_DEPENDENCY``). Returns the backend class.
     """
     backend = _backend_class(plugin, plugin.format, overrides)
     get_registry().register_reader(backend)
+    if issubclass(plugin, SequentialFormatHandler):
+        container = plugin.format.container
+        assert isinstance(container, ContainerFormat), (
+            "a built-in has a named container"
+        )
+        add_sequential_container(container)
+        # Its compressed pairs (``ar.gz``) have no named constant.
+        format_args.PAIR_SPELLED_CONTAINERS.add(container)
+        for each in compressed_formats(plugin.format):
+            add_plugin_spellings(each)
     return backend
 
 

@@ -48,6 +48,7 @@ from archivey.internal.naming import (
     infer_member_name_from_archive,
 )
 from archivey.internal.open_site import OpenSite
+from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
@@ -107,6 +108,7 @@ class _IndexReportRecorder(DiagnosticCollector):
         super().__init__()
         self.reports: list[IndexReport] = []
 
+    @override
     def emit(
         self,
         *,
@@ -259,6 +261,7 @@ class SingleFileReader(BaseArchiveReader):
             # Non-seekable: validation waits for the first read (see _validate_at_open).
             self._pending_parts = self._open_codec_parts()
 
+    @override
     def _validate_at_open(self) -> None:
         """Decode one byte, so a source that is not the claimed codec fails at open.
 
@@ -536,6 +539,7 @@ class SingleFileReader(BaseArchiveReader):
 
     # --- reader hooks --------------------------------------------------------------------
 
+    @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield self._member
 
@@ -608,6 +612,7 @@ class SingleFileReader(BaseArchiveReader):
             fill_size=fill,
         )
 
+    @override
     def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         if self._seekable:
             # Reentrant: every open builds a fresh codec (path → independent FD; stream →
@@ -627,6 +632,7 @@ class SingleFileReader(BaseArchiveReader):
         self._stamp_error_context(err, member.name)
         raise err
 
+    @override
     def _get_archive_info(self) -> ArchiveInfo:
         cost = CostReceipt(
             listing_cost=ListingCost.INDEXED,  # exactly one member, always
@@ -649,6 +655,7 @@ class SingleFileReader(BaseArchiveReader):
             cost=cost,
         )
 
+    @override
     def _close_archive(self) -> None:
         # Close an unserved non-seekable pending stream. The SharedSource is deliberately
         # NOT closed: it owns nothing (only stream sources are wrapped, and the caller
@@ -680,6 +687,7 @@ class SingleFileBackend(ReadBackend):
     # non-seekable source. Random access always needs a seekable source.
     SUPPORTS_STREAMING_NON_SEEKABLE = True
 
+    @override
     def open_read(
         self,
         source: ArchiveSource,

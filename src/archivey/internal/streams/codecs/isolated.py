@@ -8,9 +8,9 @@ proxy forwards each call with its arguments unchanged, so a codec's per-library 
 (zlib's ``max_length=0`` meaning "no limit", the others' ``-1``) stay where they are.
 
 The libraries that re-enable the GIL on a free-threaded build (brotli, inflate64,
-pyppmd) are never imported here when isolated: their exception types have stand-ins
-(:class:`BrotliChildError`, :class:`PpmdChildError`) that the codecs catch and
-translate alongside the real ones.
+pyppmd, python-lzo) are never imported here when isolated: their exception types have
+stand-ins (:class:`BrotliChildError`, :class:`PpmdChildError`, :class:`LzoChildError`)
+that the codecs catch and translate alongside the real ones.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Protocol
 
 from archivey.config import ProcessIsolation
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.decoder_child import (
     DecoderChild,
@@ -62,6 +63,10 @@ class PpmdChildError(ValueError):
     """
 
 
+class LzoChildError(ValueError):
+    """Stand-in for ``lzo.error`` raised by liblzo2 in a child process."""
+
+
 def _known(*classes: type[Exception] | None) -> dict[tuple[str, str], type[Exception]]:
     return {
         (cls.__module__, cls.__qualname__): cls for cls in classes if cls is not None
@@ -70,7 +75,10 @@ def _known(*classes: type[Exception] | None) -> dict[tuple[str, str], type[Excep
 
 _ZLIB_ERRORS = _known(zlib.error)
 _LZMA_ERRORS = _known(lzma.LZMAError)
+
+
 # Matched by type name alone ("*"): the modules that raise them differ by build.
+_LZO_ERRORS: dict[tuple[str, str], type[Exception]] = {("*", "error"): LzoChildError}
 _BROTLI_ERRORS: dict[tuple[str, str], type[Exception]] = {
     ("*", "error"): BrotliChildError
 }
@@ -247,6 +255,7 @@ class Natives:
     def __init__(self, *, isolated: bool) -> None:
         self.isolated = isolated
 
+    @override
     def __repr__(self) -> str:
         return f"Natives(isolated={self.isolated})"
 
@@ -349,6 +358,28 @@ class Natives:
             return child.call("decompress", block, (), kwargs)
         finally:
             child.close()
+
+    def lzo_decompress(self, block: bytes, limit: int) -> bytes:
+        """``lzo.decompress(block, False, limit)``: one raw LZO1X block. Needs
+        python-lzo; not imported here when isolated, where it raises
+        :class:`LzoChildError` for ``lzo.error``."""
+        if not self.isolated:
+            lzo = deps.lzo.load()
+            assert lzo is not None
+            return lzo.decompress(block, False, limit)
+        child = self._child("lzo", known=_LZO_ERRORS)
+        try:
+            return child.call("decompress", block, (False, limit))
+        finally:
+            child.close()
+
+    def lzo_errors(self) -> tuple[type[Exception], ...]:
+        """The exception types :meth:`lzo_decompress` raises on bad data."""
+        if self.isolated:
+            return (LzoChildError,)
+        lzo = deps.lzo.load()
+        assert lzo is not None
+        return (lzo.error,)
 
     def brotli_decompressor(self) -> Any:
         """A ``brotli.Decompressor``; needs brotli installed. Not imported here when

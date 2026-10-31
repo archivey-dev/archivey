@@ -54,6 +54,7 @@ from archivey.internal.diagnostics_collector import (
     resolve_collector,
 )
 from archivey.internal.logs import streams as logger
+from archivey.internal.overrides import override
 from archivey.internal.streams.child_process import is_no_verdict
 from archivey.internal.streams.kept_errors import KeptError
 from archivey.internal.streams.native_memory import end_lzma_decoder
@@ -916,6 +917,7 @@ class DecompressorStream(ReadOnlyIOStream):
         # Kept without its frames (``kept_errors``).
         self._spent: KeptError | None = None
 
+    @override
     def seekable(self) -> bool:
         return self._inner.seekable()
 
@@ -1502,6 +1504,7 @@ class DecompressorStream(ReadOnlyIOStream):
             return _NO_DEFERRAL
         return collector.deferring_raises()
 
+    @override
     def readall(self) -> bytes:
         if self._spent is not None:
             # The caller asked for the whole stream, which cannot be had: raise now,
@@ -1549,6 +1552,7 @@ class DecompressorStream(ReadOnlyIOStream):
             self._publish_size(self._pos)
         return data
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         if n == 0:
             return b""
@@ -1649,6 +1653,7 @@ class DecompressorStream(ReadOnlyIOStream):
         assert self._spent is not None
         self._spent.raise_again()
 
+    @override
     def close(self) -> None:
         # Quiesce any decoder-owned native worker before dropping references, so a
         # blocked PPMd worker cannot be resumed into freed memory at GC.
@@ -1743,6 +1748,7 @@ class DecompressorStream(ReadOnlyIOStream):
                 raise held
         return self._size
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         with self._deferring_raises() as pending:
             pos = self._seek(offset, whence)
@@ -1853,6 +1859,7 @@ class DecompressorStream(ReadOnlyIOStream):
         self._pos = new_pos
         return self._pos
 
+    @override
     def tell(self, /) -> int:
         return self._pos
 

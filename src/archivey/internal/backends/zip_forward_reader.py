@@ -104,6 +104,7 @@ from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPas
 from archivey.internal.hashing import crc32_digest
 from archivey.internal.listing_limits import member_metadata_bytes
 from archivey.internal.logs import backends as logger
+from archivey.internal.overrides import override
 from archivey.internal.password import unverified_data_error, wrong_password_error
 from archivey.internal.password_confirm import (
     PASSWORD_CONFIRM_CHUNK_BYTES,
@@ -1595,15 +1596,18 @@ class _KeptData(MemberData):
         self._kept = kept.data
         self._descriptor = kept.descriptor
 
+    @override
     def _read_some(self, size: int) -> bytes:
         chunk = self._kept[self.consumed : self.consumed + size]
         self.consumed += len(chunk)
         return chunk
 
     @property
+    @override
     def found_descriptor(self) -> DataDescriptor | None:
         return self._descriptor
 
+    @override
     def settle(
         self,
         used: int | None = None,
@@ -1631,6 +1635,7 @@ class _SpoolView(ReadOnlyIOStream):
         """How many of the kept bytes the trial has read."""
         return self._pos
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         end = len(self._data) if n < 0 else self._pos + n
         chunk = self._data[self._pos : end]
@@ -1655,6 +1660,7 @@ class _Replay(ReadOnlyIOStream):
         """The kept bytes not read yet."""
         return self._kept[self._pos :]
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         if self._pos < len(self._kept):
             end = len(self._kept) if n < 0 else self._pos + n
@@ -1677,6 +1683,7 @@ class _CutShortWatch(ReadOnlyIOStream):
         self._data = data
         self._owner = owner
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         try:
             chunk = self._data.read(n)
@@ -1706,6 +1713,7 @@ class _PassStream(ReadOnlyIOStream):
         super().__init__()
         self._pass_data = data
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         if self.closed:
             raise ValueError("read from a closed ZIP member stream")
@@ -1732,6 +1740,7 @@ class ZipForwardReader(ZipReader):
     _MEMBER_LIST_UPFRONT = False
     _REVISES_YIELDED_MEMBERS = True
 
+    @override
     def _open_index(self, source: ArchiveSource, start_offset: int) -> None:
         self._fp = None
         self._walker = LocalHeaderWalk(source, offset=0, find_start=True)
@@ -1803,6 +1812,7 @@ class ZipForwardReader(ZipReader):
 
     # -- the walk ----------------------------------------------------------------
 
+    @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
         walker = self._walker
         self._local_count = 0
@@ -2257,6 +2267,7 @@ class ZipForwardReader(ZipReader):
             _, _, error = failed[0]
             raise error
 
+    @override
     def _local_crc_for(self, entry: CentralEntry) -> int | None:
         """The seekable read's :meth:`ZipReader._local_crc_for`, from the local header
         the pass met at ``entry``'s offset rather than a read of it."""
@@ -2268,6 +2279,7 @@ class ZipForwardReader(ZipReader):
             return None
         return local.crc
 
+    @override
     def _directory_data_reach(self, entry: CentralEntry) -> str | None:
         """A directory whose local header defers its sizes to a data descriptor (bit
         3) has no size when a pass reaches it, so the pass yields no stream and its
@@ -2352,6 +2364,7 @@ class ZipForwardReader(ZipReader):
             descriptor.file_size,
         )
 
+    @override
     def _listed_in_index_order(self) -> list[ArchiveMember]:
         """The kept members in the directory's order, once it has been read.
 
@@ -2444,6 +2457,7 @@ class ZipForwardReader(ZipReader):
 
     # -- data ----------------------------------------------------------------------
 
+    @override
     def _iter_with_data(
         self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
     ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
@@ -2459,6 +2473,7 @@ class ZipForwardReader(ZipReader):
             self._begin_forward_pass(), open_member=_open, close_previous=False
         )
 
+    @override
     def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         current = self._pass_data
         if current is None or current.member is not member:
@@ -2487,6 +2502,7 @@ class ZipForwardReader(ZipReader):
             )
         return self._member_parts(stream, member.name, size=member.size)
 
+    @override
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         member_id = member._member_id
         why = None if member_id is None else self._uncaptured.get(member_id)
@@ -2522,6 +2538,7 @@ class ZipForwardReader(ZipReader):
             target_in_archive=True,
         )
 
+    @override
     def _link_target_opener(
         self, member: ArchiveMember
     ) -> Callable[[], AbstractContextManager[ReadableStream]]:
@@ -2606,6 +2623,7 @@ class ZipForwardReader(ZipReader):
 
     # -- what the caller sees ------------------------------------------------------
 
+    @override
     def _account_archive_comment(self) -> None:
         # The walk starts before the end record is read: ``_read_directory`` weighs
         # the comment once it is. The base call at the start of the walk has to be
@@ -2615,18 +2633,22 @@ class ZipForwardReader(ZipReader):
         if self._end_record is not None:
             super()._account_archive_comment()
 
+    @override
     def _archive_comment(self) -> str | None:
         end = self._end_record
         if end is None or not end.comment:
             return None
         return self._decode_unflagged_comment(end.comment)
 
+    @override
     def _known_member_count(self) -> int | None:
         return self._entries_read
 
+    @override
     def _cost_receipt(self) -> CostReceipt:
         return _ZIP_FORWARD_COST
 
+    @override
     def _get_archive_info(self) -> ArchiveInfo:
         return ArchiveInfo(
             format=ArchiveFormat.ZIP,
@@ -2640,6 +2662,7 @@ class ZipForwardReader(ZipReader):
             extra=ArchiveInfoExtra({"zip.volume_count": self._volume_count}),
         )
 
+    @override
     def _close_archive(self) -> None:
         current, self._pass_data = self._pass_data, None
         if current is not None:

@@ -509,6 +509,7 @@ _SEEK_ARCHIVES: tuple[_SeekSpec, ...] = (
     _SeekSpec("basic", "tar.lz"),
     _SeekSpec("basic", "tar.zz"),
     _SeekSpec("basic", "tar.br"),
+    _SeekSpec("basic-lzo", "tar.lzo"),
     _SeekSpec("basic", "dir"),
     _SeekSpec("basic", "iso"),
     _SeekSpec("basic", "iso-joliet"),
@@ -520,6 +521,7 @@ _SEEK_ARCHIVES: tuple[_SeekSpec, ...] = (
     _SeekSpec("single-file", "lz"),
     _SeekSpec("single-file", "zz"),
     _SeekSpec("single-file", "br"),
+    _SeekSpec("single-file", "lzo"),
     _SeekSpec("single-file-meta", "gz-meta"),
 )
 
@@ -904,6 +906,13 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
     ("tar-lzma-alone", "no corpus builder for tar + LZMA Alone"),
     ("tar-unix-compress", "no corpus builder for tar + unix compress (.tar.Z)"),
     ("udif", "UDIF is recognised and refused; there is no reader"),
+    (
+        "ar",
+        (
+            "no corpus builder: the corpus trees hold directories, which ar cannot; "
+            "tests/test_ar.py seeks inside members, plain and gzip-compressed"
+        ),
+    ),
 )
 
 _UNTESTED_FORMATS = {
@@ -912,6 +921,7 @@ _UNTESTED_FORMATS = {
     ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZMA_ALONE): "tar-lzma-alone",
     ArchiveFormat(ContainerFormat.TAR, StreamFormat.UNIX_COMPRESS): "tar-unix-compress",
     ArchiveFormat.DMG: "udif",
+    **{ArchiveFormat(ContainerFormat.AR, stream): "ar" for stream in StreamFormat},
 }
 
 
