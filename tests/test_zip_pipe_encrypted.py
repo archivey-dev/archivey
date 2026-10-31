@@ -1227,8 +1227,8 @@ def _declared_size(data: bytes, size: int) -> bytes:
     return bytes(out)
 
 
-def _method_6_link() -> bytes:
-    """A ZipCrypto symlink whose method says Implode in both headers: the password
+def _unsupported_method_link() -> bytes:
+    """A ZipCrypto symlink whose method says Reduce (2) in both headers: the password
     is right, and the codec is refused once the stage is built."""
     data = bytearray(
         build_zipcrypto_zip(
@@ -1239,8 +1239,8 @@ def _method_6_link() -> bytes:
             unix_mode=0o120777,
         )
     )
-    struct.pack_into("<H", data, 8, 6)
-    struct.pack_into("<H", data, data.index(b"PK\x01\x02") + 10, 6)
+    struct.pack_into("<H", data, 8, 2)
+    struct.pack_into("<H", data, data.index(b"PK\x01\x02") + 10, 2)
     return bytes(data)
 
 
@@ -1263,7 +1263,7 @@ def test_a_link_whose_codec_is_refused_says_so_as_from_a_file(
 ) -> None:
     """Listing keeps the link without a target and says why, from a file and a pipe
     alike; opening the link raises the refusal (DR-2)."""
-    data = _method_6_link()
+    data = _unsupported_method_link()
     calls = _counted_decrypts(monkeypatch)
     from_file = _link_target_report(data, pipe=False)
     from_pipe = _link_target_report(data, pipe=True)
@@ -1311,7 +1311,7 @@ def test_a_failed_open_is_not_retried_on_the_data_past_the_header(
 ) -> None:
     """The stage read the encryption header; a second open would read the next
     twelve bytes as one. The caller's error stands, for the link target too."""
-    data = _method_6_link()
+    data = _unsupported_method_link()
     calls = _counted_decrypts(monkeypatch)
     with (
         archivey.open_archive(io.BytesIO(data), password=_PASSWORD) as reader,

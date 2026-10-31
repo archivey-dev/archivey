@@ -20,7 +20,8 @@ name: Review loop
 # stands. Those labels only report; the gate never reads them.
 #
 # The first lines of this workflow's closing comments are the only state: which rounds
-# ran, with what verdict, and where a review failed. Nothing runs without a fresh label.
+# ran, with what verdict, and where a review failed. Nothing runs without a fresh label,
+# except the Opus pass, which follows an approving round in that same run.
 #
 # `scripts/review_loop_gate.py` makes the decisions and writes the closing comment, and
 # is unit tested. `dev-docs/review-loop.md` is the prose version.
@@ -53,7 +54,8 @@ jobs:
       github.event.label.name == 'review' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # A round and, on a standard or deep pull request, the Opus pass after it.
+    timeout-minutes: 110
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PR: ${{ github.event.pull_request.number }}
@@ -130,6 +132,7 @@ jobs:
             echo "round=$(jq -r .round /tmp/gate.json)"
             echo "final=$(jq -r .final /tmp/gate.json)"
             echo "max_rounds=$(jq -r .max_rounds /tmp/gate.json)"
+            echo "opus_pass=$(jq -r '.opus_pass // false' /tmp/gate.json)"
             echo "head_sha=$REVIEWED_SHA"
           } >> "$GITHUB_OUTPUT"
           jq -r '"Gate: run=\(.run) round=\(.round) — \(.reason)"' /tmp/gate.json \
@@ -165,8 +168,63 @@ jobs:
             gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file /tmp/comment.md
           fi
 
+      # The project installed as `scripts/setup-dev-env.sh` installs it, at the pull
+      # request's own lockfile, so the reviewer can run the code it reads: the optional
+      # accelerators and codecs a change is about, not only the standard library. The
+      # review-eval runs on 2026-10-29 found reviews of rapidgzip changes reporting
+      # "rapidgzip is not installed" and reading the code instead of measuring it.
+      - name: Install uv
+        if: steps.gate.outputs.run == 'true'
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install the project
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          uv python install 3.11
+          uv sync --frozen --group dev --extra all
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      # The tier decides whether an Opus pass follows the round. The base branch's copy
+      # of the script, as `risk-label.yml` uses, so the path lists the pull request
+      # edits do not move its own tier (the gate and the prompt are still the pull
+      # request's: see review-loop.md, Known rough edges). Written beside the pull
+      # request's copy, since it finds the repository from its own path, and removed
+      # again at once. A failure here only loses the Opus pass (an empty tier), never
+      # the round itself.
+      - name: Find the risk tier
+        id: tier
+        if: steps.gate.outputs.run == 'true'
+        continue-on-error: true
+        env:
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          git show "origin/$BASE:scripts/review_prep.py" > scripts/.review_prep_base.py
+          tier="$(python3 scripts/.review_prep_base.py --base "origin/$BASE" tier \
+            | sed -n 's/^tier: //p')"
+          rm scripts/.review_prep_base.py
+          echo "tier=$tier" >> "$GITHUB_OUTPUT"
+          echo "Tier: $tier" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Write the prompt
+        id: prompt
+        if: steps.gate.outputs.run == 'true'
+        env:
+          ROUND: ${{ steps.gate.outputs.round }}
+          MAX_ROUNDS: ${{ steps.gate.outputs.max_rounds }}
+          # The round after a conditional approval's fixes is the Opus pass itself.
+          PASS: ${{ steps.gate.outputs.opus_pass == 'true' && 'opus' || '' }}
+          TIER: ${{ steps.tier.outputs.tier }}
+        run: python3 scripts/review_loop_prompt.py >> "$GITHUB_OUTPUT"
+
+      # Each review has its own timeout inside the job's, so a slow round leaves the
+      # Opus pass its time, and both closes theirs.
       - name: Claude review
         if: steps.gate.outputs.run == 'true'
+        timeout-minutes: 45
         uses: anthropics/claude-code-action@v1
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -177,135 +235,82 @@ jobs:
           # cannot spend review credits. The action reports the actor with and without
           # the `[bot]` suffix depending on the code path, so both spellings are listed.
           allowed_bots: "claude,claude[bot],cursor,cursor[bot]"
+          # Sonnet, not Opus: on the review-eval set (dev-docs/review-eval/results.md)
+          # it caught as many of the bugs the loop missed, at about an eighth of the
+          # cost. Raising its effort did not help either. Opus reads a standard or
+          # deep pull request once, in the Opus pass: this round when the gate says
+          # so (after a conditional approval's fixes), else the steps below.
           claude_args: |
-            --model claude-opus-5
+            --model ${{ steps.gate.outputs.opus_pass == 'true' && 'claude-opus-5' || 'claude-sonnet-5-5' }}
             --allowedTools Read,Grep,Glob,WebFetch,Bash
-          prompt: |
-            Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
-            This is review round ${{ steps.gate.outputs.round }}. Your verdict decides
-            whether the closing comment asks for another round; the implementer adds
-            one otherwise only if its fixes grow beyond what you described. An agent can
-            ask for at most ${{ steps.gate.outputs.max_rounds }} rounds — which is the
-            skill's own round budget (its §4), so review as it tells you to and let the
-            verdict say whether another round is needed rather than padding one to
-            reach it.
-
-            Follow this repository's own review skill, in full, as if it had been invoked
-            by name: read `.claude/skills/code-review-skill/SKILL.md` first, then the one
-            reference doc its §1 names for this kind of review, and obey them over any
-            generic review habit. In particular:
-
-            - The three-block output shape (§3), stable finding IDs kept across rounds,
-              and §6 for posting: inline review comments for located findings, blocks 1
-              and 3 in the review body, `event: COMMENT`.
-            - Open every comment you post with a heading, per §6: the round and the
-              verdict on the review body, the ID with its severity and confidence on an
-              inline finding. Post no table in anything — bullets instead.
-            - On any round after the first, open with one status bullet per previous ID
-              before any new finding.
-            - Do not re-run the gates. Do not edit any code. You are reviewing.
-            - Do not write a prompt or brief for whoever fixes this. They read the PR.
-
-            Use `gh` for GitHub writes. End every comment you post with a `---` rule and
-            `_Generated by [Claude Code](https://claude.ai/code)_`.
-
-            Then write `/tmp/loop-verdict.json`, and nothing else to that path:
-
-            {
-              "verdict": "clean" | "approved" | "conditional" | "findings" | "decision",
-              "summary": "at most 400 characters, plain language, no finding IDs and no
-                          file paths: what someone who has not opened the diff needs to
-                          know about where this PR stands",
-              "question": "if verdict is decision: the one question for the maintainer,
-                           in plain language, answerable in a word or a short line.
-                           Otherwise an empty string"
-            }
-
-            `verdict` is "decision" if block 3 has anything in it at all — a maintainer
-            decision stops the review, and that beats the findings. It is "clean" only
-            if block 2 is empty.
-
-            Otherwise it carries your verdict line (§4), and this is the field that decides
-            whether another round is asked for, so match it to what you actually wrote:
-
-            - "approved" for a plain ✅ Approve: nothing is left for the implementer to
-              fix. ("clean" is narrower: block 2 empty, so a plain ✅ Approve over
-              💡/📚/🎉 annotations is "approved", not "clean".)
-            - "conditional" for ✅ Approve conditional on the listed fixes, and for
-              💬 Comment: the findings are the implementer's to fix, and you do not need
-              to see the result.
-
-              Neither asks for another round; the findings are still posted in full and
-              the implementer still works through them. The two differ only in the
-              label the pull request is left with, so pick the one that matches your
-              verdict line.
-            - "findings" for 🔄 Request Changes — a 🔴 stands, or a fix wants a look once
-              it lands. That is what asks for the next round.
-
-            Do not write "findings" to keep a round in hand: rounds are not yours to
-            bank, and one spent re-reading wording you already described is the case the
-            budget exists to stop. Equally, do not write "approved" or "conditional" with
-            a 🔴 open.
+          prompt: ${{ steps.prompt.outputs.prompt }}
 
       # `always()` so that a review that died still says so, rather than leaving a pull
       # request whose label came off with nothing on it saying why.
       - name: Close the round
+        id: close
         if: always() && steps.gate.outputs.run == 'true'
         env:
           ROUND: ${{ steps.gate.outputs.round }}
           FINAL: ${{ steps.gate.outputs.final }}
           HEAD_SHA: ${{ steps.gate.outputs.head_sha }}
+          TIER: ${{ steps.tier.outputs.tier }}
+          PASS: ${{ steps.gate.outputs.opus_pass == 'true' && 'opus' || '' }}
+        run: bash scripts/review_loop_close.sh
+
+      # The Opus pass: a standard or deep pull request whose rounds have approved it
+      # gets one full review by Opus, and a deep one gets one by Cursor too. The gate
+      # decides when (`OPUS_PASS_STARTS`), and it runs once per pull request. After a
+      # conditional approval it is the next label's round, above; after a plain one it
+      # runs here, as the next round in this same run, because a label the workflow's
+      # own token adds starts no workflow. The steps run whatever happened before them
+      # (`!cancelled()`), so a failed side step cannot drop a pass the round's comment
+      # has announced, and the Cursor request is best-effort.
+      - name: Ask Cursor for a full review
+        continue-on-error: true
+        if: >-
+          !cancelled() &&
+          (steps.close.outputs.opus_pass_next == 'true' ||
+           steps.gate.outputs.opus_pass == 'true') &&
+          steps.tier.outputs.tier == 'deep'
         run: |
-          set -euo pipefail
-          # A missing file is a review that did not finish, which does not count. A file
-          # that is there but is not a JSON object still counts — the findings were
-          # posted — and the gate treats its verdict as `findings`.
-          if [ ! -f /tmp/loop-verdict.json ]; then
-            verdict=null
-          elif jq -e 'type == "object"' /tmp/loop-verdict.json >/dev/null 2>&1; then
-            verdict="$(cat /tmp/loop-verdict.json)"
-          else
-            verdict='"unreadable"'
-          fi
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "@cursoragent please do a full code review of this pull request with this repository's \`code-review-skill\`: the whole diff against its base, as a first look. Post the findings as review comments; do not push.
 
-          # The head now, to name any push that landed while the review ran.
-          live="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
-            --json headRefOid --jq .headRefOid || true)"
+          ---
+          _Posted by the review workflow for the Opus pass._"
 
-          jq -n \
-            --argjson round "$ROUND" \
-            --argjson final "$FINAL" \
-            --arg head_sha "$HEAD_SHA" \
-            --arg live_head_sha "$live" \
-            --arg repository "$GITHUB_REPOSITORY" \
-            --argjson verdict "$verdict" \
-            '{round: $round, final: $final, head_sha: $head_sha,
-              live_head_sha: $live_head_sha, repository: $repository,
-              verdict: $verdict}' \
-            | python3 scripts/review_loop_gate.py --finish > /tmp/finish.json
-          jq -r '"Verdict: \(.verdict) stop=\(.stop) counted=\(.counted) — \(.reason)"' \
-            /tmp/finish.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Write the Opus-pass prompt
+        id: opus_prompt
+        if: "!cancelled() && steps.close.outputs.opus_pass_next == 'true'"
+        env:
+          ROUND: ${{ steps.gate.outputs.round }}
+          MAX_ROUNDS: ${{ steps.gate.outputs.max_rounds }}
+          PASS: opus-after
+          TIER: ${{ steps.tier.outputs.tier }}
+        run: python3 scripts/review_loop_prompt.py >> "$GITHUB_OUTPUT"
 
-          jq -j '.comment // ""' /tmp/finish.json > /tmp/comment.md
-          if [ -s /tmp/comment.md ]; then
-            gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file /tmp/comment.md
-          fi
+      - name: Claude Opus pass
+        id: opus
+        if: "!cancelled() && steps.close.outputs.opus_pass_next == 'true'"
+        timeout-minutes: 45
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: "claude,claude[bot],cursor,cursor[bot]"
+          claude_args: |
+            --model claude-opus-5
+            --allowedTools Read,Grep,Glob,WebFetch,Bash
+          prompt: ${{ steps.opus_prompt.outputs.prompt }}
 
-          # The outcome label, for the pull request list. It only reports: nothing
-          # reads it, and a failure here must not fail a round that already posted.
-          label="$(jq -r .label /tmp/finish.json)"
-          if [ -n "$label" ]; then
-            # Only the ones that are on: deleting an absent label is a 404 in the log.
-            # If the listing fails, try them all rather than leave a stale one on.
-            present="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
-              --json labels --jq '.labels[].name')" \
-              || present="$(jq -r '.unlabel[]' /tmp/finish.json)"
-            for other in $(jq -r '.unlabel[]' /tmp/finish.json); do
-              if grep -qxF -- "$other" <<< "$present"; then
-                gh api --method DELETE \
-                  "repos/$GITHUB_REPOSITORY/issues/$PR/labels/$other" --silent || true
-              fi
-            done
-            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR/labels" \
-              -f "labels[]=$label" --silent || true
-          fi
+      - name: Close the Opus pass
+        if: always() && steps.close.outputs.opus_pass_next == 'true'
+        env:
+          # The gate's round: the close script makes the pass the round after it.
+          ROUND: ${{ steps.gate.outputs.round }}
+          MAX_ROUNDS: ${{ steps.gate.outputs.max_rounds }}
+          HEAD_SHA: ${{ steps.gate.outputs.head_sha }}
+          TIER: ${{ steps.tier.outputs.tier }}
+          PASS: opus-after
+        run: bash scripts/review_loop_close.sh

@@ -2372,6 +2372,95 @@ def test_a_report_made_while_listing_names_the_member_as_listed() -> None:
         assert "ddd/" in diagnostic.message
 
 
+def test_an_empty_rock_ridge_name_falls_back_to_the_iso9660_name() -> None:
+    """An ``NM`` entry that spells nothing would join into a path as an empty
+    component, listing the directory's children one level up and the directory as a
+    second copy of its parent. The ISO 9660 name stands in, as Linux's isofs does."""
+    from archivey import DiagnosticCode
+
+    def populate(iso: Any) -> None:
+        iso.add_directory("/TOP", rr_name="top")
+        iso.add_directory("/TOP/DDDD", rr_name="dddd")
+        iso.add_fp(io.BytesIO(b"in"), 2, "/TOP/DDDD/IN.;1", rr_name="in")
+
+    data = _build_rr_iso(populate)
+    nm = b"NM\x09\x01\x00dddd"
+    assert data.count(nm) == 1
+    # The empty NM, then a 4-byte SUSP entry of no known type that pads the area back
+    # to its old length, so nothing else moves.
+    data = data.replace(nm, b"NM\x05\x01\x00" + b"XX\x04\x01")
+    with open_archive(io.BytesIO(data)) as ar:
+        members = ar.members()
+        # A list, not a dict's keys: the directory listed as a second ``top/`` is
+        # half of what this guards against.
+        assert sorted(m.name for m in members) == ["top/", "top/DDDD/", "top/DDDD/in"]
+        by_name = {m.name: m for m in members}
+        assert ar.read("top/DDDD/in") == b"in"
+        [diagnostic] = by_name["top/DDDD/"].diagnostics
+        assert diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        assert diagnostic.context.record == "NM"
+        assert "listed under its ISO 9660 name" in diagnostic.message
+
+
+def test_an_empty_nm_over_an_empty_iso9660_identifier_collapses_as_in_any_format() -> (
+    None
+):
+    """With no name in either namespace there is nothing to fall back to: the empty
+    component collapses, as ``a//b`` does in a ZIP, and both reports say so. The
+    diagnostic does not claim an ISO 9660 name that is not there."""
+    from archivey import DiagnosticCode
+
+    def populate(iso: Any) -> None:
+        iso.add_directory("/TOP", rr_name="top")
+        iso.add_directory("/TOP/DDDD", rr_name="dddd")
+        iso.add_fp(io.BytesIO(b"in"), 2, "/TOP/DDDD/IN.;1", rr_name="in")
+
+    data = _build_rr_iso(populate)
+    data = data.replace(b"NM\x09\x01\x00dddd", b"NM\x05\x01\x00XX\x04\x01")
+    # The record's identifier length goes to 0. Its System Use area moves up to the
+    # new offset (33, plus the pad byte an even length takes), and a 4-byte unknown
+    # entry fills the tail, so the record keeps its length.
+    at = data.index(b"\x04DDDD") - 32
+    record = data[at : at + data[at]]
+    moved = record[:32] + b"\x00\x00" + record[38:] + b"XX\x04\x01"
+    assert len(moved) == len(record)
+    data = data[:at] + moved + data[at + len(record) :]
+    with open_archive(io.BytesIO(data)) as ar:
+        assert sorted(m.name for m in ar.members()) == ["top/", "top/", "top/in"]
+        codes = {d.code: d for d in ar.diagnostics.retained}
+        assert (
+            "no name is left"
+            in codes[DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED].message
+        )
+        assert DiagnosticCode.MEMBER_NAME_NORMALIZED in codes
+
+
+@pytest.mark.parametrize("flags", [3, 5, 6, 7])
+def test_an_nm_entry_with_flags_pycdlib_refuses_costs_only_its_member(
+    flags: int,
+) -> None:
+    """pycdlib refuses an ``NM`` with more than one of CONTINUE, CURRENT and PARENT,
+    and with it the whole image; isofs ignores the entry. The filter ends the area at
+    it, so the image lists and the member says what it lost."""
+    from archivey import DiagnosticCode
+
+    def populate(iso: Any) -> None:
+        iso.add_directory("/TOP", rr_name="top")
+        iso.add_directory("/TOP/DDDD", rr_name="dddd")
+        iso.add_fp(io.BytesIO(b"in"), 2, "/TOP/DDDD/IN.;1", rr_name="in")
+
+    data = _build_rr_iso(populate)
+    nm = b"NM\x09\x01\x00dddd"
+    assert data.count(nm) == 1
+    data = data.replace(nm, b"NM\x09\x01" + bytes([flags]) + b"dddd")
+    with open_archive(io.BytesIO(data)) as ar:
+        members = ar.members()
+        assert sorted(m.name for m in members) == ["top/", "top/DDDD/", "top/DDDD/in"]
+        [diagnostic] = {m.name: m for m in members}["top/DDDD/"].diagnostics
+        assert diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        assert diagnostic.context.list_truncated
+
+
 def test_a_directory_record_without_entries_is_named_as_listed() -> None:
     """The report for a record with no Rock Ridge entries names a directory with its
     ``/``, in the message as in the context."""

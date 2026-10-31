@@ -18,10 +18,12 @@ from archivey.exceptions import (
     TruncatedError,
     exception_detail,
 )
+from archivey.formats import Decompressor
 from archivey.internal.config import (
     AcceleratorMode,
     StreamConfig,
 )
+from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
@@ -36,7 +38,7 @@ from archivey.internal.streams.codecs.base import (
 )
 from archivey.internal.streams.codecs.bzip2_resume import Bzip2Resume
 from archivey.internal.streams.codecs.framed_decoder import (
-    FramedDecompressorStream,
+    StreamStart,
     stream_magic,
 )
 from archivey.internal.streams.codecs.isolated import natives_for
@@ -49,7 +51,9 @@ from archivey.internal.streams.codecs.rapidgzip_child import (
 from archivey.internal.streams.codecs.rapidgzip_select import (
     _bound_rapidgzip_source,
     _open_rapidgzip,
+    _rapidgzip_present,
     _rapidgzip_requirement,
+    _rapidgzip_unused_reason,
     _refuse_forward_only_accelerator,
     _require_rapidgzip_child,
     _StdlibSeekContract,
@@ -71,12 +75,7 @@ from archivey.internal.streams.decompressor_stream import (
 )
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
-from archivey.types import (
-    ArchiveFormat,
-    MagicSignature,
-    OptionalLibrary,
-    StreamFormat,
-)
+from archivey.types import ArchiveFormat, MagicSignature, StreamFormat
 
 
 def _bzip2_wanted(config: StreamConfig, *, available: bool) -> bool:
@@ -99,7 +98,7 @@ def _bzip2_auto_without_child(config: StreamConfig) -> str | None:
     process can run it: :func:`rapidgzip_child_unavailable_reason`), or ``None``."""
     if config.use_indexed_bzip2 is not AcceleratorMode.AUTO:
         return None
-    if not _bzip2_wanted(config, available=deps.rapidgzip.available()):
+    if not _bzip2_wanted(config, available=_rapidgzip_present(config)):
         return None
     return rapidgzip_child_unavailable_reason()
 
@@ -113,7 +112,7 @@ def _bzip2_uses_accelerator(config: StreamConfig) -> bool:
     when a child cannot be started at open. This is a query: the warning for the first
     case is logged by :meth:`Bzip2Codec.open`.
     """
-    available = deps.rapidgzip.available()
+    available = _rapidgzip_present(config)
     if not available or not _bzip2_wanted(config, available=available):
         return False
     return _bzip2_auto_without_child(config) is None
@@ -130,22 +129,6 @@ _BZIP2_HEADER_LEN = len(_BZIP2_MAGIC)
 
 # Nothing starts a further stream: what follows the first one is past the data.
 _NO_FURTHER_STREAM = stream_magic()
-
-
-def _stdlib_bzip2(
-    source: CodecSource, config: StreamConfig, *, single_stream: bool
-) -> BinaryIO:
-    # ``single_stream`` has no default: every engine that decodes a coder's data,
-    # the accelerator's fallbacks too, must agree on what follows its stream (DR-5).
-    return FramedDecompressorStream(
-        source,
-        natives_for(config.process_isolation).bz2_decompressor,
-        codec_name="bzip2",
-        magic=_NO_FURTHER_STREAM if single_stream else _BZIP2_STREAMS,
-        collector=config.collector,
-        report_trailing_data=config.report_trailing_data,
-        refuse_input_after_end=config.refuse_input_after_end,
-    )
 
 
 class _Bzip2EmptyStreamCheck(DelegatingStream):
@@ -220,10 +203,16 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         views: _SourceViews,
         config: StreamConfig,
         single_stream: bool,
+        open_stdlib: Callable[[CodecSource], BinaryIO],
     ) -> None:
         super().__init__(inner)
         self._views = views
         self._config = config
+        # The standard library's decode of a source (``Bzip2Codec.open_framed``). It
+        # must use the same ``single_stream`` as this check: every engine that decodes
+        # a coder's data, the fallbacks too, must agree on what follows its stream
+        # (DR-5).
+        self._open_stdlib = open_stdlib
         # A container coder's data is one stream (CodecParams.single_stream): a stream
         # after it is not decoded at the end, as the standard library would not.
         self._single_stream = single_stream
@@ -551,13 +540,7 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         read only."""
         self._armed = False
         self._end_unchecked = False  # the stdlib engine reports its own end
-        self._replace_inner(
-            _stdlib_bzip2(
-                self._views.for_stdlib(),
-                self._config,
-                single_stream=self._single_stream,
-            )
-        )
+        self._replace_inner(self._open_stdlib(self._views.for_stdlib()))
 
 
 # The 48-bit magic numbers that start a bzip2 block and an end-of-stream marker. Each
@@ -791,18 +774,31 @@ class Bzip2Codec(StreamCodec):
     stream_format = StreamFormat.BZIP2
     magic = (MagicSignature(0, b"BZh", ArchiveFormat.BZ2),)
 
+    @override
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
+        # Without the accelerator, a rewind re-decompresses from the start; the outer
+        # ArchiveStream warns about that (see rewind_warning). The [seekable]
+        # accelerator gives real random access.
         if self._use_accelerator(config):
             stream = self._open_accelerated(source, params, config)
             if stream is not None:
                 return stream
-        # A rewind re-decompresses from the start; the outer ArchiveStream warns about
-        # that (see rewind_warning). The [seekable] accelerator gives real random
-        # access.
-        return _stdlib_bzip2(source, config, single_stream=params.single_stream)
+        return super().open(source, params, config)
 
+    @override
+    def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
+        return natives_for(config.process_isolation).bz2_decompressor()
+
+    @override
+    def stream_start(self, params: CodecParams) -> StreamStart:
+        # The whole stream header, block-size digit included, not ``magic`` alone.
+        # Every engine that decodes a coder's data, the accelerator's fallbacks too,
+        # must agree on what follows its stream (DR-5): see ``open_framed``.
+        return _NO_FURTHER_STREAM if params.single_stream else _BZIP2_STREAMS
+
+    @override
     def check_accelerator(self, source: CodecSource, config: StreamConfig) -> None:
         if config.use_indexed_bzip2 is not AcceleratorMode.ON:
             return
@@ -819,7 +815,7 @@ class Bzip2Codec(StreamCodec):
         if _bzip2_uses_accelerator(config):
             return True
         if config.use_indexed_bzip2 is AcceleratorMode.ON:
-            requirement = _rapidgzip_requirement()
+            requirement = _rapidgzip_requirement(config.excluded_libraries)
             raise PackageNotInstalledError(
                 requirement.message("bzip2 random access"), missing=(requirement,)
             )
@@ -843,15 +839,18 @@ class Bzip2Codec(StreamCodec):
         child = _open_rapidgzip(accel_source, "bzip2", config)
         if child is None:
             return None
+
+        # Both fallbacks below decode with the accelerator off.
+        def open_stdlib(fallback: CodecSource) -> BinaryIO:
+            return self.open_framed(fallback, params, config)
+
         # A data error hands the read to the standard library, which delivers what it
         # delivers with the accelerator off and raises its error; see
         # _StdlibOnAcceleratorError.
         takeover = _StdlibOnAcceleratorError(
             child,
             views=views,
-            open_stdlib=lambda fallback: _stdlib_bzip2(
-                fallback, config, single_stream=params.single_stream
-            ),
+            open_stdlib=open_stdlib,
             label="bzip2",
             takes_over=self._accelerator_data_error,
             resume_points=_bzip2_resume_points,
@@ -863,9 +862,11 @@ class Bzip2Codec(StreamCodec):
                 views=views,
                 config=config,
                 single_stream=params.single_stream,
+                open_stdlib=open_stdlib,
             )
         )
 
+    @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, OSError) and "Invalid data stream" in str(exc):
             return CorruptionError(f"bzip2 stream is corrupt: {exception_detail(exc)}")
@@ -875,21 +876,24 @@ class Bzip2Codec(StreamCodec):
             )
         return self._eof_truncation(exc, "bzip2")
 
+    @override
     def translator(self, config: StreamConfig) -> ExceptionTranslator:
         if _bzip2_uses_accelerator(config):
             return self._translate_accelerator
         return self.translate
 
+    @override
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         # An engaged accelerator no longer suppresses the report: its index can be sparse
         # enough that a backward seek still re-decodes megabytes. The distance decides.
+        unused_reason = _rapidgzip_unused_reason(config)
         return RewindWarning(
             "bzip2",
             accelerator="rapidgzip",
             suggest_install=not _bzip2_uses_accelerator(config)
             and not deps.rapidgzip.available()
-            and not deps.unused_reason(OptionalLibrary.RAPIDGZIP),
-            unused_reason=deps.unused_reason(OptionalLibrary.RAPIDGZIP),
+            and not unused_reason,
+            unused_reason=unused_reason,
         )
 
     def _accelerator_data_error(self, exc: Exception) -> bool:
@@ -957,7 +961,8 @@ class Bzip2Codec(StreamCodec):
             )
         if isinstance(exc, (EOFError, OSError)):
             # The stdlib engine that _Bzip2EmptyStreamCheck falls back to raises these.
-            # This does not widen translation: translate maps only an OSError saying
-            # "Invalid data stream"; any other OSError comes back None and propagates.
+            # This does not widen translation: translate maps only an
+            # OSError saying "Invalid data stream"; any other OSError comes back None
+            # and propagates.
             return self.translate(exc)
         return None

@@ -9,7 +9,10 @@ open file objects, you can pass a list of them, in order. A ZIP split by 7-Zip i
 `.zip.002` and so on opens the same way. If a part of a numbered set like that (`.7z.001`,
 `.zip.001`) is missing, opening raises `TruncatedError` naming it, rather than reading a shorter
 archive. A RAR set with a volume missing still opens, as `unrar` would, but `members()` raises
-`TruncatedError` naming the missing volume, and so does reading a member with data in it.
+`TruncatedError` naming the missing volume, and so does reading a member with data in it. A part
+archivey finds on its own that is a symbolic link is refused with `OpenError`; pass the parts as a
+list to read it. `ArchiveyConfig(discover_volumes=False)` turns the search off, so a path opens
+only the file it names ([Security](security.md#hardening) says when that is worth it).
 
 A file object is read from its current position to its end, so an archive that starts partway
 through a larger file opens as is. Bytes after the archive don't stop it opening. Any that aren't
@@ -34,7 +37,8 @@ the file isn't in the specified format, it fails like a damaged one.
 `FormatInfo` with the format and how sure archivey is about it: `CERTAIN` when the format's
 signature matched where the format puts it, `PROBABLE` when a test of its contents matched, and
 `GUESS` when the evidence is weak, such as only the file name. `payload_offset` is more than 0 for a
-self-extracting archive, where the archive starts after a program. A file in no format archivey
+self-extracting archive, where the archive starts after a program, and for any other archive found
+behind leading bytes. A file in no format archivey
 knows raises `FormatDetectionError`. The confidence grade is for a person reading it and may change
 between releases, so decide what to do from the format, not the grade.
 
@@ -175,3 +179,22 @@ A file in a format the policy turns off raises `UnsupportedFeatureError`, and th
 which entry would let it open. `format=` doesn't get around it. `detect_format` still reports
 what a file is, and `config.formats.allows(info.format)` tells you whether it would open. A plugin
 format that's turned off isn't detected at all, so its code doesn't run.
+
+`exclude_libraries=` turns off optional packages for the call, even when they're installed:
+
+```python
+from archivey import OptionalLibrary as L
+
+NO_PPMD = ArchiveyConfig(formats=FormatPolicy(exclude_libraries={L.PYPPMD, "inflate64"}))
+```
+
+archivey then reads as if those packages weren't there. A PPMd member raises
+`PackageNotInstalledError` when you open it, while the other members read; an ISO image with
+`pycdlib` excluded doesn't open; and an accelerator such as rapidgzip under `AUTO` falls back to
+the standard library. The error's `missing` names the package, and its `reason` says the policy
+turned it off. Each entry is an [`OptionalLibrary`][archivey.OptionalLibrary] member or its value,
+and any other name is refused, so a typo can't leave a package on. The setting only affects calls
+made with that config: other calls in the same program, on any thread, still use the package.
+`format_availability(fmt, config=...)` and `list_supported_formats(config=...)` answer with the
+excluded packages counted as missing. A plugin reader that imports a package itself honours the setting
+only if it checks `config.formats.exclude_libraries`, as `archivey-squashfs` does for `lz4`.

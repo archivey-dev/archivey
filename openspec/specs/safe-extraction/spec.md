@@ -839,8 +839,10 @@ written-byte total that progress reports still includes it.
 
 The system SHALL raise `ResourceLimitError` when a single member's output exceeds
 `max_ratio * member.compressed_size` after that member's output crosses
-`ratio_activation_threshold`. Defaults are `max_ratio=1000.0` and threshold
-5 MiB. The ratio is per-member output, not cumulative output, and is checked only
+`ratio_activation_threshold`. The fields are `DecoderLimits`'; defaults are
+`max_ratio=800.0` and threshold 5 MiB. 800 sits below Deflate's ceiling of about
+1032:1, so zero-filled Deflate data (about 1003 to 1032:1) is refused every time, as
+it is in every other codec, rather than by a few bytes. The ratio is per-member output, not cumulative output, and is checked only
 when `member.compressed_size` is known and greater than zero. The original member
 is used so late-bound compressed-size metadata remains accurate.
 
@@ -855,7 +857,7 @@ under `OnError.CONTINUE`; global guards remain always-stop.
 | Member output exceeds ratio after threshold | `ResourceLimitError` while processing that member |
 | Tiny highly-compressible member stays below threshold | No ratio error; threshold prevents false positive |
 | `compressed_size is None` or `0` | Per-member ratio skipped; cumulative/global guards still apply |
-| `ExtractionLimits(max_ratio=100)` | Members over 100:1 trip this guard |
+| `DecoderLimits(max_ratio=100)` in the config | Members over 100:1 trip this guard |
 
 ### Requirement: A recorded size decides the per-member ratio before decoding
 
@@ -891,22 +893,68 @@ earlier check would save little. Members without a recorded `size` or
 | Member whose recorded sizes are over the per-member ratio after the threshold | Per-member `ResourceLimitError` before any byte of it is written; under `OnError.CONTINUE` the rest are extracted |
 | Member whose recorded sizes overstate its data | Only that member fails, whichever error names it |
 
-### Requirement: Bomb Protection Scope Limited to Extraction Paths
+### Requirement: Bomb Protection Scope
 
-The system SHALL apply `ExtractionLimits` bomb guards only during
-`ArchiveReader.extract_all()`. `ArchiveReader.read()`
-and `ArchiveReader.open()` return decompressed data/streams without byte, ratio,
-or entry-count enforcement; callers are responsible for guarding direct reads.
-Listing materialization caps are separate (`ListingLimits` in `archive-reading`)
-and do not apply to `read()` / `open()` either.
+The system SHALL apply `max_extracted_bytes` and `max_entries` only during
+`ArchiveReader.extract_all()`. The system SHALL apply `max_ratio` to every member
+stream a caller reads as well: `ArchiveReader.open()`, `ArchiveReader.read()` and the
+streams `stream_members()` yields (Requirement: A member read is held to the ratio),
+and to every decode of a container inside a compression stream, listing included
+(Requirement: A compressed container's decode is held to the archive-wide ratio).
+Extraction's own passes are held by its tracker, to the limits the `extract_all` call
+was given. Listing materialization caps are separate (`ListingLimits` in
+`archive-reading`).
 
 #### Scenario: bomb-scope matrix
 
 | Case | Expected |
 | --- | --- |
-| `reader.read(member)` on extreme-ratio data | Raw decompressed bytes returned or normal read error; no extraction bomb guard |
-| `reader.open(member)` | Stream delivers decompressed data without extraction limits |
+| `reader.read(member)` on a member past `max_ratio` of its compressed size | `ResourceLimitError` for that member, before the whole member is held in memory |
+| `reader.open(member)` read past the ratio | The read that crosses it raises `ResourceLimitError` |
+| `reader.read(member)` on a large member under the ratio | All bytes returned; no byte cap applies to a read |
 | `reader.members()` on a metadata bomb | `ListingLimits` / `ResourceLimitError` per `archive-reading`, not `ExtractionLimits` |
+| `reader.members()` on a container inside a compression stream past `max_ratio` | `ResourceLimitError` from the archive-wide ratio |
+
+### Requirement: A member read is held to the ratio
+
+A caller that reads member data (to scan, hash or test an archive) pays for the decode
+whether or not anything is written, and some codecs (bzip2, xz, zstd) expand a few
+bytes into gigabytes. The system SHALL hold each member stream that `open()` returns or
+`stream_members()` yields to the reader's `decoder_limits.max_ratio` by the two
+rules extraction applies to what it writes:
+
+- **Per member.** Once the furthest offset the stream has decoded passes
+  `ratio_activation_threshold`, and its ratio to the member's recorded
+  `compressed_size` (when the archive records a non-zero one) passes `max_ratio`, the
+  read or seek that crosses it SHALL raise `ResourceLimitError` for that member. It is
+  not the always-stop kind, so a pass can go on to the next member.
+- **Across the reader.** The output of all the reader's member reads together, each
+  member counted once at the furthest offset any read of it reached, is judged by the
+  archive-wide rule (`archive_ratio_refusal`: the static denominator, or the live one
+  past `live_ratio_activation_threshold`). Crossing it SHALL raise the always-stop
+  `ResourceLimitError`. Where neither denominator exists (an archive read from a
+  non-seekable stream that is not inside a compression stream: no trusted size, and no
+  counter installed), this rule does not apply to reads, as it does not to extraction;
+  extraction keeps `max_extracted_bytes` there, and a read keeps only the per-member rule.
+
+A RAR file copy is held, and counted, as the member whose data it repeats. The read
+that crosses a limit SHALL NOT return the bytes it decoded. Reads and forward seeks
+reach the decoder in steps of at most 1 MiB, so a `read()` of a whole member stops
+within a step of the limit instead of first holding all of it in memory. A decoder
+error raises from the call that meets it, as without the guard. `max_ratio=None`
+turns it off.
+
+#### Scenario: member read matrix
+
+| Case | Expected |
+| --- | --- |
+| ZIP member of 200 MiB of zeros (Deflate, about 1030:1) | `open()` + read and `stream_members()` raise `ResourceLimitError` once the ratio passes 800:1 |
+| `.bz2` of 200 MiB of zeros | `read()` raises after about 5 MiB decoded |
+| `stream_members()` over an archive whose second member is over the ratio | The second member's read raises; the pass yields the third |
+| Archive of many members under 5 MiB each, together past the ratio of the archive's size | The read that crosses the archive-wide ratio raises the always-stop error |
+| The same member read twice | Counted once toward the archive-wide total |
+| `DecoderLimits(max_ratio=None)` in the reader's config | Reads, lists and extracts unchanged |
+| Deprecated `extract_all(limits=ExtractionLimits(max_ratio=None))` | Extracts; reads of the same reader stay held |
 
 ### Requirement: Progress Reporting via on_progress Callback
 
@@ -1388,6 +1436,34 @@ SHALL raise `ResourceLimitError`.
 | ZIP member has known `compressed_size` | Per-member ratio applies; archive-wide ratio does not replace it |
 | Nested archive opened from an Archivey member/codec stream with cheap size | Cheap source size may serve as archive-wide denominator; it is the container's unchecked declaration, so `max_extracted_bytes` is the bound that holds |
 
+### Requirement: A compressed container's decode is held to the archive-wide ratio
+
+Listing a container inside a compression stream (a `.tar.gz`, or a sequential format
+handler's `.cpio.xz`) decodes the whole stream, member data included, before
+extraction writes a byte. The system SHALL hold that decoded stream to the
+archive-wide ratio of the reader's `decoder_limits` in every use (listing, a
+member read, a pass, `extract_all`): once the furthest offset decoded passes
+`ratio_activation_threshold`, and its ratio to the archive's size (the static
+denominator), or to the compressed bytes read so far past
+`live_ratio_activation_threshold` (the live one), passes `max_ratio`, the read or
+seek that crosses it SHALL raise `ResourceLimitError`, the same type an extraction's
+archive-wide check raises, and SHALL NOT return the bytes it decoded. The rule is the
+one that check applies (`archive_ratio_refusal`). A backward seek that decodes again
+does not count again. Reads and forward seeks, a seek to the end included, reach the
+decoder in steps of at most 1 MiB, so the decode stops within a step of the limit. A
+decoder error after a read already returned bytes in the same call is held for the
+next read, so the prefix of a cut stream is kept; a seek, even a refused one, drops
+it. `max_ratio=None` turns it off.
+
+#### Scenario: compressed container decode matrix
+
+| Case | Expected |
+| --- | --- |
+| 868-byte `.tar.bz2` holding 1 GiB of zeros, from a path | `members()` raises `ResourceLimitError` after about 5 MiB decoded |
+| The same archive from a pipe | Refused once 256 MiB are decoded (the live floor) |
+| The same archive with `DecoderLimits(max_ratio=None)` | Lists, as before |
+| A `.tar.gz` under the ratio | Lists, reads and extracts unchanged |
+
 ### Requirement: Enforce Maximum Entry Count
 
 The system SHALL count members actually written to disk during one extraction call
@@ -1756,3 +1832,28 @@ its files read-only.
 | `dest` does not exist | Not created |
 | Archive stores a directory with mode `0o555` or `0o000` under `TRUSTED` | Scratch directory still removed |
 | `abort_on` fires | The error names paths under `dest`; scratch directory removed |
+
+### Requirement: Extraction restores member times where the system allows it
+
+When extraction sets a file's or a folder's modification time from
+`ArchiveMember.modified` (for a file once it is written, for a folder in the deferred
+pass of "Policy-Specific Metadata Transforms"), it SHALL also set its birth time from
+`ArchiveMember.created` on systems that let a program set one: Windows (`SetFileTime`)
+and macOS (`setattrlist`). The birth time SHALL be set after the modification time,
+because macOS moves a birth time later than a new modification time back to it. A file's
+birth time SHALL be set on the temporary file before the rename that lands it, which
+keeps it (measured on Windows, where tunnelling does not apply to a rename).
+`ArchiveMember.ctime` SHALL NOT be used for either.
+Both SHALL be best effort, under every extraction policy: a member with no stored time
+keeps the time it was written, and a time the system refuses or cannot represent SHALL
+NOT fail the member.
+
+#### Scenario: member time matrix
+
+| Case | Expected |
+| --- | --- |
+| A file and a folder with `created` and `modified`, on Windows or macOS | Both times on disk |
+| The same on Linux | The modification time; the birth time is when it was written |
+| A member with `created = None` | No birth time call |
+| On Windows, a file with `created` extracted over an existing file | The member's birth time, not the replaced file's |
+| The system refuses the birth time | The member is extracted; no error |

@@ -53,11 +53,11 @@ from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import MemberStreamParts
 from archivey.internal.streams.codecs import (
-    SINGLE_FILE_CODECS,
     Codec,
     MetadataContext,
     open_codec_stream,
     resolve_codec,
+    single_file_codecs,
     stream_codec_for_format,
 )
 from archivey.internal.streams.codecs.lzip_decoder import peek_index_summary
@@ -81,12 +81,15 @@ from archivey.types import (
 
 _T = TypeVar("_T")
 
-# Lowercased standalone-compression extensions, for the "strip vs append .uncompressed" rule
-# in member-name inference. Sourced from the codec objects. (The combined `tar.gz`/`.tgz`
-# names are a format-detection concern, not single-file naming.)
-_COMPRESSION_EXTS: frozenset[str] = frozenset(
-    ext.lower() for c in SINGLE_FILE_CODECS for ext in c.extensions
-)
+
+def _compression_exts() -> frozenset[str]:
+    """Lowercased standalone-compression extensions, for the "strip vs append
+    .uncompressed" rule in member-name inference. Read from the codecs registered now.
+    (The combined ``tar.gz``/``.tgz`` names are a format-detection concern, not
+    single-file naming.)"""
+    return frozenset(ext.lower() for c in single_file_codecs() for ext in c.extensions)
+
+
 _TAR_SHORT_TO_TAR: dict[str, str] = dict.fromkeys(COMPRESSED_TAR_SHORT_SUFFIXES, ".tar")
 
 
@@ -142,7 +145,7 @@ def _infer_member_name(archive_name: str | None) -> str:
     """Infer the single member's name from the source filename (see the spec)."""
     return infer_member_name_from_archive(
         archive_name,
-        strip_suffixes=_COMPRESSION_EXTS,
+        strip_suffixes=_compression_exts(),
         replace_suffixes=_TAR_SHORT_TO_TAR,
     )
 
@@ -664,18 +667,15 @@ class SingleFileReader(BaseArchiveReader):
 class SingleFileBackend(ReadBackend):
     """One backend serving every standalone single-file compressor.
 
-    Only the format list is declared here, derived from the codec objects. The detection
-    tables (magic, extensions, content probes) are not duplicated onto this backend — the
-    detector reads them straight from ``STREAM_CODECS`` via the registry — so adding a
-    standalone codec is a single ``StreamCodec`` subclass (see ``compressed-streams`` /
-    ``format-detection``).
+    It declares no format list: the registry makes ``(RAW_STREAM, <stream>)`` for
+    each single-file codec when asked (``RAW_STREAMS``), and the detector reads the
+    magic, extensions and content probes from the codecs too, so adding a standalone
+    codec is a single ``StreamCodec`` subclass, or a ``register_codec()`` call (see
+    ``compressed-streams`` / ``format-detection``).
     """
 
-    FORMATS: tuple[ArchiveFormat, ...] = tuple(
-        c.single_file_format
-        for c in SINGLE_FILE_CODECS
-        if c.single_file_format is not None
-    )
+    FORMATS: tuple[ArchiveFormat, ...] = ()
+    RAW_STREAMS = True
     # A compressed stream decodes front-to-back, so streaming=True works on a
     # non-seekable source. Random access always needs a seekable source.
     SUPPORTS_STREAMING_NON_SEEKABLE = True

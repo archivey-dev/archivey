@@ -433,36 +433,38 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
 
     # The two activation thresholds are the limit fields that are not ``| None``, so
     # None belongs in their bad set: it disables nothing, it breaks the comparison.
-    for bad in ("x", -1, True, 1.5, None):
-        rows.append(
-            _case(
-                "ExtractionLimits",
-                "ratio_activation_threshold",
-                bad,
-                lambda b=bad: ExtractionLimits(ratio_activation_threshold=b),
+    # The deprecated ExtractionLimits fields are checked as the DecoderLimits ones are.
+    for cls in (DecoderLimits, ExtractionLimits):
+        for bad in ("x", -1, True, 1.5, None):
+            rows.append(
+                _case(
+                    cls.__name__,
+                    "ratio_activation_threshold",
+                    bad,
+                    lambda b=bad, c=cls: c(ratio_activation_threshold=b),
+                )
             )
-        )
-        rows.append(
-            _case(
-                "ExtractionLimits",
-                "live_ratio_activation_threshold",
-                bad,
-                lambda b=bad: ExtractionLimits(live_ratio_activation_threshold=b),
+            rows.append(
+                _case(
+                    cls.__name__,
+                    "live_ratio_activation_threshold",
+                    bad,
+                    lambda b=bad, c=cls: c(live_ratio_activation_threshold=b),
+                )
             )
-        )
 
-    # A NaN compares false against everything and nothing exceeds an infinity, so
-    # either one silently switches the ratio guard off. Only the float fields can
-    # carry them.
-    for bad in ("x", -1, True, float("nan"), float("inf"), float("-inf")):
-        rows.append(
-            _case(
-                "ExtractionLimits",
-                "max_ratio",
-                bad,
-                lambda b=bad: ExtractionLimits(max_ratio=b),
+        # A NaN compares false against everything and nothing exceeds an infinity, so
+        # either one silently switches the ratio guard off. Only the float fields can
+        # carry them.
+        for bad in ("x", -1, True, float("nan"), float("inf"), float("-inf")):
+            rows.append(
+                _case(
+                    cls.__name__,
+                    "max_ratio",
+                    bad,
+                    lambda b=bad, c=cls: c(max_ratio=b),
+                )
             )
-        )
 
     # ``config=`` is checked at the entry points, but the object it names has fields of
     # its own, and those are read wherever they are needed rather than at the boundary.
@@ -545,6 +547,7 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
         "rar_allow_glob_member_concatenation",
         "read_link_targets",
         "always_probe_content",
+        "discover_volumes",
     ):
         for bad in ("false", 0, 1, None):
             rows.append(

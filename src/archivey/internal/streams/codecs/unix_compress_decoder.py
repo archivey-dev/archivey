@@ -10,6 +10,7 @@ source.
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from typing import BinaryIO
 
 from archivey.exceptions import CorruptionError, TruncatedError, UnsupportedFeatureError
@@ -61,18 +62,25 @@ _MAX_ENTRY_TAIL = 128
 _Entry = bytes | tuple[int, bytes]
 
 
-def _expand(dictionary: list[_Entry], link: tuple[int, bytes]) -> bytes:
+def _expand(dictionary: Sequence[_Entry | None], link: tuple[int, bytes]) -> bytes:
     """Rebuild a long entry by walking its links back to a flat entry.
 
     A link's base is always a code that was output, so the walk never meets block
     mode's CLEAR placeholder. A base that did would end the walk at that b"" and
     silently drop the prefix, not raise.
+
+    ZIP's Shrink decoder shares this layout, and its table also holds None for a free
+    slot or one that walks its parents. A link's base there is the parent, or an
+    ancestor, of a live slot, and a partial clear frees only slots with no children,
+    so the walk never meets None either; one that did is refused as corrupt.
     """
     base, tail = link
     parts = [tail]
     while isinstance(head := dictionary[base], tuple):
         base, tail = head
         parts.append(tail)
+    if head is None:
+        raise CorruptionError("LZW code table links to a free code")
     parts.append(head)
     parts.reverse()
     return b"".join(parts)

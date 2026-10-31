@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Protocol, assert_never, cast
 
-from archivey.config import ExtractionLimits
+from archivey.config import DecoderLimits, ExtractionLimits
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -47,9 +47,11 @@ from archivey.exceptions import (
     _UsageTypeError,
     exception_detail,
 )
+from archivey.internal.birth_time import set_birth_time
 from archivey.internal.bomb_tracker import (
     AlwaysStopResourceLimitError,
     BombTracker,
+    ratio_limits,
 )
 from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.dry_run import DryRun, scratch_for
@@ -701,6 +703,7 @@ class ExtractionCoordinator:
         selector: Callable[[ArchiveMember], bool] | None = None,
         filter: MemberFilter | None = None,
         limits: ExtractionLimits | None = None,
+        ratio: DecoderLimits | None = None,
         abort_on: Collection[AbortOn] = (),
         dry_run: bool = False,
     ) -> None:
@@ -716,6 +719,11 @@ class ExtractionCoordinator:
         self._selector = selector
         self._filter = filter
         self._limits = limits if limits is not None else ExtractionLimits()
+        # The ratio fields this extraction applies (``ratio_limits``): the reader's
+        # ``DecoderLimits``, or what a deprecated ``ExtractionLimits`` field sets.
+        self._ratio = ratio_limits(
+            ratio if ratio is not None else DecoderLimits(), self._limits
+        )
         # Built by each ``run()``. A test that drives a helper directly installs its
         # own.
         self._state: _RunState
@@ -849,15 +857,14 @@ class ExtractionCoordinator:
             self._dry.rebase_os_error(exc, resolved=True)
 
     def _run(self, reader: BaseArchiveReader, dest: Path) -> list[ExtractionResult]:
+        ratio = self._ratio
         tracker = BombTracker(
             self._limits.max_extracted_bytes,
-            self._limits.max_ratio,
-            self._limits.ratio_activation_threshold,
+            ratio.max_ratio,
+            ratio.ratio_activation_threshold,
             self._limits.max_entries,
             source=reader,
-            live_ratio_activation_threshold=(
-                self._limits.live_ratio_activation_threshold
-            ),
+            live_ratio_activation_threshold=ratio.live_ratio_activation_threshold,
         )
 
         selector = self._selector
@@ -3160,6 +3167,14 @@ class ExtractionCoordinator:
         result_index: int,
     ) -> ExtractionResult:
         source = original.link_target_member
+        if source is None and original.link_target_unrecorded:
+            # A hard link stored with an empty target names no member. GNU tar
+            # substitutes "." and fails that one link; like a symlink with no target,
+            # it is LINK_TARGET_UNAVAILABLE, reported at listing, not a failure that
+            # OnError.STOP would turn into an aborted extraction.
+            return ExtractionResult(
+                original, None, ExtractionStatus.LINK_TARGET_UNAVAILABLE, None
+            )
         if source is None:
             raise LinkTargetNotFoundError(
                 "Hardlink target not found",
@@ -4552,7 +4567,9 @@ class ExtractionCoordinator:
         return 0o755 if member.is_dir else 0o644
 
     def _apply_metadata(self, path: Path | int, member: ArchiveMember) -> None:
-        """Best-effort ownership / mode / mtime. Failures are swallowed (best-effort).
+        """Best-effort ownership / mode / mtime / birth time. Failures are swallowed
+        (best-effort). The birth time is set where the system allows it
+        (:mod:`~archivey.internal.birth_time`: Windows and macOS).
         ``path`` may be an open descriptor, where the platform takes one.
 
         Ownership goes first: Linux ``chown`` clears setuid/setgid on a non-directory
@@ -4588,6 +4605,11 @@ class ExtractionCoordinator:
                 os.utime(target, (ts, ts))
             except (OSError, ValueError, OverflowError):
                 pass
+        # After utime: macOS moves a birth time later than the new mtime back to it.
+        if member.created is not None:
+            set_birth_time(
+                target if isinstance(target, int) else os.fspath(target), member.created
+            )
 
     # --- progress / misc -----------------------------------------------------------
 

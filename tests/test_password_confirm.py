@@ -294,6 +294,13 @@ def _codec_params(codec: Codec) -> CodecParams:
         )
     if codec is Codec.LZMA2:
         return CodecParams(filters=[{"id": lzma.FILTER_LZMA2, "dict_size": 1 << 20}])
+    if codec is Codec.IMPLODE:
+        # Implode refuses to open without a size, which would pass here vacuously.
+        return CodecParams(
+            unpack_size=10 * BUDGET,
+            implode_large_window=True,
+            implode_literal_tree=True,
+        )
     return CodecParams()
 
 

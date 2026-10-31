@@ -1,0 +1,70 @@
+name: Risk label
+
+# Labels each pull request with its review tier, `risk: light`, `risk: standard` or
+# `risk: deep`, so the pull request list shows how deep a review it gets. The tier comes
+# from the changed paths alone (`python3 scripts/review_prep.py tier`); the review skill's
+# §1 says what each tier asks of a reviewer. Like the outcome labels the review loop
+# leaves, this one only reports: nothing reads it.
+#
+# It runs again on every push and on a change of base, since either can change the
+# paths and so the tier.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: risk-label-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  label:
+    name: Label the risk tier
+    # A fork's run has a read-only token, so it could not label. `edited` is also sent
+    # for a title or body edit, which cannot change the tier.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event.action != 'edited' || github.event.changes.base != null)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR: ${{ github.event.pull_request.number }}
+      BASE: ${{ github.event.pull_request.base.ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Label the risk tier
+        run: |
+          set -euo pipefail
+          # The base branch's copy of the script, not the pull request's: the path
+          # lists that decide the tier live in it, and a pull request must not be able
+          # to lower its own tier by editing them.
+          git show "origin/$BASE:scripts/review_prep.py" > scripts/review_prep.py
+          tier="$(python3 scripts/review_prep.py --base "origin/$BASE" tier \
+            | sed -n 's/^tier: //p')"
+          case "$tier" in
+            light|standard|deep) ;;
+            *) echo "Unexpected tier: '$tier'" >&2; exit 1 ;;
+          esac
+          echo "Tier: $tier" >> "$GITHUB_STEP_SUMMARY"
+
+          present="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
+            --json labels --jq '.labels[].name')"
+          for other in light standard deep; do
+            if [ "$other" != "$tier" ] && grep -qxF -- "risk: $other" <<< "$present"; then
+              gh api --method DELETE \
+                "repos/$GITHUB_REPOSITORY/issues/$PR/labels/risk:%20$other" --silent
+            fi
+          done
+          if ! grep -qxF -- "risk: $tier" <<< "$present"; then
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR/labels" \
+              -f "labels[]=risk: $tier" --silent
+          fi

@@ -74,17 +74,25 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
     except subprocess.CalledProcessError:
         ...  # archivey refused the archive or stopped part-way; it said why on stderr
     ```
-- **Reading a member has no size limit.** `read()` returns the whole decompressed member as bytes in
+- **Reading a member has no byte cap.** `read()` returns the whole decompressed member as bytes in
   memory. A stream from `open()` decodes only as much as you ask for, so `stream.read(n)` holds
   about `n` bytes however large the member is, but a `stream.read()` with no size returns the rest
   of the member. `DecoderLimits` is the main limit that applies to a read. It caps the decoder's own
-  memory, so the data you read takes additional memory on top. `ExtractionLimits` doesn't apply,
-  because it covers only what `extract_all` writes to disk. A RAR archive opened from a file object
-  rather than a path is copied to a temporary file the first time a member needs `unrar` or `unar`.
-  `spool_limits.max_bytes` caps that copy, along with the few other temporary files archivey makes
-  for RAR archives, listed in the table below. When the archive records a member's size in
-  `member.size`, archivey never decodes more than that, and a member holding more raises
-  `CorruptionError`.
+  memory, so the data you read takes additional memory on top. The byte and entry caps in
+  `ExtractionLimits` cover only what `extract_all` writes to disk, but `decoder_limits.max_ratio` holds
+  every read too: a member that decodes to more than 800 times its compressed size raises
+  `ResourceLimitError` from the read that crosses the limit, and so do the reads of one reader
+  together past 800 times the archive's size. That second check needs the archive's size, or a
+  count of its compressed bytes, so it doesn't apply to a ZIP, TAR or 7z read from a pipe: there each
+  member is still held on its own, but nothing bounds many small members together. A `read()` stops there rather than first holding the
+  whole member in memory. A container inside a compression stream (a `.tar.gz`, a format handler's
+  `.cpio.xz`) is held to it whenever it's decoded, listing included, since listing one decodes all
+  of it. A RAR archive opened from a
+  file object rather than a path is copied to a temporary file the first time a member needs
+  `unrar` or `unar`. `spool_limits.max_bytes` caps that copy, along with the few other temporary
+  files archivey makes for RAR archives, listed in the table below. When the archive records a
+  member's size in `member.size`, archivey never decodes more than that, and a member holding
+  more raises `CorruptionError`.
 - **A pass that reads members as it goes checks the listing limits as it goes.** On a TAR,
   `stream_members()` yields members up to the limit and then raises, and `extract_all` leaves the
   files it wrote before then on disk. 7z, RAR and ISO archives check the limits before they give you
@@ -227,10 +235,14 @@ in the repository measures what each limit costs in time and memory on your mach
   It costs disk space, plus 5-10 ms per MiB written, 10-20 s at the default.
 - **`extraction_limits.max_entries`**, default 262,144, caps the members one extraction writes. It
   costs about 0.6 ms per file written, under 3 minutes at the default.
-- **`extraction_limits.max_ratio`**, default 1000, caps how much a member, or the whole archive,
-  expands. It's checked as data is written, and for a member whose size and compressed size the
-  archive records, before any of it is written. Outputs under 5 MiB, or 256 MiB for a whole archive
-  read from a pipe, aren't checked. It has no cost of its own.
+- **`decoder_limits.max_ratio`**, default 800, caps how much a member, or the whole archive,
+  expands. It's checked as data is written or read, and for a member whose size and compressed size
+  the archive records, before any of it is written. Outputs under 5 MiB, or 256 MiB for a whole
+  archive read from a pipe, aren't checked. It has no cost of its own. A compressed tar is held to it
+  whenever archivey decodes it, listing included, since listing one decodes all of it. The default
+  sits below DEFLATE's ceiling of about 1032:1, so a gzip of zeros (1003 to 1032:1) is refused every
+  time rather than by a few bytes. It used to be `extraction_limits.max_ratio`; that field still
+  works, deprecated, and set there it overrides this one.
 - **`listing_limits.max_members`**, default 262,144, caps the members an archive can list. It costs
   about 25-50 µs and 1.5 KiB of memory per member, under 15 s and 384 MiB at the default.
 - **`listing_limits.max_metadata_bytes`**, default 64 MiB, caps the text kept for names, comments
@@ -271,6 +283,24 @@ release adds and plugin formats that another library registers. An `exclude=` li
 what it names, so a format added later opens. The policy decides which reader runs, not what
 detection reads: detection still looks for every built-in format, within `detection_budget`.
 
+An optional package that's installed is used whenever a file needs it, even one installed system-wide
+that your program doesn't depend on. If you'd rather a package didn't parse your input, for
+example because of a bug reported against it, list it in the policy's
+[`exclude_libraries=`](opening.md#configuration). archivey then decodes nothing with it in calls
+made with that config. It doesn't import `brotli`, `pyppmd`, `inflate64` or `rapidgzip` for them;
+`lz4`, `zstd` and `pycdlib` are imported when archivey loads, but not used. The standard library's
+`zlib`, `bz2` and `lzma` can't be excluded; refuse the formats that carry them with `only=` or
+`exclude=` instead.
+
+Opening one part of a multi-volume set by path, such as `x.part1.rar` or `x.7z.001`, also reads
+the other parts in the same folder. A part found that way that is a symbolic link is refused with
+`OpenError`, so someone who can only add files to a shared folder can't link a planted part to a
+file you can read and they can't. That check runs once, when the parts are found, and the parts are
+opened by name later, so it doesn't stop someone who swaps a part for a link in between. A hard link
+also gets past it, and some systems, macOS among them, let any user make one. If others can write to
+the folder, set `ArchiveyConfig(discover_volumes=False)`: a path is then read as the one file it
+names, and you pass a set's volumes as a list.
+
 For archives from strangers, the default `policy="strict"` refuses or rewrites every kind of unsafe
 member archivey knows of. The [policy
 table](extracting.md#what-each-policy-does-with-unusual-members) on the Extracting page shows what
@@ -283,7 +313,8 @@ Archivey's test suite replays published vulnerabilities of other archive readers
 apply to it: path traversal, link and hard link escapes, header parsing bugs, decompression bombs,
 structures built to make a reader hang, member names that drive the terminal, and permissions that
 leave extracted files writable by others. They come from GNU tar, libarchive, Info-ZIP, 7-Zip,
-unrar and WinRAR, py7zr, rarfile, Apache Commons Compress, and Python's `tarfile` and `zipfile`.
+unrar and WinRAR, py7zr, rarfile, Apache Commons Compress, the Rust `zip` crate, and Python's
+`tarfile` and `zipfile`.
 Each test builds the archive the advisory describes and checks that archivey refuses it, keeps it
 inside the destination, ends it with a typed error rather than a hang, or reads it as the format
 defines without allocating more than the archive's size pays for. The decompression libraries
@@ -297,6 +328,7 @@ it replays:
 - [`tests/test_cve_regressions_7z_rar.py`](https://github.com/archivey-dev/archivey/blob/main/tests/test_cve_regressions_7z_rar.py)
 - [`tests/test_cve_regressions_libarchive.py`](https://github.com/archivey-dev/archivey/blob/main/tests/test_cve_regressions_libarchive.py)
 - [`tests/test_cve_regressions_codecs.py`](https://github.com/archivey-dev/archivey/blob/main/tests/test_cve_regressions_codecs.py)
+- [`tests/test_cve_regressions_zip2.py`](https://github.com/archivey-dev/archivey/blob/main/tests/test_cve_regressions_zip2.py)
 - [`tests/test_cve_parsing.py`](https://github.com/archivey-dev/archivey/blob/main/tests/test_cve_parsing.py)
 
 ## Reporting a vulnerability

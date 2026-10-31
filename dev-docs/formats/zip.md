@@ -156,23 +156,25 @@ claim.
 
 Two things are ZIP-specific rather than general in the shared detector:
 
-- Prefixed ZIPs are found only when the leading bytes look like an executable or script
-  (`MZ`, ELF, or `#!` at offset 0). That gate is what keeps the forward search from reading
-  up to 2 MiB of every file a caller opens. A hit is reported as `ZIP` with a
-  `payload_offset`, ahead of the content probes (the tier that reports headerless stream
-  codecs), so a stub with a ZIP behind it comes back as a ZIP rather than as a guess at the
-  stub's own bytes. `THOROUGH` does not lift the gate today — `THOROUGH_BUDGET` raises probe
-  links, index bytes and the completion window but keeps the same 2 MiB window, and the gate
-  itself is unconditional (`detection.py:609`); a gate-free exhaustive scan is designed and
-  not shipped. The cue set, the scan window, the budget tiers and why a hit is
-  validated are shared with 7z and RAR —
-  [`topics/prefixed-archives.md`](../topics/prefixed-archives.md). What is ZIP's alone: the
-  local-header search and its validator above, the offset conventions in §3, and the fact
-  that ZIP is the only format that can locate itself from the end.
+- Prefixed ZIPs are found early when the leading bytes look like an executable or script
+  (`MZ`, ELF, or `#!` at offset 0). Behind any other leading bytes they are found by the
+  same scan run last, on a source every other step declined and whose name names no
+  format. That ordering is what keeps the forward search from reading up to 2 MiB of every
+  file a caller opens. A cued hit is reported as `ZIP` with a `payload_offset`, ahead of
+  the content probes (the tier that reports headerless stream codecs), so a stub with a
+  ZIP behind it comes back as a ZIP rather than as a guess at the stub's own bytes.
+  `THOROUGH` does not lift the gate today — `THOROUGH_BUDGET` raises probe links, index
+  bytes and the completion window but keeps the same 2 MiB window; a scan past that window
+  is designed and not shipped. The cue set, the scan window, the budget tiers and why a
+  hit is validated are shared with 7z and RAR —
+  [`topics/prefixed-archives.md`](../topics/prefixed-archives.md). What is ZIP's alone:
+  the local-header search and its validator above, the offset conventions in §3, and the
+  fact that ZIP is the only format that can locate itself from the end.
 - A **tail probe** — locating the EOCD directly instead of scanning forward — is designed and
   not shipped, and ZIP is the only format it can serve. Until it lands, a prefixed ZIP behind
   bytes that look like neither an executable nor a script (a JPEG polyglot, a plain
-  concatenation) is not detected, though `open_archive(..., format=ZIP)` reads it. The probe
+  concatenation) is detected only when it starts within the 2 MiB window and the name has
+  no known extension, though `open_archive(..., format=ZIP)` reads it anywhere. The probe
   cannot be gated the same way: a ZIP an executable cue would reach is already found. So it
   means one tail read on every source — free on a hit, since the backend reads the EOCD
   anyway, and pure waste on a miss, which is most files. Calling `open_archive` rather than
@@ -782,7 +784,8 @@ the ZIP method id to the shared codec layer.
 
 The reason is coverage and uniformity, in that order. `ZipExtFile` handles STORED, DEFLATE,
 BZIP2 and LZMA; the codec layer adds Deflate64 (9), Zstd (93) and PPMd (98), which the
-registry already advertised for ZIP, and XZ (95), which is core. It also puts ZIP member reads on the same
+registry already advertised for ZIP, and XZ (95), Shrink (1) and Implode (6), which are
+core. It also puts ZIP member reads on the same
 `VerifyingStream` and the same exception translation as every other backend, so a corrupt
 body raises `CorruptionError` and a cut-short one raises `TruncatedError` through shared
 code — and it is what lets a ZIP member use the accelerators when the caller turns them on,
@@ -825,7 +828,33 @@ end at their declared size, and their input must end there too: right after it f
 (or one zero byte later, which 7-Zip's encoder sometimes writes), after the end mark
 PPMd8 must carry. So a declared size short
 of the stream's data is `CorruptionError`, not `TruncatedError`: the input is too long,
-not short. The 7z handbook (§ coders, *Input after the stream*) has how each codec finds
+not short. Shrink (method 1) and Implode (method 6) have no end marker at all, so the
+declared size is their end too: the bits left in the last byte are padding, and a whole
+byte after it is input after the end, as for LZMA. A member whose size is only in a data
+descriptor (bit 3) therefore reads from a file, where the central directory has the size,
+and is `UnsupportedFeatureError` from a pipe. PKZIP 1.x, the only writer of either,
+predates bit 3. Their decoders (`codecs/zip_legacy_decoder.py`) follow 7-Zip's
+`ShrinkDecoder` and Info-ZIP's `unshrink.c` / `explode.c`: a partial clear can free the
+code just read, which stays the parent of the next entry (7-Zip's "orphan"), and a Shrink
+table that fills with no clear is refused, as both tools refuse it; where the two differ
+(an unknown control code, a code that names a free slot) the decoder refuses as 7-Zip
+does, and `unshrink` would leave it to the CRC-32. An Implode copy from before the start
+of the output reads zeros, as both read it. The test-only encoders in
+`tests/zip_legacy_build.py` make the fixtures, checked with `unzip` and 7-Zip 26.05;
+Commons Compress's five PKZIP archives match it in the corpus test. A partial clear
+makes no output, so no limit sees it: the decoder keeps a child count per slot and the
+set of leaves, and a clear costs the slots it frees, not a walk over the table.
+Shrink stores each slot's string as unix-compress's LZW decoder does (flat up to 256
+bytes, then links with 128-byte tails, its `_expand`), so a code is one lookup, not a
+walk up its parents; only a slot added under a free parent (an orphan) and the slots
+below it walk, since that parent slot can be taken over. That and an inline bit loop
+made it 1.5 to 1.9x faster on text and about 36x on long runs (3 to 6 MB/s on text, about
+half the unix-compress decoder's speed). The caps bound the memory: a full 13-bit table
+of long entries peaks at about 1.8 MiB (0.7 MiB when every code walked), where flat
+strings would hold about 32 MiB. `unshrink_reference` in `tests/zip_legacy_build.py`
+walks every code and scans the table at each clear; the tests check the decoder against
+it on mutated streams with long links, clears and orphans.
+The 7z handbook (§ coders, *Input after the stream*) has how each codec finds
 its end, and what it cannot see; `inflate64` drops input after a Deflate64 stream's end
 and has no `unused_data`, so `Deflate64Decoder` holds back the last byte it is given,
 and input follows the end when `eof` is already True as that byte goes in. The

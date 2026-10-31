@@ -13,10 +13,11 @@ from collections import Counter, OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, TypeGuard
+from typing import TYPE_CHECKING, BinaryIO, NoReturn, TypeGuard
 
 from archivey.exceptions import (
     OpenError,
+    ResourceUnavailableError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -487,7 +488,31 @@ def _siblings_with_base(
 
 
 def discover_volume_siblings(path: Path) -> list[Path] | None:
-    """Return ordered sibling paths when ``path`` is part of a volume set, else ``None``."""
+    """Return ordered sibling paths when ``path`` is part of a volume set, else ``None``.
+
+    A sibling found this way that is a symlink is refused (:class:`OpenError`): in a
+    directory others can write to, a planted ``x.part2.rar`` linking to a file the
+    caller can read and they cannot would put that file's bytes into an extracted
+    member. ``path`` itself may be a link, and so may its directory; the caller named
+    those. A set listed explicitly is not discovered, so its links are kept.
+    """
+    volumes = _discover_volume_siblings(path)
+    if volumes is not None:
+        for volume in volumes:
+            if volume.name != path.name and volume.is_symlink():
+                raise _discovered_link_error(volume, path)
+    return volumes
+
+
+def _discovered_link_error(volume: Path, named: Path) -> OpenError:
+    return OpenError(
+        f"Volume {display_path(volume)}, found beside {display_path(named)}, is a "
+        "symbolic link; archivey does not follow a link it found on its own. Pass "
+        "the volumes as a list to read them anyway."
+    )
+
+
+def _discover_volume_siblings(path: Path) -> list[Path] | None:
     name = path.name
     lower = name.lower()
     # Fast reject before any filesystem op: most opens (ZIP/TAR/gz/plain .7z) are
@@ -559,7 +584,9 @@ def first_volume_for_stub(path: Path) -> Path | None:
     hand to :func:`discover_volume_siblings`.
 
     A path that is already volume-shaped (``vol.exe.001``, ``rv.part1.exe``) is not
-    a stub. Two matching first volumes beside the stub is a refusal, not a guess.
+    a stub. Two matching first volumes beside the stub is a refusal, not a guess, and
+    a first volume that is a symbolic link is refused with :class:`OpenError`: it was
+    found, not named.
     """
     name = path.name
     if not is_sfx_stub_name(name):
@@ -578,6 +605,10 @@ def first_volume_for_stub(path: Path) -> Path | None:
     )
     found = [candidate for candidate in candidates if candidate.is_file()]
     if len(found) == 1:
+        # Found, not named: refused as a link, as a discovered sibling is
+        # (:func:`discover_volume_siblings`), which only tests the parts after it.
+        if found[0].is_symlink():
+            raise _discovered_link_error(found[0], path)
         return found[0]
     if len(found) > 1:
         names = ", ".join(sorted(candidate.name for candidate in found))
@@ -607,16 +638,17 @@ def _fd_limit_text() -> str:
     return f"the process file-descriptor limit is {soft}"
 
 
-def _volume_open_error(path: Path, exc: OSError) -> OpenError:
+def _raise_volume_open_error(path: Path, exc: OSError) -> NoReturn:
+    """Raise for a failed ``stat`` or ``open`` of the volume at ``path``: the
+    ``OSError`` itself, as a missing or unreadable first path does, except when the
+    process is out of file descriptors. That is the system running short, not the
+    file, so it is :class:`ResourceUnavailableError`, with ``exc`` as its cause."""
     if exc.errno in (errno.EMFILE, errno.ENFILE):
-        return OpenError(
+        raise ResourceUnavailableError(
             f"Too many open files to open volume; {_fd_limit_text()}",
             archive_name=path.as_posix(),
-        )
-    return OpenError(
-        "Cannot open volume",
-        archive_name=path.as_posix(),
-    )
+        ) from exc
+    raise exc
 
 
 @dataclass
@@ -672,11 +704,12 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
                 try:
                     st = os.stat(source)
                 except OSError as exc:
-                    # A path the caller listed is an open failure. A numbering
-                    # gap among paths that exist is TruncatedError in
+                    # A volume path that is missing or unreadable, listed by the
+                    # caller or discovered, raises its OSError, as the first does. A numbering gap among
+                    # paths that exist is TruncatedError in
                     # _validate_numbered_volume_completeness — discovery expected a
                     # part that is not in the set.
-                    raise _volume_open_error(source, exc) from exc
+                    _raise_volume_open_error(source, exc)
                 if not stat.S_ISREG(st.st_mode):
                     raise OpenError(
                         "volume is not a regular file",
@@ -767,7 +800,7 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
         try:
             return open(path, "rb")
         except OSError as exc:
-            raise _volume_open_error(path, exc) from exc
+            _raise_volume_open_error(path, exc)
 
     def _recompute_cursor(self) -> None:
         """Set volume index/offset from ``_pos``. Sequential ``read`` advances instead."""
@@ -1282,7 +1315,9 @@ def _is_source_sequence(source: object) -> TypeGuard[Sequence[object]]:
     return isinstance(source, Sequence)
 
 
-def resolve_source(source: OpenSourceInput) -> ResolvedSource:
+def resolve_source(
+    source: OpenSourceInput, *, discover_volumes: bool = True
+) -> ResolvedSource:
     """Turn ``source`` into the one :class:`ArchiveSource` every later step reads.
 
     This is the boundary every archive source crosses on its way to detection and a
@@ -1294,13 +1329,16 @@ def resolve_source(source: OpenSourceInput) -> ResolvedSource:
 
     The caller must close the returned source. A path source opens nothing until it is
     read, so resolving one only to inspect it costs no descriptor.
+
+    ``discover_volumes=False`` (``ArchiveyConfig.discover_volumes``) reads a path as
+    the one file it names, never as a part of a set found beside it.
     """
     if _is_source_sequence(source):
         raw_items = list(source)
         if not raw_items:
             raise _UsageValueError("source sequence must not be empty")
         if len(raw_items) == 1:
-            return _resolve_single(raw_items[0])
+            return _resolve_single(raw_items[0], discover_volumes=discover_volumes)
         items = [_coerce_path_or_stream(item) for item in raw_items]
         paths = [item for item in items if isinstance(item, Path)]
         joined = (
@@ -1312,16 +1350,16 @@ def resolve_source(source: OpenSourceInput) -> ResolvedSource:
             name,
             len(items),
         )
-    return _resolve_single(source)
+    return _resolve_single(source, discover_volumes=discover_volumes)
 
 
-def _resolve_single(source: object) -> ResolvedSource:
+def _resolve_single(source: object, *, discover_volumes: bool) -> ResolvedSource:
     if isinstance(source, (str, Path)):
         check_path_not_empty(source, call="open_archive()")
         path = Path(source)
         if path.is_dir():
             return ResolvedSource(ArchiveSource.for_path(path), str(path), 1)
-        siblings = discover_volume_siblings(path)
+        siblings = discover_volume_siblings(path) if discover_volumes else None
         if siblings is not None:
             # Numbered parts are byte slices, so they are joined into one stream.
             # RAR keeps volume 1's path instead: unrar walks the set itself and needs

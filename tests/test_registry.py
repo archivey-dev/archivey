@@ -570,7 +570,8 @@ def test_the_streaming_hint_still_follows_the_install_hint(
         "archivey.internal.registry._optional", lambda name: None, raising=True
     )
     monkeypatch.setattr(
-        "archivey.internal.registry.is_codec_available", lambda codec: False
+        "archivey.internal.registry.is_codec_available",
+        lambda codec, excluded=frozenset(): False,
     )
     with pytest.raises(PackageNotInstalledError):
         open_archive(

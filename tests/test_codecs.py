@@ -17,6 +17,7 @@ import lzma
 import random
 import re
 import shutil
+import subprocess
 import sys
 import sysconfig
 import types
@@ -69,6 +70,9 @@ from tests.conftest import (
     requires,
     requires_binary,
     requires_zstd,
+    run_7z,
+    sevenzip_version,
+    sevenzip_version_text,
     zstd_backend,
 )
 from tests.corruption_util import (
@@ -1189,15 +1193,109 @@ def test_unix_compress_non_block_mode_streams_match_gzip(
         assert _lzw_decode_in_chunks(compressed, chunk) == data
 
 
-def _seven_zip_decompress(compressed: bytes, tmp_path: Path) -> bytes:
-    """``7z``'s reading of a ``.Z`` stream, through a file in ``tmp_path``."""
-    import subprocess
+def _seven_zip_decompress(
+    compressed: bytes, tmp_path: Path, program: str = "7z"
+) -> bytes:
+    """``program``'s reading of a ``.Z`` stream, through a file in ``tmp_path``.
 
+    A refusal fails with the 7-Zip version and its stderr, so a CI log says which
+    7-Zip read the stream and why it stopped."""
     path = tmp_path / "data.Z"
     path.write_bytes(compressed)
-    return subprocess.run(
-        ["7z", "e", "-so", str(path)], capture_output=True, check=True
-    ).stdout
+    result = run_7z(["e", "-so", str(path)], program=program)
+    if result.returncode != 0:
+        pytest.fail(
+            f"{program} (7-Zip {sevenzip_version_text(sevenzip_version(program))}) exited {result.returncode} on "
+            f"{path.name}: {result.stderr.decode(errors='replace').strip()}"
+        )
+    return result.stdout
+
+
+# 7-Zip 26.05 added a 9-bit path "compatible with the original Z decoder": once a 9-bit
+# table fills, it skips the code-group padding and reads codes 10 bits wide (values stay
+# below 512). Upstream says 26.04 and earlier misread some old 9-bit files. archivey
+# keeps 9-bit codes, as ncompress since commit 3303f31 writes and reads them and as unar
+# and 7-Zip up to 26.04 read them, so only those 7-Zip versions can check archivey's
+# 9-bit output (``unix-compress.md`` §3 and §7).
+_SEVEN_ZIP_WIDENS_NINE_BITS = (26, 5)
+
+
+def _requires_nine_bit_7z() -> pytest.MarkDecorator:
+    """Skip unless ``7z`` is a 7-Zip that keeps 9-bit codes once the table fills."""
+    version = sevenzip_version()
+    return pytest.mark.skipif(
+        version is not None and version >= _SEVEN_ZIP_WIDENS_NINE_BITS,
+        reason=(
+            f"7z is 7-Zip {sevenzip_version_text(version)}, which widens a full 9-bit"
+            " .Z table to 10 bits"
+        ),
+    )
+
+
+def _seven_zip_widening_nine_bits() -> str | None:
+    """The first of ``7zz`` and ``7z`` that is 7-Zip 26.05 or later, or None."""
+    for program in ("7zz", "7z"):
+        version = sevenzip_version(program)
+        if version is not None and version >= _SEVEN_ZIP_WIDENS_NINE_BITS:
+            return program
+    return None
+
+
+@pytest.mark.parametrize(
+    ("banner", "version", "text", "widens"),
+    [
+        ("7-Zip 23.01 (x64) : Copyright (c) 1999-2023", (23, 1), "23.01", False),
+        ("7-Zip (z) 26.05 (x64) : Copyright (c) 1999-2026", (26, 5), "26.05", True),
+        ("7-Zip (a) 26.04 (x64) : Copyright (c) 1999-2026", (26, 4), "26.04", False),
+        # p7zip numbers its own releases; 16.02 must stay below the 7-Zip threshold.
+        ("p7zip Version 16.02 (locale=C,Utf16=off)", (16, 2), "16.02", False),
+        # An older banner shape is unknown, and an unknown 7z keeps the oracle running.
+        ("7-Zip [64] 16.02 : Copyright (c) 1999-2016", None, "unknown version", False),
+    ],
+)
+def test_sevenzip_version_reads_the_banner(
+    monkeypatch: pytest.MonkeyPatch,
+    banner: str,
+    version: tuple[int, int] | None,
+    text: str,
+    widens: bool,
+) -> None:
+    """The version that decides whether the 9-bit oracle tests run."""
+    from tests import conftest
+
+    monkeypatch.setattr(conftest.shutil, "which", lambda _name: "7z")
+    monkeypatch.setattr(
+        conftest,
+        "run_7z",
+        lambda *_a, **_k: subprocess.CompletedProcess(["7z", "i"], 0, f"\n{banner}\n"),
+    )
+    conftest.sevenzip_version.cache_clear()
+    try:
+        assert conftest.sevenzip_version() == version
+    finally:
+        conftest.sevenzip_version.cache_clear()
+    assert conftest.sevenzip_version_text(version) == text
+    assert (version is not None and version >= _SEVEN_ZIP_WIDENS_NINE_BITS) is widens
+
+
+def test_sevenzip_version_probe_that_does_not_finish_is_reported(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A ``7z i`` that raises is written to stderr and answers None."""
+    from tests import conftest
+
+    monkeypatch.setattr(conftest.shutil, "which", lambda _name: "7z")
+
+    def fail(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd=["7z", "i"], timeout=30)
+
+    monkeypatch.setattr(conftest, "run_7z", fail)
+    conftest.sevenzip_version.cache_clear()
+    try:
+        assert conftest.sevenzip_version() is None
+    finally:
+        conftest.sevenzip_version.cache_clear()
+    assert "7z i did not finish" in capsys.readouterr().err
 
 
 # (block_mode, clear_every): without block mode, block mode with no CLEAR, and block
@@ -1205,38 +1303,88 @@ def _seven_zip_decompress(compressed: bytes, tmp_path: Path) -> bytes:
 _NINE_BIT_LAYOUTS = [(False, 0), (True, 0), (True, 300)]
 
 
-@requires_binary("7z")
 @pytest.mark.parametrize(("block_mode", "clear_every"), _NINE_BIT_LAYOUTS)
 @pytest.mark.parametrize("payload", sorted(_NON_BLOCK_PAYLOADS))
 def test_unix_compress_nine_bit_streams_decode_exactly(
-    payload: str, block_mode: bool, clear_every: int, tmp_path: Path
+    payload: str, block_mode: bool, clear_every: int
 ) -> None:
     """At 9 bits the table fills and codes stay 9 bits wide; after a CLEAR the table
-    restarts at 9 bits. ``7z`` is the reference. GNU gzip is not: it moves to 10-bit
-    codes when the table fills even at 9 bits, and refuses these streams. See
-    ``dev-docs/formats/unix-compress.md`` §3."""
+    restarts at 9 bits. GNU gzip is no reference here: it moves to 10-bit codes when
+    the table fills even at 9 bits, and refuses these streams, as 7-Zip 26.05 does.
+    See ``dev-docs/formats/unix-compress.md`` §3."""
     data = _NON_BLOCK_PAYLOADS[payload]
     compressed = _lzw_compress(data, 9, block_mode=block_mode, clear_every=clear_every)
-    assert _seven_zip_decompress(compressed, tmp_path) == data
     for chunk in (1 << 20, 4097, 7):
         assert _lzw_decode_in_chunks(compressed, chunk) == data
 
 
 @requires_binary("7z")
-def test_unix_compress_ncompress_5_0_nine_bit_damage_reads_as_wrong_bytes(
+@_requires_nine_bit_7z()
+@pytest.mark.parametrize(("block_mode", "clear_every"), _NINE_BIT_LAYOUTS)
+@pytest.mark.parametrize("payload", sorted(_NON_BLOCK_PAYLOADS))
+def test_unix_compress_nine_bit_streams_match_7zip_up_to_26_04(
+    payload: str, block_mode: bool, clear_every: int, tmp_path: Path
+) -> None:
+    """``7z`` up to 26.04 reads the 9-bit streams to their input, as archivey does."""
+    data = _NON_BLOCK_PAYLOADS[payload]
+    compressed = _lzw_compress(data, 9, block_mode=block_mode, clear_every=clear_every)
+    assert _seven_zip_decompress(compressed, tmp_path) == data
+
+
+@pytest.mark.skipif(
+    _seven_zip_widening_nine_bits() is None, reason="needs 7-Zip 26.05 or later"
+)
+def test_unix_compress_nine_bit_full_table_is_refused_by_7zip_26_05(
     tmp_path: Path,
 ) -> None:
-    """ncompress 5.0's ``-b9`` bug: the table takes code 512, which is later written in
-    9 bits. The stream decodes with no error to wrong bytes, the same as ``7z`` reads,
-    because nothing in the format marks the damage (``unix-compress.md`` §3)."""
+    """7-Zip 26.05 reads codes after a full 9-bit table as 10 bits wide, so a stream
+    that keeps 9-bit codes, which archivey decodes to its input, is a data error there.
+    The same 7-Zip reads a 16-bit stream, so the refusal is about 9 bits, not ``.Z``.
+    If 7-Zip goes back to 9-bit codes this fails, and the skip above can go."""
+    program = _seven_zip_widening_nine_bits()
+    assert program is not None
     data = _NON_BLOCK_PAYLOADS["random"]
-    damaged = _lzw_compress(data, 9, block_mode=True, table_limit=512)
+    control = tmp_path / "control"
+    control.mkdir()
+    assert _seven_zip_decompress(_lzw_compress(data, 16), control, program) == data
+    compressed = _lzw_compress(data, 9, block_mode=True)
+    assert _lzw_decode_in_chunks(compressed, 1 << 20) == data
+    path = tmp_path / "data.Z"
+    path.write_bytes(compressed)
+    result = run_7z(["e", "-so", str(path)], program=program)
+    assert result.returncode == 2, result
+    assert b"Data Error" in result.stderr
+
+
+def _ncompress_5_0_nine_bit_damage() -> tuple[bytes, bytes]:
+    """(the input, its 9-bit stream with ncompress 5.0's extra code 512)."""
+    data = _NON_BLOCK_PAYLOADS["random"]
+    return data, _lzw_compress(data, 9, block_mode=True, table_limit=512)
+
+
+def test_unix_compress_ncompress_5_0_nine_bit_damage_reads_as_wrong_bytes() -> None:
+    """ncompress 5.0's ``-b9`` bug: the table takes code 512, which is later written in
+    9 bits. The stream decodes with no error to wrong bytes, because nothing in the
+    format marks the damage (``unix-compress.md`` §3)."""
+    data, damaged = _ncompress_5_0_nine_bit_damage()
     assert damaged != _lzw_compress(data, 9, block_mode=True)
     state = LzwState()
     out, _ = state.feed(damaged)
     tail, _ = state.flush()
     assert out + tail != data
     assert state.truncation is None
+
+
+@requires_binary("7z")
+@_requires_nine_bit_7z()
+def test_unix_compress_ncompress_5_0_nine_bit_damage_matches_7zip_up_to_26_04(
+    tmp_path: Path,
+) -> None:
+    """``7z`` up to 26.04 reads the damaged stream to the same wrong bytes as archivey."""
+    _data, damaged = _ncompress_5_0_nine_bit_damage()
+    state = LzwState()
+    out, _ = state.feed(damaged)
+    tail, _ = state.flush()
     assert out + tail == _seven_zip_decompress(damaged, tmp_path)
 
 
@@ -3110,6 +3258,30 @@ def test_rewind_report_gives_the_reason_rapidgzip_is_unused(
     for message in messages:
         assert message.endswith(
             f"The 'rapidgzip' accelerator is not available: {reason}."
+        ), message
+
+
+@pytest.mark.parametrize("present", [False, True], ids=["absent", "installed"])
+def test_rewind_report_gives_the_policy_when_rapidgzip_is_excluded(
+    monkeypatch: pytest.MonkeyPatch, present: bool
+) -> None:
+    """Excluded, rapidgzip is reported like a rapidgzip archivey does not use: the
+    report gives the policy, not install advice or the index."""
+    deps = codecs_module.deps
+    monkeypatch.setattr(deps, "UNDER_PYPY", False)
+    monkeypatch.setattr(
+        deps, "rapidgzip", deps.LazyOptional("rapidgzip", present=present)
+    )
+    messages = _rapidgzip_rewind_messages(
+        StreamConfig(
+            seekable=True, excluded_libraries=frozenset({OptionalLibrary.RAPIDGZIP})
+        )
+    )
+    assert len(messages) == 2
+    for message in messages:
+        assert message.endswith(
+            "The 'rapidgzip' accelerator is not available: "
+            "ArchiveyConfig.formats.exclude_libraries turns it off."
         ), message
 
 

@@ -133,6 +133,7 @@ from archivey.internal.base_reader import (
 )
 from archivey.internal.config import KeyDerivationBudget, check_decoder_memory
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.excluded_libraries import as_reported
 from archivey.internal.external.cli import ProcessOutputStream, signal_exit_error
 from archivey.internal.external.unar import (
     UnarOutputStream,
@@ -176,9 +177,11 @@ from archivey.internal.streams.archive_stream import (
 )
 from archivey.internal.streams.crypto import (
     AES_BLOCK_SIZE,
+    CRYPTO_PACKAGE,
     CRYPTO_REQUIREMENT,
     AesParams,
     _crypto_available,
+    crypto_missing,
     open_aes_decrypt_stage,
     open_aes_decrypt_stream,
 )
@@ -1071,6 +1074,9 @@ class RarReader(BaseArchiveReader):
         kdf_budget = KeyDerivationBudget(self._config.decoder_limits)
         self._usage.watch_key_derivation(kdf_budget)
         self._kdf_cache = RarKdfCache(budget=kdf_budget)
+        # The call's ``FormatPolicy.exclude_libraries``: ``cryptography`` there reads
+        # as not installed for this reader.
+        self._excluded = self._config.formats.exclude_libraries
         # The first member whose PswCheck can judge a candidate, found once on first
         # use; ``False`` until looked for, ``None`` when there is none.
         self._archive_check_member: ArchiveMember | None | Literal[False] = False
@@ -1247,7 +1253,7 @@ class RarReader(BaseArchiveReader):
                 not self._is_directly_sliceable(info)
                 or (
                     info.is_encrypted
-                    and not (self._natively_decryptable(info) and _crypto_available())
+                    and not (self._natively_decryptable(info) and self._crypto_usable())
                 )
             )
             for member, info in zip(self._members, self._archive.members, strict=True)
@@ -1277,7 +1283,11 @@ class RarReader(BaseArchiveReader):
         wrap = self._seek_handle_wrapper()
         path = source.path
         if path is not None:
-            siblings = discover_volume_siblings(path)
+            siblings = (
+                discover_volume_siblings(path)
+                if self._config.discover_volumes
+                else None
+            )
             if siblings is not None and len(siblings) > 1:
                 # The source reads volume 1 only; ``unrar`` walks the set on disk, and
                 # the header walk reads across it through a join this reader builds.
@@ -1681,6 +1691,7 @@ class RarReader(BaseArchiveReader):
                         max_members=max_members,
                         max_metadata_bytes=max_metadata_bytes,
                         kdf_cache=self._kdf_cache,
+                        excluded=self._excluded,
                         name_encoding=self._encoding,
                         volume_numbers=self._volume_numbers,
                     )
@@ -1707,6 +1718,7 @@ class RarReader(BaseArchiveReader):
                         max_members=max_members,
                         max_metadata_bytes=max_metadata_bytes,
                         kdf_cache=self._kdf_cache,
+                        excluded=self._excluded,
                         name_encoding=self._encoding,
                     )
                 finally:
@@ -1726,6 +1738,7 @@ class RarReader(BaseArchiveReader):
                             max_members=max_members,
                             max_metadata_bytes=max_metadata_bytes,
                             kdf_cache=self._kdf_cache,
+                            excluded=self._excluded,
                             name_encoding=self._encoding,
                         )
                     except UnsupportedFeatureError:
@@ -1741,6 +1754,7 @@ class RarReader(BaseArchiveReader):
                             max_members=max_members,
                             max_metadata_bytes=max_metadata_bytes,
                             kdf_cache=self._kdf_cache,
+                            excluded=self._excluded,
                             name_encoding=self._encoding,
                             volume_numbers=self._volume_numbers,
                         )
@@ -1755,6 +1769,7 @@ class RarReader(BaseArchiveReader):
                     max_members=max_members,
                     max_metadata_bytes=max_metadata_bytes,
                     kdf_cache=self._kdf_cache,
+                    excluded=self._excluded,
                     name_encoding=self._encoding,
                 )
                 if archive.is_volume and not archive.needs_next_volume:
@@ -2134,6 +2149,11 @@ class RarReader(BaseArchiveReader):
             else (lambda password: decode_check(password, full_plan)),
         )
 
+    def _crypto_usable(self) -> bool:
+        """Whether ``cryptography`` can decrypt here: installed, and not turned off by
+        the call's ``FormatPolicy.exclude_libraries``."""
+        return CRYPTO_PACKAGE not in self._excluded and _crypto_available()
+
     def _natively_decryptable(self, raw: RarMemberInfo) -> bool:
         """Whether this is a stored, encrypted member archivey can decrypt itself.
 
@@ -2178,7 +2198,7 @@ class RarReader(BaseArchiveReader):
         ``PackageNotInstalledError`` naming ``cryptography``.
         """
         return self._natively_decryptable(raw) and (
-            _crypto_available() or self._decompressor is RarDecompressor.NONE
+            self._crypto_usable() or self._decompressor is RarDecompressor.NONE
         )
 
     def _stored_data_cipher(
@@ -2205,7 +2225,7 @@ class RarReader(BaseArchiveReader):
         """
         return (
             self._natively_decryptable(raw)
-            and _crypto_available()
+            and self._crypto_usable()
             and raw.crc32 is not None
         )
 
@@ -2231,7 +2251,9 @@ class RarReader(BaseArchiveReader):
     def _stored_crc_matches(self, raw: RarMemberInfo, password: str | bytes) -> bool:
         """Whether ``password`` decrypts a stored member to bytes its CRC32 matches."""
         assert raw.crc32 is not None
-        stage = open_aes_decrypt_stage(self._stored_data_cipher(raw, password))
+        stage = open_aes_decrypt_stage(
+            self._stored_data_cipher(raw, password), excluded=self._excluded
+        )
         view = self._direct_view(raw, raw.compress_size)
         crc = 0
         remaining = raw.file_size
@@ -3804,7 +3826,11 @@ class RarReader(BaseArchiveReader):
                 )
             member.link_target = data.decode("utf-8", errors="surrogateescape")
             return
-        if raw.is_encrypted and self._natively_decryptable(raw) and _crypto_available():
+        if (
+            raw.is_encrypted
+            and self._natively_decryptable(raw)
+            and self._crypto_usable()
+        ):
             # Stored and encrypted: decrypted here as ``open()`` would, so with the
             # password the target lists as it does from a plain archive, and without
             # it the link is reported as locked (``password_required``), as in ZIP and
@@ -4319,11 +4345,20 @@ class RarReader(BaseArchiveReader):
         try:
             return self._open_member_with_program(member, raw)
         except PackageNotInstalledError as exc:
+            crypto = as_reported(CRYPTO_REQUIREMENT, self._excluded)
+            if crypto.reason:
+                also = (
+                    f"{crypto.name} would decrypt this stored member, but "
+                    f"{crypto.reason}."
+                )
+            else:
+                also = (
+                    f"Or install {crypto.name} ({crypto.install_hint}): archivey "
+                    "then decrypts this stored member itself."
+                )
             raise PackageNotInstalledError(
-                f"{raw_message_of(exc)} Or install {CRYPTO_REQUIREMENT.name} "
-                f"({CRYPTO_REQUIREMENT.install_hint}): archivey then decrypts this "
-                "stored member itself.",
-                missing=(*exc.missing, CRYPTO_REQUIREMENT),
+                f"{raw_message_of(exc)} {also}",
+                missing=(*exc.missing, crypto),
                 archive_name=self._archive_name,
                 member_name=member.name,
                 source_format=ArchiveFormat.RAR,
@@ -4341,10 +4376,10 @@ class RarReader(BaseArchiveReader):
         and :meth:`_watch_unverified` reports a read abandoned before it. The stream
         seeks: CBC restarts from any block, given the block before it.
         """
-        if not _crypto_available():
-            raise PackageNotInstalledError(
-                CRYPTO_REQUIREMENT.message("decrypting a stored RAR member"),
-                missing=(CRYPTO_REQUIREMENT,),
+        if not self._crypto_usable():
+            raise crypto_missing(
+                "decrypting a stored RAR member",
+                self._excluded,
                 archive_name=self._archive_name,
                 member_name=member.name,
                 source_format=ArchiveFormat.RAR,
@@ -4352,7 +4387,9 @@ class RarReader(BaseArchiveReader):
         params = self._stored_data_cipher(raw, self._stored_data_password(member, raw))
         view = self._direct_view(raw, raw.compress_size)
         with _close_on_error(view):
-            plain = open_aes_decrypt_stream(view, params, owns_inner=True)
+            plain = open_aes_decrypt_stream(
+                view, params, owns_inner=True, excluded=self._excluded
+            )
         with _close_on_error(plain):
             # The ciphertext is padded to whole blocks; the member ends at its
             # unpacked size, and the padding after it is not content.
@@ -4462,11 +4499,11 @@ class RarReader(BaseArchiveReader):
         self, member: ArchiveMember, raw: RarMemberInfo
     ) -> Callable[[str | None, bool], BinaryIO]:
         """:meth:`_unrar_spawner`, with the refusals about naming the member raised as
-        :class:`_UnrarCannotAddress`: a name ``unrar`` cannot be given, an include mask
-        that also matches earlier members (``rar_allow_glob_member_concatenation``), a
-        mask that does not select the member, an earlier name ``unrar`` reads
-        differently on this host, or a selection that depends on a dot rule the binary
-        did not report.
+        :class:`_UnrarCannotAddress`: a name ``unrar`` cannot be given, a name whose
+        mask also selects earlier members with data, glob or not
+        (``rar_allow_glob_member_concatenation``), a mask that does not select the
+        member, an earlier name ``unrar`` reads differently on this host, or a selection
+        that depends on a dot rule the binary did not report.
         """
         # unrar addresses the member by name (``path`` or ``path;n``) through a ``-n``
         # include mask (see open_unrar_p); a history row needs ``-ver``. The mask is
@@ -4500,11 +4537,7 @@ class RarReader(BaseArchiveReader):
         glob_prefix, shares_mask, dictionary_cost = self._unrar_selection(
             member, mask.mask_view, version_control=version_control
         )
-        if (
-            mask.is_glob
-            and glob_prefix
-            and not self._config.rar_allow_glob_member_concatenation
-        ):
+        if glob_prefix and not self._config.rar_allow_glob_member_concatenation:
             # unrar decompresses every earlier match before the target and emits
             # them concatenated. The skip below returns the right bytes, but the
             # decode has already happened and ExtractionLimits do not reach
@@ -4534,20 +4567,25 @@ class RarReader(BaseArchiveReader):
             # the mask itself. This bounds the payload, not the match.
             #
             # A mask with no glob that still selects earlier members (a duplicate
-            # name, or two names unrar reads the same way) is read by position
-            # without this refusal: its name is not an include mask.
+            # name, or two names unrar reads the same way) costs the same decode and
+            # is refused the same way (maintainer decision, 2026-10-29). Under AUTO
+            # both go to unar, which selects by index, when it can read the member.
             #
             # The predicate is deliberately `_unrar_selection`'s own answer and
             # not a second walk: which siblings match is decided by the mask
             # actually handed to unrar, which that function owns. Recomputing it
             # from the presented name here would refuse archives that read fine
             # under the mask unrar is given.
+            why = (
+                "is an include mask that also matches"
+                if mask.is_glob
+                else "also selects"
+            )
             if self._archive.is_solid:
                 message = (
                     f"Reading RAR member {quoted(member.name)} is refused: its "
-                    "name, as unrar is given it, is an include mask that also "
-                    "matches earlier members. Names like this are almost always "
-                    "constructed. Set "
+                    f"name, as unrar is given it, {why} earlier members. Names "
+                    "like this are almost always constructed. Set "
                     "ArchiveyConfig.rar_allow_glob_member_concatenation=True "
                     "to read it anyway."
                 )
@@ -4555,8 +4593,7 @@ class RarReader(BaseArchiveReader):
                 message = (
                     f"Reading RAR member {quoted(member.name)} would decompress "
                     f"{glob_prefix} bytes of earlier members first: its name, as "
-                    "unrar is given it, is an include mask that also matches them. "
-                    "Set "
+                    f"unrar is given it, {why} them. Set "
                     "ArchiveyConfig.rar_allow_glob_member_concatenation=True to "
                     "read it anyway."
                 )
@@ -4867,7 +4904,8 @@ class RarReader(BaseArchiveReader):
                 proc,
                 has_verifiable_digest=True,
                 empty_means_wrong_password=(
-                    self._archive_has_encryption and policy.solid_pass_emits_data()
+                    policy.solid_pass_needs_password()
+                    and policy.solid_pass_emits_data()
                 ),
             )
 
@@ -4983,8 +5021,9 @@ class RarReadBackend(ReadBackend):
 
     @classmethod
     def missing_programs(cls) -> tuple[MissingComponent, ...]:
-        # Independent of ``rar_decompressor``: the query takes no config, so it answers
-        # for the default ``AUTO``, which uses unrar when one is usable.
+        # Independent of ``rar_decompressor``: the query reads only the format policy
+        # from a config, so it answers for the default ``AUTO``, which uses unrar when
+        # one is usable.
         return rarlab_unrar_missing()
 
     def open_read(
