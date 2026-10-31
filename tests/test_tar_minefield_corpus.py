@@ -739,10 +739,12 @@ def render_results(expected: dict[str, Any]) -> str:
         ),
         "",
         (
-            "What this costs: a caller who scans an archive with Archivey and extracts "
-            "it with another tool can get another tree on these cases, and only "
-            "F16 reports a diagnostic, so `DiagnosticPolicy.PEDANTIC` does not catch "
-            "the others."
+            "A caller who checks an archive with Archivey and extracts it with "
+            "another tool can still refuse every one of them: each reports a "
+            "diagnostic outside `ARCHIVE_INTEGRITY_CODES` (MEMBER_TYPE_UNKNOWN, "
+            "MEMBER_READERS_DISAGREE or MEMBER_NAME_DUPLICATE), which "
+            "`DiagnosticPolicy.PEDANTIC` or `raise_on=` turns into a refusal. The "
+            "codes column of the table shows which."
         ),
         "",
         "## Cases the safest settings fail",

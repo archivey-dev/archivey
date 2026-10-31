@@ -1230,7 +1230,9 @@
     "outcome": "rejected",
     "tree": "44136fa355b3678a"
    },
-   "codes": [],
+   "codes": [
+    "member_readers_disagree"
+   ],
    "trusted": {
     "outcome": "other",
     "tree": "e6df658443a9a7d3",
@@ -1261,7 +1263,9 @@
     "outcome": "other",
     "tree": "8ce6e36c9afbf8d4"
    },
-   "codes": [],
+   "codes": [
+    "member_readers_disagree"
+   ],
    "trusted": {
     "outcome": "other",
     "tree": "8ce6e36c9afbf8d4",
@@ -1611,7 +1615,9 @@
     "outcome": "other",
     "tree": "dd27f332bd4342ce"
    },
-   "codes": [],
+   "codes": [
+    "member_readers_disagree"
+   ],
    "trusted": {
     "outcome": "other",
     "tree": "dd27f332bd4342ce",
@@ -1642,7 +1648,9 @@
     "outcome": "other",
     "tree": "2da7ede53362bf61"
    },
-   "codes": [],
+   "codes": [
+    "member_readers_disagree"
+   ],
    "trusted": {
     "outcome": "other",
     "tree": "2da7ede53362bf61",
@@ -1960,7 +1968,8 @@
     "tree": "44136fa355b3678a"
    },
    "codes": [
-    "member_header_ambiguous"
+    "member_header_ambiguous",
+    "member_name_duplicate"
    ],
    "trusted": {
     "outcome": "other",
@@ -2310,7 +2319,9 @@
     "outcome": "rejected",
     "tree": "2da7ede53362bf61"
    },
-   "codes": [],
+   "codes": [
+    "member_name_duplicate"
+   ],
    "trusted": {
     "outcome": "other",
     "tree": "2da7ede53362bf61",
@@ -2372,7 +2383,9 @@
     "outcome": "rejected",
     "tree": "cf6164c9ab34add1"
    },
-   "codes": [],
+   "codes": [
+    "member_readers_disagree"
+   ],
    "trusted": {
     "outcome": "other",
     "tree": "d1517a9789f09e2b",
@@ -2403,7 +2416,9 @@
     "outcome": "other",
     "tree": "1cf4351d5d7aac03"
    },
-   "codes": [],
+   "codes": [
+    "member_name_duplicate"
+   ],
    "trusted": {
     "outcome": "other",
     "tree": "1cf4351d5d7aac03",
@@ -2434,7 +2449,9 @@
     "outcome": "other",
     "tree": "e6df658443a9a7d3"
    },
-   "codes": [],
+   "codes": [
+    "member_name_duplicate"
+   ],
    "trusted": {
     "outcome": "other",
     "tree": "e6df658443a9a7d3",
@@ -2465,7 +2482,9 @@
     "outcome": "other",
     "tree": "c9ea737f243cd08d"
    },
-   "codes": [],
+   "codes": [
+    "member_name_duplicate"
+   ],
    "trusted": {
     "outcome": "other",
     "tree": "c9ea737f243cd08d",
@@ -2496,7 +2515,9 @@
     "outcome": "other",
     "tree": "3e140f31efe90819"
    },
-   "codes": [],
+   "codes": [
+    "member_name_duplicate"
+   ],
    "trusted": {
     "outcome": "other",
     "tree": "3e140f31efe90819",

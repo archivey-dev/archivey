@@ -35,7 +35,7 @@ Archivey's goal is to read every archive the format's own tool reads, so it hold
 
 tar-codec, the corpus's strictest reader, fails 13 cases too, among them the duplicate members, the star and GNU prefix layouts and the link name on a file: the shapes real tarballs use. Its sources do not say why; the likely reason is the same trade, since uv must read the sdists already published. The cases where tar-codec refuses and Archivey reads are marked 🔴, the ones both read 🟡.
 
-What this costs: a caller who scans an archive with Archivey and extracts it with another tool can get another tree on these cases, and only F16 reports a diagnostic, so `DiagnosticPolicy.PEDANTIC` does not catch the others.
+A caller who checks an archive with Archivey and extracts it with another tool can still refuse every one of them: each reports a diagnostic outside `ARCHIVE_INTEGRITY_CODES` (MEMBER_TYPE_UNKNOWN, MEMBER_READERS_DISAGREE or MEMBER_NAME_DUPLICATE), which `DiagnosticPolicy.PEDANTIC` or `raise_on=` turns into a refusal. The codes column of the table shows which.
 
 ## Cases the safest settings fail
 
@@ -404,8 +404,8 @@ Why links to the case's entry above, for a case where any run fails the verdict 
 | [F35](https://stoppels.ch/tar/F35.html) `pax-size-on-hardlink` | reject | ❌ other | ❌ other | ❌ other ≠GNU | ❌ other ≠GNU | ✅ rejected | `member_link_data_ignored` | [why](#f35-pax-size-on-hardlink) |
 | [F36](https://stoppels.ch/tar/F36.html) `pax-record-length-short` | reject | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | `error: CorruptionError` |  |
 | [F37](https://stoppels.ch/tar/F37.html) `number-size-not-octal` | reject | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | `error: CorruptionError` |  |
-| [K01](https://stoppels.ch/tar/K01.html) `kind-trailing-slash-file` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ❌ other | nothing | [why](#k01-kind-trailing-slash-file) |
-| [K02](https://stoppels.ch/tar/K02.html) `linkname-on-file` | reject | ❌ other | ❌ other | ❌ other | ❌ other | ❌ other | nothing | [why](#k02-linkname-on-file) |
+| [K01](https://stoppels.ch/tar/K01.html) `kind-trailing-slash-file` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ❌ other | `member_readers_disagree` | [why](#k01-kind-trailing-slash-file) |
+| [K02](https://stoppels.ch/tar/K02.html) `linkname-on-file` | reject | ❌ other | ❌ other | ❌ other | ❌ other | ❌ other | `member_readers_disagree` | [why](#k02-linkname-on-file) |
 | [K03](https://stoppels.ch/tar/K03.html) `symlink-trailing-slash` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_name_normalized` | [why](#k03-symlink-trailing-slash) |
 | [N01](https://stoppels.ch/tar/N01.html) `gnu-long-name` | accept | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
 | [N02](https://stoppels.ch/tar/N02.html) `name-fills-field` | accept | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
@@ -416,8 +416,8 @@ Why links to the case's entry above, for a case where any run fails the verdict 
 | [N07](https://stoppels.ch/tar/N07.html) `symlink-absolute` | tolerate | ✅ expected | ✅ rejected | ✅ rejected ≠GNU | ✅ rejected ≠GNU | ✅ rejected | nothing | [why](#n07-symlink-absolute) |
 | [N08](https://stoppels.ch/tar/N08.html) `extended-pax-path-and-gnu-long-name` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n08-extended-pax-path-and-gnu-long-name) |
 | [N09](https://stoppels.ch/tar/N09.html) `extended-two-pax-headers` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n09-extended-two-pax-headers) |
-| [N10](https://stoppels.ch/tar/N10.html) `format-star` | reject | ❌ other | ❌ other | ❌ other | ❌ other ≠GNU | ❌ other | nothing | [why](#n10-format-star) |
-| [N11](https://stoppels.ch/tar/N11.html) `gnu-prefix-field` | reject | ❌ other | ❌ other | ❌ other | ❌ other | ❌ other | nothing | [why](#n11-gnu-prefix-field) |
+| [N10](https://stoppels.ch/tar/N10.html) `format-star` | reject | ❌ other | ❌ other | ❌ other | ❌ other ≠GNU | ❌ other | `member_readers_disagree` | [why](#n10-format-star) |
+| [N11](https://stoppels.ch/tar/N11.html) `gnu-prefix-field` | reject | ❌ other | ❌ other | ❌ other | ❌ other | ❌ other | `member_readers_disagree` | [why](#n11-gnu-prefix-field) |
 | [N12](https://stoppels.ch/tar/N12.html) `name-absolute` | reject | ❌ other | ✅ rejected | ❌ other | ✅ rejected ≠GNU | ✅ rejected | nothing | [why](#n12-name-absolute) |
 | [N13](https://stoppels.ch/tar/N13.html) `name-backslash` | reject | ❌ other | ✅ rejected | ❌ other | ✅ rejected ≠GNU | ✅ rejected | nothing | [why](#n13-name-backslash) |
 | [N14](https://stoppels.ch/tar/N14.html) `name-bytes-after-nul` | reject | ❌ other | ❌ other | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n14-name-bytes-after-nul) |
@@ -427,7 +427,7 @@ Why links to the case's entry above, for a case where any run fails the verdict 
 | [N18](https://stoppels.ch/tar/N18.html) `name-not-utf8` | reject | ❌ other | ✅ rejected | ❌ other | ✅ rejected ≠GNU | ✅ rejected | nothing | [why](#n18-name-not-utf8) |
 | [N19](https://stoppels.ch/tar/N19.html) `pax-nul-in-path` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n19-pax-nul-in-path) |
 | [N20](https://stoppels.ch/tar/N20.html) `pax-repeated-key` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n20-pax-repeated-key) |
-| [N21](https://stoppels.ch/tar/N21.html) `pax-global-path` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n21-pax-global-path) |
+| [N21](https://stoppels.ch/tar/N21.html) `pax-global-path` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous`, `member_name_duplicate` | [why](#n21-pax-global-path) |
 | [N22](https://stoppels.ch/tar/N22.html) `pax-path-empty` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n22-pax-path-empty) |
 | [N23](https://stoppels.ch/tar/N23.html) `extended-gnu-long-then-pax` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | `member_header_ambiguous` | [why](#n23-extended-gnu-long-then-pax) |
 | [N24](https://stoppels.ch/tar/N24.html) `pax-hdrcharset-binary` | reject | ❌ other | ✅ rejected | ❌ other | ✅ rejected ≠GNU | ✅ rejected | nothing | [why](#n24-pax-hdrcharset-binary) |
@@ -438,13 +438,13 @@ Why links to the case's entry above, for a case where any run fails the verdict 
 | [S01](https://stoppels.ch/tar/S01.html) `tree-dir-after-contents` | accept | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
 | [S02](https://stoppels.ch/tar/S02.html) `tree-duplicate-dir` | accept | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
 | [S03](https://stoppels.ch/tar/S03.html) `hardlink-missing-target` | reject | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | nothing |  |
-| [S04](https://stoppels.ch/tar/S04.html) `hardlink-to-itself` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ❌ other | nothing | [why](#s04-hardlink-to-itself) |
+| [S04](https://stoppels.ch/tar/S04.html) `hardlink-to-itself` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ❌ other | `member_name_duplicate` | [why](#s04-hardlink-to-itself) |
 | [S05](https://stoppels.ch/tar/S05.html) `hardlink-to-later-member` | reject | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | nothing |  |
-| [S06](https://stoppels.ch/tar/S06.html) `hardlink-to-symlink` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ❌ other | nothing | [why](#s06-hardlink-to-symlink) |
-| [S07](https://stoppels.ch/tar/S07.html) `tree-duplicate-file-differs` | reject | ❌ other | ❌ other | ❌ other | ❌ other | ❌ other | nothing | [why](#s07-tree-duplicate-file-differs) |
-| [S08](https://stoppels.ch/tar/S08.html) `tree-duplicate-file-dir` | reject | ❌ other | ❌ other | ❌ other | ✅ rejected ≠GNU | ✅ rejected | nothing | [why](#s08-tree-duplicate-file-dir) |
-| [S09](https://stoppels.ch/tar/S09.html) `tree-duplicate-file-identical` | reject | ❌ other | ❌ other | ❌ other | ❌ other | ❌ other | nothing | [why](#s09-tree-duplicate-file-identical) |
-| [S10](https://stoppels.ch/tar/S10.html) `tree-symlink-then-file` | reject | ❌ other | ❌ other | ❌ other | ❌ other | ❌ other | nothing | [why](#s10-tree-symlink-then-file) |
+| [S06](https://stoppels.ch/tar/S06.html) `hardlink-to-symlink` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ❌ other | `member_readers_disagree` | [why](#s06-hardlink-to-symlink) |
+| [S07](https://stoppels.ch/tar/S07.html) `tree-duplicate-file-differs` | reject | ❌ other | ❌ other | ❌ other | ❌ other | ❌ other | `member_name_duplicate` | [why](#s07-tree-duplicate-file-differs) |
+| [S08](https://stoppels.ch/tar/S08.html) `tree-duplicate-file-dir` | reject | ❌ other | ❌ other | ❌ other | ✅ rejected ≠GNU | ✅ rejected | `member_name_duplicate` | [why](#s08-tree-duplicate-file-dir) |
+| [S09](https://stoppels.ch/tar/S09.html) `tree-duplicate-file-identical` | reject | ❌ other | ❌ other | ❌ other | ❌ other | ❌ other | `member_name_duplicate` | [why](#s09-tree-duplicate-file-identical) |
+| [S10](https://stoppels.ch/tar/S10.html) `tree-symlink-then-file` | reject | ❌ other | ❌ other | ❌ other | ❌ other | ❌ other | `member_name_duplicate` | [why](#s10-tree-symlink-then-file) |
 | [S11](https://stoppels.ch/tar/S11.html) `tree-through-symlink` | reject | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | nothing |  |
 | [S12](https://stoppels.ch/tar/S12.html) `tree-under-file` | reject | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | nothing |  |
 | [S13](https://stoppels.ch/tar/S13.html) `hardlink-empty-target` | reject | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | `symlink_target_unavailable` |  |
