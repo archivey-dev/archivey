@@ -1305,8 +1305,8 @@ def _usage_line(report: ExtractionReport) -> str | None:
 def _escaped_where(result: ExtractionResult, target: Path, moves: _Moves | None) -> str:
     """The destination to report for a member that did not keep it, terminal-safe.
 
-    ``requested_path`` is built from the member's own name. STRICT and STANDARD write the
-    controls 0x01-0x1F as ``%XX``, but other non-printable characters (DEL, the C1
+    ``requested_path`` is built from the member's own name. STRICT refuses the controls
+    0x01-0x1F and STANDARD writes them as ``%XX``, but other non-printable characters (DEL, the C1
     controls, U+2028) pass through, and TRUSTED writes every name as stored. Printing it
     raw is the line-spoofing vector ``escape_member_name`` exists to close, so both the
     path and the name fallback go through it.

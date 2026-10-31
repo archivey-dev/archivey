@@ -742,8 +742,9 @@ unencrypted walk already allows.
 **Names, and `encoding=`.** A RAR5 name is UTF-8, and a RAR 1.5-4 name usually has a
 UTF-16 field beside its 8-bit bytes; both decode as stored. A RAR5 name, or a RAR5
 redirect target, that is not valid UTF-8 decodes with `surrogateescape`, as a TAR name
-does: each bad byte is one U+DC80–U+DCFF character, and extraction escapes it the
-shared way (`a%FFq.txt` under `STRICT`/`STANDARD`, the raw byte under `TRUSTED`). It
+does: each bad byte is one U+DC80–U+DCFF character, and extraction handles it the
+shared way (refused under `STRICT`, `a%FFq.txt` under `STANDARD`, the raw byte under
+`TRUSTED`). It
 used to decode with `replace`, so `a\xffq.txt` and `a\xfeq.txt` both listed as
 `a\ufffdq.txt` and the second superseded the first. `unrar` 7.00 reads both names as
 `a` (it stops at the first bad byte), and each still reads its own bytes, because the

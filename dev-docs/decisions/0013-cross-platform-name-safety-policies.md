@@ -128,8 +128,11 @@ conflicts rather than open space.
   rewrite this ADR chose (`a\b` as `a/b`, `caf\udce9` as `caf%E9`, a newline as `%0A`),
   and `TRUSTED` still writes the stored bytes. The characters Windows refuses, `<>"|?*`,
   are still escaped under both, and a `\` in a link target is still written as `/`.
-- **Why.** The tar-minefield corpus (`dev-docs/tar-minefield-results.md`) marks these
-  names "reject" or "tolerate" (N13, N15, N18, N24), and Astral's tar-codec refuses them.
+- **Why.** The tar-minefield corpus (https://stoppels.ch/tar/, one page per case) holds
+  four such names: N13 (a backslash), N15 (a newline), N18 (other control characters) and
+  N24 (bytes that are not UTF-8). It marks each one "reject" or "tolerate", never
+  "extract as is", and Astral's tar-codec refuses all four. GNU tar 1.35 writes them as
+  stored.
   Each one names a different file depending on who reads it: Windows takes `\` as a
   separator and POSIX as a character, a newline splits a listing line, and undecodable
   bytes have no spelling every OS shares. The rewrite kept them from landing anywhere

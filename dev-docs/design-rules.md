@@ -212,9 +212,9 @@ factor came out.
   DR-25; applied by PR 730).
 - **Would the tool's result break a promise archivey makes?** Principles 1 and 2, and the
   policy levels' promises, come first. A 7z name holding a lone UTF-16 surrogate lists
-  the way 7-Zip does, but is percent-escaped under STRICT and STANDARD, which promise the
-  same result on every OS. TRUSTED, the faithful level, writes 7-Zip's bytes (PRs 564 and
-  577).
+  the way 7-Zip does, but is refused under STRICT and percent-escaped under STANDARD, which
+  both promise the same result on every OS (ADR 0013 amendment, 2026-10-31). TRUSTED, the
+  faithful level, writes 7-Zip's bytes (PRs 564 and 577).
 - **Could the lenient behaviour hide bytes or weaken a check?** Then the stricter side
   wins. Leftover compressed input inside a ZIP or 7z member raises, as 7-Zip does, though
   unzip accepts some of it (2026-10-07).
