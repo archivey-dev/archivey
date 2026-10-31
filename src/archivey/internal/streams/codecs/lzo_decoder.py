@@ -479,12 +479,17 @@ class Lzo1xDecoder(BaseDecoder):
     LZO1X has no framing a decoder could stream over, and its end marker (17, 0, 0)
     can also occur inside the data, so the input is held whole and decoded at the end
     of the source. ``size`` is the most the data may decode to: a SquashFS block's
-    decoded length is the block size or less.
+    decoded length is the block size or less. It also bounds the input held, to the
+    most LZO1X takes to store that many bytes.
     """
 
     def __init__(self, decode_block: Callable[[bytes, int], bytes], size: int) -> None:
         self._decode_block = decode_block
         self._size = size
+        # The most LZO1X can take to store ``size`` bytes (liblzo2's
+        # ``lzo1x_worst_compress``): longer input is not a block of that size, and is
+        # refused as it arrives rather than held.
+        self._max_input = size + size // 16 + 64 + 3
         self._in = bytearray()
         self._done = False
 
@@ -497,6 +502,11 @@ class Lzo1xDecoder(BaseDecoder):
         if self._done:
             self._past_end(chunk)
         else:
+            if len(self._in) + len(chunk) > self._max_input:
+                raise CorruptionError(
+                    f"LZO block: over {self._max_input} bytes of input, more than "
+                    f"LZO1X takes to store {self._size} bytes"
+                )
             self._in += chunk
         return DecodeOut(b"")
 

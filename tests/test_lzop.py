@@ -330,6 +330,24 @@ def test_raw_lzo1x_past_its_size_is_refused(decoder: str, tmp_path: Path) -> Non
             reader.read(reader.members()[0])
 
 
+def test_raw_lzo1x_input_is_bounded_by_its_size(decoder: str, tmp_path: Path) -> None:
+    # Raw LZO1X is held whole until its input ends: input longer than LZO1X needs
+    # for ``size`` bytes is refused as it arrives, not buffered.
+    plain = _PLAIN
+    data = _literal_lzo1x(plain) + bytes(8 << 20)
+    with registration_scope():
+        register_format(_compressed_plugin(CompressionAlgorithm.LZO))
+        path = _compressed_archive(tmp_path, data, plain)
+        with open_archive(path) as reader:
+            member = reader.members()[0]
+
+            def read() -> None:
+                with pytest.raises(CorruptionError, match="more than LZO1X takes"):
+                    reader.read(member)
+
+            assert traced_peak(read) < 1 << 20
+
+
 def test_raw_lzo1x_needs_a_size(tmp_path: Path) -> None:
     from tests.test_format_api import MemberData, ToyHandler, ToyReader
 
