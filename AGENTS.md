@@ -227,8 +227,8 @@ rulings on the handbook page, and general ones in `dev-docs/design-rules.md`.
   (maintainer, 2026-09-25: "go ahead with merge straightforward ones … if there's a
   tricky one, you can ask me to take a look before merging").
   On standard and deep that approval includes the Opus pass, and on deep Cursor's too.
-  The maintainer merges a PR that makes a decision of theirs (maintainer, 2026-10-31:
-  "I'm tired of having to merge all deep PRs, I don't actually look at them"). The tier
+  The maintainer merges a PR that makes a decision of theirs (maintainer, 2026-10-31),
+  so their merges go to the PRs that need their judgement, not to every deep one. The tier
   command's `merge:` line says which, run from the base branch's copy as
   `address-review-findings` §7 shows: "merge: the maintainer merges this one" and the
   decisions it found (a public name, parameter or fixed value removed, or a top-level
