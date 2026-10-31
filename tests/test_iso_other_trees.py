@@ -68,7 +68,8 @@ def _image(
 
 
 def _reported(image: bytes) -> tuple[list[str], list[tuple[str, str]]]:
-    return _reports(image)[:2]  # type: ignore[return-value]
+    names, found, _ = _reports(image)
+    return names, found
 
 
 def _reports(image: bytes) -> tuple[list[str], list[tuple[str, str]], list[str]]:
