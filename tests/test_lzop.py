@@ -348,6 +348,16 @@ def test_raw_lzo1x_input_is_bounded_by_its_size(decoder: str, tmp_path: Path) ->
             assert traced_peak(read) < 1 << 20
 
 
+def test_raw_lzo1x_input_bound_is_lzo1x_worst_case() -> None:
+    # liblzo2's lzo1x_worst_compress(size): accepted at it, refused one byte past it.
+    size = 1000
+    most = size + size // 16 + 64 + 3
+    decoder = lzo_decoder.Lzo1xDecoder(lzo_decoder.lzo1x_decompress_python, size)
+    decoder.feed(bytes(most))
+    with pytest.raises(CorruptionError, match="more than LZO1X takes"):
+        decoder.feed(b"\x00")
+
+
 def test_raw_lzo1x_needs_a_size(tmp_path: Path) -> None:
     from tests.test_format_api import MemberData, ToyHandler, ToyReader
 
