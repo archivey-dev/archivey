@@ -415,8 +415,8 @@ installed only via the CI `fuzz` dependency group (`packaging-and-extras`).
 | Case | Expected |
 | --- | --- |
 | Merge-queue group changing a library, test, dependency or CI path | Short partitioned budgets over the full target set (MAY be sharded across parallel jobs); green if no crash/hang/raw exception, else the group does not merge |
-| Merge-queue group changing none of those paths (only docs, review files or other scripts) | Short fuzz not required; the nightly guard still sees the commit on `main` |
-| Pull request push | Short fuzz not required (the merge queue runs it) |
+| Merge-queue group changing none of those paths (docs, review files, or a script the list does not name) | Short fuzz not required; the nightly guard still sees the commit on `main` |
+| Pull request push | Short fuzz not required (the merge queue runs it for a group that changes one of those paths) |
 | Scheduled nightly, HEAD commit within ~3 days | Full partitioned target set runs |
 | Scheduled nightly, HEAD older than ~3 days | Expensive fuzz skipped (guard only) |
 | `workflow_dispatch` (optional longer env budget) | Full partition; extended exploration allowed |
