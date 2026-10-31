@@ -33,6 +33,7 @@ import abc
 import io
 from typing import TYPE_CHECKING, BinaryIO, Never
 
+from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools.binaryio import (
     is_seekable,
     read_blocking,
@@ -57,6 +58,7 @@ class ReadOnlyIOStream(io.RawIOBase, BinaryIO):
     """
 
     @abc.abstractmethod
+    @override
     def read(self, n: int = -1, /) -> bytes:
         # The internal contract takes an int. ``read(None)`` (read to EOF, the ``io``
         # contract) is accepted at the public boundary, ``ArchiveStream.read``, which
@@ -68,10 +70,12 @@ class ReadOnlyIOStream(io.RawIOBase, BinaryIO):
         # forgotten read() fails loudly instead of looping via RawIOBase.
         raise NotImplementedError
 
+    @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         """Canonical ``readinto``: read into ``b`` via the subclass's ``read``."""
         return readinto_via_read(self, b)
 
+    @override
     def readall(self) -> bytes:
         chunks = bytearray()
         while True:
@@ -81,16 +85,20 @@ class ReadOnlyIOStream(io.RawIOBase, BinaryIO):
             chunks.extend(chunk)
         return bytes(chunks)
 
+    @override
     def readable(self) -> bool:
         return True
 
+    @override
     def writable(self) -> bool:
         return False
 
+    @override
     def write(self, b: object, /) -> int:
         raise io.UnsupportedOperation("write")
 
     @property
+    @override
     def mode(self) -> str:
         """Always ``"rb"``: every stream here is read-only binary by construction.
 
@@ -106,6 +114,7 @@ class ReadOnlyIOStream(io.RawIOBase, BinaryIO):
         return "rb"
 
     @property
+    @override
     def name(self) -> Never:
         """Always raises :exc:`AttributeError`. The raise *is* the contract.
 
@@ -258,12 +267,14 @@ class DelegatingStream(ReadOnlyIOStream):
         except Exception:  # noqa: BLE001, S110 - best-effort; the new inner took over
             pass
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         # A non-blocking inner's ``None`` ("nothing yet") is refused with
         # ``BlockingIOError``, as ``readinto`` already does via ``try_readinto``;
         # passing it on would hand callers a non-bytes they would take for EOF.
         return read_blocking(self._inner, n)
 
+    @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         # Zero-copy passthrough when allowed and the inner exposes a usable
         # readinto; otherwise route through self.read() so an overridden
@@ -275,12 +286,15 @@ class DelegatingStream(ReadOnlyIOStream):
                 return n
         return super().readinto(b)
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         return self._inner.seek(offset, whence)
 
+    @override
     def tell(self, /) -> int:
         return self._inner.tell()
 
+    @override
     def seekable(self) -> bool:
         # is_seekable() handles the edge cases a bare inner.seekable() misses (a BufferedReader
         # over a non-seekable raw; a pipe that reports seekable()=True but cannot reposition).
@@ -288,6 +302,7 @@ class DelegatingStream(ReadOnlyIOStream):
         # ``_replace_inner``.
         return self._seekable
 
+    @override
     def close(self) -> None:
         if self.closed:
             return
@@ -298,6 +313,7 @@ class DelegatingStream(ReadOnlyIOStream):
             super().close()
 
     @property
+    @override
     def name(self) -> str:  # pyrefly: ignore[bad-override]  # ty: ignore[invalid-property-type-override]  # base is Never; this returns a path when the inner has one
         """Path of the inner stream, or raise :exc:`AttributeError` if it has none.
 

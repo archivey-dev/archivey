@@ -34,6 +34,7 @@ from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.filters import resolve_or_raise_on_loop
 from archivey.internal.logs import backends as logger
 from archivey.internal.open_site import OpenSite
+from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
@@ -189,6 +190,7 @@ class DirectoryReader(BaseArchiveReader):
         self._uname_cache: dict[int, str | None] = {}
         self._gname_cache: dict[int, str | None] = {}
 
+    @override
     def _check_extraction_dest(self, dest: Path) -> None:
         # Extracting a tree into a directory inside it reads its own output: a
         # streaming walk descends into what it just wrote (`copy/copy/copy/...`)
@@ -213,6 +215,7 @@ class DirectoryReader(BaseArchiveReader):
                 f"inside the source {display_path(self._root)}"
             )
 
+    @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
         # An explicit stack rather than recursion: a tree deeper than the interpreter's
         # recursion limit (easy to produce by extracting an archive of `a/a/a/…/f`)
@@ -572,6 +575,7 @@ class DirectoryReader(BaseArchiveReader):
                 self._gname_cache[gid] = None
         return self._gname_cache[gid]
 
+    @override
     def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         # Served like every backend's member stream (the uniform-handle contract): the
         # directory backend has no translator (a genuine OSError propagates unchanged,
@@ -662,6 +666,7 @@ class DirectoryReader(BaseArchiveReader):
         finally:
             os.close(fd)
 
+    @override
     def _get_archive_info(self) -> ArchiveInfo:
         cost = CostReceipt(
             # A directory has no O(1) index; listing walks the tree header-to-header
@@ -682,6 +687,7 @@ class DirectoryReader(BaseArchiveReader):
             cost=cost,
         )
 
+    @override
     def _close_archive(self) -> None:
         pass  # nothing to close for filesystem directory
 
@@ -693,6 +699,7 @@ class DirectoryReadBackend(ReadBackend):
     EXTENSIONS: Mapping[str, ArchiveFormat] = {}
     MAGIC: tuple[MagicSignature, ...] = ()
 
+    @override
     def open_read(
         self,
         source: ArchiveSource,

@@ -15,6 +15,7 @@ from typing import BinaryIO
 
 from archivey.exceptions import CorruptionError, TruncatedError, UnsupportedFeatureError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.overrides import override
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -715,6 +716,7 @@ class UnixCompressDecoder(BaseDecoder):
         return self._state.is_finished()
 
     @property
+    @override
     def needs_input(self) -> bool:
         return self._state.needs_input
 

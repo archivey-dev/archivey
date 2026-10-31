@@ -223,6 +223,7 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         # The decoder's compressed position when the layout was last checked.
         self._layout_checked_at: int | None = None
 
+    @override
     def read(self, size: int = -1, /) -> bytes:
         if size == 0:
             return b""  # an explicit read(0) is not EOF; it must not trip the check
@@ -483,6 +484,7 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
                 held = data[zeros - keep :]
                 offset += zeros - keep
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         result = super().seek(offset, whence)
         if result != 0:
