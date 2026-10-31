@@ -513,7 +513,10 @@ sending side when the ZIP is done.
   name or size or dropping an earlier one's values, a NUL inside a PAX name, GNU long name and PAX headers both extending one member, a
   global header inside a member's headers, an empty PAX `path` or number, a PAX size with a
   leading zero, bytes after the end of a header's size, name or link name, a size on a
-  directory or link header that names no data), the member is also reported with
+  directory or link header that names no data, a checksum that matches only as a signed sum, a
+  ustar version other than `00` or NULs, a newline in a PAX keyword or in a value other than
+  an extended attribute's or an ACL's, a NUL in a PAX keyword),
+  the member is also reported with
   `MEMBER_HEADER_AMBIGUOUS`, because another tool may list it under another name or size.
   `STRICT` refuses the archive.
 - A tar from macOS `tar` can hold `._name` sidecar files

@@ -32,6 +32,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.backends.tar_parser import (
     BLOCKSIZE,
+    Ambiguity,
     HeaderBlock,
     HeaderFormat,
     LinkData,
@@ -264,19 +265,28 @@ def test_rejected_blocks(block: bytes, reason: str) -> None:
     assert parsed == RejectedBlock(0, reason)
 
 
+def _sign_checksum(h: bytearray) -> None:
+    """Write the checksum of ``h`` as the signed sum of its bytes, as old Sun tar did."""
+    h[148:156] = b" " * 8
+    total = sum(b - 256 if b >= 0x80 else b for b in h)
+    h[148:156] = f"{total:06o}".encode() + b"\x00 "
+
+
 def test_signed_checksum_is_accepted() -> None:
     """Old Sun tar summed the block as signed bytes; GNU tar accepts either sum."""
     name = b"\xe9t\xe9"  # bytes >= 0x80 make the two sums differ
 
     def signed(h: bytearray) -> None:
         h[0:3] = name
-        h[148:156] = b" " * 8
-        total = sum(b - 256 if b >= 0x80 else b for b in h)
-        h[148:156] = f"{total:06o}".encode() + b"\x00 "
+        _sign_checksum(h)
 
     parsed = parse_header_block(_block(patch=signed, checksum=False), 0)
     assert isinstance(parsed, HeaderBlock)
     assert parsed.name == name
+    assert parsed.signed_checksum
+    unsigned = parse_header_block(_block(name), 0)
+    assert isinstance(unsigned, HeaderBlock)
+    assert not unsigned.signed_checksum
 
 
 @pytest.mark.parametrize("fill", [0x00, 0x01, 0x7F, 0x80, 0xFF])
@@ -288,9 +298,14 @@ def test_checksum_sum_is_exact_for_any_byte_values(fill: int) -> None:
     block = bytearray([fill]) * BLOCKSIZE
     block[148:156] = b" " * 8
     unsigned = sum(block)
-    assert _checksum_matches(bytes(block), unsigned)
-    assert not _checksum_matches(bytes(block), unsigned + 1)
-    assert not _checksum_matches(bytes(block), unsigned - 1)
+    signed = sum(b - 256 if b >= 0x80 else b for b in block)
+    assert _checksum_matches(bytes(block), unsigned) == "unsigned"
+    assert _checksum_matches(bytes(block), unsigned + 1) is None
+    assert _checksum_matches(bytes(block), unsigned - 1) is None
+    # Only a block with bytes over 0x7F has a signed sum of its own.
+    if signed != unsigned:
+        assert _checksum_matches(bytes(block), signed) == "signed"
+        assert _checksum_matches(bytes(block), signed - 1) is None
 
 
 def test_header_layouts() -> None:
@@ -1853,6 +1868,12 @@ def _file(name: bytes = b"f", **kwargs) -> bytes:
     return _block(name, size=1, **kwargs) + _data(b"x")
 
 
+def _signed_sum(h: bytearray) -> None:
+    """A block patch: a uname byte over 0x7F, and the checksum as the signed sum."""
+    h[265:268] = b"\xe9" * 3
+    _sign_checksum(h)
+
+
 def _symlink(name: bytes = b"s") -> bytes:
     return _block(name, typeflag=b"2", linkname=b"hdr")
 
@@ -2000,6 +2021,43 @@ _AMBIGUOUS = {
         "s",
         ("field_tail", "linkname"),
     ),
+    # tar-minefield F06.
+    "a checksum that matches only signed": (
+        _block(size=1, patch=_signed_sum, checksum=False) + _data(b"x"),
+        "f",
+        ("signed_checksum", "chksum"),
+    ),
+    # tar-minefield F11.
+    "a ustar version other than 00": (
+        _file(magic=b"ustar\x0001"),
+        "f",
+        ("magic_version", "version"),
+    ),
+    # tar-minefield F13: a reader that splits on lines reads path=evil.
+    "a newline in a PAX path": (
+        _pax_body(_rec(b"path", b"good\n1 path=evil")) + _file(),
+        "good\n1 path=evil",
+        ("newline_in_value", "path"),
+    ),
+    # tar-minefield F28: a reader that splits on lines reads size=512.
+    "a newline in a PAX comment": (
+        _pax_body(_rec(b"comment", b"x\n12 size=512")) + _file(),
+        "f",
+        ("newline_in_value", "comment"),
+    ),
+    # The same record one byte earlier, in the keyword: still size=512 to a reader
+    # that splits on lines.
+    "a newline in a PAX keyword": (
+        _pax_body(b"17 k\n12 size=512\n") + _file(),
+        "f",
+        ("newline_in_value", "k\n12 size"),
+    ),
+    # A reader that cuts the keyword at its NUL reads path=evil.
+    "a NUL in a PAX keyword": (
+        _pax_body(_rec(b"path\x00junk", b"evil")) + _file(),
+        "f",
+        ("nul_in_value", "path\x00junk"),
+    ),
     # A blank is a byte of a name, so it is a tail after the NUL.
     "a blank after the NUL that ends the name": (
         _block(patch=_field(0, 100, b"a\x00 ")),
@@ -2035,6 +2093,29 @@ _AMBIGUOUS = {
 }
 
 
+# A fragment of each shape's message, so a test pins the branch each one takes.
+_AMBIGUITY_WORDS = {
+    "both_families": "a PAX record overrides",
+    "repeated": "set more than once",
+    "global_member_field": "a global PAX header setting",
+    "nul_in_value": "NUL byte",
+    "mixed_chain": "both a GNU long name",
+    "global_in_chain": "between an extended header and the member",
+    "empty_value": "an empty PAX",
+    "leading_zero": "with a leading zero",
+    "field_tail": "bytes after the NUL or blank",
+    "size_on_no_data": "a size on a directory or link header",
+    "signed_checksum": "the signed sum",
+    "magic_version": "a version other than 00 or NULs",
+    "newline_in_value": "a newline",
+    "global_replaced": "that drops the",
+}
+
+
+def test_every_ambiguity_has_its_words() -> None:
+    assert set(_AMBIGUITY_WORDS) == {a.value for a in Ambiguity}
+
+
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize(
     ("data", "name", "expected"), list(_AMBIGUOUS.values()), ids=list(_AMBIGUOUS)
@@ -2060,6 +2141,7 @@ def test_a_header_shape_no_writer_produces_is_reported(
     assert isinstance(found.context, HeaderAmbiguityContext)
     assert (found.context.ambiguity, found.context.field) == expected
     assert found.context.member_name == name
+    assert _AMBIGUITY_WORDS[expected[0]] in found.message
 
 
 def test_a_long_name_a_global_path_overrides_is_reported() -> None:
@@ -2255,6 +2337,16 @@ def _ordinary_archives() -> dict[str, bytes]:
         + _END
     )
     archives["x size 0"] = _pax({"size": "0"}) + _block(b"empty") + _END
+    # Extended attributes and ACLs hold lines and arbitrary bytes.
+    archives["newline in an xattr"] = (
+        _pax_body(
+            _rec(b"SCHILY.xattr.user.k", b"a\nb")
+            + _rec(b"SCHILY.acl.access", b"user::rw-\ngroup::r--")
+        )
+        + _file()
+        + _END
+    )
+    archives["ustar version NULs"] = _file(magic=b"ustar\x00\x00\x00") + _END
     # GNU tar 1.35 --xattrs writes this for an empty extended attribute.
     archives["empty xattr"] = (
         _pax_body(_rec(b"SCHILY.xattr.user.empty", b"")) + _file() + _END

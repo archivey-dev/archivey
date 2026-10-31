@@ -389,6 +389,8 @@ with every case's result under each policy.
   all but the last, `tarfile` merges them). The sparse 0.0 map's `GNU.sparse.offset` and
   `GNU.sparse.numbytes` repeat by design and are not reported.
 - `nul_in_value`: a NUL inside one of the string values above; `tarfile` keeps the bytes after it.
+  Or a NUL in any PAX keyword: archivey uses the whole keyword, and a reader that cuts it
+  at the NUL reads another key (`path\0junk=evil` as `path=evil`).
 - `both_families`: a GNU `L` (or `K`) header whose name a PAX record overrode, as
   `_resolve` decided it (`name_source`/`linkname_source` is `PAX`): the member's own or a
   global `path`, its `GNU.sparse.name`, or a `linkpath` on a link. GNU tar uses the PAX
@@ -435,6 +437,23 @@ with every case's result under each policy.
   when the block after it is a header, member or extended, which the walk reads next
   (no PAX `size`, and for a link, `link_data` is `None`). A reader that skips the size
   reads that header as data (tar-minefield F33, F34).
+- `signed_checksum` (field `chksum`): a header whose checksum matches only the signed
+  sum of its bytes (`HeaderBlock.signed_checksum`), as SunOS 4 and Ultrix tars wrote
+  it. GNU tar and `tarfile` accept it; a reader that takes only the POSIX unsigned
+  sum refuses the header, or skips ahead and frames every later member differently
+  (tar-minefield F06). No current writer produces it, and the corpus's scan of real
+  tarballs found none.
+- `magic_version` (field `version`): the POSIX magic `ustar\0` with a version other
+  than `00` or NULs (`_USTAR_VERSIONS`; some Java archivers write NULs). GNU tar reads
+  it as ustar and joins the prefix; a reader that takes it as v7 drops the prefix
+  (tar-minefield F11).
+- `newline_in_value` (field: the PAX keyword): a value holding a newline, outside
+  `_NEWLINE_ALLOWED_PREFIXES` (`SCHILY.xattr.`, `LIBARCHIVE.xattr.`, `SCHILY.acl.`,
+  whose values are arbitrary bytes or lines). Records are framed by their length, so
+  the newline is a byte of the value, as POSIX and GNU tar read it; a reader that
+  splits records on lines reads another record, a `path` or a `size`, even from a
+  `comment` (tar-minefield F13, F28). A newline in the keyword is reported too, whatever
+  the keyword: it is the same smuggled record one byte earlier (`k\n12 size=512`).
 
 The empty-value rule is not reported for `uname`, `gname` or `linkpath`, which it
 stores as empty: an empty `uname` or `linkpath` is how a writer clears a global value
