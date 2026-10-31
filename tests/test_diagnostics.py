@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import os
+import tarfile
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
@@ -634,6 +635,52 @@ def test_member_name_normalized_attaches(tmp_path: Path) -> None:
                 assert matched[0].diagnostics[0].occurrence_id in {
                     d.occurrence_id for d in snap.retained
                 }
+
+
+def _tar_of(names: list[str]) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.GNU_FORMAT) as tf:
+        for name in names:
+            info = tarfile.TarInfo(name)
+            if name.endswith("/"):
+                info.type = tarfile.DIRTYPE
+            else:
+                info.size = 1
+            tf.addfile(info, io.BytesIO(b"x") if info.size else None)
+    return buf.getvalue()
+
+
+def test_a_leading_dot_slash_alone_is_not_reported() -> None:
+    """``tar czf a.tar.gz .`` names every member ``./...``, the root ``./`` among them.
+
+    Every reader strips the prefix, so it is not reported and ``DiagnosticPolicy.STRICT``
+    lists the archive (maintainer ruling 2026-10-31).
+    """
+    data = _tar_of(["./", "./d/", "./d/f.txt", "././g.txt"])
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with open_archive(io.BytesIO(data), config=config) as reader:
+        names = [m.name for m in reader.members()]
+        assert DiagnosticCode.MEMBER_NAME_NORMALIZED not in reader.diagnostics.counts
+    assert names == [".", "d/", "d/f.txt", "g.txt"]
+
+
+@pytest.mark.parametrize("stored", [".//a.txt", "./a//b.txt", "a/./b.txt", "./s/"])
+def test_a_dot_slash_does_not_hide_another_normalization(stored: str) -> None:
+    """A ``//``, a ``/./`` inside the name or a trailing ``/`` on a link is still
+    reported, with or without a leading ``./``."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.GNU_FORMAT) as tf:
+        info = tarfile.TarInfo(stored)
+        if stored.endswith("/"):
+            info.type = tarfile.SYMTYPE
+            info.linkname = "t"
+            tf.addfile(info)
+        else:
+            info.size = 1
+            tf.addfile(info, io.BytesIO(b"x"))
+    with open_archive(io.BytesIO(buf.getvalue())) as reader:
+        reader.members()
+        assert reader.diagnostics.counts[DiagnosticCode.MEMBER_NAME_NORMALIZED] == 1
 
 
 def test_directory_scan_race_diagnostic(

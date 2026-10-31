@@ -182,7 +182,8 @@ the same members in the same order if archivey calls it again.
 Each record holds an `ArchiveMember` and a locator. The member carries the public fields
 your format stores: at least `type`, `name` and, for a file, `size`. The name is decoded
 but not cleaned up. archivey normalizes it (`./a//b` becomes `a/b`) and reports
-`MEMBER_NAME_NORMALIZED` when that changes it, as for a built-in format.
+`MEMBER_NAME_NORMALIZED` when that changes it, as for a built-in format. A leading `./`
+alone, or a directory's added `/`, is not reported.
 `ReaderContext.decode_name()` decodes stored bytes the way the built-in formats do: valid
 UTF-8 wins, then the caller's `encoding=`, then UTF-8 with no byte lost.
 

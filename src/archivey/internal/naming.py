@@ -384,6 +384,21 @@ def normalize_member_name(
     return name
 
 
+def _without_dot_prefix(presented_name: str) -> str:
+    """``presented_name`` without its leading run of ``./``.
+
+    ``tar czf a.tar.gz .`` names every member ``./...``, and every reader strips the
+    prefix the same way, so the report would only make a strict policy refuse ordinary
+    archives (maintainer ruling 2026-10-31).
+    """
+    # Find the prefix's end by index: slicing once per `./` would copy the rest of
+    # the name each time, quadratic in a name of many `./`.
+    end = 0
+    while presented_name.startswith("./", end):
+        end += 2
+    return presented_name[end:]
+
+
 def emit_member_name_normalized(
     collector: DiagnosticCollector,
     *,
@@ -420,15 +435,25 @@ def emit_member_name_normalized(
     # that reports equal names would not reach their members.
     if member.name == presented_name:
         return
+    # The rules below are checked on the name past its leading ``./`` run, so a
+    # dropped prefix combines with each of them. A ``//``, a ``/./`` inside the name
+    # or a trailing ``/`` on a link is still reported.
+    rest = _without_dot_prefix(presented_name)
+    if rest in ("", "."):
+        # The bare root ``./`` (or ``././``) presents as ``.``.
+        if member.name == ".":
+            return
+    elif member.name == rest:
+        return
     if (
         member.type is MemberType.DIRECTORY
-        and presented_name + "/" == member.name
-        and not presented_name.endswith("/")
+        and rest + "/" == member.name
+        and not rest.endswith("/")
     ):
         return
     if (
         link_stored_as_directory
-        and presented_name == member.name + "/"
+        and rest == member.name + "/"
         and not member.name.endswith("/")
     ):
         return

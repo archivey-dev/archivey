@@ -64,7 +64,8 @@ class DiagnosticCode(StrEnum):
 
     MEMBER_NAME_NORMALIZED = "member_name_normalized"
     """A member's stored name was changed to give ``name``, for example its
-    separators or a ``.`` segment."""
+    separators or a ``.`` segment. Not reported for a leading ``./`` alone, which
+    ``tar czf a.tar.gz .`` writes, or for a directory gaining its trailing ``/``."""
     MEMBER_NAME_ENCODING_INFERRED = "member_name_encoding_inferred"
     """A member's name was decoded with an encoding archivey inferred, not one the
     archive or the caller declared."""
