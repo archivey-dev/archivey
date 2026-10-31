@@ -12,7 +12,7 @@ import pytest
 
 from archivey.exceptions import PackageNotInstalledError
 from archivey.formats import CodecCall, CodecHandler, Decompressor, Magic
-from archivey.internal.codec_adapter import codec_class
+from archivey.internal.codec_adapter import plugin_codec_class
 from archivey.internal.config import DEFAULT_STREAM_CONFIG, StreamConfig
 from archivey.internal.streams.codecs.base import Codec, CodecParams, StreamCodec
 from archivey.internal.streams.codecs.registry import stream_codecs
@@ -124,14 +124,14 @@ def test_a_plugin_codec_starts_a_further_stream_by_the_same_rule() -> None:
         def decompressor(self, call: CodecCall) -> Decompressor:
             raise NotImplementedError
 
-    entry = codec_class(Handler)()
+    entry = plugin_codec_class(Handler)()
     assert entry.stream_start(CodecParams())(b"AB") is True
     assert entry.stream_start(CodecParams(single_stream=True))(b"AB") is False
 
     class Once(Handler):
         concatenated = False
 
-    assert codec_class(Once)().stream_start(CodecParams())(b"AB") is False
+    assert plugin_codec_class(Once)().stream_start(CodecParams())(b"AB") is False
 
 
 def test_every_codec_magic_names_the_codec_own_format() -> None:

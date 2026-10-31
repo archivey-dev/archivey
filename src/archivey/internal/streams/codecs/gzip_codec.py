@@ -32,7 +32,7 @@ from archivey.internal.streams.codecs.base import (
 )
 from archivey.internal.streams.codecs.deflate_decoder import GzipDecompressorStream
 from archivey.internal.streams.codecs.deflate_family_codec import _DeflateFamilyCodec
-from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives, natives_for
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
 from archivey.internal.streams.codecs.stdlib_takeover import (
     _DRAIN_CHUNK,
     _drain_into,
@@ -131,7 +131,7 @@ def _stdlib_gzip(source: CodecSource, config: StreamConfig) -> BinaryIO:
         source,
         collector=config.collector,
         report_trailing_data=config.report_trailing_data,
-        natives=natives_for(config.process_isolation),
+        natives=config.natives,
         index=config.seekable,
     )
 
@@ -894,7 +894,7 @@ class GzipCodec(_DeflateFamilyCodec):
     def _leaves_to_stdlib(self, source: CodecSource, config: StreamConfig) -> bool:
         # The standard-library engine raises zlib's own error on the first read, as
         # it does with the accelerator off.
-        return _gzip_header_refused(source, natives_for(config.process_isolation))
+        return _gzip_header_refused(source, config.natives)
 
     @override
     def _end_check(
@@ -925,7 +925,7 @@ class GzipCodec(_DeflateFamilyCodec):
             views=views,
             isize=isize,
             source_len=source_len,
-            natives=natives_for(config.process_isolation),
+            natives=config.natives,
         )
 
     @override

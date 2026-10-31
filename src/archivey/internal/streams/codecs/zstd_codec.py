@@ -30,7 +30,6 @@ from archivey.internal.streams.codecs.framed_decoder import (
     StreamStart,
     stream_magic,
 )
-from archivey.internal.streams.codecs.isolated import natives_for
 from archivey.internal.streams.codecs.zstd_framing import (
     FRAME_MAGIC as ZSTD_FRAME_MAGIC,
     regular_frame_behind_skippable_frames,
@@ -149,7 +148,7 @@ class ZstdCodec(StreamCodec):
         window_log_max, _ = _zstd_window_log_max(config.decoder_limits)
         window_log_max = _probe_window_log_max(window_log_max, config.probe_read_bound)
         options = {deps.zstd.DecompressionParameter.window_log_max: window_log_max}
-        return natives_for(config.process_isolation).zstd_decompressor(options)
+        return config.natives.zstd_decompressor(options)
 
     @override
     def stream_start(self, params: CodecParams) -> StreamStart:

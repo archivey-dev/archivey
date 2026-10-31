@@ -41,7 +41,6 @@ from archivey.internal.streams.codecs.framed_decoder import (
     StreamStart,
     stream_magic,
 )
-from archivey.internal.streams.codecs.isolated import natives_for
 from archivey.internal.streams.codecs.rapidgzip_child import (
     crashed_on_data,
     from_callers_source,
@@ -791,7 +790,7 @@ class Bzip2Codec(StreamCodec):
 
     @override
     def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
-        return natives_for(config.process_isolation).bz2_decompressor()
+        return config.natives.bz2_decompressor()
 
     @override
     def stream_start(self, params: CodecParams) -> StreamStart:
