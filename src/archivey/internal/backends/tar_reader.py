@@ -1440,12 +1440,14 @@ class TarReader(BaseArchiveReader):
                 "whole prefix field is part of the name, as GNU tar reads it; star "
                 "reads its end as times and names the member differently"
             )
-        else:
+        elif shape == "gnu_prefix_bytes":
             what = (
                 "has an old GNU header with times where ustar keeps the name prefix: "
                 "they are not part of the name, as GNU tar reads it; a reader that "
                 "joins the prefix for any magic names the member after them"
             )
+        else:
+            assert_never(shape)
         self._diagnostics_collector.emit(
             code=DiagnosticCode.MEMBER_READERS_DISAGREE,
             message=f"TAR member {quoted(member.name)} {what}.",

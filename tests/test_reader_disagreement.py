@@ -3,7 +3,7 @@ which archivey reads as the format's own tool does and other readers read otherw
 
 Both codes are advisory (out of ``ARCHIVE_INTEGRITY_CODES``, logged at INFO), so the
 default and ``STRICT`` policies read the archive and ``PEDANTIC`` refuses it. The TAR
-cases follow tar-minefield K01, K02, N10, N11, S04, S06, S07, S09 and S10.
+cases follow tar-minefield K01, K02, N10, N11, S04, S06, S07, S08, S09 and S10.
 """
 
 from __future__ import annotations
