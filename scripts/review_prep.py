@@ -468,10 +468,10 @@ REQUIRED_CHECKS = (
 )
 # A workflow line that grants a token scope, reads or passes on a secret (`secrets.`,
 # `secrets: inherit`), runs on the base repository's trust with its token and secrets
-# (`pull_request_target`, `workflow_run`, and the comment and review triggers), or reads the `github` context in an expression: any field but a few
-# fixed ones can carry text someone outside chose (a title, a branch, an actor's name).
-# A new `run:` step with no expression is not matched; the Opus pass and Cursor review
-# it.
+# (`pull_request_target`, `workflow_run`, and the comment and review triggers), or
+# reads the `github` context in an expression: any field but a few fixed ones can carry
+# text someone outside chose (a title, a branch, an actor's name). A new `run:` step
+# with no expression is not matched; the Opus pass and Cursor review it.
 _GITHUB_FIXED = (
     "sha|repository|repository_id|repository_owner|repository_owner_id|run_id"
     "|run_number|run_attempt|workflow|job|server_url|api_url|graphql_url|event_name"
