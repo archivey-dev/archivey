@@ -399,6 +399,13 @@ DEEP_SECURITY = (
     "src/archivey/internal/external/",
     "src/archivey/internal/streams/child_process.py",
 )
+# A new file under one of these is a new format reader, parser or codec: the pull
+# request gets the security pass (skill §1) whatever its tier. Other changes there get it when
+# the PR body's `Security:` line or the reviewer applies the template's rules.
+SECURITY_NEW_FILES = (
+    "src/archivey/internal/backends/",
+    "src/archivey/internal/streams/codecs/",
+)
 # A deep pull request touching one of these also goes to the maintainer to merge. The
 # review loop's own rules are here because a pull request is reviewed under its own copy
 # of them (dev-docs/review-loop.md, Known rough edges): the tier is read from the base
@@ -427,16 +434,22 @@ class Tier:
     reasons: list[str]
     maintainer_merges: bool
     api_changed: bool
+    # New reader, parser or codec files: the security pass runs on any tier.
+    new_parsers: list[str] = field(default_factory=list)
 
 
-def tier(paths: Iterable[str]) -> Tier:
-    """Classify the changed paths (renames give both sides) into a review tier."""
+def tier(paths: Iterable[str], added: Iterable[str] = ()) -> Tier:
+    """Classify the changed paths (renames give both sides) into a review tier.
+    `added` are the paths the diff creates."""
     paths = sorted(set(paths))
+    new_parsers = sorted(p for p in set(added) if _matches(p, SECURITY_NEW_FILES))
     security = [p for p in paths if _matches(p, DEEP_SECURITY)]
     maintainer = [p for p in paths if _matches(p, DEEP_MAINTAINER)]
     api_changed = API_SURFACE in paths
     if security or maintainer:
-        return Tier("deep", security + maintainer, bool(maintainer), api_changed)
+        return Tier(
+            "deep", security + maintainer, bool(maintainer), api_changed, new_parsers
+        )
     heavier = [
         p
         for p in paths
@@ -448,8 +461,16 @@ def tier(paths: Iterable[str]) -> Tier:
         )
     ]
     if paths and not heavier:
-        return Tier("light", [], False, api_changed)
-    return Tier("standard", heavier, False, api_changed)
+        return Tier("light", [], False, api_changed, new_parsers)
+    return Tier("standard", heavier, False, api_changed, new_parsers)
+
+
+def added_paths(base: str, head: str) -> list[str]:
+    return git("diff", "--name-only", "--diff-filter=A", f"{base}...{head}").split()
+
+
+def review_tier(base: str, head: str) -> Tier:
+    return tier(changed_paths(base, head), added_paths(base, head))
 
 
 def changed_paths(base: str, head: str) -> list[str]:
@@ -475,6 +496,13 @@ def tier_report(t: Tier) -> list[str]:
         shown = t.reasons[:5]
         more = f" (+{len(t.reasons) - len(shown)} more)" if len(t.reasons) > 5 else ""
         lines.append(f"  not light because of: {', '.join(shown)}{more}")
+    if t.name == "deep" or t.new_parsers:
+        lines.append("security pass: yes")
+        lines += [f"  new reader, parser or codec: {p}" for p in t.new_parsers]
+    else:
+        lines.append(
+            "security pass: per the Risk line's rules (pull_request_template.md)"
+        )
     lines.append(
         f"public API: {'changed (' + API_SURFACE + ')' if t.api_changed else 'unchanged'}"
     )
@@ -617,7 +645,7 @@ def main(argv: list[str] | None = None) -> int:
         return red_on_base(args.base, args.tests)
 
     if args.command == "tier":
-        print("\n".join(tier_report(tier(changed_paths(args.base, args.head)))))
+        print("\n".join(tier_report(review_tier(args.base, args.head))))
         return 0
 
     files = parse_diff(git("diff", "-U0", f"{args.base}...{args.head}"))
@@ -638,7 +666,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "=== tier: how deep the review goes (copy into the PR body's Risk section)"
         )
-        print("\n".join(tier_report(tier(changed_paths(args.base, args.head)))))
+        print("\n".join(tier_report(review_tier(args.base, args.head))))
     return status
 
 

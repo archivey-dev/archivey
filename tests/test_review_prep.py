@@ -285,6 +285,28 @@ def test_tier_is_deep_on_a_safety_path_and_the_maintainer_merges_workflows() -> 
     assert prep.tier(["src/archivey/paths.pyi"]).name == "standard"
 
 
+def test_a_new_parser_or_codec_file_gets_the_security_pass_on_any_tier() -> None:
+    new = "src/archivey/internal/backends/cab_reader.py"
+    t = prep.tier([new, "tests/test_cab.py"], added=[new, "tests/test_cab.py"])
+    assert (t.name, t.new_parsers) == ("standard", [new])
+    assert prep.tier_report(t)[-3:-1] == [
+        "security pass: yes",
+        f"  new reader, parser or codec: {new}",
+    ]
+    # Editing one is up to the Risk line's rules; so is a new file elsewhere.
+    edited = prep.tier(["src/archivey/internal/streams/codecs/lzo.py"])
+    assert edited.new_parsers == []
+    assert prep.tier_report(edited)[-2].startswith("security pass: per the Risk line")
+    # A deep pull request always gets it.
+    deep = prep.tier(["src/archivey/internal/extraction.py"])
+    assert "security pass: yes" in prep.tier_report(deep)
+
+
+def test_security_new_file_prefixes_exist() -> None:
+    for entry in prep.SECURITY_NEW_FILES:
+        assert (ROOT / entry).is_dir(), entry
+
+
 def test_tier_reports_a_public_api_change() -> None:
     t = prep.tier(["src/archivey/core.py", "dev-docs/api-surface.txt"])
     assert t.api_changed

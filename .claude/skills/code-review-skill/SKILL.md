@@ -95,21 +95,29 @@ each path is on its list, live in that script.
   **Every round on a deep pull request ends with a security pass**, done after the rest
   of the review and reported on its own. Safe handling of hostile input is what the deep
   paths carry, so it gets its own attention rather than whatever is left after the
-  general review (maintainer, 2026-10-30). The script's two lists set the attacker:
+  general review (maintainer, 2026-10-30). Format code reads hostile bytes too, so a
+  pull request of any tier gets the pass when the script prints `security pass: yes`
+  (a new reader, parser or codec file), when its Risk section's `Security:` line says
+  yes, or when the change meets one of that line's rules in
+  `.github/pull_request_template.md` whatever the line says (maintainer, 2026-10-31).
+  The line can be raised, never lowered: run the pass, and a "no" on a change the rules
+  cover is 🟢, like a wrong tier line. The script's two lists set the attacker:
 
-  - *A library path* (`DEEP_SECURITY`): the attacker controls the archive or the
-    directory source. Take each defended property in `threat-model.md` §3 the path
-    carries, or, where §3 names none for it, the guarantee every deep library path
-    carries: writes stay inside the destination, resources stay bounded, and
-    archive-supplied input reaches a command line or a terminal only as inert text. Try
-    to break it with a crafted name, size, offset, link target or member order, a
-    truncated or concatenated stream, or a hostile directory source. Build each attempt
-    and its destination in a fresh temporary directory outside the checkout. Run it
-    under the library configuration the pull request ships (the defaults, unless the
-    diff changes them), never a tighter one; keep a bomb that works cheap from outside
-    the library instead: a small fixture, a `timeout`, a capped `ulimit -v`. Where a
-    `tests/test_cve_regressions*.py` case sits near the change, read it for the shape of
-    a known attack and take its result from CI, or say CI has none yet.
+  - *A library path* (`DEEP_SECURITY`, and format or codec code the rules above cover):
+    the attacker controls the archive or the directory source. Take each defended
+    property in `threat-model.md` §3 the path carries, or, where §3 names none for it,
+    the guarantee every library path carries: writes stay inside the destination,
+    resources stay bounded, and archive-supplied input reaches a command line or a
+    terminal only as inert text. Try to break it with a crafted name, size, offset, link
+    target or member order, a truncated or concatenated stream, or a hostile directory
+    source. Build each attempt and its destination in a fresh temporary directory
+    outside the checkout. Run it under the library configuration the pull request ships
+    (the defaults, unless the diff changes them), never a tighter one; keep a bomb that
+    works cheap from outside the library instead: a small fixture, a `timeout`, a capped
+    `ulimit -v`. Where a `tests/test_cve_regressions*.py` case sits near the change,
+    read it for the shape of a known attack and take its result from CI, or say CI has
+    none yet. A pull request below deep that gets the pass also reads `threat-model.md`
+    for it.
   - *The release's and the review loop's own files* (`DEEP_MAINTAINER`: workflows, the
     release script, the loop's prompt and scripts, this skill): the attacker is whoever
     can open a pull request or write its title, body, branch name, label or a comment.
