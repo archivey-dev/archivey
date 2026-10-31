@@ -393,11 +393,14 @@ def _only_dot_prefix_dropped(presented_name: str, member: ArchiveMember) -> bool
     strict policy refuse ordinary archives (maintainer ruling 2026-10-31). A ``//``,
     a ``/./`` inside the name or a trailing ``/`` on a link is still reported.
     """
-    rest = presented_name
-    while rest.startswith("./"):
-        rest = rest[2:]
-    if rest == presented_name:
+    # Find the prefix's end by index: slicing once per `./` would copy the rest of
+    # the name each time, quadratic in a name of many `./`.
+    end = 0
+    while presented_name.startswith("./", end):
+        end += 2
+    if end == 0:
         return False
+    rest = presented_name[end:]
     if rest in ("", ".") or member.name == ".":
         return member.name == "." and rest in ("", ".")
     if member.name == rest:
