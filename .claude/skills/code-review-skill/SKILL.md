@@ -115,7 +115,11 @@ each path is on its list, live in that script.
   Everything in Standard, plus [`threat-model.md`](../../../dev-docs/threat-model.md) and
   [`security-review-guide.md`](reference/security-review-guide.md), and the security
   pass below. On a fix round, trace every fix outward (`fix-round.md`), not only the ones
-  that moved a contract.
+  that moved a contract. When every deep path is a workflow that only a dispatch or the
+  schedule starts, with a read-only token and no secret (`quiet_workflow`), the pull
+  request is standard with the security pass still on; take its attacker from the
+  `DEEP_PROCESS` item below, and check what the workflow writes that its token does not
+  scope (the Actions cache, artifacts other jobs restore).
 
   **Every round on a deep pull request ends with a security pass**, done after the rest
   of the review and reported on its own. Safe handling of hostile input is what the deep

@@ -479,13 +479,13 @@ _GITHUB_FIXED = (
     "|base_ref|ref_type|action_path|workspace|retention_days"
 )
 _WORKFLOW_POWER_RE = re.compile(
-    r"\bpermissions\s*:|\bsecrets\s*[.:]"
+    r"\bpermissions\s*:|(?i:\bsecrets\s*[.:\[)])"
     r"|\b(?:pull_request_target|workflow_run|issue_comment|pull_request_review"
     r"|pull_request_review_comment|discussion_comment)\b"
-    rf"|\$\{{\{{[^}}]*\bgithub\s*(?:\[|\.\s*(?!(?:{_GITHUB_FIXED})\b)\w)"
+    rf"|(?i:\$\{{\{{[^}}]*\bgithub\s*(?:\[|\.\s*(?!(?:{_GITHUB_FIXED})\b)\w))"
     r"|^\s*(?:actions|attestations|checks|contents|deployments|discussions|id-token"
     r"|issues|models|packages|pages|pull-requests|repository-projects|security-events"
-    r"|statuses)\s*:\s*(?:read|write|none)\b"
+    r"|statuses)\s*:\s*(?:['\"]?(?:read|write|none)\b|[>|]|$)"
 )
 # An action or reusable workflow a step runs; a new one is new code with the job's token,
 # a local one (`./`) included, since it may be a workflow that takes secrets.
@@ -746,6 +746,9 @@ class Tier:
     new_parsers: list[str] = field(default_factory=list)
     # What makes the maintainer merge it (maintainer_decisions); empty: an agent merges.
     maintainer: list[str] = field(default_factory=list)
+    # Workflows that would make it deep but run on nobody else's input with a read-only
+    # token (quiet_workflow): standard instead, and the security pass still runs.
+    quiet_workflows: list[str] = field(default_factory=list)
 
 
 def tier(paths: Iterable[str], added: Iterable[str] = ()) -> Tier:
@@ -790,9 +793,186 @@ def added_paths(base: str, head: str) -> list[str]:
     return [paths[0] for status, *paths in _name_status(base, head) if status == "A"]
 
 
+# The triggers a quiet workflow may have: someone with write access starts it, or the
+# clock does. Nothing a fork or an issue author chose reaches it.
+_QUIET_TRIGGERS = frozenset({"workflow_dispatch", "schedule"})
+# Every reader below fails closed: a spelling it does not read makes the workflow not
+# quiet, so the pull request stays deep. YAML and GitHub's expressions allow more forms
+# than a line regex can follow (quoted keys and values, flow mappings, `secrets['X']`),
+# and the unsafe answer must not be the default one.
+_ON_RE = re.compile(r"""^(?:on|"on"|'on'|true)\s*:\s*(.*?)\s*(?:#.*)?$""")
+_BARE_KEY_RE = re.compile(r"^(\s+)([\w-]+)\s*:(?:\s.*)?$")
+_PERMISSIONS_RE = re.compile(r"^(\s*)permissions\s*:\s*(.*?)\s*(?:#.*)?$")
+_READ_SCOPE_RE = re.compile(r"^\s+[\w-]+\s*:\s*(?:read|none)\s*(?:#.*)?$")
+# The job's own token, which `permissions:` bounds; any other mention of `secrets`
+# (another secret, `secrets: inherit`, `toJSON(secrets)`) is not quiet.
+_JOB_TOKEN_RE = re.compile(
+    r"""\bsecrets\s*(?:\.\s*GITHUB_TOKEN|\[\s*(['"])GITHUB_TOKEN\1\s*\])(?![\w-])""",
+    re.IGNORECASE,  # an expression's context names ignore case: `SECRETS.X` reads X
+)
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def _triggers(text: str) -> set[str] | None:
+    """The event names under a workflow's top-level ``on:``, or None where the script
+    cannot tell: no ``on:`` or two of them, or any line of the block it does not read."""
+    lines = text.splitlines()
+    starts = [i for i, line in enumerate(lines) if _ON_RE.match(line)]
+    if len(starts) != 1:
+        return None
+    i = starts[0]
+    m = _ON_RE.match(lines[i])
+    assert m is not None
+    if inline := m.group(1):
+        if inline.startswith("[") and inline.endswith("]"):
+            inline = inline[1:-1]
+        names = [n.strip() for n in inline.split(",")]
+        return set(names) if all(re.fullmatch(r"[\w-]+", n) for n in names) else None
+    found: set[str] = set()
+    indent = None
+    for nxt in lines[i + 1 :]:
+        if not nxt.strip() or nxt.lstrip().startswith("#"):
+            continue
+        if not nxt[0].isspace():
+            break
+        if indent is None:
+            indent = _indent(nxt)
+        if _indent(nxt) > indent:
+            continue  # an event's own settings: inputs, cron lines
+        k = _BARE_KEY_RE.match(nxt)
+        if _indent(nxt) < indent or k is None:
+            return None  # a quoted key, a list item, a dedent: not read here
+        found.add(k.group(2))
+    return found or None
+
+
+def _read_only_permissions(lines: list[str]) -> bool:
+    """A top-level ``permissions:`` exists, and every ``permissions:`` grants only
+    ``read`` or ``none``, each scope on its own line (an allowlist: a quoted value or a
+    flow mapping is not read here, so it is not read-only)."""
+    top = False
+    for i, line in enumerate(lines):
+        m = _PERMISSIONS_RE.match(line)
+        if m is None:
+            if re.match(
+                r"""^\s*(?:-\s*)?["']permissions["']\s*:|^\s*-\s*permissions\s*:""",
+                line,
+            ):
+                return False  # a quoted or list-item key: not read here
+            continue
+        top |= m.group(1) == ""
+        value = m.group(2)
+        if value:
+            if value not in {"read-all", "{}"}:
+                return False
+            continue
+        for nxt in lines[i + 1 :]:
+            if not nxt.strip() or nxt.lstrip().startswith("#"):
+                continue
+            if _indent(nxt) <= len(m.group(1)):
+                break
+            if not _READ_SCOPE_RE.match(nxt):
+                return False
+    return top  # without one, the repository's default token, whatever that is set to
+
+
+def _read_only_grant(value: object) -> bool:
+    if value in ("read-all", {}):
+        return True
+    return isinstance(value, dict) and all(
+        isinstance(k, str) and v in ("read", "none") for k, v in value.items()
+    )
+
+
+def _parsed_quiet(text: str) -> bool:
+    """The line readers again, on the document Actions loads: a multi-line string can
+    hold a line that looks like `on:` or `permissions:`, and a folded scalar can hold
+    `write`. Both answers must be quiet. Without PyYAML (the runner image ships it)
+    nothing is quiet, which is the tier this script gave before."""
+    try:
+        import yaml  # only workflows need it; the script runs on a bare python3
+    except ImportError:
+        return False
+    try:
+        # An alias is refused before the load expands it: nested aliases grow
+        # exponentially, and Actions rejects them anyway.
+        if any(isinstance(e, yaml.AliasEvent) for e in yaml.parse(text)):
+            return False
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return False
+    if not isinstance(doc, dict):
+        return False
+    # YAML 1.1 reads a bare `on` key as the boolean true; Actions takes either.
+    on = [doc[k] for k in (True, "on") if k in doc]
+    if len(on) != 1:
+        return False
+    events = on[0]
+    if isinstance(events, str):
+        events = [events]
+    if not events or not set(events) <= _QUIET_TRIGGERS:
+        return False
+    if "permissions" not in doc or not _read_only_grant(doc["permissions"]):
+        return False
+    jobs = doc.get("jobs") or {}
+    if not isinstance(jobs, dict):
+        return False
+    return all(
+        isinstance(job, dict)
+        and ("permissions" not in job or _read_only_grant(job["permissions"]))
+        for job in jobs.values()
+    )
+
+
+def quiet_workflow(text: str | None) -> bool:
+    """A workflow that only a dispatch or the schedule starts, with an explicit token
+    scope that writes nothing and no secret but the job's own token. Every `github`
+    field it reads was then set by someone with write access or by the repository: no
+    outside attacker supplies its input, so it is not deep for its own sake. It still
+    reaches shared CI state that `permissions:` does not scope, such as the Actions
+    cache and artifacts other jobs restore, so the security pass stays on (tier_report).
+    A new one, or a change to its triggers or token, still goes to the maintainer
+    (maintainer_decisions)."""
+    if text is None:
+        return False
+    triggers = _triggers(text)
+    if not triggers or not triggers <= _QUIET_TRIGGERS:
+        return False
+    lines = text.splitlines()
+    if not _read_only_permissions(lines) or not _parsed_quiet(text):
+        return False
+    # Comments are read too: a `#` inside a `run:` string would otherwise hide the rest
+    # of its line, and a comment that names a secret only costs a deep review.
+    return not any(
+        re.search(r"\bsecrets\b", _JOB_TOKEN_RE.sub("", t), re.IGNORECASE)
+        for t in lines
+    )
+
+
 def review_tier(base: str, head: str) -> Tier:
     paths, added = changed_paths(base, head), added_paths(base, head)
     t = tier(paths, added)
+    quiet = [
+        p
+        for p in t.reasons
+        if p.startswith(WORKFLOWS)
+        and p not in MAINTAINER_FILES
+        and quiet_workflow(base_text(head, p))
+    ]
+    if t.name == "deep" and quiet and len(quiet) == len(t.reasons):
+        rest = tier([p for p in paths if p not in quiet], added)
+        # Standard even when `rest` is light: a workflow is code that runs in CI, so it
+        # keeps the Opus pass when the rest of the diff is prose, tests or benchmarks.
+        t = Tier(
+            "standard",
+            quiet + rest.reasons,
+            t.api_changed,
+            t.new_parsers,
+            quiet_workflows=quiet,
+        )
     files = parse_diff(git("diff", "-U0", "-M", f"{base}...{head}"))
     # `base...head` diffs from the merge base, so the "before" texts come from there too.
     fork = git("merge-base", base, head).strip()
@@ -811,17 +991,28 @@ def review_tier(base: str, head: str) -> Tier:
     return t
 
 
+def _not_light(reasons: list[str]) -> str:
+    shown = reasons[:5]
+    more = f" (+{len(reasons) - len(shown)} more)" if len(reasons) > 5 else ""
+    return f"  not light because of: {', '.join(shown)}{more}"
+
+
 def tier_report(t: Tier) -> list[str]:
     lines = [f"tier: {t.name}"]
     if t.name == "deep":
         lines += [f"  deep path: {p}" for p in t.reasons]
+    elif t.quiet_workflows:
+        lines += [
+            f"  quiet workflow (dispatch or schedule, read-only token): {p}"
+            for p in t.quiet_workflows
+        ]
+        if rest := t.reasons[len(t.quiet_workflows) :]:
+            lines.append(_not_light(rest))
     elif t.name == "standard" and not t.reasons:
         lines.append("  no committed changes against the base")
     elif t.name == "standard":
-        shown = t.reasons[:5]
-        more = f" (+{len(t.reasons) - len(shown)} more)" if len(t.reasons) > 5 else ""
-        lines.append(f"  not light because of: {', '.join(shown)}{more}")
-    if t.name == "deep" or t.new_parsers:
+        lines.append(_not_light(t.reasons))
+    if t.name == "deep" or t.new_parsers or t.quiet_workflows:
         lines.append("security pass: yes")
         lines += [
             f"  new file under a parser or codec directory: {p}" for p in t.new_parsers
