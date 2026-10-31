@@ -1052,7 +1052,7 @@ misread the archive.
 - A blank time, owner or mode field is `None`.
 - A thin archive (`!<thin>`) only names files kept outside it, and raises
   `UnsupportedFeatureError`.
-- The long-name table counts against `ListingLimits.max_metadata_bytes`.
+- The long-name table may be no larger than `ListingLimits.max_metadata_bytes`.
 
 ## Disk images
 

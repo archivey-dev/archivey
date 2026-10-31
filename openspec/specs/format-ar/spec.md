@@ -49,7 +49,9 @@ A BSD name stored in the data area (`#1/N`) longer than 64 KiB, or longer than i
 member, SHALL raise `CorruptionError` before any of it is read. This is a structural
 bound, not a policy limit: no file system takes a path that long, and the check keeps a
 damaged length from growing one buffer to the member's size. The GNU long-name table is
-held for the whole walk instead, so it is charged to `ListingLimits.max_metadata_bytes`.
+held for the whole walk instead, so it SHALL be no larger than
+`ListingLimits.max_metadata_bytes` on its own; it is held beside the member names, which
+the listing counts separately.
 
 #### Scenario: ar name bounds
 
