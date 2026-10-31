@@ -11,7 +11,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from archivey_squashfs import SQUASHFS, SquashfsHandler, lzo
+from archivey_squashfs import SQUASHFS, SquashfsHandler
 from archivey_squashfs.reader import SquashfsReader
 
 import archivey
@@ -29,6 +29,7 @@ from archivey import (
 )
 from archivey.formats import register_format
 from archivey.internal.excluded_libraries import EXCLUDED_REASON
+from archivey.internal.streams.codecs import lzo_decoder as archivey_lzo
 
 DATA = Path(__file__).parent / "data"
 PACKAGE = Path(__file__).parents[1] / "src" / "archivey_squashfs"
@@ -114,7 +115,7 @@ def test_lists_and_reads_every_member(image: str) -> None:
 def lzo_decoder(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
     """Each LZO decoder in turn: the package's own, and liblzo through python-lzo."""
     if request.param == "python":
-        monkeypatch.setattr(lzo, "_python_lzo", lambda: None)
+        monkeypatch.setattr(archivey_lzo, "_python_lzo", lambda *_: None)
     return request.param
 
 

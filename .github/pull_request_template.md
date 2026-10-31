@@ -13,7 +13,20 @@ Tier: the "tier:" line that `python3 scripts/review_prep.py tier` prints (light,
 standard or deep), and the paths behind it.
 Public API: "none", or the names added, changed or removed (the diff of
 dev-docs/api-surface.txt lists them). Removing or renaming a public name is the
-maintainer's call. -->
+maintainer's call.
+Security: "yes" or "no", and the rule behind it. Yes when the change, on any path:
+allocates, loops or recurses on a size, count or offset read from the archive; adds
+or changes a decoder or codec; adds a call into native code or an external program;
+touches a limit or a bomb check; or adds a format. Also yes when the tier command
+prints "security pass: yes". When unsure, yes: the review runs a security pass
+(code-review-skill §1). The reviewer applies these rules whatever the line says, so a
+"no" can be raised but a "yes" is never lowered.
+Merge: the "merge:" line the tier command prints. It names the decisions in the diff
+that are the maintainer's call (a public name, parameter or fixed value removed, or a
+top-level name added; a config default; a defended property dropped or cut down, or a
+non-guarantee accepted; a new ADR, runtime dependency, workflow or workflow action; a
+workflow's permissions, secrets, triggers or event text; the release path or the merge
+gate). Add any it cannot see: a new subsystem, a reversed ruling. -->
 
 ## Tests
 

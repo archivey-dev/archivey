@@ -84,7 +84,13 @@ was reviewed. `OUTCOME_LABELS` in the gate holds the mapping.
 from `python3 scripts/review_prep.py tier` (the review skill's §1 says what each tier
 asks of a reviewer). It runs the base branch's copy of the script, so a pull request
 cannot lower its own tier by editing the path lists. It only reports, like the outcome
-labels.
+labels. A deep pull request's rounds end with a security pass, and so do those of a pull
+request whose format or codec code the template's `Security:` rules cover (skill §1).
+The same step adds `merge: maintainer` when the script's `merge:` line names a decision
+of the maintainer's, and takes it off when a push removes the last one. That label
+reports too: a fork's pull request gets none, a cancelled run leaves it stale, and a
+label can be removed by hand, so the merging agent runs the base branch's script itself
+(`address-review-findings` §7).
 
 **Opus reads a pull request once, first; Sonnet re-reads the fixes.** The round
 installs the project at the pull request's own lockfile (`uv sync --frozen --group dev
@@ -115,12 +121,13 @@ The prompt every round gets is
 Each close also checks the round's posts against the shape `code-review-skill` §3 and
 §6 ask for (`scripts/review_shape.py`): the `## Round <n> ·` heading and attribution
 line, the collapsed `Measured this round` list, a `### K<n> ·` heading on every inline
-finding and reply, the footer on every post, no tables, and no GitHub API error pasted
-in. The closing comment lists any miss under **Posting shape**, and the round marker
-carries their count (`shape=N`) for the weekly tally. A miss is a reviewer defect to
-fix in the skill or the prompt; it never changes the verdict or the next step. When
-the close cannot read the pull request's comments, it says so instead and the marker
-carries `shape=skipped`, which the tally counts apart from the rounds that passed.
+finding and reply, the footer on every post, no tables outside a code fence, and no
+GitHub API error pasted in. The closing comment lists any miss under **Posting
+shape**, and the round marker carries their count (`shape=N`) for the weekly tally. A
+miss is a reviewer defect to fix in the skill or the prompt; it never changes the
+verdict or the next step. When the close cannot read the pull request's comments, it
+says so instead and the marker carries `shape=skipped`, which the tally counts apart
+from the rounds that passed.
 
 ## Counting rounds
 
@@ -241,10 +248,16 @@ the three `risk:` labels.
   `review_loop_close.sh`, the prompt template and its renderer, and the review skill all
   come from the pull request's checkout. So a pull request can edit the rules its own
   review runs under, and `claude-code-action` does not refuse it as it does an edited
-  workflow file. Instead, those files are on `review_prep.py`'s maintainer list: a pull
-  request touching them is deep and the maintainer merges it, and since the tier is read
-  from the base branch, the pull request cannot take itself off the list (davitf,
-  2026-10-29).
+  workflow file. Instead, those files are deep (`review_prep.py` `DEEP_PROCESS`), and
+  the gate's own (`review_loop_gate.py`, `review_loop_close.sh`, `review_prep.py`,
+  `review-loop.yml`, `risk-label.yml`) make the maintainer merge. The tier and the merge
+  line come from the base branch's script (the merging agent runs that copy,
+  `address-review-findings` §7), so the pull request cannot take itself off either list
+  (davitf, 2026-10-29). Since 2026-10-31 an edit to the prompt or the skill merges like
+  the rest of the deep tier, after the Opus pass and Cursor; only the files that decide
+  whether a round runs and approves, and who merges, stay with the maintainer, and so
+  does an edit that talks about merging in the prose the merging agent follows
+  (`MERGE_RULE_FILES`).
 - **Cursor reviews a deep pull request's Opus round.** The workflow posts an
   `@cursoragent` request when that round starts, with the `CURSOR_TRIGGER_TOKEN`
   secret: a fine-grained personal token limited to pull request comments on this

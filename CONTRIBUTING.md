@@ -37,11 +37,13 @@ gate; it lists docs still naming what your branch removed or moved, fails on lin
 far wider than their file, and its `red-on-base` subcommand checks a "fails on `main`"
 claim (`.claude/skills/address-review-findings/SKILL.md` §5).
 
-`check.sh` mirrors CI's `lint`, `docs` and `openspec` jobs: ruff, **`pyrefly`**,
-**`ty`**, the OpenSpec checks, the docs-tree and link checks, the strict docs build and
-the check on what that build rendered. The script itself is the list. It runs every gate
-even after one fails and lists what failed at the end, so a single run tells you
-everything that is wrong. Without `--fix` it writes nothing and answers "will CI pass?".
+`check.sh` mirrors CI's `lint` job and every job in `docs-checks.yml`: ruff,
+**`pyrefly`**, **`ty`**, the OpenSpec checks, the docs-tree and link checks, the strict
+docs build, the check on what that build rendered and the tracker-URL check. The one
+exception is the docs job's pytest step (`tests/test_github_templates.py`), which
+`test.sh` runs. The script itself is the list. It runs every gate even after one fails
+and lists what failed at the end, so a single run tells you everything that is wrong.
+Without `--fix` it writes nothing and answers "will CI pass?".
 
 `test.sh` passes extra arguments through to pytest (`./scripts/test.sh tests/test_zip.py
 -k roundtrip`), and `--all-configs` runs the full before-pushing gate described below.
@@ -58,21 +60,20 @@ uv run ty check                    # type-check (ty)
 uv run pre-commit run --all-files  # optional: framework hooks over the whole tree
 ```
 
-Pyrefly and ty are scoped to `src/`, `packages/archivey-squashfs/src/`,
-`packages/archivey-cpio/src/` and `packages/archivey-ar/src/` (the library and the
-in-repo plugin packages), so every command above runs clean with no extra path
-arguments. **Both type checkers must stay green** — `ruff` passing is not the gate,
-and running it alone is the most common self-inflicted CI failure here.
+Pyrefly and ty are scoped to `src/`, `packages/archivey-squashfs/src/` and
+`packages/archivey-cpio/src/` (the library and the in-repo plugin packages), so every
+command above runs clean with no extra path arguments. **Both type checkers must stay
+green** — `ruff` passing is not the gate, and running it alone is the most common
+self-inflicted CI failure here.
 
 **Format before you commit.** CI runs `ruff format --check` (and `ruff check`) over
-`src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/ packages/archivey-cpio/
-packages/archivey-ar/` and will fail on drift. Installing the git hook
-(`./scripts/install-git-hooks.sh`) makes this automatic: staged `*.py` under those
-paths are `ruff check --fix`'d and `ruff format`'d on commit. If you skip the hook,
-run `uv run ruff format` yourself before committing — `ruff format --check` only
-reports problems; it does not rewrite files. Prefer the script over
-`uv run pre-commit install`: Cursor remaps `core.hooksPath`, and the script installs into
-the chained original hooks directory so the hook still runs.
+`src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/ packages/archivey-cpio/`
+and will fail on drift. Installing the git hook (`./scripts/install-git-hooks.sh`) makes
+this automatic: staged `*.py` under those paths are `ruff check --fix`'d and `ruff
+format`'d on commit. If you skip the hook, run `uv run ruff format` yourself before
+committing — `ruff format --check` only reports problems; it does not rewrite files.
+Prefer the script over `uv run pre-commit install`: Cursor remaps `core.hooksPath`, and
+the script installs into the chained original hooks directory so the hook still runs.
 
 **From a `git worktree`,** both scripts work unchanged. A worktree starts without a
 `.venv`, so they create one for it (about a second; uv hardlinks from its cache), and the
@@ -207,6 +208,11 @@ maintainer.
 
 - **Keep it simple and well typed.** Prefer straightforward code over cleverness; type
   everything that's part of, or feeds, the public API.
+- **Mark every override with `@override`** from `archivey.internal.overrides`, and only
+  overrides (`__init__`, `__new__`, `__init_subclass__` and `__post_init__` need none).
+  `ty check` enforces both over the library sources, so a renamed base method cannot
+  strand an override there. It does not check `tests/`, the CLI or the plugin packages;
+  `pyproject.toml` names the plugin hook that leaves unprotected.
 - **Share code that must agree; copy code that agrees by coincidence** (DR-23a). Before
   factoring out duplicated code, ask whether a change to one copy must reach the other.
 - **Don't accumulate debt — clean as you go** (DR-23). When you touch something, leave it

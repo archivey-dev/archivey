@@ -16,7 +16,7 @@ the ``LIBARCHIVE`` variable names, so a build of the clone can be used without
 installing it (``cmake -S libarchive -B build -DENABLE_TEST=OFF``, then
 ``LIBARCHIVE=build/libarchive/libarchive.so``).
 
-The format plugins in ``packages/`` (CPIO, ar, SquashFS) are registered when they
+The format plugins in ``packages/`` (CPIO, SquashFS) are registered when they
 are installed (``uv pip install -e packages/archivey-cpio``), so their fixtures are
 compared too; without them those fixtures are skipped as unknown formats.
 

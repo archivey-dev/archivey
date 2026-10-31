@@ -31,6 +31,7 @@ from archivey.exceptions import (
     ReadError,
     ResourceUnavailableError,
 )
+from archivey.internal.overrides import override
 from archivey.internal.streams.child_process import (
     describe_exit,
     is_system_kill,
@@ -368,6 +369,7 @@ class ProcessOutputStream(DelegatingStream):
             terminate_process(proc)
             raise
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         data = super().read(n)
         self._bytes_read += len(data)
@@ -397,6 +399,7 @@ class ProcessOutputStream(DelegatingStream):
         self._exit_checked = True
         self._raise_for_returncode(self._proc.returncode)
 
+    @override
     def close(self) -> None:
         if self.closed:
             return

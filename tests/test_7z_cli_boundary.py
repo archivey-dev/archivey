@@ -84,7 +84,7 @@ _UNCONVERTED: dict[str, int] = {
     "fuzz_tar_parser.py": 2,
     "sample_archives.py": 2,
     "test_cli.py": 2,
-    "test_codecs.py": 4,
+    "test_codecs.py": 3,
     "test_extraction.py": 1,
     "test_iso_trailing_data.py": 1,
     "test_public_api.py": 1,

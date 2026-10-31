@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, BinaryIO
 
+from archivey.internal.overrides import override
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.internal.streams.streamtools.binaryio import (
@@ -55,11 +56,13 @@ class CountingReader(DelegatingStream):
     def bytes_read(self) -> int:
         return self._bytes_read
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         data = read_blocking(self._inner, n)
         self._bytes_read += len(data)
         return data
 
+    @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         n = try_readinto(self._inner, b)
         if n is None:
@@ -87,11 +90,13 @@ class OutputCountingStream(DelegatingStream):
         super().__init__(inner)
         self._counter = counter
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         data = read_blocking(self._inner, n)
         self._counter.add(len(data))
         return data
 
+    @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         n = try_readinto(self._inner, b)
         if n is None:
@@ -123,6 +128,7 @@ class SeekCountingStream(DelegatingStream):
         super().__init__(inner)
         self._counter = counter
 
+    @override
     def seek(self, offset: int, whence: int = 0, /) -> int:
         self._counter.record()
         return self._inner.seek(offset, whence)

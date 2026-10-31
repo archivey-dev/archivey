@@ -206,6 +206,12 @@ def _load_lz4_block() -> Callable[..., Any]:
     return lambda: block
 
 
+def _load_lzo() -> Callable[..., Any]:
+    # A module function, as for ``lz4.block``.
+    lzo = importlib.import_module("lzo")
+    return lambda: lzo
+
+
 def _load_brotli() -> Callable[..., Any]:
     return importlib.import_module("brotli").Decompressor
 
@@ -230,6 +236,7 @@ LOADERS: dict[str, Callable[[], Callable[..., Any]]] = {
     "lz4.frame": _load_lz4_frame,
     "lz4.block": _load_lz4_block,
     "brotli": _load_brotli,
+    "lzo": _load_lzo,
     "inflate64": _load_inflate64,
     "ppmd7": _load_ppmd7,
     "ppmd8": _load_ppmd8,

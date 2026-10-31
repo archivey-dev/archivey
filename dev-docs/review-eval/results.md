@@ -61,6 +61,44 @@ habits half-took: 1.04 calls per turn, 7 and 12 subagent calls in the two sets. 
 these cases it scored 2 of 5 at $33.56 (14 percent less); on the five pull requests
 15 of 20 important findings and 8 of 11 nits at $27.82, no saving.
 
+## 2026-10-30: what the reviewer reads, and a narrower `CONTRIBUTING.md` read (not kept)
+
+The runner now keeps each review's transcript and writes `reads.json`: the characters
+every file the Read tool (or a lone `sed`, `cat`, `head`, `tail` or `nl` command)
+returned, other tools' output by tool, and the token totals. Two Opus runs, judge
+`claude-sonnet-5-5`. The whole-file arm ran skill `2cc77b24651e`. The three-section arm
+ran from an edited tree (recorded as `2cc77b24651e-dirty`) whose §1 asked for
+§Tooling decisions, §Coding standards and §Testing standards of `CONTRIBUTING.md`
+instead of the whole file; that text is skill `748b61d70ac4` (commit `2439fb32`).
+
+| Case | PR | Whole file | Three sections |
+|---|---|---|---|
+| zstd-seek-point-in-frame | #934 | no | yes |
+| decoder-death-reraise-cycle | #904 | yes | yes |
+| rapidgzip-cut-raw-deflate | #545 | no | no |
+| rapidgzip-cut-gzip-member-then-complete | #613 | no | no |
+| pax-sparse-version-by-records | #738 | partial | partial |
+| **Score** | | **1.5 of 5** | **2.5 of 5** |
+| Cost (USD) | | 39.24 | 40.74 |
+| Turns, all cases | | 262 | 278 |
+| Guide characters read | | 472 724 | 433 138 |
+| `CONTRIBUTING.md` characters read | | 138 888 | 108 107 |
+
+The guides (the paths `GUIDES` in `scripts/review_eval.py` lists: the skill, its
+references, `CONTRIBUTING.md`, the agent guides, `dev-docs/` and `openspec/`) were 18
+to 40 percent of what a review's tools returned; the rest is Bash output (the largest
+single item in every case), source and grep. A file read inside a longer shell command
+counts under Bash, so the guide figures are lower bounds. Reading three sections cut
+the guide reading by under a tenth and `CONTRIBUTING.md` by about a fifth. The score
+changed by one case and the cost by 4 percent, both inside the run-to-run noise, so
+one run each shows no saving and no loss; it does not show that the trim leaves the
+review as good. Review then showed that most of the file carries review rules (gate,
+CI, release and spec-discrepancy ones outside the three sections); the part that
+holds them is 30 KB of the 43 KB, so a read that keeps them saves about 3 000 tokens,
+some 2 percent of a review's input once cached over its turns. The skill kept the
+whole-file read. The input a review pays for is mostly what it runs and reads in the
+code, at about 150 000 tokens of context per turn over 45 to 60 turns.
+
 ## 2026-10-29: Sonnet with the project installed, and at xhigh effort
 
 Two separate changes to the Sonnet review, two runs each: `--install` (the PR's own

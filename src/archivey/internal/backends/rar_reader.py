@@ -151,6 +151,7 @@ from archivey.internal.naming import (
     resolve_link_target_name,
 )
 from archivey.internal.open_site import OpenSite
+from archivey.internal.overrides import override
 from archivey.internal.password import (
     _PasswordCandidates,
     _PasswordCandidatesExhausted,
@@ -919,10 +920,12 @@ class _UnrarOwnedStream(ProcessOutputStream):
         self._saw_eof = False
         super().__init__(stdout, proc)
 
+    @override
     def _at_eof(self) -> None:
         self._saw_eof = True
         super()._at_eof()
 
+    @override
     def tell(self, /) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
@@ -930,6 +933,7 @@ class _UnrarOwnedStream(ProcessOutputStream):
         # read() (readinto_passthrough is off), so the count is the position.
         return self._bytes_read
 
+    @override
     def _raise_for_returncode(self, rc: int) -> None:
         """Map an unrar exit code to an archivey error, or return quietly."""
         # RARLAB unrar exit codes: 11 bad password, 3 CRC/corrupt data, 2 fatal
@@ -2562,6 +2566,7 @@ class RarReader(BaseArchiveReader):
                 with volume.open("rb") as src, dest.open("wb") as out:
                     budget.copy(src, out)
 
+    @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield from self._members
         if self._archive.truncated is not None:
@@ -3097,6 +3102,7 @@ class RarReader(BaseArchiveReader):
             return MemberType.OTHER
         return MemberType.FILE
 
+    @override
     def _iter_with_data(
         self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
     ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
@@ -3330,6 +3336,7 @@ class RarReader(BaseArchiveReader):
             cleanup=_cleanup,
         )
 
+    @override
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, EOFError):
             return TruncatedError("RAR solid stream ended before the requested member")
@@ -3760,6 +3767,7 @@ class RarReader(BaseArchiveReader):
             return self._shared.view(info.data_offset, 0)
         return JoinedViews(views)
 
+    @override
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         if member.type != MemberType.SYMLINK or member.link_target is not None:
             return
@@ -4066,6 +4074,7 @@ class RarReader(BaseArchiveReader):
             source_format=ArchiveFormat.RAR,
         )
 
+    @override
     def _solid_run(self, member: ArchiveMember) -> SolidRun | None:
         # Each open() of a solid member runs a fresh process. Through its include
         # mask, unrar decodes the archive from its first payload member. unar decodes
@@ -4265,6 +4274,7 @@ class RarReader(BaseArchiveReader):
             costs[id(member)] = peak
         return costs
 
+    @override
     def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         raw = member._raw
         assert isinstance(raw, RarMemberInfo)
@@ -4499,11 +4509,11 @@ class RarReader(BaseArchiveReader):
         self, member: ArchiveMember, raw: RarMemberInfo
     ) -> Callable[[str | None, bool], BinaryIO]:
         """:meth:`_unrar_spawner`, with the refusals about naming the member raised as
-        :class:`_UnrarCannotAddress`: a name ``unrar`` cannot be given, an include mask
-        that also matches earlier members (``rar_allow_glob_member_concatenation``), a
-        mask that does not select the member, an earlier name ``unrar`` reads
-        differently on this host, or a selection that depends on a dot rule the binary
-        did not report.
+        :class:`_UnrarCannotAddress`: a name ``unrar`` cannot be given, a name whose
+        mask also selects earlier members with data, glob or not
+        (``rar_allow_glob_member_concatenation``), a mask that does not select the
+        member, an earlier name ``unrar`` reads differently on this host, or a selection
+        that depends on a dot rule the binary did not report.
         """
         # unrar addresses the member by name (``path`` or ``path;n``) through a ``-n``
         # include mask (see open_unrar_p); a history row needs ``-ver``. The mask is
@@ -4537,11 +4547,7 @@ class RarReader(BaseArchiveReader):
         glob_prefix, shares_mask, dictionary_cost = self._unrar_selection(
             member, mask.mask_view, version_control=version_control
         )
-        if (
-            mask.is_glob
-            and glob_prefix
-            and not self._config.rar_allow_glob_member_concatenation
-        ):
+        if glob_prefix and not self._config.rar_allow_glob_member_concatenation:
             # unrar decompresses every earlier match before the target and emits
             # them concatenated. The skip below returns the right bytes, but the
             # decode has already happened and ExtractionLimits do not reach
@@ -4571,20 +4577,25 @@ class RarReader(BaseArchiveReader):
             # the mask itself. This bounds the payload, not the match.
             #
             # A mask with no glob that still selects earlier members (a duplicate
-            # name, or two names unrar reads the same way) is read by position
-            # without this refusal: its name is not an include mask.
+            # name, or two names unrar reads the same way) costs the same decode and
+            # is refused the same way (maintainer decision, 2026-10-29). Under AUTO
+            # both go to unar, which selects by index, when it can read the member.
             #
             # The predicate is deliberately `_unrar_selection`'s own answer and
             # not a second walk: which siblings match is decided by the mask
             # actually handed to unrar, which that function owns. Recomputing it
             # from the presented name here would refuse archives that read fine
             # under the mask unrar is given.
+            why = (
+                "is an include mask that also matches"
+                if mask.is_glob
+                else "also selects"
+            )
             if self._archive.is_solid:
                 message = (
                     f"Reading RAR member {quoted(member.name)} is refused: its "
-                    "name, as unrar is given it, is an include mask that also "
-                    "matches earlier members. Names like this are almost always "
-                    "constructed. Set "
+                    f"name, as unrar is given it, {why} earlier members. Names "
+                    "like this are almost always constructed. Set "
                     "ArchiveyConfig.rar_allow_glob_member_concatenation=True "
                     "to read it anyway."
                 )
@@ -4592,8 +4603,7 @@ class RarReader(BaseArchiveReader):
                 message = (
                     f"Reading RAR member {quoted(member.name)} would decompress "
                     f"{glob_prefix} bytes of earlier members first: its name, as "
-                    "unrar is given it, is an include mask that also matches them. "
-                    "Set "
+                    f"unrar is given it, {why} them. Set "
                     "ArchiveyConfig.rar_allow_glob_member_concatenation=True to "
                     "read it anyway."
                 )
@@ -4904,7 +4914,8 @@ class RarReader(BaseArchiveReader):
                 proc,
                 has_verifiable_digest=True,
                 empty_means_wrong_password=(
-                    self._archive_has_encryption and policy.solid_pass_emits_data()
+                    policy.solid_pass_needs_password()
+                    and policy.solid_pass_emits_data()
                 ),
             )
 
@@ -4932,6 +4943,7 @@ class RarReader(BaseArchiveReader):
 
         yield from self._drive_solid_pass(copies, _spawn, _plan)
 
+    @override
     def _get_archive_info(self) -> ArchiveInfo:
         is_solid = self._archive.is_solid
         cost = CostReceipt(
@@ -4966,6 +4978,7 @@ class RarReader(BaseArchiveReader):
             extra=info_extra,
         )
 
+    @override
     def _close_archive(self) -> None:
         with self._materialize_lock:
             self._shared.close()
@@ -5019,12 +5032,14 @@ class RarReadBackend(ReadBackend):
     OPTIONAL_DEPENDENCY = None
 
     @classmethod
+    @override
     def missing_programs(cls) -> tuple[MissingComponent, ...]:
         # Independent of ``rar_decompressor``: the query reads only the format policy
         # from a config, so it answers for the default ``AUTO``, which uses unrar when
         # one is usable.
         return rarlab_unrar_missing()
 
+    @override
     def open_read(
         self,
         source: ArchiveSource,

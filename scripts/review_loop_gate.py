@@ -495,7 +495,11 @@ def finish(event: dict) -> Finish:
     elif v.verdict == "clean":
         body = (
             f"**Round {rnd} found nothing to fix.**{summary}\n\n"
-            "This is ready for a person to look at and merge."
+            "An agent merges it once CI is green"
+            + (" and Cursor's review approves" if event.get("tier") == "deep" else "")
+            + ", unless the base branch's `review_prep.py tier` says the maintainer "
+            "merges this one or the review lists a maintainer decision "
+            "(`address-review-findings` §7)."
         )
     elif v.stop:
         # Not "the review approved it": this covers ✅ Approve, the conditional

@@ -63,7 +63,7 @@ See `openspec/schemas/library/README.md` and the `rules:` / `context:` blocks in
 | `error-handling` | The `ArchiveyError` hierarchy and error-translation contract |
 | `diagnostics` | Lifecycle-aware advisory data: stable codes, exact bounded summaries, reader/stream/format/member/extraction aggregates, policy/callback delivery, and typed escalation |
 | `logging` | The `archivey` logger hierarchy (cross-cutting; library never configures handlers) |
-| `format-zip` / `format-tar` / `format-single-file-compressors` / `format-7z` / `format-rar` / `format-iso` / `format-directory` | Per-format behavioral contracts |
+| `format-zip` / `format-tar` / `format-single-file-compressors` / `format-7z` / `format-rar` / `format-iso` / `format-ar` / `format-directory` | Per-format behavioral contracts |
 | `compressed-streams` | Uniform pull-based codec decompressor layer (single-file + 7z/ZIP container codecs + AES stage); format parsers compose it instead of calling codec libs |
 | `seekable-decompressor-streams` | Random access inside single compressed streams (builds on `compressed-streams`) |
 | `testing-contract` | Equivalence matrix, adversarial corpus, round-trip and non-seekable coverage |

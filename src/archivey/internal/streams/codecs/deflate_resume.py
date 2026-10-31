@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from typing import BinaryIO
 
 from archivey.exceptions import TruncatedError
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.base import RAW_DEFLATE_WBITS
 from archivey.internal.streams.codecs.isolated import (
     IN_PROCESS,
@@ -223,6 +224,7 @@ class DeflateResumeDecoder(BaseDecoder):
         return False
 
     @property
+    @override
     def needs_input(self) -> bool:
         return not self._decomp.unconsumed_tail
 

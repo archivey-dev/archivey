@@ -33,6 +33,7 @@ from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from typing import BinaryIO
 
+from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.internal.streams.streamtools.binaryio import (
     ask_resume_offset,
@@ -228,6 +229,7 @@ class SlicingStream(ReadOnlyIOStream):
             return min(n, max(remaining, 0))
         return n
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         self._raise_if_closed()
         # Two gather policies, and the difference matters (ADR 0014) — it is what a short
@@ -284,6 +286,7 @@ class SlicingStream(ReadOnlyIOStream):
             self._pos += len(data)
             return data
 
+    @override
     def tell(self, /) -> int:
         self._raise_if_closed()
         return self._pos
@@ -320,6 +323,7 @@ class SlicingStream(ReadOnlyIOStream):
             return None
         return max(0, inner - start)
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         self._raise_if_closed()
         if not self._seekable:
@@ -353,6 +357,7 @@ class SlicingStream(ReadOnlyIOStream):
             self._raise_if_closed()
             return self._stream.seek(0, io.SEEK_END) - self._start
 
+    @override
     def seekable(self) -> bool:
         return self._seekable
 
@@ -369,6 +374,7 @@ class SlicingStream(ReadOnlyIOStream):
             "independent_view requires a locked SharedSource view"
         )
 
+    @override
     def close(self) -> None:
         # Non-owning by default: mark this view closed only. With ``owns_inner`` the view
         # owns a private underlying stream and closes it too.
@@ -436,6 +442,7 @@ class SharedView(SlicingStream):
             probe_source_size=probe_source_size,
         )
 
+    @override
     def independent_view(self) -> SharedView:
         assert self._start is not None
         return SharedView(

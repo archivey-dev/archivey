@@ -136,6 +136,9 @@ one more one-pass format to test the interface, 2026-10-28).
       (`--format=darwin`); Windows long names, blank fields and damaged headers are
       built in the tests.
 - [x] 3a.3 The same import check, and a CI job.
+- [x] 3a.4 Moved into the library as a built-in format (the maintainer's choice,
+      2026-10-28): `src/archivey/internal/backends/ar_reader.py`, registered with
+      `register_builtin_format`. The package and its CI job are gone.
 
 ## 3b. SquashFS package
 
@@ -188,14 +191,13 @@ more indexed plugin, 2026-10-27).
 
 ## 5. Later: decoders that compound (maintainer, 2026-10-28)
 
-- [ ] 5.1 A public `register_codec()`, the decoder twin of `register_format()`: a codec
+- [x] 5.1 A public `register_codec()`, the decoder twin of `register_format()`: a codec
       registered once is read by `open_stream`, as a single-file archive, inside TAR and
       sequential plugin pairs, by the inner-container probe and by
       `ReaderContext.decompress`. The pair, extension and codec tables become
       computed on demand instead of at import.
-- [ ] 5.2 LZO as a built-in codec (the lzop stream and raw LZO1X as a member method),
-      python-lzo optional with the pure-Python decoder as the fallback, when SquashFS
-      becomes built-in.
+- [x] 5.2 LZO as a built-in codec (the lzop stream and raw LZO1X as a member method),
+      python-lzo optional with the pure-Python decoder as the fallback.
 
 ## 6. Names
 

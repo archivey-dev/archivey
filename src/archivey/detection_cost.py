@@ -73,11 +73,12 @@ class DetectionBudget:
     a window of about 32 KiB that a 4 KiB prefix budget would forbid."""
 
     max_scan_bytes: int
-    """How far into the source the scan for an archive behind a prefix (an SFX stub)
-    looks for a signature. A candidate found there is judged on its whole header, which
-    may extend past the window by up to 132 KiB or ``max_scan_bytes``, whichever is
-    smaller; a header that does not fit is rejected, and ``sfx_scan`` recorded as cut
-    short."""
+    """How far into the source the scan for an archive behind a prefix looks for a
+    signature: behind an SFX stub or launcher, and, as detection's last step, behind
+    leading bytes of any kind. Zero turns both off. A candidate found there is judged
+    on its whole header, which may extend past the window by up to 132 KiB or
+    ``max_scan_bytes``, whichever is smaller; a header that does not fit is rejected,
+    and ``sfx_scan`` recorded as cut short."""
 
     max_decode_input: int
     """Compressed bytes decoding may consume, one allowance for the whole call, shared
