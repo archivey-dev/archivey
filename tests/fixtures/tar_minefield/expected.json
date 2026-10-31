@@ -1,0 +1,2608 @@
+{
+ "tar_minefield": "104b4bab12d707239e0dda1d8d32cb7757fd7ed3",
+ "cases": {
+  "F01-number-leading-space": {
+   "id": "F01",
+   "verdict": "tolerate",
+   "passes_with": [
+    "expected",
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "expected",
+    "tree": "bf073b7a9ab7edc4"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "expected",
+    "tree": "bf073b7a9ab7edc4",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "expected",
+    "tree": "bf073b7a9ab7edc4",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "expected",
+    "tree": "bf073b7a9ab7edc4",
+    "gnu_tree": true
+   }
+  },
+  "F02-end-data-after": {
+   "id": "F02",
+   "verdict": "tolerate",
+   "passes_with": [
+    "expected",
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61"
+   },
+   "tar_codec": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61"
+   },
+   "codes": [
+    "archive_trailing_data"
+   ],
+   "trusted": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": false
+   }
+  },
+  "F03-end-lone-zero-block": {
+   "id": "F03",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61"
+   },
+   "codes": [
+    "archive_eof_marker_missing"
+   ],
+   "trusted": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": false
+   }
+  },
+  "F04-end-missing": {
+   "id": "F04",
+   "verdict": "tolerate",
+   "passes_with": [
+    "expected",
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61"
+   },
+   "codes": [
+    "archive_eof_marker_missing"
+   ],
+   "trusted": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": false
+   }
+  },
+  "F05-magic-version-nuls": {
+   "id": "F05",
+   "verdict": "tolerate",
+   "passes_with": [
+    "expected",
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   }
+  },
+  "F06-checksum-signed": {
+   "id": "F06",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   }
+  },
+  "F07-end-archive-after": {
+   "id": "F07",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61"
+   },
+   "tar_codec": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61"
+   },
+   "codes": [
+    "archive_trailing_data"
+   ],
+   "trusted": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": false
+   }
+  },
+  "F08-end-truncated-in-member": {
+   "id": "F08",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "rejected",
+    "tree": "48d97ea803994ba2"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "error: TruncatedError"
+   ],
+   "trusted": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "F09-end-zero-block-then-member": {
+   "id": "F09",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61"
+   },
+   "codes": [
+    "archive_eof_marker_missing",
+    "archive_trailing_data"
+   ],
+   "trusted": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": false
+   }
+  },
+  "F10-extended-pax-size-before-gnu-long": {
+   "id": "F10",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "81ef13fb44f466c4"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "member_header_ambiguous"
+   ],
+   "trusted": {
+    "outcome": "other",
+    "tree": "81ef13fb44f466c4",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "81ef13fb44f466c4",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "F11-magic-odd-version": {
+   "id": "F11",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   }
+  },
+  "F12-number-size-gap": {
+   "id": "F12",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "04611c107823da44"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "member_header_ambiguous"
+   ],
+   "trusted": {
+    "outcome": "other",
+    "tree": "04611c107823da44",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "04611c107823da44",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "F13-pax-newline-in-path": {
+   "id": "F13",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "0c3412c95e921b48"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "other",
+    "tree": "0c3412c95e921b48",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "7ace3fe773df46f4",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "other",
+    "tree": "7ace3fe773df46f4",
+    "gnu_tree": false
+   }
+  },
+  "F14-pax-size-disagrees": {
+   "id": "F14",
+   "verdict": "tolerate",
+   "passes_with": [
+    "expected",
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "expected",
+    "tree": "04611c107823da44"
+   },
+   "tar_codec": {
+    "outcome": "expected",
+    "tree": "04611c107823da44"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "expected",
+    "tree": "04611c107823da44",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "expected",
+    "tree": "04611c107823da44",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "expected",
+    "tree": "04611c107823da44",
+    "gnu_tree": true
+   }
+  },
+  "F15-pax-size-on-dir": {
+   "id": "F15",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "5c36dd2995967e53"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "member_directory_data_ignored"
+   ],
+   "trusted": {
+    "outcome": "other",
+    "tree": "2af5d96f9fbf41e4",
+    "gnu_tree": false
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "2af5d96f9fbf41e4",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "F16-type-unknown": {
+   "id": "F16",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "15e78f0a85c2ab8b"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "member_type_unknown"
+   ],
+   "trusted": {
+    "outcome": "other",
+    "tree": "15e78f0a85c2ab8b",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "15e78f0a85c2ab8b",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "other",
+    "tree": "15e78f0a85c2ab8b",
+    "gnu_tree": true
+   }
+  },
+  "F17-pax-global-comment": {
+   "id": "F17",
+   "verdict": "accept",
+   "passes_with": [
+    "expected"
+   ],
+   "gnu": {
+    "outcome": "expected",
+    "tree": "589ba0b3e435fecc"
+   },
+   "tar_codec": {
+    "outcome": "expected",
+    "tree": "589ba0b3e435fecc"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "expected",
+    "tree": "589ba0b3e435fecc",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "expected",
+    "tree": "589ba0b3e435fecc",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "expected",
+    "tree": "589ba0b3e435fecc",
+    "gnu_tree": true
+   }
+  },
+  "F18-pax-global-comment-after-members": {
+   "id": "F18",
+   "verdict": "tolerate",
+   "passes_with": [
+    "expected",
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "expected",
+    "tree": "489ebf9eb6726cf0"
+   },
+   "tar_codec": {
+    "outcome": "expected",
+    "tree": "489ebf9eb6726cf0"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "expected",
+    "tree": "489ebf9eb6726cf0",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "expected",
+    "tree": "489ebf9eb6726cf0",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "expected",
+    "tree": "489ebf9eb6726cf0",
+    "gnu_tree": true
+   }
+  },
+  "F19-pax-global-between-extended-and-member": {
+   "id": "F19",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "0b211654f7958127"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "member_header_ambiguous"
+   ],
+   "trusted": {
+    "outcome": "other",
+    "tree": "0b211654f7958127",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "0b211654f7958127",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "F20-pax-global-size": {
+   "id": "F20",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "604c6f06082fcc67"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "member_header_ambiguous"
+   ],
+   "trusted": {
+    "outcome": "other",
+    "tree": "604c6f06082fcc67",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "604c6f06082fcc67",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "F21-pax-size-empty": {
+   "id": "F21",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "rejected",
+    "tree": "604c6f06082fcc67"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "error: CorruptionError"
+   ],
+   "trusted": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "F22-pax-size-negative": {
+   "id": "F22",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "rejected",
+    "tree": "04611c107823da44"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "error: CorruptionError"
+   ],
+   "trusted": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "F23-pax-size-plus": {
+   "id": "F23",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "rejected",
+    "tree": "04611c107823da44"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "error: CorruptionError"
+   ],
+   "trusted": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "F24-pax-size-leading-space": {
+   "id": "F24",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "rejected",
+    "tree": "04611c107823da44"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "error: CorruptionError"
+   ],
+   "trusted": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "F25-pax-size-not-ascii-digits": {
+   "id": "F25",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "rejected",
+    "tree": "04611c107823da44"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "error: CorruptionError"
+   ],
+   "trusted": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "F26-pax-size-leading-zero": {
+   "id": "F26",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "1c1df89e7d8fb6c7"
+   },
+   "tar_codec": {
+    "outcome": "other",
+    "tree": "1c1df89e7d8fb6c7"
+   },
+   "codes": [
+    "member_header_ambiguous"
+   ],
+   "trusted": {
+    "outcome": "other",
+    "tree": "1c1df89e7d8fb6c7",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "1c1df89e7d8fb6c7",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "F27-pax-size-too-large": {
+   "id": "F27",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "rejected",
+    "tree": "04611c107823da44"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "error: CorruptionError"
+   ],
+   "trusted": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "F28-pax-newline-in-comment": {
+   "id": "F28",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "04611c107823da44"
+   },
+   "tar_codec": {
+    "outcome": "other",
+    "tree": "04611c107823da44"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "other",
+    "tree": "04611c107823da44",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "04611c107823da44",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "other",
+    "tree": "04611c107823da44",
+    "gnu_tree": true
+   }
+  },
+  "F29-number-size-base256-negative": {
+   "id": "F29",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "rejected",
+    "tree": "78c23b43fb23ed95"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "error: CorruptionError"
+   ],
+   "trusted": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "F30-number-size-base256-too-large": {
+   "id": "F30",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "rejected",
+    "tree": "78c23b43fb23ed95"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "error: CorruptionError"
+   ],
+   "trusted": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "F31-pax-xattr-not-utf8": {
+   "id": "F31",
+   "verdict": "accept",
+   "passes_with": [
+    "expected"
+   ],
+   "gnu": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61"
+   },
+   "tar_codec": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   }
+  },
+  "F32-checksum-leading-space": {
+   "id": "F32",
+   "verdict": "tolerate",
+   "passes_with": [
+    "expected",
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "expected",
+    "tree": "84eef239717c849f"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "expected",
+    "tree": "84eef239717c849f",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "expected",
+    "tree": "84eef239717c849f",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "expected",
+    "tree": "84eef239717c849f",
+    "gnu_tree": true
+   }
+  },
+  "F33-size-on-dir": {
+   "id": "F33",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "5c36dd2995967e53"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "member_header_ambiguous"
+   ],
+   "trusted": {
+    "outcome": "other",
+    "tree": "5c36dd2995967e53",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "5c36dd2995967e53",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "F34-size-on-hardlink": {
+   "id": "F34",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "86e9496900f0cee2"
+   },
+   "tar_codec": {
+    "outcome": "other",
+    "tree": "e23d42fcf8c5ff2a"
+   },
+   "codes": [
+    "member_header_ambiguous"
+   ],
+   "trusted": {
+    "outcome": "other",
+    "tree": "86e9496900f0cee2",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "86e9496900f0cee2",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": false
+   }
+  },
+  "F35-pax-size-on-hardlink": {
+   "id": "F35",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "86e9496900f0cee2"
+   },
+   "tar_codec": {
+    "outcome": "other",
+    "tree": "e23d42fcf8c5ff2a"
+   },
+   "codes": [
+    "member_link_data_ignored"
+   ],
+   "trusted": {
+    "outcome": "other",
+    "tree": "243ac93737631d3e",
+    "gnu_tree": false
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "243ac93737631d3e",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": false
+   }
+  },
+  "F36-pax-record-length-short": {
+   "id": "F36",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "rejected",
+    "tree": "fa7487b64f8887db"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "error: CorruptionError"
+   ],
+   "trusted": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "F37-number-size-not-octal": {
+   "id": "F37",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "rejected",
+    "tree": "78c23b43fb23ed95"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "error: CorruptionError"
+   ],
+   "trusted": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "K01-kind-trailing-slash-file": {
+   "id": "K01",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "e6df658443a9a7d3"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "other",
+    "tree": "e6df658443a9a7d3",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "e6df658443a9a7d3",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "other",
+    "tree": "e6df658443a9a7d3",
+    "gnu_tree": true
+   }
+  },
+  "K02-linkname-on-file": {
+   "id": "K02",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "8ce6e36c9afbf8d4"
+   },
+   "tar_codec": {
+    "outcome": "other",
+    "tree": "8ce6e36c9afbf8d4"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "other",
+    "tree": "8ce6e36c9afbf8d4",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "8ce6e36c9afbf8d4",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "other",
+    "tree": "8ce6e36c9afbf8d4",
+    "gnu_tree": true
+   }
+  },
+  "K03-symlink-trailing-slash": {
+   "id": "K03",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "259e23a23c09490e"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "635b45a2b55b6a50"
+   },
+   "codes": [
+    "member_name_normalized"
+   ],
+   "trusted": {
+    "outcome": "other",
+    "tree": "259e23a23c09490e",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "259e23a23c09490e",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "635b45a2b55b6a50",
+    "gnu_tree": false
+   }
+  },
+  "N01-gnu-long-name": {
+   "id": "N01",
+   "verdict": "accept",
+   "passes_with": [
+    "expected"
+   ],
+   "gnu": {
+    "outcome": "expected",
+    "tree": "801166cfb9a22b6e"
+   },
+   "tar_codec": {
+    "outcome": "expected",
+    "tree": "801166cfb9a22b6e"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "expected",
+    "tree": "801166cfb9a22b6e",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "expected",
+    "tree": "801166cfb9a22b6e",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "expected",
+    "tree": "801166cfb9a22b6e",
+    "gnu_tree": true
+   }
+  },
+  "N02-name-fills-field": {
+   "id": "N02",
+   "verdict": "accept",
+   "passes_with": [
+    "expected"
+   ],
+   "gnu": {
+    "outcome": "expected",
+    "tree": "fb88a5262ecadb95"
+   },
+   "tar_codec": {
+    "outcome": "expected",
+    "tree": "fb88a5262ecadb95"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "expected",
+    "tree": "fb88a5262ecadb95",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "expected",
+    "tree": "fb88a5262ecadb95",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "expected",
+    "tree": "fb88a5262ecadb95",
+    "gnu_tree": true
+   }
+  },
+  "N03-pax-long-name": {
+   "id": "N03",
+   "verdict": "accept",
+   "passes_with": [
+    "expected"
+   ],
+   "gnu": {
+    "outcome": "expected",
+    "tree": "801166cfb9a22b6e"
+   },
+   "tar_codec": {
+    "outcome": "expected",
+    "tree": "801166cfb9a22b6e"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "expected",
+    "tree": "801166cfb9a22b6e",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "expected",
+    "tree": "801166cfb9a22b6e",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "expected",
+    "tree": "801166cfb9a22b6e",
+    "gnu_tree": true
+   }
+  },
+  "N04-ustar-prefix": {
+   "id": "N04",
+   "verdict": "accept",
+   "passes_with": [
+    "expected"
+   ],
+   "gnu": {
+    "outcome": "expected",
+    "tree": "38d440b55d035625"
+   },
+   "tar_codec": {
+    "outcome": "expected",
+    "tree": "38d440b55d035625"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "expected",
+    "tree": "38d440b55d035625",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "expected",
+    "tree": "38d440b55d035625",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "expected",
+    "tree": "38d440b55d035625",
+    "gnu_tree": true
+   }
+  },
+  "N05-name-dot": {
+   "id": "N05",
+   "verdict": "tolerate",
+   "passes_with": [
+    "expected",
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61"
+   },
+   "tar_codec": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   }
+  },
+  "N06-name-leading-dot-slash": {
+   "id": "N06",
+   "verdict": "tolerate",
+   "passes_with": [
+    "expected",
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61"
+   },
+   "tar_codec": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61"
+   },
+   "codes": [
+    "member_name_normalized"
+   ],
+   "trusted": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "expected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "N07-symlink-absolute": {
+   "id": "N07",
+   "verdict": "tolerate",
+   "passes_with": [
+    "expected",
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "expected",
+    "tree": "041d7f2b57d2069e"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "N08-extended-pax-path-and-gnu-long-name": {
+   "id": "N08",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "0b211654f7958127"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "member_header_ambiguous"
+   ],
+   "trusted": {
+    "outcome": "other",
+    "tree": "0b211654f7958127",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "0b211654f7958127",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "N09-extended-two-pax-headers": {
+   "id": "N09",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "8f56790e970e636a"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "member_header_ambiguous"
+   ],
+   "trusted": {
+    "outcome": "other",
+    "tree": "8f56790e970e636a",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "8f56790e970e636a",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "N10-format-star": {
+   "id": "N10",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "dd27f332bd4342ce"
+   },
+   "tar_codec": {
+    "outcome": "other",
+    "tree": "dd27f332bd4342ce"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "other",
+    "tree": "dd27f332bd4342ce",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "977170ae9aa1a103",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "other",
+    "tree": "977170ae9aa1a103",
+    "gnu_tree": false
+   }
+  },
+  "N11-gnu-prefix-field": {
+   "id": "N11",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61"
+   },
+   "tar_codec": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   }
+  },
+  "N12-name-absolute": {
+   "id": "N12",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "98885fb055595cba"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "other",
+    "tree": "98885fb055595cba",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "N13-name-backslash": {
+   "id": "N13",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "57a639ceea372de5"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "other",
+    "tree": "57a639ceea372de5",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "5abeb1d352d228ad",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "other",
+    "tree": "5abeb1d352d228ad",
+    "gnu_tree": false
+   }
+  },
+  "N14-name-bytes-after-nul": {
+   "id": "N14",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "4ad582a97301fabf"
+   },
+   "tar_codec": {
+    "outcome": "other",
+    "tree": "4ad582a97301fabf"
+   },
+   "codes": [
+    "member_header_ambiguous"
+   ],
+   "trusted": {
+    "outcome": "other",
+    "tree": "4ad582a97301fabf",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "4ad582a97301fabf",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "N15-name-control-character": {
+   "id": "N15",
+   "verdict": "tolerate",
+   "passes_with": [
+    "expected",
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "expected",
+    "tree": "7b883ef927f8ca5d"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "expected",
+    "tree": "7b883ef927f8ca5d",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "3f80821e3b3e0766",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "other",
+    "tree": "3f80821e3b3e0766",
+    "gnu_tree": false
+   }
+  },
+  "N16-name-dotdot": {
+   "id": "N16",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "N17-name-empty": {
+   "id": "N17",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "member_name_normalized"
+   ],
+   "trusted": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "N18-name-not-utf8": {
+   "id": "N18",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "6d28dd191238e6f0"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "other",
+    "tree": "6d28dd191238e6f0",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "c6072bd52e96c97c",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "other",
+    "tree": "c6072bd52e96c97c",
+    "gnu_tree": false
+   }
+  },
+  "N19-pax-nul-in-path": {
+   "id": "N19",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "ee79d5c11196819c"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "member_header_ambiguous"
+   ],
+   "trusted": {
+    "outcome": "other",
+    "tree": "ee79d5c11196819c",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "ee79d5c11196819c",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "N20-pax-repeated-key": {
+   "id": "N20",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "8f56790e970e636a"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "member_header_ambiguous"
+   ],
+   "trusted": {
+    "outcome": "other",
+    "tree": "8f56790e970e636a",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "8f56790e970e636a",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "N21-pax-global-path": {
+   "id": "N21",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "96b91d95cc15c677"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "member_header_ambiguous"
+   ],
+   "trusted": {
+    "outcome": "other",
+    "tree": "96b91d95cc15c677",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "96b91d95cc15c677",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "N22-pax-path-empty": {
+   "id": "N22",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "fa7487b64f8887db"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "member_header_ambiguous"
+   ],
+   "trusted": {
+    "outcome": "other",
+    "tree": "fa7487b64f8887db",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "fa7487b64f8887db",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "N23-extended-gnu-long-then-pax": {
+   "id": "N23",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "86959ae36926f5d8"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "member_header_ambiguous"
+   ],
+   "trusted": {
+    "outcome": "other",
+    "tree": "86959ae36926f5d8",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "86959ae36926f5d8",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "N24-pax-hdrcharset-binary": {
+   "id": "N24",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "7647e873d0a8c304"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "other",
+    "tree": "7647e873d0a8c304",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "108ef915c6adf3bd",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "other",
+    "tree": "108ef915c6adf3bd",
+    "gnu_tree": false
+   }
+  },
+  "N25-symlink-empty-target": {
+   "id": "N25",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "symlink_target_unavailable"
+   ],
+   "trusted": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "N26-pax-global-path-then-empty": {
+   "id": "N26",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "4b662558548e1770"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [
+    "member_header_ambiguous"
+   ],
+   "trusted": {
+    "outcome": "other",
+    "tree": "4b662558548e1770",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "4b662558548e1770",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "N27-pax-long-symlink": {
+   "id": "N27",
+   "verdict": "accept",
+   "passes_with": [
+    "expected"
+   ],
+   "gnu": {
+    "outcome": "expected",
+    "tree": "7077d9088bad58af"
+   },
+   "tar_codec": {
+    "outcome": "expected",
+    "tree": "7077d9088bad58af"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "expected",
+    "tree": "7077d9088bad58af",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "expected",
+    "tree": "7077d9088bad58af",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "expected",
+    "tree": "7077d9088bad58af",
+    "gnu_tree": true
+   }
+  },
+  "N28-pax-long-hardlink": {
+   "id": "N28",
+   "verdict": "accept",
+   "passes_with": [
+    "expected"
+   ],
+   "gnu": {
+    "outcome": "expected",
+    "tree": "9f2abf5c3d3db9e8"
+   },
+   "tar_codec": {
+    "outcome": "expected",
+    "tree": "9f2abf5c3d3db9e8"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "expected",
+    "tree": "9f2abf5c3d3db9e8",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "expected",
+    "tree": "9f2abf5c3d3db9e8",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "expected",
+    "tree": "9f2abf5c3d3db9e8",
+    "gnu_tree": true
+   }
+  },
+  "S01-tree-dir-after-contents": {
+   "id": "S01",
+   "verdict": "accept",
+   "passes_with": [
+    "expected"
+   ],
+   "gnu": {
+    "outcome": "expected",
+    "tree": "99be968445db001c"
+   },
+   "tar_codec": {
+    "outcome": "expected",
+    "tree": "99be968445db001c"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "expected",
+    "tree": "99be968445db001c",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "expected",
+    "tree": "99be968445db001c",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "expected",
+    "tree": "99be968445db001c",
+    "gnu_tree": true
+   }
+  },
+  "S02-tree-duplicate-dir": {
+   "id": "S02",
+   "verdict": "accept",
+   "passes_with": [
+    "expected"
+   ],
+   "gnu": {
+    "outcome": "expected",
+    "tree": "ce2c338b4d6c1165"
+   },
+   "tar_codec": {
+    "outcome": "expected",
+    "tree": "ce2c338b4d6c1165"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "expected",
+    "tree": "ce2c338b4d6c1165",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "expected",
+    "tree": "ce2c338b4d6c1165",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "expected",
+    "tree": "ce2c338b4d6c1165",
+    "gnu_tree": true
+   }
+  },
+  "S03-hardlink-missing-target": {
+   "id": "S03",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "S04-hardlink-to-itself": {
+   "id": "S04",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "other",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": true
+   }
+  },
+  "S05-hardlink-to-later-member": {
+   "id": "S05",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "rejected",
+    "tree": "cf6164c9ab34add1"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a",
+    "gnu_tree": false
+   }
+  },
+  "S06-hardlink-to-symlink": {
+   "id": "S06",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "d1517a9789f09e2b"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "cf6164c9ab34add1"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "other",
+    "tree": "d1517a9789f09e2b",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "d1517a9789f09e2b",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "other",
+    "tree": "d1517a9789f09e2b",
+    "gnu_tree": true
+   }
+  },
+  "S07-tree-duplicate-file-differs": {
+   "id": "S07",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "1cf4351d5d7aac03"
+   },
+   "tar_codec": {
+    "outcome": "other",
+    "tree": "1cf4351d5d7aac03"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "other",
+    "tree": "1cf4351d5d7aac03",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "1cf4351d5d7aac03",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "other",
+    "tree": "1cf4351d5d7aac03",
+    "gnu_tree": true
+   }
+  },
+  "S08-tree-duplicate-file-dir": {
+   "id": "S08",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "e6df658443a9a7d3"
+   },
+   "tar_codec": {
+    "outcome": "other",
+    "tree": "e6df658443a9a7d3"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "other",
+    "tree": "e6df658443a9a7d3",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "e6df658443a9a7d3",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "635efa60de524573",
+    "gnu_tree": false
+   }
+  },
+  "S09-tree-duplicate-file-identical": {
+   "id": "S09",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "c9ea737f243cd08d"
+   },
+   "tar_codec": {
+    "outcome": "other",
+    "tree": "c9ea737f243cd08d"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "other",
+    "tree": "c9ea737f243cd08d",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "c9ea737f243cd08d",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "other",
+    "tree": "c9ea737f243cd08d",
+    "gnu_tree": true
+   }
+  },
+  "S10-tree-symlink-then-file": {
+   "id": "S10",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "other",
+    "tree": "3e140f31efe90819"
+   },
+   "tar_codec": {
+    "outcome": "other",
+    "tree": "3e140f31efe90819"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "other",
+    "tree": "3e140f31efe90819",
+    "gnu_tree": true
+   },
+   "strict": {
+    "outcome": "other",
+    "tree": "3e140f31efe90819",
+    "gnu_tree": true
+   },
+   "strict_diag": {
+    "outcome": "other",
+    "tree": "3e140f31efe90819",
+    "gnu_tree": true
+   }
+  },
+  "S11-tree-through-symlink": {
+   "id": "S11",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "rejected",
+    "tree": "60c17c314d4f952c"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "44136fa355b3678a"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "rejected",
+    "tree": "5488ad32f700cdd7",
+    "gnu_tree": false
+   },
+   "strict": {
+    "outcome": "rejected",
+    "tree": "5488ad32f700cdd7",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "5488ad32f700cdd7",
+    "gnu_tree": false
+   }
+  },
+  "S12-tree-under-file": {
+   "id": "S12",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "rejected",
+    "tree": "6eb5e0d4dc2a6073"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "6eb5e0d4dc2a6073"
+   },
+   "codes": [],
+   "trusted": {
+    "outcome": "rejected",
+    "tree": "6eb5e0d4dc2a6073",
+    "gnu_tree": false
+   },
+   "strict": {
+    "outcome": "rejected",
+    "tree": "6eb5e0d4dc2a6073",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "6eb5e0d4dc2a6073",
+    "gnu_tree": false
+   }
+  },
+  "S13-hardlink-empty-target": {
+   "id": "S13",
+   "verdict": "reject",
+   "passes_with": [
+    "rejected"
+   ],
+   "gnu": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61"
+   },
+   "tar_codec": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61"
+   },
+   "codes": [
+    "symlink_target_unavailable"
+   ],
+   "trusted": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": false
+   },
+   "strict": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": false
+   },
+   "strict_diag": {
+    "outcome": "rejected",
+    "tree": "2da7ede53362bf61",
+    "gnu_tree": false
+   }
+  }
+ }
+}
