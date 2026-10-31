@@ -384,6 +384,31 @@ def normalize_member_name(
     return name
 
 
+def _only_dot_prefix_dropped(presented_name: str, member: ArchiveMember) -> bool:
+    """Whether normalization only dropped a leading ``./`` (and, for a directory, added
+    the trailing ``/``): what ``tar czf a.tar.gz .`` writes for every member, with the
+    bare ``./`` root among them.
+
+    Every reader strips the prefix the same way, so the report would only make a
+    strict policy refuse ordinary archives (maintainer ruling 2026-10-31). A ``//``,
+    a ``/./`` inside the name or a trailing ``/`` on a link is still reported.
+    """
+    rest = presented_name
+    while rest.startswith("./"):
+        rest = rest[2:]
+    if rest == presented_name:
+        return False
+    if rest in ("", ".") or member.name == ".":
+        return member.name == "." and rest in ("", ".")
+    if member.name == rest:
+        return True
+    return (
+        member.type is MemberType.DIRECTORY
+        and member.name == rest + "/"
+        and not rest.endswith("/")
+    )
+
+
 def emit_member_name_normalized(
     collector: DiagnosticCollector,
     *,
@@ -431,6 +456,8 @@ def emit_member_name_normalized(
         and presented_name == member.name + "/"
         and not member.name.endswith("/")
     ):
+        return
+    if _only_dot_prefix_dropped(presented_name, member):
         return
     collector.emit(
         code=DiagnosticCode.MEMBER_NAME_NORMALIZED,
