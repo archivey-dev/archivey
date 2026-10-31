@@ -57,7 +57,7 @@ on:
 # (the `scope` job). Every job below runs on pull requests unless it says otherwise. On
 # a pull request: lint, the `test` legs (Linux 3.11 and 3.14 [all], Linux 3.11
 # core-only, Windows 3.14 [all]), free-threaded 3.13t, the structural benchmark and the
-# three plugin jobs. Only past it: the `test-queue` legs (the other Pythons, 3.14
+# SquashFS plugin job. Only past it: the `test-queue` legs (the other Pythons, 3.14
 # core-only, the minimum versions, macOS, Windows 3.11), 3.15t, the distribution unar
 # packages, PyPy and the short Atheris fuzz. A failure there takes the pull request out
 # of the queue. The split exists because the organization's runners are shared (20 jobs
