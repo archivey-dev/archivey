@@ -777,6 +777,8 @@ jobs:
     ],
 )
 def test_quiet_workflow(text: str | None, quiet: bool) -> None:
+    if quiet:
+        pytest.importorskip("yaml")  # without it nothing is quiet (the test below)
     assert prep.quiet_workflow(text) is quiet
 
 
@@ -788,6 +790,7 @@ def test_without_pyyaml_no_workflow_is_quiet(monkeypatch) -> None:
 def test_a_quiet_workflow_is_standard_and_keeps_the_security_pass(
     tmp_path: Path, monkeypatch
 ) -> None:
+    pytest.importorskip("yaml")
     _git(tmp_path, "init", "-q", "-b", "main")
     _write(tmp_path, {"README.md": "x\n", ".github/workflows/ci.yml": "on: push\n"})
     _git(tmp_path, "add", "-A")
