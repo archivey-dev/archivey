@@ -41,6 +41,7 @@ class archivey.ArchiveFormat()
 init archivey.ArchiveFormat(container: ContainerFormat | PluginContainer, stream: StreamFormat | PluginStream) -> None
 field archivey.ArchiveFormat.container: ContainerFormat | PluginContainer
 field archivey.ArchiveFormat.stream: StreamFormat | PluginStream
+attribute archivey.ArchiveFormat.AR = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.BROTLI = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.BZ2 = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.DIRECTORY = ArchiveFormat(...)
@@ -213,6 +214,7 @@ value archivey.ContainerFormat.TAR = 'tar'
 value archivey.ContainerFormat.RAR = 'rar'
 value archivey.ContainerFormat.SEVEN_Z = '7z'
 value archivey.ContainerFormat.ISO = 'iso'
+value archivey.ContainerFormat.AR = 'ar'
 value archivey.ContainerFormat.DMG = 'dmg'
 value archivey.ContainerFormat.DIRECTORY = 'directory'
 value archivey.ContainerFormat.RAW_STREAM = 'raw_stream'

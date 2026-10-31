@@ -80,8 +80,23 @@ def _archive_format_spellings() -> dict[str, ArchiveFormat]:
 
 
 # Spellings of plugin formats (``archivey.formats.register_format``), looked up after
-# the built-in table, so a plugin never changes what a built-in spelling means.
+# the built-in table, so a plugin never changes what a built-in spelling means. A
+# built-in format read in one pass puts its compressed pairs here too (``ar.gz``): they
+# have no named constant, so the built-in table cannot spell them.
 _plugin_spellings: dict[str, ArchiveFormat] = {}
+
+# The built-in containers read in one forward pass, so also inside any single-file
+# compression stream. ``register_builtin_format`` adds each sequential format-API
+# container. ``cli/common.py`` keeps a copy of the rule that uses this, and
+# ``tests/test_cli_outer.py`` pins the copy to it.
+SEQUENTIAL_CONTAINERS: set[ContainerFormat] = {ContainerFormat.TAR}
+
+# The built-in containers whose compressed pairs are spelled as a plugin's (``ar.gz``),
+# because they have no named constant. TAR is not one: its pairs are named constants,
+# and the three without one (``(TAR, LZIP)`` and the rest) are unspelled on purpose.
+# ``register_builtin_format`` adds each; ``register_codec`` spells a later codec's
+# pair for them too.
+PAIR_SPELLED_CONTAINERS: set[ContainerFormat] = set()
 
 
 def _plugin_format_spellings(fmt: ArchiveFormat) -> tuple[str, str]:
@@ -101,6 +116,11 @@ def plugin_spelling_clash(fmt: ArchiveFormat) -> tuple[str, ArchiveFormat] | Non
         if owner is not None:
             return spelling, owner
     return None
+
+
+def add_sequential_container(container: ContainerFormat) -> None:
+    """Read ``container`` inside a compression layer too (``open_stream`` peels it)."""
+    SEQUENTIAL_CONTAINERS.add(container)
 
 
 def add_plugin_spellings(fmt: ArchiveFormat) -> None:
@@ -138,19 +158,20 @@ def outer_stream_format(fmt: ArchiveFormat) -> StreamFormat | PluginStream | Non
 
     A raw stream is its codec. A compressed tar is a tar inside a single-file
     compressed stream, and the pair's stream half is that outer codec (detection
-    builds the pair from it): ``open_stream`` peels that layer only and returns the tar
-    bytes, as ``gzip.open`` does for a ``.tar.gz``. A sequential plugin's compressed
-    pair (``.cpio.gz``) is the same. One rule for an explicit
-    ``format=``, a detected format and the accepted-spellings message, so the three
-    cannot disagree. Every other container, an uncompressed tar included, has no
-    compression layer to remove. ``(RAW_STREAM, UNCOMPRESSED)`` comes back as
-    ``UNCOMPRESSED``, which ``open_stream`` does not decode: it refuses it at the open,
-    where the message that names ``open_archive`` belongs.
+    builds the pair from it): ``open_stream`` peels that layer only and returns the
+    tar bytes, as ``gzip.open`` does for a ``.tar.gz``. The compressed pair of every
+    other container read in one pass (``.a.gz``, a sequential plugin's ``.cpio.gz``)
+    is the same. One rule for an explicit ``format=``, a detected format and the
+    accepted-spellings message, so the three cannot disagree. Every other container,
+    an uncompressed tar included, has no compression layer to remove.
+    ``(RAW_STREAM, UNCOMPRESSED)`` comes back as ``UNCOMPRESSED``, which ``open_stream``
+    does not decode: it refuses it at the open, where the message that names
+    ``open_archive`` belongs.
     """
     if fmt.container is ContainerFormat.RAW_STREAM:
         return fmt.stream
     if (
-        fmt.container is ContainerFormat.TAR
+        fmt.container in SEQUENTIAL_CONTAINERS
         or isinstance(fmt.container, PluginContainer)
     ) and fmt.stream is not StreamFormat.UNCOMPRESSED:
         return fmt.stream
@@ -259,8 +280,10 @@ def coerce_stream_or_archive_format(
         stream = _lookup(StreamFormat).get(spelling)
         if stream is not None:
             return stream
+        # A registered codec, or a compressed pair a sequential format reads through
+        # (``ar.gz``): the same rule as the accepted list below.
         plugin = _plugin_spellings.get(spelling)
-        if plugin is not None and plugin.container is ContainerFormat.RAW_STREAM:
+        if plugin is not None and outer_stream_format(plugin) is not None:
             return plugin
     raise _usage_error_for(value)(
         f"{call} takes a StreamFormat or an ArchiveFormat (or either spelled as a "

@@ -68,7 +68,11 @@ from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.detection import INNER_CONTAINER_PROBE_BYTES
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.format_args import add_plugin_spellings, plugin_spelling_clash
+from archivey.internal.format_args import (
+    add_plugin_spellings,
+    add_sequential_container,
+    plugin_spelling_clash,
+)
 from archivey.internal.logs import detection as detection_logger
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
 from archivey.internal.open_site import OpenSite
@@ -2120,9 +2124,16 @@ def _backend_class(
         "INNER_MAGIC": magic if sequential else (),
         "CONTENT_PROBES": (((fmt, prefix_probe(probe)),) if probe is not None else ()),
         "USES_ENCODING": bool(plugin.uses_encoding),
-        "NON_SEEKABLE_REASON": "its reader needs random access to the archive",
-        # A sequential format reads a pipe in a streaming pass.
+        # A sequential format reads a pipe in a streaming pass, so it has no reason
+        # to refuse one.
         "SUPPORTS_STREAMING_NON_SEEKABLE": sequential,
+        **(
+            {}
+            if sequential
+            else {
+                "NON_SEEKABLE_REASON": "its reader needs random access to the archive"
+            }
+        ),
         "INSTALL_HINT": plugin.install_hint,
         "REQUIRED_MODULES": tuple(plugin.requires),
         **overrides,
@@ -2152,11 +2163,22 @@ def register_builtin_format(
 
     The format keeps its built-in container, extensions, magic and place among the
     built-in backends, so detection does not change and ``FormatInfo.from_plugin`` is
-    false. ``overrides`` sets backend attributes a plugin cannot declare
+    false. A sequential format's compressed pairs are spelled as a plugin's are
+    (``"ar.gz"``). ``overrides`` sets backend attributes a plugin cannot declare
     (``NON_SEEKABLE_REASON``, ``OPTIONAL_DEPENDENCY``). Returns the backend class.
     """
     backend = _backend_class(plugin, plugin.format, overrides)
     get_registry().register_reader(backend)
+    if issubclass(plugin, SequentialFormatHandler):
+        container = plugin.format.container
+        assert isinstance(container, ContainerFormat), (
+            "a built-in has a named container"
+        )
+        add_sequential_container(container)
+        # Its compressed pairs (``ar.gz``) have no named constant.
+        format_args.PAIR_SPELLED_CONTAINERS.add(container)
+        for each in compressed_formats(plugin.format):
+            add_plugin_spellings(each)
     return backend
 
 

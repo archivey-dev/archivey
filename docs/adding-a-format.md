@@ -54,13 +54,14 @@ same way it does for a built-in format: it normalizes member names, checks them,
 the listing limits, resolves links, checks each member's size and checksum as it is read,
 and extracts safely.
 
-Three complete plugins outside archivey are in the repository:
+Complete readers written this way are in the repository. Two are plugins outside archivey:
 [`packages/archivey-squashfs`](https://github.com/archivey-dev/archivey/tree/main/packages/archivey-squashfs)
-for SquashFS images, a format with an index;
+for SquashFS images, a format with an index, and
 [`packages/archivey-cpio`](https://github.com/archivey-dev/archivey/tree/main/packages/archivey-cpio)
-for CPIO archives and
-[`packages/archivey-ar`](https://github.com/archivey-dev/archivey/tree/main/packages/archivey-ar)
-for ar archives (static libraries), both read in one pass. None is published.
+for CPIO archives, read in one pass. Neither is published. The built-in ar reader,
+[`ar_reader.py`](https://github.com/archivey-dev/archivey/blob/main/src/archivey/internal/backends/ar_reader.py),
+uses only `archivey.formats` and archivey's public names too, apart from the call that
+registers it as a built-in format.
 
 ## A complete example
 

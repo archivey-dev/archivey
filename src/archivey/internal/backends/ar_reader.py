@@ -22,12 +22,17 @@ The dialects differ in how a name longer than 15 bytes is stored:
   its data starts after the name rather than after the header. macOS pads that name
   with NULs, and pads each member with ``\n`` so the next header starts on 8 bytes,
   counting that padding in the member's size: the padding is then part of the member,
-  as llvm-ar and bsdtar extract it. The symbol table is a member named ``__.SYMDEF`` (or ``__.SYMDEF
-  SORTED``, ``__.SYMDEF_64``).
+  as llvm-ar and bsdtar extract it. The symbol table is a member named ``__.SYMDEF``
+  (or ``__.SYMDEF SORTED``, ``__.SYMDEF_64``).
 
 Symbol tables are the linker's index, not files: the walk skips them, and the archive
 info says one was there. A *thin* archive (``!<thin>\\n``) stores only the names of
 files kept outside it and is refused.
+
+The reader is written against ``archivey.formats`` and archivey's public names only,
+as a format added from outside would be; ``register_builtin_format`` is the one
+internal name it uses (``tests/test_ar.py`` checks). Handbook page:
+``dev-docs/formats/ar.md``.
 """
 
 from __future__ import annotations
@@ -35,21 +40,24 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import UTC, datetime
 
-from archivey import (
-    ArchiveMember,
+from archivey.exceptions import (
     CorruptionError,
-    MemberType,
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.formats import (
     ForwardStream,
+    Magic,
     MemberSpan,
     ReaderArchiveInfo,
     ReaderContext,
+    SequentialFormatHandler,
     SequentialReader,
 )
+from archivey.internal.format_adapter import register_builtin_format
+from archivey.internal.overrides import override
+from archivey.types import ArchiveFormat, ArchiveInfoExtra, ArchiveMember, MemberType
 
 MAGIC = b"!<arch>\n"
 THIN_MAGIC = b"!<thin>\n"
@@ -96,15 +104,21 @@ class ArReader(SequentialReader):
 
     def __init__(self, context: ReaderContext) -> None:
         self._context = context
+        # Both are what the walk has seen so far: in a streaming pass they can change
+        # until the walk ends (a table after the first member, a dialect only a later
+        # name shows). GNU ar and llvm-ar write the table first.
         self._dialect: str | None = None
         self._symbol_table = False
 
+    @override
     def archive_info(self) -> ReaderArchiveInfo:
-        extra: dict[str, object] = {"ar.symbol_table": self._symbol_table}
+        extra = ArchiveInfoExtra({"ar.symbol_table": self._symbol_table})
         if self._dialect is not None:
             extra["ar.dialect"] = self._dialect
-        return ReaderArchiveInfo(format_version=self._dialect, extra=extra)
+        # A dialect is not a version: like TAR's, it is not in format_version.
+        return ReaderArchiveInfo(extra=extra)
 
+    @override
     def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
         magic = stream.read(len(MAGIC))
         if magic == THIN_MAGIC:
@@ -227,3 +241,20 @@ class ArReader(SequentialReader):
             uid=_field(raw[28:34], 10, "uid", offset),
             gid=_field(raw[34:40], 10, "gid", offset),
         )
+
+
+class ArHandler(SequentialFormatHandler):
+    """ar archives in the GNU (System V) and BSD dialects: ``.a``, ``.ar``, ``.lib``."""
+
+    format = ArchiveFormat.AR
+    extensions = (".a", ".ar", ".lib")
+    # A thin archive is claimed too, so that opening one says why it cannot be read.
+    magic = (Magic(0, MAGIC), Magic(0, THIN_MAGIC))
+    uses_encoding = True
+
+    @override
+    def open_sequential(self, context: ReaderContext) -> ArReader:
+        return ArReader(context)
+
+
+ArReadBackend = register_builtin_format(ArHandler)
