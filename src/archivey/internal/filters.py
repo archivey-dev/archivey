@@ -31,6 +31,7 @@ from pathlib import Path
 from archivey.exceptions import ExtractionError, FilterRejectionError
 from archivey.internal.long_paths import long_path, plain
 from archivey.internal.naming import BIDI_REORDERING_CONTROLS
+from archivey.terminal import quoted
 from archivey.types import ArchiveMember, ExtractionPolicy, MemberType
 
 # Split a member name into path components on either separator; a ".." component after
@@ -785,6 +786,34 @@ def _reject_unsafe_segments(
             )
 
 
+# What STRICT refuses in a name rather than rewriting it (maintainer ruling
+# 2026-10-31, reversing ADR 0013's rewrite for STRICT): a byte that is not UTF-8 (a
+# surrogateescape char), a lone surrogate, a control character 0x01-0x1F, and ``\``.
+# Each is a name another OS or reader takes differently: undecodable bytes, a newline
+# that splits a listing line, a separator on Windows and a character on POSIX.
+# STANDARD still writes their portable spelling (``_sanitize_portable_name``).
+_STRICT_REFUSED = re.compile("[\ud800-\udfff\x01-\x1f\\\\]")
+
+
+def _reject_unportable_name(name: str) -> None:
+    """Refuse, under STRICT, a name with a character of ``_STRICT_REFUSED``."""
+    match = _STRICT_REFUSED.search(name)
+    if match is None:
+        return
+    char = match.group()
+    if char == "\\":
+        what = "a backslash, a separator on Windows and a character elsewhere"
+    elif "\ud800" <= char <= "\udfff":
+        what = "bytes that are not UTF-8"
+    else:
+        what = f"the control character U+{ord(char):04X}"
+    raise FilterRejectionError(
+        f"Name holds {what}: {quoted(name)}. ExtractionPolicy.STRICT refuses it; STANDARD "
+        "writes a portable spelling.",
+        member_name=name,
+    )
+
+
 def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> ArchiveMember:
     """Enforce the portable-name policy on ``member``'s final name.
 
@@ -792,15 +821,15 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
     ``STRICT``/``STANDARD`` **reject** only the unsafe name shapes — Windows-reserved device
     names, ``:`` (NTFS alternate data stream), and bidi overrides, in the name and in a
     symlink's target, and a name segment of only dots and spaces, which Win32 would merge
-    into its parent — and **rewrite** the merely-non-portable ones: ``STRICT`` strips
-    trailing dots/spaces (O3), and both levels write a ``\\`` as ``/`` (in a link target
-    too) and escape bytes that are not UTF-8 and the characters Windows refuses,
-    ``<>"|?*`` and 0x01-0x1F (O7). A lone surrogate outside U+DC80-U+DCFF is escaped too,
-    as its UTF-8 bytes
-    (``hi\\ud800`` → ``hi%ED%A0%80``), so the result is the same on every OS;
-    ``TRUSTED`` writes 7-Zip's bytes instead. Rewriting (not rejecting) a
-    legitimate-but-awkward name keeps extraction working; refusal is reserved for
-    structures that cannot be safely written. Raises :class:`FilterRejectionError` (so the
+    into its parent. ``STRICT`` also **rejects** a name holding a ``\\``, a control
+    character 0x01-0x1F, bytes that are not UTF-8 or a lone surrogate: each reads as a
+    different name on another OS or in another reader. Both levels **rewrite** the
+    merely-non-portable rest: ``STRICT`` strips trailing dots/spaces (O3), and both escape
+    the characters Windows refuses, ``<>"|?*`` (O7). ``STANDARD`` also writes a ``\\`` as
+    ``/`` and escapes 0x01-0x1F, bytes that are not UTF-8 and a lone surrogate outside
+    U+DC80-U+DCFF, as its UTF-8 bytes (``hi\\ud800`` → ``hi%ED%A0%80``), so the result is
+    the same on every OS; ``TRUSTED`` writes 7-Zip's bytes instead. A ``\\`` in a link
+    target is written as ``/`` under both. Raises :class:`FilterRejectionError` (so the
     coordinator records ``BLOCKED``) on a rejected name; otherwise returns ``member`` or a
     rewritten ``.replace()`` copy.
     """
@@ -844,6 +873,7 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
     # ``a/b``), so STANDARD refuses it as STRICT does.
     stripped = _strip_trailing_dot_space(name)  # refuses an all-dots segment under both
     if policy is ExtractionPolicy.STRICT:
+        _reject_unportable_name(name)
         name = stripped
     # A TAR name keeps ``\`` as a literal character, and Windows writes it as a
     # separator. Writing it as ``/`` everywhere gives the tree Windows would create, on

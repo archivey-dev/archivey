@@ -28,7 +28,7 @@ from pathlib import Path
 import pytest
 
 import archivey
-from archivey.cli.exit_codes import EXIT_OK
+from archivey.cli.exit_codes import EXIT_OK, EXIT_POLICY
 from archivey.cli.main import main
 from archivey.exceptions import (
     ExtractionError,
@@ -159,13 +159,10 @@ _ESCAPED = {
 }
 
 
-@pytest.mark.parametrize("policy", [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD])
-def test_the_portable_policies_escape_the_surrogate(
-    archive: Path, tmp_path: Path, policy: ExtractionPolicy
-) -> None:
-    """``STRICT`` and ``STANDARD`` escape the UTF-8 bytes, the same on every OS."""
+def test_standard_escapes_the_surrogate(archive: Path, tmp_path: Path) -> None:
+    """``STANDARD`` escapes the UTF-8 bytes, the same on every OS."""
     dest = tmp_path / "out"
-    results = open_and_extract(archive, dest, policy=policy)
+    results = open_and_extract(archive, dest, policy=ExtractionPolicy.STANDARD)
     assert [r.status for r in results] == [ExtractionStatus.EXTRACTED] * len(_FILES)
     assert _tree(dest) == _ESCAPED
     by_name = {r.member.name: r for r in results}
@@ -174,6 +171,16 @@ def test_the_portable_policies_escape_the_surrogate(
     assert written.path.name == "hi%ED%A0%80.txt"
     assert written.presented_name == "hi\ud800.txt"
     assert by_name["ok.txt"].presented_name is None
+
+
+def test_strict_blocks_a_lone_surrogate(archive: Path, tmp_path: Path) -> None:
+    """``STRICT`` refuses a name with a lone surrogate and writes the rest."""
+    dest = tmp_path / "out"
+    results = open_and_extract(archive, dest, on_error="continue")
+    by_name = {r.member.name: r.status for r in results}
+    assert by_name.pop("ok.txt") is ExtractionStatus.EXTRACTED
+    assert set(by_name.values()) == {ExtractionStatus.BLOCKED}
+    assert _tree(dest) == {b"ok.txt": b"ok"}
 
 
 @pytest.mark.skipif(not _BYTE_NAMES, reason="needs a filesystem that takes any bytes")
@@ -225,12 +232,12 @@ def test_trusted_posix_extraction_matches_the_7z_tool(
 
 @pytest.mark.skipif(not _BYTE_NAMES, reason="needs a filesystem that takes any bytes")
 @requires_binary("7z")
-def test_the_default_policy_escapes_where_the_7z_tool_writes_bytes(
+def test_standard_escapes_where_the_7z_tool_writes_bytes(
     archive: Path, tmp_path: Path
 ) -> None:
-    """At the default policy every surrogate name differs from 7-Zip's; ok.txt does not."""
+    """Under ``STANDARD`` every surrogate name differs from 7-Zip's; ok.txt does not."""
     ours = tmp_path / "ours"
-    open_and_extract(archive, ours)
+    open_and_extract(archive, ours, policy=ExtractionPolicy.STANDARD)
     assert _tree(ours) == _ESCAPED
     assert _seven_zip_tree(archive, tmp_path) == {
         b"hi\xed\xa0\x80.txt": b"high",
@@ -249,7 +256,7 @@ def test_a_unit_in_the_escape_range_is_the_one_difference_from_the_7z_tool(
 
     Measured with 7-Zip 23.01 on Linux, against ``TRUSTED``, the policy that otherwise
     writes what 7-Zip writes. archivey writes the byte the unit stands for in a
-    ``str``; the default policy escapes that byte to ``lo%80.txt``.
+    ``str``; ``STANDARD`` escapes that byte to ``lo%80.txt``.
     """
     archive = tmp_path / "low.7z"
     archive.write_bytes(_surrogate_7z([*_FILES, ("lo\udc80.txt", b"low")]))
@@ -261,7 +268,7 @@ def test_a_unit_in_the_escape_range_is_the_one_difference_from_the_7z_tool(
     assert ours_tree == theirs_tree
     assert len(ours_tree) == len(_FILES)
     default = tmp_path / "default"
-    open_and_extract(archive, default)
+    open_and_extract(archive, default, policy=ExtractionPolicy.STANDARD)
     assert _tree(default)[b"lo%80.txt"] == b"low"
 
 
@@ -301,7 +308,6 @@ def test_trusted_windows_extraction_uses_the_exact_name(
 @pytest.mark.parametrize(
     ("policy", "written"),
     [
-        (ExtractionPolicy.STRICT, b"hi%ED%A0%80"),
         (ExtractionPolicy.STANDARD, b"hi%ED%A0%80"),
         pytest.param(
             ExtractionPolicy.TRUSTED,
@@ -317,8 +323,8 @@ def test_a_surrogate_name_and_its_utf8_bytes_collide(
 ) -> None:
     """``hi\\ud800`` and a name whose undecodable bytes are ``ed a0 80`` name one file.
 
-    ``STRICT`` and ``STANDARD`` escape both to ``hi%ED%A0%80``; ``TRUSTED`` writes
-    both as the bytes. The second is resolved by the overwrite policy, not written
+    ``STANDARD`` escapes both to ``hi%ED%A0%80`` (``STRICT`` refuses both);
+    ``TRUSTED`` writes both as the bytes. The second is resolved by the overwrite policy, not written
     over the first.
     """
     archive = tmp_path / "pair.7z"
@@ -487,7 +493,7 @@ def test_a_low_surrogate_in_the_escape_range_is_a_byte(tmp_path: Path) -> None:
     """U+DC80-U+DCFF lists as stored, and extracts as the byte it stands for.
 
     In a ``str`` the unit cannot be told apart from a ``surrogateescape`` byte, so
-    extraction treats it as one, as it does for every format: under ``STRICT`` it is
+    extraction treats it as one, as it does for every format: under ``STANDARD`` it is
     written ``%80``. 7-Zip writes ``ed b2 80`` on Linux; ``raw_name`` keeps the unit.
     """
     archive = tmp_path / "low.7z"
@@ -497,7 +503,7 @@ def test_a_low_surrogate_in_the_escape_range_is_a_byte(tmp_path: Path) -> None:
     assert member.name == "lo\udc80.txt"
     assert member.raw_name == "lo\udc80.txt".encode("utf-16le", "surrogatepass")
     dest = tmp_path / "out"
-    (result,) = open_and_extract(archive, dest)
+    (result,) = open_and_extract(archive, dest, policy=ExtractionPolicy.STANDARD)
     assert result.status is ExtractionStatus.EXTRACTED
     assert result.presented_name == "lo\udc80.txt"
     assert (dest / "lo%80.txt").read_bytes() == b"low"
@@ -531,7 +537,8 @@ def test_cli_member_lines_escape_the_surrogate(
     argv = [verb, "-v", str(archive)] + (["-d", str(dest)] if verb == "extract" else [])
     code, out, err = _run_cli(argv)
     assert "hi\\ud800.txt" in out + err
-    assert code == EXIT_OK
+    # The default STRICT refuses the surrogate names: their lines report a block.
+    assert code == (EXIT_POLICY if verb == "extract" else EXIT_OK)
     if verb == "extract":
         assert (dest / "ok.txt").read_bytes() == b"ok"
 
@@ -563,11 +570,9 @@ def test_disk_spelling(name: str, posix: str, monkeypatch: pytest.MonkeyPatch) -
         ("\U00010000", "\U00010000"),  # a paired surrogate is a character
     ],
 )
-@pytest.mark.parametrize("policy", [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD])
 def test_the_name_policy_escapes_a_lone_surrogate_on_every_os(
     name: str,
     escaped: str,
-    policy: ExtractionPolicy,
     platform: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -577,5 +582,5 @@ def test_the_name_policy_escapes_a_lone_surrogate_on_every_os(
         name=name,
         raw_name=name.encode("utf-16le", "surrogatepass"),
     )
-    assert apply_name_policy(member, policy).name == escaped
+    assert apply_name_policy(member, ExtractionPolicy.STANDARD).name == escaped
     assert apply_name_policy(member, ExtractionPolicy.TRUSTED).name == name

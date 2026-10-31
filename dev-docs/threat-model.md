@@ -262,11 +262,16 @@ bytes. The outcome is the same on every platform. ADR
   `STANDARD` and `TRUSTED` otherwise keep the name. Under `STRICT` and `STANDARD` the collision key
   drops a trailing dot or space too, so `notes.` and `notes` collide on every platform, as
   Win32 would merge them.
+- `STRICT` refuses a name holding a `\`, a control character 0x01 to 0x1F, a non-UTF-8
+  byte or a lone surrogate (`_reject_unportable_name`): each reads as another name on
+  another OS or in another reader (ADR 0013 amendment, 2026-10-31).
 - Two classes of character are percent-escaped (`_sanitize_portable_name`: `%XX`,
   literal `%` as `%25`), a deterministic and reversible spelling: non-UTF-8 bytes, and
-  the characters Win32 refuses in a name, `<>"|?*` and the controls 0x01 to 0x1F.
-- A `\` in a name, which TAR keeps as a literal character, is written as `/`, as
-  Windows writes it, and a symlink or hard link target gets the same rewrite. A hard
+  the characters Win32 refuses in a name, `<>"|?*` and the controls 0x01 to 0x1F. Under
+  `STRICT` only `<>"|?*` reach it; the rest were refused above.
+- Under `STANDARD` a `\` in a name, which TAR keeps as a literal character, is written
+  as `/`, as Windows writes it. Under both a symlink or hard link target gets the same
+  rewrite. A hard
   link still resolves to the member the reader matched to its stored target.
 - The coordinator (`ExtractionCoordinator._transform`) runs `check_universal` again on
   a member `apply_name_policy` rewrote. A rewrite can change which directories a path
@@ -1040,8 +1045,8 @@ the ANSI/CR spoof tests extract under `TRUSTED`, which writes the raw bytes, so 
 are Unix-only, since NTFS refuses control bytes in names.
 `tests/test_cve_regressions_7z_rar.py::test_unrar_cve_2024_33899_escape_sequences_in_names`
 replays the unrar advisory over a RAR's member names through `list`, `test -v` and
-`extract`. It runs on every platform, because the default policy writes each control
-byte as `%XX` before the write.
+`extract`. It runs on every platform: the default policy refuses each name with a control
+byte, and `STANDARD` writes each one as `%XX` before the write.
 
 ### Detection is bounded and says when it guessed
 

@@ -119,3 +119,25 @@ conflicts rather than open space.
   who wants either event to be fatal sets `AbortOn.NAME_COLLISION` or
   `AbortOn.NAME_SANITIZED`. Decisions 4 and 6 above still describe the behaviour; only
   where it is reported moved.
+
+## Amendment (2026-10-31): STRICT refuses names other readers take differently
+
+- **Decision 1 is reversed for `STRICT` only.** A member name holding a `\`, a control
+  character 0x01-0x1F, a byte that is not UTF-8 or a lone surrogate is now refused under
+  `STRICT` (`FilterRejectionError`, `BLOCKED`), in every format. `STANDARD` keeps the
+  rewrite this ADR chose (`a\b` as `a/b`, `caf\udce9` as `caf%E9`, a newline as `%0A`),
+  and `TRUSTED` still writes the stored bytes. The characters Windows refuses, `<>"|?*`,
+  are still escaped under both, and a `\` in a link target is still written as `/`.
+- **Why.** The tar-minefield corpus (`dev-docs/tar-minefield-results.md`) marks these
+  names "reject" or "tolerate" (N13, N15, N18, N24), and Astral's tar-codec refuses them.
+  Each one names a different file depending on who reads it: Windows takes `\` as a
+  separator and POSIX as a character, a newline splits a listing line, and undecodable
+  bytes have no spelling every OS shares. The rewrite kept them from landing anywhere
+  unsafe, but it still wrote a tree no other tool writes, under a name the archive does not
+  hold. Decision 1's argument (a Linux user would have to drop to `TRUSTED`, a permission
+  decision, to extract an oddly named member) no longer holds: `STANDARD` now covers that
+  case without changing permissions.
+- **Ruling.** The maintainer chose "Block under STRICT, rewrite in STANDARD" on
+  2026-10-31, in the thread that ran the corpus. The STRICT promise in decision 4 becomes:
+  a member either extracts to the same portable result on every OS or is refused, and
+  refusal also covers names that read as another name on another OS.

@@ -11,6 +11,7 @@ import errno
 import gzip
 import io
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -4245,13 +4246,16 @@ def test_o3_bare_dot_root_not_trailing_dot_under_strict() -> None:
 # --- O7: surrogateescape sanitize ------------------------------------------
 
 
-def test_o7_surrogateescape_sanitized_under_strict(tmp_path: Path) -> None:
-    # caf<0xe9>.txt carries a raw non-UTF-8 byte; STRICT rewrites it to a portable spelling
-    # deterministically on every OS (rather than depending on whether the FS accepts it).
+def test_o7_surrogateescape_sanitized_under_standard(tmp_path: Path) -> None:
+    # caf<0xe9>.txt carries a raw non-UTF-8 byte; STANDARD rewrites it to a portable
+    # spelling deterministically on every OS (rather than depending on whether the FS
+    # accepts it).
     stored = b"caf\xe9.txt".decode("utf-8", errors="surrogateescape")
     archive = _surrogate_tar(stored)
     dest = tmp_path / "out"
-    report = open_and_extract(io.BytesIO(archive), dest, policy=ExtractionPolicy.STRICT)
+    report = open_and_extract(
+        io.BytesIO(archive), dest, policy=ExtractionPolicy.STANDARD
+    )
     assert report.results[0].status is ExtractionStatus.EXTRACTED
     assert sorted(p.name for p in dest.iterdir()) == ["caf%E9.txt"]
 
@@ -4262,9 +4266,61 @@ def test_o7_percent_escaped_when_sanitizing(tmp_path: Path) -> None:
     stored = b"a%b\xe9".decode("utf-8", errors="surrogateescape")
     archive = _surrogate_tar(stored)
     dest = tmp_path / "out"
-    report = open_and_extract(io.BytesIO(archive), dest, policy=ExtractionPolicy.STRICT)
+    report = open_and_extract(
+        io.BytesIO(archive), dest, policy=ExtractionPolicy.STANDARD
+    )
     assert sorted(p.name for p in dest.iterdir()) == ["a%25b%E9"]
     assert report.results[0].status is ExtractionStatus.EXTRACTED
+
+
+@pytest.mark.parametrize(
+    "stored,what",
+    [
+        (b"caf\xe9.txt".decode("utf-8", errors="surrogateescape"), "not UTF-8"),
+        ("hi\ud800", "not UTF-8"),
+        ("line\nbreak", "U+000A"),
+        ("bell\x01", "U+0001"),
+        ("dir\\file", "a backslash"),
+    ],
+)
+def test_strict_blocks_a_name_other_readers_take_differently(
+    stored: str, what: str
+) -> None:
+    """STRICT refuses these names; STANDARD writes the portable spelling (O7).
+
+    Undecodable bytes, a control character and a ``\\`` each name a different file on
+    another OS or in another reader, so the safe default writes nothing for them.
+    """
+    member = _member(stored, raw=stored.encode("utf-8", "surrogatepass"))
+    with pytest.raises(FilterRejectionError, match=re.escape(what)) as caught:
+        apply_name_policy(member, ExtractionPolicy.STRICT)
+    assert "STANDARD writes a portable spelling" in caught.value.message
+    assert apply_name_policy(member, ExtractionPolicy.STANDARD).name != stored
+    assert apply_name_policy(member, ExtractionPolicy.TRUSTED).name == stored
+
+
+def test_strict_blocks_only_the_member_with_an_unportable_name(tmp_path: Path) -> None:
+    stored = b"caf\xe9.txt".decode("utf-8", errors="surrogateescape")
+    buf = io.BytesIO()
+    with tarfile.open(
+        fileobj=buf, mode="w", encoding="utf-8", errors="surrogateescape"
+    ) as tf:
+        for nm in (stored, "ok.txt"):
+            info = tarfile.TarInfo(nm)
+            info.size = 1
+            tf.addfile(info, io.BytesIO(b"x"))
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(buf.getvalue()),
+        dest,
+        policy=ExtractionPolicy.STRICT,
+        on_error=OnError.CONTINUE,
+    )
+    assert [r.status for r in report.results] == [
+        ExtractionStatus.BLOCKED,
+        ExtractionStatus.EXTRACTED,
+    ]
+    assert sorted(p.name for p in dest.iterdir()) == ["ok.txt"]
 
 
 def test_o7_plain_percent_name_untouched(tmp_path: Path) -> None:
@@ -4279,19 +4335,21 @@ def test_o7_plain_percent_name_untouched(tmp_path: Path) -> None:
     "name,expected",
     [
         ("foo. /bar", "foo/bar"),
-        ("foo. \\bar", "foo/bar"),
-        ("a\\b.\\c ", "a/b/c"),
-        ("mixed. /x \\y.", "mixed/x/y"),
+        ("foo. \\bar", "foo. /bar"),
+        ("a\\b.\\c ", "a/b./c "),
+        ("mixed. /x \\y.", "mixed. /x /y."),
     ],
 )
-def test_o3_strip_treats_a_backslash_as_a_separator(name: str, expected: str) -> None:
-    """Trailing dot/space stripping splits on ``\\`` too, like the rest of the module.
+def test_a_backslash_is_a_separator_under_standard(name: str, expected: str) -> None:
+    """STANDARD writes each ``\\`` as ``/`` and keeps trailing dots and spaces.
 
     TAR keeps ``\\`` as a literal character and Windows writes it as a separator, so
-    ``foo. \\bar`` has to lose its trailing space as ``foo. /bar`` does. The name
-    policy then writes each ``\\`` as ``/``, so the result is the same on every OS.
+    writing ``/`` gives the same tree on every OS. STRICT refuses the backslash names
+    (``test_strict_blocks_a_name_other_readers_take_differently``) and strips the
+    trailing dot and space of the rest.
     """
-    out = apply_name_policy(_member(name), ExtractionPolicy.STRICT)
+    policy = ExtractionPolicy.STANDARD if "\\" in name else ExtractionPolicy.STRICT
+    out = apply_name_policy(_member(name), policy)
     assert out.name == expected
 
 
@@ -4897,7 +4955,10 @@ def test_o7_sanitized_name_collides_with_literal_percent_name(tmp_path: Path) ->
             tf.addfile(info, io.BytesIO(data))
     dest = tmp_path / "out"
     report = open_and_extract(
-        io.BytesIO(buf.getvalue()), dest, overwrite=OverwritePolicy.REPLACE
+        io.BytesIO(buf.getvalue()),
+        dest,
+        policy=ExtractionPolicy.STANDARD,
+        overwrite=OverwritePolicy.REPLACE,
     )
     assert sorted(p.name for p in dest.iterdir()) == ["caf%E9.txt"]
     assert len(_overwritten(report)) == 1

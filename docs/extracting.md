@@ -78,8 +78,8 @@ permissions gets written as it is:
 
 | `policy` | Names | Permissions |
 |---|---|---|
-| `"strict"` (default) | Rewritten to a portable spelling, or refused when that isn't possible | Files keep their stored permissions without setuid, setgid, sticky or group and other write, so at most `rwxr-xr-x`; a file the owner can't execute is executable by nobody; folders always `rwxr-xr-x` |
-| `"standard"` | As in `"strict"`, but trailing dots and spaces are kept, and absolute paths are placed inside the destination | As stored, without setuid, setgid and sticky bits. Files are `rw-r--r--` and folders `rwxr-xr-x` when the archive stores no permissions |
+| `"strict"` (default) | Rewritten to a portable spelling, or refused when that isn't possible or another system would read the name differently | Files keep their stored permissions without setuid, setgid, sticky or group and other write, so at most `rwxr-xr-x`; a file the owner can't execute is executable by nobody; folders always `rwxr-xr-x` |
+| `"standard"` | As in `"strict"`, but trailing dots and spaces are kept, absolute paths are placed inside the destination, and a backslash, a control character or bytes that aren't UTF-8 are rewritten instead of refused | As stored, without setuid, setgid and sticky bits. Files are `rw-r--r--` and folders `rwxr-xr-x` when the archive stores no permissions |
 | `"trusted"` | As stored, but absolute paths are placed inside the destination | As stored, and the owner too when running as root. When the archive stores no permissions, whatever your system gives a new file |
 
 Under every policy, files and folders get the member's modification time, and on Windows and
@@ -173,12 +173,14 @@ The rest depend on the policy:
   `"trusted"` write it as is.
 - **`a/.../b`, with a folder named only dots or spaces:** `"strict"` and `"standard"` refuse it,
   because Windows would write it into `a`. `"trusted"` writes it as is.
-- **`caf\xe9.txt`, a name that isn't valid UTF-8:** `"strict"` and `"standard"` write it as
-  `caf%E9.txt`. `"trusted"` writes it as is.
+- **`caf\xe9.txt`, a name that isn't valid UTF-8:** `"strict"` refuses it. `"standard"` writes it
+  as `caf%E9.txt`. `"trusted"` writes it as is.
+- **`line\nbreak`, with a control character such as a newline:** `"strict"` refuses it.
+  `"standard"` writes it as `line%0Abreak`. `"trusted"` writes it as is.
 - **`what?.txt`, with a character Windows doesn't allow:** `"strict"` and `"standard"` write it as
   `what%3F.txt`. `"trusted"` writes it as is.
-- **`back\slash` in a TAR:** `"strict"` and `"standard"` write it as `slash` in a folder `back`.
-  `"trusted"` writes it as is.
+- **`back\slash` in a TAR:** `"strict"` refuses it. `"standard"` writes it as `slash` in a folder
+  `back`. `"trusted"` writes it as is.
 - **`README`, then `readme`; `café` written two ways in Unicode; or `notes`, then `notes.`:** under
   `"strict"` and `"standard"`, the second one counts as a file already there. `"trusted"` writes
   both, if the disk tells them apart.
@@ -198,8 +200,13 @@ policy.
     rather than rewritten because on Windows they're unsafe, not just unusual: `CON` opens the
     console, and `file:ads` writes data hidden inside `file`.
 
-    A name that isn't valid UTF-8 is percent-escaped for the same reason: Linux writes it as is,
-    but macOS refuses it. `%E9` is the byte's value, as in URLs, and a `%` in a rewritten name is
+    `"strict"` refuses a name with a backslash, a control character or bytes that aren't UTF-8
+    because each one reads as a different name somewhere else: a backslash is a folder on Windows
+    and a character on Linux, a newline splits the name across two lines of a listing, and bytes
+    that aren't UTF-8 have no spelling every system shares. Archive tools disagree on them too.
+
+    Under `"standard"` a name that isn't valid UTF-8 is percent-escaped instead: Linux writes it as
+    is, but macOS refuses it. `%E9` is the byte's value, as in URLs, and a `%` in a rewritten name is
     written as `%25`, so the original can be worked out again. A name that already held `%E9` is
     written unchanged, so only a name archivey rewrote can be reversed: `result.presented_name` and
     `NameRewrite.PORTABLE_NAME` in `result.rewrites` say which ones those are.

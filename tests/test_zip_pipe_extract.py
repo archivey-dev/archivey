@@ -754,7 +754,13 @@ def test_a_staged_file_lands_without_a_copy(
     assert sorted(p.name for p in (tmp_path / "pipe").iterdir()) == ["docs"]
 
 
-@pytest.mark.parametrize("policy", list(ExtractionPolicy))
+# STRICT refuses a name holding a backslash before anything is written.
+_KEEPS_A_BACKSLASH = pytest.mark.parametrize(
+    "policy", [ExtractionPolicy.STANDARD, ExtractionPolicy.TRUSTED]
+)
+
+
+@_KEEPS_A_BACKSLASH
 def test_a_unix_name_ending_in_a_backslash_is_a_file(
     policy: ExtractionPolicy, tmp_path: Path
 ) -> None:
@@ -766,7 +772,7 @@ def test_a_unix_name_ending_in_a_backslash_is_a_file(
 
 
 @posix_modes
-@pytest.mark.parametrize("policy", list(ExtractionPolicy))
+@_KEEPS_A_BACKSLASH
 def test_a_unix_file_ending_in_a_backslash_with_data_fails_from_a_pipe(
     policy: ExtractionPolicy, tmp_path: Path
 ) -> None:
