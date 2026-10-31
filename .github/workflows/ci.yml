@@ -459,10 +459,12 @@ jobs:
 
   # Whether a merge-queue run needs every job. A group that changes none of the paths
   # in `scripts/ci_scope.py` (the library, the plugin packages, the tests, the
-  # dependencies, this CI) runs what a pull request push runs, on the merged tree, and
-  # skips the four queue-only jobs that wait on this one: `test-queue`,
-  # `unar-distro-packages`, `pypy` and `atheris`. The daily run still runs them all. Only a merge_group runs it; a
-  # skipped or failed scope, and a diff the compare API cut off, mean the full run.
+  # dependencies, this CI and the scripts it runs) runs what a pull request push runs,
+  # on the merged tree, and skips the four queue-only jobs that wait on this one:
+  # `test-queue`, `unar-distro-packages`, `pypy` and `atheris`. The daily run still runs
+  # them all. Only a merge_group runs it; a skipped or failed scope, and a diff the
+  # compare API cut off, mean the full run. The four jobs start after it in every group,
+  # a few seconds plus a runner wait.
   scope:
     name: Queue scope
     if: github.event_name == 'merge_group'
@@ -493,8 +495,11 @@ jobs:
             > /tmp/paths.txt
           args=()
           [ "$truncated" = true ] && args+=(--truncated)
-          python3 scripts/ci_scope.py "${args[@]}" < /tmp/paths.txt | tee -a "$GITHUB_OUTPUT"
-          echo "Changed paths: $(wc -l < /tmp/paths.txt)" >> "$GITHUB_STEP_SUMMARY"
+          decision=$(python3 scripts/ci_scope.py "${args[@]}" < /tmp/paths.txt)
+          echo "$decision" >> "$GITHUB_OUTPUT"
+          # Renames list both names, so count each path once.
+          echo "Paths considered: $(sort -u /tmp/paths.txt | wc -l); $decision" \
+            >> "$GITHUB_STEP_SUMMARY"
 
   # The test legs that run only past a pull request: in the merge queue, the daily run
   # and a dispatched run (see the note at the top). Same steps as `test`. In the merge

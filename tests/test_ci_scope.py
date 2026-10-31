@@ -1,9 +1,9 @@
 """`scripts/ci_scope.py` and the `scope` job in ci.yml that uses it.
 
-A merge group that changes no library, test, dependency or CI path skips the queue-only jobs.
-A wrong answer here either runs the whole matrix for nothing or, worse, lets a library
-change into main without the legs only the queue runs, so both the path rule and the
-wiring are pinned.
+A merge group that changes no library, test, dependency or CI path skips the queue-only
+jobs. A wrong answer here either runs the whole matrix for nothing or, worse, lets a
+library change into main without the legs only the queue runs, so both the path rule and
+the wiring are pinned.
 """
 
 from __future__ import annotations
@@ -98,6 +98,12 @@ def test_every_script_the_workflows_run_is_a_full_path() -> None:
     assert named - {"scripts/release.py"} <= set(scope.FULL)
 
 
+def _needs(job: dict) -> list[str]:
+    """A job's `needs:`, which YAML gives as a string for one and a list for more."""
+    needs = job.get("needs") or []
+    return [needs] if isinstance(needs, str) else list(needs)
+
+
 def test_the_queue_only_jobs_wait_on_scope_and_run_when_it_did_not() -> None:
     """Each queue-only job needs `scope` and runs unless it said `full=false`, so a
     skipped scope (the daily run, a dispatch) or a failed one runs them. PyYAML is a dev
@@ -107,11 +113,11 @@ def test_the_queue_only_jobs_wait_on_scope_and_run_when_it_did_not() -> None:
     assert jobs["scope"]["if"] == "github.event_name == 'merge_group'"
     for name in QUEUE_ONLY:
         job = jobs[name]
-        assert job["needs"] == "scope", name
+        assert _needs(job) == ["scope"], name
         assert "!cancelled()" in job["if"], name
         assert "needs.scope.outputs.full != 'false'" in job["if"], name
     # The gate fails a group whose scope failed, and every queue-only job counts.
-    assert {"scope", *QUEUE_ONLY} <= set(jobs["gate"]["needs"])
+    assert {"scope", *QUEUE_ONLY} <= set(_needs(jobs["gate"]))
     # Nothing else waits on scope: the pull request set starts at once.
-    waiting = {n for n, j in jobs.items() if "scope" in (j.get("needs") or [])}
+    waiting = {n for n, j in jobs.items() if "scope" in _needs(j)}
     assert waiting - {"gate"} == set(QUEUE_ONLY)
