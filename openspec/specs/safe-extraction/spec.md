@@ -661,7 +661,8 @@ both of which refuse a taken name. `ERROR` then raises its clash and `SKIP` reco
 next free derived name instead, without decoding the member again, and the result
 reports that name as `path`; after 100 names taken in a row the member fails. A SYMLINK
 or DIRECTORY whose name is taken after the check gets the same outcome under `ERROR`
-and `SKIP`. Where `link()` fails for another reason (a filesystem without hard links,
+and `SKIP`, and under `RENAME` fails with `ExtractionError` "Destination already
+exists": it is created at its final name, and the entry there SHALL NOT be removed. Where `link()` fails for another reason (a filesystem without hard links,
 the link-count limit), the landing SHALL fall back to `os.replace()`, which does not
 see such a writer.
 
@@ -769,6 +770,7 @@ name-safety requirement.
 | Under `ERROR`, another writer creates the member's free name after the existence check (FILE or HARDLINK) | `ExtractionError` "Destination already exists"; the other writer's file stays |
 | The same under `SKIP` | `NOT_OVERWRITTEN`, `path=None`; the other writer's file stays |
 | The same under `RENAME` | `EXTRACTED` at the next free `name (N)`, reported as `path`; the other writer's file stays |
+| A SYMLINK or DIRECTORY whose free name another writer takes after collision resolution, under `RENAME` | `ExtractionError` "Destination already exists"; the other writer's file stays |
 | Same, POSIX filesystem whose `link()` fails with `EPERM` | Lands with `os.replace()`; the member is written |
 | Existing file under `REPLACE` | Fresh file is written via temp file + `os.replace()` |
 | Existing entry replaced by a HARDLINK under `REPLACE` | Link is built at a temp sibling and `os.replace()`d in; a failure leaves the existing entry intact |

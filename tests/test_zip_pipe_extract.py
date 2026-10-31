@@ -1278,7 +1278,7 @@ def test_a_data_failure_while_staging_stops_a_stop_run_at_once(
 
 
 @posix_modes
-def test_a_staged_file_lands_by_a_rename_with_its_metadata(
+def test_a_staged_file_lands_by_moving_it_with_its_metadata(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     replaced: list[tuple[str, str]] = []

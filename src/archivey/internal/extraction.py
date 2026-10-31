@@ -312,7 +312,13 @@ class _NameTakenSince(Exception):
     """Under ``OverwritePolicy.SKIP``, a landing found its name taken after the
     existence check, by another writer into the same folder. The member is skipped
     as the check would have skipped it: the caller reports it ``NOT_OVERWRITTEN``.
-    A plain ``Exception``, so the per-member handlers let it through to that caller."""
+    A plain ``Exception``, so the per-member handlers let it through to that caller.
+
+    ``temp`` is the written temp file when the landing was asked to keep it
+    (``_write_file_atomic(keep_taken=True)``): the orphan pass offers it to the next
+    link, as the source's bytes it holds were read for this one."""
+
+    temp: Path | None = None
 
 
 class _PassedData(io.RawIOBase):
@@ -669,7 +675,8 @@ class _MemberState:
     spelled_from: ArchiveMember | None = None
     # Set by ``_prepare_destination`` when it removes an existing entry to make room.
     # Only the non-atomic paths (DIR / SYMLINK / HARDLINK) do that — a FILE write
-    # lands via os.replace and never destroys the destination up front — so this is
+    # lands by a rename or a link (``_swap_into_place``) and never destroys the
+    # destination up front — so this is
     # how the write path knows a failure afterwards left a hole rather than the old
     # content.
     removed_existing: bool = False
@@ -677,8 +684,8 @@ class _MemberState:
     # or the member has no streamed body).
     emit_progress: Callable[[], None] | None = None
     # The member's data as the pass staged it (``_stage_then_place``): a FILE written
-    # from it lands by renaming it (``_write_file_atomic``), and its bytes were
-    # counted when it was staged.
+    # from it lands by renaming or linking it (``_write_file_atomic``), and its bytes
+    # were counted when it was staged.
     staged: Path | None = None
     # A streaming pass's earlier copies of this member's name, left in place while it
     # is handled so it can replace one atomically: path -> index of the superseded
@@ -1193,7 +1200,7 @@ class ExtractionCoordinator:
         destination, and nothing else is written there. Once the walk has ended, the
         members are placed in listing order by ``_handle_member``, as a pass over the
         same archive from a file handles them, each FILE landing from its staged file
-        by a rename.
+        by a rename or a link (``_swap_into_place``).
         """
         # A member the walk can still rename or retype is selected on what it
         # becomes, so the reader yields it whatever the selection says now.
@@ -3394,14 +3401,27 @@ class ExtractionCoordinator:
         # copy of the source's bytes begins (ERROR over an existing entry, a REPLACE
         # that cannot remove what is there, a temp file its directory refuses), records
         # that outcome as its own, and the content moves on to the next link.
-        for index, orphan in enumerate(group):
-            placed = self._materialize_at(source_member, stream, group, index)
-            if placed is None:
-                # The source failed: every link from this one on is in its group.
-                return []
-            if placed:
-                return group[index + 1 :]
-        return []
+        #
+        # A link whose name another writer takes between the check and the landing,
+        # under SKIP, is skipped once the source's bytes are read into its temp file
+        # (``_NameTakenSince``). That file is then the content: each later link is
+        # offered it, as a staged file, rather than the spent stream.
+        leftover: Path | None = None
+        try:
+            for index in range(len(group)):
+                placed, leftover = self._materialize_at(
+                    source_member, stream, group, index, leftover
+                )
+                if placed is None:
+                    # The source failed: every link from this one on is in its group.
+                    return []
+                if placed:
+                    return group[index + 1 :]
+            return []
+        finally:
+            if leftover is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(long_path(leftover))
 
     def _materialize_at(
         self,
@@ -3409,14 +3429,21 @@ class ExtractionCoordinator:
         stream: BinaryIO | None,
         group: list[_Orphan],
         index: int,
-    ) -> bool | None:
+        leftover: Path | None,
+    ) -> tuple[bool | None, Path | None]:
         """Try to write the source's content at link ``group[index]``, as one step of
         ``_materialize_orphan_source``: True when it took the content, False when the
-        link was declined or failed on its own, ``None`` when the source failed.
+        link was declined or failed on its own, ``None`` when the source failed; and
+        the temp file that holds the content read for an earlier link, or ``None``.
 
-        The content is written atomically (temp + ``os.replace``), same as a normal
-        FILE, so a failure while re-reading does not clobber an existing entry. The
-        link's transformed copy supplies the on-disk mode and timestamps: hardlinks
+        ``leftover``, when set, is that file: an earlier link read the source into it
+        and was skipped at the landing (``_NameTakenSince``). This link lands it as a
+        staged file instead of reading ``stream``, so nothing this link does is the
+        source's failure, and the file is handed back unless this link took it.
+
+        The content is written atomically (temp, then ``_swap_into_place``), same as a
+        normal FILE, so a failure while re-reading does not clobber an existing entry.
+        The link's transformed copy supplies the on-disk mode and timestamps: hardlinks
         share one inode, so the metadata goes on the file that carries the content. The
         destination is O2-collision-resolved against the map the main pass built (a
         deferred link's key may have been claimed after it was orphaned).
@@ -3466,16 +3493,29 @@ class ExtractionCoordinator:
                 orphan.original, orphan.transformed, resolved, atomic=True
             )
             if result is None:
-                # ``_write_file_atomic`` runs this check again. Running it here first
-                # lets its refusal count as the source's failure.
-                source_step = True
-                self._state.tracker.check_recorded_size()
-                source_step = False
+                if leftover is None:
+                    # ``_write_file_atomic`` runs this check again. Running it here
+                    # first lets its refusal count as the source's failure.
+                    source_step = True
+                    self._state.tracker.check_recorded_size()
+                    source_step = False
                 try:
-                    resolved = self._write_file_atomic(
-                        stream, resolved, orphan.transformed, copy_begins=copy_begins
-                    )
-                except _NameTakenSince:
+                    if leftover is None:
+                        resolved = self._write_file_atomic(
+                            stream,
+                            resolved,
+                            orphan.transformed,
+                            copy_begins=copy_begins,
+                            keep_taken=True,
+                        )
+                    else:
+                        resolved = self._write_file_atomic(
+                            None, resolved, orphan.transformed, staged=leftover
+                        )
+                        leftover = None
+                except _NameTakenSince as taken:
+                    if leftover is None:
+                        leftover = taken.temp
                     result = ExtractionResult(
                         orphan.original, None, ExtractionStatus.NOT_OVERWRITTEN, None
                     )
@@ -3506,8 +3546,8 @@ class ExtractionCoordinator:
                 kind="orphaned hardlink source",
                 name=source_member.name,
             )
-            return None
-        return placed
+            return None, leftover
+        return placed, leftover
 
     def _link_orphan_group(self, group: list[_Orphan], source_id: int) -> None:
         """Link each orphan in ``group`` against the source content already on disk
@@ -3927,8 +3967,10 @@ class ExtractionCoordinator:
     ) -> bool:
         """Apply the OverwritePolicy. Returns True to proceed with creation, False to
         skip (SKIP over an existing entry). Raises ExtractionError under ERROR when the
-        entry exists, and under REPLACE or RENAME when it is a directory that is not
-        empty. Uses lstat semantics so a dangling symlink counts as existing.
+        entry exists, under REPLACE when it is a directory that is not empty, and under
+        RENAME when a SYMLINK or DIRECTORY member finds an entry at the free name
+        collision resolution gave it. Uses lstat semantics so a dangling symlink counts
+        as existing.
 
         ``atomic=True`` is used for FILE and HARDLINK writes, which land via
         ``os.replace()`` over the destination (see ``_write_file_atomic`` /
@@ -3959,20 +4001,25 @@ class ExtractionCoordinator:
                 raise self._already_exists(dest_path, member)
             if self._overwrite is OverwritePolicy.SKIP:
                 return False
-            if (
-                self._overwrite is not OverwritePolicy.REPLACE
-                and self._overwrite is not OverwritePolicy.RENAME
-            ):
+            if self._overwrite is OverwritePolicy.RENAME:
+                # Collision resolution gave this member a free name (a directory
+                # member too when a file or symlink holds its name), so an entry here
+                # appeared after that check: another writer's, never removed. A FILE
+                # or HARDLINK lands on the next free name (``_land_on_free_name``). A
+                # SYMLINK or DIRECTORY is created at its final name, so it fails as
+                # the ERROR clash, as it does when the name is taken after this check
+                # (``_taken_after_check``).
+                if atomic:
+                    return True
+                raise self._already_exists(dest_path, member)
+            if self._overwrite is not OverwritePolicy.REPLACE:
                 # What follows destroys the existing entry, so a policy nobody taught
                 # this chain must not inherit it: an unknown member stops here.
                 assert_never(self._overwrite)
-            # REPLACE (RENAME members are pre-resolved to a free path, a directory
-            # member too when a file or symlink holds its name, so they reach an
-            # existing entry here only if it appeared after that check): never
-            # write-through a symlink. For an atomic FILE write, os.replace handles a
-            # file/symlink target atomically, so only a real directory must be removed
-            # up front. Otherwise unlink a symlink/file (bytes never follow the link). A
-            # directory is removed only when it is empty.
+            # REPLACE: never write-through a symlink. For an atomic FILE write,
+            # os.replace handles a file/symlink target atomically, so only a real
+            # directory must be removed up front. Otherwise unlink a symlink/file (bytes
+            # never follow the link). A directory is removed only when it is empty.
             if stat.S_ISDIR(existing):
                 # Only an empty directory is removed, as GNU tar does without
                 # --recursive-unlink. Removing a tree takes the members this run wrote
@@ -3994,15 +4041,12 @@ class ExtractionCoordinator:
                 # A directory member of this run that wrote it no longer has it, so its
                 # result is revised (directories are never claimed, so there is no
                 # claim to hand over; ``_resolve_collision`` set this member's
-                # ``collided_with`` from ``_run_directory_at``). Only under REPLACE:
-                # RENAME reaches this arm only after a filesystem race, with nothing of
-                # this run's here, and OVERWRITTEN is a REPLACE outcome.
-                if self._overwrite is OverwritePolicy.REPLACE:
-                    self._revise_removed_directory(dest_path)
+                # ``collided_with`` from ``_run_directory_at``).
+                self._revise_removed_directory(dest_path)
                 self._forget_source_path(dest_path)
                 return True
-        # Reached by a parked copy of this name (never a directory), and by REPLACE or
-        # RENAME over an existing file or symlink.
+        # Reached by a parked copy of this name (never a directory), and by REPLACE
+        # over an existing file or symlink.
         if moves_links:
             self._note_link_change(dest_path)
         if not atomic:
@@ -4022,9 +4066,11 @@ class ExtractionCoordinator:
         *,
         staged: Path | None = None,
         copy_begins: Callable[[], None] | None = None,
+        keep_taken: bool = False,
     ) -> Path:
         """Write a FILE by streaming into a temp sibling, applying ``member``'s metadata,
-        then ``os.replace()``-ing it onto ``dest_path`` — atomic, so a mid-stream failure
+        then moving it onto ``dest_path`` (``_swap_into_place``: ``os.replace``, or a
+        link or rename that refuses a taken name) — atomic, so a mid-stream failure
         never truncates or removes an existing destination (only the temp is discarded),
         and the target name never appears half-written. The temp lives in the destination
         directory so the rename stays on one filesystem. When the orphan pass materializes
@@ -4050,7 +4096,9 @@ class ExtractionCoordinator:
         the two are never passed together.
 
         Returns the name the file landed on: ``dest_path``, or under RENAME another
-        free name when another writer took ``dest_path`` first (``_land_on_free_name``)."""
+        free name when another writer took ``dest_path`` first (``_land_on_free_name``).
+        Under SKIP, such a name raises ``_NameTakenSince``; with ``keep_taken`` the temp
+        file is left in place and handed over on it, rather than removed."""
         assert copy_begins is None or staged is None
         if staged is not None:
             return self._land_staged(staged, dest_path, member)
@@ -4079,7 +4127,10 @@ class ExtractionCoordinator:
                 )
             self._apply_metadata(tmp, member)
             return self._swap_into_place(tmp, dest_path, member, fresh=True)
-        except BaseException:
+        except BaseException as exc:
+            if keep_taken and isinstance(exc, _NameTakenSince):
+                exc.temp = tmp
+                raise
             # os.replace consumes the temp on success; on any earlier failure remove it so
             # no .archivey-tmp-* file is left behind (the existing destination is untouched).
             try:
@@ -4283,30 +4334,32 @@ class ExtractionCoordinator:
 
     def _refusal(self, dest: Path, member: ArchiveMember) -> Exception:
         """What a landing raises when ``dest`` was taken after the existence check
-        (``_taken_after_check``): ERROR's clash, or ``_NameTakenSince`` under SKIP, which
-        skips the member."""
+        (``_taken_after_check``): ``_NameTakenSince`` under SKIP, which skips the
+        member, or else ERROR's clash (under RENAME, for a member that cannot take
+        another name there: a SYMLINK, a DIRECTORY, or a FILE or HARDLINK on the
+        ``os.replace`` fallback)."""
         if self._overwrite is OverwritePolicy.SKIP:
             return _NameTakenSince()
         return self._already_exists(dest, member)
 
     def _taken_after_check(self, dest: Path, *, atomic: bool) -> bool:
-        """Whether, under ``OverwritePolicy.ERROR`` or ``SKIP``, ``dest`` is now taken
+        """Whether, under any ``OverwritePolicy`` but REPLACE, ``dest`` is now taken
         by something that was not there at the existence check: another writer into the
         same folder, such as a second extraction. Asked by every landing whose creation
         refuses a taken name: the ``os.replace`` of a FILE or HARDLINK (``atomic``), and
         the ``os.symlink`` of a SYMLINK and the ``os.makedirs`` of a DIRECTORY.
 
-        Under ERROR and SKIP the check lets a member through only to a free name, to a
-        copy this run parked (``_park_earlier_copies``), or, for a DIRECTORY member, to
-        an existing directory. An atomic landing replaces a parked copy where it stands,
-        so that copy does not count (``_occupied``); the other landings removed it in
-        ``_prepare_destination``. ``os.makedirs(exist_ok=True)`` never raises for an
-        existing directory, so a ``FileExistsError`` there means a non-directory. So
-        anything a landing is refused over appeared after the check. Under the other
-        policies a landing that fails this way is not handled: its error goes out as it
-        is. (RENAME's FILE and HARDLINK landings take another name instead, in
-        ``_land_on_free_name``.)"""
-        if self._overwrite not in (OverwritePolicy.ERROR, OverwritePolicy.SKIP):
+        Under ERROR, SKIP and RENAME the check lets a member through only to a free name
+        (RENAME's resolved one), to a copy this run parked (``_park_earlier_copies``),
+        or, for a DIRECTORY member, to an existing directory. An atomic landing replaces
+        a parked copy where it stands, so that copy does not count (``_occupied``); the
+        other landings removed it in ``_prepare_destination``.
+        ``os.makedirs(exist_ok=True)`` never raises for an existing directory, so a
+        ``FileExistsError`` there means a non-directory. So anything a landing is
+        refused over appeared after the check. Under REPLACE a landing that fails this
+        way is not handled: its error goes out as it is. (RENAME's FILE and HARDLINK
+        landings take another name instead, in ``_land_on_free_name``.)"""
+        if self._overwrite is OverwritePolicy.REPLACE:
             return False
         return self._occupied(dest) if atomic else os.path.lexists(long_path(dest))
 

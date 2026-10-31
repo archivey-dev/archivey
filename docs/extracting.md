@@ -106,10 +106,12 @@ name in one step that the system refuses when the name is taken: a hard link on 
 and macOS, a rename on Windows. There is no gap between a check and the move for another
 writer to slip into. When the name turns out to be taken, `"error"` fails the member and
 `"skip"` skips it, as if the file had been there from the start, and `"rename"` gives
-the written file the next free name, without extracting it again. On Linux and macOS
-this needs a filesystem with hard links; on one without them (FAT, some network drives),
-or when a hard-linked file has used up the link slots the filesystem allows, the later
-writer replaces the earlier one's file.
+the written file the next free name, without extracting it again. A symlink or folder
+member is created at its final name, so under `"rename"` it fails, as under `"error"`,
+when its name is taken that way. On Linux and macOS this needs a filesystem with hard
+links; on one without them (FAT, some network drives), or when a hard-linked file has
+used up the link slots the filesystem allows, the later writer replaces the earlier
+one's file.
 
 `on_error` decides what a failed member does to the rest of the extraction:
 

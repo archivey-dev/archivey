@@ -1691,6 +1691,81 @@ def test_a_landing_never_replaces_another_writers_file(
     assert _tree(dest) == ["a.txt", "b.txt"]
 
 
+@pytest.mark.parametrize("kind", [pytest.param("sym", marks=_POSIX_SYMLINKS), "dir"])
+@pytest.mark.parametrize("window", ["before_prepare", "at_creation"])
+def test_a_symlink_or_folder_under_rename_never_removes_another_writers_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, window: str
+) -> None:
+    """A SYMLINK or DIRECTORY is created at its final name, so under RENAME a name
+    another writer takes after collision resolution fails the member as the ERROR
+    clash, whether the entry appears before the policy check or at the creation call.
+    The other writer's file is never removed."""
+    dest = tmp_path / "out"
+    if window == "before_prepare":
+        prepare = extraction.ExtractionCoordinator._prepare_destination
+
+        def take_then_prepare(
+            self: extraction.ExtractionCoordinator,
+            member: ArchiveMember,
+            dest_path: Path,
+            **kwargs: bool,
+        ) -> bool:
+            if dest_path.name == "b.txt":
+                dest_path.write_bytes(_OTHER_WRITER)
+            return prepare(self, member, dest_path, **kwargs)
+
+        monkeypatch.setattr(
+            extraction.ExtractionCoordinator, "_prepare_destination", take_then_prepare
+        )
+    else:
+        _another_writer_takes(monkeypatch, "b.txt")
+    second: tuple[str, str, str | None] = (
+        ("sym", "b.txt", "a.txt") if kind == "sym" else ("dir", "b.txt", None)
+    )
+    archive = _tar([("file", "a.txt", b"first"), second])
+    with pytest.raises(ExtractionError, match="Destination already exists"):
+        open_and_extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.RENAME)
+    assert (dest / "b.txt").read_bytes() == _OTHER_WRITER
+    assert _tree(dest) == ["a.txt", "b.txt"]
+
+
+@pytest.mark.parametrize("taken", [("h1",), ("h1", "h2"), ("h1", "h2", "h3")])
+def test_an_orphan_link_skipped_at_the_landing_hands_its_content_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, taken: tuple[str, ...]
+) -> None:
+    """The second pass reads an excluded source into its first link's temp file. When
+    another writer takes that link's name before it lands, under SKIP, the link is
+    skipped and the file it read goes to the next link, rather than the spent stream
+    (which wrote an empty file)."""
+    dest = tmp_path / "out"
+    _another_writer_takes_before_the_landing(monkeypatch, *taken)
+    archive = _tar(
+        [
+            ("file", "s", b"data"),
+            ("hard", "h1", "s"),
+            ("hard", "h2", "s"),
+            ("hard", "h3", "s"),
+        ]
+    )
+    report = open_and_extract(
+        io.BytesIO(archive),
+        dest,
+        members=["h1", "h2", "h3"],
+        overwrite=OverwritePolicy.SKIP,
+    )
+    statuses = {r.member.name: r.status for r in report.results}
+    for name in ("h1", "h2", "h3"):
+        if name in taken:
+            assert statuses[name] is ExtractionStatus.NOT_OVERWRITTEN
+            assert (dest / name).read_bytes() == _OTHER_WRITER
+        else:
+            assert statuses[name] is ExtractionStatus.EXTRACTED
+            assert (dest / name).read_bytes() == b"data"
+    if not taken[1:]:
+        assert os.path.samefile(dest / "h2", dest / "h3")
+    assert _tree(dest) == ["h1", "h2", "h3"]
+
+
 @pytest.mark.parametrize("kind", ["file", "hard"])
 @pytest.mark.parametrize("streaming", [False, True])
 def test_a_landing_under_rename_takes_the_next_free_name(
