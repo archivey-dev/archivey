@@ -1001,6 +1001,15 @@ class ReaderDisagreementContext(_JsonSafeContext):
     - ``"hardlink_to_symlink"``: a hard link whose target is a symlink. It links to
       the symlink, as ``link()`` does on Linux; a reader that follows the symlink
       links to its target instead.
+    - ``"nul_in_name"``: a name with a NUL in it, which a format that stores a name's
+      length can hold (ZIP, CPIO). It is listed whole, and extraction skips the member
+      under every policy, since no filesystem takes the name (a filter that rewrites
+      the name, such as ``sanitize_names``, writes it); unzip writes the name up to
+      the NUL, and 7-Zip refuses the archive.
+    - ``"directory_attribute_without_slash"``: a ZIP entry whose attributes (a Unix
+      directory mode, or the DOS directory bit) mark it a directory, named without the
+      final ``/``. It is a directory, as 7-Zip and libarchive extract it and as
+      APPNOTE 4.4.15 marks it; unzip and ``zipfile`` go by the name and write a file.
     """
 
     kind: Literal["reader_disagreement"] = "reader_disagreement"
@@ -1013,6 +1022,8 @@ class ReaderDisagreementContext(_JsonSafeContext):
         "star_prefix",
         "gnu_prefix_bytes",
         "hardlink_to_symlink",
+        "nul_in_name",
+        "directory_attribute_without_slash",
     ] = "file_named_as_directory"
 
 

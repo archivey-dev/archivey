@@ -214,7 +214,8 @@ def _zip(entries: list[tuple[str, str, str | bytes]]) -> bytes:
         warnings.filterwarnings("ignore", "Duplicate name", UserWarning)
         for kind, name, value in entries:
             if kind == "dir" and not name.endswith("/"):
-                # archivey, like zipfile, takes a directory from the name's slash.
+                # zipfile takes a directory from the name's slash, so add it for a
+                # reader of these cases that goes by the name.
                 name += "/"
             info = zipfile.ZipInfo()
             # Set after construction: ZipInfo(name) turns backslashes into slashes
