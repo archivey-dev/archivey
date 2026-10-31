@@ -1002,9 +1002,10 @@ class ReaderDisagreementContext(_JsonSafeContext):
       the symlink, as ``link()`` does on Linux; a reader that follows the symlink
       links to its target instead.
     - ``"nul_in_name"``: a name with a NUL in it, which a format that stores a name's
-      length can hold (ZIP, CPIO). It is listed whole, and extraction skips the member,
-      since no filesystem takes the name; unzip writes the name up to the NUL, and
-      7-Zip refuses the archive.
+      length can hold (ZIP, CPIO). It is listed whole, and extraction skips the member
+      under every policy, since no filesystem takes the name (a filter that rewrites
+      the name, such as ``sanitize_names``, writes it); unzip writes the name up to
+      the NUL, and 7-Zip refuses the archive.
     - ``"directory_attribute_without_slash"``: a ZIP entry whose attributes (a Unix
       directory mode, or the DOS directory bit) mark it a directory, named without the
       final ``/``. It is a directory, as 7-Zip and libarchive extract it and as

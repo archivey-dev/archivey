@@ -2419,18 +2419,19 @@ class BaseArchiveReader(ArchiveReader):
                 key=lambda entry: entry[0],
             )
             latest[name] = (position, member)
-            if found is not None and (
-                found[1].type is MemberType.DIRECTORY
-                and member.type is MemberType.DIRECTORY
-            ):
-                found = None
+            earlier = (
+                None
+                if found is None
+                or (
+                    found[1].type is MemberType.DIRECTORY
+                    and member.type is MemberType.DIRECTORY
+                )
+                else found[1]
+            )
             nul_in_name = "\x00" in name
-            if found is not None or nul_in_name:
+            if earlier is not None or nul_in_name:
                 self._emit_presentation_shapes(
-                    member,
-                    None if found is None else found[1],
-                    to_symlink=False,
-                    nul_in_name=nul_in_name,
+                    member, earlier, to_symlink=False, nul_in_name=nul_in_name
                 )
 
     def _hardlink_names_symlink(self, member: ArchiveMember) -> bool:
@@ -2455,8 +2456,10 @@ class BaseArchiveReader(ArchiveReader):
                 message=(
                     f"{member.type.value.capitalize()} {quoted(member.name)} has a NUL "
                     "in its name: it is listed with the whole stored name, and "
-                    "extraction skips it, since no filesystem takes one; unzip writes "
-                    "the name up to the NUL and 7-Zip refuses the archive."
+                    "extraction skips it under every policy, since no filesystem takes "
+                    "one (a filter that rewrites the name, such as sanitize_names, "
+                    "writes it); unzip writes the name up to the NUL and 7-Zip refuses "
+                    "the archive."
                 ),
                 context=ReaderDisagreementContext(
                     archive_name=self._archive_name,

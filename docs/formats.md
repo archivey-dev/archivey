@@ -236,7 +236,7 @@ section for ZIP, 7z, RAR and ISO says when its mode is trusted; TAR reads the ty
 
 ZIP and CPIO store a name's length, so a name can hold a NUL (`a\0b.txt`). Archivey lists the
 whole name and reports `MEMBER_READERS_DISAGREE`; extraction skips the member under every policy,
-since no filesystem takes the name. unzip writes the name up to the NUL (`a`), and 7-Zip refuses
+since no filesystem takes the name, unless a filter such as `sanitize_names` rewrites it. unzip writes the name up to the NUL (`a`), and 7-Zip refuses
 the archive.
 
 ### Names with an unpaired surrogate
@@ -509,7 +509,9 @@ sending side when the ZIP is done.
   directory mode, or the DOS directory bit) is a directory, as 7-Zip and libarchive read it and
   as APPNOTE marks it; unzip and `zipfile` go by the name and write a file. The name gains its
   `/`, and `MEMBER_READERS_DISAGREE` is reported. Data on such an entry is a directory's data,
-  as above.
+  as above. From a pipe, `stream_members()` yields it as the file its name says, with its
+  stream, since the attributes arrive with the central directory at the end; the member becomes
+  a directory then, and `extract_all()` writes a directory.
 
 ## TAR (and compressed TAR)
 

@@ -543,6 +543,21 @@ every directory and left the bytes out of a forward-only reader's reach. The one
 left out is a ZIP directory written with a data descriptor (bit 3) and read from a pipe:
 the pass meets it before its size, and its message says so.
 
+Amended 2026-10-31 (davi, PR 1192): in ZIP the attributes are structure too. APPNOTE
+4.4.15 puts the DOS directory attribute in the external attributes and never says a
+directory's name ends in `/`, which is Info-ZIP's convention; 4.3.8 gives a directory no
+data. So an entry whose attributes mark it a directory (a Unix creator's directory mode,
+or the DOS directory bit `0x10` from a DOS/Windows creator) is a `DIRECTORY` without the
+trailing `/`, even over data, which is then a directory's data
+(`MEMBER_DIRECTORY_DATA_IGNORED`), as 7-Zip and libarchive read it; unzip and `zipfile`
+go by the name and write a file, so `MEMBER_READERS_DISAGREE`
+(`directory_attribute_without_slash`) reports the shape. 7z keeps stream presence: its
+format marks a directory by the attribute together with an empty stream, and 7-Zip
+extracts a 7z record with a stream as a file (PR 698). A second pipe exception follows:
+the attributes are only in the central directory, so a pipe's pass yields such an entry as
+the `FILE` its name says, with its stream, and the member becomes a `DIRECTORY` when the
+directory is read after the pass; extraction from a pipe still writes the directory.
+
 **Why.** Info-ZIP's `zip -FI` stores a named pipe's content under the pipe's own FIFO
 mode, and libarchive carries a workaround for exactly that shape; unzip, 7-Zip, bsdtar
 and `zipfile` all write the file, so `OTHER` was the one reader that hid the bytes. The

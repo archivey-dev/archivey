@@ -1270,6 +1270,9 @@ def _marked_directory(
     convention, and unzip, ``zipfile`` and Java's ``ZipEntry`` go by the name alone.
     The spec marks the type in the attributes (4.4.15), and 7-Zip and libarchive
     read it there, so an entry these mark is a directory with or without the slash.
+    An entry that also carries the reparse-point bit is a link instead, and one whose
+    data turns out not to be a link buffer falls back by its name alone
+    (``_reparse_fallback_type``); only a crafted archive reaches that.
     """
     if create_system is CreateSystem.UNIX:
         return stat.S_ISDIR(full_mode)

@@ -398,3 +398,33 @@ def test_other_zip_attributes_leave_a_file(host: int, external_attr: int) -> Non
         (member,) = ar.members()
     assert member.type is MemberType.FILE
     assert _reported(archive) == []
+
+
+@pytest.mark.parametrize(
+    ("host", "external_attr"),
+    [(_DOS, 0x10), (_UNIX, (stat.S_IFDIR | 0o755) << 16 | 0x10)],
+)
+def test_an_ordinary_zip_directory_reports_nothing(
+    host: int, external_attr: int
+) -> None:
+    """Every ordinary ZIP directory carries the attribute (``zipfile`` writes both);
+    named with its "/", it is no disagreement."""
+    archive = _zip_entry("d/", host=host, external_attr=external_attr)
+    with open_archive(io.BytesIO(archive)) as ar:
+        (member,) = ar.members()
+    assert member.type is MemberType.DIRECTORY
+    assert member.diagnostics == ()
+
+
+def test_a_pipe_pass_yields_a_directory_by_attribute_as_its_name_says() -> None:
+    """The attributes come with the central directory, after the pass: the pass
+    yields the file the name says, and the member is a directory afterwards (DR-25)."""
+    archive = _DIRECTORY_BY_ATTRIBUTE["dos directory bit"]
+    with open_archive(NonSeekableBytesIO(archive), streaming=True) as ar:
+        yielded = [
+            (member, member.name, member.type, stream is not None)
+            for member, stream in ar.stream_members()
+        ]
+    ((member, name, member_type, has_stream),) = yielded
+    assert (name, member_type, has_stream) == ("d", MemberType.FILE, True)
+    assert (member.name, member.type) == ("d/", MemberType.DIRECTORY)
