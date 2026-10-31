@@ -34,7 +34,8 @@ the pull request's ``updated_at`` in the webhook, which labelling bumps; see
     {"round": 3, "final": false, "head_sha": "abc...", "live_head_sha": "def...",
      "repository": "...", "tier": "deep", "opus_pass": false,
      "markers": ["<!-- archivey-review-round n=1 ... -->"],
-     "verdict": {"verdict": "findings", "summary": "...", "question": ""}}
+     "verdict": {"verdict": "findings", "summary": "...", "question": ""},
+     "shape": ["inline finding 123 has no `### K<n> ·` heading"]}
     -> {"verdict": "findings", "stop": false, "counted": true,
         "comment": "...", "reason": "...", "label": "changes-requested",
         "unlabel": ["approved", "approved-with-fixes", "needs-decision"],
@@ -48,6 +49,8 @@ The comment says what happened and what the implementer does next, and it carrie
 the marker that makes the round count. ``label`` is the outcome label the workflow puts
 on, taking the ``unlabel`` ones off; see `OUTCOME_LABELS`.
 
+``shape`` lists what the round's posts missed of the posting shape
+(`scripts/review_shape.py`); the comment lists it and the marker counts it.
 ``tier`` is the pull request's review tier (``python3 scripts/review_prep.py tier``),
 ``opus_pass`` says this round was the Opus pass, and ``markers`` are the same first
 lines `decide` reads. ``opus_pass_next`` asks the workflow to run the Opus pass now;
@@ -101,6 +104,10 @@ ROUND_MARKER = "<!-- archivey-review-round"
 ATTEMPT_MARKER = "<!-- archivey-review-attempt"
 
 _FIELD = re.compile(r"(\w+)=(\S+)")
+
+#: How many of a round's posts missed the posting shape (`scripts/review_shape.py`).
+#: On the round marker only when some did; `scripts/review_tally.py` counts them.
+SHAPE_FIELD = "shape"
 
 #: What a round's verdict says about whether another round is wanted.
 #:
@@ -592,10 +599,33 @@ def finish(event: dict) -> Finish:
             "this way."
         )
 
+    # `null` (present but empty) is a check the close could not run.
+    unchecked = "shape" in event and event["shape"] is None
+    shape = [str(miss) for miss in event.get("shape") or []]
+    misshapen = (
+        "\n\n**Posting shape.** The review's posts miss the shape "
+        "`code-review-skill` §3 and §6 ask for, which the fixes and the weekly tally "
+        "read by. It is a reviewer defect, to fix in the skill or the prompt, not on "
+        "this pull request, and it does not change the verdict:\n\n"
+        + "\n".join(f"- {miss}" for miss in shape)
+        if shape
+        else "\n\n**Posting shape.** Not checked: the pull request's comments "
+        "could not be read."
+        if unchecked
+        else ""
+    )
+    shape_field = (
+        f" {SHAPE_FIELD}=skipped"
+        if unchecked
+        else f" {SHAPE_FIELD}={len(shape)}"
+        if shape
+        else ""
+    )
     marker = (
         f"{ROUND_MARKER} n={rnd}{f' sha={sha}' if sha else ''} verdict={v.verdict}"
         f"{f' {OPUS_PASS_FIELD}' if opus_pass else ''}"
-        f"{f' {OPUS_NEXT_FIELD}' if pass_after_fixes else ''} -->"
+        f"{f' {OPUS_NEXT_FIELD}' if pass_after_fixes else ''}"
+        f"{shape_field} -->"
     )
     # No outcome label while the Opus pass is still to read the pull request: an
     # `approved` put on now would stay if the pass died. The pass's close sets it.
@@ -606,7 +636,7 @@ def finish(event: dict) -> Finish:
         # that stops.
         v.stop and not pass_after_fixes,
         True,
-        f"{marker}\n\n{body}{unseen}{footer}",
+        f"{marker}\n\n{body}{unseen}{misshapen}{footer}",
         v.reason,
         outcome,
         tuple(sorted({o for o in OUTCOME_LABELS.values() if o != outcome}))

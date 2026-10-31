@@ -447,6 +447,27 @@ def test_a_decision_carries_its_question() -> None:
     assert "Once it is answered, add the `review` label again" in answer.comment
 
 
+def test_posting_shape_misses_are_listed_and_counted() -> None:
+    """A miss is reported, and counted on the marker, but never changes the verdict."""
+    misses = ["the review body has a table", "inline finding 9 has no heading"]
+    shaped = finish(verdict_file(verdict="conditional"), shape=misses)
+    plain = finish(verdict_file(verdict="conditional"))
+    first = shaped.comment.splitlines()[0]
+    assert " shape=2 " in first
+    assert "shape=" not in plain.comment.splitlines()[0]
+    assert "**Posting shape.**" in shaped.comment
+    assert "a reviewer defect" in shaped.comment
+    assert all(f"- {miss}" in shaped.comment for miss in misses)
+    assert (shaped.verdict, shaped.stop, shaped.label) == (
+        plain.verdict,
+        plain.stop,
+        plain.label,
+    )
+    # The count on the marker leaves the history `decide` reads unchanged.
+    history = gate.read_history([first])
+    assert history == gate.read_history([plain.comment.splitlines()[0]])
+
+
 # --- the Opus pass -------------------------------------------------------------------
 
 
@@ -880,6 +901,99 @@ def test_the_close_script_says_when_the_opus_pass_starts(
     # The close consumes the verdict file, so the Opus pass that may follow in the
     # same job can never be closed with this round's verdict.
     assert not (work / "loop-verdict.json").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the step runs on ubuntu-latest")
+def test_the_close_script_checks_the_posting_shape(tmp_path: Path) -> None:
+    """The close fetches the round's posts and hands what they miss to the gate."""
+    bash, jq = shutil.which("bash"), shutil.which("jq")
+    if bash is None or jq is None:  # pragma: no cover - minimal runners
+        pytest.skip("needs bash and jq")
+    review = {
+        "id": 1,
+        "user": {"login": "claude[bot]"},
+        "submitted_at": "2026-10-30T11:00:00Z",
+        # Headed and attributed, but with no Measured list and no footer.
+        "body": "## Round 2 · ✅ Approve\n\n**Claude Code** · `code-review-skill`\n",
+    }
+    pages = tmp_path / "reviews.json"
+    pages.write_text(json.dumps([[review]]), encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "gh"
+    stub.write_text(
+        f'#!/bin/sh\necho "$@" >> {tmp_path}/gh.log\n'
+        f'case "$*" in *"pulls/7/reviews"*) cat {pages} ;;\n'
+        '  *"--slurp"*) echo "[[]]" ;; esac\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "loop-verdict.json").write_text(
+        json.dumps(verdict_file(verdict="approved")), encoding="utf-8"
+    )
+    script = _close_step().replace("/tmp/", f"{work}/")
+    env = os.environ | {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "ROUND": "2",
+        "FINAL": "false",
+        "HEAD_SHA": SHA,
+        "PR": "7",
+        "GITHUB_REPOSITORY": REPO,
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+        "GITHUB_OUTPUT": str(tmp_path / "output.txt"),
+        "TIER": "light",
+    }
+    subprocess.run([bash, "-c", script], cwd=ROOT, env=env, check=True)
+    posted = (work / "comment.md").read_text(encoding="utf-8")
+    assert " shape=2 " in posted.splitlines()[0]
+    assert "- the review body has no collapsed `Measured this round` list" in posted
+    assert "- the review body does not end with the attribution footer" in posted
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the step runs on ubuntu-latest")
+def test_a_failed_fetch_is_no_posting_shape_miss(tmp_path: Path) -> None:
+    """Empty lists from a failed call would read as a round that posted nothing, so
+    the check is skipped, and the skip is named rather than read as a pass."""
+    bash, jq = shutil.which("bash"), shutil.which("jq")
+    if bash is None or jq is None:  # pragma: no cover - minimal runners
+        pytest.skip("needs bash and jq")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "gh"
+    stub.write_text(
+        f'#!/bin/sh\necho "$@" >> {tmp_path}/gh.log\n'
+        # A failure after some output: a later page, say, or an error body.
+        'case "$*" in *"pulls/7/reviews"*) echo "[[]]"; exit 1 ;;\n'
+        '  *"--slurp"*) echo "[[]]" ;; esac\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "loop-verdict.json").write_text(
+        json.dumps(verdict_file(verdict="approved")), encoding="utf-8"
+    )
+    script = _close_step().replace("/tmp/", f"{work}/")
+    env = os.environ | {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "ROUND": "2",
+        "FINAL": "false",
+        "HEAD_SHA": SHA,
+        "PR": "7",
+        "GITHUB_REPOSITORY": REPO,
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+        "GITHUB_OUTPUT": str(tmp_path / "output.txt"),
+        "TIER": "light",
+    }
+    subprocess.run([bash, "-c", script], cwd=ROOT, env=env, check=True)
+    posted = (work / "comment.md").read_text(encoding="utf-8")
+    assert " shape=skipped " in posted.splitlines()[0]
+    assert "**Posting shape.** Not checked" in posted
+    assert "- " not in posted.split("**Posting shape.**", 1)[1]
+    summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+    assert "Posting shape: not checked" in summary
 
 
 def _step(name: str) -> str:
