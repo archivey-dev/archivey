@@ -708,8 +708,8 @@ def test_global_records_are_shared_until_a_global_header_changes_them() -> None:
 
 
 def test_a_later_global_header_with_an_empty_value_still_replaces() -> None:
-    """``comment`` goes because the second header replaces the first; its empty
-    record is skipped, so it is not what removed the key."""
+    """The second header replaces the first: ``comment`` is its empty record, which
+    is stored as GNU tar stores any string, not the first header's value."""
     data = (
         _pax({"comment": "one"}, typeflag=b"g")
         + _pax_body(_rec(b"comment", b"") + _rec(b"other", b"x"), typeflag=b"g")
@@ -717,7 +717,7 @@ def test_a_later_global_header_with_an_empty_value_still_replaces() -> None:
         + _END
     )
     (entry,), _ = _walk(data)
-    assert b"comment" not in entry.pax
+    assert entry.pax[b"comment"].value == b""
     assert entry.pax[b"other"].value == b"x"
 
 
@@ -2139,6 +2139,20 @@ def _ordinary_archives() -> dict[str, bytes]:
         _pax_body(_rec(b"SCHILY.xattr.user.empty", b"")) + _file() + _END
     )
     return archives
+
+
+def test_an_empty_record_archivey_does_not_read_is_kept() -> None:
+    """GNU tar restores an empty xattr from it, so it stays in the PAX records."""
+    data = (
+        _pax_body(_rec(b"SCHILY.xattr.user.empty", b"") + _rec(b"comment", b""))
+        + _file()
+        + _END
+    )
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        (member,) = ar.members()
+    pax = member.extra["tar.pax_headers"]
+    assert pax["SCHILY.xattr.user.empty"] == ""
+    assert pax["comment"] == ""
 
 
 @pytest.mark.parametrize("label", list(_ordinary_archives()))

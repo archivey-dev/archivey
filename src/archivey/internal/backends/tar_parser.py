@@ -499,16 +499,20 @@ def _sparse_slots(block: bytes, start: int, count: int) -> tuple[tuple[int, int]
 
 
 _PAX_LENGTH = re.compile(rb"([0-9]{1,20}) ")
-# The keywords an empty value sets to empty, as GNU tar 1.35's decoders store any
-# string. Another keyword's empty value leaves the value in force before it.
-_EMPTY_VALUE_STORED = frozenset((b"linkpath", b"uname", b"gname"))
 # The skipped empty values EMPTY_VALUE reports: a name, or a number GNU tar 1.35 calls
-# invalid. Any other keyword is left out: GNU tar writes an empty
-# SCHILY.xattr.<name> for an empty extended attribute (tar --xattrs), and a comment or
-# vendor record names and frames nothing.
+# invalid. Each leaves the value in force before it. Not reported: GNU tar writes an
+# empty SCHILY.xattr.<name> for an empty extended attribute (tar --xattrs), and a
+# comment or vendor record names and frames nothing.
 _EMPTY_VALUE_REPORTED = frozenset(
     (b"path", b"mtime", b"atime", b"ctime", b"uid", b"gid")
 )
+# The keywords whose empty value is skipped: those above, ``hdrcharset``, and
+# ``size``, which raises instead. Every other empty value is stored, as GNU tar 1.35's
+# decoders store any string: ``linkpath``, ``uname`` and ``gname`` become empty, a
+# ``GNU.sparse.*`` record is kept for the sparse checks to judge, and a key archivey
+# does not read, such as an empty xattr, stays in ``extra["tar.pax_headers"]``
+# (maintainer ruling 2026-10-31: it is the only trace that the xattr exists).
+_EMPTY_VALUE_SKIPPED = _EMPTY_VALUE_REPORTED | {b"hdrcharset", b"size"}
 # The keywords whose value is a C string to GNU tar 1.35, cut at its first NUL as an
 # ``L`` or ``K`` payload and a header field are. The cut comes before the empty-value
 # rule, so a ``path`` that is empty after it is skipped and the value in force stays.
@@ -644,13 +648,14 @@ def parse_pax_records(
     A repeated key keeps one value, so a block of many records of one key holds no
     object per record: the last one, as GNU tar 1.35 applies a member's records in
     order, or the first with ``first_wins``, as it applies a global header's (it
-    keeps them in a list it prepends to). An empty value is read as GNU tar reads it:
-    ``linkpath``, ``uname`` and ``gname`` become empty, a ``GNU.sparse.*`` record is
-    kept for the sparse checks to judge, an empty ``size`` is
+    keeps them in a list it prepends to). An empty value is read as GNU tar reads it
+    (``_EMPTY_VALUE_SKIPPED``): an empty ``path``, number or ``hdrcharset`` is left
+    out, so the value in force before it stays (GNU tar skips an empty ``path`` and
+    reports an empty number as invalid), an empty ``size`` is
     :class:`CorruptionError` (GNU tar reports it as "invalid size=", and the size
-    frames the member), and any other keyword is left out, so the value in force
-    before it stays (GNU tar skips an empty ``path`` and reports an empty number as
-    invalid). The keywords in ``_C_STRING_KEYS`` are cut at their first NUL before
+    frames the member), and any other keyword is stored empty: ``linkpath``,
+    ``uname`` and ``gname`` become empty, and a ``GNU.sparse.*`` or vendor record is
+    kept. The keywords in ``_C_STRING_KEYS`` are cut at their first NUL before
     that rule applies. ``hdrcharset`` is kept by the same rule as any key, and the one
     kept decides whether the block's names are binary.
     """
@@ -695,16 +700,15 @@ def parse_pax_records(
         if key in seen and key not in _SPARSE_MAP_KEYS:
             repeated[key] = None
         seen.add(key)
-        if not value and key not in _EMPTY_VALUE_STORED:
+        if not value and key in _EMPTY_VALUE_SKIPPED:
             if key == b"size":
                 raise CorruptionError(
                     f"TAR PAX header has an empty size record at byte "
                     f"{pos - length}: the size frames the member's data"
                 )
-            if not key.startswith(b"GNU.sparse."):
-                if key in _EMPTY_VALUE_REPORTED:
-                    emptied[key] = None
-                continue
+            if key in _EMPTY_VALUE_REPORTED:
+                emptied[key] = None
+            continue
         # The sparse 0.0 map repeats its keys by design: not reported above, but the
         # value kept still follows first_wins like any other key.
         if key in raw and first_wins:

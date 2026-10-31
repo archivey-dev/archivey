@@ -359,9 +359,13 @@ GNU tar (DR-6, measured 2026-10-30):
   an empty `linkpath` has no target (`SYMLINK_TARGET_UNAVAILABLE`, and
   `LINK_TARGET_UNAVAILABLE` at extraction, which goes on; GNU tar substitutes `.` for an
   empty hard link target and fails that link). An empty `size` is
-  `CorruptionError`, as GNU tar calls it malformed. Any other empty value is skipped, so
-  the global record or the header field stays: POSIX would delete both, and GNU tar
-  keeps an empty `path` from naming anything.
+  `CorruptionError`, as GNU tar calls it malformed. An empty `path`, `mtime`, `atime`,
+  `ctime`, `uid`, `gid` or `hdrcharset` is skipped (`_EMPTY_VALUE_SKIPPED`), so the
+  global record or the header field stays: POSIX would delete both, and GNU tar keeps
+  an empty `path` from naming anything. Any other empty value is stored, so a key
+  archivey does not read, such as GNU tar's `SCHILY.xattr.<name>` for an empty
+  extended attribute, stays in `extra["tar.pax_headers"]` with an empty value
+  (maintainer ruling 2026-10-31: it is the only trace that the attribute exists).
 - A `path`, `GNU.sparse.name`, `linkpath`, `uname` or `gname` value ends at its first
   NUL, as a header field and an `L` or `K` name do. The cut comes first (in
   `parse_pax_records`), so a `path` that is empty after it is skipped and the earlier
