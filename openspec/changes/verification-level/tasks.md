@@ -58,8 +58,9 @@
 - [x] 5b.2 `tests/test_stream_verify.py`: the verify matrix.
 - [x] 5b.3 `docs/errors-and-diagnostics.md`, `dev-docs/IDEAS.md` (the faster version
       stays an idea), `dev-docs/api-surface.txt`.
-- [x] 5b.4 Maintainer ruling: a seekable stream seeks back to where it was (a probe); a
-      forward-only one is consumed. Docstring states the cost of going back.
+- [x] 5b.4 Maintainer rulings: a seekable stream is left as it was (seeks back, also on
+      error); a forward-only one is read to the end whatever the level, and later reads
+      raise `ArchiveyUsageError`. Docstring states the cost of going back.
 
 ## 6. Archive
 

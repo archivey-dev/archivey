@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from archivey import Verification, open_archive, open_stream
-from archivey.exceptions import CorruptionError, EncryptionError
+from archivey.exceptions import ArchiveyUsageError, CorruptionError, EncryptionError
 
 _DATA = b"verify me\n" * 20000
 
@@ -45,13 +45,37 @@ def test_verify_on_a_seekable_stream_is_a_probe(tmp_path: Path) -> None:
         assert stream.read() == _DATA[100:]
 
 
-def test_verify_on_a_forward_only_stream_consumes_it(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "level", [Verification.NONE, Verification.KEY, Verification.CONTENT]
+)
+def test_verify_on_a_forward_only_stream_consumes_it(
+    tmp_path: Path, level: Verification
+) -> None:
+    # Whatever the level, it reads to the end; later reads are a usage error.
     with open_archive(_zip(tmp_path), streaming=True) as reader:
         for _member, stream in reader.stream_members():
             assert stream is not None
             assert not stream.seekable()
+            assert stream.verify(level) is Verification.CONTENT
+            with pytest.raises(ArchiveyUsageError, match="verify"):
+                stream.read(1)
+            with pytest.raises(ArchiveyUsageError, match="verify"):
+                stream.readinto(bytearray(1))
+            # A second verify() answers without reading.
             assert stream.verify() is Verification.CONTENT
-            assert stream.read() == b""
+
+
+def test_verify_consumes_a_forward_only_stream_even_when_it_fails(
+    tmp_path: Path,
+) -> None:
+    path = _corrupt_crc(_zip(tmp_path))
+    with open_archive(path, streaming=True) as reader:
+        for _member, stream in reader.stream_members():
+            assert stream is not None
+            with pytest.raises(CorruptionError):
+                stream.verify()
+            with pytest.raises(ArchiveyUsageError, match="verify"):
+                stream.read(1)
 
 
 def test_verify_finishes_a_partly_read_member(tmp_path: Path) -> None:
@@ -71,17 +95,33 @@ def test_verify_on_a_checked_stream_reads_nothing(tmp_path: Path) -> None:
         assert stream.tell() == 5
 
 
-def test_verify_raises_what_the_read_raises(tmp_path: Path) -> None:
-    path = _zip(tmp_path)
+def _corrupt_crc(path: Path) -> Path:
     raw = bytearray(path.read_bytes())
     for at in (raw.index(b"PK\x03\x04") + 14, raw.index(b"PK\x01\x02") + 16):
         (crc,) = struct.unpack_from("<I", raw, at)
         struct.pack_into("<I", raw, at, crc ^ 0xFFFFFFFF)
     path.write_bytes(bytes(raw))
+    return path
+
+
+def test_verify_raises_what_the_read_raises(tmp_path: Path) -> None:
+    path = _corrupt_crc(_zip(tmp_path))
     with open_archive(path) as reader, reader.open("a.txt") as stream:
         with pytest.raises(CorruptionError):
             stream.verify()
         assert stream.verified is Verification.KEY
+
+
+def test_verify_puts_a_seekable_stream_back_when_it_fails(tmp_path: Path) -> None:
+    path = _corrupt_crc(_zip(tmp_path))
+    with (
+        open_archive(path, seekable_members=True) as reader,
+        reader.open("a.txt") as stream,
+    ):
+        assert stream.read(100) == _DATA[:100]
+        with pytest.raises(CorruptionError):
+            stream.verify()
+        assert stream.tell() == 100
 
 
 def test_verify_stops_at_structure_for_a_tar_member(tmp_path: Path) -> None:
@@ -120,7 +160,6 @@ def test_verify_opens_a_lazy_stream_members_stream(tmp_path: Path) -> None:
             assert stream is not None
             assert stream.verified is Verification.NONE
             assert stream.verify() is Verification.CONTENT
-            assert stream.read() == b""
 
 
 @pytest.mark.parametrize("read_first", [True, False], ids=["checked", "unchecked"])
@@ -145,19 +184,13 @@ _COLLISION = (
 
 def test_verify_key_on_an_open_plain_member_reads_nothing(tmp_path: Path) -> None:
     # An unencrypted member is at KEY as soon as open() returns it.
-    with open_archive(_zip(tmp_path)) as reader, reader.open("a.txt") as stream:
+    with (
+        open_archive(_zip(tmp_path), seekable_members=True) as reader,
+        reader.open("a.txt") as stream,
+    ):
         assert stream.verify(Verification.KEY) is Verification.KEY
         assert stream.tell() == 0
-        assert stream.verify() is Verification.CONTENT
-
-
-def test_verify_key_on_a_lazy_stream_stops_at_its_first_read(tmp_path: Path) -> None:
-    with open_archive(_zip(tmp_path), streaming=True) as reader:
-        for _member, stream in reader.stream_members():
-            assert stream is not None
-            assert stream.verify(Verification.KEY) is Verification.KEY
-            # Only the first small read ran; the rest is still there to read.
-            assert 0 < stream.tell() < len(_DATA)
+        assert stream.read() == _DATA
 
 
 def test_verify_key_on_a_weak_password_reads_to_the_checksum() -> None:
@@ -186,9 +219,10 @@ def test_verify_above_the_ceiling_stops_at_the_ceiling(tmp_path: Path) -> None:
         assert stream.verify(Verification.CONTENT) is Verification.STRUCTURE
 
 
-def test_verify_none_reads_nothing(tmp_path: Path) -> None:
-    with open_archive(_zip(tmp_path), streaming=True) as reader:
-        for _member, stream in reader.stream_members():
-            assert stream is not None
-            assert stream.verify(Verification.NONE) is Verification.NONE
-            assert stream._inner is None
+def test_verify_none_on_a_seekable_stream_reads_nothing(tmp_path: Path) -> None:
+    with (
+        open_archive(_zip(tmp_path), seekable_members=True) as reader,
+        reader.open("a.txt") as stream,
+    ):
+        assert stream.verify(Verification.NONE) is Verification.KEY
+        assert stream.tell() == 0

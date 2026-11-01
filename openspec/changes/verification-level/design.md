@@ -161,24 +161,38 @@ level, with a faster `verify()` kept as an open idea.
 
 Added 2026-11-01 at the maintainer's request, as the simple version. `level` (default
 `CONTENT`) is how much the caller wants proved; the goal is `level` capped at
-`verifiable`. It reads and discards, starting at 4 KiB and doubling to 1 MiB, and stops
-once `verified` reaches the goal, so `verify(KEY)` costs nothing on an open unencrypted
-member and one small read on a lazy one. It reads nothing for `NONE`. When the stream ends
+`verifiable`. It reads and discards, starting at 4 KiB and doubling to 1 MiB. On a stream
+that can seek it stops once `verified` reaches the goal, so `verify(KEY)` costs nothing on an
+open unencrypted member, and it reads nothing for `NONE`; a stream that cannot seek is read
+to the end (below). When the stream ends
 below the goal and can seek, it seeks to 0 and reads once more, since a seek past unread
 bytes is what keeps a check from running. It raises what the read raises and adds no error
 of its own; a goal below `level` is returned, not raised, and the caller compares. A closed
 stream raises `ValueError`, as every `io` method does. It is a concrete method on the public
 base, so every stream has it.
 
-The maintainer's ruling (2026-11-01): a caller who asks for a level wants it checked at that
-level, so `verify()` does whatever that takes, then restores the stream's earlier state. On a
-stream that can seek it is a probe: it seeks back to the position it started from, so a
-later `read()` returns the same bytes. Going back to the middle of a compressed member with no
-index decodes it again up to that offset, so a probe there costs up to two decodes; the
-docstring says so. A stream that cannot seek (`stream_members()`, a pipe, a forward-only
-`open_stream()`) cannot go back, so `verify()` consumes what it reads and the docstring says
-that too. When a check fails, the stream stays where the failure was found: the error is the
-answer, and the stream's verdict repeats on any later read.
+The maintainer's rulings (2026-11-01): a caller who asks for a level wants it checked at that
+level, so `verify()` does whatever that takes. Then one simple rule, for consistency and so
+that no caller depends on how far a check happened to read:
+
+- **A stream that can seek is left as it was.** `verify()` seeks back to the position it
+  started from, also when a check raised, so a later `read()` returns the same bytes. Going
+  back to the middle of a compressed member with no index decodes it again up to that offset,
+  so that call costs up to two decodes; the docstring says so.
+- **A stream that cannot seek is fully consumed.** `stream_members()`, a pipe or a
+  forward-only `open_stream()` cannot go back, so `verify()` reads to the end whatever the
+  level, and every later read raises `ArchiveyUsageError`. A partial consume (stop once `KEY`
+  is reached) would leave a stream whose position depends on the member's format and
+  password check, which is the kind of gotcha the rule avoids. `verify(KEY)` there costs a
+  full read, and the docs say to read the data instead when it is needed. A second
+  `verify()` returns `verified` without reading.
+
+Even on a seekable stream `KEY` can need the whole member: a weak password check
+(ZipCrypto, an encrypted stored member) is confirmed only by the checksum.
+
+The usage error is enforced by `ArchiveStreamImpl`, through two protected hooks on the base
+(`_verify_consumed`, `_mark_verify_consumed`); a stream class that does not override them
+keeps answering reads at its end with `b""`.
 
 The parameter fixes the shape now, so a cheaper path to a level can land in a patch
 release: the 7z AES tail padding check (`sevenzip-aes-tail-key-check`, not implemented),

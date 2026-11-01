@@ -190,16 +190,25 @@ After seeks, `stream.verified` shows whether the checksum still ran. If it's bel
 `stream.verifiable` once you've read to the end, a seek back to the start and a read to the end
 runs every check.
 
-To check a member without keeping its bytes, call `stream.verify()`. It reads the rest of the
-stream and throws the bytes away, so every check a read to the end runs, and it returns
-`stream.verified`. If a seek kept the check from covering every byte and the stream can seek,
-it reads the member again from the start. A stream that can seek then goes back to where it
-was, so the next `read()` returns the same bytes; going back to the middle of a compressed
-member decodes it again up to that point. A stream that can't seek, such as one from
-`stream_members()`, is consumed. `stream.verify(Verification.KEY)` stops as soon as
-the password is confirmed: at once for a member that isn't encrypted or whose password passed a
-reliable check, and at its checksum for one that only passed a weak check. A failed check raises
-what the read would raise:
+To check a member without keeping its bytes, call `stream.verify()`. It runs every check a read
+to the end runs, throws the bytes away, and returns `stream.verified`. What it does to the
+stream depends on whether the stream can seek:
+
+- **A stream that can seek** is left as it was. `verify()` reads what the check needs, from the
+  start again if a seek kept an earlier read from covering every byte, then goes back to where
+  the stream was, so the next `read()` returns the same bytes. Going back to the middle of a
+  compressed member decodes it again up to that point, so that call can cost two decodes.
+- **A stream that can't seek**, such as one from `stream_members()` or a pipe, can't go back.
+  `verify()` reads it to the end, whatever level you ask for, and a later `read()` raises
+  `ArchiveyUsageError`. If you need the bytes too, read them instead: the read runs the same
+  checks.
+
+`stream.verify(Verification.KEY)` on a stream that can seek stops as soon as the password is
+confirmed: at once for a member that isn't encrypted or whose password passed a reliable check.
+A member whose password passed only a weak check, such as ZipCrypto's one-byte check, is
+confirmed only by its checksum, so that call reads the whole member. On a stream that can't
+seek, `verify(Verification.KEY)` always costs a full read. A failed check raises what the read
+would raise:
 
 ```python
 with archive.open(member) as stream:

@@ -284,6 +284,14 @@ class MemberStreamParts:
         )
 
 
+def _consumed_by_verify_error() -> ArchiveyUsageError:
+    return ArchiveyUsageError(
+        "Cannot read this stream: verify() read it to the end, and it cannot seek "
+        "back. Read the data itself to check it as you go, or open the member from a "
+        "reader that can seek."
+    )
+
+
 class ArchiveStreamImpl(ArchiveStream):
     """Archivey's own :class:`~archivey.ArchiveStream`: the one every reader and
     :func:`~archivey.open_stream` hands out.
@@ -320,6 +328,8 @@ class ArchiveStreamImpl(ArchiveStream):
     _verdict_rewound = False
     _uninterrupted = True
     _ended_from_start = False
+    # Set by ``verify()`` once it has read a forward-only stream to its end.
+    _consumed_by_verify = False
     # ``close()`` reads these three as well: ``IOBase.__del__`` closes an instance whose
     # ``__init__`` raised before assigning them, or never ran, as when a deprecated
     # ``ArchiveStream(...)`` call has the wrong arguments. ``False`` because ``None``
@@ -837,6 +847,8 @@ class ArchiveStreamImpl(ArchiveStream):
         # pull a decoder's deferred truncation into this call. An inner that shorts
         # mid-stream needs a full-count layer in front (the ``ArchiveSource`` at the
         # boundary is one), not a loop here.
+        if self._consumed_by_verify:
+            raise _consumed_by_verify_error()
         inner = self._ensure_open()
         verdict = self._verdict
         if verdict is not None and not self._verdict_rewound:
@@ -877,6 +889,8 @@ class ArchiveStreamImpl(ArchiveStream):
             leave_scope(stack, scope)
 
     def _read_ahead(self, need: int, n: int) -> bytes:
+        if self._consumed_by_verify:
+            raise _consumed_by_verify_error()
         inner = self._ensure_open()
         # A verdict raises again as ``read`` raises it. A verifier sees each byte in
         # ``read``, and bytes that skipped it would go out unchecked. No codec stream
@@ -890,6 +904,14 @@ class ArchiveStreamImpl(ArchiveStream):
             return cast("DecompressorStream", inner).read_ahead(need, n)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             self._fail_unless_closed(e)
+
+    @override
+    def _verify_consumed(self) -> bool:
+        return self._consumed_by_verify
+
+    @override
+    def _mark_verify_consumed(self) -> None:
+        self._consumed_by_verify = True
 
     @override
     def readinto(self, b: WriteableBuffer, /) -> int:
