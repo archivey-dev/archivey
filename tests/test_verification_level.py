@@ -90,7 +90,7 @@ def test_zip_member_level_stays_after_a_rewind(tmp_path: Path) -> None:
         assert stream.verified is CHECKSUM
 
 
-def test_zip_member_whose_crc_fails_stays_below_structure(tmp_path: Path) -> None:
+def test_zip_member_whose_crc_fails_stays_below_length(tmp_path: Path) -> None:
     path = _zip(tmp_path)
     _corrupt_zip_crc(path)
     with open_archive(path) as reader, reader.open("a.txt") as stream:
@@ -110,7 +110,7 @@ def test_stream_members_stream_is_none_until_its_first_read(tmp_path: Path) -> N
             assert (stream.verified, stream.verifiable) == (CHECKSUM, CHECKSUM)
 
 
-def test_tar_member_reaches_structure(tmp_path: Path) -> None:
+def test_tar_member_reaches_length(tmp_path: Path) -> None:
     path = tmp_path / "a.tar.gz"
     with tarfile.open(path, "w:gz") as tf:
         info = tarfile.TarInfo("a.txt")
@@ -142,7 +142,7 @@ def test_open_stream_reaches_what_its_codec_checks(compress, expected) -> None:
         assert stream.verified is expected
 
 
-def test_gzip_whose_crc_fails_does_not_reach_content() -> None:
+def test_gzip_whose_crc_fails_does_not_reach_checksum() -> None:
     raw = bytearray(gzip.compress(_DATA))
     raw[-8] ^= 0xFF  # the CRC-32 in the trailer
     with open_stream(io.BytesIO(bytes(raw))) as stream:
@@ -194,7 +194,7 @@ def test_zipcrypto_colliding_wrong_password_never_rises() -> None:
         assert stream.verified is NONE
 
 
-def test_zipcrypto_candidate_confirmed_on_its_crc_is_key() -> None:
+def test_zipcrypto_candidate_confirmed_on_its_crc_is_password() -> None:
     with (
         open_archive(_COLLISION, password=[_STORED_COLLISION, "secret"]) as reader,
         reader.open(_member(reader, "stored.txt")) as stream,
@@ -205,7 +205,7 @@ def test_zipcrypto_candidate_confirmed_on_its_crc_is_key() -> None:
 
 @requires("cryptography")
 @pytest.mark.parametrize("seekable", [False, True])
-def test_winzip_aes_reaches_content_only_through_its_hmac(seekable: bool) -> None:
+def test_winzip_aes_reaches_checksum_only_through_its_hmac(seekable: bool) -> None:
     with (
         open_archive(_AE1, password="secret", seekable_members=seekable) as reader,
         reader.open(_first_file(reader)) as stream,
@@ -221,7 +221,7 @@ def test_winzip_aes_reaches_content_only_through_its_hmac(seekable: bool) -> Non
 
 
 @requires_binary("unrar")
-def test_rar4_partial_read_is_none_and_full_read_content() -> None:
+def test_rar4_partial_read_is_none_and_full_read_checksum() -> None:
     with (
         open_archive(_RAR4_LARGE_STORED, password="password") as reader,
         reader.open(_first_file(reader)) as stream,
@@ -261,7 +261,7 @@ def test_rar4_wrong_password_never_rises() -> None:
 
 @requires("cryptography")
 @requires_binary("unrar")
-def test_rar5_password_check_is_key_before_the_crc() -> None:
+def test_rar5_password_check_is_password_before_the_crc() -> None:
     with (
         open_archive(_RAR5, password="password") as reader,
         reader.open(_first_file(reader)) as stream,
@@ -301,7 +301,7 @@ def test_winzip_aes_stream_members_partial_read_is_none() -> None:
 
 
 @requires("cryptography")
-def test_winzip_aes_ae2_reaches_content_from_its_hmac(tmp_path: Path) -> None:
+def test_winzip_aes_ae2_reaches_checksum_from_its_hmac(tmp_path: Path) -> None:
     from tests.zip_aes_fixture import build_aes_zip
 
     # AE-2 stores CRC 0: the HMAC is the only check over the member's bytes.
@@ -367,7 +367,7 @@ def test_weak_key_with_no_digest_can_reach_nothing(confirmed: bool) -> None:
 
 
 @pytest.mark.parametrize("measured", [False, True])
-def test_gzip_member_reaches_content_with_measurement(
+def test_gzip_member_reaches_checksum_with_measurement(
     tmp_path: Path, measured: bool
 ) -> None:
     from contextlib import nullcontext

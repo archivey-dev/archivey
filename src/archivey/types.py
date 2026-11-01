@@ -590,11 +590,11 @@ class Verification(IntEnum):
     """The password is right: the member is not encrypted, or its password passed a
     check a wrong password cannot pass by chance."""
     LENGTH = 2
-    """The password is right, and a read reached the end with the length and every
+    """As ``PASSWORD``, and a read reached the end with the length and every
     end-of-data check passing: all the data is there, though its bytes are not
     proved."""
     CHECKSUM = 3
-    """The length, and a checksum stored with the data matched every byte: the
+    """As ``LENGTH``, and a checksum stored with the data matched every byte: the
     member's CRC-32 or BLAKE2sp, the WinZip AES authentication code, or the checksum of
     a gzip, bzip2, lzip or zlib stream read from its start."""
 

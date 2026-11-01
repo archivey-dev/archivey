@@ -491,7 +491,7 @@ def test_registration_scope_undoes_registration() -> None:
         register_format(ToyHandler)
 
 
-def test_checked_counts_as_content(clean_registry: None, tmp_path: Path) -> None:
+def test_checked_counts_as_checksum(clean_registry: None, tmp_path: Path) -> None:
     """A member with no checksum archivey can compute reaches CONTENT only when the
     plugin says its library checked the data."""
 

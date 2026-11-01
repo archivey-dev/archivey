@@ -1675,7 +1675,7 @@ def test_decoded_data_with_no_size(decoded: _DecodedFixture, tmp_path: Path) -> 
     assert got == _DECODED_DATA
 
 
-def test_decoded_checked_data_counts_as_content(
+def test_decoded_checked_data_counts_as_checksum(
     decoded: _DecodedFixture, tmp_path: Path
 ) -> None:
     fmt, reader_type = decoded
