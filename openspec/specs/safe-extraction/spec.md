@@ -945,6 +945,13 @@ rules extraction applies to what it writes:
   counter installed), this rule does not apply to reads, as it does not to extraction;
   extraction keeps `max_extracted_bytes` there, and a read keeps only the per-member rule.
 
+A member whose data is a run of the archive stream's own bytes, as every TAR member's is
+except a sparse one's (a TAR is compressed as a whole, if at all), SHALL NOT be held:
+it cannot pass 1:1, and where the stream is compressed its decode is already held to the
+archive-wide ratio. It SHALL be counted toward the archive-wide total at its recorded
+size when its stream is handed out, read or not, so a member that is held (a sparse
+one) is judged with it. Counting more than was read can only refuse sooner.
+
 A RAR file copy is held, and counted, as the member whose data it repeats. The read
 that crosses a limit SHALL NOT return the bytes it decoded. Reads and forward seeks
 reach the decoder in steps of at most 1 MiB, so a `read()` of a whole member stops

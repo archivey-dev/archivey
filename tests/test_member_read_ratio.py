@@ -8,6 +8,7 @@ import dataclasses
 import functools
 import io
 import os
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -410,3 +411,86 @@ def test_call_limits_without_a_ratio_keep_the_configs_deprecated_one(
             tmp_path / "out", limits=ExtractionLimits(max_extracted_bytes=10**12)
         )
     assert (tmp_path / "out" / "zeros").stat().st_size == 24 * _MIB
+
+
+def _tar_member(name: str, data: bytes) -> bytes:
+    info = tarfile.TarInfo(name)
+    info.size = len(data)
+    return info.tobuf(format=tarfile.GNU_FORMAT) + data + bytes(-len(data) % 512)
+
+
+def _count_guards(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    built: list[str] = []
+    init = MemberRatioGuard.__init__
+
+    def counting(self: MemberRatioGuard, *args: object, **kwargs: object) -> None:
+        built.append(kwargs["member"].name)  # type: ignore[union-attr]
+        init(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(MemberRatioGuard, "__init__", counting)
+    return built
+
+
+# 1 MiB of members stored as they are, then 1.5 MiB of holes; at 2:1 the archive (about
+# 1 MiB) allows 2 MiB of output in all. The holes alone pass, the two together do not.
+_TAR_RATIO = ArchiveyConfig(
+    decoder_limits=DecoderLimits(max_ratio=2, ratio_activation_threshold=0)
+)
+
+
+def _stored_then_holes() -> bytes:
+    stored = b"".join(_tar_member(f"s{i}", _noise() * 4) for i in range(4))
+    holes = _gnu_sparse("holes", [(3 * _MIB // 2, 0)], 3 * _MIB // 2, b"")
+    return stored + holes + _TRAILER
+
+
+def test_tar_members_without_holes_are_not_guarded_but_still_counted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A TAR member's data is its own bytes of the archive stream (the archive is
+    compressed whole, if at all), so it can never pass 1:1 and gets no guard. A sparse
+    member's holes are not stored, so it does, and the archive-wide total it is judged
+    by still counts the members read before it."""
+    path = tmp_path / "mixed.tar"
+    path.write_bytes(_stored_then_holes())
+    built = _count_guards(monkeypatch)
+    read: list[str] = []
+    with (
+        open_archive(path, config=_TAR_RATIO) as reader,
+        pytest.raises(AlwaysStopResourceLimitError, match="Archive-wide"),
+    ):
+        for member, stream in reader.stream_members():
+            if stream is not None:
+                read.append(member.name)
+                _drain(stream)
+    assert read == ["s0", "s1", "s2", "s3", "holes"]
+    assert built == ["holes"]
+
+
+def test_tar_holes_alone_pass_the_same_limit(tmp_path: Path) -> None:
+    """The control for the test above: without the stored members, the same holes
+    read in full, so it is their count in the total that refuses them there."""
+    path = tmp_path / "holes.tar"
+    stored = _tar_member("pad", _noise() * 16)  # keeps the archive at about 1 MiB
+    holes = _gnu_sparse("holes", [(3 * _MIB // 2, 0)], 3 * _MIB // 2, b"")
+    path.write_bytes(stored + holes + _TRAILER)
+    with open_archive(path, config=_TAR_RATIO) as reader:
+        assert reader.read("holes") == bytes(3 * _MIB // 2)
+
+
+def test_tar_members_count_at_their_size_whether_read_or_not(tmp_path: Path) -> None:
+    """An unguarded TAR member counts at its recorded size when its stream is handed
+    out, not at what was read of it: the holes are refused here with the stored
+    members open and nothing read from them yet. Counting bytes read instead (or
+    counting them only when they close) would let the holes pass, as in the control
+    above."""
+    path = tmp_path / "unread.tar"
+    path.write_bytes(_stored_then_holes())
+    with open_archive(path, config=_TAR_RATIO, concurrent_operations=True) as reader:
+        unread = [reader.open(f"s{i}") for i in range(4)]
+        try:
+            with pytest.raises(AlwaysStopResourceLimitError, match="Archive-wide"):
+                reader.read("holes")
+        finally:
+            for stream in unread:
+                stream.close()
