@@ -54,13 +54,16 @@ level adds no new error.
 
 ### Requirement: A stream verifies itself on request
 
-Every public `ArchiveStream` SHALL have a `verify()` method that reads the rest of the
-stream, discards the bytes, and returns `verified`. It SHALL read nothing when `verified`
-already equals `verifiable` and is above `NONE`. When the read reaches the end with
-`verified` below `verifiable` and the stream can seek, it SHALL seek to 0 and read to the end
-once more. It SHALL raise what those reads raise and nothing else, and SHALL NOT raise for a
-level below `verifiable`. When it reads, it leaves the stream at its end; when it returns
-at once, the position is unchanged. On a closed stream it SHALL raise `ValueError`.
+Every public `ArchiveStream` SHALL have a `verify(level=Verification.CONTENT)` method
+that reads on, discarding the bytes, until `verified` reaches the goal, and returns
+`verified`. The goal is `level`, or `verifiable` when that is lower. It SHALL read nothing
+when the goal is already reached and `verified` is above `NONE`, or when `level` is `NONE`.
+When the stream ends below the goal and the stream can seek, it SHALL seek to 0 and read
+on once more. It SHALL raise what those reads raise and nothing else, and SHALL NOT raise
+for a level below the goal. It leaves the stream where its last read ended, or unchanged
+when it reads nothing. On a closed stream it SHALL raise `ValueError`. A later release MAY
+reach a level with less reading (a cheaper key check); the returned level and the errors
+SHALL stay those a read to the goal gives.
 
 #### Scenario: verify matrix
 
@@ -74,3 +77,9 @@ at once, the position is unchanged. On a closed stream it SHALL raise `ValueErro
 | Seekable `.gz` member after a forward seek | reads again from 0; returns `CONTENT` |
 | Lazy `stream_members()` stream | opens, reads, returns `CONTENT` |
 | Closed stream, whatever its level | raises `ValueError` |
+| `verify(KEY)` on an open unencrypted member | reads nothing; returns `KEY` |
+| `verify(KEY)` on a lazy `stream_members()` stream | one small read; returns `KEY` |
+| `verify(KEY)` on a ZipCrypto member (one-byte check only) | reads to the CRC; returns `CONTENT` |
+| `verify(KEY)` under a colliding wrong ZipCrypto password | raises `EncryptionError` |
+| `verify(CONTENT)` on a TAR member | returns `STRUCTURE` |
+| `verify(NONE)` | reads nothing; a lazy stream stays unopened |

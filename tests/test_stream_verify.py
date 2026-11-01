@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from archivey import Verification, open_archive, open_stream
-from archivey.exceptions import CorruptionError
+from archivey.exceptions import CorruptionError, EncryptionError
 
 _DATA = b"verify me\n" * 20000
 
@@ -111,3 +111,61 @@ def test_verify_on_a_closed_stream_raises_whatever_its_level(
         stream.close()
         with pytest.raises(ValueError, match="closed"):
             stream.verify()
+
+
+# --- a requested level -------------------------------------------------------------
+
+_COLLISION = (
+    Path(__file__).parent / "fixtures" / "zipcrypto" / "check_byte_collision.zip"
+)
+
+
+def test_verify_key_on_an_open_plain_member_reads_nothing(tmp_path: Path) -> None:
+    # An unencrypted member is at KEY as soon as open() returns it.
+    with open_archive(_zip(tmp_path)) as reader, reader.open("a.txt") as stream:
+        assert stream.verify(Verification.KEY) is Verification.KEY
+        assert stream.tell() == 0
+        assert stream.verify() is Verification.CONTENT
+
+
+def test_verify_key_on_a_lazy_stream_stops_at_its_first_read(tmp_path: Path) -> None:
+    with open_archive(_zip(tmp_path), streaming=True) as reader:
+        for _member, stream in reader.stream_members():
+            assert stream is not None
+            assert stream.verify(Verification.KEY) is Verification.KEY
+            # Only the first small read ran; the rest is still there to read.
+            assert 0 < stream.tell() < len(_DATA)
+
+
+def test_verify_key_on_a_weak_password_reads_to_the_checksum() -> None:
+    # ZipCrypto's one-byte check confirms nothing; only the CRC at the end does.
+    with open_archive(_COLLISION, password="secret") as reader:
+        member = next(m for m in reader.members() if m.name == "stored.txt")
+        with reader.open(member) as stream:
+            assert stream.verified is Verification.NONE
+            assert stream.verify(Verification.KEY) is Verification.CONTENT
+
+
+def test_verify_key_on_a_colliding_wrong_password_raises() -> None:
+    with open_archive(_COLLISION, password="wrong896") as reader:
+        member = next(m for m in reader.members() if m.name == "stored.txt")
+        with reader.open(member) as stream, pytest.raises(EncryptionError):
+            stream.verify(Verification.KEY)
+
+
+def test_verify_above_the_ceiling_stops_at_the_ceiling(tmp_path: Path) -> None:
+    path = tmp_path / "a.tar"
+    with tarfile.open(path, "w") as tf:
+        info = tarfile.TarInfo("a.txt")
+        info.size = len(_DATA)
+        tf.addfile(info, io.BytesIO(_DATA))
+    with open_archive(path) as reader, reader.open("a.txt") as stream:
+        assert stream.verify(Verification.CONTENT) is Verification.STRUCTURE
+
+
+def test_verify_none_reads_nothing(tmp_path: Path) -> None:
+    with open_archive(_zip(tmp_path), streaming=True) as reader:
+        for _member, stream in reader.stream_members():
+            assert stream is not None
+            assert stream.verify(Verification.NONE) is Verification.NONE
+            assert stream._inner is None

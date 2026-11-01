@@ -193,7 +193,10 @@ runs every check.
 To check a member without keeping its bytes, call `stream.verify()`. It reads the rest of the
 stream and throws the bytes away, so every check a read to the end runs, and it returns
 `stream.verified`. If a seek kept the check from covering every byte and the stream can seek,
-it reads the member again from the start. A failed check raises what the read would raise:
+it reads the member again from the start. `stream.verify(Verification.KEY)` stops as soon as
+the password is confirmed: at once for a member that isn't encrypted or whose password passed a
+reliable check, and at its checksum for one that only passed a weak check. A failed check raises
+what the read would raise:
 
 ```python
 with archive.open(member) as stream:

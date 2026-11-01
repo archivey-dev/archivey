@@ -157,18 +157,23 @@ ADR 0014's last paragraph changes from "use `VerificationMode.STRICT`" to "read 
 end, and check `stream.verified`". The `IDEAS.md` entry is replaced by the shipped
 level, with a faster `verify()` kept as an open idea.
 
-### 8. `ArchiveStream.verify()` reads the rest and returns the level
+### 8. `ArchiveStream.verify(level)` reads until the level is reached
 
-Added 2026-11-01 at the maintainer's request, as the simple version: it reads the rest of
-the stream in 1 MiB reads, discards the bytes, and returns `verified`. A closed stream
-raises `ValueError`, as every `io` method does. It reads nothing, and keeps its position,
-when `verified` already equals `verifiable` above `NONE`. When the read reached the end below
-`verifiable` and the stream can seek, it seeks to 0 and reads once more, since a seek past
-unread bytes is what keeps a check from running. It raises what the read raises and adds no
-error of its own, and it does not raise for a level below `verifiable`: the caller compares,
-as with a read. It is a concrete method on the public base, so every stream has it.
-Skipping decode work where a format allows it is a later optimisation that keeps the result
-and the errors the same.
+Added 2026-11-01 at the maintainer's request, as the simple version. `level` (default
+`CONTENT`) is how much the caller wants proved; the goal is `level` capped at
+`verifiable`. It reads and discards, starting at 4 KiB and doubling to 1 MiB, and stops
+once `verified` reaches the goal, so `verify(KEY)` costs nothing on an open unencrypted
+member and one small read on a lazy one. It reads nothing for `NONE`. When the stream ends
+below the goal and can seek, it seeks to 0 and reads once more, since a seek past unread
+bytes is what keeps a check from running. It raises what the read raises and adds no error
+of its own; a goal below `level` is returned, not raised, and the caller compares. A closed
+stream raises `ValueError`, as every `io` method does. It is a concrete method on the public
+base, so every stream has it.
+
+The parameter fixes the shape now, so a cheaper path to a level can land in a patch
+release: the 7z AES tail padding check (`sevenzip-aes-tail-key-check`, not implemented),
+or a key confirmed by decoding only the start of a self-checking stream. Today `KEY` on a
+weak-check member (ZipCrypto, 7z without a cheap check) still means a read to its checksum.
 
 ## Risks / Trade-offs
 
