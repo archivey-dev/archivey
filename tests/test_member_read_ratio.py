@@ -476,3 +476,21 @@ def test_tar_holes_alone_pass_the_same_limit(tmp_path: Path) -> None:
     path.write_bytes(stored + holes + _TRAILER)
     with open_archive(path, config=_TAR_RATIO) as reader:
         assert reader.read("holes") == bytes(3 * _MIB // 2)
+
+
+def test_tar_members_count_at_their_size_whether_read_or_not(tmp_path: Path) -> None:
+    """An unguarded TAR member counts at its recorded size when its stream is handed
+    out, not at what was read of it: the holes are refused here with the stored
+    members open and nothing read from them yet. Counting bytes read instead (or
+    counting them only when they close) would let the holes pass, as in the control
+    above."""
+    path = tmp_path / "unread.tar"
+    path.write_bytes(_stored_then_holes())
+    with open_archive(path, config=_TAR_RATIO, concurrent_operations=True) as reader:
+        unread = [reader.open(f"s{i}") for i in range(4)]
+        try:
+            with pytest.raises(AlwaysStopResourceLimitError, match="Archive-wide"):
+                reader.read("holes")
+        finally:
+            for stream in unread:
+                stream.close()

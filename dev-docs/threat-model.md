@@ -1319,7 +1319,10 @@ budget one level at a time. The caller bounds depth and total size. Public:
 `extract` only, and a `read()` of an honest 1 GiB member holds 1 GiB. `max_ratio` does
 hold reads: each member stream is held to the per-member and archive-wide ratios
 (`bomb_tracker.MemberRatioGuard`, one `ReadRatioTally` per reader), so a scan or hash of a
-bzip2 or xz bomb stops within a step past 5 MiB. The archive-wide rule needs a
+bzip2 or xz bomb stops within a step past 5 MiB. A member whose data is the archive
+stream's own bytes (every TAR member but a sparse one) gets no guard: it cannot pass 1:1
+and a compressed stream is held as a whole. It counts toward the archive-wide total at its
+recorded size when its stream is handed out. The archive-wide rule needs a
 denominator, so a ZIP, TAR or 7z read from a non-seekable stream (no trusted size, no live
 counter) has only the per-member rule for reads: many members each under 5 MiB are not
 bounded together, where extraction still has `max_extracted_bytes`. A container inside a

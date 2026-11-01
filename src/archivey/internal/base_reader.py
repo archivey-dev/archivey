@@ -666,7 +666,6 @@ class BaseArchiveReader(ArchiveReader):
         self._streaming = streaming
         self._archive_name = archive_name
         self._config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
-        self._ratio_limits_cache: DecoderLimits | None = None
         self._diagnostics_collector = (
             collector if collector is not None else collector_from_config(self._config)
         )
@@ -1145,15 +1144,10 @@ class BaseArchiveReader(ArchiveReader):
     def _ratio_limits(self) -> DecoderLimits:
         """The ratio fields this reader's decodes are held to: ``decoder_limits``, or
         what a deprecated ``extraction_limits`` ratio field sets."""
-        # The config is fixed for the reader's life, and every member read asks.
-        limits = self._ratio_limits_cache
-        if limits is None:
-            from archivey.internal.bomb_tracker import ratio_limits
+        from archivey.internal.bomb_tracker import ratio_limits
 
-            config = self._config
-            limits = ratio_limits(config.decoder_limits, config.extraction_limits)
-            self._ratio_limits_cache = limits
-        return limits
+        config = self._config
+        return ratio_limits(config.decoder_limits, config.extraction_limits)
 
     def _hold_to_ratio(self, stream: ArchiveStreamImpl, member: ArchiveMember) -> None:
         """Hold a member stream ``open()`` or ``stream_members()`` gives the caller to
@@ -1167,13 +1161,13 @@ class BaseArchiveReader(ArchiveReader):
         if limits.max_ratio is None:
             return
         tally = self._read_ratio_tally
-        if self._member_data_is_stream_bytes(member):
+        if member.size is not None and self._member_data_is_stream_bytes(member):
             # Its output is its own bytes of the archive stream, so neither rule can
             # refuse it here: its ratio is 1:1, and the archive stream's decode is held
             # by the outer ratio guard where it is compressed. It still counts toward
             # the archive-wide total, in full, for the members a guard does judge.
             assert member._member_id is not None, member.name
-            tally.advance(member._member_id, member.size or 0)
+            tally.advance(member._member_id, member.size)
             return
         # Imported here, as in ``_open_outer_codec_stream``.
         from archivey.internal.bomb_tracker import MemberRatioGuard
@@ -1196,8 +1190,12 @@ class BaseArchiveReader(ArchiveReader):
         TAR member's is: the whole archive is compressed or not, never one member.
 
         Such a member's output never passes its size in the stream, so
-        :meth:`_hold_to_ratio` builds no guard for it. ``False`` here: a format whose
-        members are each compressed (or expand, as a sparse member's holes do) is held.
+        :meth:`_hold_to_ratio` builds no guard for it and counts its recorded ``size``
+        toward the archive-wide total instead; a member with no recorded size is held
+        whatever this says. ``False`` here: a format whose members are each compressed
+        (or expand, as a sparse member's holes do) is held. TAR is the only format that
+        answers ``True`` so far; CPIO and ar have the same shape, and ISO does except for
+        a zisofs member.
         """
         return False
 

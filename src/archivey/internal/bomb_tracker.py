@@ -541,9 +541,11 @@ class ReadRatioTally:
     """The bytes a reader's member reads have decoded, for the archive-wide ratio.
 
     Each member counts once, at the furthest offset any read of it reached, so reading
-    a member again or seeking back in it adds nothing; the total is then at most what
-    one full pass decodes. Shared by every member stream of one reader, from any
-    thread.
+    a member again or seeking back in it adds nothing. A member that gets no guard
+    because its data is the archive stream's own bytes (``_hold_to_ratio``) counts at
+    its recorded size instead, read or not, so the total can pass what was decoded but
+    never what one full pass decodes. Shared by every member stream of one reader,
+    from any thread.
     """
 
     def __init__(self) -> None:
@@ -557,7 +559,8 @@ class ReadRatioTally:
         return self._total - self._furthest.get(key, 0)
 
     def advance(self, key: int, position: int) -> int:
-        """Record that member ``key`` has decoded ``position`` bytes; the new total."""
+        """Record that member ``key`` has reached ``position`` bytes (decoded, or its
+        recorded size for an unguarded member); the new total."""
         with self._lock:
             before = self._furthest.get(key, 0)
             if position > before:
