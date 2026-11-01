@@ -1407,7 +1407,7 @@ class BaseArchiveReader(ArchiveReader):
 
         ``checks_content`` says that ``inner`` checks every byte against a checksum of
         its own when read from the start to the end, and raises on a mismatch (a
-        plugin's ``MemberData.checked``): such a read counts as ``CONTENT``.
+        plugin's ``MemberData.checked``): such a read counts as ``CHECKSUM``.
         ``custom_digests`` are digests whose hasher the caller supplies (a plugin's
         ``MemberData.digests``), checked as ``expected_hashes`` are. ``bounded`` says
         ``inner`` never returns a byte past ``expected_size`` (a plugin's

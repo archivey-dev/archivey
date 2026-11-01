@@ -129,7 +129,7 @@ def test_list_and_read(name: str) -> None:
         if variant == "crc":
             with reader.open("dir/blocks.bin") as stream:
                 stream.read()
-                assert stream.verified is archivey.Verification.CONTENT
+                assert stream.verified is archivey.Verification.CHECKSUM
 
 
 @pytest.mark.parametrize("name", ARCHIVES)

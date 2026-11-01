@@ -22,7 +22,7 @@ level, a ceiling, and a `verify()` method. The ruling shipped the level and the 
 
 1. A caller can ask an open member stream which checks have passed, at any point.
 2. A caller can ask how far a stream can get, so a loop never waits for a level the
-   member cannot reach (a stored 7z member with no CRC never reaches `CONTENT`).
+   member cannot reach (a stored 7z member with no CRC never reaches `CHECKSUM`).
 3. The level never claims more than was checked. Where a check cannot be traced to
    the stream with certainty, the level reports less.
 
@@ -38,23 +38,28 @@ level, a ceiling, and a `verify()` method. The ruling shipped the level and the 
 
 ### 1. Four ordered levels
 
-`Verification` is an `IntEnum`, so `stream.verified >= Verification.STRUCTURE` reads
+`Verification` is an `IntEnum`, so `stream.verified >= Verification.LENGTH` reads
 naturally and the levels sort.
 
 | Level | Meaning |
 | --- | --- |
 | `NONE` | Nothing is proved yet: the stream has not opened its member, or a weak check accepted its password and nothing has confirmed it since |
-| `KEY` | The bytes come from the right key: the member is not encrypted, or its password passed a check that cannot pass by chance (RAR5's 64-bit check, a CRC during password confirmation, a header that decrypted) |
-| `STRUCTURE` | `KEY`, and a read reached the end with every length and end-of-data check passing: the declared size, the over-run probe, the decoder's end marker |
-| `CONTENT` | `STRUCTURE`, and a stored check over every byte matched: the member's CRC-32 or BLAKE2sp, the WinZip AES HMAC, or the codec's own checksum over a decode from the start |
+| `PASSWORD` | The bytes come from the right key: the member is not encrypted, or its password passed a check that cannot pass by chance (RAR5's 64-bit check, a CRC during password confirmation, a header that decrypted) |
+| `LENGTH` | `PASSWORD`, and a read reached the end with every length and end-of-data check passing: the declared size, the over-run probe, the decoder's end marker |
+| `CHECKSUM` | `LENGTH`, and a stored check over every byte matched: the member's CRC-32 or BLAKE2sp, the WinZip AES HMAC, or the codec's own checksum over a decode from the start |
 
 A digest that matches proves the key too: a wrong key cannot produce data whose
-stored CRC matches, except by chance at the same odds as the CRC's own. So `CONTENT`
+stored CRC matches, except by chance at the same odds as the CRC's own. So `CHECKSUM`
 needs no separate key proof.
 
 **Rejected:** two independent axes (key, content) as in the first IDEAS sketch. Every
 case in the table above is ordered: content proves structure, and neither means
 anything under a wrong key. One ordered level is simpler to test against.
+
+The levels were first named `KEY`, `STRUCTURE` and `CONTENT`. The maintainer found
+those hard to read and renamed them before 0.3.0 (2026-11-01) to `PASSWORD`, `LENGTH` and
+`CHECKSUM`, after what each one proves: `LENGTH` rather than `COMPLETE`, so that the
+middle level cannot be read as fully verified.
 
 ### 2. `verified` is a high-water mark
 
@@ -72,13 +77,13 @@ byte, an HMAC stage, a password still in doubt.
 
 | Stream | `verifiable` |
 | --- | --- |
-| ZIP, 7z or RAR member with a stored CRC-32 or BLAKE2sp | `CONTENT` |
-| WinZip AES member (AE-1 and AE-2) | `CONTENT` |
-| TAR, ISO or directory member | `STRUCTURE` |
-| 7z member with no CRC (an AES folder, an empty-stream file) | `STRUCTURE`, or `NONE` if its password is still in doubt |
-| `.gz`, `.bz2`, `.lz`, zlib file (and `open_stream` over one) | `CONTENT` |
-| `.xz`, `.zst`, `.lz4` | `STRUCTURE` for now (decision 6) |
-| `.br`, `.Z`, `.lzma` | `STRUCTURE` |
+| ZIP, 7z or RAR member with a stored CRC-32 or BLAKE2sp | `CHECKSUM` |
+| WinZip AES member (AE-1 and AE-2) | `CHECKSUM` |
+| TAR, ISO or directory member | `LENGTH` |
+| 7z member with no CRC (an AES folder, an empty-stream file) | `LENGTH`, or `NONE` if its password is still in doubt |
+| `.gz`, `.bz2`, `.lz`, zlib file (and `open_stream` over one) | `CHECKSUM` |
+| `.xz`, `.zst`, `.lz4` | `LENGTH` for now (decision 6) |
+| `.br`, `.Z`, `.lzma` | `LENGTH` |
 
 Once a stream is open, `verifiable` can rise and never falls: it rises when another
 member confirms a password that was in doubt. A lazy stream from `stream_members()`
@@ -132,21 +137,21 @@ state, as it already adopts the verifier.
 ```
 p = proofs()
 if not opened or p.key_in_doubt:  level = NONE
-elif p.ended and p.content:        level = CONTENT
-elif p.ended:                      level = STRUCTURE
-else:                              level = KEY
+elif p.ended and p.content:        level = CHECKSUM
+elif p.ended:                      level = LENGTH
+else:                              level = PASSWORD
 verified = max(verified, level)
 ```
 
 Nothing on the read path computes a level. The read path sets one flag when a read
 reaches the end. Everything else is attributes the checks already keep.
 
-### 6. `.xz`, `.zst` and `.lz4` stay at `STRUCTURE` for now
+### 6. `.xz`, `.zst` and `.lz4` stay at `LENGTH` for now
 
 Each frame or stream of these formats says in its header whether it carries a check,
 and one file can mix both. Counting the check would need each decoder to report, per
 frame, that a check was present and passed. Until that is built, these formats report
-`STRUCTURE`: less than they reach, never more. It is tracked internally as a
+`LENGTH`: less than they reach, never more. It is tracked internally as a
 follow-up.
 
 ### 7. `STRICT` is closed
@@ -206,7 +211,7 @@ weak-check member (ZipCrypto, 7z without a cheap check) still means a read to it
 
 | Risk | Mitigation |
 | --- | --- |
-| A wrapper between the watch and the public stream does not forward "key in doubt", so a weak-key member reports `KEY` | Doubt forwards through every layer with an `_inner`, flag or not. A test matrix opens each weak-key case (ZipCrypto, WinZip AES on its 2-byte check, 7z with an exhausted confirm, RAR 3-4) by `open()` and by `stream_members()` and checks `NONE` after a partial read |
+| A wrapper between the watch and the public stream does not forward "key in doubt", so a weak-key member reports `PASSWORD` | Doubt forwards through every layer with an `_inner`, flag or not. A test matrix opens each weak-key case (ZipCrypto, WinZip AES on its 2-byte check, 7z with an exhausted confirm, RAR 3-4) by `open()` and by `stream_members()` and checks `NONE` after a partial read |
 | A slice forwards a check that covers more than its member | Forwarding the end and content proofs is opt-in per class. Slices do not opt in |
-| The codec rule under-reports after seeks | Documented: a seek back to 0 and a read to the end reaches `CONTENT` |
+| The codec rule under-reports after seeks | Documented: a seek back to 0 and a read to the end reaches `CHECKSUM` |
 | Callers read `verified` as "the member is good" when `verifiable` is low | The docs lead with comparing the two |

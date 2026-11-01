@@ -36,9 +36,9 @@ _RAR5 = _FIXTURES / "rar" / "encryption__.rar"
 _DATA = b"verification level\n" * 4000
 
 NONE = Verification.NONE
-KEY = Verification.KEY
-STRUCTURE = Verification.STRUCTURE
-CONTENT = Verification.CONTENT
+PASSWORD = Verification.PASSWORD
+LENGTH = Verification.LENGTH
+CHECKSUM = Verification.CHECKSUM
 
 
 def _zip(tmp_path: Path, data: bytes = _DATA) -> Path:
@@ -72,11 +72,11 @@ def _first_file(reader: object) -> ArchiveMember:
 
 def test_zip_member_levels_through_a_read(tmp_path: Path) -> None:
     with open_archive(_zip(tmp_path)) as reader, reader.open("a.txt") as stream:
-        assert (stream.verified, stream.verifiable) == (KEY, CONTENT)
+        assert (stream.verified, stream.verifiable) == (PASSWORD, CHECKSUM)
         stream.read(10)
-        assert stream.verified is KEY
+        assert stream.verified is PASSWORD
         assert stream.read() == _DATA[10:]
-        assert stream.verified is CONTENT
+        assert stream.verified is CHECKSUM
 
 
 def test_zip_member_level_stays_after_a_rewind(tmp_path: Path) -> None:
@@ -87,17 +87,17 @@ def test_zip_member_level_stays_after_a_rewind(tmp_path: Path) -> None:
         stream.read()
         stream.seek(0)
         stream.read(10)
-        assert stream.verified is CONTENT
+        assert stream.verified is CHECKSUM
 
 
-def test_zip_member_whose_crc_fails_stays_below_structure(tmp_path: Path) -> None:
+def test_zip_member_whose_crc_fails_stays_below_length(tmp_path: Path) -> None:
     path = _zip(tmp_path)
     _corrupt_zip_crc(path)
     with open_archive(path) as reader, reader.open("a.txt") as stream:
         with pytest.raises(CorruptionError):
             stream.read()
-        assert stream.verified is KEY
-        assert stream.verifiable is CONTENT
+        assert stream.verified is PASSWORD
+        assert stream.verifiable is CHECKSUM
 
 
 def test_stream_members_stream_is_none_until_its_first_read(tmp_path: Path) -> None:
@@ -107,48 +107,48 @@ def test_stream_members_stream_is_none_until_its_first_read(tmp_path: Path) -> N
             # Asking opens nothing.
             assert stream._inner is None
             stream.read()
-            assert (stream.verified, stream.verifiable) == (CONTENT, CONTENT)
+            assert (stream.verified, stream.verifiable) == (CHECKSUM, CHECKSUM)
 
 
-def test_tar_member_reaches_structure(tmp_path: Path) -> None:
+def test_tar_member_reaches_length(tmp_path: Path) -> None:
     path = tmp_path / "a.tar.gz"
     with tarfile.open(path, "w:gz") as tf:
         info = tarfile.TarInfo("a.txt")
         info.size = len(_DATA)
         tf.addfile(info, io.BytesIO(_DATA))
     with open_archive(path) as reader, reader.open("a.txt") as stream:
-        assert stream.verifiable is STRUCTURE
+        assert stream.verifiable is LENGTH
         stream.read(10)
-        assert stream.verified is KEY
+        assert stream.verified is PASSWORD
         stream.read()
         # The archive's gzip CRC covers the whole archive, not this member.
-        assert (stream.verified, stream.verifiable) == (STRUCTURE, STRUCTURE)
+        assert (stream.verified, stream.verifiable) == (LENGTH, LENGTH)
 
 
 @pytest.mark.parametrize(
     ("compress", "expected"),
     [
-        pytest.param(gzip.compress, CONTENT, id="gzip"),
-        pytest.param(bz2.compress, CONTENT, id="bzip2"),
+        pytest.param(gzip.compress, CHECKSUM, id="gzip"),
+        pytest.param(bz2.compress, CHECKSUM, id="bzip2"),
         # Whether an xz stream carries a check is per stream; not traced yet.
-        pytest.param(lzma.compress, STRUCTURE, id="xz"),
+        pytest.param(lzma.compress, LENGTH, id="xz"),
     ],
 )
 def test_open_stream_reaches_what_its_codec_checks(compress, expected) -> None:
     with open_stream(io.BytesIO(compress(_DATA))) as stream:
         assert stream.verifiable is expected
-        assert stream.verified is KEY
+        assert stream.verified is PASSWORD
         assert stream.read() == _DATA
         assert stream.verified is expected
 
 
-def test_gzip_whose_crc_fails_does_not_reach_content() -> None:
+def test_gzip_whose_crc_fails_does_not_reach_checksum() -> None:
     raw = bytearray(gzip.compress(_DATA))
     raw[-8] ^= 0xFF  # the CRC-32 in the trailer
     with open_stream(io.BytesIO(bytes(raw))) as stream:
         with pytest.raises(CorruptionError):
             stream.read()
-        assert stream.verified is KEY
+        assert stream.verified is PASSWORD
 
 
 def test_gzip_member_seek_skips_the_codec_check_until_a_rewind(tmp_path: Path) -> None:
@@ -160,10 +160,10 @@ def test_gzip_member_seek_skips_the_codec_check_until_a_rewind(tmp_path: Path) -
     ):
         stream.seek(1000)
         stream.read()
-        assert stream.verified < CONTENT
+        assert stream.verified < CHECKSUM
         stream.seek(0)
         assert stream.read() == _DATA
-        assert stream.verified is CONTENT
+        assert stream.verified is CHECKSUM
 
 
 # --- passwords -----------------------------------------------------------------------
@@ -175,11 +175,11 @@ def test_zipcrypto_partial_read_is_none_under_the_right_password() -> None:
         open_archive(_COLLISION, password="secret") as reader,
         reader.open(_member(reader, "stored.txt")) as stream,
     ):
-        assert (stream.verified, stream.verifiable) == (NONE, CONTENT)
+        assert (stream.verified, stream.verifiable) == (NONE, CHECKSUM)
         stream.read(5)
         assert stream.verified is NONE
         stream.read()
-        assert stream.verified is CONTENT
+        assert stream.verified is CHECKSUM
 
 
 def test_zipcrypto_colliding_wrong_password_never_rises() -> None:
@@ -194,42 +194,42 @@ def test_zipcrypto_colliding_wrong_password_never_rises() -> None:
         assert stream.verified is NONE
 
 
-def test_zipcrypto_candidate_confirmed_on_its_crc_is_key() -> None:
+def test_zipcrypto_candidate_confirmed_on_its_crc_is_password() -> None:
     with (
         open_archive(_COLLISION, password=[_STORED_COLLISION, "secret"]) as reader,
         reader.open(_member(reader, "stored.txt")) as stream,
     ):
         stream.read(5)
-        assert stream.verified is KEY
+        assert stream.verified is PASSWORD
 
 
 @requires("cryptography")
 @pytest.mark.parametrize("seekable", [False, True])
-def test_winzip_aes_reaches_content_only_through_its_hmac(seekable: bool) -> None:
+def test_winzip_aes_reaches_checksum_only_through_its_hmac(seekable: bool) -> None:
     with (
         open_archive(_AE1, password="secret", seekable_members=seekable) as reader,
         reader.open(_first_file(reader)) as stream,
     ):
-        assert stream.verifiable is CONTENT
+        assert stream.verifiable is CHECKSUM
         if seekable:
             stream.seek(1)
         stream.read(1)
         # The two-byte password check can pass by chance.
         assert stream.verified is NONE
         stream.read()
-        assert stream.verified is CONTENT
+        assert stream.verified is CHECKSUM
 
 
 @requires_binary("unrar")
-def test_rar4_partial_read_is_none_and_full_read_content() -> None:
+def test_rar4_partial_read_is_none_and_full_read_checksum() -> None:
     with (
         open_archive(_RAR4_LARGE_STORED, password="password") as reader,
         reader.open(_first_file(reader)) as stream,
     ):
         stream.read(100)
-        assert (stream.verified, stream.verifiable) == (NONE, CONTENT)
+        assert (stream.verified, stream.verifiable) == (NONE, CHECKSUM)
         stream.read()
-        assert stream.verified is CONTENT
+        assert stream.verified is CHECKSUM
 
 
 @requires_binary("unrar")
@@ -243,7 +243,7 @@ def test_rar4_stream_members_partial_read_is_none() -> None:
             stream.read(100)
             assert stream.verified is NONE
             stream.read()
-            assert stream.verified is CONTENT
+            assert stream.verified is CHECKSUM
 
 
 @requires_binary("unrar")
@@ -261,14 +261,14 @@ def test_rar4_wrong_password_never_rises() -> None:
 
 @requires("cryptography")
 @requires_binary("unrar")
-def test_rar5_password_check_is_key_before_the_crc() -> None:
+def test_rar5_password_check_is_password_before_the_crc() -> None:
     with (
         open_archive(_RAR5, password="password") as reader,
         reader.open(_first_file(reader)) as stream,
     ):
-        assert stream.verified is KEY
+        assert stream.verified is PASSWORD
         stream.read()
-        assert stream.verified is CONTENT
+        assert stream.verified is CHECKSUM
 
 
 @requires("cryptography")
@@ -283,9 +283,9 @@ def test_sevenzip_unconfirmed_folder_partial_read_is_none(tmp_path: Path) -> Non
         reader.open(_first_file(reader)) as stream,
     ):
         stream.read(100)
-        assert (stream.verified, stream.verifiable) == (NONE, CONTENT)
+        assert (stream.verified, stream.verifiable) == (NONE, CHECKSUM)
         stream.read()
-        assert stream.verified is CONTENT
+        assert stream.verified is CHECKSUM
 
 
 @requires("cryptography")
@@ -297,11 +297,11 @@ def test_winzip_aes_stream_members_partial_read_is_none() -> None:
             stream.read(1)
             assert stream.verified is NONE
             stream.read()
-            assert stream.verified is CONTENT
+            assert stream.verified is CHECKSUM
 
 
 @requires("cryptography")
-def test_winzip_aes_ae2_reaches_content_from_its_hmac(tmp_path: Path) -> None:
+def test_winzip_aes_ae2_reaches_checksum_from_its_hmac(tmp_path: Path) -> None:
     from tests.zip_aes_fixture import build_aes_zip
 
     # AE-2 stores CRC 0: the HMAC is the only check over the member's bytes.
@@ -313,11 +313,11 @@ def test_winzip_aes_ae2_reaches_content_from_its_hmac(tmp_path: Path) -> None:
         open_archive(path, password="secret") as reader,
         reader.open("a.txt") as stream,
     ):
-        assert stream.verifiable is CONTENT
+        assert stream.verifiable is CHECKSUM
         stream.read(1)
         assert stream.verified is NONE
         assert stream.read() == _DATA[1:]
-        assert stream.verified is CONTENT
+        assert stream.verified is CHECKSUM
 
 
 @requires("cryptography")
@@ -336,7 +336,7 @@ def test_sevenzip_unconfirmed_folder_stream_members_partial_read_is_none(
             stream.read(100)
             assert stream.verified is NONE
             stream.read()
-            assert stream.verified is CONTENT
+            assert stream.verified is CHECKSUM
 
 
 @pytest.mark.parametrize("confirmed", [False, True])
@@ -363,11 +363,11 @@ def test_weak_key_with_no_digest_can_reach_nothing(confirmed: bool) -> None:
         assert (stream.verified, stream.verifiable) == (NONE, NONE)
         if confirmed:
             doubt[0] = False  # another member's checksum confirmed the password
-            assert (stream.verified, stream.verifiable) == (STRUCTURE, STRUCTURE)
+            assert (stream.verified, stream.verifiable) == (LENGTH, LENGTH)
 
 
 @pytest.mark.parametrize("measured", [False, True])
-def test_gzip_member_reaches_content_with_measurement(
+def test_gzip_member_reaches_checksum_with_measurement(
     tmp_path: Path, measured: bool
 ) -> None:
     from contextlib import nullcontext
@@ -382,4 +382,4 @@ def test_gzip_member_reaches_content_with_measurement(
         reader.open(_first_file(reader)) as stream,
     ):
         assert stream.read() == _DATA
-        assert (stream.verified, stream.verifiable) == (CONTENT, CONTENT)
+        assert (stream.verified, stream.verifiable) == (CHECKSUM, CHECKSUM)

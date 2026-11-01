@@ -110,6 +110,14 @@ dict. Changing the existing bag in place works as before.
 The format sections below mention a key only when it is part of that format's behaviour. The full
 list is on the two classes.
 
+### Time zones
+
+A time has no zone when the format records local time: a ZIP with only the DOS time, and RAR 4.
+Every other format records UTC or an offset, so its times have a zone, and so does a ZIP with a
+UTC field beside its DOS time. Two such times from one archive can't be compared directly.
+`member.modified_utc()`, `accessed_utc()`, `created_utc()` and `ctime_utc()` give each time in UTC.
+A time with no zone is taken as your local time, or as the zone you pass (`tz_for_naive=`).
+
 ### Creation time and `ctime`
 
 `ArchiveMember.created` is a birth time or `None`, never Unix `st_ctime` (the time of the last

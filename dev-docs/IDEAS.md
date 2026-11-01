@@ -119,13 +119,13 @@ Each idea carries a status:
 ## Reading and verification
 
 - **Raise a stream's verification level on demand.** *Open idea.* A member stream
-  reports `verified` and `verifiable` (`Verification`: `NONE`, `KEY`, `STRUCTURE`,
-  `CONTENT`). A `verify(at_least=…)` method could read what is left to reach a level,
+  reports `verified` and `verifiable` (`Verification`: `NONE`, `PASSWORD`, `LENGTH`,
+  `CHECKSUM`). A `verify(at_least=…)` method could read what is left to reach a level,
   and a `reader.verify(member)` could check a member without handing out its bytes.
   Retiring `ENCRYPTED_MEMBER_UNVERIFIED` in favour of the level is a separate call.
 - **Count the xz, zstd and LZ4 checksums in the level.** *Open idea.* These formats
   carry a checksum per stream or frame only when the writer added one, so their
-  streams stop at `STRUCTURE` today. Each decoder would report, per frame, that a check
+  streams stop at `LENGTH` today. Each decoder would report, per frame, that a check
   was present and passed.
 - **Say when a WinZip AES seek re-reads the ciphertext.** *Open idea.* **Good first
   contribution.** To keep the HMAC across seeks, the read that returns an AES member's last

@@ -23,7 +23,7 @@ read.
 ## What Changes
 
 - A new public `IntEnum`, `archivey.Verification`, with four ordered levels: `NONE`,
-  `KEY`, `STRUCTURE`, `CONTENT`.
+  `PASSWORD`, `LENGTH`, `CHECKSUM`.
 - Two new read-only properties on `ArchiveStream`:
   - `verified`: the highest level this stream has proved so far. It never goes down.
   - `verifiable`: the highest level this stream can reach by a read from the start to

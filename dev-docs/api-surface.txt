@@ -573,9 +573,9 @@ init archivey.UnsupportedFeatureError(message: str, *, source_format: ArchiveFor
 class archivey.Verification(IntEnum)
 enum archivey.Verification
 value archivey.Verification.NONE = 0
-value archivey.Verification.KEY = 1
-value archivey.Verification.STRUCTURE = 2
-value archivey.Verification.CONTENT = 3
+value archivey.Verification.PASSWORD = 1
+value archivey.Verification.LENGTH = 2
+value archivey.Verification.CHECKSUM = 3
 function archivey.detect_format(source: str | Path | BinaryIO, *, config: ArchiveyConfig | None = None, follow_stub_volumes: bool = True) -> FormatInfo
 function archivey.format_availability(fmt: ArchiveFormat | str, *, check_programs: bool = True, config: ArchiveyConfig | None = None) -> FormatAvailability
 function archivey.list_known_formats() -> list[ArchiveFormat]
