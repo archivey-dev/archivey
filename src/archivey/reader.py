@@ -123,7 +123,8 @@ class ArchiveStream(ReadOnlyIOStream):
         Compare it with ``verifiable``: a TAR member has no checksum, so ``STRUCTURE``
         is the most it can reach. Reading this property reads nothing from the archive.
 
-        Experimental: any release may change the levels or what they mean.
+        Experimental: any release, a patch included, may change or remove this property,
+        its levels or what they mean.
         """
 
     @property
@@ -141,7 +142,8 @@ class ArchiveStream(ReadOnlyIOStream):
         then takes a member with no checksum from ``STRUCTURE`` to ``NONE``. Once open,
         it never falls. Reading this property reads nothing from the archive.
 
-        Experimental: any release may change the levels or what they mean.
+        Experimental: any release, a patch included, may change or remove this property,
+        its levels or what they mean.
         """
 
     @abstractmethod

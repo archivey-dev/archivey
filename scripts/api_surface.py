@@ -69,8 +69,8 @@ OPEN_ENUMS = frozenset(
         "archivey.DiagnosticCode",
     }
 )
-#: The experimental names: the format and codec plugin interface, and the names that
-#: exist only for it. The stability policy leaves them out (``docs/how-it-is-built.md``
+#: The experimental names: the format and codec plugin interface and the names that
+#: exist only for it, and the verification level (DR-12a). The stability policy leaves them out (``docs/how-it-is-built.md``
 #: §Versioning and stability): any release may change or remove them, with no
 #: deprecation release. A line whose own name is one of them (or under one) never makes
 #: a release a minor; a stable line that only mentions one in a signature still does,

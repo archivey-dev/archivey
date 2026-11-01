@@ -149,9 +149,9 @@ level, and `stream.verifiable` is the most a read from the start to the end can 
 !!! warning "Experimental"
     `Verification`, `stream.verified` and `stream.verifiable` are experimental and outside
     the [stability policy](how-it-is-built.md#versioning-and-stability): any release, a
-    patch release included, may change their levels, names or meaning. The checks are not
-    experimental: a read that fails a check raises whatever the level says.
-
+    patch release included, may change or remove them, their levels, names or meaning. The
+    checks themselves are not experimental: a read that fails one raises as before, whatever
+    level the stream reports.
 
 | Level | What has been checked |
 |---|---|

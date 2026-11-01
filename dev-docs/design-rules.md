@@ -851,7 +851,7 @@ the rulings above.
   plugin formats keeps working whatever happens to the interface it refuses. Declaring
   the interface stable is the maintainer's call.
 - The verification level is experimental too, on the same terms: `Verification`,
-  `ArchiveStream.verified` and `ArchiveStream.verifiable` may change or go in any
+  `ArchiveStream.verified` and `ArchiveStream.verifiable` may change or be removed in any
   release (maintainer, 2026-11-01: the levels are still confusing and need a redesign,
   such as a level for every byte covered by some check, and one for a full read with no
   checksum). `EXPERIMENTAL` lists them. The checks themselves are not experimental: a
