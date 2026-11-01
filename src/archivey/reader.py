@@ -147,33 +147,50 @@ class ArchiveStream(ReadOnlyIOStream):
         """
 
     def verify(self, level: Verification = Verification.CONTENT) -> Verification:
-        """Read on until ``verified`` reaches ``level``, discarding the bytes; return it.
+        """Run the checks until ``verified`` reaches ``level``, discarding the bytes; return it.
 
-        This runs the checks a read runs, without keeping the data, and stops as soon as
-        ``verified`` reaches ``level``, or the most the stream can reach when that is
-        lower (``verifiable``): ``verify(Verification.KEY)`` stops once the password is
-        confirmed, which for most members is at the first read. With the default,
-        ``CONTENT``, it reads to the end. It returns at once, reading nothing, when the
-        level is already reached and above ``NONE``, or when ``level`` is ``NONE``.
+        This reads as much of the member as ``level`` needs, without keeping the data,
+        and stops as soon as ``verified`` reaches ``level``, or the most the stream can
+        reach when that is lower (``verifiable``): ``verify(Verification.KEY)`` stops
+        once the password is confirmed, which for most members is at the first read.
+        With the default, ``CONTENT``, it reads to the end. It returns at once, reading
+        nothing, when the level is already reached and above ``NONE``, or when
+        ``level`` is ``NONE``. When a seek earlier kept a read from checking every byte
+        and the stream can seek, it reads the member again from the start, so the level
+        asked for is reached whatever the stream's history.
 
-        When a seek earlier kept the read from checking every byte and the stream can
-        seek, it reads the member once more from the start. A failed check raises what
-        the read raises (``CorruptionError``, ``TruncatedError``, ``EncryptionError``);
-        otherwise compare the result with ``level`` or ``verifiable``, since a TAR
-        member, with no checksum, ends at ``STRUCTURE``. The stream is left where its
-        last read ended, or unchanged when it returns at once. A closed stream raises
-        ``ValueError``, as every ``io`` method does. Which reads a level needs can get
-        cheaper in a later release; the result and the errors stay the same.
+        A failed check raises what the read raises (``CorruptionError``,
+        ``TruncatedError``, ``EncryptionError``); otherwise compare the result with
+        ``level`` or ``verifiable``, since a TAR member, with no checksum, ends at
+        ``STRUCTURE``. A closed stream raises ``ValueError``, as every ``io`` method
+        does.
+
+        On a stream that can seek, ``verify()`` is a probe: it seeks back to where the
+        stream was, so a later ``read()`` returns the same bytes it would have returned
+        before. Going back to the middle of a compressed member with no index decodes
+        the member again up to that offset, so a ``verify()`` there can cost up to two
+        decodes of the member. A stream that cannot seek (``stream_members()``, a pipe,
+        ``open_stream()`` on a forward-only source) cannot go back: ``verify()``
+        consumes what it reads, and the stream is left where its last read ended. When
+        a check fails, the stream is left where the failure was found. Which reads a
+        level needs can get cheaper in a later release; the result and the errors stay
+        the same.
         """
         if self.closed:
             raise ValueError("I/O operation on closed file.")
         level = Verification(level)
         if level is Verification.NONE or self._verify_done(level):
             return self.verified
+        if not self.seekable():
+            self._verify_read_on(level)
+            return self.verified
+        start = self.tell()
         self._verify_read_on(level)
-        if not self._verify_done(level) and self.seekable() and self.tell() > 0:
+        if not self._verify_done(level) and start > 0:
+            # Bytes before ``start`` may have been skipped by a seek: read them too.
             self.seek(0)
             self._verify_read_on(level)
+        self.seek(start)
         return self.verified
 
     def _verify_done(self, level: Verification) -> bool:

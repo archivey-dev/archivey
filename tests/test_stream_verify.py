@@ -31,7 +31,27 @@ def _zip(tmp_path: Path) -> Path:
 def test_verify_reads_a_fresh_member_to_content(tmp_path: Path) -> None:
     with open_archive(_zip(tmp_path)) as reader, reader.open("a.txt") as stream:
         assert stream.verify() is Verification.CONTENT
-        assert stream.read() == b""
+
+
+def test_verify_on_a_seekable_stream_is_a_probe(tmp_path: Path) -> None:
+    # verify() goes back to where the stream was, so read() returns the same bytes.
+    with (
+        open_archive(_zip(tmp_path), seekable_members=True) as reader,
+        reader.open("a.txt") as stream,
+    ):
+        assert stream.read(100) == _DATA[:100]
+        assert stream.verify() is Verification.CONTENT
+        assert stream.tell() == 100
+        assert stream.read() == _DATA[100:]
+
+
+def test_verify_on_a_forward_only_stream_consumes_it(tmp_path: Path) -> None:
+    with open_archive(_zip(tmp_path), streaming=True) as reader:
+        for _member, stream in reader.stream_members():
+            assert stream is not None
+            assert not stream.seekable()
+            assert stream.verify() is Verification.CONTENT
+            assert stream.read() == b""
 
 
 def test_verify_finishes_a_partly_read_member(tmp_path: Path) -> None:
@@ -85,6 +105,8 @@ def test_verify_rereads_from_the_start_after_a_seek(tmp_path: Path) -> None:
     ):
         stream.seek(1000)
         assert stream.verify() is Verification.CONTENT
+        assert stream.tell() == 1000
+        assert stream.read() == _DATA[1000:]
 
 
 def test_verify_on_a_forward_only_stream_returns_what_it_reached() -> None:
@@ -98,6 +120,7 @@ def test_verify_opens_a_lazy_stream_members_stream(tmp_path: Path) -> None:
             assert stream is not None
             assert stream.verified is Verification.NONE
             assert stream.verify() is Verification.CONTENT
+            assert stream.read() == b""
 
 
 @pytest.mark.parametrize("read_first", [True, False], ids=["checked", "unchecked"])

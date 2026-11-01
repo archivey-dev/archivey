@@ -60,8 +60,10 @@ that reads on, discarding the bytes, until `verified` reaches the goal, and retu
 when the goal is already reached and `verified` is above `NONE`, or when `level` is `NONE`.
 When the stream ends below the goal and the stream can seek, it SHALL seek to 0 and read
 on once more. It SHALL raise what those reads raise and nothing else, and SHALL NOT raise
-for a level below the goal. It leaves the stream where its last read ended, or unchanged
-when it reads nothing. On a closed stream it SHALL raise `ValueError`. A later release MAY
+for a level below the goal. On a stream that can seek, it SHALL seek back to the position
+it started from once the goal is reached or the reads end, so a later `read()` returns the
+same bytes. On a stream that cannot seek, it SHALL leave the stream where its last read
+ended. It leaves the stream unchanged when it reads nothing. On a closed stream it SHALL raise `ValueError`. A later release MAY
 reach a level with less reading (a cheaper key check); the returned level and the errors
 SHALL stay those a read to the goal gives.
 
@@ -74,8 +76,9 @@ SHALL stay those a read to the goal gives.
 | Member already at `CONTENT`, positioned mid-way | returns `CONTENT`; position unchanged |
 | ZIP member whose CRC fails | raises `CorruptionError`; `verified` stays `KEY` |
 | TAR member | returns `STRUCTURE` |
-| Seekable `.gz` member after a forward seek | reads again from 0; returns `CONTENT` |
-| Lazy `stream_members()` stream | opens, reads, returns `CONTENT` |
+| Seekable member, 100 bytes read first | returns `CONTENT`; position 100; `read()` gives the rest |
+| Seekable `.gz` member after a forward seek | reads again from 0; returns `CONTENT`; position restored |
+| Lazy `stream_members()` stream | opens, reads, returns `CONTENT`; stream consumed |
 | Closed stream, whatever its level | raises `ValueError` |
 | `verify(KEY)` on an open unencrypted member | reads nothing; returns `KEY` |
 | `verify(KEY)` on a lazy `stream_members()` stream | one small read; returns `KEY` |

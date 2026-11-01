@@ -170,6 +170,16 @@ of its own; a goal below `level` is returned, not raised, and the caller compare
 stream raises `ValueError`, as every `io` method does. It is a concrete method on the public
 base, so every stream has it.
 
+The maintainer's ruling (2026-11-01): a caller who asks for a level wants it checked at that
+level, so `verify()` does whatever that takes, then restores the stream's earlier state. On a
+stream that can seek it is a probe: it seeks back to the position it started from, so a
+later `read()` returns the same bytes. Going back to the middle of a compressed member with no
+index decodes it again up to that offset, so a probe there costs up to two decodes; the
+docstring says so. A stream that cannot seek (`stream_members()`, a pipe, a forward-only
+`open_stream()`) cannot go back, so `verify()` consumes what it reads and the docstring says
+that too. When a check fails, the stream stays where the failure was found: the error is the
+answer, and the stream's verdict repeats on any later read.
+
 The parameter fixes the shape now, so a cheaper path to a level can land in a patch
 release: the 7z AES tail padding check (`sevenzip-aes-tail-key-check`, not implemented),
 or a key confirmed by decoding only the start of a self-checking stream. Today `KEY` on a
