@@ -30,8 +30,9 @@ every read, and stricter defaults for names and for archive shapes no writer pro
   `archivey.formats` with `register_format()` and `register_codec()`, and
   `FormatPolicy(replace=)` to read a built-in container with your own reader. It is
   outside the stability policy: any release may change it.
-- `ArchiveStream.verified` and `.verifiable` say how far a member's data has been
-  checked (`Verification.NONE` to `CHECKSUM`).
+- Experimental: `ArchiveStream.verified` and `.verifiable` say how far a member's data
+  has been checked (`Verification.NONE` to `CHECKSUM`). Any release may change the
+  levels.
 - `ArchiveMember.accessed_utc()`, `created_utc()` and `ctime_utc()`, beside
   `modified_utc()`. Extraction restores a member's birth time (`created`) on Windows and
   macOS.
