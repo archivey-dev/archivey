@@ -87,11 +87,15 @@ inaccurate sentence.
    user can't bound the ratio. Say "best effort" when something is: `on_progress` can stop
    an extraction, but only between chunks.
 2. **Can't be misread.** STE's rules were dropped, but its goal stayed. Read each word as
-   a stranger would. "Calls" read as "decisions". "RAR archives list" makes the archive do
-   the listing ("can be listed"). Archives, members and files never read, list or open
-   themselves: write "archivey reads X", "X is read" or "X is supported", never "X
-   members read". "Limits apply to one archive at a time" reads as
-   concurrency ("apply to each archive separately"). "Works out" became "identifies".
+   a stranger would. Each pair below is a sentence that was misread, then its fix:
+
+   | Don't write | Write | Why |
+   |---|---|---|
+   | "RAR archives list" | "RAR archives can be listed" | The archive doesn't do the listing. |
+   | "ZIP Shrink members read" | "archivey reads ZIP Shrink members" or "ZIP Shrink members are supported" | Archives, members and files never read, list or open themselves: archivey does it, or they are read. |
+   | "Limits apply to one archive at a time" | "Limits apply to each archive separately" | "At a time" reads as concurrency. |
+   | "Calls" | "Decisions" | "Calls" reads as function calls. |
+   | "Works out" | "Identifies" | A phrasal verb with several meanings. |
 3. **Sounds like a person.** Within the first two, natural wins over rule-following.
 
 Rulings from the maintainer in #523's thread:
