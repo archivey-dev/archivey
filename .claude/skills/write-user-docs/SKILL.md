@@ -6,8 +6,8 @@ description: |
   paragraph, show the final text before committing. Merges five writing skills into one
   voice where "sounds like a person" outranks Simplified Technical English.
   Use when: writing or rewriting a user docs page, "write the next docs page", drafting
-  user documentation with the maintainer, editing user docs prose, or when the user
-  invokes /write-user-docs.
+  user documentation with the maintainer, editing user docs prose, editing README or
+  release CHANGELOG prose, or when the user invokes /write-user-docs.
 ---
 
 # Write user docs
@@ -18,9 +18,9 @@ puts "reads as if a person wrote it" above the sentence rules, below only being 
 and being impossible to misread.
 
 This skill sets the voice for **all user docs prose**: `docs/`, the README and the
-release's `CHANGELOG.md` entry. Its loop
-is for writing or rewriting a page with the maintainer. For a one-sentence fix, use the
-Voice and Shaping sections without the loop. Chat, PR comments and briefs still use
+release's `CHANGELOG.md` entry. Its loop is for writing or rewriting a page with the
+maintainer. For a one-sentence fix in a page, use the Voice and Shaping sections without
+the loop. The README and the CHANGELOG entry are not pages: only §Voice applies to them. Chat, PR comments and briefs still use
 [`unslop`](../unslop/SKILL.md). Code comments and exception messages still use
 [`asd-ste100`](../asd-ste100/SKILL.md) in strict mode ([`AGENTS.md`](../../../AGENTS.md)
 §Writing English).
