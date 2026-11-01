@@ -147,11 +147,12 @@ A member stream tells you what has been checked so far. `stream.verified` is a `
 level, and `stream.verifiable` is the most a read from the start to the end can reach.
 
 !!! warning "Experimental"
-    `Verification`, `stream.verified` and `stream.verifiable` are experimental and outside
-    the [stability policy](how-it-is-built.md#versioning-and-stability): any release, a
-    patch release included, may change or remove them, their levels, names or meaning. The
-    checks themselves are not experimental: a read that fails one raises as before, whatever
-    level the stream reports.
+    `Verification`, `stream.verified`, `stream.verifiable` and `stream.verify()` are
+    experimental and outside the
+    [stability policy](how-it-is-built.md#versioning-and-stability): any release, a patch
+    release included, may change or remove them, their levels, names or meaning. The checks
+    themselves are not experimental: a read that fails one raises as before, whatever level
+    the stream reports.
 
 | Level | What has been checked |
 |---|---|
@@ -196,6 +197,35 @@ a seek, so seeking back can't hand you the damaged member as if it were complete
 After seeks, `stream.verified` shows whether the checksum still ran. If it's below
 `stream.verifiable` once you've read to the end, a seek back to the start and a read to the end
 runs every check.
+
+To check a member without keeping its bytes, call `stream.verify()`. It runs every check a read
+to the end runs, throws the bytes away, and returns `stream.verified`. What it does to the
+stream depends on whether the stream can seek. A member stream can seek only when the archive
+was opened with `seekable_members=True` (see
+[Seeking inside a member](reading.md#seeking-inside-a-member)), and an `open_stream()` stream
+only with `seekable=True`. So by default, `verify()` consumes the stream:
+
+- **A stream that can seek** is left as it was. `verify()` reads what the check needs, from the
+  start again if a seek kept an earlier read from covering every byte, then goes back to where
+  the stream was, so the next `read()` returns the same bytes. Going back to the middle of a
+  compressed member decodes it again up to that point, so that call can cost two decodes.
+- **A stream that can't seek**, such as one from `reader.open()` by default, `stream_members()`
+  or a pipe, can't go back. `verify()` reads it to the end, whatever level you ask for, and a
+  later `read()` raises `ArchiveyUsageError`. If you need the bytes too, read them instead: the
+  read runs the same checks.
+
+`stream.verify(Verification.PASSWORD)` on a stream that can seek stops as soon as the password is
+confirmed: at once for a member that isn't encrypted or whose password passed a reliable check.
+A member whose password passed only a weak check, such as ZipCrypto's one-byte check, is
+confirmed only by its checksum, so that call reads the whole member. On a stream that can't
+seek, `verify(Verification.PASSWORD)` always costs a full read. A failed check raises what the read
+would raise:
+
+```python
+with archive.open(member) as stream:  # can't seek by default: verify() consumes it
+    if stream.verify() < stream.verifiable:
+        ...  # a check this member carries didn't run
+```
 
 [Damaged members](extracting.md#damaged-members) covers what extraction does.
 

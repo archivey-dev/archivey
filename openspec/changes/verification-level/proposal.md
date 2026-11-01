@@ -30,6 +30,12 @@ read.
     the end. `verified` never exceeds it.
 - The docs state reading to the end as the way to get a verdict, and point at the
   level for checking which one was given.
+- `ArchiveStream.verify(level=CHECKSUM)` runs the stream's checks up to `level` (or
+  `verifiable`, if lower), discarding the bytes, and returns `verified`. A stream that can
+  seek is put back where it was, also when a check raised; a stream that cannot seek is read
+  to the end whatever the level, and later reads raise `ArchiveyUsageError` (design
+  Decision 8). Added on 2026-11-01 at the maintainer's request, after the rest of this
+  change, as a convenience over the read to the end.
 - `verification-integrity-mode` moves to the archive as closed, not implemented.
   ADR 0014's pointer to `STRICT` is replaced by a pointer to the level.
 

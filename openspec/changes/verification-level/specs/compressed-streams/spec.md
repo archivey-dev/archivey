@@ -31,7 +31,7 @@ the stream, the level SHALL report less. Reading the properties SHALL NOT read,
 decode or seek.
 
 A stream that reaches the end raises any content verdict from that read, as today. The
-level adds no new error and no new way to read.
+level adds no new error.
 
 #### Scenario: verification level matrix
 
@@ -51,3 +51,51 @@ level adds no new error and no new way to read.
 | Lazy stream from `stream_members()`, before its first read | `verified` is `NONE` |
 | Member whose read raises `CorruptionError` | `verified` stays at the level it had before that read |
 | Reading `verified` on a stream that has not opened | Opens nothing; returns `NONE` |
+
+### Requirement: A stream verifies itself on request
+
+Every public `ArchiveStream` SHALL have a `verify(level=Verification.CHECKSUM)` method that
+runs the stream's checks, discarding the bytes, and returns `verified`. The goal is `level`,
+or `verifiable` when that is lower. It SHALL raise what its reads raise and nothing else.
+It SHALL NOT raise when the goal is below `level`, or when `verified` ends below the goal:
+it returns `verified`, and the caller compares. Its own seeks SHALL NOT report
+`STREAM_REWIND_REDECOMPRESSES`. On a closed stream it SHALL raise
+`ValueError`.
+
+On a stream that can seek, it SHALL read on until `verified` reaches the goal, and SHALL
+read nothing when the goal is already reached and `verified` is above `NONE`, or when
+`level` is `NONE`. When the reads end below the goal and the stream did not start at 0, it
+SHALL seek to 0 and read on once more. It SHALL then seek back to the position it started
+from, also when a read raised, so a later `read()` returns the same bytes.
+
+On a stream that cannot seek, it SHALL read to the end whatever `level` is, and every later
+`read()`, `readinto()` or `read_ahead()` SHALL raise `ArchiveyUsageError`, also when a check
+failed. A later `verify()`, at any level, SHALL read nothing: it SHALL raise the first
+call's check failure again if that call failed, and otherwise return `verified`.
+
+A later release MAY reach a level with less reading (a cheaper key check); the returned
+level and the errors SHALL stay those a read to the goal gives.
+
+#### Scenario: verify matrix
+
+| Case | Expected |
+| --- | --- |
+| Fresh ZIP deflate member | returns `CHECKSUM` |
+| Same member, 100 bytes read first | returns `CHECKSUM` |
+| Member already at `CHECKSUM`, positioned mid-way | returns `CHECKSUM`; position unchanged |
+| ZIP member whose CRC fails | raises `CorruptionError`; `verified` stays `PASSWORD` |
+| Seekable member whose CRC fails, 100 bytes read first | raises `CorruptionError`; position 100 |
+| TAR member | returns `LENGTH` |
+| Seekable member, 100 bytes read first | returns `CHECKSUM`; position 100; `read()` gives the rest |
+| Seekable `.gz` member after a forward seek | reads again from 0; returns `CHECKSUM`; position restored |
+| Lazy `stream_members()` stream | opens, reads, returns `CHECKSUM` |
+| `stream_members()` stream, `verify(NONE)`, `PASSWORD` or `CHECKSUM` | reads to the end; returns `CHECKSUM`; later `read()` raises `ArchiveyUsageError`; a second `verify()` returns `CHECKSUM` |
+| `stream_members()` stream whose CRC fails | raises `CorruptionError`; later `read()` raises `ArchiveyUsageError`; a later `verify(PASSWORD)` raises `CorruptionError` again |
+| Forward-only stream, `verify(PASSWORD)` then `verify(CHECKSUM)`, or the reverse | both return `CHECKSUM`; the second reads nothing |
+| Forward-only `open_stream()` | returns `CHECKSUM` |
+| Closed stream, whatever its level | raises `ValueError` |
+| `verify(PASSWORD)` on an open seekable unencrypted member | reads nothing; returns `PASSWORD` |
+| `verify(PASSWORD)` on a ZipCrypto member (one-byte check only) | reads to the CRC; returns `CHECKSUM` |
+| `verify(PASSWORD)` under a colliding wrong ZipCrypto password | raises `EncryptionError` |
+| `verify(CHECKSUM)` on a TAR member | returns `LENGTH` |
+| `verify(NONE)` on a seekable stream | reads nothing |
