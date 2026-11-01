@@ -17,10 +17,11 @@ every read, and stricter defaults for names and for archive shapes no writer pro
 
 ### Added
 
-- ar, CPIO (including afio) and SquashFS archives read as built-in formats, and so do
-  `.cpio.gz`, `.a.xz` and the like. LZO is a built-in codec: lzop files (`.lzo`,
-  `.tar.lzo`), and the LZO data in SquashFS images, read without an extra package.
-- ZIP members compressed with XZ (method 95), Shrink (1) and Implode (6) read.
+- archivey reads ar, CPIO (including afio) and SquashFS archives as built-in formats,
+  compressed ones too (`.cpio.gz`, `.a.xz` and the like). LZO is a built-in codec, so
+  lzop files (`.lzo`, `.tar.lzo`) and the LZO data in SquashFS images are read without
+  an extra package.
+- ZIP members compressed with XZ (method 95), Shrink (1) and Implode (6) are supported.
 - `ArchiveyConfig(formats=FormatPolicy(...))` chooses which formats one open may use
   (`only=`, `exclude=`, `plugins=`) and which optional libraries it may load
   (`exclude_libraries=`, with the new `OptionalLibrary` enum).
@@ -48,16 +49,16 @@ every read, and stricter defaults for names and for archive shapes no writer pro
 
 ### Changed
 
-- **Breaking:** the decompression ratio limit, now `DecoderLimits.max_ratio`, holds
-  every read, not only extraction, and its default is 800:1, down from 1000:1.
+- **Breaking:** the decompression ratio limit, now `DecoderLimits.max_ratio`, applies
+  to every read, not only extraction, and its default is 800:1, down from 1000:1.
   `read()`, `open()` and `stream_members()` raise `ResourceLimitError` for a member, or
-  a whole archive, that expands past it, and a compressed TAR is held to it while
+  a whole archive, that expands past it, and it applies to a compressed TAR while
   listing too. Set `DecoderLimits.max_ratio` to raise it or turn it off.
 - **Breaking:** `ExtractionPolicy.STRICT`, the default, refuses a member name with a
   backslash, a control character or bytes that are not UTF-8. `STANDARD` still writes
   such names with the portable rewrite.
-- **Breaking:** a ZIP member whose attributes say directory is a directory even without
-  a trailing `/`, as 7-Zip and libarchive read it.
+- **Breaking:** a ZIP member whose attributes say directory is read as a directory even
+  without a trailing `/`, as 7-Zip and libarchive do.
 - **Breaking:** errors that changed type. A listed volume that is missing raises its
   `OSError` (`FileNotFoundError`) instead of `OpenError`; running out of file
   descriptors raises `ResourceUnavailableError`. A ZIP, 7z or RAR file that is empty or
@@ -83,7 +84,8 @@ every read, and stricter defaults for names and for archive shapes no writer pro
 
 ### Security
 
-- A ZIP or TAR read from a pipe is held to the archive-wide ratio, as it is from a file.
+- The archive-wide ratio limit applies to a ZIP or TAR read from a pipe, as it does to
+  one read from a file.
 - A discovered sibling volume that is a symlink is refused.
 - Extraction never replaces a file that another writer made after archivey checked the
   path was free.
