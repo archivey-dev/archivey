@@ -329,7 +329,7 @@ archivey checks every member stream against what the listing said.
 - **Checksums in the index.** A CRC-32 or BLAKE2sp the index stores, known when
   listing, goes in `member.hashes`, where callers see it. It is checked as the stream is
   read. A mismatch raises `CorruptionError`, and a full read with a match reaches
-  `Verification.CONTENT`.
+  `Verification.CHECKSUM`.
 - **Checksums you read when opening.** A checksum the member's own header stores goes in
   `MemberData.digests`, as a `MemberDigest` with its name and stored value. For a name
   archivey computes (`"crc32"`, `"blake2sp"`) that is all; for a CRC-16, a SHA-1 or any
@@ -359,7 +359,7 @@ archivey checks every member stream against what the listing said.
 
 - **Checksums the stream checks itself.** If the stream your library returns checks its
   own checksum and raises when it does not match, set `checked=True` on the
-  `MemberData`. A read to the end then counts as `Verification.CONTENT` too.
+  `MemberData`. A read to the end then counts as `Verification.CHECKSUM` too.
 
 Whichever way a checksum archivey has no name for gets checked, keep the stored value in
 `member.extra` under a key named after your format, such as `"toya.sha1"`, so callers can
@@ -705,7 +705,7 @@ When a module is missing, `format_availability()` reports the format as
 
 A caller can turn an optional package off with `FormatPolicy(exclude_libraries=)`.
 archivey checks `requires` against it, so a plugin that names the package there needs
-nothing more: the format reads as not available, and its content probe does not run. A
+nothing more: the format is reported as not available, and its content probe does not run. A
 probe is not handed the policy, so it must not import anything `requires` does not
 name. A plugin that imports an optional package only for some files, outside
 `requires`, checks `context.config.formats.exclude_libraries` itself before it imports

@@ -19,8 +19,8 @@ follow, and rules on the trade-offs they can't settle from the code. Two example
 
 - **When formats disagree.** Archivey weighs following each format's official tool, such as `unrar`
   for RAR and GNU tar for TAR, against being the same across formats. Neither wins automatically.
-  Device files that store no data are one case where being the same won: every format lists them as
-  "other".
+  Device files that store no data are one case where being the same won: they are listed as "other"
+  in every format.
 - **What counts as damage.** Some problems refuse the archive, and others, which are only unusual,
   are reported as diagnostics.
 

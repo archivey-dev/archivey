@@ -253,7 +253,7 @@ Points that matter:
   `MemberData(stream, digests=(MemberDigest(name, expected, new),))`, where `new` makes
   a hashlib-shaped hasher (`update`, `digest`). archivey's member verifier feeds it as
   the stream is read, with the same seek handling, `CorruptionError` on a mismatch and
-  `Verification.CONTENT` on a match as its own CRC-32. The hashers live on `MemberData`,
+  `Verification.CHECKSUM` on a match as its own CRC-32. The hashers live on `MemberData`,
   not on `ArchiveMember`, because a member is public data callers copy and compare. A
   digest name is refused when it is a `HashAlgorithm` value or repeats another digest's
   name, so it can never replace archivey's own check. `checked=True` stays for a stream

@@ -100,7 +100,7 @@ with archivey.open_archive("damaged.tar") as archive:
     found, so the exception at the end still tells you the rest is missing.
 
 A TAR archive cut between two members, or inside a member's header, has nothing left that looks
-wrong, so it lists as a complete, shorter archive with no error. Only the diagnostic
+wrong, so it is listed as a complete, shorter archive with no error. Only the diagnostic
 `ARCHIVE_EOF_MARKER_MISSING` shows it, and
 [`DiagnosticPolicy.STRICT`](#raising-or-quieting-a-diagnostic) turns it into an exception.
 
@@ -149,9 +149,9 @@ level, and `stream.verifiable` is the most a read from the start to the end can 
 | Level | What has been checked |
 |---|---|
 | `NONE` | Nothing yet, or the member's password passed only a check that a wrong password can pass by chance |
-| `KEY` | The member isn't encrypted, or its password passed a reliable check |
-| `STRUCTURE` | A read reached the end, and the length and the end of the data were as expected |
-| `CONTENT` | A checksum stored with the data matched every byte |
+| `PASSWORD` | The member isn't encrypted, or its password passed a reliable check |
+| `LENGTH` | A read reached the end, and the length and the end of the data were as expected |
+| `CHECKSUM` | A checksum stored with the data matched every byte |
 
 The levels are ordered, so you can compare them:
 
@@ -163,8 +163,8 @@ with archive.open(member) as stream:
 ```
 
 A member with no checksum of its own, such as a TAR, ISO or `.lzma` member, stops at
-`STRUCTURE`. A gzip, bzip2, lzip or zlib file reaches `CONTENT` from its own checksum when it's
-read from the start with no seek in between. `.xz`, `.zst` and `.lz4` files stop at `STRUCTURE`
+`LENGTH`. A gzip, bzip2, lzip or zlib file reaches `CHECKSUM` from its own checksum when it's
+read from the start with no seek in between. `.xz`, `.zst` and `.lz4` files stop at `LENGTH`
 for now, even when they carry a checksum.
 
 An encrypted member whose password was accepted only on a weak check, such as the one-byte check of

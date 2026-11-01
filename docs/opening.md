@@ -23,7 +23,7 @@ pipe or an HTTP response, needs `streaming=True` and works only for some formats
 once](reading.md#reading-once) lists.
 
 ??? note "Why not refuse bytes after the archive?"
-    They aren't part of any member, so every member still reads correctly. GNU gzip and bzip2 also
+    They aren't part of any member, so every member is still read correctly. GNU gzip and bzip2 also
     decompress such a file and only warn, though `xz` refuses it.
 
 ## Format
@@ -120,7 +120,7 @@ escape, the way Python's `surrogateescape` does. An escape is a placeholder char
 and U+DCFF.
 
 If you know the encoding, pass it as `encoding=`, and archivey uses it in place of that default for
-names that aren't valid UTF-8: a Latin-1 `café.txt` in a TAR lists as `'caf\udce9.txt'` without it
+names that aren't valid UTF-8: a Latin-1 `café.txt` in a TAR is listed as `'caf\udce9.txt'` without it
 and `'café.txt'` with `encoding="latin-1"`. Only ZIP, TAR, ISO, RAR, CPIO, ar and SquashFS read
 `encoding=`. The other formats decode names their own way, and a value passed to them is ignored and
 noted in the diagnostics.
@@ -189,7 +189,7 @@ NO_PPMD = ArchiveyConfig(formats=FormatPolicy(exclude_libraries={L.PYPPMD, "infl
 ```
 
 archivey then reads as if those packages weren't there. A PPMd member raises
-`PackageNotInstalledError` when you open it, while the other members read; an ISO image with
+`PackageNotInstalledError` when you open it, while the other members can still be read; an ISO image with
 `pycdlib` excluded doesn't open; and an accelerator such as rapidgzip under `AUTO` falls back to
 the standard library. The error's `missing` names the package, and its `reason` says the policy
 turned it off. Each entry is an [`OptionalLibrary`][archivey.OptionalLibrary] member or its value,

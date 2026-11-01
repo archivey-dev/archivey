@@ -22,8 +22,8 @@ Python library for reading, streaming, and safely extracting archives (ZIP, TAR,
   Integrity errors come from reads, never from `close()`.
 - **Built for streaming:** `stream_members()` hands out each member as a stream, in
   archive order and in one pass, so a solid 7z or RAR is decoded once and a large member
-  is read in chunks rather than held in memory. TAR, ZIP and the single-file formats also
-  read straight from a pipe.
+  is read in chunks rather than held in memory. TAR, ZIP and the single-file formats can
+  also be read straight from a pipe.
 - **Encrypted archives:** ZipCrypto and WinZip AES in ZIP, AES in 7z, and RAR encryption.
 - **Native 7z and RAR metadata readers.** 7z data decodes in-process; RAR data needs
   RARLAB `unrar` or `rar`, or `unar`.

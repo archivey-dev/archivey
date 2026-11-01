@@ -1009,11 +1009,11 @@ class ArchiveStreamImpl(ArchiveStream):
     def verifiable(self) -> Verification:
         proofs = self._verification_proofs()
         if proofs.content_possible:
-            ceiling = Verification.CONTENT
+            ceiling = Verification.CHECKSUM
         elif proofs.key_in_doubt:
             ceiling = Verification.NONE
         else:
-            ceiling = Verification.STRUCTURE
+            ceiling = Verification.LENGTH
         return max(ceiling, self.verified)
 
     def _level_now(self) -> Verification:
@@ -1024,12 +1024,12 @@ class ArchiveStreamImpl(ArchiveStream):
         # A checksum that matched every byte proves the key as well: a wrong key does
         # not decrypt to data that matches it.
         if proofs.ended and proofs.content:
-            return Verification.CONTENT
+            return Verification.CHECKSUM
         if proofs.key_in_doubt:
             return Verification.NONE
         if proofs.ended:
-            return Verification.STRUCTURE
-        return Verification.KEY
+            return Verification.LENGTH
+        return Verification.PASSWORD
 
     @override
     def nearest_resume_offset(self, target: int) -> int | None:

@@ -215,7 +215,7 @@ policy.
     console, and `file:ads` writes data hidden inside `file`.
 
     `"strict"` refuses a name with a backslash, a control character or bytes that aren't UTF-8
-    because each one reads as a different name somewhere else: a backslash is a folder on Windows
+    because each one means a different name somewhere else: a backslash is a folder on Windows
     and a character on Linux, a newline splits the name across two lines of a listing, and bytes
     that aren't UTF-8 have no spelling every system shares. Archive tools disagree on them too.
 
