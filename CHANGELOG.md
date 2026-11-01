@@ -70,7 +70,8 @@ every read, and stricter defaults for names and for archive shapes no writer pro
 - Under `use_rapidgzip=AUTO`, rapidgzip also decodes large sequential DEFLATE reads on
   Linux and macOS, where it was measured to pay.
 - Extracting a ZIP takes about 0.8x the 0.2.1 time, and reading a single `.gz` file
-  about 0.7x (same-runner comparison against 0.2.1; other cases are within 15% of it).
+  about 0.7x (same-runner comparison against 0.2.1; the other cases are within about
+  15% of it).
 
 ### Deprecated
 
