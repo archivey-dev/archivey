@@ -153,7 +153,7 @@ class ArchiveStream(ReadOnlyIOStream):
         its levels or what they mean.
         """
 
-    def verify(self, level: Verification = Verification.CONTENT) -> Verification:
+    def verify(self, level: Verification = Verification.CHECKSUM) -> Verification:
         """Run the stream's checks up to ``level``, discarding the bytes; return ``verified``.
 
         A member stream can seek only when its archive was opened with
@@ -165,7 +165,7 @@ class ArchiveStream(ReadOnlyIOStream):
         member as ``level`` needs, then leaves the stream as it was, at the same
         position, so a later ``read()`` returns the bytes it would have returned before.
         It stops once ``verified`` reaches ``level``, or the most the stream can reach
-        when that is lower (``verifiable``). With the default, ``CONTENT``, it reads the
+        when that is lower (``verifiable``). With the default, ``CHECKSUM``, it reads the
         whole member. It reads nothing when the level is already reached and above
         ``NONE``, or when ``level`` is ``NONE``. When a seek earlier kept a read from
         checking every byte, it reads the member again from the start, so the level is
@@ -176,21 +176,24 @@ class ArchiveStream(ReadOnlyIOStream):
 
         On a stream that cannot seek, it cannot go back, so whatever ``level`` is, it reads the
         stream to the end, and any later ``read()`` raises ``ArchiveyUsageError``. So
-        ``verify(Verification.KEY)`` costs a full read there; read the data itself
+        ``verify(Verification.PASSWORD)`` costs a full read there; read the data itself
         instead when you need it. A later ``verify()``, at any level, reads nothing:
         it raises the first call's error again if that call failed, and otherwise
         returns ``verified``, the level the full read reached.
 
         A password is not always confirmed early either: a member with only a weak
         password check (ZipCrypto, or an encrypted stored member with no other check)
-        reaches ``KEY`` only at its checksum, so ``verify(Verification.KEY)`` reads it
+        reaches ``PASSWORD`` only at its checksum, so ``verify(Verification.PASSWORD)`` reads it
         to the end. A failed check raises what the read raises (``CorruptionError``,
         ``TruncatedError``, ``EncryptionError``), and a seekable stream is still put
         back where it was. Otherwise compare the result with ``level`` or
-        ``verifiable``: a TAR member, with no checksum, ends at ``STRUCTURE``. A closed
+        ``verifiable``: a TAR member, with no checksum, ends at ``LENGTH``. A closed
         stream raises ``ValueError``, as every ``io`` method does, also after
         ``verify()`` consumed it. Which reads a level needs can get cheaper in a later
         release; the result and the errors stay the same.
+
+        Experimental: any release, a patch included, may change or remove this method,
+        its levels or what they mean.
         """
         if self.closed:
             raise ValueError("I/O operation on closed file.")
@@ -255,7 +258,7 @@ class ArchiveStream(ReadOnlyIOStream):
     def _verify_read_on(self, level: Verification | None) -> None:
         """Read and discard until ``level`` is reached or the stream ends (``None``: end).
 
-        Reads start small, so a level the first bytes reach (``KEY``) costs little, and
+        Reads start small, so a level the first bytes reach (``PASSWORD``) costs little, and
         grow to ``_VERIFY_CHUNK`` so a read to the end pays little per call.
         """
         step = _VERIFY_FIRST_CHUNK

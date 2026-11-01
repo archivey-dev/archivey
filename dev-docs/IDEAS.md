@@ -226,9 +226,9 @@ Each idea carries a status:
   for a member, and says whether it was stored or computed. The recipe is in
   `docs/formats.md`.
 - **A cheaper `ArchiveStream.verify(level)`.** *Open idea.* `verify()` (0.3.0) reads and
-  discards until the level is reached. Some levels could cost less: `KEY` from the 7z AES
+  discards until the level is reached. Some levels could cost less: `PASSWORD` from the 7z AES
   tail padding (`openspec/changes/sevenzip-aes-tail-key-check`) or from decoding only the
-  start of a self-checking stream, and `CONTENT` without a full decode where a format allows
+  start of a self-checking stream, and `CHECKSUM` without a full decode where a format allows
   it (`reports/partial-crc-candidates-2026-10-22.md`). The result and the errors must stay
   the same, so each can land in a patch release.
 - **Public backend API.** *Needs design.* Export the backend base class and registry so

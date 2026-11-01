@@ -154,8 +154,8 @@ A few things you can see aren't part of the API either, and can change in any re
   `FormatInfo.from_plugin`). Any release may change or remove them, with no deprecation
   warning first, until the interface is declared stable. See
   [Adding a format](adding-a-format.md).
-- The experimental verification level: `Verification`, `ArchiveStream.verified` and
-  `ArchiveStream.verifiable`. Any release may change or remove them, their names, levels
+- The experimental verification level: `Verification`, `ArchiveStream.verified`,
+  `ArchiveStream.verifiable` and `ArchiveStream.verify()`. Any release may change or remove them, their names, levels
   or meaning, with no deprecation warning first. The checks they report on are not
   experimental: a failed checksum or a cut member raises as before. See
   [Damaged archives](errors-and-diagnostics.md#damaged-archives).

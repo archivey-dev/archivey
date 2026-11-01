@@ -36,9 +36,9 @@ def _zip(tmp_path: Path) -> Path:
     return path
 
 
-def test_verify_reads_a_fresh_member_to_content(tmp_path: Path) -> None:
+def test_verify_reads_a_fresh_member_to_checksum(tmp_path: Path) -> None:
     with open_archive(_zip(tmp_path)) as reader, reader.open("a.txt") as stream:
-        assert stream.verify() is Verification.CONTENT
+        assert stream.verify() is Verification.CHECKSUM
 
 
 def test_verify_on_a_seekable_stream_is_a_probe(tmp_path: Path) -> None:
@@ -48,13 +48,13 @@ def test_verify_on_a_seekable_stream_is_a_probe(tmp_path: Path) -> None:
         reader.open("a.txt") as stream,
     ):
         assert stream.read(100) == _DATA[:100]
-        assert stream.verify() is Verification.CONTENT
+        assert stream.verify() is Verification.CHECKSUM
         assert stream.tell() == 100
         assert stream.read() == _DATA[100:]
 
 
 @pytest.mark.parametrize(
-    "level", [Verification.NONE, Verification.KEY, Verification.CONTENT]
+    "level", [Verification.NONE, Verification.PASSWORD, Verification.CHECKSUM]
 )
 def test_verify_on_a_forward_only_stream_consumes_it(
     tmp_path: Path, level: Verification
@@ -64,13 +64,13 @@ def test_verify_on_a_forward_only_stream_consumes_it(
         for _member, stream in reader.stream_members():
             assert stream is not None
             assert not stream.seekable()
-            assert stream.verify(level) is Verification.CONTENT
+            assert stream.verify(level) is Verification.CHECKSUM
             with pytest.raises(ArchiveyUsageError, match="verify"):
                 stream.read(1)
             with pytest.raises(ArchiveyUsageError, match="verify"):
                 stream.readinto(bytearray(1))
             # A second verify() answers without reading.
-            assert stream.verify() is Verification.CONTENT
+            assert stream.verify() is Verification.CHECKSUM
             # Once closed, a read is the closed-file ValueError, as verify() is.
             stream.close()
             with pytest.raises(ValueError, match="closed"):
@@ -90,13 +90,13 @@ def test_verify_consumes_a_forward_only_stream_even_when_it_fails(
                 stream.read(1)
             # A later verify() repeats the failure, whatever its level.
             with pytest.raises(CorruptionError):
-                stream.verify(Verification.KEY)
+                stream.verify(Verification.PASSWORD)
 
 
 def test_verify_finishes_a_partly_read_member(tmp_path: Path) -> None:
     with open_archive(_zip(tmp_path)) as reader, reader.open("a.txt") as stream:
         stream.read(100)
-        assert stream.verify() is Verification.CONTENT
+        assert stream.verify() is Verification.CHECKSUM
 
 
 def test_verify_on_a_checked_stream_reads_nothing(tmp_path: Path) -> None:
@@ -106,7 +106,7 @@ def test_verify_on_a_checked_stream_reads_nothing(tmp_path: Path) -> None:
     ):
         stream.read()
         stream.seek(5)
-        assert stream.verify() is Verification.CONTENT
+        assert stream.verify() is Verification.CHECKSUM
         assert stream.tell() == 5
 
 
@@ -124,7 +124,7 @@ def test_verify_raises_what_the_read_raises(tmp_path: Path) -> None:
     with open_archive(path) as reader, reader.open("a.txt") as stream:
         with pytest.raises(CorruptionError):
             stream.verify()
-        assert stream.verified is Verification.KEY
+        assert stream.verified is Verification.PASSWORD
 
 
 def test_verify_puts_a_seekable_stream_back_when_it_fails(tmp_path: Path) -> None:
@@ -139,15 +139,15 @@ def test_verify_puts_a_seekable_stream_back_when_it_fails(tmp_path: Path) -> Non
         assert stream.tell() == 100
 
 
-def test_verify_stops_at_structure_for_a_tar_member(tmp_path: Path) -> None:
+def test_verify_stops_at_length_for_a_tar_member(tmp_path: Path) -> None:
     path = tmp_path / "a.tar"
     with tarfile.open(path, "w") as tf:
         info = tarfile.TarInfo("a.txt")
         info.size = len(_DATA)
         tf.addfile(info, io.BytesIO(_DATA))
     with open_archive(path) as reader, reader.open("a.txt") as stream:
-        assert stream.verify() is Verification.STRUCTURE
-        assert stream.verifiable is Verification.STRUCTURE
+        assert stream.verify() is Verification.LENGTH
+        assert stream.verifiable is Verification.LENGTH
 
 
 def test_verify_rereads_from_the_start_after_a_seek(tmp_path: Path) -> None:
@@ -159,14 +159,14 @@ def test_verify_rereads_from_the_start_after_a_seek(tmp_path: Path) -> None:
         reader.open(next(m for m in reader.members() if m.is_file)) as stream,
     ):
         stream.seek(1000)
-        assert stream.verify() is Verification.CONTENT
+        assert stream.verify() is Verification.CHECKSUM
         assert stream.tell() == 1000
         assert stream.read() == _DATA[1000:]
 
 
 def test_verify_on_a_forward_only_stream_returns_what_it_reached() -> None:
     with open_stream(io.BytesIO(gzip.compress(_DATA))) as stream:
-        assert stream.verify() is Verification.CONTENT
+        assert stream.verify() is Verification.CHECKSUM
 
 
 def test_verify_opens_a_lazy_stream_members_stream(tmp_path: Path) -> None:
@@ -174,7 +174,7 @@ def test_verify_opens_a_lazy_stream_members_stream(tmp_path: Path) -> None:
         for _member, stream in reader.stream_members():
             assert stream is not None
             assert stream.verified is Verification.NONE
-            assert stream.verify() is Verification.CONTENT
+            assert stream.verify() is Verification.CHECKSUM
 
 
 @pytest.mark.parametrize("read_first", [True, False], ids=["checked", "unchecked"])
@@ -197,31 +197,31 @@ _COLLISION = (
 )
 
 
-def test_verify_key_on_an_open_plain_member_reads_nothing(tmp_path: Path) -> None:
-    # An unencrypted member is at KEY as soon as open() returns it.
+def test_verify_password_on_an_open_plain_member_reads_nothing(tmp_path: Path) -> None:
+    # An unencrypted member is at PASSWORD as soon as open() returns it.
     with (
         open_archive(_zip(tmp_path), seekable_members=True) as reader,
         reader.open("a.txt") as stream,
     ):
-        assert stream.verify(Verification.KEY) is Verification.KEY
+        assert stream.verify(Verification.PASSWORD) is Verification.PASSWORD
         assert stream.tell() == 0
         assert stream.read() == _DATA
 
 
-def test_verify_key_on_a_weak_password_reads_to_the_checksum() -> None:
+def test_verify_password_on_a_weak_password_reads_to_the_checksum() -> None:
     # ZipCrypto's one-byte check confirms nothing; only the CRC at the end does.
     with open_archive(_COLLISION, password="secret") as reader:
         member = next(m for m in reader.members() if m.name == "stored.txt")
         with reader.open(member) as stream:
             assert stream.verified is Verification.NONE
-            assert stream.verify(Verification.KEY) is Verification.CONTENT
+            assert stream.verify(Verification.PASSWORD) is Verification.CHECKSUM
 
 
-def test_verify_key_on_a_colliding_wrong_password_raises() -> None:
+def test_verify_password_on_a_colliding_wrong_password_raises() -> None:
     with open_archive(_COLLISION, password="wrong896") as reader:
         member = next(m for m in reader.members() if m.name == "stored.txt")
         with reader.open(member) as stream, pytest.raises(EncryptionError):
-            stream.verify(Verification.KEY)
+            stream.verify(Verification.PASSWORD)
 
 
 def test_verify_above_the_ceiling_stops_at_the_ceiling(tmp_path: Path) -> None:
@@ -231,7 +231,7 @@ def test_verify_above_the_ceiling_stops_at_the_ceiling(tmp_path: Path) -> None:
         info.size = len(_DATA)
         tf.addfile(info, io.BytesIO(_DATA))
     with open_archive(path) as reader, reader.open("a.txt") as stream:
-        assert stream.verify(Verification.CONTENT) is Verification.STRUCTURE
+        assert stream.verify(Verification.CHECKSUM) is Verification.LENGTH
 
 
 def test_verify_none_on_a_seekable_stream_reads_nothing(tmp_path: Path) -> None:
@@ -239,7 +239,7 @@ def test_verify_none_on_a_seekable_stream_reads_nothing(tmp_path: Path) -> None:
         open_archive(_zip(tmp_path), seekable_members=True) as reader,
         reader.open("a.txt") as stream,
     ):
-        assert stream.verify(Verification.NONE) is Verification.KEY
+        assert stream.verify(Verification.NONE) is Verification.PASSWORD
         assert stream.tell() == 0
 
 
@@ -260,7 +260,7 @@ def test_verify_seeks_report_no_rewind(tmp_path: Path) -> None:
             reader.open("a") as stream,
         ):
             stream.read(start)
-            assert stream.verify() is Verification.CONTENT
+            assert stream.verify() is Verification.CHECKSUM
             assert stream.tell() == start
             assert stream.diagnostics.total_count == 0
 
@@ -268,7 +268,7 @@ def test_verify_seeks_report_no_rewind(tmp_path: Path) -> None:
 def test_verify_on_an_open_stream_blocks_read_ahead() -> None:
     # No member verifier sits in front here, so read_ahead's own guard is the one hit.
     with open_stream(io.BytesIO(gzip.compress(_DATA))) as stream:
-        assert stream.verify() is Verification.CONTENT
+        assert stream.verify() is Verification.CHECKSUM
         with pytest.raises(ArchiveyUsageError, match="verify"):
             stream.read_ahead(1, 1)
         with pytest.raises(ArchiveyUsageError, match="verify"):
@@ -278,8 +278,8 @@ def test_verify_on_an_open_stream_blocks_read_ahead() -> None:
 @pytest.mark.parametrize(
     ("first", "second"),
     [
-        (Verification.KEY, Verification.CONTENT),
-        (Verification.CONTENT, Verification.KEY),
+        (Verification.PASSWORD, Verification.CHECKSUM),
+        (Verification.CHECKSUM, Verification.PASSWORD),
     ],
 )
 def test_verify_twice_on_a_forward_only_stream(
@@ -287,5 +287,5 @@ def test_verify_twice_on_a_forward_only_stream(
 ) -> None:
     # The first call reads to the end whatever its level; the second reads nothing.
     with open_stream(io.BytesIO(gzip.compress(_DATA))) as stream:
-        assert stream.verify(first) is Verification.CONTENT
-        assert stream.verify(second) is Verification.CONTENT
+        assert stream.verify(first) is Verification.CHECKSUM
+        assert stream.verify(second) is Verification.CHECKSUM

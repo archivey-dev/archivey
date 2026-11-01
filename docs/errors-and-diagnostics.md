@@ -147,7 +147,8 @@ A member stream tells you what has been checked so far. `stream.verified` is a `
 level, and `stream.verifiable` is the most a read from the start to the end can reach.
 
 !!! warning "Experimental"
-    `Verification`, `stream.verified` and `stream.verifiable` are experimental and outside
+    `Verification`, `stream.verified`, `stream.verifiable` and `stream.verify()` are
+    experimental and outside
     the [stability policy](how-it-is-built.md#versioning-and-stability): any release, a
     patch release included, may change or remove them, their levels, names or meaning. The
     checks themselves are not experimental: a read that fails one raises as before, whatever
@@ -213,11 +214,11 @@ only with `seekable=True`. So by default, `verify()` consumes the stream:
   later `read()` raises `ArchiveyUsageError`. If you need the bytes too, read them instead: the
   read runs the same checks.
 
-`stream.verify(Verification.KEY)` on a stream that can seek stops as soon as the password is
+`stream.verify(Verification.PASSWORD)` on a stream that can seek stops as soon as the password is
 confirmed: at once for a member that isn't encrypted or whose password passed a reliable check.
 A member whose password passed only a weak check, such as ZipCrypto's one-byte check, is
 confirmed only by its checksum, so that call reads the whole member. On a stream that can't
-seek, `verify(Verification.KEY)` always costs a full read. A failed check raises what the read
+seek, `verify(Verification.PASSWORD)` always costs a full read. A failed check raises what the read
 would raise:
 
 ```python

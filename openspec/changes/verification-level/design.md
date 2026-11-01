@@ -165,9 +165,9 @@ level, with a faster `verify()` kept as an open idea.
 ### 8. `ArchiveStream.verify(level)` reads until the level is reached
 
 Added 2026-11-01 at the maintainer's request, as the simple version. `level` (default
-`CONTENT`) is how much the caller wants proved; the goal is `level` capped at
+`CHECKSUM`) is how much the caller wants proved; the goal is `level` capped at
 `verifiable`. It reads and discards, starting at 4 KiB and doubling to 1 MiB. On a stream
-that can seek it stops once `verified` reaches the goal, so `verify(KEY)` costs nothing on an
+that can seek it stops once `verified` reaches the goal, so `verify(PASSWORD)` costs nothing on an
 open unencrypted member, and it reads nothing for `NONE`; a stream that cannot seek is read
 to the end (below). When the stream ends below the goal, can seek and did not start at 0, it
 seeks to 0 and reads once more, since a seek past unread bytes is what keeps a check from
@@ -188,14 +188,14 @@ that no caller depends on how far a check happened to read:
   so that call costs up to two decodes; the docstring says so.
 - **A stream that cannot seek is fully consumed.** `stream_members()`, a pipe or a
   forward-only `open_stream()` cannot go back, so `verify()` reads to the end whatever the
-  level, and every later read raises `ArchiveyUsageError`. A partial consume (stop once `KEY`
+  level, and every later read raises `ArchiveyUsageError`. A partial consume (stop once `PASSWORD`
   is reached) would leave a stream whose position depends on the member's format and
-  password check, which is the kind of gotcha the rule avoids. `verify(KEY)` there costs a
+  password check, which is the kind of gotcha the rule avoids. `verify(PASSWORD)` there costs a
   full read, and the docs say to read the data instead when it is needed. A later
   `verify()`, at any level, reads nothing: it raises the first call's check failure again,
   or returns `verified`, so a failed check never turns into a quiet lower level.
 
-Even on a seekable stream `KEY` can need the whole member: a weak password check
+Even on a seekable stream `PASSWORD` can need the whole member: a weak password check
 (ZipCrypto, an encrypted stored member) is confirmed only by the checksum.
 
 The usage error is enforced by `ArchiveStreamImpl`, through two protected hooks on the base
@@ -204,7 +204,7 @@ keeps answering reads at its end with `b""`.
 
 The parameter fixes the shape now, so a cheaper path to a level can land in a patch
 release: the 7z AES tail padding check (`sevenzip-aes-tail-key-check`, not implemented),
-or a key confirmed by decoding only the start of a self-checking stream. Today `KEY` on a
+or a key confirmed by decoding only the start of a self-checking stream. Today `PASSWORD` on a
 weak-check member (ZipCrypto, 7z without a cheap check) still means a read to its checksum.
 
 ## Risks / Trade-offs
