@@ -164,10 +164,12 @@ Added 2026-11-01 at the maintainer's request, as the simple version. `level` (de
 `verifiable`. It reads and discards, starting at 4 KiB and doubling to 1 MiB. On a stream
 that can seek it stops once `verified` reaches the goal, so `verify(KEY)` costs nothing on an
 open unencrypted member, and it reads nothing for `NONE`; a stream that cannot seek is read
-to the end (below). When the stream ends
-below the goal and can seek, it seeks to 0 and reads once more, since a seek past unread
-bytes is what keeps a check from running. It raises what the read raises and adds no error
-of its own; a goal below `level` is returned, not raised, and the caller compares. A closed
+to the end (below). When the stream ends below the goal, can seek and did not start at 0, it
+seeks to 0 and reads once more, since a seek past unread bytes is what keeps a check from
+running. It raises what the read raises and adds no error of its own; a goal below `level`
+is returned, not raised, and the caller compares. Its own seeks (to 0 and back) report no
+`STREAM_REWIND_REDECOMPRESSES`: that code is a tripwire for the caller's access pattern, and
+a policy that raises on it would otherwise make a passing `verify()` raise. A closed
 stream raises `ValueError`, as every `io` method does. It is a concrete method on the public
 base, so every stream has it.
 

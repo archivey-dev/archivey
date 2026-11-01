@@ -150,6 +150,11 @@ class ArchiveStream(ReadOnlyIOStream):
     def verify(self, level: Verification = Verification.CONTENT) -> Verification:
         """Run the stream's checks up to ``level``, discarding the bytes; return ``verified``.
 
+        A member stream can seek only when its archive was opened with
+        ``seekable_members=True``, and an ``open_stream()`` stream only with
+        ``seekable=True``; ``stream_members()`` streams never can. By default, then,
+        ``verify()`` consumes the stream (see below).
+
         On a stream that can seek, ``verify()`` is a probe: it reads as much of the
         member as ``level`` needs, then leaves the stream as it was, at the same
         position, so a later ``read()`` returns the bytes it would have returned before.
@@ -160,10 +165,10 @@ class ArchiveStream(ReadOnlyIOStream):
         checking every byte, it reads the member again from the start, so the level is
         reached whatever the stream's history. Going back to the middle of a compressed
         member with no index decodes it again up to that offset, so a call there can
-        cost up to two decodes of the member.
+        cost up to two decodes of the member. Its own seeks report no
+        ``STREAM_REWIND_REDECOMPRESSES``: they are not the caller's.
 
-        On a stream that cannot seek (``stream_members()``, a pipe, ``open_stream()`` on
-        a forward-only source), it cannot go back, so whatever ``level`` is, it reads the
+        On a stream that cannot seek, it cannot go back, so whatever ``level`` is, it reads the
         stream to the end, and any later ``read()`` raises ``ArchiveyUsageError``. So
         ``verify(Verification.KEY)`` costs a full read there; read the data itself
         instead when you need it. A second ``verify()`` returns ``verified`` and reads
@@ -197,14 +202,21 @@ class ArchiveStream(ReadOnlyIOStream):
             self._verify_read_on(level)
             if not self._verify_done(level) and start > 0:
                 # A seek may have skipped bytes before ``start``: read them too.
-                self.seek(0)
+                self._verify_seek(0)
                 self._verify_read_on(level)
         except Exception:
             with contextlib.suppress(Exception):
-                self.seek(start)
+                self._verify_seek(start)
             raise
-        self.seek(start)
+        self._verify_seek(start)
         return self.verified
+
+    def _verify_seek(self, pos: int) -> None:
+        """Seek for ``verify()``: a seek the caller did not make, so it reports nothing.
+
+        A stream class that does not override it seeks as ``seek()`` does.
+        """
+        self.seek(pos)
 
     def _verify_consumed(self) -> bool:
         """Whether ``verify()`` has read this forward-only stream to its end."""

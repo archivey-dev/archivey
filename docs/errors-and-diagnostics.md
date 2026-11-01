@@ -192,16 +192,19 @@ runs every check.
 
 To check a member without keeping its bytes, call `stream.verify()`. It runs every check a read
 to the end runs, throws the bytes away, and returns `stream.verified`. What it does to the
-stream depends on whether the stream can seek:
+stream depends on whether the stream can seek. A member stream can seek only when the archive
+was opened with `seekable_members=True` (see
+[Seeking inside a member](reading.md#seeking-inside-a-member)), and an `open_stream()` stream
+only with `seekable=True`. So by default, `verify()` consumes the stream:
 
 - **A stream that can seek** is left as it was. `verify()` reads what the check needs, from the
   start again if a seek kept an earlier read from covering every byte, then goes back to where
   the stream was, so the next `read()` returns the same bytes. Going back to the middle of a
   compressed member decodes it again up to that point, so that call can cost two decodes.
-- **A stream that can't seek**, such as one from `stream_members()` or a pipe, can't go back.
-  `verify()` reads it to the end, whatever level you ask for, and a later `read()` raises
-  `ArchiveyUsageError`. If you need the bytes too, read them instead: the read runs the same
-  checks.
+- **A stream that can't seek**, such as one from `reader.open()` by default, `stream_members()`
+  or a pipe, can't go back. `verify()` reads it to the end, whatever level you ask for, and a
+  later `read()` raises `ArchiveyUsageError`. If you need the bytes too, read them instead: the
+  read runs the same checks.
 
 `stream.verify(Verification.KEY)` on a stream that can seek stops as soon as the password is
 confirmed: at once for a member that isn't encrypted or whose password passed a reliable check.
@@ -211,7 +214,7 @@ seek, `verify(Verification.KEY)` always costs a full read. A failed check raises
 would raise:
 
 ```python
-with archive.open(member) as stream:
+with archive.open(member) as stream:  # can't seek by default: verify() consumes it
     if stream.verify() < stream.verifiable:
         ...  # a check this member carries didn't run
 ```

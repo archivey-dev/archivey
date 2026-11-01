@@ -287,8 +287,9 @@ class MemberStreamParts:
 def _consumed_by_verify_error() -> ArchiveyUsageError:
     return ArchiveyUsageError(
         "Cannot read this stream: verify() read it to the end, and it cannot seek "
-        "back. Read the data itself to check it as you go, or open the member from a "
-        "reader that can seek."
+        "back. Read the data itself to check it as you go, or get a stream that can "
+        "seek: reader.open() on an archive opened with seekable_members=True, or "
+        "open_stream(..., seekable=True). A stream from stream_members() never seeks."
     )
 
 
@@ -323,6 +324,8 @@ class ArchiveStreamImpl(ArchiveStream):
     _open_interrupted_by: type[BaseException] | None = None
     _inner: BinaryIO | None = None
     _rewind_warned = False
+    # Set while ``verify()`` seeks: its own rewinds are not the caller's access pattern.
+    _rewind_quiet = False
     _closing = False
     _verdict: KeptError | None = None
     _verdict_rewound = False
@@ -906,6 +909,14 @@ class ArchiveStreamImpl(ArchiveStream):
             self._fail_unless_closed(e)
 
     @override
+    def _verify_seek(self, pos: int) -> None:
+        self._rewind_quiet = True
+        try:
+            self.seek(pos)
+        finally:
+            self._rewind_quiet = False
+
+    @override
     def _verify_consumed(self) -> bool:
         return self._consumed_by_verify
 
@@ -972,7 +983,8 @@ class ArchiveStreamImpl(ArchiveStream):
             self._verdict_rewound = True
         if result != before:
             self._uninterrupted = result == 0
-        self._maybe_warn_rewind(before, result)
+        if not self._rewind_quiet:
+            self._maybe_warn_rewind(before, result)
         return result
 
     def _note_raised_seek(self, inner: BinaryIO, before: int | None) -> None:
@@ -989,7 +1001,7 @@ class ArchiveStreamImpl(ArchiveStream):
             # Where the inner was left is unknown, or somewhere the decode may have
             # jumped to.
             self._uninterrupted = after == 0
-        if after is None:
+        if after is None or self._rewind_quiet:
             return
         if before is not None:
             try:

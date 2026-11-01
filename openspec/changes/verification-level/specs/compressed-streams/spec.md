@@ -56,8 +56,10 @@ level adds no new error.
 
 Every public `ArchiveStream` SHALL have a `verify(level=Verification.CONTENT)` method that
 runs the stream's checks, discarding the bytes, and returns `verified`. The goal is `level`,
-or `verifiable` when that is lower. It SHALL raise what its reads raise and nothing else,
-and SHALL NOT raise for a level below the goal. On a closed stream it SHALL raise
+or `verifiable` when that is lower. It SHALL raise what its reads raise and nothing else.
+It SHALL NOT raise when the goal is below `level`, or when `verified` ends below the goal:
+it returns `verified`, and the caller compares. Its own seeks SHALL NOT report
+`STREAM_REWIND_REDECOMPRESSES`. On a closed stream it SHALL raise
 `ValueError`.
 
 On a stream that can seek, it SHALL read on until `verified` reaches the goal, and SHALL

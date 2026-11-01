@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import gzip
 import io
+import os
 import struct
 import tarfile
 import zipfile
@@ -15,7 +16,14 @@ from pathlib import Path
 
 import pytest
 
-from archivey import Verification, open_archive, open_stream
+from archivey import (
+    ArchiveyConfig,
+    DiagnosticCode,
+    DiagnosticPolicy,
+    Verification,
+    open_archive,
+    open_stream,
+)
 from archivey.exceptions import ArchiveyUsageError, CorruptionError, EncryptionError
 
 _DATA = b"verify me\n" * 20000
@@ -230,3 +238,35 @@ def test_verify_none_on_a_seekable_stream_reads_nothing(tmp_path: Path) -> None:
     ):
         assert stream.verify(Verification.NONE) is Verification.KEY
         assert stream.tell() == 0
+
+
+def test_verify_seeks_report_no_rewind(tmp_path: Path) -> None:
+    # verify()'s own seeks are not the caller's: no STREAM_REWIND_REDECOMPRESSES.
+    data = os.urandom(1 << 16) * 96  # 6 MiB, over the rewind report's threshold
+    path = tmp_path / "big.zip"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("a", data)
+    config = ArchiveyConfig(
+        diagnostic_policy=DiagnosticPolicy(
+            raise_on={DiagnosticCode.STREAM_REWIND_REDECOMPRESSES}
+        )
+    )
+    for start in (0, 100):
+        with (
+            open_archive(path, seekable_members=True, config=config) as reader,
+            reader.open("a") as stream,
+        ):
+            stream.read(start)
+            assert stream.verify() is Verification.CONTENT
+            assert stream.tell() == start
+            assert stream.diagnostics.total_count == 0
+
+
+def test_verify_on_an_open_stream_blocks_read_ahead() -> None:
+    # No member verifier sits in front here, so read_ahead's own guard is the one hit.
+    with open_stream(io.BytesIO(gzip.compress(_DATA))) as stream:
+        assert stream.verify() is Verification.CONTENT
+        with pytest.raises(ArchiveyUsageError, match="verify"):
+            stream.read_ahead(1, 1)
+        with pytest.raises(ArchiveyUsageError, match="verify"):
+            stream.read(1)
