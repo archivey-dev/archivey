@@ -629,6 +629,13 @@ class TarReader(BaseArchiveReader):
         return (cap - counted, cap)
 
     @override
+    def _member_data_is_stream_bytes(self, member: ArchiveMember) -> bool:
+        # A TAR is compressed as a whole, so a member's data is a slice of the decoded
+        # stream, except a sparse member's, whose holes read as zeros it does not store.
+        span = member._raw
+        return isinstance(span, TarSpan) and span.sparse is None
+
+    @override
     def _register_member(
         self,
         idx: int,
