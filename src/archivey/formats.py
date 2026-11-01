@@ -136,7 +136,7 @@ class MemberDigest(NamedTuple):
     against as they are read.
 
     A mismatch raises ``CorruptionError`` when a read reaches the end, and a match
-    counts as ``Verification.CONTENT``, as for a CRC-32 in ``ArchiveMember.hashes``.
+    counts as ``Verification.CHECKSUM``, as for a CRC-32 in ``ArchiveMember.hashes``.
     Bytes read again after a backward seek are not fed twice.
 
     A checksum the index stores, known when listing, goes in ``ArchiveMember.hashes``

@@ -188,7 +188,7 @@ def test_open_list_and_read(toya: ArchiveFormat, tmp_path: Path) -> None:
         assert reader.read("docs/a.txt") == b"alpha\n"
         with reader.open("b.bin") as stream:
             assert stream.read() == bytes(range(256)) * 4
-            assert stream.verified is archivey.Verification.CONTENT
+            assert stream.verified is archivey.Verification.CHECKSUM
         info = reader.info
         assert info.format == toya
         assert info.comment == "toy"
@@ -511,8 +511,8 @@ def test_checked_counts_as_content(clean_registry: None, tmp_path: Path) -> None
     _plugin_with("unhashed", reader=Unhashed)
     _plugin_with("checked", reader=Checked)
     for ext, expected in (
-        ("unhashed", archivey.Verification.STRUCTURE),
-        ("checked", archivey.Verification.CONTENT),
+        ("unhashed", archivey.Verification.LENGTH),
+        ("checked", archivey.Verification.CHECKSUM),
     ):
         path = _write(tmp_path, build_toya(_ENTRIES), f"t.{ext}")
         with open_archive(path) as reader, reader.open("docs/a.txt") as stream:
@@ -545,7 +545,7 @@ def test_a_crc32_from_open_member_is_checked(
     with open_archive(path) as reader:
         with reader.open("docs/a.txt") as stream:
             assert stream.read() == b"alpha\n"
-            assert stream.verified is archivey.Verification.CONTENT
+            assert stream.verified is archivey.Verification.CHECKSUM
         with pytest.raises(CorruptionError):
             reader.read("b.bin")
 
@@ -593,7 +593,7 @@ def test_a_listed_and_an_opened_crc32_are_both_checked(
         if fails is None:
             with reader.open("docs/a.txt") as stream:
                 assert stream.read() == b"alpha\n"
-                assert stream.verified is archivey.Verification.CONTENT
+                assert stream.verified is archivey.Verification.CHECKSUM
         else:
             # The error names the value that failed.
             with pytest.raises(CorruptionError, match=fails):
@@ -669,7 +669,7 @@ def test_a_listed_name_outside_hashalgorithm_uses_the_plugins_hasher(
         if fails is None:
             with reader.open("docs/a.txt") as stream:
                 assert stream.read() == b"alpha\n"
-                assert stream.verified is archivey.Verification.CONTENT
+                assert stream.verified is archivey.Verification.CHECKSUM
         else:
             with pytest.raises(CorruptionError, match=fails):
                 reader.read("docs/a.txt")
@@ -707,7 +707,7 @@ def test_a_listed_name_archivey_can_hash_keeps_archiveys_hasher(
     path = _write(tmp_path, build_toya(_ENTRIES), "t.listedsha1")
     with open_archive(path) as reader, reader.open("docs/a.txt") as stream:
         assert stream.read() == b"alpha\n"
-        assert stream.verified is archivey.Verification.CONTENT
+        assert stream.verified is archivey.Verification.CHECKSUM
 
 
 def test_long_member_raises_corruption(clean_registry: None, tmp_path: Path) -> None:
@@ -1007,7 +1007,7 @@ def test_decompress_methods(
         reader.open("m.bin") as stream,
     ):
         assert stream.read() == _PLAIN
-        assert stream.verified is archivey.Verification.CONTENT
+        assert stream.verified is archivey.Verification.CHECKSUM
 
 
 @pytest.mark.parametrize(
@@ -1159,7 +1159,7 @@ def test_decompress_stream_formats(
     path = _compressed_archive(tmp_path, _stream(method, _PLAIN))
     with open_archive(path) as reader, reader.open("m.bin") as stream:
         assert stream.read() == _PLAIN
-        assert stream.verified is archivey.Verification.CONTENT
+        assert stream.verified is archivey.Verification.CHECKSUM
 
 
 def test_decompress_stream_format_reads_as_its_files_do(
@@ -1581,7 +1581,7 @@ def test_seekable_member_over_forward_only_stream(
         assert len(opened) == 2  # a backward seek opens the member again
         stream.seek(0)
         assert stream.read() == data
-        assert stream.verified is archivey.Verification.CONTENT
+        assert stream.verified is archivey.Verification.CHECKSUM
 
 
 def test_forward_only_stream_without_seekable_members(
@@ -1660,7 +1660,7 @@ def test_member_digest_checked(
     path = _write(tmp_path, build_toya(_ENTRIES))
     with open_archive(path) as reader, reader.open("b.bin") as stream:
         assert stream.read() == data
-        assert stream.verified is archivey.Verification.CONTENT
+        assert stream.verified is archivey.Verification.CHECKSUM
 
 
 def test_member_digest_mismatch_raises(clean_registry: None, tmp_path: Path) -> None:
@@ -1684,7 +1684,7 @@ def test_member_digest_across_seeks(clean_registry: None, tmp_path: Path) -> Non
         stream.read(300)
         stream.seek(100)  # bytes read again are not fed to the hasher twice
         assert stream.read() == data[100:]
-        assert stream.verified is archivey.Verification.CONTENT
+        assert stream.verified is archivey.Verification.CHECKSUM
 
 
 def test_seekable_member_with_no_listed_size(
@@ -1704,7 +1704,7 @@ def test_seekable_member_with_no_listed_size(
             assert stream.read(4) == data[10:14]
             stream.seek(0)
             assert stream.read() == data
-            assert stream.verified is archivey.Verification.CONTENT
+            assert stream.verified is archivey.Verification.CHECKSUM
 
 
 @pytest.mark.parametrize(
@@ -1775,7 +1775,7 @@ def test_a_hashalgorithm_name_uses_archiveys_hasher(
     path = _write(tmp_path, build_toya(_ENTRIES), "t.owncrc")
     with open_archive(path) as reader, reader.open("docs/a.txt") as stream:
         assert stream.read() == b"alpha\n"
-        assert stream.verified is archivey.Verification.CONTENT
+        assert stream.verified is archivey.Verification.CHECKSUM
 
 
 def test_member_stream_is_closed_when_a_hasher_factory_fails(

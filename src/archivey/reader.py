@@ -112,15 +112,15 @@ class ArchiveStream(ReadOnlyIOStream):
     def verified(self) -> Verification:
         """How much of this stream's data has been checked so far, as a ``Verification``.
 
-        ``KEY`` once the stream has opened its member and nothing doubts its password,
-        ``STRUCTURE`` once a read has reached the end with the length checks passing,
-        and ``CONTENT`` once a checksum stored with the data has matched every byte. It
+        ``PASSWORD`` once the stream has opened its member and nothing doubts its password,
+        ``LENGTH`` once a read has reached the end with the length checks passing,
+        and ``CHECKSUM`` once a checksum stored with the data has matched every byte. It
         never goes down: a seek back to the start runs the checks again, and what they
         proved stays proved. A read that raises leaves it where it was. A stream from
         ``stream_members()`` opens its member at its first read, and is ``NONE`` until
         then.
 
-        Compare it with ``verifiable``: a TAR member has no checksum, so ``STRUCTURE``
+        Compare it with ``verifiable``: a TAR member has no checksum, so ``LENGTH``
         is the most it can reach. Reading this property reads nothing from the archive.
         """
 
@@ -129,14 +129,14 @@ class ArchiveStream(ReadOnlyIOStream):
     def verifiable(self) -> Verification:
         """The most ``verified`` can reach by a read from the start to the end.
 
-        ``CONTENT`` when the member carries a checksum archivey can compute,
-        ``STRUCTURE`` when it carries none, and ``NONE`` for an encrypted member with no
+        ``CHECKSUM`` when the member carries a checksum archivey can compute,
+        ``LENGTH`` when it carries none, and ``NONE`` for an encrypted member with no
         checksum whose password passed only a weak check. It rises when another
         member's checksum confirms that password. A stream from ``stream_members()``
         learns what its member carries when it opens, at its first read. Until then it
         answers from what it knows without opening (the member's stored digest), and
         the answer can settle lower when it opens: a password watch that only appears
-        then takes a member with no checksum from ``STRUCTURE`` to ``NONE``. Once open,
+        then takes a member with no checksum from ``LENGTH`` to ``NONE``. Once open,
         it never falls. Reading this property reads nothing from the archive.
         """
 

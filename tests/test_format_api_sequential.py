@@ -186,7 +186,7 @@ def test_random_access_from_a_file(toys: ArchiveFormat, tmp_path: Path) -> None:
         assert reader.read("b.bin") == _DATA["b.bin"]
         with reader.open("docs/a.txt") as stream:
             assert stream.read() == b"alpha\n"
-            assert stream.verified is archivey.Verification.CONTENT
+            assert stream.verified is archivey.Verification.CHECKSUM
         assert reader.read("link") == b"alpha\n"
         member = reader.get("docs/a.txt")
         assert member is not None
@@ -737,7 +737,7 @@ def test_random_access_inside_a_compression_stream(
         assert reader.read("b.bin") == _DATA["b.bin"]
         with reader.open("docs/a.txt") as stream:
             assert stream.read() == b"alpha\n"
-            assert stream.verified is archivey.Verification.CONTENT
+            assert stream.verified is archivey.Verification.CHECKSUM
         info = reader.info
         assert info.is_solid
         assert info.cost.listing_cost is ListingCost.REQUIRES_DECOMPRESSION
@@ -1066,7 +1066,7 @@ def test_decompress_part_way_random_access(
         assert reader.read("empty") == b""
         with reader.open("b.bin") as member_stream:
             assert member_stream.read() == _DATA["b.bin"]
-            assert member_stream.verified is archivey.Verification.CONTENT
+            assert member_stream.verified is archivey.Verification.CHECKSUM
         assert reader.info.is_solid
         assert reader.info.cost.access_cost is AccessCost.SOLID
 
@@ -1531,7 +1531,7 @@ def test_decoded_random_access(decoded: _DecodedFixture, tmp_path: Path) -> None
         assert reader_type.walks == 3
         with reader.open("b.bin") as stream:
             assert stream.read() == _DECODED_DATA["b.bin"]
-            assert stream.verified is archivey.Verification.CONTENT
+            assert stream.verified is archivey.Verification.CHECKSUM
         # In order from there, the walk carries on.
         assert reader.read("c.bin") == _DECODED_DATA["c.bin"]
         assert reader.read("empty") == b""
@@ -1683,11 +1683,11 @@ def test_decoded_checked_data_counts_as_content(
     path = _write(tmp_path, build_decoded(_DECODED_ENTRIES))
     with open_archive(path, format=fmt) as reader, reader.open("b.bin") as stream:
         stream.read()
-        assert stream.verified is archivey.Verification.STRUCTURE
+        assert stream.verified is archivey.Verification.LENGTH
     reader_type.checked = True
     with open_archive(path, format=fmt) as reader, reader.open("b.bin") as stream:
         stream.read()
-        assert stream.verified is archivey.Verification.CONTENT
+        assert stream.verified is archivey.Verification.CHECKSUM
 
 
 def test_decoded_data_and_data_length_is_a_plugin_bug(

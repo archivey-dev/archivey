@@ -266,7 +266,7 @@ def test_trailing_data_is_reported(toy: ArchiveFormat) -> None:
     assert DiagnosticCode.ARCHIVE_TRAILING_DATA in codes
 
 
-@pytest.mark.parametrize(("checks", "level"), [(True, "CONTENT"), (False, "STRUCTURE")])
+@pytest.mark.parametrize(("checks", "level"), [(True, "CHECKSUM"), (False, "LENGTH")])
 def test_checks_content_sets_the_verification_level(checks: bool, level: str) -> None:
     class Handler(ToyHandler):
         checks_content = checks
