@@ -12,13 +12,103 @@ one line. How to write the entry: see
 
 ## [Unreleased]
 
+A minor release: new formats built in, a per-call format policy, the ratio limit on
+every read, and stricter defaults for names and for archive shapes no writer produces.
+
+### Added
+
+- archivey reads ar, CPIO (including afio) and SquashFS archives as built-in formats,
+  compressed ones too (`.cpio.gz`, `.a.xz` and the like). LZO is a built-in codec, so
+  lzop files (`.lzo`, `.tar.lzo`) and the LZO data in SquashFS images are read without
+  an extra package.
+- ZIP members compressed with XZ (method 95), Shrink (1) and Implode (6) are supported.
+- `ArchiveyConfig(formats=FormatPolicy(...))` chooses which formats one open may use
+  (`only=`, `exclude=`, `plugins=`) and which optional libraries it may load
+  (`exclude_libraries=`, with the new `OptionalLibrary` enum).
+  `PackageNotInstalledError.missing` names what is missing.
+- An experimental interface for formats and codecs from outside archivey:
+  `archivey.formats` with `register_format()` and `register_codec()`, and
+  `FormatPolicy(replace=)` to read a built-in container with your own reader. It is
+  outside the stability policy: any release may change it.
+- Experimental: `ArchiveStream.verified` and `.verifiable` say how far a member's data
+  has been checked (`Verification.NONE` to `CHECKSUM`), and `ArchiveStream.verify(level)`
+  runs the checks without keeping the bytes. A stream that can seek is left where it
+  was; one that cannot is read to the end. Any release may change these or the levels.
+- `ArchiveMember.accessed_utc()`, `created_utc()` and `ctime_utc()`, beside
+  `modified_utc()`. Extraction restores a member's birth time (`created`) on Windows and
+  macOS.
+- `ArchiveyConfig.discover_volumes` turns off looking for an archive's other volumes.
+- `ResourceUnavailableError`, a `ResourceLimitError` for the system running short (a
+  killed decoder process, out of file descriptors) rather than a limit you set.
+- Detection finds a ZIP, 7z or RAR behind leading bytes of any kind, and a TAR with no
+  magic by its header checksum.
+- New diagnostics: `MEMBER_HEADER_AMBIGUOUS` (TAR header shapes no known writer
+  produces; in `ARCHIVE_INTEGRITY_CODES`, so `DiagnosticPolicy.STRICT` refuses them),
+  and `MEMBER_NAME_DUPLICATE` and `MEMBER_READERS_DISAGREE` (shapes other readers take
+  differently; reported at INFO, raised only by `PEDANTIC` or `raise_on=`).
+  `MEMBER_READERS_DISAGREE` also names a file that only one of an ISO image's trees
+  (ISO 9660, Joliet, UDF) holds, and a member name with a NUL byte.
+
+### Changed
+
+- **Breaking:** the decompression ratio limit, now `DecoderLimits.max_ratio`, applies
+  to every read, not only extraction, and its default is 800:1, down from 1000:1.
+  `read()`, `open()` and `stream_members()` raise `ResourceLimitError` for a member, or
+  a whole archive, that expands past it, and it applies to a compressed TAR while
+  listing too. Set `DecoderLimits.max_ratio` to raise it or turn it off.
+- **Breaking:** `ExtractionPolicy.STRICT`, the default, refuses a member name with a
+  backslash, a control character or bytes that are not UTF-8. `STANDARD` still writes
+  such names with the portable rewrite.
+- **Breaking:** a ZIP member whose attributes say directory is read as a directory even
+  without a trailing `/`, as 7-Zip and libarchive do.
+- **Breaking:** errors that changed type. A listed volume that is missing raises its
+  `OSError` (`FileNotFoundError`) instead of `OpenError`; running out of file
+  descriptors raises `ResourceUnavailableError`. A ZIP, 7z or RAR file that is empty or
+  holds only the start of its signature raises `TruncatedError` instead of
+  `CorruptionError`.
+- TAR follows GNU tar where readers disagree: PAX records combine as GNU tar combines
+  them, a PAX size on a directory or link no longer frames data, and an mtime field with
+  no digit is `None`, not 1970.
+- `MEMBER_NAME_NORMALIZED` is no longer reported for a leading `./` alone.
+- Under `use_rapidgzip=AUTO`, rapidgzip also decodes large sequential DEFLATE reads on
+  Linux and macOS, where it was measured to pay.
+- Extracting a ZIP takes about 0.8x the 0.2.1 time, and reading a single `.gz` file
+  about 0.7x (same-runner comparison against 0.2.1; the other cases are within about
+  15% of it).
+
+### Deprecated
+
+- The ratio fields of `ExtractionLimits` (`max_ratio`, `ratio_activation_threshold`,
+  `live_ratio_activation_threshold`): set them on `DecoderLimits`. They still apply, and
+  are removed in 0.4.0.
+- Constructing `ArchiveStream` or `MemberPass` directly: they are now base classes you
+  receive from `open()`, `stream_members()` and `open_stream()`. Removed in 0.4.0.
+
+### Security
+
+- The archive-wide ratio limit applies to a ZIP or TAR read from a pipe, as it does to
+  one read from a file.
+- A discovered sibling volume that is a symlink is refused.
+- Extraction never replaces a file that another writer made after archivey checked the
+  path was free.
+- A raw LZO1X stream is refused once its input exceeds what LZO1X needs for the
+  declared size.
+
+### Fixed
+
+- About 20 bugs found since 0.2.1, most of them in TAR, RAR and the decoders. Many came
+  from comparing archivey with
+  [Apache Commons Compress](https://commons.apache.org/proper/commons-compress/) and its
+  test archives, and from the [tar-minefield](https://github.com/haampie/tar-minefield)
+  corpus of TAR files that readers take differently.
+
 ## [0.2.1] - 2026-10-24
 
 A patch release: no public name was added, renamed or removed.
 
 ### Added
 
-- 7z archives that use 7-Zip 24's RISC-V branch filter now read. The filter is
+- 7z archives that use 7-Zip 24's RISC-V branch filter are now supported. The filter is
   decoded in Python, so it needs no extra package.
 - `archivey extract --dry-run` prints a `peak use of the reader limits:` line: the
   largest decoder allocation, the temporary-file peak, the key-derivation rounds and
@@ -36,8 +126,8 @@ A patch release: no public name was added, renamed or removed.
   merges it away, so the name means something different there. `STANDARD` also treats
   `notes.` and `notes` as the same file, as Windows does, so the second one is a
   collision on every platform instead of silently replacing the first on Windows.
-- A ZIP member compressed with Zstandard reads every frame, as a `.zst` file does. A
-  second frame used to raise `DataAfterEndError`.
+- archivey reads every frame of a ZIP member compressed with Zstandard, as it does for a
+  `.zst` file. A second frame used to raise `DataAfterEndError`.
 - The `STREAM_REWIND_REDECOMPRESSES` diagnostic is logged at INFO instead of WARNING.
   It is still collected and can still be escalated by a `DiagnosticPolicy`.
 - When `rapidgzip` speeds up seeking, the members of one archive share its child process
@@ -86,7 +176,7 @@ and each change will be listed here. No major changes are expected.
 - **Resource limits** on listing size, decoder memory, password key-derivation work and
   temporary files.
 - **Built for streaming.** `stream_members()` reads every member in one pass, so a solid
-  7z or RAR is decoded once. TAR, ZIP and single compressed files also read from a pipe,
+  7z or RAR is decoded once. TAR, ZIP and single compressed files can also be read from a pipe,
   and zstd and gzip files can seek instead of decompressing from the start.
 - **Crash isolation.** The native decoders known to crash on hostile input run in a
   child process, so a crash costs one member, not your process.
