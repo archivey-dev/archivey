@@ -190,6 +190,17 @@ After seeks, `stream.verified` shows whether the checksum still ran. If it's bel
 `stream.verifiable` once you've read to the end, a seek back to the start and a read to the end
 runs every check.
 
+To check a member without keeping its bytes, call `stream.verify()`. It reads the rest of the
+stream and throws the bytes away, so every check a read to the end runs, and it returns
+`stream.verified`. If a seek kept the check from covering every byte and the stream can seek,
+it reads the member again from the start. A failed check raises what the read would raise:
+
+```python
+with archive.open(member) as stream:
+    if stream.verify() < stream.verifiable:
+        ...  # a check this member carries didn't run
+```
+
 [Damaged members](extracting.md#damaged-members) covers what extraction does.
 
 ## Diagnostics

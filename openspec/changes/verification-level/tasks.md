@@ -52,6 +52,13 @@
       when `stream.verified` lands and this code is retired" is left as is: the code
       stays until the maintainer decides to retire it.
 
+## 5b. `verify()` (2026-11-01)
+
+- [x] 5b.1 `ArchiveStream.verify()` on the public base (`src/archivey/reader.py`).
+- [x] 5b.2 `tests/test_stream_verify.py`: the verify matrix.
+- [x] 5b.3 `docs/errors-and-diagnostics.md`, `dev-docs/IDEAS.md` (the faster version
+      stays an idea), `dev-docs/api-surface.txt`.
+
 ## 6. Archive
 
 - [ ] 6.1 `openspec archive verification-level` once review settles the names and the

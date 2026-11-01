@@ -31,7 +31,7 @@ the stream, the level SHALL report less. Reading the properties SHALL NOT read,
 decode or seek.
 
 A stream that reaches the end raises any content verdict from that read, as today. The
-level adds no new error and no new way to read.
+level adds no new error.
 
 #### Scenario: verification level matrix
 
@@ -51,3 +51,24 @@ level adds no new error and no new way to read.
 | Lazy stream from `stream_members()`, before its first read | `verified` is `NONE` |
 | Member whose read raises `CorruptionError` | `verified` stays at the level it had before that read |
 | Reading `verified` on a stream that has not opened | Opens nothing; returns `NONE` |
+
+### Requirement: A stream verifies itself on request
+
+Every public `ArchiveStream` SHALL have a `verify()` method that reads the rest of the
+stream, discards the bytes, and returns `verified`. It SHALL read nothing when `verified`
+already equals `verifiable` and is above `NONE`. When the read reaches the end with
+`verified` below `verifiable` and the stream can seek, it SHALL seek to 0 and read to the end
+once more. It SHALL raise what those reads raise and nothing else, and SHALL NOT raise for a
+level below `verifiable`. It leaves the stream at its end.
+
+#### Scenario: verify matrix
+
+| Case | Expected |
+| --- | --- |
+| Fresh ZIP deflate member | returns `CONTENT` |
+| Same member, 100 bytes read first | returns `CONTENT` |
+| Member already at `CONTENT`, positioned mid-way | returns `CONTENT`; position unchanged |
+| ZIP member whose CRC fails | raises `CorruptionError`; `verified` stays `KEY` |
+| TAR member | returns `STRUCTURE` |
+| Seekable `.gz` member after a forward seek | reads again from 0; returns `CONTENT` |
+| Lazy `stream_members()` stream | opens, reads, returns `CONTENT` |

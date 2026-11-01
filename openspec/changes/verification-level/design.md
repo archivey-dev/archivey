@@ -29,7 +29,8 @@ level, a ceiling, and a `verify()` method. The ruling ships the level and the ce
 **Non-goals**
 
 - A mode that forces a verdict (`STRICT`): closed by the ruling.
-- `stream.verify()` or `reader.verify(member)`: possible later and additive.
+- `reader.verify(member)`. `stream.verify()` was first a non-goal, then added at the
+  maintainer's request (2026-11-01): a plain read of the rest, see Decision 8.
 - Changing when or how any check runs, or what it raises.
 - Retiring `ENCRYPTED_MEMBER_UNVERIFIED`.
 
@@ -155,6 +156,18 @@ The parked `verification-integrity-mode` change moves to
 ADR 0014's last paragraph changes from "use `VerificationMode.STRICT`" to "read to the
 end, and check `stream.verified`". The `IDEAS.md` entry is replaced by the shipped
 level, with `verify()` kept as an open idea.
+
+### 8. `ArchiveStream.verify()` reads the rest and returns the level
+
+Added 2026-11-01 at the maintainer's request, as the simple version: it reads the rest of
+the stream in 1 MiB reads, discards the bytes, and returns `verified`. It reads nothing when
+`verified` already equals `verifiable` above `NONE`. When the read reached the end below
+`verifiable` and the stream can seek, it seeks to 0 and reads once more, since a seek past
+unread bytes is what keeps a check from running. It raises what the read raises and adds no
+error of its own, and it does not raise for a level below `verifiable`: the caller compares,
+as with a read. It is a concrete method on the public base, so every stream has it.
+Skipping decode work where a format allows it is a later optimisation that keeps the result
+and the errors the same.
 
 ## Risks / Trade-offs
 

@@ -51,6 +51,10 @@ MemberSelector = MemberSelectorArg
 
 _T_co = TypeVar("_T_co", covariant=True)
 
+# How much ``ArchiveStream.verify()`` asks for per read: large enough that the call
+# overhead is small, small enough that the discarded chunk costs little memory.
+_VERIFY_CHUNK = 1024 * 1024
+
 
 class ArchiveStream(ReadOnlyIOStream):
     """A member's bytes, as a read-only binary file.
@@ -139,6 +143,29 @@ class ArchiveStream(ReadOnlyIOStream):
         then takes a member with no checksum from ``STRUCTURE`` to ``NONE``. Once open,
         it never falls. Reading this property reads nothing from the archive.
         """
+
+    def verify(self) -> Verification:
+        """Read the rest of the stream, discarding the bytes, and return ``verified``.
+
+        This runs every check a read to the end runs, without keeping the data. It
+        returns at once, reading nothing, when ``verified`` already equals
+        ``verifiable`` and is above ``NONE``. When a seek earlier kept the read from
+        checking every byte and the stream can seek, it reads the member once more from
+        the start. A failed check raises what the read raises (``CorruptionError``,
+        ``TruncatedError``, ``EncryptionError``); otherwise compare the result with
+        ``verifiable``, since a TAR member, with no checksum, ends at ``STRUCTURE``.
+        The stream is left at its end.
+        """
+        reached = self.verified
+        if reached >= self.verifiable and reached > Verification.NONE:
+            return reached
+        while self.read(_VERIFY_CHUNK):
+            pass
+        if self.verified < self.verifiable and self.seekable() and self.tell() > 0:
+            self.seek(0)
+            while self.read(_VERIFY_CHUNK):
+                pass
+        return self.verified
 
     @abstractmethod
     @override

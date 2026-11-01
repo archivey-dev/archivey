@@ -157,6 +157,7 @@ property archivey.ArchiveStream.size: int | None
 method archivey.ArchiveStream.tell(self, /) -> int
 property archivey.ArchiveStream.verifiable: Verification
 property archivey.ArchiveStream.verified: Verification
+method archivey.ArchiveStream.verify(self) -> Verification
 method archivey.ArchiveStream.writable(self) -> bool
 method archivey.ArchiveStream.write(self, b: object, /) -> int
 class archivey.ArchiveyConfig()
