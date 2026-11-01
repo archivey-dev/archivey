@@ -47,6 +47,11 @@ goes in it:
 
 Internal refactors, review docs and chore work stay out.
 
+Write the lines in the user docs voice
+([`write-user-docs`](../.claude/skills/write-user-docs/SKILL.md) §Voice). In particular,
+the library does the reading: "archivey reads ar archives" or "ZIP Shrink members are
+supported", not "ar archives read".
+
 Previous release tag: `PREV=$(git describe --tags --abbrev=0 2>/dev/null || true)`
 (0.2.0, the first release, has its entry written already under
 `## [0.2.0] - Unreleased`: a feature summary rather than a change list. Re-read it

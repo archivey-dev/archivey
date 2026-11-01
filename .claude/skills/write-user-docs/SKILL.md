@@ -17,7 +17,8 @@ flat, too prescriptive and too detailed, so this process works in small agreed s
 puts "reads as if a person wrote it" above the sentence rules, below only being true
 and being impossible to misread.
 
-This skill sets the voice for **all user docs prose**, in `docs/`. Its loop
+This skill sets the voice for **all user docs prose**: `docs/`, the README and the
+release's `CHANGELOG.md` entry. Its loop
 is for writing or rewriting a page with the maintainer. For a one-sentence fix, use the
 Voice and Shaping sections without the loop. Chat, PR comments and briefs still use
 [`unslop`](../unslop/SKILL.md). Code comments and exception messages still use
@@ -87,7 +88,9 @@ inaccurate sentence.
    an extraction, but only between chunks.
 2. **Can't be misread.** STE's rules were dropped, but its goal stayed. Read each word as
    a stranger would. "Calls" read as "decisions". "RAR archives list" makes the archive do
-   the listing ("can be listed"). "Limits apply to one archive at a time" reads as
+   the listing ("can be listed"). Archives, members and files never read, list or open
+   themselves: write "archivey reads X", "X is read" or "X is supported", never "X
+   members read". "Limits apply to one archive at a time" reads as
    concurrency ("apply to each archive separately"). "Works out" became "identifies".
 3. **Sounds like a person.** Within the first two, natural wins over rule-following.
 
