@@ -59,7 +59,8 @@ stream, discards the bytes, and returns `verified`. It SHALL read nothing when `
 already equals `verifiable` and is above `NONE`. When the read reaches the end with
 `verified` below `verifiable` and the stream can seek, it SHALL seek to 0 and read to the end
 once more. It SHALL raise what those reads raise and nothing else, and SHALL NOT raise for a
-level below `verifiable`. It leaves the stream at its end.
+level below `verifiable`. When it reads, it leaves the stream at its end; when it returns
+at once, the position is unchanged. On a closed stream it SHALL raise `ValueError`.
 
 #### Scenario: verify matrix
 
@@ -72,3 +73,4 @@ level below `verifiable`. It leaves the stream at its end.
 | TAR member | returns `STRUCTURE` |
 | Seekable `.gz` member after a forward seek | reads again from 0; returns `CONTENT` |
 | Lazy `stream_members()` stream | opens, reads, returns `CONTENT` |
+| Closed stream, whatever its level | raises `ValueError` |

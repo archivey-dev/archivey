@@ -154,8 +154,12 @@ class ArchiveStream(ReadOnlyIOStream):
         the start. A failed check raises what the read raises (``CorruptionError``,
         ``TruncatedError``, ``EncryptionError``); otherwise compare the result with
         ``verifiable``, since a TAR member, with no checksum, ends at ``STRUCTURE``.
-        The stream is left at its end.
+        When it reads, it leaves the stream at its end; when it returns at once, the
+        position is unchanged. A closed stream raises ``ValueError``, as every ``io``
+        method does.
         """
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
         reached = self.verified
         if reached >= self.verifiable and reached > Verification.NONE:
             return reached

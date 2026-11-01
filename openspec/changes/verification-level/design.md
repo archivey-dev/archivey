@@ -13,8 +13,8 @@ Each of these knows its own state. None of it is visible on the stream the calle
 holds. The level exposes it without changing any of it.
 
 `dev-docs/IDEAS.md` ("Verification state as data") sketched the shape: an ordered
-level, a ceiling, and a `verify()` method. The ruling ships the level and the ceiling.
-`verify()` is not part of it.
+level, a ceiling, and a `verify()` method. The ruling shipped the level and the ceiling;
+`stream.verify()` was added later, at the maintainer's request (Decision 8).
 
 ## Goals / Non-Goals
 
@@ -155,13 +155,14 @@ The parked `verification-integrity-mode` change moves to
 `openspec/changes/archive/` with a note that it was closed, not implemented, and why.
 ADR 0014's last paragraph changes from "use `VerificationMode.STRICT`" to "read to the
 end, and check `stream.verified`". The `IDEAS.md` entry is replaced by the shipped
-level, with `verify()` kept as an open idea.
+level, with a faster `verify()` kept as an open idea.
 
 ### 8. `ArchiveStream.verify()` reads the rest and returns the level
 
 Added 2026-11-01 at the maintainer's request, as the simple version: it reads the rest of
-the stream in 1 MiB reads, discards the bytes, and returns `verified`. It reads nothing when
-`verified` already equals `verifiable` above `NONE`. When the read reached the end below
+the stream in 1 MiB reads, discards the bytes, and returns `verified`. A closed stream
+raises `ValueError`, as every `io` method does. It reads nothing, and keeps its position,
+when `verified` already equals `verifiable` above `NONE`. When the read reached the end below
 `verifiable` and the stream can seek, it seeks to 0 and reads once more, since a seek past
 unread bytes is what keeps a check from running. It raises what the read raises and adds no
 error of its own, and it does not raise for a level below `verifiable`: the caller compares,

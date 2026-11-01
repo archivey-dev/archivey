@@ -98,3 +98,16 @@ def test_verify_opens_a_lazy_stream_members_stream(tmp_path: Path) -> None:
             assert stream is not None
             assert stream.verified is Verification.NONE
             assert stream.verify() is Verification.CONTENT
+
+
+@pytest.mark.parametrize("read_first", [True, False], ids=["checked", "unchecked"])
+def test_verify_on_a_closed_stream_raises_whatever_its_level(
+    tmp_path: Path, read_first: bool
+) -> None:
+    with open_archive(_zip(tmp_path)) as reader:
+        stream = reader.open("a.txt")
+        if read_first:
+            stream.read()
+        stream.close()
+        with pytest.raises(ValueError, match="closed"):
+            stream.verify()
