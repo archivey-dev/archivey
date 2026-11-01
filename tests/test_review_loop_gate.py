@@ -907,7 +907,7 @@ def test_the_round_s_model_follows_the_gate() -> None:
     assert f"PASS: ${{{{ {gate_says} && 'opus' || '' }}}}" in _step("Close the round")
     assert f"PASS: ${{{{ {gate_says} && 'opus' || '' }}}}" in _step("Write the prompt")
     assert (
-        f"--model ${{{{ {gate_says} && 'claude-opus-5' || 'claude-sonnet-5-5' }}}}"
+        f"--model ${{{{ {gate_says} && 'claude-opus-5-5' || 'claude-sonnet-5-5' }}}}"
         in _step("Claude review")
     )
     assert "run: bash scripts/review_loop_close.sh" in _step("Close the round")

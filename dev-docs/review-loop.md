@@ -96,7 +96,7 @@ label can be removed by hand, so the merging agent runs the base branch's script
 installs the project at the pull request's own lockfile (`uv sync --frozen --group dev
 --extra all`, what `scripts/setup-dev-env.sh` installs), so the reviewer can measure with
 the optional accelerators and codecs a change is about. The first round that reaches a
-verdict on a `standard` or `deep` pull request runs `claude-opus-5`: a full first look,
+verdict on a `standard` or `deep` pull request runs `claude-opus-5-5`: a full first look,
 and its closing comment's marker carries `pass=opus`, which is how later rounds know it
 ran. Every other round runs `claude-sonnet-5-5`: the rounds that re-read fixes, and
 every round of a `light` pull request. An Opus round that dies before its verdict is

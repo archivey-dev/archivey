@@ -273,7 +273,7 @@ jobs:
           # `Task` (`Agent` in newer CLIs) lets the reviewer start subagents. They get
           # this same allowlist and environment, so narrowing `Bash` here narrows them too.
           claude_args: |
-            --model ${{ steps.gate.outputs.opus_pass == 'true' && 'claude-opus-5' || 'claude-sonnet-5-5' }}
+            --model ${{ steps.gate.outputs.opus_pass == 'true' && 'claude-opus-5-5' || 'claude-sonnet-5-5' }}
             --allowedTools Read,Grep,Glob,WebFetch,Bash,Task,Agent
           prompt: ${{ steps.prompt.outputs.prompt }}
 
