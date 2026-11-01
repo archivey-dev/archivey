@@ -73,7 +73,8 @@ different things, and where both apply, both run:
   prose: chat replies, decision packets, PR comments, thin briefs.
 - [`asd-ste100`](.claude/skills/asd-ste100/SKILL.md) cuts **ambiguity** — sentences a
   reader can parse two ways. It applies to every piece of English an agent writes here:
-  chat with the maintainer, user-visible text (exception messages, CLI output, `docs/`, where
+  chat with the maintainer, user-visible text (exception messages, CLI output, and
+  `docs/`, the README and the release's CHANGELOG entry, where
   [`write-user-docs`](.claude/skills/write-user-docs/SKILL.md) ranks it below being true
   and sounding like a person),
   pull request titles and descriptions, review and inline comments, commit messages, and
