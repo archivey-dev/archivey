@@ -224,6 +224,8 @@ def _real_changelog_with_entry(with_comment: bool) -> tuple[str, str]:
         start, end = text.rindex("<!--"), text.rindex("-->") + 3
         text = text[:start] + text[end:].lstrip("\n")
     head, rest = text.split("## [Unreleased]\n", 1)
+    # An entry already written under [Unreleased] (a release PR's) is replaced.
+    rest = rest[rest.index("## [") :]
     body = "### Fixed\n\n- Fixed 2 bugs in TAR reading.\n"
     return head + "## [Unreleased]\n\n" + body + "\n" + rest.lstrip("\n"), body
 
