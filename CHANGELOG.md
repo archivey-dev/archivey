@@ -106,7 +106,7 @@ A patch release: no public name was added, renamed or removed.
 
 ### Added
 
-- 7z archives that use 7-Zip 24's RISC-V branch filter now read. The filter is
+- 7z archives that use 7-Zip 24's RISC-V branch filter are now supported. The filter is
   decoded in Python, so it needs no extra package.
 - `archivey extract --dry-run` prints a `peak use of the reader limits:` line: the
   largest decoder allocation, the temporary-file peak, the key-derivation rounds and
@@ -124,8 +124,8 @@ A patch release: no public name was added, renamed or removed.
   merges it away, so the name means something different there. `STANDARD` also treats
   `notes.` and `notes` as the same file, as Windows does, so the second one is a
   collision on every platform instead of silently replacing the first on Windows.
-- A ZIP member compressed with Zstandard reads every frame, as a `.zst` file does. A
-  second frame used to raise `DataAfterEndError`.
+- archivey reads every frame of a ZIP member compressed with Zstandard, as it does for a
+  `.zst` file. A second frame used to raise `DataAfterEndError`.
 - The `STREAM_REWIND_REDECOMPRESSES` diagnostic is logged at INFO instead of WARNING.
   It is still collected and can still be escalated by a `DiagnosticPolicy`.
 - When `rapidgzip` speeds up seeking, the members of one archive share its child process
@@ -174,7 +174,7 @@ and each change will be listed here. No major changes are expected.
 - **Resource limits** on listing size, decoder memory, password key-derivation work and
   temporary files.
 - **Built for streaming.** `stream_members()` reads every member in one pass, so a solid
-  7z or RAR is decoded once. TAR, ZIP and single compressed files also read from a pipe,
+  7z or RAR is decoded once. TAR, ZIP and single compressed files can also be read from a pipe,
   and zstd and gzip files can seek instead of decompressing from the start.
 - **Crash isolation.** The native decoders known to crash on hostile input run in a
   child process, so a crash costs one member, not your process.
