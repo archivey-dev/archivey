@@ -20,10 +20,10 @@ and being impossible to misread.
 This skill sets the voice for **all user docs prose**: `docs/`, the README and the
 release's `CHANGELOG.md` entry. Its loop is for writing or rewriting a page with the
 maintainer. For a one-sentence fix in a page, use the Voice and Shaping sections without
-the loop. The README and the CHANGELOG entry are not pages: only §Voice applies to them. Chat, PR comments and briefs still use
-[`unslop`](../unslop/SKILL.md). Code comments and exception messages still use
-[`asd-ste100`](../asd-ste100/SKILL.md) in strict mode ([`AGENTS.md`](../../../AGENTS.md)
-§Writing English).
+the loop. The README and the CHANGELOG entry are not pages: only §Voice applies to them.
+Chat, PR comments and briefs still use [`unslop`](../unslop/SKILL.md). Code comments and
+exception messages still use [`asd-ste100`](../asd-ste100/SKILL.md) in strict mode
+([`AGENTS.md`](../../../AGENTS.md) §Writing English).
 
 ## The loop
 
