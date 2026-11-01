@@ -31,7 +31,7 @@ every read, and stricter defaults for names and for archive shapes no writer pro
   `FormatPolicy(replace=)` to read a built-in container with your own reader. It is
   outside the stability policy: any release may change it.
 - `ArchiveStream.verified` and `.verifiable` say how far a member's data has been
-  checked (`Verification.NONE` to `CONTENT`).
+  checked (`Verification.NONE` to `CHECKSUM`).
 - `ArchiveMember.accessed_utc()`, `created_utc()` and `ctime_utc()`, beside
   `modified_utc()`. Extraction restores a member's birth time (`created`) on Windows and
   macOS.
