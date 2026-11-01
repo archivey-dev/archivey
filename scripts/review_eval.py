@@ -50,7 +50,7 @@ SKILL = Path(".claude/skills/code-review-skill")
 COPIED = (SKILL, Path("scripts/review_prep.py"))
 
 # What .github/workflows/review-loop.yml runs for a standard or deep first look.
-REVIEW_MODEL = "claude-opus-5"
+REVIEW_MODEL = "claude-opus-5-5"
 # The loop's tools less WebFetch: a fetch of the PR's page on GitHub would show the
 # later rounds and the fix.
 REVIEW_TOOLS = "Read,Grep,Glob,Bash,Task,Agent"
