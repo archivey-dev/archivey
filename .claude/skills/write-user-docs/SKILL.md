@@ -6,8 +6,8 @@ description: |
   paragraph, show the final text before committing. Merges five writing skills into one
   voice where "sounds like a person" outranks Simplified Technical English.
   Use when: writing or rewriting a user docs page, "write the next docs page", drafting
-  user documentation with the maintainer, editing user docs prose, or when the user
-  invokes /write-user-docs.
+  user documentation with the maintainer, editing user docs prose, editing README or
+  release CHANGELOG prose, or when the user invokes /write-user-docs.
 ---
 
 # Write user docs
@@ -17,12 +17,13 @@ flat, too prescriptive and too detailed, so this process works in small agreed s
 puts "reads as if a person wrote it" above the sentence rules, below only being true
 and being impossible to misread.
 
-This skill sets the voice for **all user docs prose**, in `docs/`. Its loop
-is for writing or rewriting a page with the maintainer. For a one-sentence fix, use the
-Voice and Shaping sections without the loop. Chat, PR comments and briefs still use
-[`unslop`](../unslop/SKILL.md). Code comments and exception messages still use
-[`asd-ste100`](../asd-ste100/SKILL.md) in strict mode ([`AGENTS.md`](../../../AGENTS.md)
-§Writing English).
+This skill sets the voice for **all user docs prose**: `docs/`, the README and the
+release's `CHANGELOG.md` entry. Its loop is for writing or rewriting a page with the
+maintainer. For a one-sentence fix in a page, use the Voice and Shaping sections without
+the loop. The README and the CHANGELOG entry are not pages: only §Voice applies to them.
+Chat, PR comments and briefs still use [`unslop`](../unslop/SKILL.md). Code comments and
+exception messages still use [`asd-ste100`](../asd-ste100/SKILL.md) in strict mode
+([`AGENTS.md`](../../../AGENTS.md) §Writing English).
 
 ## The loop
 
@@ -86,9 +87,15 @@ inaccurate sentence.
    user can't bound the ratio. Say "best effort" when something is: `on_progress` can stop
    an extraction, but only between chunks.
 2. **Can't be misread.** STE's rules were dropped, but its goal stayed. Read each word as
-   a stranger would. "Calls" read as "decisions". "RAR archives list" makes the archive do
-   the listing ("can be listed"). "Limits apply to one archive at a time" reads as
-   concurrency ("apply to each archive separately"). "Works out" became "identifies".
+   a stranger would. Each pair below is a sentence that was misread, then its fix:
+
+   | Don't write | Write | Why |
+   |---|---|---|
+   | "RAR archives list" | "RAR archives can be listed" | The archive doesn't do the listing. |
+   | "ZIP Shrink members read" | "archivey reads ZIP Shrink members" or "ZIP Shrink members are supported" | An archive, member or format never reads or lists, alone or "as" something: archivey reads it, or it is read or listed ("is listed as `OTHER`", not "lists as `OTHER`"). "Opens" stays: "a misnamed file still opens". |
+   | "Limits apply to one archive at a time" | "Limits apply to each archive separately" | "At a time" reads as concurrency. |
+   | "Calls" | "Decisions" | "Calls" reads as function calls. |
+   | "Works out" | "Identifies" | A phrasal verb with several meanings. |
 3. **Sounds like a person.** Within the first two, natural wins over rule-following.
 
 Rulings from the maintainer in #523's thread:
