@@ -92,7 +92,7 @@ inaccurate sentence.
    | Don't write | Write | Why |
    |---|---|---|
    | "RAR archives list" | "RAR archives can be listed" | The archive doesn't do the listing. |
-   | "ZIP Shrink members read" | "archivey reads ZIP Shrink members" or "ZIP Shrink members are supported" | An archive or member never does the reading or listing of something: archivey does, or it is read. The intransitive idiom stays: "a misnamed file still opens", "the member lists as `OTHER`". |
+   | "ZIP Shrink members read" | "archivey reads ZIP Shrink members" or "ZIP Shrink members are supported" | An archive, member or format never reads or lists, alone or "as" something: archivey reads it, or it is read or listed ("is listed as `OTHER`", not "lists as `OTHER`"). "Opens" stays: "a misnamed file still opens". |
    | "Limits apply to one archive at a time" | "Limits apply to each archive separately" | "At a time" reads as concurrency. |
    | "Calls" | "Decisions" | "Calls" reads as function calls. |
    | "Works out" | "Identifies" | A phrasal verb with several meanings. |
