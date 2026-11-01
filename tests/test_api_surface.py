@@ -111,6 +111,9 @@ def test_experimental_names_are_pinned() -> None:
         "archivey.PluginStream",
         "archivey.FormatPolicy.replace",
         "archivey.FormatInfo.from_plugin",
+        "archivey.Verification",
+        "archivey.ArchiveStream.verified",
+        "archivey.ArchiveStream.verifiable",
     )
 
 

@@ -129,6 +129,9 @@ class ArchiveStream(ReadOnlyIOStream):
 
         Compare it with ``verifiable``: a TAR member has no checksum, so ``LENGTH``
         is the most it can reach. Reading this property reads nothing from the archive.
+
+        Experimental: any release, a patch included, may change or remove this property,
+        its levels or what they mean.
         """
 
     @property
@@ -145,6 +148,9 @@ class ArchiveStream(ReadOnlyIOStream):
         the answer can settle lower when it opens: a password watch that only appears
         then takes a member with no checksum from ``LENGTH`` to ``NONE``. Once open,
         it never falls. Reading this property reads nothing from the archive.
+
+        Experimental: any release, a patch included, may change or remove this property,
+        its levels or what they mean.
         """
 
     def verify(self, level: Verification = Verification.CONTENT) -> Verification:
