@@ -580,6 +580,9 @@ class Verification(IntEnum):
     ``ArchiveStream.verifiable`` the most it can reach by a read from the start to
     the end. The levels are ordered, so ``stream.verified >= Verification.LENGTH``
     reads as "at least the length was checked".
+
+    Experimental: any release, a patch included, may change or remove the levels, their
+    names or what they mean.
     """
 
     NONE = 0
