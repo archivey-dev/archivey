@@ -110,7 +110,7 @@ zipfile doesn't recognize symbolic links: a ZIP entry that records one is a plai
 `member.is_link` and `member.link_target`.
 
 A field the archive doesn't record is `None`, such as `compressed_size` for a member of a
-`.tar.gz`. A directory's name ends with `/` in every format, so a directory tarfile lists as `docs`
+`.tar.gz`. A directory's name ends with `/` in every format, so a directory that tarfile lists as `docs`
 is `docs/` in archivey. `reader.get` returns `None` for a name that isn't there, where `getinfo` and
 `getmember` raise `KeyError`.
 

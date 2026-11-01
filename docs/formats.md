@@ -31,12 +31,12 @@ images](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/dmg.
 reaching a member means decompressing others first ([Solid archives](reading.md#solid-archives)).
 
 - **ZIP:** core; `[recommended]` adds Deflate64, PPMd, WinZip AES, and Zstandard before Python
-  3.14. Listing: from its index; from a pipe, header by header. Members: direct. Reads from a pipe.
-- **TAR:** core. Listing: header by header. Members: direct. Reads from a pipe.
+  3.14. Listing: from its index; from a pipe, header by header. Members: direct. Readable from a pipe.
+- **TAR:** core. Listing: header by header. Members: direct. Readable from a pipe.
 - **Compressed TAR** (`.tar.gz`, `.tar.bz2`, `.tar.xz`, `.tar.lz`, `.tar.lzma`, `.tar.zz`,
   `.tar.Z`, `.tar.zst`, `.tar.lz4`, `.tar.br`, `.tar.lzo`): needs what its compressor needs
   (below).
-  Listing: needs decompression. Members: solid. Reads from a pipe.
+  Listing: needs decompression. Members: solid. Readable from a pipe.
 - **7z:** core for LZMA, LZMA2, Deflate, BZip2, Delta and the executable filters (BCJ, BCJ2,
   ARM64, RISC-V and the others); `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, AES, and Zstandard
   before Python 3.14. Listing: from its index. Members: solid, unless written without solid
@@ -51,15 +51,15 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
   Zstandard images need what a `.zst` file needs; LZ4 images need `[recommended]`. Listing:
   from its index. Members: direct. Needs a source that can seek.
 - **CPIO** (`.cpio`, initramfs, RPM payloads): core. Listing: header by header. Members:
-  direct. Reads from a pipe. Inside any compressor TAR reads inside (`.cpio.gz`, …), as a
-  compressed TAR is: listing needs decompression, members are solid.
+  direct. Readable from a pipe. Readable inside any compressor a TAR can be in (`.cpio.gz`,
+  …); there, as with a compressed TAR, listing needs decompression and members are solid.
 - **ar** (`.a`, `.lib`, the outer layer of a `.deb`): core. Listing: header by header. Members:
-  direct. Reads from a pipe. Inside any compressor TAR reads inside (`.a.gz`, …), as a
-  compressed TAR is: listing needs decompression, members are solid.
+  direct. Readable from a pipe. Readable inside any compressor a TAR can be in (`.a.gz`,
+  …); there, as with a compressed TAR, listing needs decompression and members are solid.
 - **Directory:** core. Listing: walks the tree. Members: direct.
 - **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z` and `.lzo` in core;
   Zstandard in core on Python 3.14 and later, otherwise `[recommended]`; LZ4 and Brotli need
-  `[recommended]`. One member. Members: direct. Reads from a pipe. Seeking inside the member
+  `[recommended]`. One member. Members: direct. Readable from a pipe. Seeking inside the member
   needs `seekable_members=True` ([Seeking inside a member](reading.md#seeking-inside-a-member)).
 - **UDIF disk images** (`.dmg`): recognised and refused ([Disk images](#disk-images)).
 
@@ -74,8 +74,8 @@ explains the choice of each compression library, and
 
 No pip extra can read compressed RAR data. Archivey runs RARLAB's `unrar` or `rar`, version 6.0 or
 later, from `PATH`, or else The Unarchiver's `unar` 1.10 or later. Without either, RAR archives
-still list, uncompressed members read, and so does an uncompressed encrypted member in one part
-when `cryptography` is installed. `7z` and `unrar-free` are never used.
+can still be listed and their uncompressed members read, and so can an uncompressed encrypted
+member in one part when `cryptography` is installed. `7z` and `unrar-free` are never used.
 
 `ArchiveyConfig.rar_decompressor` picks the program:
 
@@ -100,7 +100,7 @@ of 6.0 or later is found, even when a usable `unar` is installed.
 `ArchiveInfo.extra` is an [`ArchiveInfoExtra`](api.md#members-and-archive-details). Both are
 `dict[str, object]` subclasses, and both names are importable. Reading a known key
 (`extra["zip.compress_type"]`) gives that key's type to a type checker, and an unknown key (from a
-third party, or added later) stays legal and reads as `object`. `.get()` returns `object` for
+third party, or added later) stays legal and is typed as `object`. `.get()` returns `object` for
 every key. The `EXTRA_*` constants in `archivey.types` name the keys that have constants.
 
 Writes are not type-checked: a value of the wrong type for a known key is accepted, as an unknown
@@ -151,9 +151,9 @@ A symlink whose target archivey has not read yet (`read_link_targets=False`) can
 
 `members()`, `members_report()` and `get()` return members that read `True`, except unread
 symlinks, and single-file or large macOS ZIP members whose `size` a full read has not filled in
-yet. Members read `False` until a call like those, or the end of a pass, has resolved the
+yet. Members report `False` until a call like those, or the end of a pass, has resolved the
 listing's links. A `streaming=True` pass yields every member before that, in every format. A
-`members_report_if_available()` peek resolves no links, so its members read `False` until a later
+`members_report_if_available()` peek resolves no links, so its members report `False` until a later
 call or pass does. A random-access pass with no listing call before it may or may not yield before
 that point, depending on how the format is listed, so read the flag rather than assume. A pass that
 goes past `ListingLimits` stops updating members from that point: a member yielded after it reads
@@ -225,11 +225,11 @@ Inside a ZIP or 7z member, bytes after the compressed stream are corruption, not
 ### Device files, FIFOs and sockets
 
 A ZIP, 7z, RAR, ISO or CPIO entry whose mode is a device, FIFO or socket, or a TAR entry whose
-typeflag is a device or FIFO (TAR has no socket type), lists as `MemberType.OTHER` when it
+typeflag is a device or FIFO (TAR has no socket type), is listed as `MemberType.OTHER` when it
 stores no data. Extraction does not create it: its result is `BLOCKED`, and the other members
 are extracted. `extra["special_file_type"]` names the kind. In ZIP, 7z, RAR, ISO and CPIO, such
 an entry that does store data is a `FILE`, with `MEMBER_SPECIAL_FILE_HAS_DATA` reported. Each
-section for ZIP, 7z, RAR and ISO says when its mode is trusted; TAR reads the typeflag instead
+section for ZIP, 7z, RAR and ISO says when its mode is trusted; for TAR, archivey reads the typeflag instead
 ([TAR](#tar-and-compressed-tar)).
 
 ### Names with a NUL
@@ -346,7 +346,7 @@ sending side when the ZIP is done.
   value itself and the directory's end can be found, and reports `ARCHIVE_EOF_MARKER_MISSING`.
   Otherwise it lists the members the local headers hold, then raises `CorruptionError`.
 - **The end record disagrees with the directory**, on the entry count or with an archive comment
-  length past the end of the file: the members still list and read, and
+  length past the end of the file: the members can still be listed and read, and
   `ARCHIVE_EOF_MARKER_MISSING` is reported after the directory's last entry. From a file, the
   listing is complete before any member is handed out, so `DiagnosticPolicy.STRICT` raises before
   the first one. With `streaming=True`, the pass yields every member and then raises.
@@ -405,7 +405,7 @@ sending side when the ZIP is done.
   4 MB compressed).
 - **Archive Utility stores each member's size modulo 4 GiB**, so for a deflated member over about
   4 MB compressed, the listing cannot tell whether the size passed 4 GiB. This happens in a Mac ZIP
-  of any length. Such a member lists `size=None`, with the stored value in
+  of any length. Such a member is listed with `size=None`, with the stored value in
   `extra["size_mod_2_32"]` and `MEMBER_SIZE_WRAPPED` reported. A read to the end, checked against
   that value and the CRC-32, fills in `size`; the key stays.
 - Finder and `ditto` add `__MACOSX/` sidecar files
@@ -443,7 +443,7 @@ sending side when the ZIP is done.
   no CRC-32 in `hashes`: its HMAC checks the data. A failing HMAC raises `CorruptionError`, with one
   password or several: a wrong password gets past the two-byte check only once in 65 536 tries, so
   damage is by far the likelier cause.
-- **PKWARE Strong Encryption** is not supported. Such members list as encrypted, and opening one
+- **PKWARE Strong Encryption** is not supported. Such members are listed as encrypted, and opening one
   raises `UnsupportedFeatureError`. An archive whose central directory is itself encrypted this way
   cannot be listed: archivey raises `UnsupportedFeatureError` when it recognises the layout, and
   `CorruptionError` otherwise.
@@ -484,8 +484,8 @@ sending side when the ZIP is done.
 
 - Times start from the DOS fields, then NTFS, then the Unix fields (`0x000d`, `0x5855`), then the
   Extended Timestamp field when present. The Unix fields are read as unzip 6.00 reads them. macOS
-  `ditto` and Archive Utility write only `0x5855`, so their archives list `modified` and `accessed`
-  in UTC.
+  `ditto` and Archive Utility write only `0x5855`, so `modified` and `accessed` in their archives are
+  listed in UTC.
 - Owner ids: Info-ZIP `zip` on Unix records `uid` and `gid`, read as unzip 6.00 reads them.
   `uname` and `gname` stay `None`, and Windows writers store no owner.
 - Extra fields archivey takes nothing from (a vendor's own, or a known one found malformed) stay
@@ -496,7 +496,7 @@ sending side when the ZIP is done.
 - A Unix mode is read only when "version made by" says Unix. A device, FIFO or socket follows
   [the shared rule](#device-files-fifos-and-sockets); `zip -FI` stores a named pipe's content as
   data, which makes it a `FILE`.
-- **A directory entry that declares data** (APPNOTE gives a directory none) lists as a directory
+- **A directory entry that declares data** (APPNOTE gives a directory none) is listed as a directory
   with that size, and `MEMBER_DIRECTORY_DATA_IGNORED` is reported; `STRICT` refuses the archive.
   Extraction creates the directory, as unzip and 7-Zip do. `read()` returns the bytes, checked
   against the stored CRC-32, and so does the stream `stream_members()` yields for it. A CRC of 0,
@@ -522,7 +522,7 @@ sending side when the ZIP is done.
   signature. archivey recognises it by its first header's checksum, from a file, a pipe or a
   `BytesIO`, with or without a `.tar` name, and inside a compressor (a gzipped one is `TAR_GZ`).
   It is reported as `PROBABLE`, not `CERTAIN`.
-- **Reading members:** a plain TAR from a file reads each member straight from its place. A
+- **Reading members:** archivey reads each member of a plain TAR from a file straight from its place. A
   compressed TAR is solid: reaching a member means decompressing everything before it, so a
   single `stream_members()` pass is the fast way to read it.
 - **From a pipe:** yes. The listing reads up to 1 MiB past the end-of-archive blocks, so a sender
@@ -629,7 +629,7 @@ On a compressed tar, the stream's own checksum adds three cases:
   modes. `STRICT` refuses the archive.
 - **A symlink or hard link header (typeflag `2` or `1`) with data in its own size field** has no
   data area either. When
-  a member header follows it at once, the size names no data, and the link lists as GNU tar and
+  a member header follows it at once, the size names no data, and the link is listed as GNU tar and
   `tarfile` read it, reported with `MEMBER_HEADER_AMBIGUOUS` (a tool that skips by the size
   would lose the next member). Otherwise the declared blocks are skipped, so a zero
   block among them does not end the archive, and `MEMBER_LINK_DATA_IGNORED` reports the link
@@ -882,7 +882,7 @@ misread the archive.
 - **A RAR5 archive cut exactly between two blocks** is reported, not raised. RAR5 ends each volume
   with an end-of-archive block, so archivey lists the members before the cut and then reports
   `ARCHIVE_EOF_MARKER_MISSING` (`expected_marker="end_of_archive_block"`), which `STRICT` raises.
-  RAR 1.5-4 archives may lack the end block, so a cut between their blocks lists as complete.
+  RAR 1.5-4 archives may lack the end block, so an archive cut between its blocks is listed as complete.
 - **A cut inside a member's data or a header** lists the members before the cut, and the listing
   raises `TruncatedError`.
 - **A damaged end-of-archive block keeps the listing.** When the block after the last member fails
@@ -960,7 +960,7 @@ misread the archive.
 
 ### Member types and fields
 
-- **File versions (`rar -ver`):** older revisions list as names like `path;1`, with
+- **File versions (`rar -ver`):** older revisions are listed under names like `path;1`, with
   `extra["rar.file_version"]` and `is_current=False`; the live path is `is_current=True`.
   Extraction skips the older revisions by default.
 - **Links and file copies.** A RAR5 hard link (`rar -oh`) is a `HARDLINK`. A RAR5 file copy
@@ -986,7 +986,7 @@ misread the archive.
 - **A compression version RAR does not know:** a RAR5 member whose compression version is newer
   than RAR 7's, or a RAR 1.5-4 member whose unpack version is outside 13-29, lists normally and
   raises `UnsupportedFeatureError` when read, where `unrar` says "Unknown method". An uncompressed
-  member reads whatever version it declares.
+  member is read whatever version it declares.
 - A device, FIFO or socket from a Unix host follows [the shared rule](#device-files-fifos-and-sockets).
   `rar` itself skips such files when archiving.
 - **A directory entry that declares data** (`rar` never writes one) is reported with
@@ -1023,8 +1023,8 @@ misread the archive.
   and keep any `;N`.
 - Two files stored with the same identifier both list, the later one current, as in ZIP and TAR.
   That includes a file and its associated file (such as the resource fork on a Mac hybrid image),
-  which list as two members with one name and nothing to tell the fork apart. Entries in a directory
-  list in the order of their records on the disc.
+  which are listed as two members with one name and nothing to tell the fork apart. Entries in a directory
+  are listed in the order of their records on the disc.
 - An image carries up to three name trees over one set of files: Rock Ridge (on the plain ISO
   9660 records), which Linux reads and archivey lists; Joliet, which 7-Zip and Windows read; and
   UDF, which Windows reads first. Without Rock Ridge archivey lists Joliet, and a reader without
@@ -1036,15 +1036,15 @@ misread the archive.
 ### Contents
 
 - **zisofs** (Rock Ridge transparent compression: `mkzftree` with `genisoimage -z`, or `xorriso
-  -set_filter_r --zisofs`) reads. The member lists the size its data decodes to, with
-  `compression=(CompressionMethod(algo=DEFLATE),)`, and reads decoded, seeking by block. zisofs2
+  -set_filter_r --zisofs`) is supported. The member is listed with the size its data decodes to,
+  with `compression=(CompressionMethod(algo=DEFLATE),)`, and is read decoded, seeking by block. zisofs2
   (`xorriso -zisofs version_2=on -set_filter_r --zisofs /`, under the `ZF` or the `Z2` tag), and a
-  zisofs entry too short to parse, list with `CompressionAlgorithm.UNKNOWN` and refuse to read with
+  zisofs entry too short to parse, are listed with `CompressionAlgorithm.UNKNOWN`, and reading one raises
   `UnsupportedFeatureError`.
-- A file of 4 GiB or more, stored in several extents, lists and reads as one member, wherever
+- A file of 4 GiB or more, stored in several extents, is listed and read as one member, wherever
   its extents sit in the image. Extents that overlap each other are refused with
   `CorruptionError`.
-- A bootable image lists its El Torito boot catalog (`boot.catalog`, `BOOT.CAT`) as an ordinary
+- The El Torito boot catalog of a bootable image (`boot.catalog`, `BOOT.CAT`) is listed as an ordinary
   file, with the catalog's bytes as its data, as a mounted image shows it.
 - A Rock Ridge device node, FIFO or socket over an empty extent follows
   [the shared rule](#device-files-fifos-and-sockets); over a non-empty extent it is a `FILE`.
@@ -1053,7 +1053,7 @@ misread the archive.
 - `import archivey` wraps pycdlib's Rock Ridge parser, but the wrapper acts only while archivey
   itself opens an image, so other code using pycdlib sees no change. Inside archivey, a System Use
   entry of a type pycdlib does not know is skipped, as the SUSP specification says, instead of
-  failing the whole image. A malformed entry ends that record's Rock Ridge data: the member lists
+  failing the whole image. A malformed entry ends that record's Rock Ridge data: the member is listed
   from the entries before it, with a `MEMBER_HEADER_RECORD_SKIPPED` diagnostic, and a symlink cut
   this way lists with `link_target` unset and a `SYMLINK_TARGET_UNAVAILABLE` diagnostic.
   genisoimage writes such an entry for a long symlink target (from about 400 bytes with genisoimage
@@ -1173,7 +1173,7 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
 - **Listing:** walks the tree.
 - **Reading members:** the same defaults as an archive: forward-only streams and one live stream,
   until you pass `seekable_members=True` or `concurrent_operations=True`.
-- Hardlinks list as a tar lists them. When several names inside the root share one file, the first
+- Hardlinks are listed as tar lists them. When several names inside the root share one file, the first
   name the walk reaches is a `FILE`, and each later name is a `HARDLINK` to it, with `size` `None`.
   The walk visits a directory's files by name, then its subdirectories, so which name keeps the
   data is fixed. With `streaming=True`, extracting a later name whose first name a filter left out
@@ -1213,8 +1213,9 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
 - **`.xz` size and `.lz` CRC-32** come from the stream's index or the lzip trailer whenever the
   source can seek: a file path and an in-memory stream both qualify, a pipe does not.
   `seekable_members=True` makes no difference, since reading the trailer is a bounded backward peek
-  at open. A `.xz` or `.lz` opened from another archive's member stream reads neither, seekable or
-  not: it never reports the CRC-32, and its size arrives only from a full read.
+  at open. For a `.xz` or `.lz` opened from another archive's member stream, archivey reads
+  neither, seekable or not: it never reports the CRC-32, and its size arrives only from a full
+  read.
 - `.gz` may expose `extra["gzip.original_filename"]` when the header carries a name (`FNAME`).
 - `.lzo` exposes `extra["lzop.original_filename"]` when its header stores a name, and the
   modification time and permission bits the header stores.
@@ -1235,7 +1236,7 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
 - **No checksum:** Brotli, `.Z` and LZMA Alone files have none, so damaged data can decode to wrong
   bytes with no error. A `.zst` frame has one only when its writer adds it, as a modern `.lz4`
   frame usually does; archivey checks it when it is there. The legacy LZ4 format (`lz4 -l`, used
-  for Linux kernel images) reads as `.lz4` and has no checksum either. Archivey does not report a
+  for Linux kernel images) is read as `.lz4` and has no checksum either. Archivey does not report a
   diagnostic on each such file, because there is no check to skip.
 - **No end mark:** a `.Z` file, and a legacy LZ4 file, can be cut between two blocks and read short
   with no error. `.Z` truncation is best effort: leftover bits that are not zero after the last
@@ -1244,7 +1245,7 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
 - **`open_archive` decodes the first byte** of a seekable source, so a file that is not the codec
   its name or detection claims (a `.gz` full of zeros, an empty `.bz2`) raises `CorruptionError` or
   `TruncatedError` from `open_archive` rather than from the first read. A valid empty stream still
-  opens and reads as `b""`. The check goes one byte deep: damage further in still fails on the read.
+  opens and is read as `b""`. The check goes one byte deep: damage further in still fails on the read.
   It costs one decoded block, which is noticeable only for `.bz2` (up to 900 KB of output; about
   30 ms on incompressible data). A pipe is not checked at open, because the check would consume
   bytes of its one pass; it fails on the first read instead.
@@ -1277,8 +1278,8 @@ read that reaches it raises `DiagnosticRaisedError`. The same check runs on a co
   `CorruptionError` rather than return the first stream alone.
 - `.xz` and `.lz` keep their size and seeks when the appended bytes are within 1 MiB, unless they
   are crafted to hold thousands of fake end markers. Further out, the index is not found and the
-  size reads as unknown. A damaged end marker on the last of several `.xz` streams or `.lz` members
-  is corruption, not appended bytes: the size reads as unknown, and the read or seek that reaches
+  size is reported as unknown. A damaged end marker on the last of several `.xz` streams or `.lz` members
+  is corruption, not appended bytes: the size is reported as unknown, and the read or seek that reaches
   the damage raises `CorruptionError`.
 - Brotli has no end marker the library reports, so archivey finds the end by decoding the source
   again, which needs a source that can seek. From a pipe, bytes after a Brotli stream raise

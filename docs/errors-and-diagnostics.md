@@ -100,7 +100,7 @@ with archivey.open_archive("damaged.tar") as archive:
     found, so the exception at the end still tells you the rest is missing.
 
 A TAR archive cut between two members, or inside a member's header, has nothing left that looks
-wrong, so it lists as a complete, shorter archive with no error. Only the diagnostic
+wrong, so it is listed as a complete, shorter archive with no error. Only the diagnostic
 `ARCHIVE_EOF_MARKER_MISSING` shows it, and
 [`DiagnosticPolicy.STRICT`](#raising-or-quieting-a-diagnostic) turns it into an exception.
 
