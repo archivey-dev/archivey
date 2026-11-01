@@ -88,6 +88,9 @@ def test_verify_consumes_a_forward_only_stream_even_when_it_fails(
                 stream.verify()
             with pytest.raises(ArchiveyUsageError, match="verify"):
                 stream.read(1)
+            # A later verify() repeats the failure, whatever its level.
+            with pytest.raises(CorruptionError):
+                stream.verify(Verification.KEY)
 
 
 def test_verify_finishes_a_partly_read_member(tmp_path: Path) -> None:
@@ -270,3 +273,19 @@ def test_verify_on_an_open_stream_blocks_read_ahead() -> None:
             stream.read_ahead(1, 1)
         with pytest.raises(ArchiveyUsageError, match="verify"):
             stream.read(1)
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        (Verification.KEY, Verification.CONTENT),
+        (Verification.CONTENT, Verification.KEY),
+    ],
+)
+def test_verify_twice_on_a_forward_only_stream(
+    first: Verification, second: Verification
+) -> None:
+    # The first call reads to the end whatever its level; the second reads nothing.
+    with open_stream(io.BytesIO(gzip.compress(_DATA))) as stream:
+        assert stream.verify(first) is Verification.CONTENT
+        assert stream.verify(second) is Verification.CONTENT

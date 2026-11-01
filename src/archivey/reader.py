@@ -171,8 +171,9 @@ class ArchiveStream(ReadOnlyIOStream):
         On a stream that cannot seek, it cannot go back, so whatever ``level`` is, it reads the
         stream to the end, and any later ``read()`` raises ``ArchiveyUsageError``. So
         ``verify(Verification.KEY)`` costs a full read there; read the data itself
-        instead when you need it. A second ``verify()`` returns ``verified`` and reads
-        nothing.
+        instead when you need it. A later ``verify()``, at any level, reads nothing:
+        it raises the first call's error again if that call failed, and otherwise
+        returns ``verified``, the level the full read reached.
 
         A password is not always confirmed early either: a member with only a weak
         password check (ZipCrypto, or an encrypted stored member with no other check)
@@ -189,7 +190,9 @@ class ArchiveStream(ReadOnlyIOStream):
             raise ValueError("I/O operation on closed file.")
         level = Verification(level)
         if not self.seekable():
-            if not self._verify_consumed():
+            if self._verify_consumed():
+                self._verify_raise_again()
+            else:
                 try:
                     self._verify_read_on(None)
                 finally:
@@ -221,6 +224,12 @@ class ArchiveStream(ReadOnlyIOStream):
     def _verify_consumed(self) -> bool:
         """Whether ``verify()`` has read this forward-only stream to its end."""
         return False
+
+    def _verify_raise_again(self) -> None:
+        """Raise again the check failure the consuming ``verify()`` raised, if any.
+
+        A stream class that does not override it raises nothing here.
+        """
 
     def _mark_verify_consumed(self) -> None:
         """Make later reads raise ``ArchiveyUsageError``: ``verify()`` used the bytes.

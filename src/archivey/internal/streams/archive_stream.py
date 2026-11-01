@@ -921,6 +921,10 @@ class ArchiveStreamImpl(ArchiveStream):
         return self._consumed_by_verify
 
     @override
+    def _verify_raise_again(self) -> None:
+        self._raise_verdict()
+
+    @override
     def _mark_verify_consumed(self) -> None:
         self._consumed_by_verify = True
 

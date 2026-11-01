@@ -186,8 +186,9 @@ that no caller depends on how far a check happened to read:
   level, and every later read raises `ArchiveyUsageError`. A partial consume (stop once `KEY`
   is reached) would leave a stream whose position depends on the member's format and
   password check, which is the kind of gotcha the rule avoids. `verify(KEY)` there costs a
-  full read, and the docs say to read the data instead when it is needed. A second
-  `verify()` returns `verified` without reading.
+  full read, and the docs say to read the data instead when it is needed. A later
+  `verify()`, at any level, reads nothing: it raises the first call's check failure again,
+  or returns `verified`, so a failed check never turns into a quiet lower level.
 
 Even on a seekable stream `KEY` can need the whole member: a weak password check
 (ZipCrypto, an encrypted stored member) is confirmed only by the checksum.

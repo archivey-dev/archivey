@@ -70,7 +70,8 @@ from, also when a read raised, so a later `read()` returns the same bytes.
 
 On a stream that cannot seek, it SHALL read to the end whatever `level` is, and every later
 `read()`, `readinto()` or `read_ahead()` SHALL raise `ArchiveyUsageError`, also when a check
-failed. A later `verify()` SHALL return `verified` without reading.
+failed. A later `verify()`, at any level, SHALL read nothing: it SHALL raise the first
+call's check failure again if that call failed, and otherwise return `verified`.
 
 A later release MAY reach a level with less reading (a cheaper key check); the returned
 level and the errors SHALL stay those a read to the goal gives.
@@ -89,7 +90,8 @@ level and the errors SHALL stay those a read to the goal gives.
 | Seekable `.gz` member after a forward seek | reads again from 0; returns `CONTENT`; position restored |
 | Lazy `stream_members()` stream | opens, reads, returns `CONTENT` |
 | `stream_members()` stream, `verify(NONE)`, `KEY` or `CONTENT` | reads to the end; returns `CONTENT`; later `read()` raises `ArchiveyUsageError`; a second `verify()` returns `CONTENT` |
-| `stream_members()` stream whose CRC fails | raises `CorruptionError`; later `read()` raises `ArchiveyUsageError` |
+| `stream_members()` stream whose CRC fails | raises `CorruptionError`; later `read()` raises `ArchiveyUsageError`; a later `verify(KEY)` raises `CorruptionError` again |
+| Forward-only stream, `verify(KEY)` then `verify(CONTENT)`, or the reverse | both return `CONTENT`; the second reads nothing |
 | Forward-only `open_stream()` | returns `CONTENT` |
 | Closed stream, whatever its level | raises `ValueError` |
 | `verify(KEY)` on an open seekable unencrypted member | reads nothing; returns `KEY` |
