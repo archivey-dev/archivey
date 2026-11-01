@@ -1213,8 +1213,9 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
 - **`.xz` size and `.lz` CRC-32** come from the stream's index or the lzip trailer whenever the
   source can seek: a file path and an in-memory stream both qualify, a pipe does not.
   `seekable_members=True` makes no difference, since reading the trailer is a bounded backward peek
-  at open. For a `.xz` or `.lz` opened from another archive's member stream, archivey reads neither, seekable or
-  not: it never reports the CRC-32, and its size arrives only from a full read.
+  at open. For a `.xz` or `.lz` opened from another archive's member stream, archivey reads
+  neither, seekable or not: it never reports the CRC-32, and its size arrives only from a full
+  read.
 - `.gz` may expose `extra["gzip.original_filename"]` when the header carries a name (`FNAME`).
 - `.lzo` exposes `extra["lzop.original_filename"]` when its header stores a name, and the
   modification time and permission bits the header stores.
