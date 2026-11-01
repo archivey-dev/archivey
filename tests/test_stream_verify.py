@@ -63,6 +63,10 @@ def test_verify_on_a_forward_only_stream_consumes_it(
                 stream.readinto(bytearray(1))
             # A second verify() answers without reading.
             assert stream.verify() is Verification.CONTENT
+            # Once closed, a read is the closed-file ValueError, as verify() is.
+            stream.close()
+            with pytest.raises(ValueError, match="closed"):
+                stream.read(1)
 
 
 def test_verify_consumes_a_forward_only_stream_even_when_it_fails(

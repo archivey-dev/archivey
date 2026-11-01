@@ -847,9 +847,9 @@ class ArchiveStreamImpl(ArchiveStream):
         # pull a decoder's deferred truncation into this call. An inner that shorts
         # mid-stream needs a full-count layer in front (the ``ArchiveSource`` at the
         # boundary is one), not a loop here.
+        inner = self._ensure_open()  # a closed stream's ValueError comes first
         if self._consumed_by_verify:
             raise _consumed_by_verify_error()
-        inner = self._ensure_open()
         verdict = self._verdict
         if verdict is not None and not self._verdict_rewound:
             self._raise_verdict()
@@ -889,9 +889,9 @@ class ArchiveStreamImpl(ArchiveStream):
             leave_scope(stack, scope)
 
     def _read_ahead(self, need: int, n: int) -> bytes:
+        inner = self._ensure_open()
         if self._consumed_by_verify:
             raise _consumed_by_verify_error()
-        inner = self._ensure_open()
         # A verdict raises again as ``read`` raises it. A verifier sees each byte in
         # ``read``, and bytes that skipped it would go out unchecked. No codec stream
         # under a reader's buffer has one, so this costs nothing; ``read(n)`` is still

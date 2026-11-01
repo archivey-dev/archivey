@@ -170,13 +170,14 @@ class ArchiveStream(ReadOnlyIOStream):
         nothing.
 
         A password is not always confirmed early either: a member with only a weak
-        password check (ZipCrypto, or an encrypted stored member with no other check) reaches ``KEY`` only at its
-        checksum, so ``verify(Verification.KEY)`` reads it to the end. A failed check
-        raises what the read raises (``CorruptionError``, ``TruncatedError``,
-        ``EncryptionError``), and a seekable stream is still put back where it was.
-        Otherwise compare the result with ``level`` or ``verifiable``: a TAR member,
-        with no checksum, ends at ``STRUCTURE``. A closed stream raises ``ValueError``,
-        as every ``io`` method does. Which reads a level needs can get cheaper in a later
+        password check (ZipCrypto, or an encrypted stored member with no other check)
+        reaches ``KEY`` only at its checksum, so ``verify(Verification.KEY)`` reads it
+        to the end. A failed check raises what the read raises (``CorruptionError``,
+        ``TruncatedError``, ``EncryptionError``), and a seekable stream is still put
+        back where it was. Otherwise compare the result with ``level`` or
+        ``verifiable``: a TAR member, with no checksum, ends at ``STRUCTURE``. A closed
+        stream raises ``ValueError``, as every ``io`` method does, also after
+        ``verify()`` consumed it. Which reads a level needs can get cheaper in a later
         release; the result and the errors stay the same.
         """
         if self.closed:
