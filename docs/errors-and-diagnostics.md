@@ -144,7 +144,14 @@ unchecked data, read the whole member into memory or a temporary file first, and
 the read has finished without an error.
 
 A member stream tells you what has been checked so far. `stream.verified` is a `Verification`
-level, and `stream.verifiable` is the most a read from the start to the end can reach:
+level, and `stream.verifiable` is the most a read from the start to the end can reach.
+
+!!! warning "Experimental"
+    `Verification`, `stream.verified` and `stream.verifiable` are experimental and outside
+    the [stability policy](how-it-is-built.md#versioning-and-stability): any release, a
+    patch release included, may change their levels, names or meaning. The checks are not
+    experimental: a read that fails a check raises whatever the level says.
+
 
 | Level | What has been checked |
 |---|---|

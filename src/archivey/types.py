@@ -578,7 +578,8 @@ class Verification(IntEnum):
 
     ``ArchiveStream.verified`` is the level a stream has reached, and
     ``ArchiveStream.verifiable`` the most it can reach by a read from the start to
-    the end. The levels are ordered, so ``stream.verified >= Verification.STRUCTURE``
+    the end. Experimental: any release, a patch included, may change the levels, their
+    names or what they mean. The levels are ordered, so ``stream.verified >= Verification.STRUCTURE``
     reads as "at least the structure was checked".
     """
 
