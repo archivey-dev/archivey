@@ -13,10 +13,14 @@
 - [ ] 2.2 Tests: password confirmation by a CRC is scoped to the folder; an AES folder
       with no CRC stays `NONE` after a full read.
 
-## 3. verify()
+## 3. Member level and verify calls
 
-- [ ] 3.0 Replace `verify(level)` with `verify(*, password_only=False)`; update the CLI
-      and tests that pass a level.
+- [ ] 3.0 Replace `verify(level)` with `verify(*, password_only=False)`.
+- [ ] 3.1 `ArchiveMember.verified`/`verifiable`, filled by the reader; member streams mirror them.
+- [ ] 3.2 Spanning checks (7z folder CRC, `.tar.gz` trailer, listing passes) raise the
+      members they cover when they pass.
+- [ ] 3.3 `reader.verify(member, *, password_only=False)`.
+- [ ] 3.4 `reader.verify_all()`; the CLI `test` verb uses it.
 
 ## 4. Docs and tests
 

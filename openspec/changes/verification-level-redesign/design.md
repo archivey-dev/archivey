@@ -42,12 +42,25 @@ When a 7z folder holds exactly one file and that file has no digest, the folder'
 unpack digest covers the same bytes, so the reader hands it to the verifier as the
 member digest. With several files and only a folder CRC, each file stays at `LENGTH`.
 
-### 4. Surface
+### 4. Where the level lives
 
-The surface is `verified`, `verifiable` and `verify(*, password_only=False) ->
-Verification` (the `level` argument goes). `verify()` aims at `verifiable`, so on a
-seekable stream whose checksum a seek skipped, it reads again from 0. The docs lead with
-"`verified == verifiable` means nothing more can be checked".
+The level belongs to the member: `ArchiveMember.verified` and `.verifiable`, filled in
+place by the reader like digests. A member stream asks its member, and an
+`open_stream()` stream keeps its own. Each check that proves bytes reports to the
+member it covers. A check that spans members (7z folder CRC, `.tar.gz` trailer) keeps
+the list of members it covers and raises them all when it passes. A listing pass that
+decodes data reports to every member it passed. `ArchiveMember.replace()` copies the
+level as it stands; the copy does not follow later raises.
+
+### 5. Verify calls
+
+- `stream.verify(*, password_only=False)`: this stream only, PR 1211 rules.
+- `reader.verify(member, *, password_only=False)`: an internal stream on a random-access
+  reader; on a streaming-only reader, the current member only.
+- `reader.verify_all()`: every member, keeps going, returns `(member, error)` pairs.
+
+All three aim at `verifiable`, or at `PASSWORD` with `password_only`. None of them reads
+past the member it verifies, except `verify_all()`, which reads everything.
 
 ## Risks / Trade-offs
 

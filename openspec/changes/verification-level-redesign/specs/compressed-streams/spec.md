@@ -28,8 +28,10 @@ The levels mean:
   of an `.xz`, `.zst` or `.lz4` file. A codec check counts only over a decode from the
   start with no seek between, other than seeks to 0. The check's value need not be
   exposed. A check that spans several members (a `.tar.gz` trailer, a 7z folder CRC
-  over several files) SHALL NOT raise any member's level; a 7z folder CRC over a single
-  file SHALL count as that file's digest when it has none of its own.
+  over several files) SHALL raise the level of every member it covers only once it
+  passes, at the end of the folder or stream; a 7z folder CRC over a single file SHALL
+  count as that file's digest when it has none of its own. A member stream's
+  `verified` and `verifiable` SHALL equal its member's.
 
 The level SHALL NOT claim a check that did not run. Where a check cannot be traced to
 the stream, the level SHALL report less. Reading the properties SHALL NOT read,
@@ -52,9 +54,10 @@ level adds no new error and no new way to read.
 | `.xz` file with one stream of check type None, read to the end | `LENGTH` |
 | `.zst` file, every frame with a content checksum, read to the end | `CHECKSUM` |
 | `.lz4` frame with a content checksum, read to the end | `CHECKSUM` |
-| TAR member of a `.tar.gz`, read to the end | `LENGTH` (the trailer spans members) |
+| TAR member of a `.tar.gz`, read to the end | `LENGTH`; `CHECKSUM` once the archive is read to its end and the trailer matches |
+| `.tar.gz` listed to its end, trailer matches | every member's `verified` is `CHECKSUM` |
 | 7z one-file folder with a folder CRC and no file CRC, read to the end | `CHECKSUM` |
-| 7z folder of several files with only a folder CRC, a file read to the end | `LENGTH` |
+| 7z folder of several files with only a folder CRC, a file read to the end | `LENGTH`; `CHECKSUM` for all once the folder is read and its CRC matches |
 | 7z AES folder with no CRC, read to the end | `verified` and `verifiable` are `NONE` |
 | 7z: a file's CRC matches in AES folder A; AES folder B has no CRC, read to the end | B stays `NONE`: A's match does not prove B's key |
 | ZipCrypto member, password on its check byte, half read | `verified` is `NONE`; `verifiable` is `CHECKSUM` |
