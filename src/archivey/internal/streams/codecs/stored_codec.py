@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 from typing import BinaryIO
 
-from archivey.exceptions import TruncatedError
 from archivey.internal.config import StreamConfig
 from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import RewindWarning
@@ -32,12 +31,6 @@ class StoredCodec(StreamCodec):
         if isinstance(source, (str, os.PathLike)):
             return open(os.fspath(source), "rb")
         return ensure_binaryio(source)
-
-    @override
-    def eof_truncation(self, exc: Exception) -> TruncatedError | None:
-        # No decoder reads the source, so an EOFError here is the source's own, an I/O
-        # problem that reaches the caller as itself (DR-15a).
-        return None
 
     @override
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
