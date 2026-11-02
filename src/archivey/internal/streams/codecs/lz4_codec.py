@@ -19,6 +19,7 @@ from archivey.internal.streams.codecs.base import (
     StreamCodec,
 )
 from archivey.internal.streams.codecs.framed_decoder import (
+    FrameCheck,
     StreamStart,
     stream_magic,
 )
@@ -50,6 +51,24 @@ LZ4_REQUIREMENT = MissingComponent(
 )
 
 
+_LZ4_FRAME_MAGIC = b"\x04\x22\x4d\x18"
+
+
+def _lz4_frame_has_checksum(head: bytes) -> bool | None:
+    """Whether an LZ4 frame checks every byte: its FLG byte (after the magic) sets the
+    content checksum (bit 2) or the block checksum (bit 4), which then covers every
+    block. liblz4 checks both when set. A legacy stream carries no checksum; a
+    skippable frame holds no content (``None``)."""
+    if head[:4] == _LZ4_FRAME_MAGIC:
+        return bool(head[4] & 0x14)
+    if head[:4] == LEGACY_MAGIC:
+        return False
+    return None
+
+
+_LZ4_FRAME_CHECK = FrameCheck(head=5, judge=_lz4_frame_has_checksum)
+
+
 class Lz4Codec(StreamCodec):
     codec = Codec.LZ4
     stream_format = StreamFormat.LZ4
@@ -68,6 +87,10 @@ class Lz4Codec(StreamCodec):
     def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
         # A frame or a legacy stream, whichever the data starts with.
         return Lz4Decompressor(config.natives)
+
+    @override
+    def frame_check(self) -> FrameCheck:
+        return _LZ4_FRAME_CHECK
 
     @override
     def stream_start(self, params: CodecParams) -> StreamStart:

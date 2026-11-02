@@ -55,6 +55,7 @@ from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
     DecompressorStream,
+    FrameChecks,
     PrebuiltIndex,
     SeekPoint,
     SpacedCollector,
@@ -663,6 +664,12 @@ def _report_unverifiable_check(
     )
 
 
+def _note_check(check: int, frame_checks: FrameChecks) -> None:
+    """Note whether a stream's check is one liblzma runs: not ``CHECK_NONE``, and one it
+    implements (an unknown ID is decoded without it, ``_report_unverifiable_check``)."""
+    frame_checks.note(check != lzma.CHECK_NONE and lzma.is_check_supported(check))
+
+
 class _XzState:
     """Streaming state machine for multi-stream XZ decompression."""
 
@@ -983,8 +990,11 @@ class XzDecoder(BaseDecoder):
         reported_checks: set[int],
         handoff: SeekPoint | None = None,
         natives: Natives = IN_PROCESS,
+        frame_checks: FrameChecks | None = None,
     ) -> None:
         self._engine = engine
+        # Each stream's check, as its header (or a resumed block's footer) gives it.
+        self.frame_checks = frame_checks if frame_checks is not None else FrameChecks()
         self._natives = natives
         self._reported_checks = reported_checks
         self._limits = limits
@@ -1012,7 +1022,10 @@ class XzDecoder(BaseDecoder):
         """``reported_checks`` is shared by every decoder of one file (see
         :func:`_report_unverifiable_check`)."""
 
+        frame_checks = FrameChecks()
+
         def on_check(check: int) -> None:
+            _note_check(check, frame_checks)
             _report_unverifiable_check(check, reported_checks, collector)
 
         handoff: SeekPoint | None = None
@@ -1041,6 +1054,7 @@ class XzDecoder(BaseDecoder):
             reported_checks=reported_checks,
             handoff=handoff,
             natives=natives,
+            frame_checks=frame_checks,
         )
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> XzDecoder:
@@ -1086,11 +1100,17 @@ class XzDecoder(BaseDecoder):
         point = self._handoff
         self._handoff = None
         self._inner.seek(point.compressed_offset)
+
+        frame_checks = self.frame_checks
+        assert frame_checks is not None  # set in __init__
+
+        def on_check(check: int) -> None:
+            _note_check(check, frame_checks)
+            _report_unverifiable_check(check, self._reported_checks, self._collector)
+
         self._engine = _XzState(
             self._limits,
-            lambda check: _report_unverifiable_check(
-                check, self._reported_checks, self._collector
-            ),
+            on_check,
             after_stream=True,
             start_offset=point.compressed_offset,
             natives=self._natives,

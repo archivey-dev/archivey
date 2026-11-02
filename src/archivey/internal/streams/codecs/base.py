@@ -38,6 +38,7 @@ from archivey.internal.streams.archive_stream import (
 )
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64
 from archivey.internal.streams.codecs.framed_decoder import (
+    FrameCheck,
     FramedDecompressorStream,
     StreamIndex,
     StreamStart,
@@ -391,8 +392,9 @@ class StreamCodec:
     # Whether the decoder checks every byte it decodes against a checksum the format
     # requires (gzip's CRC-32, bzip2's CRCs, lzip's CRC-32, zlib's Adler-32), raising on
     # a mismatch before it reports the end. Formats whose checksum is optional per
-    # frame (xz, zstd, LZ4) leave it False until their decoders report, per frame,
-    # that one was present. Read by a stream's verification level.
+    # frame (xz, zstd, LZ4) leave it False: their decoders report, per frame, whether
+    # one was present (``frame_check``, ``FrameChecks``). Read by a stream's
+    # verification level.
     checks_content: ClassVar[bool] = False
     # The name diagnostics and messages give the stream (:attr:`stream_name`), when not
     # ``codec.value``.
@@ -465,7 +467,13 @@ class StreamCodec:
             collector=config.collector,
             report_trailing_data=config.report_trailing_data,
             refuse_input_after_end=config.refuse_input_after_end,
+            frame_check=self.frame_check(),
         )
+
+    def frame_check(self) -> FrameCheck | None:
+        """How to tell, from a frame's first bytes, whether it carries a check, for a
+        codec whose check is optional per frame (zstd, LZ4). ``None`` for the others."""
+        return None
 
     def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
         """A new decoder for one stream, for the default :meth:`open`. Called for each

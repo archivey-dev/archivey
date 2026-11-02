@@ -34,13 +34,18 @@ class VerificationProofs:
     and nothing has confirmed it since. ``ended``: a read reached the end with every
     length and end-of-data check passing. ``content``: a check over every byte
     matched. ``content_possible``: such a check exists, so a read to the end can match
-    it. The last three hold for the member's own bytes only.
+    it. ``frames_checked``: a codec whose check is optional per frame (xz, zstd, LZ4)
+    has seen at least one frame and every frame it has seen carries a check its
+    library verifies; the stream above counts it as a codec that checks every byte,
+    which a read from the start to the end proves. All but ``key_in_doubt`` hold for
+    the member's own bytes only.
     """
 
     key_in_doubt: bool = False
     ended: bool = False
     content: bool = False
     content_possible: bool = False
+    frames_checked: bool = False
 
     def combine(self, below: VerificationProofs) -> VerificationProofs:
         """This layer's proofs together with the ones of the layer below it."""
@@ -49,6 +54,7 @@ class VerificationProofs:
             ended=self.ended or below.ended,
             content=self.content or below.content,
             content_possible=self.content_possible or below.content_possible,
+            frames_checked=self.frames_checked or below.frames_checked,
         )
 
     def doubt_only(self) -> VerificationProofs:

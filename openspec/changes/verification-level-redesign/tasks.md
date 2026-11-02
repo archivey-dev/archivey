@@ -2,11 +2,11 @@
 
 ## 1. Codec checks
 
-- [ ] 1.1 xz: report per stream whether every block had a check and all passed.
-- [ ] 1.2 zstd: the same per frame (Content_Checksum_flag); skippable frames ignored.
-- [ ] 1.3 lz4 frame: the same (content checksum, or block checksums on every block);
+- [x] 1.1 xz: report per stream whether every block had a check and all passed.
+- [x] 1.2 zstd: the same per frame (Content_Checksum_flag); skippable frames ignored.
+- [x] 1.3 lz4 frame: the same (content checksum, or block checksums on every block);
       legacy-format streams carry none.
-- [ ] 1.4 The codec stream counts the file as `CHECKSUM` only when every frame qualified.
+- [x] 1.4 The codec stream counts the file as `CHECKSUM` only when every frame qualified.
 
 ## 2. 7z
 
