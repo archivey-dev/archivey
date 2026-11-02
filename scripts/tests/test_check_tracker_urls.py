@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "check_tracker_urls.py"
+SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "check_tracker_urls.py"
 _spec = importlib.util.spec_from_file_location("check_tracker_urls", SCRIPT)
 assert _spec is not None and _spec.loader is not None
 check = importlib.util.module_from_spec(_spec)

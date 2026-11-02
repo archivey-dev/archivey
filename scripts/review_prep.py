@@ -321,7 +321,10 @@ def width(files: Iterable[FileDiff], base: str, head: str = "HEAD") -> list[str]
             # Tests are left out: nobody has flagged a long line in one, and their
             # literal fixtures make the check noisy.
             limit: int | None = (
-                PY_WIDTH if f.path.startswith(("src/", "scripts/")) else None
+                PY_WIDTH
+                if f.path.startswith(("src/", "scripts/"))
+                and not f.path.startswith(SCRIPT_TESTS)
+                else None
             )
             candidates = f.added
         elif f.path.endswith(".md"):
@@ -344,6 +347,10 @@ def width(files: Iterable[FileDiff], base: str, head: str = "HEAD") -> list[str]
 
 # --- tier: how deep the review goes ----------------------------------------------------
 
+# The tests of the scripts (CONTRIBUTING.md §Testing standards): tests like `tests/`,
+# for the tier and the width check alike.
+SCRIPT_TESTS = "scripts/tests/"
+
 # A pull request is light only when every path it changes is here: user and maintainer
 # prose, tests and benchmarks. Two rules keep the rest out:
 # - What an agent or a review round reads as its own instructions or contracts is never
@@ -355,6 +362,7 @@ LIGHT_PREFIXES = (
     "docs/",
     "dev-docs/",
     "tests/",
+    SCRIPT_TESTS,
     "benchmarks/",
 )
 LIGHT_FILES = ("mkdocs.yml",)

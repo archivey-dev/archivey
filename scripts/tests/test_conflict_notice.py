@@ -13,7 +13,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "conflict_notice.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "conflict-notice.yml"
 

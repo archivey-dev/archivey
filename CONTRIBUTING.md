@@ -38,10 +38,9 @@ far wider than their file, and its `red-on-base` subcommand checks a "fails on `
 claim (`.claude/skills/address-review-findings/SKILL.md` §5).
 
 `check.sh` mirrors CI's `lint` job and every job in `docs-checks.yml`: ruff,
-**`pyrefly`**, **`ty`**, the OpenSpec checks, the docs-tree and link checks, the strict
-docs build, the check on what that build rendered and the tracker-URL check. The one
-exception is the docs job's pytest step (`tests/test_github_templates.py`), which
-`test.sh` runs. The script itself is the list. It runs every gate even after one fails
+**`pyrefly`**, **`ty`**, the tests of the scripts (`scripts/tests/`, a few seconds),
+the OpenSpec checks, the docs-tree and link checks, the strict docs build, the check on
+what that build rendered and the tracker-URL check. The script itself is the list. It runs every gate even after one fails
 and lists what failed at the end, so a single run tells you everything that is wrong.
 Without `--fix` it writes nothing and answers "will CI pass?".
 
@@ -152,7 +151,7 @@ jobs: lint, test legs, free-threaded leg, benchmark gate, plugin jobs). The docs
 and the OpenSpec checks live in `docs-checks.yml`, which always runs. The list of
 documentation paths is the `pull_request: paths:` filter in `ci.yml`; if a test starts
 reading a doc file, re-include that file there, as `docs/api.md` is, or a change to it
-will skip the test that reads it. `tests/test_ci_doc_paths.py` checks that the
+will skip the test that reads it. `scripts/tests/test_ci_doc_paths.py` checks that the
 re-includes come after every `!` entry. Branch protection on `main` requires no
 status checks today. If one is added, it must come from a workflow that runs on every
 pull request, because a filtered workflow reports no check at all and the PR would wait
@@ -385,6 +384,14 @@ maintainer.
 
 ## Testing standards
 
+- **Library tests go in `tests/`; tests of the repository's own tooling go in
+  `scripts/tests/`.** A test belongs in `scripts/tests/` when it checks a script, a
+  workflow file or another repository file and never imports `archivey`. The `test`
+  legs run `tests/` on every platform and Python; `scripts/tests/` runs once, in the
+  lint job, and a change confined to it and to the scripts it checks skips the merge
+  queue's extra legs (`scripts/ci_scope.py`). A library test that reads a script, such
+  as a fixture generator, stays in `tests/`, and `scripts/ci_scope.py` lists that
+  script so a change to it runs every leg. A bare `uv run pytest` runs both folders.
 - **Test behaviour, not internal implementation.** Assert on what a public API returns
   and does, so refactors don't break tests gratuitously. *Narrow exception:* the
   low-level building blocks — stream primitives/helpers, format parsers, the codec

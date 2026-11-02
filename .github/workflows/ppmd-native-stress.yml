@@ -5,8 +5,8 @@ name: PPMd native stress
 #
 # Runs weekly, on demand, and on a pull request that changes the PPMd code, the child
 # process around it, its tests, the scripts below, this file, or the dependency pins (a
-# pyppmd upgrade); tests/test_ppmd_stress_paths.py keeps that list matching the tree and
-# the `run:` steps. There is no post-merge run: the stress marker, the hard raw-streams
+# pyppmd upgrade); scripts/tests/test_ppmd_stress_paths.py keeps that list matching the
+# tree and the `run:` steps. There is no post-merge run: the stress marker, the hard raw-streams
 # soak and the valgrind gate run nowhere else, so a regression that arrives through a
 # pull request outside the list (the 7z reader, streamtools, the decompressor stream)
 # waits for the weekly run.
