@@ -1425,8 +1425,8 @@ class DecompressorStream(ReadOnlyIOStream):
         ``LZMAError("Internal error")``. So the error goes into ``_spent``, as a deferred
         one does (:meth:`_raise_deferred`): a bounded read hands back what is already
         buffered, then raises it again, and ``readall`` raises at once, as it does for a
-        deferred error. A seek restarts the decoder from a seek point, also a seek to the
-        position the stream is already at.
+        deferred error. After a seek, also one to the position the stream is already at,
+        the next read restarts the decoder from a seek point (:meth:`_settle`).
 
         Every exception counts, not only a verdict on the data: an ``OSError`` from the
         caller's source raised inside a decode (xz's resume hand-off seeks the source)
@@ -1921,13 +1921,16 @@ class DecompressorStream(ReadOnlyIOStream):
         if target is None:
             return
         self._seek_target = None
+        # The error the decoder kept before this settle, if it had raised: only a
+        # different one, kept by a decode below, is a decode error in the gap.
+        kept_before = self._spent
         with self._deferring_raises() as pending:
             try:
                 self._seek_to(target)
                 if self._restart_pending:
                     self._restart_at_position()
             except BaseException:
-                if self._spent is None:
+                if self._spent is None or self._spent is kept_before:
                     self._seek_target = target
                 else:
                     self._buffer.clear()

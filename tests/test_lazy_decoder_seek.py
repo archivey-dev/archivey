@@ -76,7 +76,24 @@ def test_seeks_that_no_read_follows_cost_nothing(
         assert counts.resets <= 1
 
 
-def test_a_seek_within_the_buffered_output_is_done_at_once() -> None:
+def test_a_seek_within_the_buffered_output_is_done_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = lzma.compress(FULL, format=lzma.FORMAT_XZ)
+    with XzDecompressorStream(io.BytesIO(data)) as stream:
+        # The decode a seek runs to reach 1000 stops past it: the rest stays buffered.
+        stream.seek(1000)
+        assert stream.read(1) == FULL[1000:1001]
+        counts = _Counts(monkeypatch)
+        assert stream.seek(1500) == 1500
+        assert stream._seek_target is None
+        assert counts.chunks == 0
+        assert counts.resets == 0
+        assert stream.read(10) == FULL[1500:1510]
+        assert counts.chunks == 0
+
+
+def test_a_seek_at_or_past_a_known_size_is_done_at_once() -> None:
     data = lzma.compress(FULL, format=lzma.FORMAT_XZ)
     with XzDecompressorStream(io.BytesIO(data)) as stream:
         assert stream.read(1) == FULL[:1]
@@ -127,3 +144,38 @@ def test_damage_in_the_gap_raises_at_the_read_and_keeps_the_target() -> None:
             stream.read(10)
         stream.seek(0)
         assert stream.read(10) == FULL[:10]
+
+
+class _FlakySeek(io.BytesIO):
+    """A source whose next ``seek`` raises ``OSError`` once ``fail`` is set."""
+
+    fail = False
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        if self.fail:
+            self.fail = False
+            raise OSError("source seek failed")
+        return super().seek(offset, whence)
+
+
+@pytest.mark.parametrize("spent", [False, True], ids=["fresh", "already_raised"])
+def test_a_failed_source_seek_keeps_the_target(spent: bool) -> None:
+    """The source's own seek failing is not a decode error: the next read tries again.
+
+    Also on a stream whose decoder had already raised: the error it kept is older than
+    the settle, so it does not mark this failure as a decode error.
+    """
+    data = lzma.compress(FULL, format=lzma.FORMAT_XZ)
+    source = _FlakySeek(data[: len(data) // 2] if spent else data)
+    with XzDecompressorStream(source) as stream:
+        if spent:
+            with pytest.raises(TruncatedError):
+                stream.read()
+        else:
+            stream.read(100)
+        stream.seek(5)
+        source.fail = True
+        with pytest.raises(OSError, match="source seek failed"):
+            stream.read(3)
+        assert stream.tell() == 5
+        assert stream.read(3) == FULL[5:8]
