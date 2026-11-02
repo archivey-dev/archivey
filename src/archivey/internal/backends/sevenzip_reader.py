@@ -749,6 +749,7 @@ class SevenZipReader(BaseArchiveReader):
         # members, and one with no CRC. A one-file folder's digest is already its
         # member's (the parser hands it over).
         self._folder_crc_only: dict[int, int] = {}
+        self._key_anchor_cache: dict[int, tuple[tuple[int, int, int], ...]] = {}
         for index, members in self._folder_members.items():
             folder = self._archive.folders[index]
             if (
@@ -1418,14 +1419,20 @@ class SevenZipReader(BaseArchiveReader):
 
         A CRC over fewer than ``PASSWORD_CONFIRM_MIN_VERIFIED_BYTES`` is skipped, as
         the confirm ladder skips it: an empty member's CRC matches under any key.
+        Built once per folder: an open of each member of a folder that stays
+        unconfirmed would otherwise walk the folder's member list each time.
         """
+        cached = self._key_anchor_cache.get(folder_index)
+        if cached is not None:
+            return cached
         anchors = []
         for member in self._folder_members.get(folder_index, ()):
             crc = _member_crc(member)
             size = _member_stream_size(member)
             if crc is not None and size >= PASSWORD_CONFIRM_MIN_VERIFIED_BYTES:
                 anchors.append((self._member_prefix(member), size, crc))
-        return tuple(anchors)
+        result = self._key_anchor_cache[folder_index] = tuple(anchors)
+        return result
 
     def _folder_key_proved(self, folder_index: int) -> None:
         """A CRC matched over this folder's decode: its password is confirmed.

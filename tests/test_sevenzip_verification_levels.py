@@ -182,6 +182,14 @@ def test_seekable_member_reads_never_claim_the_folder_crc() -> None:
         for name in "abc":
             assert reader.read(members[name]) == _THREE[name]
         assert {m.verified for m in members.values()} == {Verification.LENGTH}
+        # Each file is at its LENGTH ceiling, so verify_all() reads none of them...
+        assert reader.verify_all() == ()
+        assert {m.verified for m in members.values()} == {Verification.LENGTH}
+        # ...and a pass over the whole folder still raises them.
+        for _member, stream in reader.stream_members():
+            assert stream is not None
+            stream.read()
+        assert {m.verified for m in members.values()} == {Verification.CHECKSUM}
 
 
 # Encrypted folders. pack -> AES -> LZMA2 -> output: LZMA2 rejects random input, so the
@@ -287,3 +295,32 @@ def test_a_crc_in_the_same_pass_confirms_the_folder_for_a_second_verify_all() ->
         # A second call reads again what is below its ceiling.
         assert reader.verify_all() == ()
         assert _levels(members["a1"]) == (Verification.LENGTH, Verification.LENGTH)
+
+
+@requires("cryptography")
+def test_an_unconfirmed_folder_builds_its_key_anchors_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Seekable reads never confirm the folder, so each open would otherwise walk the
+    # folder's member list again: quadratic over a large folder.
+    import archivey.internal.backends.sevenzip_reader as sevenzip_reader_mod
+
+    data = _two_aes_folders(
+        {"a1": (_BIG, False), "a2": (_SMALL, True)}, {"b1": (_SMALL, True)}
+    )
+    calls = 0
+    real = sevenzip_reader_mod._member_crc
+
+    def counting(member: ArchiveMember) -> int | None:
+        nonlocal calls
+        calls += 1
+        return real(member)
+
+    with open_archive(io.BytesIO(data), password="pw", seekable_members=True) as r:
+        members = _by_name(r.members())
+        monkeypatch.setattr(sevenzip_reader_mod, "_member_crc", counting)
+        assert r.read(members["a2"]) == _SMALL
+        first = calls
+        assert first > 0
+        assert r.read(members["a2"]) == _SMALL
+        assert calls == first
