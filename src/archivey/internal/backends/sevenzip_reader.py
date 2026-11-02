@@ -28,6 +28,7 @@ import io
 import re
 import stat
 import threading
+import zlib
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass
@@ -114,6 +115,7 @@ from archivey.internal.password import (
 )
 from archivey.internal.password_confirm import (
     PASSWORD_CONFIRM_MAX_INPUT_BYTES,
+    PASSWORD_CONFIRM_MIN_VERIFIED_BYTES,
     PASSWORD_CONFIRM_PREFIX_BYTES,
     REJECTING_CODECS,
     PasswordConfirmPlan,
@@ -129,7 +131,9 @@ from archivey.internal.streams.archive_stream import (
     MemberStreamParts,
 )
 from archivey.internal.streams.crypto import _AesCbcTruncatedError
+from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
+    DelegatingStream,
     ReadableStream,
     ReadOnlyIOStream,
     SharedSource,
@@ -138,6 +142,8 @@ from archivey.internal.streams.streamtools import (
     is_seekable,
     skip_forward,
 )
+from archivey.internal.streams.streamtools.binaryio import read_blocking
+from archivey.internal.streams.verification import raise_member_level
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
 from archivey.internal.trailing_scan import first_nonzero_offset
 from archivey.internal.unix_mode import (
@@ -161,6 +167,7 @@ from archivey.types import (
     MemberStreams,
     MemberType,
     SpecialFileType,
+    Verification,
 )
 
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
@@ -468,6 +475,116 @@ def _member_stream_size(member: ArchiveMember) -> int:
     return member.size if member.size is not None else 0
 
 
+def _member_crc(member: ArchiveMember) -> int | None:
+    """``member``'s stored CRC-32 as an integer, or ``None`` when it has none."""
+    raw = member.hashes.get(HashAlgorithm.CRC32) if member.hashes else None
+    if not isinstance(raw, bytes):
+        return None
+    return int.from_bytes(raw, "big") & 0xFFFFFFFF
+
+
+class _FolderChecks(DelegatingStream):
+    """Hash a 7z folder's decode from its first byte, for the checks no member owns.
+
+    Two checks, each run only when it can prove something a member stream cannot:
+
+    - ``folder_crc``: the folder's unpack digest. When the decode reaches the folder's
+      end with every byte hashed in order and the digest matches, ``on_folder_match``
+      runs. It is how a member with no CRC of its own, in a folder of several,
+      reaches ``CHECKSUM`` (``verification-level-redesign``, the spanning checks).
+    - ``anchors``: ``(start, size, crc)`` of the folder's members that carry a CRC, in
+      folder order. The first that matches runs ``on_key_proved``: a wrong key does
+      not decrypt to bytes that match a CRC, so the folder's password is confirmed.
+      Only a folder whose password was accepted without such a proof passes any.
+
+    The hash runs only over a decode from offset 0 with no gap: a seek anywhere but to
+    the position already hashed stops it, and a seek to 0 starts it again. A match
+    found twice runs its callback twice, which the callbacks allow. Changes no byte,
+    so the verification level looks through it.
+    """
+
+    forwards_verification = True
+    # Hashing is a side effect of ``read``: ``readinto`` must not bypass it.
+    readinto_passthrough = False
+
+    def __init__(
+        self,
+        inner: BinaryIO,
+        *,
+        size: int,
+        folder_crc: int | None,
+        anchors: tuple[tuple[int, int, int], ...],
+        on_folder_match: Callable[[], None],
+        on_key_proved: Callable[[], None],
+    ) -> None:
+        super().__init__(inner)
+        self._size = size
+        self._folder_crc = folder_crc
+        self._anchors = anchors
+        self._on_folder_match = on_folder_match
+        self._on_key_proved = on_key_proved
+        self._restart()
+
+    def _restart(self) -> None:
+        # ``_pos``: bytes hashed in order from offset 0, ``None`` once a seek broke
+        # the run. ``_next_anchor`` is the anchor being hashed, past the last once
+        # one matched: one proof is enough.
+        self._pos: int | None = 0
+        self._crc = 0
+        self._next_anchor = 0
+        self._anchor_crc = 0
+
+    @override
+    def read(self, n: int = -1, /) -> bytes:
+        data = read_blocking(self._inner, n)
+        if data and self._pos is not None:
+            self._hash(data)
+        return data
+
+    def _hash(self, data: bytes) -> None:
+        start = self._pos
+        assert start is not None
+        end = start + len(data)
+        self._pos = end
+        if self._folder_crc is not None and start < self._size:
+            self._crc = zlib.crc32(data, self._crc)
+            if end == self._size and self._crc == self._folder_crc:
+                self._on_folder_match()
+        anchors = self._anchors
+        if self._next_anchor >= len(anchors):
+            return
+        view = memoryview(data)
+        while self._next_anchor < len(anchors):
+            a_start, a_size, a_crc = anchors[self._next_anchor]
+            a_end = a_start + a_size
+            lo, hi = max(start, a_start), min(end, a_end)
+            if lo < hi:
+                self._anchor_crc = zlib.crc32(
+                    view[lo - start : hi - start], self._anchor_crc
+                )
+            if end < a_end:
+                return
+            if self._anchor_crc == a_crc:
+                self._next_anchor = len(anchors)
+                self._on_key_proved()
+                return
+            self._next_anchor += 1
+            self._anchor_crc = 0
+
+    @override
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        pos = self._inner.seek(offset, whence)
+        if pos == 0:
+            self._restart()
+        elif pos != self._pos:
+            self._pos = None
+        return pos
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        # A pass-through over the decoded folder: the inner's offset space is ours.
+        return ask_resume_offset(self._inner, target)
+
+
 class _LazyFolder:
     """A folder's ``SolidBlockReader``, opened on the first read into it.
 
@@ -628,6 +745,18 @@ class SevenZipReader(BaseArchiveReader):
         self._init_folder_caches(self._archive)
         self._members = self._build_members()
         self._folder_members = self._members_by_folder()
+        # Folders whose unpack digest proves bytes no member's own CRC covers: several
+        # members, and one with no CRC. A one-file folder's digest is already its
+        # member's (the parser hands it over).
+        self._folder_crc_only: dict[int, int] = {}
+        for index, members in self._folder_members.items():
+            folder = self._archive.folders[index]
+            if (
+                folder.digest_defined
+                and folder.crc is not None
+                and any(_member_crc(m) is None for m in members)
+            ):
+                self._folder_crc_only[index] = folder.crc & 0xFFFFFFFF
         self._report_trailing_data()
 
     def _view(self, start: int, length: int | None = None) -> BinaryIO:
@@ -1255,11 +1384,77 @@ class SevenZipReader(BaseArchiveReader):
             collector=self._diagnostics_collector,
             seekable=seekable,
         )
+        stream = self._watch_folder_checks(folder_index, stream)
         # Random ``open()`` passes track_output=True so each from-start folder decode
         # counts; sequential ``_iter_with_data`` already wraps once around SolidBlockReader.
         if track_output:
             return self._track_decompressed(stream)
         return stream
+
+    def _watch_folder_checks(self, folder_index: int, stream: BinaryIO) -> BinaryIO:
+        """Wrap a folder decode in the checks that span its members (``_FolderChecks``).
+
+        ``stream`` is returned as it is when neither check can prove anything: the
+        common case, a folder whose members all carry a CRC and whose password, if
+        any, was confirmed at open.
+        """
+        folder_crc = self._folder_crc_only.get(folder_index)
+        anchors: tuple[tuple[int, int, int], ...] = ()
+        if folder_index in self._folders_unconfirmed:
+            anchors = self._key_anchors(folder_index)
+        if folder_crc is None and not anchors:
+            return stream
+        return _FolderChecks(
+            stream,
+            size=folder_unpack_size(self._archive.folders[folder_index]),
+            folder_crc=folder_crc,
+            anchors=anchors,
+            on_folder_match=lambda: self._folder_crc_matched(folder_index),
+            on_key_proved=lambda: self._folder_key_proved(folder_index),
+        )
+
+    def _key_anchors(self, folder_index: int) -> tuple[tuple[int, int, int], ...]:
+        """``(start, size, crc)`` of the members whose CRC can prove the folder's key.
+
+        A CRC over fewer than ``PASSWORD_CONFIRM_MIN_VERIFIED_BYTES`` is skipped, as
+        the confirm ladder skips it: an empty member's CRC matches under any key.
+        """
+        anchors = []
+        for member in self._folder_members.get(folder_index, ()):
+            crc = _member_crc(member)
+            size = _member_stream_size(member)
+            if crc is not None and size >= PASSWORD_CONFIRM_MIN_VERIFIED_BYTES:
+                anchors.append((self._member_prefix(member), size, crc))
+        return tuple(anchors)
+
+    def _folder_key_proved(self, folder_index: int) -> None:
+        """A CRC matched over this folder's decode: its password is confirmed.
+
+        Its members' streams stop doubting the key (``_watch_unverified`` asks at each
+        sync), and each member's ``verifiable`` rises to what a read of it can now
+        prove. Only this folder: another folder may use another password.
+        """
+        if folder_index not in self._folders_unconfirmed:
+            return
+        self._folders_unconfirmed.discard(folder_index)
+        for member in self._folder_members.get(folder_index, ()):
+            ceiling = (
+                Verification.CHECKSUM
+                if _member_crc(member) is not None
+                else Verification.LENGTH
+            )
+            raise_member_level(member, Verification.NONE, ceiling)
+
+    def _folder_crc_matched(self, folder_index: int) -> None:
+        """The folder's digest matched over a whole in-order decode.
+
+        Every byte of every member is proved, so the members with no CRC of their own
+        reach ``CHECKSUM``. Those with one reach it through their own reads.
+        """
+        self._folder_key_proved(folder_index)
+        for member in self._folder_members.get(folder_index, ()):
+            if _member_crc(member) is None:
+                raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
 
     def _password_for_folder(
         self, folder_index: int, member: ArchiveMember | None
@@ -1433,13 +1628,20 @@ class SevenZipReader(BaseArchiveReader):
         """
         raw = member._raw
         assert isinstance(raw, _MemberRaw)
-        if raw.folder_index not in self._folders_unconfirmed:
+        folder_index = raw.folder_index
+        if folder_index not in self._folders_unconfirmed:
             return stream
         return self._watch_unverified_read(
             stream,
             member,
             size=_member_stream_size(member),
-            check="confirm_budget_exhausted",
+            # Asked at each sync and at close: another member's CRC can confirm the
+            # folder's key while this stream is open (``_folder_key_proved``).
+            check=lambda: (
+                "confirm_budget_exhausted"
+                if folder_index in self._folders_unconfirmed
+                else None
+            ),
             format_label="7z",
             digest="checksum",
             why="no checksum confirmed the password",

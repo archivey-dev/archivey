@@ -271,6 +271,9 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.streams.streamtools.readahead.ReadAheadStream": (
         "assigns every field close() reads before DelegatingStream.__init__"
     ),
+    "archivey.internal.backends.sevenzip_reader._FolderChecks": (
+        "DelegatingStream.__init__ first; close() reads nothing assigned after it"
+    ),
     "archivey.internal.streams.streamtools.sparse.SparseStream": (
         "DelegatingStream.__init__ first; close() reads nothing assigned after it"
     ),

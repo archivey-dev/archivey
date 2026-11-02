@@ -185,6 +185,15 @@ matches. If you close its stream before the end, or seek past bytes without read
 logs `ENCRYPTED_MEMBER_UNVERIFIED`, since the bytes you read may come from a wrong password. WinZip
 AES members are the exception: their check holds across seeks.
 
+A 7z archive can compress several files together in one folder and store one checksum for
+the whole folder and none for each file. Each of those files stops at `LENGTH` when you read it
+alone. They all reach `CHECKSUM` once a read of the whole folder, in order from its start,
+matches the folder's checksum: `verify_all()` does that, and so does a `stream_members()` pass
+that reaches the end of the folder. In an encrypted 7z folder, a file whose checksum matches
+also confirms the password for the other files of that folder, though not for other folders,
+which can use another password. A file you read before that confirmation keeps the level it
+had; calling `verify_all()` again reads it once more.
+
 If you opened the archive with `seekable_members=True` (see [Choosing how to read](reading.md)),
 most seeks keep the checksum check: a seek back, a seek to or past the end, and a seek forward that
 the next read has to decode its way through anyway. Bytes you read again after a seek back aren't

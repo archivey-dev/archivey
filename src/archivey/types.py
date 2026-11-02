@@ -1393,8 +1393,9 @@ class ArchiveMember:
 
         ``UNLOCKED`` from the listing when the member is not encrypted, ``NONE`` while
         an encrypted member's password is not confirmed. Any read that proves more
-        raises it in place: a stream of this member read to its end, or
-        :meth:`~archivey.ForwardArchiveReader.verify_all`. A stream opened from a
+        raises it in place: a stream of this member read to its end,
+        :meth:`~archivey.ForwardArchiveReader.verify_all`, or a read of a whole 7z
+        folder whose checksum covers this member. A stream opened from a
         ``replace()`` copy raises the reader's own member, not the copy. It never goes
         down. Not part of equality, and not covered by :attr:`~archivey.ArchiveMember.member_state_final`: it
         can still rise after that is ``True``.
