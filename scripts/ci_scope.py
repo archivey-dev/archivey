@@ -14,7 +14,8 @@ The daily scheduled run on main still runs every job, so a change outside `FULL`
 breaks a skipped leg shows up within a day. Library tests are in `FULL` so that a test
 which fails only on a skipped leg (macOS, PyPy, the minimum versions) cannot merge. The
 tests of the scripts themselves live in ``scripts/tests/``, outside `FULL`: they run in
-the lint job, which every run has, so a script change with its tests needs no more.
+the lint job, which every run has. A change to them, and to scripts off `FULL`, needs
+no more; a script on `FULL` still needs every leg.
 """
 
 from __future__ import annotations

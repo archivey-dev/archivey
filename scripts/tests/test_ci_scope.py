@@ -129,8 +129,8 @@ def test_every_script_a_library_test_reads_is_a_full_path() -> None:
 
 
 def test_script_tests_are_outside_full() -> None:
-    """``scripts/tests/`` is not under ``tests/``, so a script change with its tests
-    needs only the pull request set, which runs them in the lint job."""
+    """``scripts/tests/`` is not under ``tests/``, so changing a script test needs only
+    the pull request set, which runs it in the lint job."""
     assert not scope.needs_full(["scripts/tests/test_review_prep.py"])
     yaml = pytest.importorskip("yaml")
     jobs = yaml.safe_load(CI.read_text())["jobs"]

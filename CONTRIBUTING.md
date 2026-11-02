@@ -121,24 +121,27 @@ uv sync --no-dev && uv run --no-sync python tests/check_zero_dep_core.py \
 ```
 
 These mirror CI's `[all]`, `[all-lowest]`, and `[core-only]` legs; all three must stay
-green. `-n auto` (pytest-xdist) runs the suite on every core; it is not in `addopts`, so
-a plain `uv run pytest tests/test_zip.py` stays one process.
+green. Legs 1 and 2 pass no path, so they also run `scripts/tests/`, which CI runs once
+in the lint job instead; leg 3 passes `tests/`, as CI's core-only leg does. `-n auto`
+(pytest-xdist) runs the suite on every core; it is not in `addopts`, so a plain `uv run
+pytest tests/test_zip.py` stays one process.
 
 CI also matrixes supported **Python versions** (3.11–3.14 on Linux; 3.11/3.14 on
 macOS/Windows). A pull request push runs a reduced set (Linux 3.11 and 3.14, one
 core-only leg, Windows 3.14, free-threaded 3.13t, the benchmark and plugin jobs); the
 merge queue runs every leg plus PyPy, the distribution unar packages and the short
 Atheris fuzz, and a failure there takes the pull request out of the queue. A queued
-change that touches no library, test, dependency or CI path (`scripts/ci_scope.py`)
-runs only the pull request set plus the free-threaded 3.15t leg there, and skips the
-short fuzz. `ci.yml` does not run again after the merge; a daily run tests `main` with
-every job. To run the
-whole set before queueing, dispatch `ci.yml` on your branch. The note at the top of
-`ci.yml` lists which job runs where. Repo `.python-version` pins the default local env to 3.11, so a matrix
-job must pin its Python on every `uv sync` / `uv run`, or newer-version legs silently
-re-test 3.11. Today the `ci.yml` test matrix sets `UV_PYTHON` and passes `--python`; the
-free-threaded job and the stress workflows pin each call with `--python` or `UV_PYTHON`.
-Keep that when you add a step.
+change that touches no path on `FULL` in `scripts/ci_scope.py` (the library, the library
+tests, the dependencies, the CI, and the scripts CI runs or a library test reads;
+`scripts/tests/` is not on it) runs only the pull request set plus the free-threaded
+3.15t leg there, and skips the short fuzz. `ci.yml` does not run again after the merge;
+a daily run tests `main` with every job. To run the whole set before queueing, dispatch
+`ci.yml` on your branch. The note at the top of `ci.yml` lists which job runs where.
+Repo `.python-version` pins the default local env to 3.11, so a matrix job must pin its
+Python on every `uv sync` / `uv run`, or newer-version legs silently re-test 3.11. Today
+the `ci.yml` test matrix sets `UV_PYTHON` and passes `--python`; the free-threaded job
+and the stress workflows pin each call with `--python` or `UV_PYTHON`. Keep that when
+you add a step.
 
 > **`--resolution lowest-direct` rewrites `uv.lock`**, and every later `uv sync --frozen`
 > / `uv run --no-sync` keeps the downgraded set. `./scripts/test.sh --all-configs`
@@ -389,10 +392,11 @@ maintainer.
   `scripts/tests/`.** A test belongs in `scripts/tests/` when it checks a script, a
   workflow file or another repository file and never imports `archivey`. The `test`
   legs run `tests/` on every platform and Python; `scripts/tests/` runs once, in the
-  lint job, and a change confined to it and to the scripts it checks skips the merge
-  queue's extra legs (`scripts/ci_scope.py`). A library test that reads a script, such
-  as a fixture generator, stays in `tests/`, and `scripts/ci_scope.py` lists that
-  script so a change to it runs every leg. A bare `uv run pytest` runs both folders.
+  lint job. A library test that reads a script, such as a fixture generator, stays in
+  `tests/`. `scripts/ci_scope.py` lists that script, and every script CI runs, on
+  `FULL`, so a change to one runs every leg in the merge queue; a change confined to
+  `scripts/tests/` and scripts off `FULL` skips the queue's extra legs. A bare `uv run
+  pytest` runs both folders.
 - **Test behaviour, not internal implementation.** Assert on what a public API returns
   and does, so refactors don't break tests gratuitously. *Narrow exception:* the
   low-level building blocks — stream primitives/helpers, format parsers, the codec
