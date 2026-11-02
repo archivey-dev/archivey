@@ -10,9 +10,9 @@
 
 ## 2. 7z
 
-- [ ] 2.1 A one-file folder's unpack digest becomes the member digest when the file has
+- [x] 2.1 A one-file folder's unpack digest becomes the member digest when the file has
       none.
-- [ ] 2.2 Tests: password confirmation by a CRC is scoped to the folder; an AES folder
+- [x] 2.2 Tests: password confirmation by a CRC is scoped to the folder; an AES folder
       with no CRC stays `NONE` after a full read.
 
 ## 3. Member level and verify calls
