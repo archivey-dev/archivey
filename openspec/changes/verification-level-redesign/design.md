@@ -44,7 +44,9 @@ member digest. With several files and only a folder CRC, each file stays at `LEN
 
 ### 4. Surface
 
-The surface stays `verified`, `verifiable` and `verify(level)`. The docs lead with
+The surface is `verified`, `verifiable` and `verify(*, password_only=False) ->
+Verification` (the `level` argument goes). `verify()` aims at `verifiable`, so on a
+seekable stream whose checksum a seek skipped, it reads again from 0. The docs lead with
 "`verified == verifiable` means nothing more can be checked".
 
 ## Risks / Trade-offs

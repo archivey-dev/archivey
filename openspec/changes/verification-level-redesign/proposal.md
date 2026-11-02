@@ -23,6 +23,14 @@ verification design" (2026-11-01 and 2026-11-02). This change records those ruli
 - **No new levels.** `NONE < PASSWORD < LENGTH < CHECKSUM` stays. A full read with
   nothing to check is `LENGTH`, and `verifiable` already separates it from a checksum
   that a seek skipped.
+- **`verify()` takes a flag, not a level.** `stream.verify()` reads whatever it takes to
+  reach `verifiable`. `stream.verify(password_only=True)` reads only what it takes to
+  prove the password: a cheap check when there is one, otherwise a full read. Either
+  way it returns `verified`. Passing `LENGTH` or `CHECKSUM` made no difference except
+  in one narrow case (a seekable stream that already reached `LENGTH` after a seek
+  skipped its checksum), so the level argument mostly confused callers. A non-seekable
+  stream is still read to the end in both modes, and later reads raise
+  `ArchiveyUsageError`, as ruled for PR 1211.
 - **No other public API.** There is no `fully_checked` property: `stream.verify() ==
   stream.verifiable` already says nothing more can be checked, and the docs lead with
   that comparison. There is no archive-wide level and no `reader.verify()`.

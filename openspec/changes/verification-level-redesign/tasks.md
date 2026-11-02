@@ -13,9 +13,14 @@
 - [ ] 2.2 Tests: password confirmation by a CRC is scoped to the folder; an AES folder
       with no CRC stays `NONE` after a full read.
 
-## 3. Docs and tests
+## 3. verify()
 
-- [ ] 3.1 `Verification.CHECKSUM` docstring and `docs/errors-and-diagnostics.md`: the
+- [ ] 3.0 Replace `verify(level)` with `verify(*, password_only=False)`; update the CLI
+      and tests that pass a level.
+
+## 4. Docs and tests
+
+- [ ] 4.1 `Verification.CHECKSUM` docstring and `docs/errors-and-diagnostics.md`: the
       every-byte definition; lead with `verified == verifiable`.
-- [ ] 3.2 Scenario tests from the spec delta.
-- [ ] 3.3 `openspec archive verification-level-redesign` (after `verification-level`).
+- [ ] 4.2 Scenario tests from the spec delta.
+- [ ] 4.3 `openspec archive verification-level-redesign` (after `verification-level`).
