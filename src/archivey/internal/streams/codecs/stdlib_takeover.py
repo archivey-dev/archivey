@@ -15,10 +15,10 @@ from typing import BinaryIO, TypeVar
 from archivey.exceptions import ArchiveyError
 from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.base import CodecSource
+from archivey.internal.streams.codecs.callers_source import from_callers_source
 from archivey.internal.streams.codecs.rapidgzip_child import (
     RapidgzipChildStream,
     crashed_on_data,
-    from_callers_source,
 )
 from archivey.internal.streams.codecs.rapidgzip_select import _translate_rapidgzip
 from archivey.internal.streams.decompressor_stream import (

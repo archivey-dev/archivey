@@ -20,6 +20,7 @@ from archivey.internal.streams.archive_stream import (
     ArchiveStreamImpl,
     ExceptionTranslator,
     RewindWarning,
+    compose_translators,
     raise_translated,
 )
 from archivey.internal.streams.codecs.base import (
@@ -221,6 +222,7 @@ def resolve_codec(
     The translator must match the *active* backend: when an accelerator
     (``rapidgzip`` / ``indexed_bzip2``) is the chosen backend, its exception taxonomy
     differs from stdlib's, so the codec's :meth:`StreamCodec.translator` selects the right one.
+    Whichever it is, :meth:`StreamCodec.eof_truncation` maps the ``EOFError`` it leaves.
     The ``rewind_warning`` is likewise config-dependent (an active accelerator gives indexed
     random access, so it carries none); it is attached to the ``ArchiveStream`` by
     :func:`open_codec_stream`.
@@ -232,7 +234,7 @@ def resolve_codec(
     return CodecBackend(
         codec=codec,
         config=config,
-        translate=sc.translator(config),
+        translate=compose_translators(sc.translator(config), sc.eof_truncation),
         rewind_warning=sc.rewind_warning(config),
         _open=sc.open,
         checks_content=sc.checks_content,

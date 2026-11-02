@@ -7,7 +7,6 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.exceptions import (
-    ArchiveyError,
     CorruptionError,
     ResourceLimitError,
     UnsupportedFeatureError,
@@ -95,11 +94,6 @@ class LzopCodec(StreamCodec):
         )
 
     @override
-    def translate(self, exc: Exception) -> ArchiveyError | None:
-        # The decompressor raises CorruptionError / UnsupportedFeatureError itself.
-        return self._eof_truncation(exc, "lzop")
-
-    @override
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
         """The stored name, mtime and mode from the first file's header.
 
@@ -165,7 +159,3 @@ class Lzo1xCodec(StreamCodec):
             collector=config.collector,
             refuse_input_after_end=config.refuse_input_after_end,
         )
-
-    @override
-    def translate(self, exc: Exception) -> ArchiveyError | None:
-        return None

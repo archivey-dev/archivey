@@ -98,10 +98,7 @@ class PluginCodec(StreamCodec):
 
     @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
-        translated = self.handler.translate_exception(exc)
-        if translated is not None:
-            return translated
-        return self._eof_truncation(exc, self.handler.stream_format.value)
+        return self.handler.translate_exception(exc)
 
 
 def codec_call(params: CodecParams, config: StreamConfig) -> CodecCall:

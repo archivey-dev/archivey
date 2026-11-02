@@ -59,4 +59,4 @@ class Deflate64Codec(StreamCodec):
             return CorruptionError(
                 f"Error reading deflate64 stream: {exception_detail(exc)}"
             )
-        return self._eof_truncation(exc, "deflate64")
+        return None

@@ -81,7 +81,7 @@ def _translate_lzma(
 ) -> ArchiveyError | None:
     if isinstance(exc, lzma.LZMAError):
         return lzma_error_to_archivey(exc, "Error reading LZMA/XZ stream", limits)
-    return StreamCodec._eof_truncation(exc, "LZMA/XZ")
+    return None
 
 
 class _LzmaErrorCodec(StreamCodec):

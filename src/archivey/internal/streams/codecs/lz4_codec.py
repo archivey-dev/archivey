@@ -120,4 +120,4 @@ class Lz4Codec(StreamCodec):
         if deps.lz4_block is not None and isinstance(exc, deps.lz4_block.LZ4BlockError):
             # A block of a legacy stream; it has no checksum to fail.
             return CorruptionError(f"Error reading lz4 stream: {exception_detail(exc)}")
-        return self._eof_truncation(exc, "lz4")
+        return None

@@ -54,7 +54,9 @@ from archivey.internal.streams.codecs import (
     open_codec_stream,
     resolve_codec,
     stream_codec,
+    stream_codecs,
 )
+from archivey.internal.streams.codecs.callers_source import mark_callers_source
 from archivey.internal.streams.codecs.stored_codec import StoredCodec
 from archivey.internal.streams.codecs.unix_compress_decoder import (
     _MAX_ENTRY_TAIL,
@@ -3768,30 +3770,26 @@ def test_a_cut_stream_names_its_format(codec: Codec, label: str) -> None:
         stream.read()
 
 
-@pytest.mark.parametrize(
-    ("codec", "label"),
-    [
-        (Codec.GZIP, "gzip"),
-        (Codec.BZIP2, "bzip2"),
-        (Codec.XZ, "LZMA/XZ"),
-        (Codec.ZLIB, "zlib"),
-        (Codec.DEFLATE, "deflate"),
-        (Codec.DEFLATE64, "deflate64"),
-        (Codec.ZSTD, "zstd"),
-        (Codec.LZ4, "lz4"),
-        (Codec.PPMD, "PPMd"),
-    ],
-)
-def test_a_translated_eof_names_its_format(codec: Codec, label: str) -> None:
-    """Every translator that maps a library's ``EOFError`` words it the same way.
+@pytest.mark.parametrize("sc", stream_codecs(), ids=lambda sc: sc.stream_name)
+def test_a_translated_eof_names_its_format(sc: StreamCodec) -> None:
+    """Every codec's translator maps a library's ``EOFError`` the same way, naming the
+    stream.
 
-    A cut stream does not reach every one of these arms: the archivey decoders for XZ,
+    A cut stream does not reach this arm for every codec: the archivey decoders for XZ,
     bzip2 and LZ4 raise their own ``TruncatedError`` first. The translator is called
     directly instead, which needs no optional library.
     """
-    translated = stream_codec(codec).translate(EOFError("cut"))
+    translated = resolve_codec(sc.codec).translate(EOFError("cut"))
     assert type(translated) is TruncatedError
-    assert str(translated) == f"{label} stream is truncated: cut"
+    assert str(translated) == f"{sc.stream_name} stream is truncated: cut"
+
+
+def test_an_eof_from_the_callers_source_is_not_translated() -> None:
+    """An ``EOFError`` marked as the caller's own source's reaches the caller as
+    itself, whichever codec read it."""
+    exc = EOFError("the caller's")
+    mark_callers_source(exc)
+    assert resolve_codec(Codec.GZIP).translate(exc) is None
 
 
 @requires("lz4")

@@ -39,10 +39,10 @@ from archivey.internal.streams.codecs.base import (
     CodecParams,
     CodecSource,
 )
+from archivey.internal.streams.codecs.callers_source import from_callers_source
 from archivey.internal.streams.codecs.rapidgzip_child import (
     RapidgzipChildStartError,
     RapidgzipChildStream,
-    from_callers_source,
     rapidgzip_child_unavailable_reason,
     reported_by_child,
 )
