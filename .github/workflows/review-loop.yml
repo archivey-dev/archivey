@@ -79,7 +79,10 @@ jobs:
           BASE: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
-          git show "origin/$BASE:scripts/review/review_prep.py" > scripts/.review_prep_base.py
+          # A base from before scripts/ was sorted into folders has it at the old path.
+          git show "origin/$BASE:scripts/review/review_prep.py" \
+            > scripts/.review_prep_base.py 2>/dev/null \
+            || git show "origin/$BASE:scripts/review_prep.py" > scripts/.review_prep_base.py
           tier="$(python3 scripts/.review_prep_base.py --base "origin/$BASE" tier \
             | sed -n 's/^tier: //p')"
           rm scripts/.review_prep_base.py
