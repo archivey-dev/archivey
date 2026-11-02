@@ -493,7 +493,8 @@ _LIBRARY_ERRORS: list[tuple[str, str, Callable[[], Exception]]] = [
 _TEXTLESS_ERRORS: list[tuple[str, Callable[[], Exception], str]] = [
     ("ppmd", lambda: ValueError(), "Error reading PPMd stream: ValueError"),
     ("gzip", lambda: zlib.error(), "Error reading gzip stream: zlib.error"),
-    # The shared EOF arm every codec's translator ends with.
+    # The EOF arm resolve_codec adds after every codec's translator
+    # (StreamCodec.eof_truncation).
     ("zstd", lambda: EOFError(), "zstd stream is truncated: EOFError"),
 ]
 

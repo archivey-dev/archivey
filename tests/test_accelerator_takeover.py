@@ -471,3 +471,51 @@ def test_bzip2_accelerator_stops_at_the_declared_pack_size() -> None:
         pytest.raises(DataAfterEndError),
     ):
         s.read()
+
+
+class _EofOnRead(io.RawIOBase):
+    """A standard-library decoder stand-in whose every read raises a bare
+    ``EOFError``, as ``gzip.GzipFile`` does for a member cut mid-body."""
+
+    _pos = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        assert whence == io.SEEK_SET
+        self._pos = offset
+        return offset
+
+    def tell(self) -> int:
+        return self._pos
+
+    def readinto(self, buffer: object) -> int:
+        raise EOFError("cut")
+
+
+def test_an_eof_error_after_a_takeover_is_a_truncation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Once the standard library has taken over, an ``EOFError`` it raises leaves the
+    takeover as the codec's ``TruncatedError``, not raw: a raw error inside the stream
+    would read as "no more data" to an over-run probe (``_StdlibOnAcceleratorError``).
+
+    The takeover is read through the codec's own ``open``, with no ``ArchiveStream``
+    around it, whose translator would map the ``EOFError`` on its own.
+    """
+    sc = codecs_module.stream_codec(Codec.ZLIB)
+    monkeypatch.setattr(
+        type(sc), "_open_stdlib", lambda self, source, config: _EofOnRead()
+    )
+    config = _zlib_config(AcceleratorMode.ON, declared=False)
+    stream = sc.open(io.BytesIO(_zlib_cut("later-block")), CodecParams(), config)
+    try:
+        with pytest.raises(TruncatedError, match="^zlib stream is truncated: cut$"):
+            while stream.read(1 << 16):
+                pass
+    finally:
+        stream.close()
