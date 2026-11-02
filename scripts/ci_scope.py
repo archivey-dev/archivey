@@ -7,13 +7,12 @@ Reads the changed paths of a merge group, one per line, on stdin, and prints
 the dependencies, or the CI that tests them and the scripts it runs) skips the jobs a
 pull request push skips too: the `test-queue` legs, the distribution unar packages,
 PyPy and the short Atheris fuzz. It still runs every job a pull request runs, on the
-merged tree. ``--truncated`` (the
-compare API stopped listing files) and an empty list both mean the full run, since an
-unknown diff is not a small one.
+merged tree. ``--truncated`` (the compare API stopped listing files) and an empty list
+both mean the full run, since an unknown diff is not a small one.
 
 The daily scheduled run on main still runs every job, so a change outside `FULL` that
-breaks a skipped leg shows up within a day. Library tests are in `FULL` so that a test which
-fails only on a skipped leg (macOS, PyPy, the minimum versions) cannot merge. The
+breaks a skipped leg shows up within a day. Library tests are in `FULL` so that a test
+which fails only on a skipped leg (macOS, PyPy, the minimum versions) cannot merge. The
 tests of the scripts themselves live in ``scripts/tests/``, outside `FULL`: they run in
 the lint job, which every run has, so a script change with its tests needs no more.
 """
