@@ -52,7 +52,8 @@ verification design" (2026-11-01 and 2026-11-02). This change records those ruli
   every member to the end and does not stop at a failure. Afterwards every member is at
   its highest possible level, checks that span members included, except the members
   that failed. It returns the failures, and an empty tuple means everything checked out.
-  Damage that breaks the listing itself still raises. A second call on a random-access
+  Damage that stops the listing does not raise: `verify_all()` stops there and
+  `members_report().error` holds it. The design states the full contract. A second call on a random-access
   reader re-reads only members still below their `verifiable`, so it asks the password
   provider again for the ones that failed to decrypt. On a streaming-only reader a
   second call raises `ArchiveyUsageError`.

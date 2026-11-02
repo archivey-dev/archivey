@@ -26,4 +26,8 @@
 - [ ] 4.1 `Verification.CHECKSUM` docstring and `docs/errors-and-diagnostics.md`: the
       every-byte definition; lead with `verified == verifiable`.
 - [ ] 4.2 Scenario tests from the spec delta.
-- [ ] 4.3 `openspec archive verification-level-redesign` (after `verification-level`).
+## 5. Contract tests
+
+- [ ] 5.1 One test per item of design Decision 6 (the contract), across ZIP, 7z (solid,
+      AES), RAR, TAR, `.tar.gz` and a single `.xz`, random-access and streaming-only.
+- [ ] 5.2 `openspec archive verification-level-redesign` (after `verification-level`).
