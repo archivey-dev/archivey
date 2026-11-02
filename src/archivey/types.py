@@ -586,14 +586,15 @@ class Verification(IntEnum):
     """
 
     NONE = 0
-    """Nothing is checked yet. The stream has not opened its member, or the member's
-    password passed only a check that a wrong password can pass by chance, such as the
+    """Nothing is proved: the member is encrypted and its password is not confirmed,
+    not yet or only by a check that a wrong password can pass by chance, such as the
     one-byte check of old ZIP encryption."""
-    PASSWORD = 1
-    """The password is right: the member is not encrypted, or its password passed a
-    check a wrong password cannot pass by chance."""
+    UNLOCKED = 1
+    """Nothing stands between the reader and the member's real bytes: the member is
+    not encrypted, or its password passed a check a wrong password cannot pass by
+    chance."""
     LENGTH = 2
-    """As ``PASSWORD``, and a read reached the end with the length and every
+    """As ``UNLOCKED``, and a read reached the end with the length and every
     end-of-data check passing: all the data is there, though its bytes are not
     proved."""
     CHECKSUM = 3
@@ -1390,7 +1391,7 @@ class ArchiveMember:
     def verified(self) -> Verification:
         """How much of this member's data a read has checked so far, as a ``Verification``.
 
-        ``PASSWORD`` from the listing when the member is not encrypted, ``NONE`` while
+        ``UNLOCKED`` from the listing when the member is not encrypted, ``NONE`` while
         an encrypted member's password is not confirmed. Any read that proves more
         raises it in place: a stream of this member read to its end, or
         :meth:`~archivey.ForwardArchiveReader.verify_all`. A stream opened from a
@@ -1402,7 +1403,7 @@ class ArchiveMember:
         its levels or what they mean.
         """
         if self._verified is Verification.NONE and not self.is_encrypted:
-            return Verification.PASSWORD
+            return Verification.UNLOCKED
         return self._verified
 
     @property

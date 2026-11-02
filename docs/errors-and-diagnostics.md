@@ -161,7 +161,7 @@ member, reports its own.
 | Level | What has been checked |
 |---|---|
 | `NONE` | The member is encrypted and its password isn't confirmed: not yet, or only by a check that a wrong password can pass by chance |
-| `PASSWORD` | The member isn't encrypted, or its password passed a reliable check. A member with no data of its own, such as a link or a directory, stops here |
+| `UNLOCKED` | The member isn't encrypted, or its password passed a reliable check. A member with no data of its own, such as a link or a directory, stops here |
 | `LENGTH` | A read reached the end, and the length and the end of the data were as expected |
 | `CHECKSUM` | A checksum stored with the data matched every byte |
 

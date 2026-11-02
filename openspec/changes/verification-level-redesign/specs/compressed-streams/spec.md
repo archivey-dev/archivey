@@ -5,7 +5,7 @@
 ### Requirement: A stream reports the verification it has reached and can reach
 
 Every public `ArchiveStream` SHALL expose two read-only properties of type
-`archivey.Verification`, an `IntEnum` ordered `NONE < PASSWORD < LENGTH < CHECKSUM`:
+`archivey.Verification`, an `IntEnum` ordered `NONE < UNLOCKED < LENGTH < CHECKSUM`:
 
 - `verified`: the highest level the stream has proved. It SHALL NOT decrease, and a
   read that raises SHALL NOT raise it.
@@ -18,9 +18,9 @@ The levels mean:
 
 - `NONE`: nothing is proved yet about the data, or a check that can pass by chance
   accepted its password and nothing has confirmed it since.
-- `PASSWORD`: the member is not encrypted, or its password passed a check that cannot pass
+- `UNLOCKED`: the member is not encrypted, or its password passed a check that cannot pass
   by chance.
-- `LENGTH`: `PASSWORD`, and a read reached the end with every length and end-of-data
+- `LENGTH`: `UNLOCKED`, and a read reached the end with every length and end-of-data
   check passing.
 - `CHECKSUM`: `LENGTH`, and every output byte passed a stored check that a wrong byte
   fails, at any layer: a member digest the verifier computes, the WinZip AES HMAC, a
@@ -48,7 +48,7 @@ level adds no new error and no new way to read.
 | Case | Expected |
 | --- | --- |
 | ZIP deflate member with CRC-32, read to the end | `verified` is `CHECKSUM`; `verifiable` is `CHECKSUM` |
-| Same member, half read | `verified` is `PASSWORD` |
+| Same member, half read | `verified` is `UNLOCKED` |
 | Same member, `seek(0)` after a full read, then half read | `verified` stays `CHECKSUM` |
 | TAR member read to the end | `verified` and `verifiable` are `LENGTH` |
 | `.gz` file through `open_stream`, read to the end | `CHECKSUM` |
@@ -72,7 +72,7 @@ level adds no new error and no new way to read.
 | Encrypted member with no stored digest, password accepted only on a weak check | `verifiable` is `NONE`; it rises once the password is confirmed |
 | WinZip AES AE-2 member read to the end | `CHECKSUM` (the HMAC) |
 | Lazy stream from `stream_members()` of a ZipCrypto member, before its first read | `verified` is `NONE` |
-| Lazy stream from `stream_members()` of an unencrypted member, before its first read | `verified` is `PASSWORD` (changed: `verification-level` reported `NONE`) |
+| Lazy stream from `stream_members()` of an unencrypted member, before its first read | `verified` is `UNLOCKED` (changed: `verification-level` reported `NONE`) |
 | Random-access reader after `verify_all()`; a lazy `stream_members()` stream before its first read | `verified` is the member's level (`CHECKSUM` for a ZIP member with a CRC) |
 | Stream opened from a `replace()` copy of a member, read to the end | the reader's own member rises to `CHECKSUM`; the copy keeps the level it was copied with |
 | Member whose read raises `CorruptionError` | `verified` stays at the level it had before that read |
@@ -82,7 +82,7 @@ level adds no new error and no new way to read.
 
 Every public `ArchiveStream` SHALL have a `verify(*, password_only=False)` method that
 runs the stream's checks, discarding the bytes, and returns `verified`. Its target is
-`verifiable`, or `PASSWORD` when `password_only` is true (`verifiable` when that is
+`verifiable`, or `UNLOCKED` when `password_only` is true (`verifiable` when that is
 lower). It SHALL raise what its reads raise and nothing else. It SHALL NOT raise when
 `verified` ends below the target: it returns `verified`, and the caller compares. Its
 own seeks SHALL NOT report `STREAM_REWIND_REDECOMPRESSES`. On a closed stream it SHALL
@@ -113,7 +113,7 @@ returned level and the errors SHALL stay those a read to the target gives.
 | Fresh ZIP deflate member | returns `CHECKSUM` |
 | Same member, 100 bytes read first | returns `CHECKSUM`; position 100 |
 | Member already at `CHECKSUM`, positioned mid-way | reads nothing; returns `CHECKSUM`; position unchanged |
-| ZIP member whose CRC fails | raises `CorruptionError`; `verified` stays `PASSWORD` |
+| ZIP member whose CRC fails | raises `CorruptionError`; `verified` stays `UNLOCKED` |
 | TAR member | returns `LENGTH` |
 | Seekable `.gz` member after a forward seek | reads again from 0; returns `CHECKSUM`; position restored |
 | `stream_members()` stream, either mode | reads to the end; later `read()` raises `ArchiveyUsageError`; a second `verify()` reads nothing |
@@ -121,7 +121,7 @@ returned level and the errors SHALL stay those a read to the target gives.
 | Non-seekable stream whose member is already at `CHECKSUM` (proved by `verify_all()`) | reads nothing; returns `CHECKSUM`; later `read()` raises `ArchiveyUsageError` |
 | Forward-only `open_stream()` `.gz` | returns `CHECKSUM` |
 | Closed stream | raises `ValueError` |
-| `password_only=True` on a seekable unencrypted member | reads nothing; returns `PASSWORD` |
+| `password_only=True` on a seekable unencrypted member | reads nothing; returns `UNLOCKED` |
 | `password_only=True` on a ZipCrypto member (one-byte check only) | reads to the CRC; returns `CHECKSUM` |
 | `password_only=True` under a colliding wrong ZipCrypto password | raises `EncryptionError` |
 | 7z AES member with no CRC, truncated | raises `TruncatedError`, on a first and on a second call |

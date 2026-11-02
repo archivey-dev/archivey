@@ -9,7 +9,7 @@
 requirement gives them, applied to this entry's data in this archive.
 
 - From the listing, a member that is not encrypted SHALL start at `verified ==
-  PASSWORD`, and an encrypted member whose password is not yet confirmed at `NONE`.
+  UNLOCKED`, and an encrypted member whose password is not yet confirmed at `NONE`.
 - `verifiable` is known from the listing. It MAY settle once, at the member's first
   open, which is the first time any stream of that member opens its data (a password
   watch that only appears then can lower it). After that it SHALL NOT fall.
@@ -28,7 +28,7 @@ requirement gives them, applied to this entry's data in this archive.
 
 | Case | Expected |
 | --- | --- |
-| ZIP member with a CRC, before any read | `verified` is `PASSWORD`; `verifiable` is `CHECKSUM` |
+| ZIP member with a CRC, before any read | `verified` is `UNLOCKED`; `verifiable` is `CHECKSUM` |
 | Same member after a stream read it to the end | `verified` is `CHECKSUM` |
 | Same member compared with a copy taken before the read | equal |
 | `member_state_final` is `True`, then a stream reads the member to the end | `verified` rises to `CHECKSUM` |

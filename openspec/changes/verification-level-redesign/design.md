@@ -1,7 +1,9 @@
 ## Context
 
 `verification-level` (PR 1032) shipped four ordered levels, renamed in PR 1212 to
-`NONE`, `PASSWORD`, `LENGTH` and `CHECKSUM` and marked experimental in PR 1213.
+`NONE`, `PASSWORD`, `LENGTH` and `CHECKSUM` and marked experimental in PR 1213. This
+change renames `PASSWORD` to `UNLOCKED`: an unencrypted member starts there, and
+"password" read oddly for it.
 `ArchiveStream.verify(level)` (PR 1211) raises a stream to a level: a seekable stream
 is left as it was, and a non-seekable one is read to the end, after which reads raise
 `ArchiveyUsageError`. The maintainer refined the meaning in the thread "Refine the
@@ -56,7 +58,7 @@ reports to every member it passed.
   `NONE` means "nothing proved yet", not "not opened". An `open_stream()` stream has no
   member and keeps its own level.
 - **Starting level.** From the listing, a member that is not encrypted starts at
-  `PASSWORD` (nothing to prove about a key), and an encrypted member whose password is not
+  `UNLOCKED` (nothing to prove about a key), and an encrypted member whose password is not
   yet confirmed starts at `NONE`. This changes the shipped behaviour, where a lazy stream
   reported `NONE` before its first read whatever the member.
 - **"Open" for a member** is the first time any stream of that member opens its data.
@@ -88,7 +90,7 @@ has been proved; `stream.verify()` reads one stream until it reaches `verifiable
 `reader.verify_all()` does that for every member, without stopping at failures, and
 returns the ones that failed.
 
-Both aim at `verifiable` (`stream.verify()` at `PASSWORD` with `password_only`).
+Both aim at `verifiable` (`stream.verify()` at `UNLOCKED` with `password_only`).
 `stream.verify()` never reads past its own member; `verify_all()` reads everything.
 
 ### 6. The contract
@@ -110,7 +112,7 @@ Each item gets a test (tasks group 5).
    `NONE` once its read ended cleanly.
 3. A member stream's `verified` and `verifiable` equal its member's at every moment,
    opened or not. A read on the stream that proves more raises the member in place.
-4. When `verified` has reached the call's target (`verifiable`, or `PASSWORD` with
+4. When `verified` has reached the call's target (`verifiable`, or `UNLOCKED` with
    `password_only`) and is above `NONE`, `stream.verify()` reads and decodes nothing. On
    a non-seekable stream it still marks the stream consumed, so later reads raise
    `ArchiveyUsageError` (the PR 1211 rule), but that marking does no I/O. A target of

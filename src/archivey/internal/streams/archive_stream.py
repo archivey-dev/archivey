@@ -1107,7 +1107,7 @@ class ArchiveStreamImpl(ArchiveStream):
             return Verification.NONE
         if proofs.ended:
             return Verification.LENGTH
-        return Verification.PASSWORD
+        return Verification.UNLOCKED
 
     @override
     def nearest_resume_offset(self, target: int) -> int | None:

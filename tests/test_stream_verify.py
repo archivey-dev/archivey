@@ -55,14 +55,14 @@ def test_verify_on_a_seekable_stream_is_a_probe(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     ("password_only", "reached"),
-    [(False, Verification.CHECKSUM), (True, Verification.PASSWORD)],
+    [(False, Verification.CHECKSUM), (True, Verification.UNLOCKED)],
     ids=["full", "password_only"],
 )
 def test_verify_on_a_forward_only_stream_consumes_it(
     tmp_path: Path, password_only: bool, reached: Verification
 ) -> None:
     # Later reads are a usage error, even when the target was already reached and
-    # verify() read nothing (an unencrypted member is at PASSWORD from the start).
+    # verify() read nothing (an unencrypted member is at UNLOCKED from the start).
     with open_archive(_zip(tmp_path), streaming=True) as reader:
         for _member, stream in reader.stream_members():
             assert stream is not None
@@ -127,7 +127,7 @@ def test_verify_raises_what_the_read_raises(tmp_path: Path) -> None:
     with open_archive(path) as reader, reader.open("a.txt") as stream:
         with pytest.raises(CorruptionError):
             stream.verify()
-        assert stream.verified is Verification.PASSWORD
+        assert stream.verified is Verification.UNLOCKED
 
 
 def test_verify_puts_a_seekable_stream_back_when_it_fails(tmp_path: Path) -> None:
@@ -173,11 +173,11 @@ def test_verify_on_a_forward_only_stream_returns_what_it_reached() -> None:
 
 
 def test_verify_opens_a_lazy_stream_members_stream(tmp_path: Path) -> None:
-    # Unopened, it mirrors its member: an unencrypted member starts at PASSWORD.
+    # Unopened, it mirrors its member: an unencrypted member starts at UNLOCKED.
     with open_archive(_zip(tmp_path), streaming=True) as reader:
         for _member, stream in reader.stream_members():
             assert stream is not None
-            assert stream.verified is Verification.PASSWORD
+            assert stream.verified is Verification.UNLOCKED
             assert stream.verify() is Verification.CHECKSUM
 
 
@@ -202,12 +202,12 @@ _COLLISION = (
 
 
 def test_verify_password_on_an_open_plain_member_reads_nothing(tmp_path: Path) -> None:
-    # An unencrypted member is at PASSWORD as soon as open() returns it.
+    # An unencrypted member is at UNLOCKED as soon as open() returns it.
     with (
         open_archive(_zip(tmp_path), seekable_members=True) as reader,
         reader.open("a.txt") as stream,
     ):
-        assert stream.verify(password_only=True) is Verification.PASSWORD
+        assert stream.verify(password_only=True) is Verification.UNLOCKED
         assert stream.tell() == 0
         assert stream.read() == _DATA
 

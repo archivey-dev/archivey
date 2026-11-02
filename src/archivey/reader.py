@@ -126,7 +126,7 @@ class ArchiveStream(ReadOnlyIOStream):
         already checked reports ``CHECKSUM`` before its first read. A stream from
         :func:`~archivey.open_stream` has no member and keeps its own level.
 
-        ``PASSWORD`` when nothing doubts the password (an unencrypted member starts
+        ``UNLOCKED`` when nothing doubts the password (an unencrypted member starts
         there), ``LENGTH`` once a read has reached the end with the length checks
         passing, and ``CHECKSUM`` once a checksum stored with the data has matched every
         byte. It never goes down. A read that raises leaves it where it was.
@@ -158,7 +158,7 @@ class ArchiveStream(ReadOnlyIOStream):
     def verify(self, *, password_only: bool = False) -> Verification:
         """Run the stream's checks, discarding the bytes; return ``verified``.
 
-        The target is ``verifiable``, or ``PASSWORD`` with ``password_only=True``
+        The target is ``verifiable``, or ``UNLOCKED`` with ``password_only=True``
         (``verifiable`` when that is lower). It never reads past this stream's own
         member, so a check that covers several members (a ``.tar.gz`` trailer) is
         not reached here; :meth:`~archivey.ForwardArchiveReader.verify_all` reaches it.
@@ -190,7 +190,7 @@ class ArchiveStream(ReadOnlyIOStream):
 
         A password is not always confirmed early either: a member with only a weak
         password check (ZipCrypto, or an encrypted stored member with no other check)
-        reaches ``PASSWORD`` only at its checksum, so ``verify(password_only=True)``
+        reaches ``UNLOCKED`` only at its checksum, so ``verify(password_only=True)``
         reads it to the end. A failed check raises what the read raises
         (``CorruptionError``, ``TruncatedError``, ``EncryptionError``), and a seekable
         stream is still put back where it was. Otherwise compare the result with
@@ -204,7 +204,7 @@ class ArchiveStream(ReadOnlyIOStream):
         """
         if self.closed:
             raise ValueError("I/O operation on closed file.")
-        level = Verification.PASSWORD if password_only else Verification.CHECKSUM
+        level = Verification.UNLOCKED if password_only else Verification.CHECKSUM
         if not self.seekable():
             if self._verify_consumed():
                 self._verify_raise_again()
@@ -267,7 +267,7 @@ class ArchiveStream(ReadOnlyIOStream):
     def _verify_read_on(self, level: Verification | None) -> None:
         """Read and discard until ``level`` is reached or the stream ends (``None``: end).
 
-        Reads start small, so a level the first bytes reach (``PASSWORD``) costs little, and
+        Reads start small, so a level the first bytes reach (``UNLOCKED``) costs little, and
         grow to ``_VERIFY_CHUNK`` so a read to the end pays little per call.
         """
         step = _VERIFY_FIRST_CHUNK

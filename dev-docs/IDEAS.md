@@ -119,7 +119,7 @@ Each idea carries a status:
 ## Reading and verification
 
 - **Raise a stream's verification level on demand.** *Open idea.* A member stream
-  reports `verified` and `verifiable` (`Verification`: `NONE`, `PASSWORD`, `LENGTH`,
+  reports `verified` and `verifiable` (`Verification`: `NONE`, `UNLOCKED`, `LENGTH`,
   `CHECKSUM`). A `verify(at_least=…)` method could read what is left to reach a level,
   and a `reader.verify(member)` could check a member without handing out its bytes.
   Retiring `ENCRYPTED_MEMBER_UNVERIFIED` in favour of the level is a separate call.
@@ -226,8 +226,8 @@ Each idea carries a status:
   for a member, and says whether it was stored or computed. The recipe is in
   `docs/formats.md`.
 - **A cheaper `ArchiveStream.verify()`.** *Open idea.* `verify()` (0.3.0) reads and
-  discards until the target is reached (`verifiable`, or `PASSWORD` with
-  `password_only=True`). Some levels could cost less: `PASSWORD` from the 7z AES
+  discards until the target is reached (`verifiable`, or `UNLOCKED` with
+  `password_only=True`). Some levels could cost less: `UNLOCKED` from the 7z AES
   tail padding (`openspec/changes/sevenzip-aes-tail-key-check`) or from decoding only the
   start of a self-checking stream, and `CHECKSUM` without a full decode where a format allows
   it (`reports/partial-crc-candidates-2026-10-22.md`). The result and the errors must stay

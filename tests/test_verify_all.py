@@ -36,7 +36,7 @@ from archivey.types import ArchiveMember, MemberType
 from tests.conftest import requires_binary
 
 NONE = Verification.NONE
-PASSWORD = Verification.PASSWORD
+UNLOCKED = Verification.UNLOCKED
 LENGTH = Verification.LENGTH
 CHECKSUM = Verification.CHECKSUM
 
@@ -105,7 +105,7 @@ def test_verify_all_stops_at_listing_damage_without_raising(
         assert isinstance(report.error, TruncatedError)
         assert _levels(list(report.members)) == {
             "a": (LENGTH, LENGTH),
-            "b": (PASSWORD, LENGTH),
+            "b": (UNLOCKED, LENGTH),
         }
 
 
@@ -140,7 +140,7 @@ def test_verify_all_brings_every_member_to_its_ceiling(tmp_path: Path) -> None:
             "a.txt": (CHECKSUM, CHECKSUM),
             "b.txt": (CHECKSUM, CHECKSUM),
             # No data of its own: nothing to read, so it is at its ceiling already.
-            "d/": (PASSWORD, PASSWORD),
+            "d/": (UNLOCKED, UNLOCKED),
         }
 
 
@@ -166,7 +166,7 @@ def test_a_held_stream_mirrors_what_verify_all_proved(tmp_path: Path) -> None:
         _zip(tmp_path), seekable_members=True, concurrent_operations=True
     ) as reader:
         stream = reader.open("a.txt")
-        assert (stream.verified, stream.verifiable) == (PASSWORD, CHECKSUM)
+        assert (stream.verified, stream.verifiable) == (UNLOCKED, CHECKSUM)
         stream.read(10)
         assert reader.verify_all() == ()
         assert (stream.verified, stream.verifiable) == (CHECKSUM, CHECKSUM)
@@ -200,12 +200,12 @@ def test_a_full_count_read_raises_its_member_at_once(
 
 @requires_binary("unrar")
 def test_an_open_that_proves_the_password_raises_its_member() -> None:
-    # RAR5's password check value is reliable: the open itself proves PASSWORD.
+    # RAR5's password check value is reliable: the open itself proves UNLOCKED.
     with open_archive(_RAR5, password="password") as reader:
         member = next(m for m in reader.members() if m.is_file)
         assert member.verified is NONE
         stream = reader.open(member)
-        assert member.verified is PASSWORD
+        assert member.verified is UNLOCKED
         stream.close()
 
 
@@ -218,7 +218,7 @@ def test_a_stream_of_a_copy_raises_the_readers_member(tmp_path: Path) -> None:
             assert stream.verified is CHECKSUM
         assert member.verified is CHECKSUM
         # The copy keeps the values it was copied with.
-        assert copy.verified is PASSWORD
+        assert copy.verified is UNLOCKED
 
 
 # --- 4 and 8. a proved member reads nothing ------------------------------------------
@@ -275,7 +275,7 @@ def test_a_failed_read_leaves_the_level_where_it_was(tmp_path: Path) -> None:
         member = reader.get("a.txt")
         with reader.open(member) as stream, pytest.raises(CorruptionError):
             stream.read()
-        assert (member.verified, member.verifiable) == (PASSWORD, CHECKSUM)
+        assert (member.verified, member.verifiable) == (UNLOCKED, CHECKSUM)
         assert member.verified <= member.verifiable
 
 
@@ -290,7 +290,7 @@ def test_raise_member_level_never_lowers(tmp_path: Path) -> None:
 def test_concurrent_raises_keep_the_maximum(tmp_path: Path) -> None:
     with open_archive(_zip(tmp_path)) as reader:
         member = reader.get("a.txt")
-        levels = [LENGTH, CHECKSUM, PASSWORD] * 200
+        levels = [LENGTH, CHECKSUM, UNLOCKED] * 200
         barrier = threading.Barrier(3)
 
         def raise_all(offset: int) -> None:
