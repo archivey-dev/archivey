@@ -33,6 +33,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.streams.verification import raise_member_level
 from archivey.types import ArchiveMember, MemberType
+from tests.conftest import requires_binary
 
 NONE = Verification.NONE
 PASSWORD = Verification.PASSWORD
@@ -43,6 +44,7 @@ _DATA = b"verify all\n" * 4000
 _COLLISION = (
     Path(__file__).parent / "fixtures" / "zipcrypto" / "check_byte_collision.zip"
 )
+_RAR5 = Path(__file__).parent / "fixtures" / "rar" / "encryption__.rar"
 
 
 def _zip(tmp_path: Path) -> Path:
@@ -182,6 +184,31 @@ def test_a_stream_read_raises_its_member(tmp_path: Path) -> None:
         assert (member.verified, member.verifiable) == (CHECKSUM, CHECKSUM)
 
 
+@pytest.mark.parametrize("seekable", [False, True])
+def test_a_full_count_read_raises_its_member_at_once(
+    tmp_path: Path, seekable: bool
+) -> None:
+    # read(size) returns every byte and runs the CRC: the member knows before the
+    # stream is read again, closed, or asked for its own level.
+    with open_archive(_zip(tmp_path), seekable_members=seekable) as reader:
+        member = reader.get("a.txt")
+        stream = reader.open(member)
+        assert stream.read(len(_DATA)) == _DATA
+        assert member.verified is CHECKSUM
+        stream.close()
+
+
+@requires_binary("unrar")
+def test_an_open_that_proves_the_password_raises_its_member() -> None:
+    # RAR5's password check value is reliable: the open itself proves PASSWORD.
+    with open_archive(_RAR5, password="password") as reader:
+        member = next(m for m in reader.members() if m.is_file)
+        assert member.verified is NONE
+        stream = reader.open(member)
+        assert member.verified is PASSWORD
+        stream.close()
+
+
 def test_a_stream_of_a_copy_raises_the_readers_member(tmp_path: Path) -> None:
     with open_archive(_zip(tmp_path)) as reader:
         member = reader.get("a.txt")
@@ -227,6 +254,9 @@ def test_verify_on_a_forward_only_proved_member_still_consumes_it(
 
 def test_a_member_with_no_provable_key_is_still_read() -> None:
     # The target NONE is never "reached": the read runs, so its length checks do.
+    # No fixture reaches a NONE ceiling through the public API yet: the shape is a 7z
+    # AES folder with no CRC, which 7-Zip does not write (its end-to-end test comes
+    # with the 7z folder work). So the ceiling is set by hand here.
     with open_archive(_COLLISION, password="secret") as reader:
         member = reader.get("stored.txt")
         # As a member whose key nothing can prove: its ceiling settles at NONE.

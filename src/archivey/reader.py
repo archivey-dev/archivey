@@ -638,8 +638,6 @@ class ForwardArchiveReader(ABC):
     def verify_all(self) -> tuple[tuple[ArchiveMember, ArchiveyError], ...]:
         """Read every member's data to run its checks; return the members that failed.
 
-        *Experimental:* may change in a minor release.
-
         Each member is read as :meth:`ArchiveStream.verify` reads one, with
         ``verifiable`` as the target, and a member that fails does not stop the call:
         it is returned with its error, and the next member is read. Afterwards every
@@ -659,6 +657,9 @@ class ForwardArchiveReader(ABC):
         (asking the password input again) and the members whose ``verifiable`` is
         ``NONE``; the others are skipped. It does not touch streams the caller holds.
         On a streaming reader it is the one pass.
+
+        Experimental: any release, a patch included, may change or remove this method,
+        its arguments or what it returns.
 
         Raises:
             ArchiveyUsageError: The reader is closed; another pass or call is running;

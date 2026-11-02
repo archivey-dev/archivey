@@ -613,8 +613,11 @@ class ArchiveStreamImpl(ArchiveStream):
                     pass
                 raise ValueError("I/O operation on closed file.")
             wrap = self._inner_wrap
-            self._inner = opened if wrap is None else wrap(opened)
-            return self._inner
+            inner = self._inner = opened if wrap is None else wrap(opened)
+        # An open can prove the password (a reliable check value): tell the member.
+        # Outside ``_open_lock``: the level lock is a leaf.
+        self._sync_member_level()
+        return inner
 
     def _adopt(self, parts: MemberStreamParts) -> BinaryIO:
         """Take over ``parts`` as a nested member handle's collapse would have.
@@ -876,7 +879,13 @@ class ArchiveStreamImpl(ArchiveStream):
             # A read to the end, or one that found it, from the start with no seek
             # between: every length and end-of-data check below it ran on all of it.
             self._ended_from_start = True
-        if self._level_member is not None and (n < 0 or (n != 0 and not data)):
+        if (
+            self._level_member is not None
+            and n != 0
+            and (not data or self._reached_end(n, data))
+        ):
+            # The read reached the end (EOF, a short return, or a full count landing at
+            # the declared size), where the end-of-data checks run: tell the member.
             self._sync_member_level()
         if verdict is not None and n != 0 and self._reached_end(n, data):
             # A rewound stream reached its end: the damage is still there, and the

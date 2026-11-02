@@ -4000,6 +4000,8 @@ class BaseArchiveReader(ArchiveReader):
                 )
                 self._hold_to_ratio(stream, opened[0])
                 stream._level_member = self._level_member(opened[0])
+                # An eager open may have proved the password already.
+                stream._sync_member_level()
                 # Asked before the bind: from here a raise still closes the stream.
                 run = (
                     self._solid_run(opened[0])
