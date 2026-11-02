@@ -71,7 +71,8 @@ level adds no new error and no new way to read.
 | Same member read to the end, CRC matches | `CHECKSUM` |
 | Encrypted member with no stored digest, password accepted only on a weak check | `verifiable` is `NONE`; it rises once the password is confirmed |
 | WinZip AES AE-2 member read to the end | `CHECKSUM` (the HMAC) |
-| Lazy stream from `stream_members()`, before its first read, member not yet proved | `verified` is `NONE` |
+| Lazy stream from `stream_members()` of a ZipCrypto member, before its first read | `verified` is `NONE` |
+| Lazy stream from `stream_members()` of an unencrypted member, before its first read | `verified` is `PASSWORD` (changed: `verification-level` reported `NONE`) |
 | Random-access reader after `verify_all()`; a lazy `stream_members()` stream before its first read | `verified` is the member's level (`CHECKSUM` for a ZIP member with a CRC) |
 | Stream opened from a `replace()` copy of a member, read to the end | the reader's own member rises to `CHECKSUM`; the copy keeps the level it was copied with |
 | Member whose read raises `CorruptionError` | `verified` stays at the level it had before that read |

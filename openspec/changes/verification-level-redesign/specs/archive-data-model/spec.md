@@ -8,13 +8,16 @@
 `archivey.Verification`, with the meanings the `compressed-streams` verification
 requirement gives them, applied to this entry's data in this archive.
 
+- From the listing, a member that is not encrypted SHALL start at `verified ==
+  PASSWORD`, and an encrypted member whose password is not yet confirmed at `NONE`.
 - `verifiable` is known from the listing. It MAY settle once, at the member's first
   open, which is the first time any stream of that member opens its data (a password
   watch that only appears then can lower it). After that it SHALL NOT fall.
 - `verified` SHALL only rise. The reader SHALL raise it in place from every read that
   proves more: a stream of the member, a listing pass that decodes the data, and a
   check that spans members once it passes. A raise SHALL be a monotonic maximum taken
-  under the reader's member lock, so concurrent raises cannot lower it.
+  under a per-reader leaf lock held only for the compare-and-store (never across I/O
+  or a callback), so concurrent raises cannot lower it.
 - `verified` and `verifiable` SHALL be excluded from equality, like `hashes`,
   `diagnostics` and `extra`. `member_state_final` SHALL NOT cover them, as it does not
   cover `diagnostics`: they MAY still rise after it is `True`.

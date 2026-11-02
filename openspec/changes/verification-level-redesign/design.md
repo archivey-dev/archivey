@@ -55,6 +55,10 @@ reports to every member it passed.
   `verify_all()`, a lazy `stream_members()` stream already reports the proved level.
   `NONE` means "nothing proved yet", not "not opened". An `open_stream()` stream has no
   member and keeps its own level.
+- **Starting level.** From the listing, a member that is not encrypted starts at
+  `PASSWORD` (nothing to prove about a key), and an encrypted member whose password is not
+  yet confirmed starts at `NONE`. This changes the shipped behaviour, where a lazy stream
+  reported `NONE` before its first read whatever the member.
 - **"Open" for a member** is the first time any stream of that member opens its data.
   `verifiable` comes from the listing and may settle once, then: a password watch that
   only appears at open can lower it. After that it never falls.
@@ -66,8 +70,11 @@ reports to every member it passed.
   before. `member_state_final` does not cover them, as it does not cover `diagnostics`:
   they can rise after it turns `True`. The other option, keeping `member_state_final`
   `False` until the reader closes, would make the flag useless for every member.
-- **Concurrency.** A raise is a monotonic maximum taken under the reader's member lock
-  (`reader-concurrency`: late-bound updates are synchronized and idempotent). Two threads
+- **Concurrency.** A raise is a monotonic maximum taken under a new per-reader leaf
+  lock, the level lock (`reader-concurrency`: late-bound updates are synchronized and
+  idempotent). It is held only for the compare-and-store, never across I/O or a
+  callback, and no other lock is taken while it is held, so it adds no lock-order
+  edge. Two threads
   raising one member through a stream and through a folder CRC cannot lower it.
 
 ### 5. Verify calls
