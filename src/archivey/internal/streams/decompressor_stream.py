@@ -1736,8 +1736,8 @@ class DecompressorStream(ReadOnlyIOStream):
         The decoder has reached the end of its input, so a later read would otherwise
         return ``b""`` and a truncated stream would read as a short, clean one. Every
         later read that has no buffered bytes raises it again, and no size is
-        published. A seek restarts the decoder (:meth:`_settle`, at the read after the seek), which reaches the same
-        error again at the same place.
+        published. A seek restarts the decoder at the read after it (:meth:`_settle`),
+        which reaches the same error again at the same place.
 
         No frame keeps the error in a local as the raise leaves it: the callers ask
         :meth:`_end_error` without keeping the answer, and this frame drops its own,
