@@ -41,17 +41,13 @@ verification design" (2026-11-01 and 2026-11-02). This change records those ruli
   returns `verified`. Passing `LENGTH` or `CHECKSUM` made no difference except in one
   narrow case (a seekable stream that already reached `LENGTH` after a seek skipped its
   checksum), so the level argument mostly confused callers.
-- **`reader.verify(member, *, password_only=False) -> Verification`.** It sits next to
-  `reader.open()` and `reader.read()`. On a random-access reader it uses its own
-  internal stream, so a stream the caller holds is not touched, not even its position.
-  On a streaming-only reader it is allowed only for the member the pass is on: it
-  consumes that member's stream, and later reads of it raise `ArchiveyUsageError`. It
+- **`stream.verify(*, password_only=False)` is the one per-member call**, on every
+  stream, with the PR 1211 rules: a seekable stream is left as it was, and a
+  non-seekable one is read to the end, after which reads raise `ArchiveyUsageError`. It
   proves what the member alone can prove. A check that spans members lands only when
   the rest of the folder or stream is read, so a TAR member of a `.tar.gz` can end at
-  `LENGTH` while its `verifiable` says `CHECKSUM`.
-- **`stream.verify(*, password_only=False)` stays on every stream**, working on that
-  stream only, with the PR 1211 rules: a seekable stream is left as it was, and a
-  non-seekable one is read to the end, after which reads raise `ArchiveyUsageError`.
+  `LENGTH` while its `verifiable` says `CHECKSUM`. To check a member without disturbing
+  a stream already held, open a fresh one: `with reader.open(m) as s: s.verify()`.
 - **`reader.verify_all() -> tuple[tuple[ArchiveMember, ArchiveyError], ...]`.** It reads
   every member to the end and does not stop at a failure. Afterwards every member is at
   its highest possible level, checks that span members included, except the members
@@ -79,6 +75,10 @@ verification design" (2026-11-01 and 2026-11-02). This change records those ruli
 - **`reader.verify()` stopping at the first failure**, and an archive-wide level on
   `MemberPass`. Both were dropped. The level lives on each member, and `verify_all()`
   keeps going.
+- **`reader.verify(member)`** beside `stream.verify()`. Two ways to do one job; the only
+  reason for both was that `open_stream()` streams have no reader, which argues for the
+  stream call. One call per job: `stream.verify()` for one stream, `verify_all()` for
+  the archive.
 - **`verify()` as a method on `ArchiveMember`.** Members are plain data that callers copy
   with `replace()`. A method there would need a hidden link to the reader.
 - **No level fields on `open_stream()` streams** (open the file as a one-member archive
@@ -98,8 +98,7 @@ verification design" (2026-11-01 and 2026-11-02). This change records those ruli
 
 ## Impact
 
-- Code: `ArchiveMember.verified`/`verifiable`; member streams read them; `reader.verify`,
-  `reader.verify_all`; `verify(level)` becomes `verify(*, password_only=False)`; the
+- Code: `ArchiveMember.verified`/`verifiable`; member streams read them; `reader.verify_all`; `verify(level)` becomes `verify(*, password_only=False)`; the
   CLI `test` verb can call `verify_all()`. The xz, zstd and lz4 decoders report, per frame, whether a check was present
   and passed. The codec stream counts the file only when all frames did. The 7z reader
   passes a one-file folder's CRC as the member digest when the file has none of its own.

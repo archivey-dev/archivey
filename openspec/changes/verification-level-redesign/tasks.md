@@ -19,8 +19,7 @@
 - [ ] 3.1 `ArchiveMember.verified`/`verifiable`, filled by the reader; member streams mirror them.
 - [ ] 3.2 Spanning checks (7z folder CRC, `.tar.gz` trailer, listing passes) raise the
       members they cover when they pass.
-- [ ] 3.3 `reader.verify(member, *, password_only=False)`.
-- [ ] 3.4 `reader.verify_all()`; the CLI `test` verb uses it.
+- [ ] 3.3 `reader.verify_all()`; the CLI `test` verb uses it.
 
 ## 4. Docs and tests
 

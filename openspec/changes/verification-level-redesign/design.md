@@ -55,12 +55,15 @@ level as it stands; the copy does not follow later raises.
 ### 5. Verify calls
 
 - `stream.verify(*, password_only=False)`: this stream only, PR 1211 rules.
-- `reader.verify(member, *, password_only=False)`: an internal stream on a random-access
-  reader; on a streaming-only reader, the current member only.
 - `reader.verify_all()`: every member, keeps going, returns `(member, error)` pairs.
 
-All three aim at `verifiable`, or at `PASSWORD` with `password_only`. None of them reads
-past the member it verifies, except `verify_all()`, which reads everything.
+The user docs explain it in one line each: `verified` on a member or stream says what
+has been proved; `stream.verify()` reads one stream until it reaches `verifiable`;
+`reader.verify_all()` does that for every member, without stopping at failures, and
+returns the ones that failed.
+
+Both aim at `verifiable` (`stream.verify()` at `PASSWORD` with `password_only`).
+`stream.verify()` never reads past its own member; `verify_all()` reads everything.
 
 ## Risks / Trade-offs
 
