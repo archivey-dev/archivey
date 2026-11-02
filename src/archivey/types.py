@@ -598,9 +598,10 @@ class Verification(IntEnum):
     end-of-data check passing: all the data is there, though its bytes are not
     proved."""
     CHECKSUM = 3
-    """As ``LENGTH``, and a checksum stored with the data matched every byte: the
-    member's CRC-32 or BLAKE2sp, the WinZip AES authentication code, or the checksum of
-    a gzip, bzip2, lzip or zlib stream read from its start."""
+    """As ``LENGTH``, and every byte was checked against a checksum stored with the
+    data: the member's CRC-32 or BLAKE2sp, the WinZip AES authentication code, the
+    checksum of a gzip, bzip2, lzip or zlib stream, or the checks of an xz, zstd or LZ4
+    file whose every stream or frame carries one, read from its start."""
 
 
 class CompressionAlgorithm(Enum):
@@ -1393,8 +1394,9 @@ class ArchiveMember:
 
         ``UNLOCKED`` from the listing when the member is not encrypted, ``NONE`` while
         an encrypted member's password is not confirmed. Any read that proves more
-        raises it in place: a stream of this member read to its end, or
-        :meth:`~archivey.ForwardArchiveReader.verify_all`. A stream opened from a
+        raises it in place: a stream of this member read to its end,
+        :meth:`~archivey.ForwardArchiveReader.verify_all`, or a read of a whole 7z
+        folder whose checksum covers this member. A stream opened from a
         ``replace()`` copy raises the reader's own member, not the copy. It never goes
         down. Not part of equality, and not covered by :attr:`~archivey.ArchiveMember.member_state_final`: it
         can still rise after that is ``True``.

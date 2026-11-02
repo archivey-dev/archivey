@@ -176,14 +176,29 @@ with archive.open(member) as stream:
 
 A member with no checksum of its own, such as a TAR, ISO or `.lzma` member, stops at
 `LENGTH`. A gzip, bzip2, lzip or zlib file reaches `CHECKSUM` from its own checksum when it's
-read from the start with no seek in between. `.xz`, `.zst` and `.lz4` files stop at `LENGTH`
-for now, even when they carry a checksum.
+read from the start with no seek in between. An `.xz`, `.zst` or `.lz4` file carries a check
+per stream or frame only if the program that wrote it added one. It reaches `CHECKSUM` when every
+stream or frame in it carries one, read the same way; one without a check keeps the whole file at
+`LENGTH`. Since only a read to the end has seen every frame, its `verifiable` stays at `LENGTH`
+until such a read, and then becomes `CHECKSUM` if every frame had a check.
 
 An encrypted member whose password was accepted only on a weak check, such as the one-byte check of
 old ZIP encryption, is in the same position. Its `stream.verified` stays `NONE` until its checksum
 matches. If you close its stream before the end, or seek past bytes without reading them, archivey
 logs `ENCRYPTED_MEMBER_UNVERIFIED`, since the bytes you read may come from a wrong password. WinZip
 AES members are the exception: their check holds across seeks.
+
+A 7z archive can compress several files together in one folder and store one checksum for
+the whole folder and none for each file. Each of those files stops at `LENGTH` when you read it
+alone. They all reach `CHECKSUM` once a read of the whole folder, in order from its start,
+matches the folder's checksum. A `stream_members()` pass that reaches the end of the folder does
+that. `verify_all()` does too while one of the files is still below `LENGTH`. If you opened the
+archive with `seekable_members=True` and read every file of the folder on its own, each one is
+already at its `LENGTH` ceiling, so `verify_all()` reads none of them; a `stream_members()`
+pass still raises them. In an encrypted 7z folder, a file whose checksum matches
+also confirms the password for the other files of that folder, though not for other folders,
+which can use another password. A file you read before that confirmation keeps the level it
+had; calling `verify_all()` again reads it once more.
 
 If you opened the archive with `seekable_members=True` (see [Choosing how to read](reading.md)),
 most seeks keep the checksum check: a seek back, a seek to or past the end, and a seek forward that

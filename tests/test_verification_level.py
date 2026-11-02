@@ -10,7 +10,6 @@ from __future__ import annotations
 import bz2
 import gzip
 import io
-import lzma
 import struct
 import tarfile
 import zipfile
@@ -133,8 +132,7 @@ def test_tar_member_reaches_length(tmp_path: Path) -> None:
     [
         pytest.param(gzip.compress, CHECKSUM, id="gzip"),
         pytest.param(bz2.compress, CHECKSUM, id="bzip2"),
-        # Whether an xz stream carries a check is per stream; not traced yet.
-        pytest.param(lzma.compress, LENGTH, id="xz"),
+        # xz, zstd and LZ4 carry a check per frame: tests/test_codec_frame_checks.py.
     ],
 )
 def test_open_stream_reaches_what_its_codec_checks(compress, expected) -> None:
