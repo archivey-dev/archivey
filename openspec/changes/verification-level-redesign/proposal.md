@@ -14,10 +14,10 @@ verification design" (2026-11-01 and 2026-11-02). This change records those ruli
 - **`CHECKSUM` means every output byte passed a check that a wrong byte would fail, at
   any layer.** That covers the member's digest (CRC-32, BLAKE2sp), the WinZip AES
   authentication code, a codec's whole-stream checksum (gzip, bzip2, lzip, zlib), and
-  the per-frame or per-block checks of `.xz`, `.zst` and `.lz4`. The checksum value
-  does not need to be exposed. A file reaches `CHECKSUM` only when every frame or
-  block in it carried a check. One unchecked frame keeps it at `LENGTH`. This closes
-  Decision 6 of `verification-level`.
+  the per-frame or per-block checks of `.xz`, `.zst` and `.lz4`. The checksum value does
+  not need to be exposed. A file reaches `CHECKSUM` only when every frame or block in it
+  carried a check. One unchecked frame keeps it at `LENGTH`. This closes Decision 6 of
+  `verification-level`.
 - **A 7z folder with a single file:** the folder CRC covers exactly that file, so it
   counts as the file's own check.
 - **No new levels.** `NONE < PASSWORD < LENGTH < CHECKSUM` stays. A full read with
@@ -44,21 +44,22 @@ verification design" (2026-11-01 and 2026-11-02). This change records those ruli
 - **`stream.verify(*, password_only=False)` is the one per-member call**, on every
   stream, with the PR 1211 rules: a seekable stream is left as it was, and a
   non-seekable one is read to the end, after which reads raise `ArchiveyUsageError`. It
-  proves what the member alone can prove. A check that spans members lands only when
-  the rest of the folder or stream is read, so a TAR member of a `.tar.gz` can end at
+  proves what the member alone can prove. A check that spans members lands only when the
+  rest of the folder or stream is read, so a TAR member of a `.tar.gz` can end at
   `LENGTH` while its `verifiable` says `CHECKSUM`. To check a member without disturbing
   a stream already held, open a fresh one: `with reader.open(m) as s: s.verify()`.
 - **`reader.verify_all() -> tuple[tuple[ArchiveMember, ArchiveyError], ...]`.** It reads
   every member to the end and does not stop at a failure. Afterwards every member is at
-  its highest possible level, checks that span members included, except the members
-  that failed. It returns the failures, and an empty tuple means everything checked out.
+  its highest possible level, checks that span members included, except the members that
+  failed. It returns the failures, and an empty tuple means everything checked out.
   Damage that stops the listing does not raise: `verify_all()` stops there and
-  `members_report().error` holds it. The design states the full contract. A second call on a random-access
-  reader re-reads only members still below their `verifiable`, so it asks the password
-  provider again for the ones that failed to decrypt. On a streaming-only reader a
-  second call raises `ArchiveyUsageError`.
-- **No `fully_checked` property.** `verified == verifiable` already says nothing more can
-  be checked, and the docs lead with that comparison.
+  `members_report().error` holds it. The design states the full contract. A second call
+  on a random-access reader re-reads the members still below their `verifiable`, the
+  earlier failures (asking the password provider again) and the members whose
+  `verifiable` is `NONE`. On a streaming-only reader any call after a pass has started
+  raises `ArchiveyUsageError`.
+- **No `fully_checked` property.** `verified == verifiable` already says nothing more
+  can be checked, and the docs lead with that comparison.
 - **Ships in a 0.3.x patch, still experimental.** The feature is promoted to stable in
   0.4.0, after use.
 
@@ -99,10 +100,16 @@ verification design" (2026-11-01 and 2026-11-02). This change records those ruli
 
 ## Impact
 
-- Code: `ArchiveMember.verified`/`verifiable`; member streams read them; `reader.verify_all`; `verify(level)` becomes `verify(*, password_only=False)`; the
-  CLI `test` verb can call `verify_all()`. The xz, zstd and lz4 decoders report, per frame, whether a check was present
-  and passed. The codec stream counts the file only when all frames did. The 7z reader
-  passes a one-file folder's CRC as the member digest when the file has none of its own.
+- Code: `ArchiveMember.verified`/`verifiable`; member streams read them;
+  `reader.verify_all`; `verify(level)` becomes `verify(*, password_only=False)`; the CLI
+  `test` verb can call `verify_all()`. The xz, zstd and lz4 decoders report, per frame,
+  whether a check was present and passed. The codec stream counts the file only when all
+  frames did. The 7z reader passes a one-file folder's CRC as the member digest when the
+  file has none of its own.
 - Docs: `Verification.CHECKSUM` docstring, `docs/errors-and-diagnostics.md`.
-- Tests: the cases in the spec delta.
-- Applies after `verification-level` is archived. Its requirement is the one modified here.
+- Specs: `compressed-streams` (both verification requirements modified),
+  `archive-data-model` (the member fields), `archive-reading` (`verify_all()`). The CLI
+  `test` verb's output does not change, so `cli` has no delta.
+- Tests: the cases in the spec deltas, and one per contract item (design Decision 6).
+- Applies after `verification-level` is archived. Its two requirements are the ones
+  modified here.

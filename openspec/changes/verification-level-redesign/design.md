@@ -45,12 +45,30 @@ member digest. With several files and only a folder CRC, each file stays at `LEN
 ### 4. Where the level lives
 
 The level belongs to the member: `ArchiveMember.verified` and `.verifiable`, filled in
-place by the reader like digests. A member stream asks its member, and an
-`open_stream()` stream keeps its own. Each check that proves bytes reports to the
-member it covers. A check that spans members (7z folder CRC, `.tar.gz` trailer) keeps
-the list of members it covers and raises them all when it passes. A listing pass that
-decodes data reports to every member it passed. `ArchiveMember.replace()` copies the
-level as it stands; the copy does not follow later raises.
+place by the reader like digests. Each check that proves bytes reports to the member it
+covers. A check that spans members (7z folder CRC, `.tar.gz` trailer) keeps the list of
+members it covers and raises them all when it passes. A listing pass that decodes data
+reports to every member it passed.
+
+- **Streams mirror the member.** A member stream reports the level of the reader's own
+  member with the same identity, whether or not the stream has opened its data. So after
+  `verify_all()`, a lazy `stream_members()` stream already reports the proved level.
+  `NONE` means "nothing proved yet", not "not opened". An `open_stream()` stream has no
+  member and keeps its own level.
+- **"Open" for a member** is the first time any stream of that member opens its data.
+  `verifiable` comes from the listing and may settle once, then: a password watch that
+  only appears at open can lower it. After that it never falls.
+- **Copies.** A stream opened from a `replace()` copy mirrors and raises the reader's
+  own member, because the level describes the archive's bytes, not the record passed in.
+  The copy keeps the values it was copied with.
+- **Equality and finality.** `verified` and `verifiable` are excluded from equality, like
+  `hashes`, `diagnostics` and `extra`, so a member read later still equals a copy taken
+  before. `member_state_final` does not cover them, as it does not cover `diagnostics`:
+  they can rise after it turns `True`. The other option, keeping `member_state_final`
+  `False` until the reader closes, would make the flag useless for every member.
+- **Concurrency.** A raise is a monotonic maximum taken under the reader's member lock
+  (`reader-concurrency`: late-bound updates are synchronized and idempotent). Two threads
+  raising one member through a stream and through a folder CRC cannot lower it.
 
 ### 5. Verify calls
 
@@ -71,42 +89,50 @@ Both aim at `verifiable` (`stream.verify()` at `PASSWORD` with `password_only`).
 Each item gets a test (tasks group 5).
 
 1. `verify_all()` returns per-member failures and does not raise them. It raises only:
-   `ArchiveyUsageError` (closed reader, a call during an active pass, a second call on a
-   streaming-only reader); `ResourceLimitError` when the listing exceeds
-   `ListingLimits`, as `members_report()` does; an error the caller's diagnostic policy
-   escalates; and non-archivey errors (`OSError`, `KeyboardInterrupt`). Damage that stops
-   the listing does not raise: `verify_all()` stops there, and `members_report().error`
-   holds it. A per-member limit (a decode ratio breach) is a member failure.
+   `ArchiveyUsageError` (closed reader, a call during an active pass, or, on a
+   streaming-only reader, any call after a pass has started, its own included);
+   `ResourceLimitError` when the listing exceeds `ListingLimits`, as `members_report()`
+   does; an error the caller's diagnostic policy escalates; and non-archivey errors
+   (`OSError`, `KeyboardInterrupt`). Damage that stops the listing does not raise:
+   `verify_all()` stops there, and `members_report().error` holds it. A per-member limit
+   (a decode ratio breach) is a member failure.
 2. After `verify_all()`, every listed member has `verified == verifiable`, except the
-   members in its returned failures. That includes encrypted members whose password was
-   not found. A member whose password nothing can prove has `verifiable == NONE`, so it
-   meets the rule at `NONE`.
-3. A member stream's `verified` and `verifiable` equal its member's at every moment. A
-   read on the stream that proves more raises the member in place.
-4. When `verified == verifiable`, `stream.verify()` reads and decodes nothing. On a
-   non-seekable stream it still marks the stream consumed, so later reads raise
-   `ArchiveyUsageError` (the PR 1211 rule), but that marking does no I/O.
-5. `verified` never falls, and `verifiable` never falls once the member is open. A read
-   that raises leaves `verified` where it was. `verified <= verifiable` always.
+   members in its returned failures. A member whose password the password input did not
+   supply is a failure, returned with its `EncryptionError`. A member whose password was
+   accepted but cannot be proved has `verifiable == NONE`, so it meets the rule at
+   `NONE` once its read ended cleanly.
+3. A member stream's `verified` and `verifiable` equal its member's at every moment,
+   opened or not. A read on the stream that proves more raises the member in place.
+4. When `verified` has reached the call's target (`verifiable`, or `PASSWORD` with
+   `password_only`) and is above `NONE`, `stream.verify()` reads and decodes nothing. On
+   a non-seekable stream it still marks the stream consumed, so later reads raise
+   `ArchiveyUsageError` (the PR 1211 rule), but that marking does no I/O. A target of
+   `NONE` is never reached this way, so a member whose password cannot be proved is
+   still read to the end and its length checks run.
+5. `verified` never falls, and `verifiable` never falls once the member is open
+   (Decision 4). A read that raises leaves `verified` where it was. `verified <=
+   verifiable` always.
 6. A level is never claimed for a check that did not run. Under-reporting is allowed and
    over-reporting is not.
 7. A check that spans members (7z folder CRC, `.tar.gz` trailer) raises the members it
    covers when it passes, and not before.
 8. Reading `verified` or `verifiable` never reads, decodes or seeks.
-9. `stream.verify()` on a seekable stream leaves it as it was (position and what a
-   later `read()` returns). On a non-seekable stream it reads to the end, later reads
-   raise `ArchiveyUsageError`, and a second call reads nothing and raises the first
-   call's error again.
-10. `verify_all()` on a random-access reader does not touch streams the caller holds.
-    A second call re-reads only members whose `verified` is below their `verifiable`,
-    asking the password provider again for those that failed to decrypt.
+9. `stream.verify()` on a seekable stream leaves it as it was (position and what a later
+   `read()` returns). On a non-seekable stream it reads to the end, later reads raise
+   `ArchiveyUsageError`, and a second call reads nothing and raises the first call's
+   error again.
+10. `verify_all()` on a random-access reader does not touch streams the caller holds. A
+    second call re-reads the members whose `verified` is below their `verifiable`, the
+    earlier failures (asking the password provider again for those that failed to
+    decrypt), and the members whose `verifiable` is `NONE`, so two calls agree on a
+    truncated member that nothing else can prove.
 11. On a streaming-only reader, after `verify_all()`, `members_report()` returns the
     report of that same pass without reading again.
 12. To check everything about an archive: `verify_all()`, then `members_report()` (the
     members with their levels, and `error` for damage that stopped the listing), then
     `reader.diagnostics` (archive-level findings such as `ARCHIVE_EOF_MARKER_MISSING`,
-    which raise only when the diagnostic policy escalates them). Archive-level damage
-    is reported there, never as a verification level.
+    which raise only when the diagnostic policy escalates them). Archive-level damage is
+    reported there, never as a verification level.
 
 ## Risks / Trade-offs
 
