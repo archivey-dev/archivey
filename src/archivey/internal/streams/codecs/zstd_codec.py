@@ -215,7 +215,7 @@ class ZstdCodec(StreamCodec):
             return CorruptionError(
                 f"Error reading zstd stream: {exception_detail(exc)}"
             )
-        return self._eof_truncation(exc, "zstd")
+        return None
 
     @override
     def magic_behind_prefix(self, prefix: bytes) -> bool:

@@ -65,6 +65,7 @@ from archivey.internal.streams.child_process import (
     unavailable_reason,
 )
 from archivey.internal.streams.codecs import deps
+from archivey.internal.streams.codecs.callers_source import mark_callers_source
 from archivey.internal.streams.codecs.decoder_worker import (
     RAPIDGZIP_ARG,
     parse_error_payload,
@@ -231,29 +232,6 @@ def reported_by_child(exc: BaseException) -> bool:
     marked, so a translator can treat every marked ``RuntimeError`` as rapidgzip's.
     """
     return getattr(exc, _FROM_CHILD, False) is True
-
-
-_FROM_SOURCE = "_archivey_raised_by_callers_source"
-
-
-def from_callers_source(exc: BaseException) -> bool:
-    """Whether ``exc`` came from the caller's own source, parked while a decoder read it
-    (the rapidgzip child's reads, or the in-process bzip2 decoder's), or raised by a
-    file region's check before a call to the child (what reading that source would
-    have raised; see ``file_region``).
-
-    Such an exception is raised to the caller as itself, so a translator must leave it
-    alone, including one whose types (``EOFError``) it would map for a decoder.
-    """
-    return getattr(exc, _FROM_SOURCE, False) is True
-
-
-def mark_callers_source(exc: BaseException) -> None:
-    """Mark ``exc`` as raised by the caller's own source (see :func:`from_callers_source`)."""
-    try:
-        setattr(exc, _FROM_SOURCE, True)
-    except AttributeError:  # an exception type that refuses new attributes
-        pass
 
 
 def _reported_error(payload: bytes) -> Exception:

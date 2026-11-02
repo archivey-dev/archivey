@@ -530,7 +530,7 @@ class _ZlibErrorCodec(_DeflateFamilyCodec):
         if isinstance(exc, zlib.error):
             # A zlib stream's Adler-32 failing is a whole-stream checksum.
             return zlib_error(exc, self._label)
-        return self._eof_truncation(exc, self._label)
+        return None
 
 
 class DeflateCodec(_ZlibErrorCodec):

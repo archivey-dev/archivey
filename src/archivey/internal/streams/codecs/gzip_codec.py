@@ -942,7 +942,7 @@ class GzipCodec(_DeflateFamilyCodec):
             # and a failed CRC-32/ISIZE check a whole-stream one; a member header gzip
             # refuses as unsupported stays unsupported (:func:`gzip_error`).
             return gzip_error(exc)
-        return self._eof_truncation(exc, "gzip")
+        return None
 
     @override
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:

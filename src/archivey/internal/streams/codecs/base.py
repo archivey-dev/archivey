@@ -37,6 +37,7 @@ from archivey.internal.streams.archive_stream import (
     RewindWarning,
 )
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64
+from archivey.internal.streams.codecs.callers_source import from_callers_source
 from archivey.internal.streams.codecs.framed_decoder import (
     FramedDecompressorStream,
     StreamIndex,
@@ -506,17 +507,24 @@ class StreamCodec:
         return
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
-        """Map a raw decoder exception to an ``ArchiveyError`` subclass, or ``None``."""
+        """Map a raw decoder exception to an ``ArchiveyError`` subclass, or ``None``.
+
+        An ``EOFError`` needs no arm here: :meth:`eof_truncation` maps the one a
+        translator leaves, for every codec."""
         return None
 
-    @staticmethod
-    def _eof_truncation(exc: Exception, label: str) -> TruncatedError | None:
-        """The :class:`TruncatedError` for an ``EOFError`` from a ``label`` stream's
-        decoder, or ``None`` for any other exception. A :meth:`translate` calls it for
-        its ``EOFError`` arm, so every codec words a truncation the same way."""
-        if isinstance(exc, EOFError):
+    def eof_truncation(self, exc: Exception) -> TruncatedError | None:
+        """The :class:`TruncatedError` for an ``EOFError`` from this codec's decoder, or
+        ``None`` for any other exception.
+
+        :func:`~archivey.internal.streams.codecs.registry.resolve_codec` asks it after
+        :meth:`translator`, so every codec words a truncation the same way and none
+        repeats the arm. An ``EOFError`` from the caller's own source
+        (``from_callers_source``) is not the decoder's: it reaches the caller as itself,
+        as an accelerator translator leaves it."""
+        if isinstance(exc, EOFError) and not from_callers_source(exc):
             return TruncatedError(
-                f"{truncated_message(label)}: {exception_detail(exc)}"
+                f"{truncated_message(self.stream_name)}: {exception_detail(exc)}"
             )
         return None
 
