@@ -267,9 +267,9 @@ bzip2-specific only; the shared items are [`single-file.md`](single-file.md) §4
 - **The accelerator is native code, contained in a child process.** An abort from the bzip2
   decoder costs the stream, and the standard library takes over and gives the verdict
   (§2.3). None has been seen on cut or mutated input. The Atheris `bzip2_accel` target
-  fuzzes it through archivey, and `scripts/investigations/accelerator_crash_search.py` runs it in-process
-  on damaged input to tell whether the isolation is still needed (threat-model O5). A busy
-  loop in the child is not bounded by a timeout.
+  fuzzes it through archivey, and `scripts/investigations/accelerator_crash_search.py`
+  runs it in-process on damaged input to tell whether the isolation is still needed
+  (threat-model O5). A busy loop in the child is not bounded by a timeout.
 - **A small file costs a whole block.** Each block expands up to 900 kB before the first
   output byte, and detection's inner-TAR probe reads up to 1 MiB of compressed input to
   reach it. Both are bounded by the block size; the detection budget bounds the probe

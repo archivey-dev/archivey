@@ -557,16 +557,15 @@ def _build_wildcard_ver(rar_bin: Path, out: Path) -> None:
     print(f"wrote {_shown(out)}")
 
 
-# unar 1.10.1 writes nothing for a compressed RAR5 member when a Huffman lookup near
-# its end peeks past the last packed byte, and exits 0.
-# ``scripts/investigations/find_unar_probe_member.py`` explains why and found both ``f.txt`` members:
-# the shortest over ``ab`` that RAR 7.00 ``-m3`` compresses and unar drops, alone and
-# after ``a.txt`` in a solid archive (``--after hello``). In one run over the
-# five-member solid archive, unar drops ``c.txt``, writes stale window bytes of
+# unar 1.10.1 writes nothing for a compressed RAR5 member when a Huffman lookup near its
+# end peeks past the last packed byte, and exits 0.
+# ``scripts/investigations/find_unar_probe_member.py`` explains why and found both
+# ``f.txt`` members: the shortest over ``ab`` that RAR 7.00 ``-m3`` compresses and unar
+# drops, alone and after ``a.txt`` in a solid archive (``--after hello``). In one run
+# over the five-member solid archive, unar drops ``c.txt``, writes stale window bytes of
 # ``d.txt``'s length and drops ``e.txt``: read by offset, the stale bytes fill
-# ``c.txt``'s place. Another ``rar`` build may compress them differently;
-# rerun the search, and check ``unar -o - <archive>`` still shows the fault after a
-# regeneration.
+# ``c.txt``'s place. Another ``rar`` build may compress them differently; rerun the
+# search, and check ``unar -o - <archive>`` still shows the fault after a regeneration.
 _UNAR_DROP_MEMBER = _File("f.txt", b"aaaaabababbabb")
 _UNAR_DROP_SOLID: tuple[_File, ...] = (
     _File("a.txt", b"hello"),

@@ -130,11 +130,11 @@ stores mtime only; these two are the ones that carry `accessed` / `created`.
 | `xtime__.rar` | RAR5 `-m0 -tsmca`; one `file.txt`; mtime 2020-01-15 12:00:00 UTC, atime 2021-06-20 18:30:00 UTC. ctime is the build machine's inode-change time and is deliberately not pinned; tests assert presence, not value |
 | `xtime__rar4.rar` | RAR4 `-ma4 -m0 -tsmca`; same member and pinned mtime/atime; ctime likewise unpinned |
 
-Members MacPaw `unar` 1.10.1 drops (exit 0, no output): a compressed RAR5 member where
-a Huffman lookup peeks past the end of its packed data. Built by `_build_unar_drop` with
+Members MacPaw `unar` 1.10.1 drops (exit 0, no output): a compressed RAR5 member where a
+Huffman lookup peeks past the end of its packed data. Built by `_build_unar_drop` with
 RAR 7.00; another `rar` build may compress them so `unar` reads them, so rerun
-`scripts/investigations/find_unar_probe_member.py` (with `--after hello` for the solid one) and check
-`unar -o -` after regenerating.
+`scripts/investigations/find_unar_probe_member.py` (with `--after hello` for the solid
+one) and check `unar -o -` after regenerating.
 
 | Files | Notes |
 | --- | --- |

@@ -88,7 +88,8 @@ _ALL_SCENARIOS: tuple[str, ...] = (*_DEFAULT_SCENARIOS, "main_step")
 _PLUGIN_NAME = "_rgz_stress_plugin"
 _PLUGIN = textwrap.dedent(
     '''\
-    """Loaded by scripts/investigations/rapidgzip_resume_stress.py into pytest and its xdist workers."""
+    """Loaded by scripts/investigations/rapidgzip_resume_stress.py into pytest and its
+    xdist workers."""
     import faulthandler
     import os
     import signal

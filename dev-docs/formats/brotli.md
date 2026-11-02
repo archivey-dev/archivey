@@ -252,8 +252,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Archives behind a stub are not Brotli |
 
 **Building fixtures.** `brotli.compress` writes Brotli; the `brotli` command installs from
-the distribution. `scripts/investigations/exploration/brotli_probe_field_survey.py` is the reference for
-the meta-block header parser.
+the distribution. `scripts/investigations/exploration/brotli_probe_field_survey.py` is
+the reference for the meta-block header parser.
 
 ## 9. References
 

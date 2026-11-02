@@ -49,9 +49,9 @@ on the larger rows, by up to about 15%. Treat a smaller difference as noise.
 
 ## 1. Isolation, accelerators off
 
-`scripts/investigations/bench_process_isolation.py`: each archive read in full with `stream_members()`,
-`use_rapidgzip` and `use_indexed_bzip2` set to `OFF`. Times in ms, and the ratio to
-`NONE`.
+`scripts/investigations/bench_process_isolation.py`: each archive read in full with
+`stream_members()`, `use_rapidgzip` and `use_indexed_bzip2` set to `OFF`. Times in ms,
+and the ratio to `NONE`.
 
 | archive | `NONE` | `KNOWN_CRASHES` (default) | `NATIVE_DECODERS` |
 |---|---:|---:|---:|
