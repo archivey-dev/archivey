@@ -205,7 +205,8 @@ runs every check.
 A compressed TAR, such as a `.tar.gz` or `.tar.bz2`, has one checksum for the whole
 compressed stream, checked at its end. A TAR member you read to its end is at `LENGTH` until
 then. Once something reads the archive to its end and that checksum matches, every file in it
-reaches `CHECKSUM`, whether or not you read it: listing the archive does that, and so does a
+reaches `CHECKSUM`, whether or not you read it, except a sparse file, whose holes are not stored
+bytes: listing the archive does that, and so does a
 `stream_members()` pass that runs to the end.
 
 To check a member without keeping its bytes, call `stream.verify()`. It runs every check a read

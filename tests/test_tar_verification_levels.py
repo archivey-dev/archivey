@@ -8,13 +8,16 @@ read to its end is ``LENGTH``.
 
 from __future__ import annotations
 
+import gzip
 import io
+import random
 import tarfile
 
 import pytest
 
 from archivey import Verification, open_archive
 from archivey.types import ArchiveMember
+from tests.test_audit_tar_streams import _TRAILER, _gnu_sparse, _member
 
 _FILES = {"a": b"first " * 500, "b": b"second " * 3}
 
@@ -85,3 +88,39 @@ def test_a_file_read_in_a_pass_reaches_checksum_at_the_archive_end() -> None:
                 assert member.verified is Verification.LENGTH
             seen.append(member)
     assert _levels(seen) == {"a": _CHECKED, "b": _CHECKED, "d/": _DIR}
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    "sizes",
+    [
+        pytest.param((5000, 3000), id="two-past-the-walk-buffer"),
+        pytest.param((200_000,), id="one-large"),
+        pytest.param((1000,) * 10, id="ten-small"),
+    ],
+)
+def test_a_listing_that_skips_member_data_still_raises_every_file(
+    sizes: tuple[int, ...], streaming: bool
+) -> None:
+    # A random-access walk skips each member's data. Past the walk's buffer that skip
+    # must decode through, or the trailer would not count (review round 1, K1).
+    rng = random.Random(len(sizes))
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w:gz") as tar:
+        for index, size in enumerate(sizes):
+            info = tarfile.TarInfo(f"m{index}")
+            info.size = size
+            tar.addfile(info, io.BytesIO(rng.randbytes(size)))
+    members = _listing(out.getvalue(), streaming=streaming)
+    assert {(m.verified, m.verifiable) for m in members} == {_CHECKED}
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_sparse_file_is_left_to_its_own_reads(streaming: bool) -> None:
+    # Its holes are not stored bytes, so the trailer does not cover all it reads as.
+    sparse = _gnu_sparse("s", [(0, 512), (4096, 512)], 8192, b"x" * 1024)
+    tar = _member("a", _FILES["a"]) + sparse + _TRAILER
+    members = _listing(gzip.compress(tar), streaming=streaming)
+    levels = _levels(members)
+    assert levels["a"] == _CHECKED
+    assert levels["s"] == _UNREAD
