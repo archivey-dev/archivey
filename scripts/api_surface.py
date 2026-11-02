@@ -85,6 +85,7 @@ EXPERIMENTAL = (
     "archivey.Verification",
     "archivey.ArchiveStream.verified",
     "archivey.ArchiveStream.verifiable",
+    "archivey.ArchiveStream.verify",
 )
 #: The literal type that lists every diagnostic code string, which grows with them.
 CODE_LITERALS = frozenset({"archivey.diagnostics.DiagnosticCodeStr"})

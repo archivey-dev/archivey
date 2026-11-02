@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import warnings
 from abc import ABC, abstractmethod
@@ -50,6 +51,12 @@ MemberSelector = MemberSelectorArg
 
 
 _T_co = TypeVar("_T_co", covariant=True)
+
+# How much ``ArchiveStream.verify()`` asks for per read: large enough that the call
+# overhead is small, small enough that the discarded chunk costs little memory.
+_VERIFY_CHUNK = 1024 * 1024
+# The first read's size: enough to open the member and pass its key check.
+_VERIFY_FIRST_CHUNK = 4096
 
 
 class ArchiveStream(ReadOnlyIOStream):
@@ -145,6 +152,120 @@ class ArchiveStream(ReadOnlyIOStream):
         Experimental: any release, a patch included, may change or remove this property,
         its levels or what they mean.
         """
+
+    def verify(self, level: Verification = Verification.CHECKSUM) -> Verification:
+        """Run the stream's checks up to ``level``, discarding the bytes; return ``verified``.
+
+        A member stream can seek only when its archive was opened with
+        ``seekable_members=True``, and an ``open_stream()`` stream only with
+        ``seekable=True``; ``stream_members()`` streams never can. By default, then,
+        ``verify()`` consumes the stream (see below).
+
+        On a stream that can seek, ``verify()`` is a probe: it reads as much of the
+        member as ``level`` needs, then leaves the stream as it was, at the same
+        position, so a later ``read()`` returns the bytes it would have returned before.
+        It stops once ``verified`` reaches ``level``, or the most the stream can reach
+        when that is lower (``verifiable``). With the default, ``CHECKSUM``, it reads the
+        whole member. It reads nothing when the level is already reached and above
+        ``NONE``, or when ``level`` is ``NONE``. When a seek earlier kept a read from
+        checking every byte, it reads the member again from the start, so the level is
+        reached whatever the stream's history. Going back to the middle of a compressed
+        member with no index decodes it again up to that offset, so a call there can
+        cost up to two decodes of the member. Its own seeks report no
+        ``STREAM_REWIND_REDECOMPRESSES``: they are not the caller's.
+
+        On a stream that cannot seek, it cannot go back, so whatever ``level`` is, it reads the
+        stream to the end, and any later ``read()`` raises ``ArchiveyUsageError``. So
+        ``verify(Verification.PASSWORD)`` costs a full read there; read the data itself
+        instead when you need it. A later ``verify()``, at any level, reads nothing:
+        it raises the first call's error again if that call failed, and otherwise
+        returns ``verified``, the level the full read reached.
+
+        A password is not always confirmed early either: a member with only a weak
+        password check (ZipCrypto, or an encrypted stored member with no other check)
+        reaches ``PASSWORD`` only at its checksum, so ``verify(Verification.PASSWORD)`` reads it
+        to the end. A failed check raises what the read raises (``CorruptionError``,
+        ``TruncatedError``, ``EncryptionError``), and a seekable stream is still put
+        back where it was. Otherwise compare the result with ``level`` or
+        ``verifiable``: a TAR member, with no checksum, ends at ``LENGTH``. A closed
+        stream raises ``ValueError``, as every ``io`` method does, also after
+        ``verify()`` consumed it. Which reads a level needs can get cheaper in a later
+        release; the result and the errors stay the same.
+
+        Experimental: any release, a patch included, may change or remove this method,
+        its levels or what they mean.
+        """
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        level = Verification(level)
+        if not self.seekable():
+            if self._verify_consumed():
+                self._verify_raise_again()
+            else:
+                try:
+                    self._verify_read_on(None)
+                finally:
+                    self._mark_verify_consumed()
+            return self.verified
+        if level is Verification.NONE or self._verify_done(level):
+            return self.verified
+        start = self.tell()
+        try:
+            self._verify_read_on(level)
+            if not self._verify_done(level) and start > 0:
+                # A seek may have skipped bytes before ``start``: read them too.
+                self._verify_seek(0)
+                self._verify_read_on(level)
+        except Exception:
+            with contextlib.suppress(Exception):
+                self._verify_seek(start)
+            raise
+        self._verify_seek(start)
+        return self.verified
+
+    def _verify_seek(self, pos: int) -> None:
+        """Seek for ``verify()``: a seek the caller did not make, so it reports nothing.
+
+        A stream class that does not override it seeks as ``seek()`` does.
+        """
+        self.seek(pos)
+
+    def _verify_consumed(self) -> bool:
+        """Whether ``verify()`` has read this forward-only stream to its end."""
+        return False
+
+    def _verify_raise_again(self) -> None:
+        """Raise again the check failure the consuming ``verify()`` raised, if any.
+
+        A stream class that does not override it raises nothing here.
+        """
+
+    def _mark_verify_consumed(self) -> None:
+        """Make later reads raise ``ArchiveyUsageError``: ``verify()`` used the bytes.
+
+        A stream class that does not override it keeps answering reads at its end.
+        """
+
+    def _verify_done(self, level: Verification) -> bool:
+        """Whether ``verified`` has reached ``level``, or the stream's ceiling below it.
+
+        A ceiling of ``NONE`` (a weak password with nothing to confirm it) is never
+        reached this way, so the read still runs its length checks to the end.
+        """
+        reached = self.verified
+        return reached >= min(level, self.verifiable) and reached > Verification.NONE
+
+    def _verify_read_on(self, level: Verification | None) -> None:
+        """Read and discard until ``level`` is reached or the stream ends (``None``: end).
+
+        Reads start small, so a level the first bytes reach (``PASSWORD``) costs little, and
+        grow to ``_VERIFY_CHUNK`` so a read to the end pays little per call.
+        """
+        step = _VERIFY_FIRST_CHUNK
+        while self.read(step):
+            if level is not None and self._verify_done(level):
+                return
+            step = min(step * 2, _VERIFY_CHUNK)
 
     @abstractmethod
     @override

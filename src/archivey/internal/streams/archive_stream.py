@@ -284,6 +284,15 @@ class MemberStreamParts:
         )
 
 
+def _consumed_by_verify_error() -> ArchiveyUsageError:
+    return ArchiveyUsageError(
+        "Cannot read this stream: verify() read it to the end, and it cannot seek "
+        "back. Read the data itself to check it as you go, or get a stream that can "
+        "seek: reader.open() on an archive opened with seekable_members=True, or "
+        "open_stream(..., seekable=True). A stream from stream_members() never seeks."
+    )
+
+
 class ArchiveStreamImpl(ArchiveStream):
     """Archivey's own :class:`~archivey.ArchiveStream`: the one every reader and
     :func:`~archivey.open_stream` hands out.
@@ -315,11 +324,15 @@ class ArchiveStreamImpl(ArchiveStream):
     _open_interrupted_by: type[BaseException] | None = None
     _inner: BinaryIO | None = None
     _rewind_warned = False
+    # Set while ``verify()`` seeks: its own rewinds are not the caller's access pattern.
+    _rewind_quiet = False
     _closing = False
     _verdict: KeptError | None = None
     _verdict_rewound = False
     _uninterrupted = True
     _ended_from_start = False
+    # Set by ``verify()`` once it has read a forward-only stream to its end.
+    _consumed_by_verify = False
     # ``close()`` reads these three as well: ``IOBase.__del__`` closes an instance whose
     # ``__init__`` raised before assigning them, or never ran, as when a deprecated
     # ``ArchiveStream(...)`` call has the wrong arguments. ``False`` because ``None``
@@ -837,7 +850,9 @@ class ArchiveStreamImpl(ArchiveStream):
         # pull a decoder's deferred truncation into this call. An inner that shorts
         # mid-stream needs a full-count layer in front (the ``ArchiveSource`` at the
         # boundary is one), not a loop here.
-        inner = self._ensure_open()
+        inner = self._ensure_open()  # a closed stream's ValueError comes first
+        if self._consumed_by_verify:
+            raise _consumed_by_verify_error()
         verdict = self._verdict
         if verdict is not None and not self._verdict_rewound:
             self._raise_verdict()
@@ -878,6 +893,8 @@ class ArchiveStreamImpl(ArchiveStream):
 
     def _read_ahead(self, need: int, n: int) -> bytes:
         inner = self._ensure_open()
+        if self._consumed_by_verify:
+            raise _consumed_by_verify_error()
         # A verdict raises again as ``read`` raises it. A verifier sees each byte in
         # ``read``, and bytes that skipped it would go out unchecked. No codec stream
         # under a reader's buffer has one, so this costs nothing; ``read(n)`` is still
@@ -890,6 +907,26 @@ class ArchiveStreamImpl(ArchiveStream):
             return cast("DecompressorStream", inner).read_ahead(need, n)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             self._fail_unless_closed(e)
+
+    @override
+    def _verify_seek(self, pos: int) -> None:
+        self._rewind_quiet = True
+        try:
+            self.seek(pos)
+        finally:
+            self._rewind_quiet = False
+
+    @override
+    def _verify_consumed(self) -> bool:
+        return self._consumed_by_verify
+
+    @override
+    def _verify_raise_again(self) -> None:
+        self._raise_verdict()
+
+    @override
+    def _mark_verify_consumed(self) -> None:
+        self._consumed_by_verify = True
 
     @override
     def readinto(self, b: WriteableBuffer, /) -> int:
@@ -950,7 +987,8 @@ class ArchiveStreamImpl(ArchiveStream):
             self._verdict_rewound = True
         if result != before:
             self._uninterrupted = result == 0
-        self._maybe_warn_rewind(before, result)
+        if not self._rewind_quiet:
+            self._maybe_warn_rewind(before, result)
         return result
 
     def _note_raised_seek(self, inner: BinaryIO, before: int | None) -> None:
@@ -967,7 +1005,7 @@ class ArchiveStreamImpl(ArchiveStream):
             # Where the inner was left is unknown, or somewhere the decode may have
             # jumped to.
             self._uninterrupted = after == 0
-        if after is None:
+        if after is None or self._rewind_quiet:
             return
         if before is not None:
             try:
