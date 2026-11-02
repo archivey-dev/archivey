@@ -15,6 +15,7 @@ from archivey.config import ExtractionLimits
 from archivey.cost import CostReceipt
 from archivey.detection import FormatInfo
 from archivey.diagnostics import DiagnosticSummary, ExtractionReport, MemberListReport
+from archivey.exceptions import ArchiveyError
 from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.types import (
@@ -119,13 +120,16 @@ class ArchiveStream(ReadOnlyIOStream):
     def verified(self) -> Verification:
         """How much of this stream's data has been checked so far, as a ``Verification``.
 
-        ``PASSWORD`` once the stream has opened its member and nothing doubts its password,
-        ``LENGTH`` once a read has reached the end with the length checks passing,
-        and ``CHECKSUM`` once a checksum stored with the data has matched every byte. It
-        never goes down: a seek back to the start runs the checks again, and what they
-        proved stays proved. A read that raises leaves it where it was. A stream from
-        ``stream_members()`` opens its member at its first read, and is ``NONE`` until
-        then.
+        A member stream answers with its member's :attr:`~archivey.ArchiveMember.verified`,
+        whether or not it has opened its data, and what its reads prove raises the
+        member: a stream of a member that :meth:`~archivey.ForwardArchiveReader.verify_all`
+        already checked reports ``CHECKSUM`` before its first read. A stream from
+        :func:`~archivey.open_stream` has no member and keeps its own level.
+
+        ``PASSWORD`` when nothing doubts the password (an unencrypted member starts
+        there), ``LENGTH`` once a read has reached the end with the length checks
+        passing, and ``CHECKSUM`` once a checksum stored with the data has matched every
+        byte. It never goes down. A read that raises leaves it where it was.
 
         Compare it with ``verifiable``: a TAR member has no checksum, so ``LENGTH``
         is the most it can reach. Reading this property reads nothing from the archive.
@@ -139,22 +143,25 @@ class ArchiveStream(ReadOnlyIOStream):
     def verifiable(self) -> Verification:
         """The most ``verified`` can reach by a read from the start to the end.
 
-        ``CHECKSUM`` when the member carries a checksum archivey can compute,
-        ``LENGTH`` when it carries none, and ``NONE`` for an encrypted member with no
-        checksum whose password passed only a weak check. It rises when another
-        member's checksum confirms that password. A stream from ``stream_members()``
-        learns what its member carries when it opens, at its first read. Until then it
-        answers from what it knows without opening (the member's stored digest), and
-        the answer can settle lower when it opens: a password watch that only appears
-        then takes a member with no checksum from ``LENGTH`` to ``NONE``. Once open,
-        it never falls. Reading this property reads nothing from the archive.
+        ``CHECKSUM`` when the data carries a checksum archivey can compute, ``LENGTH``
+        when it carries none, and ``NONE`` for an encrypted member with no checksum
+        whose password passed only a weak check. A member stream answers with its
+        member's :attr:`~archivey.ArchiveMember.verifiable`: the listing's estimate
+        until a stream of the member first opens its data, which can settle it lower
+        once. After that it never falls, and it rises when another member's checksum
+        confirms the password. Reading this property reads nothing from the archive.
 
         Experimental: any release, a patch included, may change or remove this property,
         its levels or what they mean.
         """
 
-    def verify(self, level: Verification = Verification.CHECKSUM) -> Verification:
-        """Run the stream's checks up to ``level``, discarding the bytes; return ``verified``.
+    def verify(self, *, password_only: bool = False) -> Verification:
+        """Run the stream's checks, discarding the bytes; return ``verified``.
+
+        The target is ``verifiable``, or ``PASSWORD`` with ``password_only=True``
+        (``verifiable`` when that is lower). It never reads past this stream's own
+        member, so a check that covers several members (a ``.tar.gz`` trailer) is
+        not reached here; :meth:`~archivey.ForwardArchiveReader.verify_all` reaches it.
 
         A member stream can seek only when its archive was opened with
         ``seekable_members=True``, and an ``open_stream()`` stream only with
@@ -162,52 +169,54 @@ class ArchiveStream(ReadOnlyIOStream):
         ``verify()`` consumes the stream (see below).
 
         On a stream that can seek, ``verify()`` is a probe: it reads as much of the
-        member as ``level`` needs, then leaves the stream as it was, at the same
+        data as the target needs, then leaves the stream as it was, at the same
         position, so a later ``read()`` returns the bytes it would have returned before.
-        It stops once ``verified`` reaches ``level``, or the most the stream can reach
-        when that is lower (``verifiable``). With the default, ``CHECKSUM``, it reads the
-        whole member. It reads nothing when the level is already reached and above
-        ``NONE``, or when ``level`` is ``NONE``. When a seek earlier kept a read from
-        checking every byte, it reads the member again from the start, so the level is
-        reached whatever the stream's history. Going back to the middle of a compressed
-        member with no index decodes it again up to that offset, so a call there can
-        cost up to two decodes of the member. Its own seeks report no
-        ``STREAM_REWIND_REDECOMPRESSES``: they are not the caller's.
+        It reads and decodes nothing when ``verified`` has already reached the target
+        and is above ``NONE``. A target of ``NONE`` (a password nothing can prove) is
+        never reached this way, so the read still runs its length checks to the end.
+        When a seek earlier kept a read from checking every byte, it reads the data
+        again from the start. Going back to the middle of a compressed member with no
+        index decodes it again up to that offset, so a call there can cost up to two
+        decodes. Its own seeks report no ``STREAM_REWIND_REDECOMPRESSES``: they are not
+        the caller's.
 
-        On a stream that cannot seek, it cannot go back, so whatever ``level`` is, it reads the
-        stream to the end, and any later ``read()`` raises ``ArchiveyUsageError``. So
-        ``verify(Verification.PASSWORD)`` costs a full read there; read the data itself
-        instead when you need it. A later ``verify()``, at any level, reads nothing:
-        it raises the first call's error again if that call failed, and otherwise
-        returns ``verified``, the level the full read reached.
+        On a stream that cannot seek, it cannot go back, so it reads the stream to the
+        end whatever the target, unless ``verified`` already reached it (then it reads
+        nothing), and any later ``read()`` raises ``ArchiveyUsageError``. So
+        ``verify(password_only=True)`` costs a full read there; read the data itself
+        instead when you need it. A later ``verify()`` reads nothing: it raises the
+        first call's error again if that call failed, and otherwise returns
+        ``verified``.
 
         A password is not always confirmed early either: a member with only a weak
         password check (ZipCrypto, or an encrypted stored member with no other check)
-        reaches ``PASSWORD`` only at its checksum, so ``verify(Verification.PASSWORD)`` reads it
-        to the end. A failed check raises what the read raises (``CorruptionError``,
-        ``TruncatedError``, ``EncryptionError``), and a seekable stream is still put
-        back where it was. Otherwise compare the result with ``level`` or
-        ``verifiable``: a TAR member, with no checksum, ends at ``LENGTH``. A closed
+        reaches ``PASSWORD`` only at its checksum, so ``verify(password_only=True)``
+        reads it to the end. A failed check raises what the read raises
+        (``CorruptionError``, ``TruncatedError``, ``EncryptionError``), and a seekable
+        stream is still put back where it was. Otherwise compare the result with
+        ``verifiable``: when they are equal, nothing more can be checked. A closed
         stream raises ``ValueError``, as every ``io`` method does, also after
-        ``verify()`` consumed it. Which reads a level needs can get cheaper in a later
+        ``verify()`` consumed it. Which reads a target needs can get cheaper in a later
         release; the result and the errors stay the same.
 
         Experimental: any release, a patch included, may change or remove this method,
-        its levels or what they mean.
+        its arguments or what it returns.
         """
         if self.closed:
             raise ValueError("I/O operation on closed file.")
-        level = Verification(level)
+        level = Verification.PASSWORD if password_only else Verification.CHECKSUM
         if not self.seekable():
             if self._verify_consumed():
                 self._verify_raise_again()
+            elif self._verify_done(level):
+                self._mark_verify_consumed()
             else:
                 try:
                     self._verify_read_on(None)
                 finally:
                     self._mark_verify_consumed()
             return self.verified
-        if level is Verification.NONE or self._verify_done(level):
+        if self._verify_done(level):
             return self.verified
         start = self.tell()
         try:
@@ -622,6 +631,41 @@ class ForwardArchiveReader(ABC):
         and :class:`~archivey.PackageNotInstalledError` for data archivey cannot decode,
         and :class:`~archivey.ResourceLimitError` for a member that asks a decoder for
         more memory than :class:`~archivey.DecoderLimits` allows.
+        """
+        ...
+
+    @abstractmethod
+    def verify_all(self) -> tuple[tuple[ArchiveMember, ArchiveyError], ...]:
+        """Read every member's data to run its checks; return the members that failed.
+
+        *Experimental:* may change in a minor release.
+
+        Each member is read as :meth:`ArchiveStream.verify` reads one, with
+        ``verifiable`` as the target, and a member that fails does not stop the call:
+        it is returned with its error, and the next member is read. Afterwards every
+        listed member has ``verified == verifiable`` except the ones returned. A member
+        whose password the password input did not supply is returned with its
+        ``EncryptionError``. The levels are raised on the members in place, so
+        :meth:`~ArchiveReader.members` and :meth:`members_report` show them, and so do
+        streams of those members opened later.
+
+        Damage to the archive's structure that stops the listing ends the call without
+        raising: :meth:`members_report` returns it as ``error``. Archive-level findings,
+        such as a missing end-of-archive marker, are in ``reader.diagnostics``. To check
+        everything about an archive, call ``verify_all()``, then look at
+        ``members_report()`` and ``diagnostics``.
+
+        On a random-access reader a second call reads again the members that failed
+        (asking the password input again) and the members whose ``verifiable`` is
+        ``NONE``; the others are skipped. It does not touch streams the caller holds.
+        On a streaming reader it is the one pass.
+
+        Raises:
+            ArchiveyUsageError: The reader is closed; another pass or call is running;
+                or it is a streaming reader whose one pass has already started.
+            ResourceLimitError: The listing exceeds :class:`~archivey.ListingLimits`.
+            DiagnosticRaisedError: A diagnostic that the
+                :class:`~archivey.DiagnosticPolicy` in the config raises on.
         """
         ...
 

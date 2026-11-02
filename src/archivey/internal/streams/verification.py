@@ -18,7 +18,12 @@ to pass on everything.
 from __future__ import annotations
 
 import io
+import threading
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from archivey.types import ArchiveMember, Verification
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,3 +86,29 @@ def ask_verification_proofs(stream: object, *, _depth: int = 0) -> VerificationP
     if getattr(stream, "forwards_verification", False) is True:
         return below
     return below.doubt_only()
+
+
+# The level lock (``verification-level-redesign`` design Decision 4): a leaf lock held
+# only for the compare-and-store below, never across I/O or a callback, and no other
+# lock is taken while it is held. One for the process: the critical section is a few
+# attribute reads and writes, so sharing it costs nothing measurable.
+_LEVEL_LOCK = threading.Lock()
+
+
+def raise_member_level(
+    member: ArchiveMember,
+    verified: Verification,
+    verifiable: Verification | None,
+) -> None:
+    """Raise ``member``'s level to what a stream of it has proved.
+
+    ``verified`` only rises. ``verifiable`` is the stream's ceiling once it has opened
+    its data (``None`` before): the first one settles the member's, which can lower
+    the listing's estimate, and later ones only raise it.
+    """
+    with _LEVEL_LOCK:
+        member._verified = max(member._verified, verified)
+        if verifiable is not None:
+            settled = member._verifiable
+            if settled is None or verifiable > settled:
+                member._verifiable = verifiable

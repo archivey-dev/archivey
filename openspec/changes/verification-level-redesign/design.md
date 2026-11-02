@@ -70,8 +70,8 @@ reports to every member it passed.
   before. `member_state_final` does not cover them, as it does not cover `diagnostics`:
   they can rise after it turns `True`. The other option, keeping `member_state_final`
   `False` until the reader closes, would make the flag useless for every member.
-- **Concurrency.** A raise is a monotonic maximum taken under a new per-reader leaf
-  lock, the level lock (`reader-concurrency`: late-bound updates are synchronized and
+- **Concurrency.** A raise is a monotonic maximum taken under a new leaf lock, the
+  level lock (`reader-concurrency`: late-bound updates are synchronized and
   idempotent). It is held only for the compare-and-store, never across I/O or a
   callback, and no other lock is taken while it is held, so it adds no lock-order
   edge. Two threads

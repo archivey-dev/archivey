@@ -143,11 +143,15 @@ No option makes archivey check a member before handing you its bytes. If you mus
 unchecked data, read the whole member into memory or a temporary file first, and use it only once
 the read has finished without an error.
 
-A member stream tells you what has been checked so far. `stream.verified` is a `Verification`
-level, and `stream.verifiable` is the most a read from the start to the end can reach.
+A member tells you what has been checked so far. `member.verified` is a `Verification` level,
+and `member.verifiable` is the most a read from the start to the end can reach, so
+`member.verified == member.verifiable` means every check the member carries has passed. A read
+that proves more raises them on the member in place. A member stream reports the same two values
+as its member, whether or not it has started reading, and an `open_stream()` stream, which has no
+member, reports its own.
 
 !!! warning "Experimental"
-    `Verification`, `stream.verified`, `stream.verifiable` and `stream.verify()` are
+    `Verification`, `verified`, `verifiable`, `stream.verify()` and `reader.verify_all()` are
     experimental and outside the
     [stability policy](how-it-is-built.md#versioning-and-stability): any release, a patch
     release included, may change or remove them, their levels, names or meaning. The checks
@@ -156,8 +160,8 @@ level, and `stream.verifiable` is the most a read from the start to the end can 
 
 | Level | What has been checked |
 |---|---|
-| `NONE` | Nothing yet, or the member's password passed only a check that a wrong password can pass by chance |
-| `PASSWORD` | The member isn't encrypted, or its password passed a reliable check |
+| `NONE` | The member is encrypted and its password isn't confirmed: not yet, or only by a check that a wrong password can pass by chance |
+| `PASSWORD` | The member isn't encrypted, or its password passed a reliable check. A member with no data of its own, such as a link or a directory, stops here |
 | `LENGTH` | A read reached the end, and the length and the end of the data were as expected |
 | `CHECKSUM` | A checksum stored with the data matched every byte |
 
@@ -210,22 +214,38 @@ only with `seekable=True`. So by default, `verify()` consumes the stream:
   the stream was, so the next `read()` returns the same bytes. Going back to the middle of a
   compressed member decodes it again up to that point, so that call can cost two decodes.
 - **A stream that can't seek**, such as one from `reader.open()` by default, `stream_members()`
-  or a pipe, can't go back. `verify()` reads it to the end, whatever level you ask for, and a
-  later `read()` raises `ArchiveyUsageError`. If you need the bytes too, read them instead: the
+  or a pipe, can't go back. `verify()` reads it to the end, unless the member is already at the
+  level it aims for, and a later `read()` raises `ArchiveyUsageError` either way. If you need the bytes too, read them instead: the
   read runs the same checks.
 
-`stream.verify(Verification.PASSWORD)` on a stream that can seek stops as soon as the password is
-confirmed: at once for a member that isn't encrypted or whose password passed a reliable check.
-A member whose password passed only a weak check, such as ZipCrypto's one-byte check, is
-confirmed only by its checksum, so that call reads the whole member. On a stream that can't
-seek, `verify(Verification.PASSWORD)` always costs a full read. A failed check raises what the read
-would raise:
+`stream.verify()` aims for `verifiable`. When the member has reached it already, for example
+after `verify_all()`, it reads nothing. `stream.verify(password_only=True)` stops as soon as the
+password is confirmed: at once for a member that isn't encrypted or whose password passed a
+reliable check. A member whose password passed only a weak check, such as ZipCrypto's one-byte
+check, is confirmed only by its checksum, so that call reads the whole member. A failed check
+raises what the read would raise:
 
 ```python
 with archive.open(member) as stream:  # can't seek by default: verify() consumes it
     if stream.verify() < stream.verifiable:
         ...  # a check this member carries didn't run
 ```
+
+To check every member, call `reader.verify_all()`. It reads each member as `verify()` does,
+keeps going when one fails, and returns the members that failed, each with its error. Afterwards
+every other member has `verified == verifiable`. A member it had no password for comes back with
+its `EncryptionError`; a second call reads the failed members again and asks the password input
+again. To check everything about an archive:
+
+```python
+failures = reader.verify_all()        # (member, error) for each member that failed
+report = reader.members_report()      # report.error: damage that stopped the listing
+findings = reader.diagnostics         # archive-level findings, such as a missing end marker
+```
+
+Damage that stops archivey finding the next member ends `verify_all()` without raising, and
+`members_report().error` holds it. On a streaming reader `verify_all()` is the one pass, and
+`members_report()` returns what it listed without reading again.
 
 [Damaged members](extracting.md#damaged-members) covers what extraction does.
 

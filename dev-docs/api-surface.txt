@@ -125,6 +125,8 @@ property archivey.ArchiveMember.member_id: int
 property archivey.ArchiveMember.member_state_final: bool
 method archivey.ArchiveMember.modified_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None
 method archivey.ArchiveMember.replace(self, **kwargs: object) -> ArchiveMember
+property archivey.ArchiveMember.verifiable: Verification
+property archivey.ArchiveMember.verified: Verification
 class archivey.ArchiveReader(ForwardArchiveReader)
 method archivey.ArchiveReader.close(self) -> None
 property archivey.ArchiveReader.cost: CostReceipt
@@ -140,6 +142,7 @@ method archivey.ArchiveReader.members_report_if_available(self) -> MemberListRep
 method archivey.ArchiveReader.open(self, member: str | ArchiveMember) -> ArchiveStream
 method archivey.ArchiveReader.read(self, member: str | ArchiveMember) -> bytes
 method archivey.ArchiveReader.stream_members(self, members: MemberSelector = None, *, file_copy_streams: bool = True) -> MemberPass[tuple[ArchiveMember, ArchiveStream | None]]
+method archivey.ArchiveReader.verify_all(self) -> tuple[tuple[ArchiveMember, ArchiveyError], ...]
 class archivey.ArchiveStream(ReadOnlyIOStream)
 method archivey.ArchiveStream.close(self) -> None
 property archivey.ArchiveStream.diagnostics: DiagnosticSummary
@@ -157,7 +160,7 @@ property archivey.ArchiveStream.size: int | None
 method archivey.ArchiveStream.tell(self, /) -> int
 property archivey.ArchiveStream.verifiable: Verification
 property archivey.ArchiveStream.verified: Verification
-method archivey.ArchiveStream.verify(self, level: Verification = Verification.CHECKSUM) -> Verification
+method archivey.ArchiveStream.verify(self, *, password_only: bool = False) -> Verification
 method archivey.ArchiveStream.writable(self) -> bool
 method archivey.ArchiveStream.write(self, b: object, /) -> int
 class archivey.ArchiveyConfig()
@@ -431,6 +434,7 @@ property archivey.ForwardArchiveReader.info: ArchiveInfo
 method archivey.ForwardArchiveReader.members_report(self) -> MemberListReport
 method archivey.ForwardArchiveReader.members_report_if_available(self) -> MemberListReport | None
 method archivey.ForwardArchiveReader.stream_members(self, members: MemberSelector = None, *, file_copy_streams: bool = True) -> MemberPass[tuple[ArchiveMember, ArchiveStream | None]]
+method archivey.ForwardArchiveReader.verify_all(self) -> tuple[tuple[ArchiveMember, ArchiveyError], ...]
 class archivey.HashAlgorithm(StrEnum)
 enum archivey.HashAlgorithm
 value archivey.HashAlgorithm.CRC32 = 'crc32'

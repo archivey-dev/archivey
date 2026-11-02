@@ -100,14 +100,16 @@ def test_zip_member_whose_crc_fails_stays_below_length(tmp_path: Path) -> None:
         assert stream.verifiable is CHECKSUM
 
 
-def test_stream_members_stream_is_none_until_its_first_read(tmp_path: Path) -> None:
+def test_lazy_stream_members_stream_mirrors_its_member(tmp_path: Path) -> None:
     with open_archive(_zip(tmp_path), streaming=True) as reader:
-        for _member_, stream in reader.stream_members():
-            assert stream.verified is NONE
+        for member, stream in reader.stream_members():
+            # Unopened, it reports its member's level: unencrypted starts at PASSWORD.
+            assert (stream.verified, stream.verifiable) == (PASSWORD, CHECKSUM)
             # Asking opens nothing.
             assert stream._inner is None
             stream.read()
             assert (stream.verified, stream.verifiable) == (CHECKSUM, CHECKSUM)
+            assert (member.verified, member.verifiable) == (CHECKSUM, CHECKSUM)
 
 
 def test_tar_member_reaches_length(tmp_path: Path) -> None:

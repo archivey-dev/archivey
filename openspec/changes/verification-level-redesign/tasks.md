@@ -17,14 +17,14 @@
 
 ## 3. Member level and verify calls
 
-- [ ] 3.1 Replace `verify(level)` with `verify(*, password_only=False)`.
-- [ ] 3.2 `ArchiveMember.verified`/`verifiable`, filled by the reader under a new leaf
+- [x] 3.1 Replace `verify(level)` with `verify(*, password_only=False)`.
+- [x] 3.2 `ArchiveMember.verified`/`verifiable`, filled by the reader under a new leaf
       level lock (compare-and-store only), starting at `PASSWORD` unencrypted or `NONE`
       encrypted, excluded from equality and from `member_state_final`; member streams
       mirror the reader's member, opened or not.
 - [ ] 3.3 Spanning checks (7z folder CRC, `.tar.gz` trailer, listing passes) raise the
       members they cover when they pass.
-- [ ] 3.4 `reader.verify_all()`. The CLI `test` verb may use it internally; its output
+- [x] 3.4 `reader.verify_all()`. The CLI `test` verb may use it internally; its output
       and exit codes do not change.
 
 ## 4. Docs and tests
