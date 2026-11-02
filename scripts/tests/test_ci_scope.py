@@ -147,8 +147,8 @@ def _needs(job: dict) -> list[str]:
 
 def test_the_queue_only_jobs_wait_on_scope_and_run_when_it_did_not() -> None:
     """Each queue-only job needs `scope` and runs unless it said `full=false`, so a
-    skipped scope (the daily run, a dispatch) or a failed one runs them. PyYAML is a dev
-    dependency, so the core-only legs skip this one; the others run it."""
+    skipped scope (the daily run, a dispatch) or a failed one runs them. The lint job
+    runs it with the dev group, which has PyYAML."""
     yaml = pytest.importorskip("yaml")
     jobs = yaml.safe_load(CI.read_text())["jobs"]
     assert jobs["scope"]["if"] == "github.event_name == 'merge_group'"
