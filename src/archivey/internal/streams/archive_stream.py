@@ -1042,11 +1042,15 @@ class ArchiveStreamImpl(ArchiveStream):
         """What this stream and the layers below it have proved (``verification``)."""
         below = ask_verification_proofs(self._inner)
         # A codec that checks every frame it has seen counts as one that checks every
-        # byte (``frames_checked``): a read from the start to the end saw them all.
-        checks = self._checks_content or below.frames_checked
+        # byte (``frames_checked``), but only once a read from the start has ended:
+        # until then a later frame may carry no check, and a ceiling claimed early
+        # would stay on the member (``raise_member_level`` only raises it) above
+        # what any read can reach.
+        ended = self._ended_from_start
+        checks = self._checks_content or (below.frames_checked and ended)
         own = VerificationProofs(
-            ended=self._ended_from_start,
-            content=checks and self._ended_from_start,
+            ended=ended,
+            content=checks and ended,
             content_possible=checks,
         )
         verifier = self._verifier

@@ -96,11 +96,56 @@ def test_single_file_member_reaches_what_its_frames_check(
         assert (member.verified, member.verifiable) == (expected, expected)
 
 
-def test_a_checked_frame_seen_raises_the_ceiling_before_the_end() -> None:
-    # The first header shows a check: a read cut short now falls below the ceiling.
+def test_the_ceiling_waits_for_a_read_to_the_end() -> None:
+    # A later frame may carry no check, so a checked first header claims nothing yet.
     with open_stream(io.BytesIO(lzma.compress(_DATA))) as stream:
         stream.read(100)
-        assert (stream.verified, stream.verifiable) == (UNLOCKED, CHECKSUM)
+        assert (stream.verified, stream.verifiable) == (UNLOCKED, LENGTH)
+        stream.read()
+        assert (stream.verified, stream.verifiable) == (CHECKSUM, CHECKSUM)
+
+
+@requires_zstd()
+def test_a_member_synced_mid_read_ends_with_verified_equal_to_verifiable(
+    tmp_path: Path,
+) -> None:
+    # A checked frame, then an unchecked one: a ceiling read between the two headers
+    # must not stay on the member above what the full read reaches.
+    path = tmp_path / "mixed.zst"
+    path.write_bytes(_zstd(True)(_DATA) + _zstd(False)(_DATA))
+    with open_archive(path) as reader:
+        member = next(m for m in reader.members() if m.is_file)
+        with reader.open(member) as stream:
+            stream.read(100)
+            assert stream.verifiable is LENGTH
+            stream.read()
+            assert (stream.verified, stream.verifiable) == (LENGTH, LENGTH)
+        assert reader.verify_all() == ()
+        assert (member.verified, member.verifiable) == (LENGTH, LENGTH)
+
+
+def _seek_past_unchecked(raw: bytes, frame_size: int) -> Verification:
+    with open_stream(io.BytesIO(raw), seekable=True) as stream:
+        assert stream.read() == _DATA * 3
+        stream.seek(frame_size * 2 + 10)
+        stream.read()
+        return stream.verified
+
+
+@requires_zstd()
+def test_a_seek_past_an_unchecked_zstd_frame_keeps_length() -> None:
+    # The new decoder after the seek sees only checked frames; the unchecked one the
+    # first decoder saw must still count.
+    raw = _zstd(False)(_DATA) + _zstd(True)(_DATA) + _zstd(True)(_DATA)
+    assert _seek_past_unchecked(raw, len(_DATA)) is LENGTH
+
+
+def test_a_seek_past_an_unchecked_xz_stream_keeps_length() -> None:
+    raw = b"".join(
+        lzma.compress(_DATA, check=check)
+        for check in (lzma.CHECK_NONE, lzma.CHECK_CRC64, lzma.CHECK_CRC64)
+    )
+    assert _seek_past_unchecked(raw, len(_DATA)) is LENGTH
 
 
 @pytest.mark.parametrize(
@@ -145,10 +190,27 @@ def test_a_seek_back_and_full_read_reaches_checksum() -> None:
         assert stream.verified is CHECKSUM
 
 
-def test_a_failed_xz_check_raises_and_stays_below_checksum() -> None:
-    raw = bytearray(lzma.compress(_DATA))
-    # The CRC64 sits just before the index; flip a byte of it.
-    raw[-(12 + 12 + 8)] ^= 0xFF
+@pytest.mark.parametrize(
+    ("compress", "offset"),
+    [
+        # The CRC64 sits just before the index and the stream footer.
+        pytest.param(_xz(lzma.CHECK_CRC64), -(12 + 12 + 8), id="xz"),
+        pytest.param(_zstd(True), -1, id="zstd", marks=requires_zstd()),
+        pytest.param(
+            _lz4(content_checksum=True), -1, id="lz4-content", marks=requires("lz4")
+        ),
+        # The last block's checksum, before the 4-byte end mark.
+        pytest.param(
+            _lz4(block_checksum=True), -5, id="lz4-blocks", marks=requires("lz4")
+        ),
+    ],
+)
+def test_a_failed_frame_check_raises_and_stays_below_checksum(
+    compress: Callable[[bytes], bytes], offset: int
+) -> None:
+    # A frame counted as checked must be one the library really checks.
+    raw = bytearray(compress(_DATA))
+    raw[offset] ^= 0xFF
     with open_stream(io.BytesIO(bytes(raw))) as stream:
         with pytest.raises(CorruptionError):
             stream.read()
