@@ -176,8 +176,11 @@ with archive.open(member) as stream:
 
 A member with no checksum of its own, such as a TAR, ISO or `.lzma` member, stops at
 `LENGTH`. A gzip, bzip2, lzip or zlib file reaches `CHECKSUM` from its own checksum when it's
-read from the start with no seek in between. `.xz`, `.zst` and `.lz4` files stop at `LENGTH`
-for now, even when they carry a checksum.
+read from the start with no seek in between. An `.xz`, `.zst` or `.lz4` file carries a check
+per stream or frame only if the program that wrote it added one. It reaches `CHECKSUM` when every
+stream or frame in it carries one, read the same way; one without a check keeps the whole file at
+`LENGTH`. Its `verifiable` starts at `LENGTH` and rises to `CHECKSUM` once the first header read
+shows a check.
 
 An encrypted member whose password was accepted only on a weak check, such as the one-byte check of
 old ZIP encryption, is in the same position. Its `stream.verified` stays `NONE` until its checksum

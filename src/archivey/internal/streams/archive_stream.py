@@ -1040,15 +1040,19 @@ class ArchiveStreamImpl(ArchiveStream):
 
     def _verification_proofs(self) -> VerificationProofs:
         """What this stream and the layers below it have proved (``verification``)."""
+        below = ask_verification_proofs(self._inner)
+        # A codec that checks every frame it has seen counts as one that checks every
+        # byte (``frames_checked``): a read from the start to the end saw them all.
+        checks = self._checks_content or below.frames_checked
         own = VerificationProofs(
             ended=self._ended_from_start,
-            content=self._checks_content and self._ended_from_start,
-            content_possible=self._checks_content,
+            content=checks and self._ended_from_start,
+            content_possible=checks,
         )
         verifier = self._verifier
         if verifier is not None:
             own = own.combine(verifier.proofs())
-        return own.combine(ask_verification_proofs(self._inner))
+        return own.combine(below)
 
     @property
     @override

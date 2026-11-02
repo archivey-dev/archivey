@@ -598,9 +598,10 @@ class Verification(IntEnum):
     end-of-data check passing: all the data is there, though its bytes are not
     proved."""
     CHECKSUM = 3
-    """As ``LENGTH``, and a checksum stored with the data matched every byte: the
-    member's CRC-32 or BLAKE2sp, the WinZip AES authentication code, or the checksum of
-    a gzip, bzip2, lzip or zlib stream read from its start."""
+    """As ``LENGTH``, and every byte was checked against a checksum stored with the
+    data: the member's CRC-32 or BLAKE2sp, the WinZip AES authentication code, the
+    checksum of a gzip, bzip2, lzip or zlib stream, or the checks of an xz, zstd or LZ4
+    file whose every stream or frame carries one, read from its start."""
 
 
 class CompressionAlgorithm(Enum):

@@ -25,6 +25,7 @@ from archivey.internal.streams.decompressor_stream import (
     DecodeOut,
     Decoder,
     DecompressorStream,
+    FrameChecks,
     SeekPoint,
     damaged_stream_error,
     near_stream_magic,
@@ -75,6 +76,19 @@ def offset0_start(
     if not concatenated or not starts:
         return never_starts
     return stream_magic(*(tuple(bytes([b]) for b in data) for data in starts))
+
+
+@dataclass(frozen=True, slots=True)
+class FrameCheck:
+    """A codec's test of whether a frame carries a check (``StreamCodec.frame_check``).
+
+    ``judge`` gets the frame's first ``head`` bytes: ``True`` when the frame carries a
+    check its library verifies, ``False`` when it carries none, ``None`` for a frame
+    that holds no content (a zstd or LZ4 skippable frame).
+    """
+
+    head: int
+    judge: Callable[[bytes], bool | None]
 
 
 @dataclass(frozen=True)
@@ -182,8 +196,15 @@ class FramedDecoder(BaseDecoder):
         zero_padding: bool = True,
         index: StreamIndex | None = None,
         start: SeekPoint | None = None,
+        frame_check: FrameCheck | None = None,
     ) -> None:
         self._new = new_decompressor
+        # The codec's per-frame check test and what it found (``frame_checks``): the
+        # first ``frame_check.head`` bytes of each stream, collected as they are fed.
+        self._frame_check = frame_check
+        self.frame_checks = FrameChecks() if frame_check is not None else None
+        self._head = b""
+        self._head_pending = frame_check is not None
         self._magic = magic
         self._index = index
         # Source offset just past every byte fed, and output offset just past every
@@ -233,7 +254,21 @@ class FramedDecoder(BaseDecoder):
             zero_padding=self._zero_padding,
             index=self._index,
             start=point,
+            frame_check=self._frame_check,
         )
+
+    def _take_head(self, data: bytes) -> None:
+        """Collect the current stream's first bytes and judge its check once they are
+        all in."""
+        check = self._frame_check
+        assert check is not None
+        self._head += data[: check.head - len(self._head)]
+        if len(self._head) < check.head:
+            return
+        self._head_pending = False
+        verdict = check.judge(self._head)
+        if verdict is not None and self.frame_checks is not None:
+            self.frame_checks.note(verdict)
 
     def _next_stream(self, data: bytes) -> bytes:
         """Resolve ``data`` past a stream's end: the next stream's input, or ``b""``.
@@ -279,6 +314,9 @@ class FramedDecoder(BaseDecoder):
             release_decoder(self._decomp)
             self._decomp = self._new()
             self._between = False
+            if self._frame_check is not None:
+                self._head = b""
+                self._head_pending = True
             return rest
         self._past_end(rest)
         self._done = True
@@ -321,6 +359,8 @@ class FramedDecoder(BaseDecoder):
                         self._produced + len(output), self._fed_end - len(data)
                     )
             limit = max_length - len(output) if max_length >= 0 else -1
+            if self._head_pending and data:
+                self._take_head(data)
             produced = self._decomp.decompress(data, limit)
             if produced and self._pending_point is not None:
                 points.append(self._pending_point)
@@ -439,6 +479,7 @@ def FramedDecompressorStream(
     collector: DiagnosticCollector | None = None,
     report_trailing_data: bool = False,
     refuse_input_after_end: bool = False,
+    frame_check: FrameCheck | None = None,
 ) -> DecompressorStream:
     """Decode a one-stream library decompressor's codec.
 
@@ -452,6 +493,7 @@ def FramedDecompressorStream(
             zero_padding=zero_padding,
             index=index,
             start=point,
+            frame_check=frame_check,
         ),
         collector=collector,
         codec_name=codec_name,

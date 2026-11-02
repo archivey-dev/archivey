@@ -418,6 +418,39 @@ class Decoder(Protocol):
         ...
 
 
+class FrameChecks:
+    """Whether the frames a decoder has started each carry a check it verifies.
+
+    For a codec whose check is optional per frame or stream (xz, zstd, LZ4). The
+    decoder notes each frame once its header says; the stream keeps what earlier
+    decoders saw across a seek (``DecompressorStream._frame_checks``). One frame
+    without a check is enough to keep the whole file below ``CHECKSUM``.
+    """
+
+    __slots__ = ("checked", "unchecked")
+
+    def __init__(self) -> None:
+        self.checked = False
+        self.unchecked = False
+
+    def note(self, checked: bool) -> None:
+        if checked:
+            self.checked = True
+        else:
+            self.unchecked = True
+
+    def merge(self, other: FrameChecks | None) -> None:
+        if other is not None:
+            self.checked = self.checked or other.checked
+            self.unchecked = self.unchecked or other.unchecked
+
+    def all_checked(self, other: FrameChecks | None = None) -> bool:
+        """At least one frame seen, here or in ``other``, and none without a check."""
+        checked = self.checked or (other is not None and other.checked)
+        unchecked = self.unchecked or (other is not None and other.unchecked)
+        return checked and not unchecked
+
+
 class BaseDecoder:
     """Default decoder behavior: empty points, no pending error, no-op index build.
 
@@ -431,6 +464,8 @@ class BaseDecoder:
     _pending_error: BaseException | None = None
     _trailing_bytes: int | None = None
     _input_after_end = False
+    # Set by a decoder of a codec whose check is optional per frame (xz, zstd, LZ4).
+    frame_checks: FrameChecks | None = None
     # See Decoder.index_reads_whole_source. The xz, lzip and zstd scans read only
     # index/trailer structures, not the payload.
     index_reads_whole_source = False
@@ -880,6 +915,8 @@ class DecompressorStream(ReadOnlyIOStream):
         # decode reaches the end with (_publish_size).
         self._decoder_pos = 0
         self._make_decoder = make_decoder
+        # The frame checks seen by decoders this stream has since replaced (a seek).
+        self._frame_checks = FrameChecks()
         try:
             if isinstance(path, (str, os.PathLike)):
                 # The handle outlives this statement; its owner closes it.
@@ -1197,17 +1234,24 @@ class DecompressorStream(ReadOnlyIOStream):
         return self._seek_points[i]
 
     def _verification_proofs(self) -> VerificationProofs:
-        """Only a whole-content match from the source, and doubt about its key.
+        """Only a whole-content match from the source, doubt about its key, and the
+        codec's per-frame checks.
 
         The source is compressed, so its end and length say nothing about the
         decoded bytes. A check over all of it does: the WinZip AES HMAC covers every
-        ciphertext byte, and so every byte decoded from them.
+        ciphertext byte, and so every byte decoded from them. ``frames_checked`` says
+        every frame seen so far carries a check: the stream above turns it into a
+        content proof only for a read from the start to the end, which decodes, and
+        so checks, every frame.
         """
         below = ask_verification_proofs(self._inner)
         return VerificationProofs(
             key_in_doubt=below.key_in_doubt,
             content=below.content,
             content_possible=below.content_possible,
+            frames_checked=self._frame_checks.all_checked(
+                getattr(self._decoder, "frame_checks", None)
+            ),
         )
 
     def nearest_resume_offset(self, target: int) -> int:
@@ -1260,6 +1304,7 @@ class DecompressorStream(ReadOnlyIOStream):
         # config, not from the old native state, so closing first is safe.
         old_decoder = self._decoder
         old_decoder.close()
+        self._frame_checks.merge(getattr(old_decoder, "frame_checks", None))
         self._decoder = old_decoder.recreate(point, self._inner)
         self._decode_from_index = point.from_index
         self._fresh_index_point = point if point.from_index else None
