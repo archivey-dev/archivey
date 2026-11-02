@@ -140,6 +140,14 @@ Each idea carries a status:
   dictionary, which surfaces as a resource limit. Real encoders write only a few sizes, so
   an off-grid size could be reported as a wrong password. Measure what real writers emit
   first.
+- **Translate only the decoder's own `EOFError`.** *Open idea.* Every codec maps an
+  `EOFError` to `TruncatedError` (`StreamCodec.eof_truncation`). Python file objects,
+  pipes and sockets return `b""` at the end, so an `EOFError` is normally the decoder's.
+  A few source libraries raise it for a dropped connection (paramiko does for SSH/SFTP),
+  and that I/O failure then reads as a truncated archive (DR-15a). Only the accelerator
+  paths mark an exception from the caller's source (`from_callers_source`), so that it
+  passes through unchanged. Marking source reads on every path would do the same
+  everywhere.
 - **Salvage mode.** *Needs design.* Backups are full of truncated and corrupt archives.
   Reads already return the readable prefix and then raise, and a member's data error
   already leaves `stream_members()` running wherever the next member is reachable (ZIP,
