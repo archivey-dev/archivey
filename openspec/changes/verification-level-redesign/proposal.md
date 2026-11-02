@@ -20,7 +20,9 @@ verification design" (2026-11-01 and 2026-11-02). This change records those ruli
   `verification-level`.
 - **A 7z folder with a single file:** the folder CRC covers exactly that file, so it
   counts as the file's own check.
-- **No new levels.** `NONE < PASSWORD < LENGTH < CHECKSUM` stays. A full read with
+- **No new levels.** `NONE < UNLOCKED < LENGTH < CHECKSUM` stays, with `PASSWORD`
+  renamed `UNLOCKED` (maintainer, 11-02): an unencrypted member starts at that level,
+  and the old name read as if it had a password. A full read with
   nothing to check is `LENGTH`, and `verifiable` already separates it from a checksum
   that a seek skipped.
 - **The member holds the level.** `ArchiveMember` gains `verifiable` (what can be proved

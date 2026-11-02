@@ -115,6 +115,10 @@ def test_experimental_names_are_pinned() -> None:
         "archivey.ArchiveStream.verified",
         "archivey.ArchiveStream.verifiable",
         "archivey.ArchiveStream.verify",
+        "archivey.ArchiveMember.verified",
+        "archivey.ArchiveMember.verifiable",
+        "archivey.ForwardArchiveReader.verify_all",
+        "archivey.ArchiveReader.verify_all",
     )
 
 

@@ -36,7 +36,7 @@ _RAR5 = _FIXTURES / "rar" / "encryption__.rar"
 _DATA = b"verification level\n" * 4000
 
 NONE = Verification.NONE
-PASSWORD = Verification.PASSWORD
+UNLOCKED = Verification.UNLOCKED
 LENGTH = Verification.LENGTH
 CHECKSUM = Verification.CHECKSUM
 
@@ -72,9 +72,9 @@ def _first_file(reader: object) -> ArchiveMember:
 
 def test_zip_member_levels_through_a_read(tmp_path: Path) -> None:
     with open_archive(_zip(tmp_path)) as reader, reader.open("a.txt") as stream:
-        assert (stream.verified, stream.verifiable) == (PASSWORD, CHECKSUM)
+        assert (stream.verified, stream.verifiable) == (UNLOCKED, CHECKSUM)
         stream.read(10)
-        assert stream.verified is PASSWORD
+        assert stream.verified is UNLOCKED
         assert stream.read() == _DATA[10:]
         assert stream.verified is CHECKSUM
 
@@ -96,18 +96,20 @@ def test_zip_member_whose_crc_fails_stays_below_length(tmp_path: Path) -> None:
     with open_archive(path) as reader, reader.open("a.txt") as stream:
         with pytest.raises(CorruptionError):
             stream.read()
-        assert stream.verified is PASSWORD
+        assert stream.verified is UNLOCKED
         assert stream.verifiable is CHECKSUM
 
 
-def test_stream_members_stream_is_none_until_its_first_read(tmp_path: Path) -> None:
+def test_lazy_stream_members_stream_mirrors_its_member(tmp_path: Path) -> None:
     with open_archive(_zip(tmp_path), streaming=True) as reader:
-        for _member_, stream in reader.stream_members():
-            assert stream.verified is NONE
+        for member, stream in reader.stream_members():
+            # Unopened, it reports its member's level: unencrypted starts at UNLOCKED.
+            assert (stream.verified, stream.verifiable) == (UNLOCKED, CHECKSUM)
             # Asking opens nothing.
             assert stream._inner is None
             stream.read()
             assert (stream.verified, stream.verifiable) == (CHECKSUM, CHECKSUM)
+            assert (member.verified, member.verifiable) == (CHECKSUM, CHECKSUM)
 
 
 def test_tar_member_reaches_length(tmp_path: Path) -> None:
@@ -119,7 +121,7 @@ def test_tar_member_reaches_length(tmp_path: Path) -> None:
     with open_archive(path) as reader, reader.open("a.txt") as stream:
         assert stream.verifiable is LENGTH
         stream.read(10)
-        assert stream.verified is PASSWORD
+        assert stream.verified is UNLOCKED
         stream.read()
         # The archive's gzip CRC covers the whole archive, not this member.
         assert (stream.verified, stream.verifiable) == (LENGTH, LENGTH)
@@ -137,7 +139,7 @@ def test_tar_member_reaches_length(tmp_path: Path) -> None:
 def test_open_stream_reaches_what_its_codec_checks(compress, expected) -> None:
     with open_stream(io.BytesIO(compress(_DATA))) as stream:
         assert stream.verifiable is expected
-        assert stream.verified is PASSWORD
+        assert stream.verified is UNLOCKED
         assert stream.read() == _DATA
         assert stream.verified is expected
 
@@ -148,7 +150,7 @@ def test_gzip_whose_crc_fails_does_not_reach_checksum() -> None:
     with open_stream(io.BytesIO(bytes(raw))) as stream:
         with pytest.raises(CorruptionError):
             stream.read()
-        assert stream.verified is PASSWORD
+        assert stream.verified is UNLOCKED
 
 
 def test_gzip_member_seek_skips_the_codec_check_until_a_rewind(tmp_path: Path) -> None:
@@ -200,7 +202,7 @@ def test_zipcrypto_candidate_confirmed_on_its_crc_is_password() -> None:
         reader.open(_member(reader, "stored.txt")) as stream,
     ):
         stream.read(5)
-        assert stream.verified is PASSWORD
+        assert stream.verified is UNLOCKED
 
 
 @requires("cryptography")
@@ -266,7 +268,7 @@ def test_rar5_password_check_is_password_before_the_crc() -> None:
         open_archive(_RAR5, password="password") as reader,
         reader.open(_first_file(reader)) as stream,
     ):
-        assert stream.verified is PASSWORD
+        assert stream.verified is UNLOCKED
         stream.read()
         assert stream.verified is CHECKSUM
 

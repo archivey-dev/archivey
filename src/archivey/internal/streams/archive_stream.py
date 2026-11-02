@@ -51,6 +51,7 @@ from archivey.internal.streams.streamtools import (
 from archivey.internal.streams.verification import (
     VerificationProofs,
     ask_verification_proofs,
+    raise_member_level,
 )
 from archivey.internal.streams.verify import (
     CustomDigests,
@@ -342,6 +343,11 @@ class ArchiveStreamImpl(ArchiveStream):
     _on_close: CloseHook | None = None
     # Set by ``_hold_inner``: wraps the inner stream when a lazy handle opens it.
     _inner_wrap: Callable[[BinaryIO], BinaryIO] | None = None
+    # The reader's own member this stream reads, set by ``open()`` and
+    # ``stream_members()``: ``verified`` and ``verifiable`` mirror it, and what this
+    # stream proves raises it (``raise_member_level``). ``None`` for a stream of no
+    # listed member (``open_stream()``), which keeps its own level.
+    _level_member: ArchiveMember | None = None
 
     def __init__(
         self,
@@ -607,8 +613,11 @@ class ArchiveStreamImpl(ArchiveStream):
                     pass
                 raise ValueError("I/O operation on closed file.")
             wrap = self._inner_wrap
-            self._inner = opened if wrap is None else wrap(opened)
-            return self._inner
+            inner = self._inner = opened if wrap is None else wrap(opened)
+        # An open can prove the password (a reliable check value): tell the member.
+        # Outside ``_open_lock``: the level lock is a leaf.
+        self._sync_member_level()
+        return inner
 
     def _adopt(self, parts: MemberStreamParts) -> BinaryIO:
         """Take over ``parts`` as a nested member handle's collapse would have.
@@ -870,6 +879,14 @@ class ArchiveStreamImpl(ArchiveStream):
             # A read to the end, or one that found it, from the start with no seek
             # between: every length and end-of-data check below it ran on all of it.
             self._ended_from_start = True
+        if (
+            self._level_member is not None
+            and n != 0
+            and (not data or self._reached_end(n, data))
+        ):
+            # The read reached the end (EOF, a short return, or a full count landing at
+            # the declared size), where the end-of-data checks run: tell the member.
+            self._sync_member_level()
         if verdict is not None and n != 0 and self._reached_end(n, data):
             # A rewound stream reached its end: the damage is still there, and the
             # seek may have paused the check that found it (a seek back to its
@@ -1039,20 +1056,43 @@ class ArchiveStreamImpl(ArchiveStream):
         # No high-water mark is kept: every input to ``_level_now`` moves one way. The
         # stream's end flag and the verifier's and the HMAC stage's match flags are
         # only ever set, ``_inner`` is never cleared, and a password watch's doubt
-        # only clears.
-        return self._level_now()
+        # only clears. A member stream answers with its member's level.
+        member = self._level_member
+        if member is None:
+            return self._level_now()
+        self._sync_member_level()
+        return member.verified
 
     @property
     @override
     def verifiable(self) -> Verification:
+        member = self._level_member
+        if member is None:
+            return max(self._ceiling_now(), self._level_now())
+        self._sync_member_level()
+        return member.verifiable
+
+    def _ceiling_now(self) -> Verification:
+        """The most a read to the end can prove, from the layers' proofs."""
         proofs = self._verification_proofs()
         if proofs.content_possible:
-            ceiling = Verification.CHECKSUM
-        elif proofs.key_in_doubt:
-            ceiling = Verification.NONE
-        else:
-            ceiling = Verification.LENGTH
-        return max(ceiling, self.verified)
+            return Verification.CHECKSUM
+        if proofs.key_in_doubt:
+            return Verification.NONE
+        return Verification.LENGTH
+
+    def _sync_member_level(self) -> None:
+        """Raise the member to what this stream has proved (``raise_member_level``).
+
+        Before the stream opens its data it proves nothing, and its ceiling is still
+        the listing's, so only an opened stream settles the member's ``verifiable``.
+        """
+        member = self._level_member
+        if member is None:
+            return
+        if self._inner is None:
+            return
+        raise_member_level(member, self._level_now(), self._ceiling_now())
 
     def _level_now(self) -> Verification:
         """The level the layers' proofs add up to."""
@@ -1067,7 +1107,7 @@ class ArchiveStreamImpl(ArchiveStream):
             return Verification.NONE
         if proofs.ended:
             return Verification.LENGTH
-        return Verification.PASSWORD
+        return Verification.UNLOCKED
 
     @override
     def nearest_resume_offset(self, target: int) -> int | None:
@@ -1233,6 +1273,10 @@ class ArchiveStreamImpl(ArchiveStream):
             leave_scope(stack, scope)
 
     def _close(self) -> None:
+        if self._level_member is not None:
+            # What the reads proved stays on the member after the stream is gone.
+            with contextlib.suppress(Exception):
+                self._sync_member_level()
         # First: a read failing on another thread because this close is taking the
         # inner down raises the closed-file error (``_fail_unless_closed``).
         self._closing = True

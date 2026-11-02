@@ -586,14 +586,15 @@ class Verification(IntEnum):
     """
 
     NONE = 0
-    """Nothing is checked yet. The stream has not opened its member, or the member's
-    password passed only a check that a wrong password can pass by chance, such as the
+    """Nothing is proved: the member is encrypted and its password is not confirmed,
+    not yet or only by a check that a wrong password can pass by chance, such as the
     one-byte check of old ZIP encryption."""
-    PASSWORD = 1
-    """The password is right: the member is not encrypted, or its password passed a
-    check a wrong password cannot pass by chance."""
+    UNLOCKED = 1
+    """Nothing stands between the reader and the member's real bytes: the member is
+    not encrypted, or its password passed a check a wrong password cannot pass by
+    chance."""
     LENGTH = 2
-    """As ``PASSWORD``, and a read reached the end with the length and every
+    """As ``UNLOCKED``, and a read reached the end with the length and every
     end-of-data check passing: all the data is there, though its bytes are not
     proved."""
     CHECKSUM = 3
@@ -1238,19 +1239,19 @@ class ArchiveMember:
     walk ends). Cleared once the listing's links are resolved, when the walk stops
     keeping members, when the reader closes, and on a :meth:`replace` copy; not when
     the walk ends, since a peek ends it before any link is resolved. Read it through
-    the public :attr:`member_state_final`. Not part of the public contract."""
+    the public :attr:`~archivey.ArchiveMember.member_state_final`. Not part of the public contract."""
     _link_target_unread: bool = field(default=False, repr=False, compare=False)
     """Set while this symlink's target is stored as member data nobody has read yet.
 
     Reading it can set ``link_target`` and, for a Windows reparse point whose data is
     not a link buffer, change ``type``. Cleared once the backend has looked, found or
-    not. Read it through :attr:`member_state_final`. Not part of the public contract."""
+    not. Read it through :attr:`~archivey.ArchiveMember.member_state_final`. Not part of the public contract."""
     _size_unread: bool = field(default=False, repr=False, compare=False)
     """Set while ``size`` is ``None`` and a full read of the member would fill it in.
 
     Cleared once a read fills the size, when a ``streaming=True`` pass ends or fails
     (no read can reach the member again), and when the reader closes. Read it through
-    :attr:`member_state_final`. Not part of the public contract."""
+    :attr:`~archivey.ArchiveMember.member_state_final`. Not part of the public contract."""
     _link_target_absent: bool = field(default=False, repr=False, compare=False)
     """Set when the archive itself records no target for this link.
 
@@ -1269,6 +1270,16 @@ class ArchiveMember:
     target again and raises it. This only stops a second report, when a ``stream_members()`` pass
     read the target as it reached the link and its listing then resolves links. Not
     part of the public contract."""
+    _verified: Verification = field(
+        default=Verification.NONE, repr=False, compare=False
+    )
+    """The highest level a read has proved for this member's data, raised in place
+    under the level lock (``raise_member_level``). Read it through ``verified``.
+    Not part of the public contract."""
+    _verifiable: Verification | None = field(default=None, repr=False, compare=False)
+    """The most a read can prove, settled when a stream of this member first opens
+    its data; ``None`` until then. Read it through ``verifiable``. Not part of
+    the public contract."""
 
     # Mutable members are intentionally unhashable. ``@dataclass`` (``eq=True``, not
     # frozen) sets ``__hash__ = None``, which is what makes ``isinstance(m, Hashable)``
@@ -1375,6 +1386,50 @@ class ArchiveMember:
         what the archive said about it.
         """
         return bool(self.extra.get(EXTRA_IS_REPARSE_POINT))
+
+    @property
+    def verified(self) -> Verification:
+        """How much of this member's data a read has checked so far, as a ``Verification``.
+
+        ``UNLOCKED`` from the listing when the member is not encrypted, ``NONE`` while
+        an encrypted member's password is not confirmed. Any read that proves more
+        raises it in place: a stream of this member read to its end, or
+        :meth:`~archivey.ForwardArchiveReader.verify_all`. A stream opened from a
+        ``replace()`` copy raises the reader's own member, not the copy. It never goes
+        down. Not part of equality, and not covered by :attr:`~archivey.ArchiveMember.member_state_final`: it
+        can still rise after that is ``True``.
+
+        Experimental: any release, a patch included, may change or remove this property,
+        its levels or what they mean.
+        """
+        if self._verified is Verification.NONE and not self.is_encrypted:
+            return Verification.UNLOCKED
+        return self._verified
+
+    @property
+    def verifiable(self) -> Verification:
+        """The most :attr:`~archivey.ArchiveMember.verified` can reach by reading this member's data to the end.
+
+        ``CHECKSUM`` when the member carries a checksum archivey can compute,
+        ``LENGTH`` when it carries none, and ``NONE`` for an encrypted member whose
+        password nothing can prove. A member with no data of its own (a link, a special
+        entry, a directory that declares no data) has nothing to read, so it is
+        ``verified`` already. Before a stream of the member has opened its data
+        it is the listing's estimate, and it may settle lower once, at that first open
+        (a weak password check is only found then). After that it never falls. It
+        rises when another member's checksum confirms the password.
+
+        Experimental: any release, a patch included, may change or remove this property,
+        its levels or what they mean.
+        """
+        settled = self._verifiable
+        if settled is None:
+            if not (
+                self.is_file or (self.type is MemberType.DIRECTORY and bool(self.size))
+            ):
+                return self.verified
+            settled = Verification.CHECKSUM if self.hashes else Verification.LENGTH
+        return max(settled, self.verified)
 
     @property
     def member_state_final(self) -> bool:

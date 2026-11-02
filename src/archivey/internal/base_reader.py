@@ -69,6 +69,7 @@ from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
     CorruptionError,
+    DiagnosticRaisedError,
     EncryptionError,
     LinkTargetNotFoundError,
     LinkTargetNotFoundReason,
@@ -147,6 +148,7 @@ from archivey.internal.streams.streamtools import (
     read_exact,
     source_byte_size,
 )
+from archivey.internal.streams.verification import raise_member_level
 from archivey.internal.streams.verify import CustomDigests
 from archivey.internal.timestamps import TimestampIssue
 from archivey.internal.walk_handoff import WalkHandoffStream
@@ -184,6 +186,7 @@ from archivey.types import (
     PluginStream,
     StreamFormat,
     TrailerSignature,
+    Verification,
 )
 
 UNREADABLE_LINK_TARGET_ERRORS: tuple[type[ArchiveyError], ...] = (
@@ -2196,6 +2199,22 @@ class BaseArchiveReader(ArchiveReader):
                 return listed
         return None
 
+    def _level_member(self, member: ArchiveMember) -> ArchiveMember:
+        """The member whose verification level a stream of ``member`` raises.
+
+        The reader's own object (``_own_member``), so a stream opened from a
+        ``replace()`` copy raises what the listing holds; ``member`` itself when this
+        reader did not list it. Looks at the member's listing position first, so the
+        usual case costs no scan.
+        """
+        idx = member._member_id
+        if idx is not None and member._archive_id == self._archive_id:
+            listed = self._listed
+            if 0 <= idx < len(listed) and listed[idx]._member_id == idx:
+                return listed[idx]
+        own = self._own_member(member)
+        return member if own is None else own
+
     def _listed_members(self) -> Iterator[ArchiveMember]:
         """The listed members for a backend's own data pass, then the walk's damage.
 
@@ -3980,6 +3999,9 @@ class BaseArchiveReader(ArchiveReader):
                     member, visited=set(), opened=opened
                 )
                 self._hold_to_ratio(stream, opened[0])
+                stream._level_member = self._level_member(opened[0])
+                # An eager open may have proved the password already.
+                stream._sync_member_level()
                 # Asked before the bind: from here a raise still closes the stream.
                 run = (
                     self._solid_run(opened[0])
@@ -4187,6 +4209,40 @@ class BaseArchiveReader(ArchiveReader):
             )
         )
 
+    @override
+    def verify_all(self) -> tuple[tuple[ArchiveMember, ArchiveyError], ...]:
+        failures: list[tuple[ArchiveMember, ArchiveyError]] = []
+
+        # A member at its ceiling has nothing left to prove; one whose ceiling is NONE
+        # (a key nothing can prove) is read again, so its length checks run each time.
+        def selector(m: ArchiveMember) -> bool:
+            ceiling = m.verifiable
+            return ceiling is Verification.NONE or m.verified < ceiling
+
+        with self.stream_members(selector) as members:
+            it = iter(members)
+            while True:
+                try:
+                    m, stream = next(it)
+                except StopIteration:
+                    break
+                except DiagnosticRaisedError:
+                    raise
+                except CorruptionError:
+                    # Damage that stops the listing: members_report().error holds it.
+                    break
+                if stream is None:
+                    # No data to read: what it has now is all it can reach.
+                    raise_member_level(m, m.verified, m.verified)
+                    continue
+                try:
+                    stream.verify()
+                except DiagnosticRaisedError:
+                    raise
+                except ArchiveyError as e:
+                    failures.append((m, e))
+        return tuple(failures)
+
     def _stream_members(
         self,
         members: MemberSelectorArg,
@@ -4280,6 +4336,7 @@ class BaseArchiveReader(ArchiveReader):
                         # some formats only is a per-format accident callers would
                         # come to rely on. seekable_members=True is for open().
                         stream._make_forward_only()
+                        stream._level_member = m
                         if hold_to_ratio:
                             # A file copy decodes its source's bytes again: held, and
                             # counted once, as that source.
