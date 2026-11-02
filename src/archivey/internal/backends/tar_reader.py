@@ -52,6 +52,7 @@ sets it to ``RAISE`` (``DiagnosticPolicy.STRICT`` does so for all of them).
 
 from __future__ import annotations
 
+import io
 import re
 import threading
 from collections.abc import Callable, Iterator, Mapping
@@ -128,12 +129,19 @@ from archivey.internal.streams.archive_stream import (
     MemberStreamParts,
 )
 from archivey.internal.streams.decompressor_stream import _StreamChecksumError
+from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     LockedStream,
     ReadAheadStream,
+    ReadOnlyIOStream,
     SharedView,
     SparseStream,
     ensure_bufferedio,
+)
+from archivey.internal.streams.streamtools.binaryio import read_blocking
+from archivey.internal.streams.verification import (
+    ask_verification_proofs,
+    raise_member_level,
 )
 from archivey.internal.timestamps import TimestampIssue, unix_to_datetime
 from archivey.internal.unix_mode import special_file_type_from_tar_typeflag
@@ -152,6 +160,7 @@ from archivey.types import (
     MemberStreams,
     MemberType,
     StreamFormat,
+    Verification,
     _ReadOnlyDict,
 )
 
@@ -385,6 +394,63 @@ def _tar_time_issue(
     )
 
 
+# Chunk for a skip decoded through: one chunk of extra memory, whatever the skip.
+_SKIP_READ = 64 * 1024
+
+
+class _DecodeThroughSkips(ReadOnlyIOStream):
+    """The walk's handle on a compressed tar's codec stream: skips data by decoding it.
+
+    A random-access walk seeks over each member's data. On a codec stream with no
+    restart point past where it is, that seek decodes every byte in between anyway,
+    but a seek clears the stream's "read from the start with no gap" proof, so the
+    codec's whole-stream checksum (a gzip trailer) could no longer count for the
+    members (``TarReader._raise_members_the_codec_checked``). This handle reads those
+    bytes instead, at the same decoding cost, and keeps the proof. A skip that a
+    restart point can jump (an indexed codec: bgzip, Seekable Zstandard) still seeks,
+    since its bytes are never decoded. Any other seek passes through.
+
+    Borrows the codec stream: the reader closes it, never this handle.
+    """
+
+    def __init__(self, inner: BinaryIO) -> None:
+        super().__init__()
+        self._inner = inner
+
+    @override
+    def read(self, n: int = -1, /) -> bytes:
+        return read_blocking(self._inner, n)
+
+    @override
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        inner = self._inner
+        if whence == io.SEEK_SET:
+            here = inner.tell()
+            if offset > here:
+                resume = ask_resume_offset(inner, offset)
+                if resume is None or resume <= here:
+                    remaining = offset - here
+                    while remaining > 0:
+                        chunk = read_blocking(inner, min(remaining, _SKIP_READ))
+                        if not chunk:
+                            # Past the end: the codec stream's own seek says where.
+                            return inner.seek(offset, whence)
+                        remaining -= len(chunk)
+                    return offset
+        return inner.seek(offset, whence)
+
+    @override
+    def tell(self) -> int:
+        return self._inner.tell()
+
+    @override
+    def seekable(self) -> bool:
+        return True
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        return ask_resume_offset(self._inner, target)
+
+
 class TarReader(BaseArchiveReader):
     """Reads a TAR archive (plain or compressed) with :class:`TarWalker`.
 
@@ -573,8 +639,11 @@ class TarReader(BaseArchiveReader):
         # Plain file: a read larger than the buffer rewinds the prefetched tail and
         # returns the file's own buffer. Joining the tail on would copy the member.
         # A codec keeps the join: rewinding it would decode the tail again.
+        handle: BinaryIO = self._stream
+        if self._compressed:
+            handle = _DecodeThroughSkips(handle)
         view = ReadAheadStream(
-            SharedView(self._stream, 0, lock=self._io_guard()),
+            SharedView(handle, 0, lock=self._io_guard()),
             _WALK_BUFFER,
             rewind_oversize=not self._compressed,
         )
@@ -680,6 +749,28 @@ class TarReader(BaseArchiveReader):
             with self._translated_errors():
                 entry = self._step(walker)
         self._verify_tar_eof(walker, entry, last_member=last_member, member_count=index)
+        self._raise_members_the_codec_checked()
+
+    def _raise_members_the_codec_checked(self) -> None:
+        """Raise every listed file to ``CHECKSUM`` when the codec's checksum covered it.
+
+        Runs when a walk has ended. On a compressed tar the end-of-archive checks read
+        on to the codec's end, where its whole-stream checksum (a gzip trailer, a
+        bzip2 stream CRC) is checked. When the codec stream proves it matched over a
+        decode from its start with no gap, every member's bytes passed it, read or not
+        (``verification-level-redesign``, the spanning checks). A sparse member's holes
+        are not stored bytes, so it is left to its own reads. A codec with no check, a
+        seek that broke the decode, or a walk cut short raises nothing.
+        """
+        codec = self._owned_codec_stream
+        if codec is None:
+            return
+        proofs = ask_verification_proofs(codec)
+        if not (proofs.ended and proofs.content):
+            return
+        for member in self._listed:
+            if member.is_file and self._member_data_is_stream_bytes(member):
+                raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
 
     def _iter_members_progressive(self) -> Iterator[ArchiveMember]:
         """Forward-only member walk. Yields bare members; the base's shared progressive

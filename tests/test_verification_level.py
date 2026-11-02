@@ -112,8 +112,10 @@ def test_lazy_stream_members_stream_mirrors_its_member(tmp_path: Path) -> None:
 
 
 def test_tar_member_reaches_length(tmp_path: Path) -> None:
-    path = tmp_path / "a.tar.gz"
-    with tarfile.open(path, "w:gz") as tf:
+    # A plain tar: a .tar.gz listing reaches its trailer, which raises the member to
+    # CHECKSUM before it is read (tests/test_tar_verification_levels.py).
+    path = tmp_path / "a.tar"
+    with tarfile.open(path, "w") as tf:
         info = tarfile.TarInfo("a.txt")
         info.size = len(_DATA)
         tf.addfile(info, io.BytesIO(_DATA))
@@ -122,7 +124,6 @@ def test_tar_member_reaches_length(tmp_path: Path) -> None:
         stream.read(10)
         assert stream.verified is UNLOCKED
         stream.read()
-        # The archive's gzip CRC covers the whole archive, not this member.
         assert (stream.verified, stream.verifiable) == (LENGTH, LENGTH)
 
 
