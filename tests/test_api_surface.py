@@ -1,7 +1,7 @@
 """The committed API surface file is current, and the patch-or-minor rule reads it right.
 
 ``dev-docs/api-surface.txt`` is how a pull request shows that it changes the public API,
-and ``scripts/release.py notes`` reads the same lines to say whether a release can be a
+and ``scripts/release/release.py notes`` reads the same lines to say whether a release can be a
 patch (``docs/how-it-is-built.md`` §Versioning and stability).
 """
 
@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "api_surface.py"
+SCRIPT = ROOT / "scripts" / "checks" / "api_surface.py"
 
 _spec = importlib.util.spec_from_file_location("api_surface_script", SCRIPT)
 assert _spec is not None and _spec.loader is not None
@@ -28,7 +28,7 @@ def test_surface_file_is_current() -> None:
     current = api_surface.render(api_surface.surface_lines())
     assert committed == current, (
         "dev-docs/api-surface.txt is stale: run"
-        " `uv run python scripts/api_surface.py --write` and commit the result"
+        " `uv run python scripts/checks/api_surface.py --write` and commit the result"
     )
 
 

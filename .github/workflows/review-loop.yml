@@ -25,7 +25,7 @@ name: Review loop
 # The reviewer is Opus for the first round of a standard or deep pull request, and
 # Sonnet for every other round (`OPUS_PASS_TIERS` in the gate says why).
 #
-# `scripts/review_loop_gate.py` makes the decisions and writes the closing comment, and
+# `scripts/review/review_loop_gate.py` makes the decisions and writes the closing comment, and
 # is unit tested. `dev-docs/review-loop.md` is the prose version.
 
 on:
@@ -79,7 +79,7 @@ jobs:
           BASE: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
-          git show "origin/$BASE:scripts/review_prep.py" > scripts/.review_prep_base.py
+          git show "origin/$BASE:scripts/review/review_prep.py" > scripts/.review_prep_base.py
           tier="$(python3 scripts/.review_prep_base.py --base "origin/$BASE" tier \
             | sed -n 's/^tier: //p')"
           rm scripts/.review_prep_base.py
@@ -149,7 +149,7 @@ jobs:
               label_since: $label_since, label_events: $label_events,
               repository: $repository, tier: $tier}' > /tmp/gate-input.json
 
-          python3 scripts/review_loop_gate.py < /tmp/gate-input.json > /tmp/gate.json
+          python3 scripts/review/review_loop_gate.py < /tmp/gate-input.json > /tmp/gate.json
           cat /tmp/gate.json
           {
             echo "run=$(jq -r .run /tmp/gate.json)"
@@ -243,7 +243,7 @@ jobs:
           # The pull request's Opus round.
           PASS: ${{ steps.gate.outputs.opus_pass == 'true' && 'opus' || '' }}
           TIER: ${{ steps.tier.outputs.tier }}
-        run: python3 scripts/review_loop_prompt.py >> "$GITHUB_OUTPUT"
+        run: python3 scripts/review/review_loop_prompt.py >> "$GITHUB_OUTPUT"
 
       # The prompt names the built-in read-only `Explore` subagent. A file in
       # `.claude/agents/` with that name would replace it, and the checkout is the pull
@@ -286,4 +286,4 @@ jobs:
           FINAL: ${{ steps.gate.outputs.final }}
           HEAD_SHA: ${{ steps.gate.outputs.head_sha }}
           PASS: ${{ steps.gate.outputs.opus_pass == 'true' && 'opus' || '' }}
-        run: bash scripts/review_loop_close.sh
+        run: bash scripts/review/review_loop_close.sh

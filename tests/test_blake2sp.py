@@ -53,7 +53,7 @@ def test_blake2sp_matches_rar5_fixture_payload() -> None:
     fixture = Path(__file__).parent / "fixtures" / "rar" / "blake2sp.rar"
     assert fixture.is_file(), (
         "vendored tests/fixtures/rar/blake2sp.rar is required "
-        "(regenerate via scripts/gen_rar_fixtures.py)"
+        "(regenerate via scripts/fixtures/gen_rar_fixtures.py)"
     )
     payload = b"stored payload"
     with open_archive(fixture) as archive:

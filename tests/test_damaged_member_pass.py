@@ -8,7 +8,7 @@ cleanly. Random access (``members()`` plus ``open()``) gives each member the sam
 
 Only ``b.txt``'s data is damaged in every case; the headers and the listing are intact.
 The 7z and RAR archives are committed (``tests/fixtures/damaged_member/``, built by
-``scripts/gen_damaged_member_fixtures.py``, which checks the damage against ``7z t`` and
+``scripts/fixtures/gen_damaged_member_fixtures.py``, which checks the damage against ``7z t`` and
 ``unrar t``). The ZIP, TAR and ISO cases are built here.
 """
 
@@ -41,7 +41,7 @@ format stores no member checksum, so the damaged bytes come back with no error."
 
 
 def _member_text(name: str) -> bytes:
-    """Member content; ``scripts/gen_damaged_member_fixtures.py`` imports this function."""
+    """Member content; ``scripts/fixtures/gen_damaged_member_fixtures.py`` imports this function."""
     vocab_rng = random.Random("damaged-member-vocab")
     vocab = [
         "".join(

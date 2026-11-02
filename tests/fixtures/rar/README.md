@@ -3,7 +3,7 @@
 Most archives here are **generated** by:
 
 ```bash
-uv run python scripts/gen_rar_fixtures.py
+uv run python scripts/fixtures/gen_rar_fixtures.py
 ```
 
 That script shells out to RARLAB `rar` (and, when the system `rar` is 7.x and
@@ -120,7 +120,7 @@ Seek-respawn (named `unrar p` with `seekable_members=True`):
 | `solid_groups__.rar` | RAR5 `-s2 -m3`; `a.txt` … `d.txt` (840 bytes each) in solid groups of two, so `c.txt` starts a second solid stream (solid flag clear). `tests/test_rar_unknown_compression.py` sets `a.txt` to an unknown compression version |
 
 (`-m0` store archives do not set the solid bit even with `-s`; the flags still
-match the regeneration commands in `scripts/gen_rar_fixtures.py`.)
+match the regeneration commands in `scripts/fixtures/gen_rar_fixtures.py`.)
 
 Extended timestamps (`-tsmca`: modification, creation, access). Default `rar a`
 stores mtime only; these two are the ones that carry `accessed` / `created`.
@@ -133,7 +133,7 @@ stores mtime only; these two are the ones that carry `accessed` / `created`.
 Members MacPaw `unar` 1.10.1 drops (exit 0, no output): a compressed RAR5 member where
 a Huffman lookup peeks past the end of its packed data. Built by `_build_unar_drop` with
 RAR 7.00; another `rar` build may compress them so `unar` reads them, so rerun
-`scripts/find_unar_probe_member.py` (with `--after hello` for the solid one) and check
+`scripts/investigations/find_unar_probe_member.py` (with `--after hello` for the solid one) and check
 `unar -o -` after regenerating.
 
 | Files | Notes |

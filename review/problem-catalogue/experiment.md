@@ -30,7 +30,7 @@ That is a defect in the catalogue, not in the experiment
 Two mechanical guards exist, both in `scripts/tests/test_review_problem_catalogue.py`:
 
 - `catalogue-neutral.md` is **derived** from `catalogue.md` by
-  `scripts/derive_neutral_catalogue.py`, and the test fails if the committed file is
+  `scripts/review/derive_neutral_catalogue.py`, and the test fails if the committed file is
   stale. Redaction is therefore not a step anyone can forget at experiment time.
 - No entry's fields 1–3 may name an archivey type, module or config field.
 
@@ -58,7 +58,7 @@ output, and must not see any grading.
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"
-python scripts/derive_neutral_catalogue.py --check   # must exit 0
+python scripts/review/derive_neutral_catalogue.py --check   # must exit 0
 git rev-parse --short HEAD                           # record as the catalogue revision
 ```
 
@@ -200,7 +200,7 @@ it catalogues stops being a record of the problems.
 
 Before spending the run:
 
-- [ ] `python scripts/derive_neutral_catalogue.py --check` exits 0.
+- [ ] `python scripts/review/derive_neutral_catalogue.py --check` exits 0.
 - [ ] `uv run --no-sync pytest scripts/tests/test_review_problem_catalogue.py -q` passes.
 - [ ] Sample ten entries at random and read fields 1–3 as a stranger would. Each states
       what the world does, not what a library does. Rewrite any that fail; a bad entry

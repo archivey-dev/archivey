@@ -193,7 +193,7 @@ Each idea carries a status:
   2026-10-26).
 - **Resource usage against the limits, as data.** *Open idea.* A caller cannot ask how
   close an archive came to each limit. A usage record on the reader and on the extraction
-  report would help tune limits against a real corpus. `scripts/scan_archives.py` shows
+  report would help tune limits against a real corpus. `scripts/investigations/scan_archives.py` shows
   what can be read from public results today.
 - **Opt-in free-space check before extraction.** *Open idea.* **Good first contribution.**
   Sum the declared sizes of the selected members and compare against

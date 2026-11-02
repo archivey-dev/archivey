@@ -73,15 +73,15 @@ run "script tests"        uv run --no-sync pytest scripts/tests -q -n auto --no-
 
 # --- API surface (tests/test_api_surface.py in CI) ------------------------------------
 if [ "$FIX" -eq 1 ]; then
-  uv run --no-sync python scripts/api_surface.py --write
+  uv run --no-sync python scripts/checks/api_surface.py --write
 fi
-run "api surface" uv run --no-sync python scripts/api_surface.py --check
+run "api surface" uv run --no-sync python scripts/checks/api_surface.py --check
 
 # --- CI job: openspec --------------------------------------------------------------
 # Stdlib-only, same as CI. `openspec validate` needs the npm CLI, which the setup script
 # installs; skip rather than fail if someone is running on a bare clone.
-run "openspec archived" python3 scripts/check_openspec_archived.py
-run "openspec self-reference" python3 scripts/check_openspec_self_reference.py
+run "openspec archived" python3 scripts/checks/check_openspec_archived.py
+run "openspec self-reference" python3 scripts/checks/check_openspec_self_reference.py
 if command -v openspec >/dev/null 2>&1; then
   run "openspec validate" openspec validate --all
 else
@@ -89,18 +89,18 @@ else
 fi
 
 # --- CI job: No tracker URLs (docs-checks.yml) ------------------------------------
-run "tracker URLs" python3 scripts/check_tracker_urls.py
+run "tracker URLs" python3 scripts/checks/check_tracker_urls.py
 
 # --- CI job: docs ------------------------------------------------------------------
 # Needs the `docs` group (mkdocs, markdown) rather than the everyday env, so this leg
 # syncs on demand instead of using --no-sync.
-run "docs nav"   uv run --group docs python scripts/check_docs_nav.py
-run "internal md links" uv run --no-sync python scripts/check_internal_md_links.py
+run "docs nav"   uv run --group docs python scripts/checks/check_docs_nav.py
+run "internal md links" uv run --no-sync python scripts/checks/check_internal_md_links.py
 # `docs roles` reads the site `docs build` just wrote, so it runs only when that build
 # succeeded: against a stale or missing `site/` it would report a build that is not this
 # tree's.
 if run "docs build" uv run --group docs mkdocs build --strict --quiet; then
-  run "docs roles" python3 scripts/check_docs_rendered.py site
+  run "docs roles" python3 scripts/checks/check_docs_rendered.py site
 else
   printf '\n\033[1m=== docs roles\033[0m\nSKIPPED — needs the site from `docs build`, which failed\n'
 fi

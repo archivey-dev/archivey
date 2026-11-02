@@ -9,13 +9,13 @@
 on:
   pull_request:
     paths:
-      - "scripts/rapidgzip_truncation_sweep.py"
+      - "scripts/investigations/rapidgzip_truncation_sweep.py"
       - "openspec/changes/rapidgzip-truncation-investigation/**"
       - ".github/workflows/rapidgzip-truncation-sweep.yml"
   push:
     branches: [main]
     paths:
-      - "scripts/rapidgzip_truncation_sweep.py"
+      - "scripts/investigations/rapidgzip_truncation_sweep.py"
       - "openspec/changes/rapidgzip-truncation-investigation/**"
       - ".github/workflows/rapidgzip-truncation-sweep.yml"
   workflow_dispatch:
@@ -68,7 +68,7 @@ jobs:
           out_dir="rgz-trunc-out"
           mkdir -p "$out_dir"
           tag="${{ matrix.tag }}"
-          uv run --python 3.11 --no-sync python scripts/rapidgzip_truncation_sweep.py \
+          uv run --python 3.11 --no-sync python scripts/investigations/rapidgzip_truncation_sweep.py \
             --parallelization 0 \
             --json-out "$out_dir/${tag}.json" \
             --md-out "$out_dir/${tag}.md"

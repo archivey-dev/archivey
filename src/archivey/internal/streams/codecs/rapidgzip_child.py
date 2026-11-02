@@ -16,7 +16,7 @@ source stays in this process: the child asks for each read, seek and tell, and t
 process answers from the caller's stream, so an exception from that stream reaches
 the caller unchanged.
 
-Measured cost (``scripts/bench_rapidgzip_child.py``, one Linux machine): about 25 ms to
+Measured cost (``scripts/investigations/bench_rapidgzip_child.py``, one Linux machine): about 25 ms to
 start the child and import rapidgzip, and about 70 µs per round trip. A full read took
 1.1 to 1.35 times as long as in-process rapidgzip, and stayed about 1.5 times faster
 than the stdlib engine.
@@ -25,7 +25,7 @@ rapidgzip's bzip2 decoder (``IndexedBzip2File``) runs in the same kind of child,
 per stream (``bzip2=True``), as a precaution: it has not been seen to abort, but it
 comes from the same library as the DEFLATE decoder, which does. Being native code is
 not by itself a reason to isolate a decoder (the standard library's are not);
-an observed crash that cannot always be avoided is. ``scripts/accelerator_crash_search.py``
+an observed crash that cannot always be avoided is. ``scripts/investigations/accelerator_crash_search.py``
 keeps looking for crashes in both, by running them on damaged input in a process it
 watches, so whether the isolation is still needed stays known.
 """

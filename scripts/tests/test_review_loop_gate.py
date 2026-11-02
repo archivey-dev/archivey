@@ -1,6 +1,6 @@
 """The review workflow's gate, exercised without GitHub.
 
-`scripts/review_loop_gate.py` decides whether adding the `review` label runs a round,
+`scripts/review/review_loop_gate.py` decides whether adding the `review` label runs a round,
 counts the round, and writes the comment that closes it. Everything it needs arrives as
 JSON, so the cases that matter — the round cap, a person buying a round past it, a
 review that died, a verdict nobody expected — are testable here instead of by labelling
@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "scripts" / "review_loop_gate.py"
+SCRIPT = ROOT / "scripts" / "review" / "review_loop_gate.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "review-loop.yml"
 
 _spec = importlib.util.spec_from_file_location("review_loop_gate", SCRIPT)
@@ -619,7 +619,7 @@ _BLOCK_INDENT = " " * 10
 
 
 #: The shell both close steps run; the workflow's steps only call it.
-CLOSE_SCRIPT = ROOT / "scripts" / "review_loop_close.sh"
+CLOSE_SCRIPT = ROOT / "scripts" / "review" / "review_loop_close.sh"
 
 
 def _close_step(name: str = "Close the round") -> str:
@@ -910,7 +910,7 @@ def test_the_round_s_model_follows_the_gate() -> None:
         f"--model ${{{{ {gate_says} && 'claude-opus-5-5' || 'claude-sonnet-5-5' }}}}"
         in _step("Claude review")
     )
-    assert "run: bash scripts/review_loop_close.sh" in _step("Close the round")
+    assert "run: bash scripts/review/review_loop_close.sh" in _step("Close the round")
     # The review has a timeout of its own, inside the job's.
     assert "timeout-minutes:" in _step("Claude review")
 
@@ -960,7 +960,9 @@ def test_the_reviewer_may_send_subagents_and_is_told_to_batch() -> None:
         "- name: Claude review"
     )
     # The eval's copy of the paragraph keeps the same guards on a subagent's answer.
-    eval_script = (ROOT / "scripts" / "review_eval.py").read_text(encoding="utf-8")
+    eval_script = (ROOT / "scripts" / "review" / "review_eval.py").read_text(
+        encoding="utf-8"
+    )
     for text in (" ".join(prompt.split()), " ".join(eval_script.split())):
         assert '`subagent_type: "Explore"`' in text
         assert "Read yourself the diff and its immediate surroundings" in text

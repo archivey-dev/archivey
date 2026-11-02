@@ -1,5 +1,5 @@
 {
- "_comment": "Pins for tests/test_commons_compress_corpus.py; rewrite with scripts/gen_commons_compress_expected.py.",
+ "_comment": "Pins for tests/test_commons_compress_corpus.py; rewrite with scripts/fixtures/gen_commons_compress_expected.py.",
  "commons_compress": "0c20ded",
  "files": {
   "7z-empty-mhc-off.7z": {

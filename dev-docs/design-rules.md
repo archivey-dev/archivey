@@ -841,7 +841,7 @@ the rulings above.
   names that exist only for it (`PluginContainer`, `PluginStream`,
   `FormatPolicy.replace`, `FormatInfo.from_plugin`) may change or go in any release,
   with no deprecation release (maintainer, 2026-10-31: it should not freeze before
-  the maintainer has reviewed it closely). `scripts/api_surface.py` `EXPERIMENTAL`
+  the maintainer has reviewed it closely). `scripts/checks/api_surface.py` `EXPERIMENTAL`
   lists them, and `release.py notes` does not ask for a minor for a line whose own
   name is one of them.
   A stable signature that only mentions one (`FormatPolicy`'s constructor with
@@ -1238,7 +1238,7 @@ reaches him.
 - Merging a **tricky** pull request: one that makes a decision of the maintainer's, such
   as a behaviour trade-off, a design reversal, removing or renaming a public name
   (DR-12a), or anything an open decision touches (the list is in `AGENTS.md`, and
-  `scripts/review_prep.py tier` finds most of it). Size alone is not one of them. Any
+  `scripts/review/review_prep.py tier` finds most of it). Size alone is not one of them. Any
   other one an agent may merge once its review approves and CI is green; on standard and
   deep that approval includes the Opus pass, and on deep Cursor's too (maintainer,
   2026-10-31).

@@ -1,4 +1,4 @@
-"""`scripts/review_prep.py`, the checks an implementer runs before adding the `review` label.
+"""`scripts/review/review_prep.py`, the checks an implementer runs before adding the `review` label.
 
 The diff parsing runs on a real ``git diff`` from a scratch repository; the reports are pure
 functions over text and are tested on it directly. The pytest call in ``red-on-base`` is
@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "scripts" / "review_prep.py"
+SCRIPT = ROOT / "scripts" / "review" / "review_prep.py"
 
 _spec = importlib.util.spec_from_file_location("review_prep", SCRIPT)
 assert _spec is not None and _spec.loader is not None
@@ -25,7 +25,7 @@ prep = importlib.util.module_from_spec(_spec)
 sys.modules["review_prep"] = prep
 _spec.loader.exec_module(prep)
 _gate_spec = importlib.util.spec_from_file_location(
-    "review_loop_gate", ROOT / "scripts" / "review_loop_gate.py"
+    "review_loop_gate", ROOT / "scripts" / "review" / "review_loop_gate.py"
 )
 assert _gate_spec is not None and _gate_spec.loader is not None
 gate = importlib.util.module_from_spec(_gate_spec)
@@ -248,7 +248,7 @@ def test_tier_is_light_only_when_every_path_is_prose_or_tests() -> None:
     assert prep.tier(["src/archivey/core.py", "tests/test_x.py"]).name == "standard"
     # The scripts' own tests are tests too; the script they test is not.
     assert prep.tier(["scripts/tests/test_review_tally.py"]).name == "light"
-    assert prep.tier(["scripts/review_tally.py"]).name == "standard"
+    assert prep.tier(["scripts/review/review_tally.py"]).name == "standard"
     assert prep.tier([]).name == "standard"
     # Gates and contracts inside the light folders are taken back out.
     for gate in ("tests/conftest.py", "dev-docs/threat-model.md"):
@@ -296,14 +296,14 @@ def test_the_review_rules_are_deep_and_the_gate_goes_to_the_maintainer() -> None
     for rules in (
         ".github/review-loop-prompt.md",
         ".claude/skills/code-review-skill/SKILL.md",
-        "scripts/review_shape.py",
+        "scripts/review/review_shape.py",
     ):
         assert prep.tier([rules]).name == "deep", rules
         assert prep.maintainer_decisions([prep.FileDiff(rules)]) == [], rules
     for gate in (
-        "scripts/review_loop_gate.py",
-        "scripts/review_loop_close.sh",
-        "scripts/review_prep.py",
+        "scripts/review/review_loop_gate.py",
+        "scripts/review/review_loop_close.sh",
+        "scripts/review/review_prep.py",
         ".github/workflows/review-loop.yml",
         ".github/workflows/risk-label.yml",
     ):
@@ -342,12 +342,12 @@ def test_tier_is_deep_on_a_safety_path_and_on_workflows() -> None:
 
 
 def test_the_merge_line_names_the_maintainers_decisions() -> None:
-    t = prep.tier(["scripts/release.py"])
-    t.maintainer = ["touches the release path: scripts/release.py"]
+    t = prep.tier(["scripts/release/release.py"])
+    t.maintainer = ["touches the release path: scripts/release/release.py"]
     # AGENTS.md, the risk-label workflow and the PR template quote the first line.
     assert prep.tier_report(t)[-2:] == [
         "merge: the maintainer merges this one",
-        "  maintainer decision: touches the release path: scripts/release.py",
+        "  maintainer decision: touches the release path: scripts/release/release.py",
     ]
     # With no decision, the line names what must approve first: the Opus pass runs on
     # the tiers review_loop_gate.py lists, and Cursor on deep alone.

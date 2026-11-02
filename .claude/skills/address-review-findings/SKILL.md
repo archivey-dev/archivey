@@ -233,14 +233,14 @@ most common self-inflicted CI failure. The gate is `AGENTS.md` §Every task and
 change, archive it here (`CONTRIBUTING.md` §"Archiving an OpenSpec change"), or leave the
 trailing task unchecked while the design is still moving and say so in your reply.
 
-### Before the `review` label: `scripts/review_prep.py`
+### Before the `review` label: `scripts/review/review_prep.py`
 
 Run it before you add the label, and again before every re-label:
 
 ```bash
-uv run python scripts/review_prep.py                        # sweep + width vs origin/main
-uv run python scripts/review_prep.py --base <reviewed-sha>  # a round's fixes only
-uv run python scripts/review_prep.py red-on-base tests/test_x.py::test_new ...
+uv run python scripts/review/review_prep.py                        # sweep + width vs origin/main
+uv run python scripts/review/review_prep.py --base <reviewed-sha>  # a round's fixes only
+uv run python scripts/review/review_prep.py red-on-base tests/test_x.py::test_new ...
 ```
 
 `red-on-base` needs the project environment for pytest and stops if it cannot import it;
@@ -392,7 +392,7 @@ Once the round is done, the PR should record what happened to every finding.
 Reply once per round, not once per fix.
 
 **Then ask for the next round, if the review asked to see the fixes.** The round's
-closing comment says which: when it asks for them, run `scripts/review_prep.py` over the
+closing comment says which: when it asks for them, run `scripts/review/review_prep.py` over the
 fixes (§5), then add the `review` label after your final push, which starts the next
 round of the [review loop](../../../dev-docs/review-loop.md). It is the last thing you
 do — a commit pushed after it may not be in what gets reviewed. If the branch conflicts
@@ -421,7 +421,7 @@ labels alone (a label can be removed, and a fork's pull request gets none):
 ```bash
 base=main  # the pull request's base branch
 git fetch origin "$base"
-git show "origin/$base:scripts/review_prep.py" > scripts/.review_prep_base.py
+git show "origin/$base:scripts/review/review_prep.py" > scripts/.review_prep_base.py
 python3 scripts/.review_prep_base.py --base "origin/$base" tier
 rm scripts/.review_prep_base.py
 ```

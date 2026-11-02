@@ -60,7 +60,7 @@ moves, and hourly. For each conflicted pull request it posts one comment per hea
 which wakes the watching session, and takes the `review` label off with a comment saying
 so, unless the label went on in the last 50 minutes and its round may still be
 queued. Merge `main`, push, and add the label again if a round was waiting.
-`scripts/conflict_notice.py` holds the rules.
+`scripts/review/conflict_notice.py` holds the rules.
 
 **The outcome shows as a label.** A finished round leaves one label saying how it
 ended, and takes off any other of the four:
@@ -81,7 +81,7 @@ was reviewed. `OUTCOME_LABELS` in the gate holds the mapping.
 
 **The risk tier shows as a label too.** `risk-label.yml` labels every pull request
 `risk: light`, `risk: standard` or `risk: deep` when it opens and again on each push,
-from `python3 scripts/review_prep.py tier` (the review skill's §1 says what each tier
+from `python3 scripts/review/review_prep.py tier` (the review skill's §1 says what each tier
 asks of a reviewer). It runs the base branch's copy of the script, so a pull request
 cannot lower its own tier by editing the path lists. It only reports, like the outcome
 labels. A deep pull request's rounds end with a security pass, and so do those of a pull
@@ -116,10 +116,10 @@ cost; the day of live rounds showed that it reads far less deeply on a first loo
 
 The prompt every round gets is
 [`.github/review-loop-prompt.md`](../.github/review-loop-prompt.md), filled in by
-`scripts/review_loop_prompt.py`; both closes run `scripts/review_loop_close.sh`.
+`scripts/review/review_loop_prompt.py`; both closes run `scripts/review/review_loop_close.sh`.
 
 Each close also checks the round's posts against the shape `code-review-skill` §3 and
-§6 ask for (`scripts/review_shape.py`): the `## Round <n> ·` heading and attribution
+§6 ask for (`scripts/review/review_shape.py`): the `## Round <n> ·` heading and attribution
 line, the collapsed `Measured this round` list, a `### K<n> ·` heading on every inline
 finding and reply, the footer on every post, no tables outside a code fence, and no
 GitHub API error pasted in. The closing comment lists any miss under **Posting
@@ -158,7 +158,7 @@ can fall out of step with what actually ran:
 The round cap and the retry guard apply to agents only. A person is a `User` sender whose
 `review` labeled event has no `performed_via_github_app`; an event that cannot be found
 counts as an agent. `is_person` in
-[`scripts/review_loop_gate.py`](../scripts/review_loop_gate.py) holds the rule and the
+[`scripts/review/review_loop_gate.py`](../scripts/review/review_loop_gate.py) holds the rule and the
 evidence for it.
 
 ## Stopping it
@@ -170,7 +170,7 @@ evidence for it.
   full and still fixed, but the closing comment does not ask for another round.
   `findings` (🔄 Request Changes) asks for one.
   `decision` stops until the maintainer answers. `VERDICT_STOPS` in
-  [`scripts/review_loop_gate.py`](../scripts/review_loop_gate.py) holds the mapping.
+  [`scripts/review/review_loop_gate.py`](../scripts/review/review_loop_gate.py) holds the mapping.
 - **The verdict advises; it does not refuse.** After a verdict that needs no other
   round, an agent's label still runs one. A nit or a maintainer question sometimes grows
   into a larger change that warrants a full review, and the implementer is trusted to
@@ -211,7 +211,7 @@ assistant, answers only people.
 - **Measuring the reviewer.** After changing the review skill, the prompt
   (`.github/review-loop-prompt.md`) or the model, rerun the bugs the loop missed ([`review-eval/`](review-eval/README.md))
   and add the score to its results.
-- **Counting what it found.** `review-tally.yml` runs `scripts/review_tally.py` each
+- **Counting what it found.** `review-tally.yml` runs `scripts/review/review_tally.py` each
   Monday over the week's merged pull requests: rounds per pull request, findings by
   severity and by who raised them (the Opus round or a Sonnet round), each finding's
   disposition, findings an earlier fix caused, and rounds whose posts missed the posting

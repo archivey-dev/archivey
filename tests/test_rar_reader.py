@@ -1270,7 +1270,7 @@ def test_multi_volume_roundtrip() -> None:
 
 
 def _stdin_payload(stem: str) -> bytes:
-    """The bytes ``scripts/gen_rar_fixtures.py`` piped to ``rar -si`` for ``stem``."""
+    """The bytes ``scripts/fixtures/gen_rar_fixtures.py`` piped to ``rar -si`` for ``stem``."""
     seed, size = {
         "stdin_vol": (b"stdin-vol", 2000),
         "stdin_vol_m3": (b"stdin-vol-m3", 4000),
@@ -2418,7 +2418,7 @@ def test_rar3_compressed_archive_comment_counts_toward_budget(
     assert calls == []
 
 
-# The comment texts ``scripts/gen_rar_fixtures.py`` gives the two
+# The comment texts ``scripts/fixtures/gen_rar_fixtures.py`` gives the two
 # ``comment_compressed*__rar4.rar`` fixtures. ``rar`` 6.23 compresses each into a
 # RAR 2.9-4 ``CMT`` SERVICE header; the unicode one is UTF-16LE with
 # ``SUBHEAD_FLAGS_CMT_UNICODE`` set.

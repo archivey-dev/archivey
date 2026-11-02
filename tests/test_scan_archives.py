@@ -1,6 +1,6 @@
 """The corpus scan script, run against the test fixtures.
 
-`scripts/scan_archives.py` dry-runs every archive under a directory and writes a CSV
+`scripts/investigations/scan_archives.py` dry-runs every archive under a directory and writes a CSV
 whose `flags` column is the filter for "look at this one". It is not in CI otherwise,
 and a flag that silently fails to reach the CSV looks exactly like an archive with
 nothing wrong, so the cases where that could happen are pinned here.
@@ -24,7 +24,7 @@ from archivey.internal.base_reader import BaseArchiveReader
 from tests.streams_util import make_lzip_member
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "scan_archives.py"
+SCRIPT = ROOT / "scripts" / "investigations" / "scan_archives.py"
 FIXTURE = ROOT / "tests" / "fixtures" / "corpus" / "rar" / "basic.rar"
 
 _spec = importlib.util.spec_from_file_location("scan_archives", SCRIPT)

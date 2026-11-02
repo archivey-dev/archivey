@@ -12,7 +12,7 @@ session needs and points at the rest.
 2. **Run the gates with the scripts**, not hand-assembled commands:
    `./scripts/check.sh --fix` (seconds, every fast gate), `./scripts/test.sh` (minutes),
    `./scripts/test.sh --all-configs` when the change can reach an optional library, and
-   `uv run python scripts/review_prep.py` before each review round.
+   `uv run python scripts/review/review_prep.py` before each review round.
    [`CONTRIBUTING.md`](CONTRIBUTING.md) §Getting started says when each applies.
 3. **Coding and testing rules** are in `CONTRIBUTING.md`. **Design questions** go through
    [`dev-docs/design-rules.md`](dev-docs/design-rules.md) first — its index lists every
@@ -109,7 +109,7 @@ missing; read that line.
   which archivey refuses (it drops some RAR5 members;
   [`known-issues.md`](dev-docs/known-issues.md)), so those tests skip and the
   verification block prints `REFUSED unar`. To run them, build 1.10.8 with
-  `scripts/install-unar-from-source.sh --dest ~/.local/bin`.
+  `scripts/ci/install-unar-from-source.sh --dest ~/.local/bin`.
 - **`openspec`** installs to `~/.local/bin`; the manual recipe and the common commands
   are in `CONTRIBUTING.md` §OpenSpec changes.
 - **Gates from a `git worktree`** work unchanged; the one trap (an empty `.venv` that
@@ -175,7 +175,7 @@ are about the *internal tracker* only:
   or inline comment, a commit message, or a file in the repo. Write "tracked internally"
   instead: the reader cannot open the ticket, so the key is dead weight to them and it
   publishes the internal layout.
-- `scripts/check_tracker_urls.py` (in `check.sh` and CI) enforces the URL rule for
+- `scripts/checks/check_tracker_urls.py` (in `check.sh` and CI) enforces the URL rule for
   tracked files only. Keys, PR text, comments and commit messages are on you.
 - **GitHub `#nnn` is the public record and is always fine** — in PR text, commits,
   comments and repo files alike. This rule does not touch it.

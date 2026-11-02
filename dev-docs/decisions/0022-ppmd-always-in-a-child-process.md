@@ -100,7 +100,7 @@ children are recycled after a fixed number of decoders.
   0.5 to 0.8 ms per MiB of decoded output alone; the PR #481 docstring's 450 MB/s (about
   2.2 ms per MiB) counts compressed input and decoded output together. The 30 µs is the
   round trips alone. Measured end to end on the shipped pool (2026-10-22,
-  `scripts/bench_process_isolation.py`), a non-solid PPMd member costs about 1.4 to 2 ms
+  `scripts/investigations/bench_process_isolation.py`), a non-solid PPMd member costs about 1.4 to 2 ms
   more than in-process, so another term dominates. Part of it is the pool's own
   recycling: a child is retired every 64 decoders (`MAX_DECODERS_PER_CHILD`), about
   0.2 ms per decoder at the start cost below. The rest is not traced (decoder

@@ -70,7 +70,7 @@ def _extra_records(data: bytes) -> list[_Record]:
     """Every FHEXTRA record in every RAR5 FILE header, in file order.
 
     Offsets are found rather than hard-coded because the fixtures are regenerated
-    by ``scripts/gen_rar_fixtures.py`` and their layout is not pinned.
+    by ``scripts/fixtures/gen_rar_fixtures.py`` and their layout is not pinned.
     """
     found: list[_Record] = []
     pos = 8  # past the RAR5 signature

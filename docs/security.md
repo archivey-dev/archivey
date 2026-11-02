@@ -186,7 +186,7 @@ costs only the member being read:
   copying of larger members on top. Each process
   holds about 9 MB while it waits to be reused. Where no child process can start, reading raises
   `ResourceUnavailableError`; nothing is decoded in your process instead.
-  [`scripts/bench_process_isolation.py`](https://github.com/archivey-dev/archivey/blob/main/scripts/bench_process_isolation.py)
+  [`scripts/investigations/bench_process_isolation.py`](https://github.com/archivey-dev/archivey/blob/main/scripts/investigations/bench_process_isolation.py)
   in the repository measures these costs on your machine.
 - **`ProcessIsolation.NONE`** decodes everything in your process. It's for trusted files, tests,
   and places that can't start processes. A damaged or crafted PPMd member can crash your process,
@@ -227,7 +227,7 @@ Every limit has a default that lets large legitimate archives through. A higher 
 malicious archive use more memory, disk space or processing time before it's stopped, so if you know
 what your archives look like, lower the limits to fit them. They're set in `ArchiveyConfig`, and
 `extract_all` also takes `limits=` for one call.
-[`scripts/measure_limit_costs.py`](https://github.com/archivey-dev/archivey/blob/main/scripts/measure_limit_costs.py)
+[`scripts/investigations/measure_limit_costs.py`](https://github.com/archivey-dev/archivey/blob/main/scripts/investigations/measure_limit_costs.py)
 in the repository measures what each limit costs in time and memory on your machine.
 
 - **`extraction_limits.max_extracted_bytes`**, default 2 GiB, caps the bytes one extraction writes.

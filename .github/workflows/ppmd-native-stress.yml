@@ -26,8 +26,8 @@ on:
       - "src/archivey/internal/streams/codecs/isolated.py"
       - "src/archivey/internal/streams/child_process.py"
       - "tests/test_ppmd_*.py"
-      - "scripts/ppmd_*.py"
-      - "scripts/ci_run_native_modules.py"
+      - "scripts/investigations/ppmd_*.py"
+      - "scripts/ci/ci_run_native_modules.py"
       - ".github/workflows/ppmd-native-stress.yml"
       - "pyproject.toml"
       - "uv.lock"
@@ -91,7 +91,7 @@ jobs:
         # This workflow must stay non-required so a red run does not block merge.
         run: >
           uv run --python ${{ matrix.python-version }} --no-sync
-          python scripts/ppmd_native_stress.py
+          python scripts/investigations/ppmd_native_stress.py
           --summary ppmd-stress-summary-${{ matrix.os }}-py${{ matrix.python-version }}.md
 
       - name: Soak test_ppmd_raw_streams (pytest module exit abort)
@@ -103,7 +103,7 @@ jobs:
           ARCHIVEY_PPMD_RAW_STREAMS_ITERS: ${{ github.event.inputs.iterations || '20' }}
         run: >
           uv run --python ${{ matrix.python-version }} --no-sync
-          python scripts/ci_run_native_modules.py
+          python scripts/ci/ci_run_native_modules.py
           --modules tests/test_ppmd_raw_streams.py
           --repeat ${{ env.ARCHIVEY_PPMD_RAW_STREAMS_ITERS }}
           --summary ppmd-raw-streams-soak-${{ matrix.os }}-py${{ matrix.python-version }}.md
@@ -118,7 +118,7 @@ jobs:
         if: runner.os == 'Linux' && steps.sync.outcome == 'success'
         run: >
           uv run --python ${{ matrix.python-version }} --no-sync
-          python scripts/ppmd_valgrind.py --scenario all
+          python scripts/investigations/ppmd_valgrind.py --scenario all
 
       - name: Stress PPMd (pytest marker entry points)
         # Run even when the script step failed (crash signal), but not when setup/sync

@@ -167,7 +167,7 @@ The 16 MiB gate is the break-even of the child process: it costs about 45 ms to 
 open (about 25 ms of it starting the child), plus about 70 µs per round trip, which the
 parent's read-ahead buffer reduces, and saves about 3.4 ms per MB of compressed input on a
 full read, so below about 13 MB the standard library is faster
-(`scripts/bench_rapidgzip_child.py`; the numbers are in the design of the archived
+(`scripts/investigations/bench_rapidgzip_child.py`; the numbers are in the design of the archived
 `rapidgzip-deflate-child-process` OpenSpec change). The last `AUTO`
 condition keeps a bare zlib or raw DEFLATE stream on the standard library: nothing could
 catch `rapidgzip` ending a raw DEFLATE stream early, and a zlib stream's Adler-32 is checked
@@ -222,7 +222,7 @@ parent over a pipe (`OPEN_STREAM`), and is not reused, which costs about 85 to 1
 stream, more than the decode saves at that size. So `AUTO`
 keeps sequential reads on the standard library on Windows; a declared seek still gets
 `rapidgzip`, whose index is what that open needs. The numbers come from
-`scripts/exploration/rapidgzip_platform_probe.py`, which measures the same on any machine.
+`scripts/investigations/exploration/rapidgzip_platform_probe.py`, which measures the same on any machine.
 On the `windows-latest` CI runner a ZIP member's index once had no interior
 point at all; that machine's in-process index did, so it is a property of the runner, not
 of Windows.
@@ -717,7 +717,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 (package `tabix`) install from the distribution. `scripts/setup-dev-env.sh` (`tabix`
 on Linux, `htslib` on macOS) and the Linux `all` CI legs install `bgzip`, so the suite
 checks the walk against the reference writer there; the macOS CI legs skip that check.
-`scripts/bench_rapidgzip_child.py` measures the child's start and round-trip cost.
+`scripts/investigations/bench_rapidgzip_child.py` measures the child's start and round-trip cost.
 
 ## 9. References
 

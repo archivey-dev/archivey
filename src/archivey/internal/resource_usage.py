@@ -1,6 +1,6 @@
 """How close one reader came to each reader-lifetime limit: a private record.
 
-Internal on purpose. ``scripts/scan_archives.py`` and ``archivey extract --dry-run``
+Internal on purpose. ``scripts/investigations/scan_archives.py`` and ``archivey extract --dry-run``
 read it to tune the defaults from a real corpus; it becomes public, if at all, once
 such a scan shows which numbers are useful (a public name would be kept under the
 deprecate-first policy).

@@ -20,7 +20,7 @@ from the native parse before any process starts:
   line (see :mod:`archivey.internal.external.unar`).
 
 Measurements: ``dev-docs/investigations/alternative-rar-decompressors.md`` and
-``scripts/exploration/rar_decompressor_matrix.py``.
+``scripts/investigations/exploration/rar_decompressor_matrix.py``.
 """
 
 from __future__ import annotations
