@@ -3770,7 +3770,11 @@ def test_a_cut_stream_names_its_format(codec: Codec, label: str) -> None:
         stream.read()
 
 
-@pytest.mark.parametrize("sc", stream_codecs(), ids=lambda sc: sc.stream_name)
+@pytest.mark.parametrize(
+    "sc",
+    [sc for sc in stream_codecs() if sc.codec is not Codec.STORED],
+    ids=lambda sc: sc.stream_name,
+)
 def test_a_translated_eof_names_its_format(sc: StreamCodec) -> None:
     """Every codec's translator maps a library's ``EOFError`` the same way, naming the
     stream.
@@ -3782,6 +3786,12 @@ def test_a_translated_eof_names_its_format(sc: StreamCodec) -> None:
     translated = resolve_codec(sc.codec).translate(EOFError("cut"))
     assert type(translated) is TruncatedError
     assert str(translated) == f"{sc.stream_name} stream is truncated: cut"
+
+
+def test_a_stored_streams_eof_is_its_sources_own() -> None:
+    """A stored stream has no decoder: an ``EOFError`` is the source's, an I/O problem
+    (DR-15a), and reaches the caller as itself."""
+    assert resolve_codec(Codec.STORED).translate(EOFError("cut")) is None
 
 
 def test_an_eof_from_the_callers_source_is_not_translated() -> None:
