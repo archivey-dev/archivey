@@ -135,6 +135,10 @@ from archivey.internal.streams.streamtools import (
     SparseStream,
     ensure_bufferedio,
 )
+from archivey.internal.streams.verification import (
+    ask_verification_proofs,
+    raise_member_level,
+)
 from archivey.internal.timestamps import TimestampIssue, unix_to_datetime
 from archivey.internal.unix_mode import special_file_type_from_tar_typeflag
 from archivey.internal.walk_handoff import MemberDataView
@@ -152,6 +156,7 @@ from archivey.types import (
     MemberStreams,
     MemberType,
     StreamFormat,
+    Verification,
     _ReadOnlyDict,
 )
 
@@ -680,6 +685,28 @@ class TarReader(BaseArchiveReader):
             with self._translated_errors():
                 entry = self._step(walker)
         self._verify_tar_eof(walker, entry, last_member=last_member, member_count=index)
+        self._raise_members_the_codec_checked()
+
+    def _raise_members_the_codec_checked(self) -> None:
+        """Raise every listed file to ``CHECKSUM`` when the codec's checksum covered it.
+
+        Runs when a walk has ended. On a compressed tar the end-of-archive checks read
+        on to the codec's end, where its whole-stream checksum (a gzip trailer, a
+        bzip2 stream CRC) is checked. When the codec stream proves it matched over a
+        decode from its start with no gap, every member's bytes passed it, read or not
+        (``verification-level-redesign``, the spanning checks). A sparse member's holes
+        are not stored bytes, so it is left to its own reads. A codec with no check, a
+        seek that broke the decode, or a walk cut short raises nothing.
+        """
+        codec = self._owned_codec_stream
+        if codec is None:
+            return
+        proofs = ask_verification_proofs(codec)
+        if not (proofs.ended and proofs.content):
+            return
+        for member in self._listed:
+            if member.is_file and self._member_data_is_stream_bytes(member):
+                raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
 
     def _iter_members_progressive(self) -> Iterator[ArchiveMember]:
         """Forward-only member walk. Yields bare members; the base's shared progressive
