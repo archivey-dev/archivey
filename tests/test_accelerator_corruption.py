@@ -892,8 +892,10 @@ def test_bzip2_accelerator_reads_stream_gaps_as_the_standard_library_does(
 
 def test_bzip2_accelerator_stops_at_a_skipped_stream_after_a_seek_past_it() -> None:
     # A seek into the stream after the skipped one lands where the decoder's output
-    # already went on past the damage; the seek raises, as with the accelerator off,
-    # instead of handing out a position past it.
+    # already went on past the damage; the read after it raises, as with the
+    # accelerator off, instead of handing out bytes from past it. (A decoder seek
+    # decodes nothing until that read; ``SEEK_END`` finds the size, so it raises at
+    # the seek.)
     pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
     data = _BZ2_LAYOUT_CASES["stream-without-markers-between"]
     # 1500 lands inside the stream after the damage; 2000 is the end of the output the
@@ -904,6 +906,7 @@ def test_bzip2_accelerator_stops_at_a_skipped_stream_after_a_seek_past_it() -> N
             pytest.raises(CorruptionError),
         ):
             s.seek(target, whence)
+            s.read(1)
 
 
 @pytest.mark.parametrize(

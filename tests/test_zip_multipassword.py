@@ -161,7 +161,7 @@ def test_single_colliding_password_is_reported_as_a_password_failure(
     "compression", [p for p in COMPRESSION_METHODS if p.id != "stored"]
 )
 def test_single_colliding_password_fails_a_forward_seek(compression: int) -> None:
-    """A forward seek decodes what it skips, so the seek itself names both causes."""
+    """A forward seek decodes what it skips at the next read, which names both causes."""
     blob = build_zipcrypto_zip(RIGHT, NAME.encode(), DATA, compression=compression)
     collider = find_check_byte_collision(blob, NAME, RIGHT)
 
@@ -171,6 +171,7 @@ def test_single_colliding_password_fails_a_forward_seek(compression: int) -> Non
         _open_decoding_header(ar, compression) as stream,
     ):
         stream.seek(len(DATA))
+        stream.read(1)
 
 
 def test_single_colliding_password_stored_seek_reports_unverified() -> None:

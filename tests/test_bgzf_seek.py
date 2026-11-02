@@ -122,10 +122,12 @@ def test_bgzf_then_plain_member_keeps_the_walked_points_and_no_size() -> None:
     whole = b"".join(PARTS[:4])
     with _open(io.BytesIO(data)) as stream:
         stream.seek(STARTS[2] + 5)
+        # The seek decodes nothing; the read after it walks to the target.
+        assert _points(stream) == [0]
+        assert stream.read(10) == whole[STARTS[2] + 5 : STARTS[2] + 15]
         # The walk stops at the plain member; the decode records its start.
         assert _engine(stream)._size is None
         assert _points(stream) == STARTS[:4]
-        assert stream.read(10) == whole[STARTS[2] + 5 : STARTS[2] + 15]
         assert stream.seek(0, io.SEEK_END) == len(whole)
 
 
@@ -133,8 +135,8 @@ def test_trailing_zeros_after_bgzf_keep_the_points() -> None:
     data = make_bgzf(PARTS) + b"\x00" * 512
     with _open(io.BytesIO(data)) as stream:
         stream.seek(STARTS[4])
-        assert _points(stream) == STARTS
         assert stream.read() == FULL[STARTS[4] :]
+        assert _points(stream) == STARTS
 
 
 def test_undeclared_stream_walks_nothing_and_keeps_no_points() -> None:
@@ -379,7 +381,9 @@ def test_bgzf_size_is_known_after_a_walk_or_a_full_read(fill: str) -> None:
         elif fill == "read_all":
             assert stream.read() == full
         else:
+            # The seek walks at the read after it, not at the seek.
             stream.seek(len(full) // 2)
+            assert stream.read(1) == full[len(full) // 2 : len(full) // 2 + 1]
         assert _engine(stream).try_get_size() == len(full)
         assert stream.size == len(full)
 
