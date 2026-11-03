@@ -543,3 +543,33 @@ def test_a_call_ratio_tighter_than_the_config_holds_a_compressed_tar(
         pytest.raises(ResourceLimitError, match="max_ratio=10:1"),
     ):
         reader.extract_all(tmp_path / "out", limits=tight)
+
+
+@pytest.mark.parametrize("hook", ["on_progress", "filter", "members"])
+def test_a_callers_read_inside_an_unlimited_extraction_keeps_the_readers_ratio(
+    tmp_path: Path, hook: str
+) -> None:
+    # The call's limits govern its own decodes, not the caller's code it runs: a read
+    # from a callback is held to the reader's limits, on a .tar.gz as on a ZIP.
+    targz = _tar_gz_of_zeros(tmp_path / "bomb.tar.gz", 24 * _MIB)
+    zipped = _zip(tmp_path / "bomb.zip", [("zeros", bytes(24 * _MIB))])
+    for path in (targz, zipped):
+        with open_archive(path) as reader:
+            refused: list[bool] = []
+
+            def read_it(_arg: object, reader=reader, refused=refused) -> object:
+                if not refused:
+                    try:
+                        reader.read("zeros")
+                    except ResourceLimitError:
+                        refused.append(True)
+                    else:
+                        refused.append(False)
+                return _arg if hook == "filter" else True
+
+            reader.extract_all(
+                tmp_path / f"out-{path.name}",
+                limits=ExtractionLimits.UNLIMITED,
+                **{hook: read_it},
+            )
+        assert refused == [True], path.name

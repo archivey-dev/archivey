@@ -30,6 +30,7 @@ from typing import (
     NamedTuple,
     NoReturn,
     Self,
+    TypeVar,
     cast,
 )
 
@@ -236,6 +237,10 @@ _UnconfirmedEvidence = Literal["extension", "content_probe"]
 # guards cost nothing per member, few enough that a pass on another thread is not kept
 # waiting for a whole listing.
 _DRAIN_BATCH = 256
+
+
+_ArgT = TypeVar("_ArgT")
+_RetT = TypeVar("_RetT")
 
 
 class _UnconfirmedWording(NamedTuple):
@@ -1160,6 +1165,24 @@ class BaseArchiveReader(ArchiveReader):
         """The ratio fields of the ``extract_all`` call running on this thread, or
         ``None`` outside one."""
         return getattr(self._extraction_ratio, "limits", None)
+
+    def _outside_extraction_ratio(
+        self, callback: Callable[[_ArgT], _RetT]
+    ) -> Callable[[_ArgT], _RetT]:
+        """``callback``, run with no ``extract_all`` ratio in force on its thread
+        (``_run_ratio_limits``): a caller's ``filter``, selector or ``on_progress``
+        that reads the reader is held to the reader's limits, not the call's."""
+        run_ratio = self._extraction_ratio
+
+        def call(arg: _ArgT, /) -> _RetT:
+            outer = getattr(run_ratio, "limits", None)
+            run_ratio.limits = None
+            try:
+                return callback(arg)
+            finally:
+                run_ratio.limits = outer
+
+        return call
 
     def _hold_to_ratio(self, stream: ArchiveStreamImpl, member: ArchiveMember) -> None:
         """Hold a member stream ``open()`` or ``stream_members()`` gives the caller to
@@ -4472,14 +4495,17 @@ class BaseArchiveReader(ArchiveReader):
             limits if limits is not None else self._config.extraction_limits
         )
         collector = self._diagnostics_collector
+        # The caller's code the call runs is not one of its decodes: a read it makes is
+        # held to the reader's limits, as on a ZIP.
+        outside = self._outside_extraction_ratio
         coordinator = ExtractionCoordinator(
             policy=policy,
             overwrite=overwrite,
             on_error=on_error,
             abort_on=abort_on,
-            on_progress=on_progress,
-            selector=selector,
-            filter=filter,
+            on_progress=None if on_progress is None else outside(on_progress),
+            selector=None if selector is None else outside(selector),
+            filter=None if filter is None else outside(filter),
             limits=effective_limits,
             # The reader's ratio, a deprecated field of its config's extraction limits
             # included, under the call's: a per-call ``limits=`` that sets no ratio

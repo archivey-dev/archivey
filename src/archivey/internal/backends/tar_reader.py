@@ -1677,9 +1677,10 @@ class TarReader(BaseArchiveReader):
                 for k in others[:_AMBIGUOUS_FIELDS_NAMED]
             )
             rest = len(others) - _AMBIGUOUS_FIELDS_NAMED
-            fields = "field" if len(others) == 1 else "fields"
-            also = f" The same holds for {len(others)} more {fields}: {named}"
-            also += f", and {rest} others." if rest > 0 else "."
+            # Only the shape is shared: a NUL or newline in a keyword is read
+            # otherwise than one in a value.
+            also = f" Other fields with this shape: {named}"
+            also += f", and {rest} more." if rest > 0 else "."
         self._diagnostics_collector.emit(
             code=DiagnosticCode.MEMBER_HEADER_AMBIGUOUS,
             message=(

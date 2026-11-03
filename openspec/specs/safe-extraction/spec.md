@@ -1471,8 +1471,9 @@ next read, so the prefix of a cut stream is kept; a seek, even a refused one, dr
 it. `max_ratio=None` turns it off. An `extract_all` call's own decodes SHALL be held to the
 ratio fields that call applies instead, so `ExtractionLimits.UNLIMITED` or a deprecated
 ratio field passed in `limits=` lifts or tightens it for that call alone, as for a
-ZIP; a read after the call SHALL still be held to the reader's limits, though the call
-decoded past them.
+ZIP. A read after the call, or from the caller's own code the call runs (`filter`,
+a `members=` predicate, `on_progress`), SHALL still be held to the reader's limits,
+though the call decoded past them.
 
 #### Scenario: compressed container decode matrix
 
@@ -1484,6 +1485,7 @@ decoded past them.
 | A `.tar.gz` under the ratio | Lists, reads and extracts unchanged |
 | A `.tar.gz` of 24 MiB of zeros, `extract_all(limits=ExtractionLimits.UNLIMITED)` | Extracts, from a seekable source and in streaming mode |
 | The same, with a deprecated `ExtractionLimits(max_ratio=1e9)` in `limits=`, then `read()` | Extracts; the read raises `ResourceLimitError` |
+| The same `.tar.gz` or a ZIP of it under `UNLIMITED`, with an `on_progress`, `filter` or `members=` callback that calls `read()` | The callback's read raises `ResourceLimitError` |
 
 ### Requirement: Enforce Maximum Entry Count
 
