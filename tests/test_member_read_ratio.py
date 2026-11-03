@@ -547,9 +547,10 @@ def test_a_deprecated_call_ratio_governs_a_compressed_tars_extraction_only(
         reader.extract_all(tmp_path / "out", limits=off)
         # The reader's own reads are still held, though the extraction decoded the
         # whole stream past the limit already.
-        with pytest.raises(ResourceLimitError, match="max_ratio=800:1"):
-            reader.read("zeros")
-        # A second read of the member reaches the refused offset again, and is
+        for _ in range(3):
+            with pytest.raises(ResourceLimitError, match="max_ratio=800:1"):
+                reader.read("zeros")
+        # A read of the member reaches the refused offset again each time, and is
         # refused before it returns a byte past the ratio.
         got = 0
         with (
