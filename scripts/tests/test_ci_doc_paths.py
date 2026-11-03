@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
 FILTERED = ("ci.yml",)
 # Doc paths a test reads, and the test that reads each one.
 TEST_READ = {

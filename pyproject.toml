@@ -135,12 +135,12 @@ dev = [
     # just by having a newer one. Bump these deliberately, together, in their own commit.
     #
     # Keep `ruff` in step with the `rev:` in .pre-commit-config.yaml — the framework hook
-    # path resolves its own copy. tests/test_tooling_pins.py enforces that.
+    # path resolves its own copy. scripts/tests/test_tooling_pins.py enforces that.
     "pyrefly==1.4.0",
     "ty==0.0.90",
     "ruff==0.17.1",
     "pre-commit>=4.0.0",
-    # tests/test_release_script.py reads the workflow files with it.
+    # scripts/tests/test_release_script.py reads the workflow files with it.
     "pyyaml>=6.0",
     "coverage[toml]>=7.6.0",
     # >=1.1: earlier releases pin pyppmd<1.3.0, the range the pyppmd>=1.3.1 floor
@@ -308,7 +308,7 @@ exclude_also = [
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "tests", "."]
-testpaths = ["tests"]
+testpaths = ["tests", "scripts/tests"]
 # --timeout: a hung test fails fast (with a traceback of all threads) instead of stalling
 # the whole job until the CI hard limit. 60s is far above any real test here (all run in
 # milliseconds), so only a genuine hang trips it.

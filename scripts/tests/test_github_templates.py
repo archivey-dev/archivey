@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 GITHUB = ROOT / ".github"
 FORMS = sorted((GITHUB / "ISSUE_TEMPLATE").glob("*.yml"))
 # The files that link into the repository. config.yml links only to the advisory form.
