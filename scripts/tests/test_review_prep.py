@@ -8,6 +8,7 @@ not run here.
 from __future__ import annotations
 
 import importlib.util
+import re
 import shutil
 import subprocess
 import sys
@@ -836,3 +837,54 @@ def test_a_quiet_workflow_is_standard_and_keeps_the_security_pass(
     _write(tmp_path, {".github/workflows/ci.yml": "on: push\njobs: {}\n"})
     _git(tmp_path, "commit", "-qam", "ci too")
     assert prep.review_tier("main", "pr").name == "deep"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".github/workflows/review-loop.yml",
+        ".github/workflows/risk-label.yml",
+        ".claude/skills/address-review-findings/SKILL.md",
+    ],
+)
+def test_the_base_copy_runs_at_the_depth_it_came_from(path: str) -> None:
+    """The script finds the repository from its own path (``parents[2]`` under
+    ``scripts/review/``), so a copy of the base's script written one folder up would
+    run git outside the checkout and every tier would come out empty."""
+    text = (ROOT / path).read_text(encoding="utf-8")
+    shows = re.findall(
+        r'git show "origin/\$(?:BASE|base):([\w./-]+)" > "?([^"\s]+)', text
+    )
+    assert shows, "no base copy found"
+    for source, dest in shows:
+        if dest == "$base_prep":
+            dest = re.findall(
+                r"base_prep=(\S+)\n\s*git show \S+:" + re.escape(source), text
+            )[0]
+        assert Path(dest).parent == Path(source).parent, (source, dest)
+
+
+def test_the_moved_script_finds_the_repository_only_from_its_own_folder(
+    tmp_path: Path,
+) -> None:
+    """The red-green pair behind the depth rule above."""
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _write(tmp_path, {"README.md": "x\n"})
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "base")
+    for rel in ("scripts/review/.review_prep_base.py", "scripts/.review_prep_base.py"):
+        dest = tmp_path / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(SCRIPT, dest)
+
+    def run(rel: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, rel, "--base", "main", "tier"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    assert "tier: " in run("scripts/review/.review_prep_base.py").stdout
+    assert run("scripts/.review_prep_base.py").returncode != 0

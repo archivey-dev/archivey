@@ -421,9 +421,9 @@ labels alone (a label can be removed, and a fork's pull request gets none):
 ```bash
 base=main  # the pull request's base branch
 git fetch origin "$base"
-git show "origin/$base:scripts/review/review_prep.py" > scripts/.review_prep_base.py
-python3 scripts/.review_prep_base.py --base "origin/$base" tier
-rm scripts/.review_prep_base.py
+git show "origin/$base:scripts/review/review_prep.py" > scripts/review/.review_prep_base.py
+python3 scripts/review/.review_prep_base.py --base "origin/$base" tier
+rm scripts/review/.review_prep_base.py
 ```
 
 It is tricky when that prints "merge: the maintainer merges this one", when the review's

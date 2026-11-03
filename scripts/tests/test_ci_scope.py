@@ -125,20 +125,42 @@ def test_every_script_the_workflows_run_is_a_full_path() -> None:
 _NAMED_NOT_READ = {"scripts/release/release.py", "scripts/py7zr"}
 
 
+_PART = r"""\s*/\s*["']([\w.-]+)["']"""
+_JOIN = re.compile(r"""["']scripts["']((?:""" + _PART + r")+)")
+
+
+def _script_paths(text: str) -> set[str]:
+    """The ``scripts/...`` strings in ``text``, and each ``"scripts" / "a" / "b"`` join
+    spelled out to its full path."""
+    named = set(re.findall(r"scripts/[\w./-]*[\w-]", text))
+    for join in _JOIN.finditer(text):
+        named.add("/".join(["scripts", *re.findall(_PART, join[1])]))
+    return named
+
+
+def test_the_scan_spells_out_a_join_into_a_folder() -> None:
+    """A join into a NOT_FULL folder must come out whole: its first part alone
+    (``scripts/review``) has no trailing slash, so it would count as a full-run path."""
+    text = 'SCRIPT = ROOT / "scripts" / "review" / "review_prep.py"\n'
+    assert _script_paths(text) == {"scripts/review/review_prep.py"}
+    assert not scope.needs_full(["scripts/review/review_prep.py"])
+
+
 def test_every_script_a_library_test_reads_is_a_full_path() -> None:
     """A library test that reads or runs a script (a fixture generator, a scan it
     checks) must run on every leg when that script changes, or a script edit that breaks
     it on macOS or PyPy only would merge. The scan takes ``scripts/...`` strings and
-    ``"scripts" / "name"`` joins from every file under ``tests/``."""
+    ``"scripts" / ...`` joins from every file under ``tests/``."""
     named: set[str] = set()
+    joined: set[str] = set()
     for path in (ROOT / "tests").rglob("*.py"):
         text = path.read_text(encoding="utf-8")
-        named |= set(re.findall(r"scripts/[\w./-]*[\w-]", text))
-        named |= {
-            f"scripts/{m}"
-            for m in re.findall(r"""["']scripts["']\s*/\s*["']([\w./-]+)["']""", text)
-        }
+        named |= _script_paths(text)
+        joined |= _script_paths("".join(m[0] for m in _JOIN.finditer(text)))
     assert "scripts/fixtures/gen_rar_fixtures.py" in named, "the scan found nothing"
+    assert "scripts/investigations/scan_archives.py" in joined, (
+        "no join was spelled out"
+    )
     uncovered = sorted(n for n in named - _NAMED_NOT_READ if not scope.needs_full([n]))
     assert not uncovered, f"move these out of the NOT_FULL folders: {uncovered}"
 

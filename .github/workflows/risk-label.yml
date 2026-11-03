@@ -54,11 +54,17 @@ jobs:
           if ! [[ "$BASE" =~ ^[A-Za-z0-9._/-]+$ ]]; then
             echo "Unexpected base branch name: refusing it" >&2; exit 1
           fi
-          # A base from before scripts/ was sorted into folders has it at the old path.
-          git show "origin/$BASE:scripts/review/review_prep.py" \
-            > scripts/review/review_prep.py 2>/dev/null \
-            || git show "origin/$BASE:scripts/review_prep.py" > scripts/review/review_prep.py
-          report="$(python3 scripts/review/review_prep.py --base "origin/$BASE" tier)"
+          # Each copy runs at the depth it came from, since it finds the repository
+          # from its own path. A base from before scripts/ was sorted into folders has
+          # the script at the old path.
+          if git cat-file -e "origin/$BASE:scripts/review/review_prep.py" 2>/dev/null; then
+            base_prep=scripts/review/review_prep.py
+            git show "origin/$BASE:scripts/review/review_prep.py" > "$base_prep"
+          else
+            base_prep=scripts/.review_prep_base.py
+            git show "origin/$BASE:scripts/review_prep.py" > "$base_prep"
+          fi
+          report="$(python3 "$base_prep" --base "origin/$BASE" tier)"
           tier="$(sed -n 's/^tier: //p' <<< "$report")"
           case "$tier" in
             light|standard|deep) ;;
