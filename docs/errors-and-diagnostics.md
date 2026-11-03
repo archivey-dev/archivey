@@ -144,8 +144,9 @@ unchecked data, read the whole member into memory or a temporary file first, and
 the read has finished without an error.
 
 A member tells you what has been checked so far. `member.verified` is a `Verification` level,
-and `member.verifiable` is the most a read from the start to the end can reach, so
-`member.verified == member.verifiable` means every check the member carries has passed. A read
+and `member.verifiable` is the most a read from the start to the end can reach. Above `NONE`,
+`member.verified == member.verifiable` means every check the member carries has passed; at `NONE`
+nothing was proved, not even that the data is complete. A read
 that proves more raises them on the member in place. A member stream reports the same two values
 as its member, whether or not it has started reading, and an `open_stream()` stream, which has no
 member, reports its own.
