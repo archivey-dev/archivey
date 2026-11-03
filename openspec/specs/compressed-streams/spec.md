@@ -909,7 +909,12 @@ The levels mean:
   be exposed. A check that spans several members (a `.tar.gz` trailer, a 7z folder CRC
   over several files) SHALL raise the level of every member it covers only once it
   passes, at the end of the folder or stream; a 7z folder CRC over a single file SHALL
-  count as that file's digest when it has none of its own. A member stream's
+  count as that file's digest when it has none of its own. A 7z folder CRC over several
+  files that does not match SHALL raise `CorruptionError`, naming the folder, from the
+  read at the end of the file that ends the folder, after that file's own CRC, if it
+  has one, has run; when that own CRC fails, its error SHALL be the one the read
+  raises. `verify_all()` SHALL return every file of the folder with no CRC of its own
+  as a failure, and no level SHALL fall. A member stream's
   `verified` and `verifiable` SHALL equal those of the reader's own member with the
   same identity, at every moment, whether or not the stream has opened its data; a
   stream opened from a `replace()` copy mirrors and raises the reader's member, not the
@@ -944,6 +949,8 @@ level adds no new error and no new way to read.
 | `.tar.gz` listed to its end, trailer matches | every member's `verified` is `CHECKSUM` |
 | 7z one-file folder with a folder CRC and no file CRC, read to the end | `CHECKSUM` |
 | 7z folder of several files with only a folder CRC, a file read to the end | `LENGTH`; `CHECKSUM` for all once the folder is read and its CRC matches |
+| Same, the folder CRC does not match | the read at the last file's end raises `CorruptionError`; `verify_all()` returns every file of the folder; the files read before stay at `LENGTH` |
+| Same, the last file carries a CRC of its own that matches | the last file reaches `CHECKSUM` and is not returned; `verify_all()` returns the other files, on a second call too |
 | 7z AES folder with no CRC, read to the end | `verified` and `verifiable` are `NONE` |
 | 7z: a file's CRC matches in AES folder A; AES folder B has no CRC, read to the end | B stays `NONE`: A's match does not prove B's key |
 | ZipCrypto member, password on its check byte, half read | `verified` is `NONE`; `verifiable` is `CHECKSUM` |

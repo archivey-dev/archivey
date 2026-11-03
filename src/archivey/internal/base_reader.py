@@ -150,7 +150,10 @@ from archivey.internal.streams.streamtools import (
     read_exact,
     source_byte_size,
 )
-from archivey.internal.streams.verification import raise_member_level
+from archivey.internal.streams.verification import (
+    SpanningCheckError,
+    raise_member_level,
+)
 from archivey.internal.streams.verify import CustomDigests
 from archivey.internal.timestamps import TimestampIssue
 from archivey.internal.walk_handoff import WalkHandoffStream
@@ -239,6 +242,9 @@ _UnconfirmedEvidence = Literal["extension", "content_probe"]
 # waiting for a whole listing.
 _DRAIN_BATCH = 256
 
+
+# The read size verify_all() uses to read a member again for a spanning check.
+_VERIFY_ALL_CHUNK = 1 << 20
 
 _ArgT = TypeVar("_ArgT")
 _RetT = TypeVar("_RetT")
@@ -745,6 +751,15 @@ class BaseArchiveReader(ArchiveReader):
         # the index's order, with why: the walk's error is the first of them, and
         # extraction gives each its result.
         self._failed_at_end: list[tuple[ArchiveMember, CorruptionError]] = []
+        # ``verify_all()``: the ids of the members its last call read into a failed
+        # check that spans members (``SpanningCheckError``), and of those it covers.
+        # They may sit at their ceiling, so the next call reads them again by this.
+        self._spanning_retry: set[int] = set()
+        # Failed spanning checks no read raised, because a member's own error took
+        # priority (``_note_unraised_spanning``); ``verify_all()`` takes them. One per
+        # check, keyed by the backend's name for it, so repeated reads of the same
+        # damaged member keep one error, not one per read.
+        self._unraised_spanning: dict[object, SpanningCheckError] = {}
         # Name to the member listed under it, or to a list of them in listing order
         # once a second member has that name: a list here always holds two or more. A
         # list per name would be one more object per member for the collector to walk.
@@ -4249,17 +4264,26 @@ class BaseArchiveReader(ArchiveReader):
     @override
     def verify_all(self) -> tuple[tuple[ArchiveMember, ArchiveyError], ...]:
         failures: list[tuple[ArchiveMember, ArchiveyError]] = []
+        spanning: list[SpanningCheckError] = []
+        retry_next: set[int] = set()
+        self._unraised_spanning.clear()
 
         # A member at its ceiling has nothing left to prove; one whose ceiling is NONE
         # (a key nothing can prove) is read again, so its length checks run each time.
         # So is one whose per-frame checks wait on a read from the start
         # (``ArchiveMember._ceiling_provisional``), as it may still reach CHECKSUM.
+        # So is one the last call found in a failed spanning check, at its ceiling or
+        # not: the check is read again, to fail it again or (a password supplied
+        # since) to pass.
+        retry = self._spanning_retry
+
         def selector(m: ArchiveMember) -> bool:
             ceiling = m.verifiable
             return (
                 ceiling is Verification.NONE
                 or m.verified < ceiling
                 or m._ceiling_provisional is True
+                or id(m) in retry
             )
 
         with self.stream_members(selector) as members:
@@ -4295,12 +4319,63 @@ class BaseArchiveReader(ArchiveReader):
                     raise_member_level(m, m.verified, m.verified)
                     continue
                 try:
-                    stream.verify()
+                    if id(m) in retry:
+                        # verify() reads nothing for a member at its ceiling; the
+                        # spanning check needs its bytes and its end read again.
+                        while stream.read(_VERIFY_ALL_CHUNK):
+                            pass
+                    else:
+                        stream.verify()
                 except DiagnosticRaisedError:
                     raise
                 except ArchiveyError as e:
                     failures.append((m, e))
+                    if isinstance(e, SpanningCheckError):
+                        spanning.append(e)
+                        retry_next.add(id(m))
+                        retry_next.update(id(c) for c in e.covers)
+        for error in self._unraised_spanning.values():
+            spanning.append(error)
+            retry_next.update(id(c) for c in error.covers)
+        self._unraised_spanning.clear()
+        self._spanning_retry = retry_next
+        if spanning:
+            failures = self._with_spanning_failures(failures, spanning)
         return tuple(failures)
+
+    def _note_unraised_spanning(self, key: object, error: SpanningCheckError) -> None:
+        """Keep a failed spanning check that no read raises, for ``verify_all()``.
+
+        A backend calls this when the read that reached the check raised the reading
+        member's own, more precise error instead. ``key`` names the check (a 7z
+        folder index): a later failure of the same check replaces the earlier one, so
+        what is held stays bounded by the number of checks, however often it is read.
+        """
+        self._unraised_spanning[key] = error
+
+    def _with_spanning_failures(
+        self,
+        failures: list[tuple[ArchiveMember, ArchiveyError]],
+        spanning: list[SpanningCheckError],
+    ) -> list[tuple[ArchiveMember, ArchiveyError]]:
+        """``failures`` plus every member a failed spanning check covers, in listing
+        order. A member that failed on its own keeps its own error. A member whose
+        read only carried the error of a check that does not cover it, and whose own
+        check passed (it is at its ceiling), is not a failure."""
+        found = {
+            id(m): (m, e)
+            for m, e in failures
+            if not (
+                isinstance(e, SpanningCheckError)
+                and all(c is not m for c in e.covers)
+                and m.verified >= m.verifiable
+            )
+        }
+        for error in spanning:
+            for member in error.covers:
+                found.setdefault(id(member), (member, error))
+        order = {id(m): i for i, m in enumerate(self._listed)}
+        return sorted(found.values(), key=lambda pair: order.get(id(pair[0]), -1))
 
     def _stream_members(
         self,
