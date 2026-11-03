@@ -469,7 +469,9 @@ def test_too_many_held_links(tmp_path: Path) -> None:
 def test_held_link_names_count_toward_max_metadata_bytes(tmp_path: Path) -> None:
     """Held links' names count toward max_metadata_bytes while they are held, so a
     long run of them is refused as it is read, not once the data link arrives. The
-    archive is cut after the held links: on the old reader, that was the error."""
+    archive is cut after the held links, so only a check made while they are held
+    raises ResourceLimitError; a check at release or at the trailer would surface
+    TruncatedError instead."""
     links = [(b"%02d" % i + b"a" * 1000, _FILE, 7, 30, b"") for i in range(20)]
     data = _without_trailer(_newc(*links))
     config = archivey.ArchiveyConfig(

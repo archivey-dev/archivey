@@ -189,7 +189,9 @@ def _pad(n: int, align: int) -> int:
 
 def _held_bytes(member: ArchiveMember, stored: str) -> int:
     """What a held link weighs against ``max_metadata_bytes``: its names, weighed as the
-    listing weighs a name (four bytes per character unless ASCII)."""
+    listing weighs a name (four bytes per character unless ASCII). The rule is restated
+    here rather than imported from ``archivey.internal.listing_limits`` because the
+    reader uses only public names (``tests/test_cpio.py`` checks)."""
     texts = (member.name,) if stored == member.name else (member.name, stored)
     total = 0
     for text in texts:

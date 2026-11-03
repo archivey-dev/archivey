@@ -84,8 +84,9 @@ as in every format; one that stores data reports `MEMBER_SPECIAL_FILE_HAS_DATA`.
 
 archivey's hard links name an earlier member only, so:
 
-- binary and odc: the first name is the `FILE`, the later ones `HARDLINK` members to it,
-  and their copy of the data is skipped.
+- binary and odc: of the files that share a device and inode and have a link count
+  above 1, the first name is the `FILE`, the later ones `HARDLINK` members to it, and
+  their copy of the data is skipped.
 - newc and crc: the reader holds the empty links back until the link with the data
   arrives, yields that one as the `FILE`, then the held ones as `HARDLINK` members to it.
   A group whose data never arrives (an empty file) is yielded at the trailer. More held
@@ -142,7 +143,7 @@ header can ask for:
 | What you see | Where | More |
 | --- | --- | --- |
 | In a newc or crc archive, a hard-linked file lists under its last name, where libarchive lists the first | **archivey** | Hard links name an earlier member, and the data comes with the last link (§2.2, §6) |
-| In a binary or odc archive, a later file with the same device and inode lists as a hard link to the first, its own data unread, even when its size differs | **format** | Those variants keep 16 or 18 bits of the inode, so unrelated files can collide; GNU cpio links them the same way (§2.2) |
+| In a binary or odc archive, a later file with the same device and inode, both with a link count above 1, lists as a hard link to the first, its own data unread, even when its size differs | **format** | Those variants keep 16 or 18 bits of the inode, so unrelated files can collide; GNU cpio links them the same way (§2.2) |
 | A gzipped binary archive opens as a one-member `.gz` | **format** | Its magic is too weak to trust alone: name it `.cpio.gz`, or pass `format="cpio.gz"` (§2.1) |
 | An initramfs lists only its first archive and reports `ARCHIVE_TRAILING_DATA` | **archivey** | The walk stops at the first trailer (§6) |
 | An afio archive with extra header bytes raises `UnsupportedFeatureError` | **format** | Nothing says where the extra bytes go (§6) |
