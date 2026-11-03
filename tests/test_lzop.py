@@ -5,6 +5,7 @@ Python."""
 from __future__ import annotations
 
 import datetime
+import importlib.util
 import io
 import random
 import struct
@@ -23,6 +24,7 @@ from archivey import (
     DecoderLimits,
     DiagnosticCode,
     FormatPolicy,
+    OptionalLibrary,
     ProcessIsolation,
     ResourceLimitError,
     StreamFormat,
@@ -34,7 +36,7 @@ from archivey import (
 )
 from archivey.formats import register_format
 from archivey.internal.format_adapter import registration_scope
-from archivey.internal.streams.codecs import lzo_decoder
+from archivey.internal.streams.codecs import deps, lzo_decoder
 from archivey.internal.streams.codecs.decoder_child import POOL
 from tests.lzop_build import make_lzop
 from tests.memory_util import traced_peak
@@ -160,6 +162,24 @@ def test_a_damaged_block_in_a_child_is_corruption() -> None:
         pytest.raises(CorruptionError),
     ):
         stream.read()
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("lzo") is not None,
+    reason="stands for a python-lzo that is found but does not import",
+)
+def test_a_python_lzo_that_does_not_import_falls_back_under_native_decoders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In this process a found package that fails to import is treated as absent.
+    Under NATIVE_DECODERS it is only looked up, so the child's import failed and the
+    read raised ResourceUnavailableError instead of using the Python decoder."""
+    broken = deps.LazyOptional(OptionalLibrary.LZO, present=True)
+    monkeypatch.setattr(deps, "lzo", broken)
+    config = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
+    with open_stream(_DATA / "text.txt.lzo", config=config) as stream:
+        assert stream.read() == _TEXT
+    assert not broken.available()
 
 
 def _expanding_lzop(size: int) -> bytes:

@@ -79,6 +79,11 @@ class DecoderChildStartError(RuntimeError):
     """
 
 
+class DecoderChildImportError(DecoderChildStartError):
+    """The child started but could not import the codec's library: a package that is
+    found but does not import (a broken wheel, a missing shared library)."""
+
+
 class DecoderChildReportedError(RuntimeError):
     """The child reported an exception of a type the parent does not rebuild.
 
@@ -291,6 +296,13 @@ _BUILTIN_ERRORS: dict[tuple[str, str], type[Exception]] = {
 }
 
 
+# What the first reply to ``OPEN`` may report besides the codec's own errors: the
+# child's import of the codec's library failed.
+_IMPORT_ERRORS: dict[tuple[str, str], type[Exception]] = {
+    ("builtins", cls.__qualname__): cls for cls in (ImportError, ModuleNotFoundError)
+}
+
+
 def rebuild_error(
     payload: bytes,
     known: dict[tuple[str, str], type[Exception]],
@@ -412,9 +424,12 @@ class DecoderChild:
         self._building = False
         tag, state, output = self._exchange(OPEN, 0, (self._open_message,))
         if tag != OK:
-            exc = rebuild_error(output, self._known)
+            exc = rebuild_error(output, {**self._known, **_IMPORT_ERRORS})
             if isinstance(exc, ImportError):
-                raise start_error(f"cannot import the {self._codec} library: {exc}")
+                raise DecoderChildImportError(
+                    "cannot start the decoder process: cannot import the "
+                    f"{self._codec} library: {exc}"
+                )
             raise start_error(str(exc))
         self._building = True
         tag, state, output = self._receive_raw()

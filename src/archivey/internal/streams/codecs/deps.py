@@ -95,6 +95,20 @@ class LazyOptional:
                 )
         return self._module
 
+    def failed_to_import(self, exc: BaseException) -> None:
+        """Record that the package failed to import where :meth:`load` did not see it
+        (a decoder child process): it is then treated as absent, logged once, as
+        :meth:`load` treats one that fails here."""
+        if not self._import_failed:
+            self._import_failed = True
+            logs.streams.warning(
+                "%r is installed but failed to import (%r); archivey reads as "
+                "if it were absent.",
+                str(self.name),
+                exc,
+            )
+        self._present = False
+
     def loaded(self) -> ModuleType | None:
         """The package if it has been imported already, else ``None``. Never imports.
 

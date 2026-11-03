@@ -795,6 +795,10 @@ class Decompressor(Protocol):
     ``decompress(b"", max_length)``, called again until :attr:`eof` is set. When a
     call returns nothing, or :attr:`needs_input` turns true, before :attr:`eof` is
     set, or there is no ``end_input()``, the stream is truncated.
+
+    An ``EOFError`` raised from :meth:`decompress` or ``end_input()`` means the input
+    ended inside the stream: unless :meth:`CodecHandler.translate_exception` maps it,
+    archivey reports it as ``TruncatedError``.
     """
 
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
@@ -902,7 +906,9 @@ class CodecHandler(ABC):
 
     def translate_exception(self, exc: Exception) -> ArchiveyError | None:
         """Map an exception the decoder raises to an archivey exception, usually
-        ``CorruptionError``. Return ``None`` to let ``exc`` propagate as it is."""
+        ``CorruptionError``. Return ``None`` to let ``exc`` propagate as it is, with one
+        exception: an ``EOFError`` left untranslated becomes ``TruncatedError``, as it
+        does for the built-in codecs."""
         return None
 
 
