@@ -1590,6 +1590,51 @@ def test_decoded_in_order_opens_walk_once(
         assert reader_type.walks == 2
 
 
+class _RewalkReader(_DecodedReader):
+    """Walks as ``_DecodedReader`` the first time; on a later walk, ``broken``
+    yields ``None`` in place of the second member, or ends the walk there."""
+
+    broken = "none"
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        spans = super().walk(stream)
+        yield next(spans)  # Counts this walk.
+        if type(self).walks == 1:
+            yield from spans
+        elif self.broken == "none":
+            yield None  # type: ignore[misc]
+            yield from spans
+
+
+@pytest.mark.parametrize(
+    ("broken", "error", "message"),
+    [
+        ("none", TypeError, "yielded NoneType, not a MemberSpan"),
+        ("ended", CorruptionError, "walking the archive again ended before"),
+    ],
+)
+def test_a_walk_run_again_that_breaks_before_its_member(
+    tmp_path: Path, broken: str, error: type[Exception], message: str
+) -> None:
+    """A ``None`` the walk yields on a later walk is a plugin bug, not the walk's
+    end; a later walk that ends before the member it was run for is corruption."""
+
+    class Reader(_RewalkReader):
+        walks = 0
+
+    Reader.broken = broken
+    path = _write(tmp_path, build_decoded(_DECODED_ENTRIES))
+    with registration_scope():
+        fmt = _variant(Reader, ToysContainer.DECODED)  # type: ignore[arg-type]
+        with open_archive(path, format=fmt) as reader:
+            reader.members()
+            with pytest.raises(error, match=message) as raised:
+                reader.read("c.bin")
+    assert Reader.walks == 2
+    if error is TypeError:
+        assert not isinstance(raised.value, CorruptionError)
+
+
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
 @pytest.mark.parametrize("partial", [False, True], ids=["whole", "part-read"])
 def test_decoded_stream_members(

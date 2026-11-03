@@ -245,9 +245,7 @@ class _PluginAdapter(BaseArchiveReader):
         raise NotImplementedError
 
     def _wrong_reader(self, reader: object, method: str, noun: str) -> NoReturn:
-        # Each check that the plugin kept to the interface sits outside the error
-        # boundary, so a plugin's broad ``translate_exception`` cannot report a plugin
-        # bug as a fault in the archive.
+        # Every interface check raises through ``_plugin_bug()``, wherever it runs.
         raise _plugin_bug(
             TypeError(
                 f"{type(self._plugin).__name__}.{method}() returned "
@@ -393,8 +391,8 @@ class _PluginAdapter(BaseArchiveReader):
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         # A plugin that broke the interface is a plugin bug, not a fault in the
         # archive: not offered to the plugin's translator, which may map every
-        # ValueError to corruption. These are raised from inside the walk, so the
-        # boundary cannot sit outside them as it does for _wrong_reader's checks.
+        # ValueError to corruption. Every interface check raises through
+        # ``_plugin_bug()``, wherever it runs.
         if isinstance(exc, ArchiveyUsageError) or getattr(exc, _PLUGIN_BUG, False):
             return None
         translated = (
