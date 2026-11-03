@@ -415,6 +415,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
 
     def fragment_tail(self, location: FileLocation, length: int) -> bytes:
         start, stored = self._fragment(location.fragment)
+        # ``_decodes_twice`` replays this cache's policy; change both together.
         block = self._fragments.get(start)
         if block is None:
             length_on_disk = stored & ~_BLOCK_UNCOMPRESSED
@@ -592,11 +593,14 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         order would decode a fragment block a second time (the cache replayed over
         where their blocks start, read from the fragment table, which needs no block
         decoded), the files with a tail come sorted by block and offset instead, so
-        each block decodes once. Writers that
-        fill fragments in name order never reach this: mksquashfs, gensquashfs and
-        tar2sqfs keep one fragment in progress, mksquashfs ``-tailends`` and sqfstar
-        two. An image built from a tar in another order can, and so can a crafted one,
-        which in listing order would decode a whole fragment block for each small file.
+        each block decodes once. Writers that fill fragments in name order never reach
+        this: mksquashfs and gensquashfs keep one fragment in progress and mksquashfs
+        ``-tailends`` two. sqfstar and tar2sqfs
+        fill them in the tar's order, which needs the same when the tar is in name
+        order. An image built from a tar in another order can reach it, and so can a
+        crafted one, which in listing order would decode a whole fragment block for
+        each small file. An image that lists one name twice keeps listing order, which
+        says which entry is current.
         Then the members come as: directories, other members and files with no tail in
         listing order, so a directory still comes before its contents; then the files
         with a tail; then the hard links, in listing order, so each comes after the
@@ -694,6 +698,10 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         """The members' order when listing order would decode a fragment block twice
         (:meth:`iter_members`), else ``None``. Only for an image whose every member
         reads without error."""
+        # The last entry listed under a name is the current one: an image that lists a
+        # name twice keeps the order that says which.
+        if len({(entry.parent, entry.name) for entry in entries}) < len(entries):
+            return None
         tails: list[tuple[int, int, int]] = []
         for index, entry in enumerate(entries):
             if entry.kind == _DIR:

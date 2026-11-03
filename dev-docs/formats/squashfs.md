@@ -70,11 +70,13 @@ by offset, so each block decodes once. The check replays the four-block cache ov
 blocks' starts (from the fragment table), with nothing decoded. Then the order is:
 directories, files with no tail and other members, in listing order (so a directory
 still comes before its contents); the files with a tail; the hard links, in listing
-order (each after the member it names). mksquashfs, gensquashfs and tar2sqfs fill one
-fragment at a time in name order, and mksquashfs `-tailends` and sqfstar two (small files
-and tail ends), so their images keep listing order. An image built from a tar whose
-order is not the names' (sqfstar, tar2sqfs) can need more and is sorted, as is a crafted
-one, which in listing order would cost a whole block decode per small file (§4).
+order (each after the member it names). mksquashfs and gensquashfs fill one fragment at
+a time in name order, and mksquashfs `-tailends` two (small files and tail ends), so
+their images keep listing order. sqfstar and tar2sqfs fill fragments in the tar's order:
+the same when the tar is in name order, and when it is not they can need more and are
+sorted, as is a crafted image, which in listing order would cost a whole block decode
+per small file (§4). An image that lists one name twice in a directory keeps listing
+order whatever its fragments, since that order says which entry is current.
 
 The listing walks the directories first, then reads every other inode once, in its
 order in the inode table, and with it the file's block list for `is_sparse`.
@@ -194,7 +196,7 @@ offsets the image declares:
 - **Fragment order over listing order, only when listing order would thrash.** The
   maintainer's call (2026-11-03), for a crafted layout that decoded a fragment block per
   small file. Listing order is kept whenever the four-block cache covers it, which is
-  every image mksquashfs, gensquashfs or tar2sqfs writes from a directory; files with a
+  every image mksquashfs or gensquashfs writes from a directory; files with a
   tail are sorted only when the replayed cache would decode a block twice. The replay
   and the sort use the block's start, not the fragment-table entry, since two entries
   can name one block. Rejected: charging decoded block bytes to a per-reader budget

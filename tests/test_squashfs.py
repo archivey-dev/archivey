@@ -9,7 +9,7 @@ import importlib.util
 import io
 import random
 import struct
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -259,6 +259,24 @@ def test_fragment_entries_naming_one_block_decode_it_once(
     assert sorted(decoded) == sorted(set(decoded))
 
 
+def test_a_duplicate_name_keeps_listing_order(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The last entry listed under a name is the current one, in every format. Two
+    entries named f1 here (f5's renamed): sorting them by fragment would put the one
+    listed second first, so an image with a duplicate name keeps listing order."""
+    entries = SquashfsReader._entries
+
+    def renamed(self: SquashfsReader, listing: tuple[int, int, int]) -> Iterator:
+        for name, *rest in entries(self, listing):
+            yield (b"f1" if name == b"f5" else name, *rest)
+
+    monkeypatch.setattr(SquashfsReader, "_entries", renamed)
+    with open_archive(DATA / "tar-order.sqfs") as archive:
+        archive.extract_all(tmp_path)
+    assert (tmp_path / "f1").read_bytes() == _TAR_ORDER["f5"]
+
+
 def test_fragments_filled_out_of_listing_order_extract(tmp_path: Path) -> None:
     with open_archive(DATA / "tar-order.sqfs") as archive:
         archive.extract_all(tmp_path)
@@ -285,9 +303,17 @@ def test_reads_each_inode_once_in_table_order(monkeypatch: pytest.MonkeyPatch) -
     """The listing reads the inodes of everything but directories once each, sorted by
     where they are in the inode table, whatever order the entries name them in: an
     image whose entries stride across more inode-table blocks than the reader keeps
-    still decodes each block once. dir/hard.txt names a.txt's inode a second time."""
+    still decodes each block once. Each listing is read backwards here, so the entries
+    name the inodes against table order; dir/hard.txt names a.txt's inode a second
+    time."""
     read: list[tuple[int, int]] = []
     inode = SquashfsReader._inode
+    entries = SquashfsReader._entries
+    monkeypatch.setattr(
+        SquashfsReader,
+        "_entries",
+        lambda self, listing: iter(list(entries(self, listing))[::-1]),
+    )
 
     def recording(self: SquashfsReader, block: int, offset: int) -> object:
         found = inode(self, block, offset)
