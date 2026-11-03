@@ -17,6 +17,7 @@ import pytest
 
 from archivey import Verification, open_archive
 from archivey.exceptions import CorruptionError
+from archivey.internal.streams.verification import SpanningCheckError
 from archivey.types import ArchiveMember
 from tests.conftest import requires
 from tests.test_audit_sevenzip import (
@@ -284,6 +285,24 @@ def test_a_last_file_whose_own_crc_fails_keeps_its_own_error() -> None:
             assert "Digest mismatch" in str(failures["c"])
             assert "folder 0" in str(failures["a"])
             assert failures["a"] is failures["b"]
+
+
+def test_repeated_reads_of_a_damaged_last_file_hold_one_folder_error() -> None:
+    # Each read of c fails the folder CRC unraised; the reader keeps one error for
+    # the folder, not one per read, and verify_all() returns each file once.
+    data = _folder_with_one_own_crc("c", own_crc_delta=1)
+    with open_archive(io.BytesIO(data)) as reader:
+        members = _by_name(reader.members())
+        for _ in range(3):
+            with pytest.raises(CorruptionError, match="Digest mismatch"):
+                reader.read(members["c"])
+        assert len(reader._unraised_spanning) == 1  # type: ignore[attr-defined]
+        failures = reader.verify_all()
+        assert sorted(m.name for m, _e in failures) == ["a", "b", "c"]
+        by_name = {m.name: e for m, e in failures}
+        assert isinstance(by_name["a"], SpanningCheckError)
+        assert by_name["a"] is by_name["b"]
+        assert "Digest mismatch" in str(by_name["c"])
 
 
 def test_a_folder_crc_leaves_files_with_their_own_crc_to_it() -> None:

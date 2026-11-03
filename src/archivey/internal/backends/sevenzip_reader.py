@@ -1616,7 +1616,7 @@ class SevenZipReader(BaseArchiveReader):
         if tail_matched is False:
             error.archive_name = self._archive_name
             error.member_name = None if last is None else last.name
-            self._note_unraised_spanning(error)
+            self._note_unraised_spanning(folder_index, error)
             return None
         return error
 

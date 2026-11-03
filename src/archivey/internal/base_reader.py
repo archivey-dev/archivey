@@ -756,8 +756,10 @@ class BaseArchiveReader(ArchiveReader):
         # They may sit at their ceiling, so the next call reads them again by this.
         self._spanning_retry: set[int] = set()
         # Failed spanning checks no read raised, because a member's own error took
-        # priority (``_note_unraised_spanning``); ``verify_all()`` takes them.
-        self._unraised_spanning: list[SpanningCheckError] = []
+        # priority (``_note_unraised_spanning``); ``verify_all()`` takes them. One per
+        # check, keyed by the backend's name for it, so repeated reads of the same
+        # damaged member keep one error, not one per read.
+        self._unraised_spanning: dict[object, SpanningCheckError] = {}
         # Name to the member listed under it, or to a list of them in listing order
         # once a second member has that name: a list here always holds two or more. A
         # list per name would be one more object per member for the collector to walk.
@@ -4332,7 +4334,7 @@ class BaseArchiveReader(ArchiveReader):
                         spanning.append(e)
                         retry_next.add(id(m))
                         retry_next.update(id(c) for c in e.covers)
-        for error in self._unraised_spanning:
+        for error in self._unraised_spanning.values():
             spanning.append(error)
             retry_next.update(id(c) for c in error.covers)
         self._unraised_spanning.clear()
@@ -4341,13 +4343,15 @@ class BaseArchiveReader(ArchiveReader):
             failures = self._with_spanning_failures(failures, spanning)
         return tuple(failures)
 
-    def _note_unraised_spanning(self, error: SpanningCheckError) -> None:
+    def _note_unraised_spanning(self, key: object, error: SpanningCheckError) -> None:
         """Keep a failed spanning check that no read raises, for ``verify_all()``.
 
         A backend calls this when the read that reached the check raised the reading
-        member's own, more precise error instead.
+        member's own, more precise error instead. ``key`` names the check (a 7z
+        folder index): a later failure of the same check replaces the earlier one, so
+        what is held stays bounded by the number of checks, however often it is read.
         """
-        self._unraised_spanning.append(error)
+        self._unraised_spanning[key] = error
 
     def _with_spanning_failures(
         self,
