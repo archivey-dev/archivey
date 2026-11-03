@@ -302,6 +302,10 @@ class SingleFileReader(BaseArchiveReader):
         # decompressed size); the reader stays codec-agnostic and just supplies the
         # source-reading hooks the extractor may need (the base method is a no-op).
         self._stream_codec.extract_metadata(self._metadata_context(), member)
+        # The data's own checks, which no listing field records: a codec that checks
+        # every byte, or one whose frames may each carry a check.
+        codec = self._stream_codec
+        member._listing_checksum = codec.checks_content or codec.checks_frames
         # A size the format does not record comes from the first clean full read
         # (``_open_codec_parts``); ``member_state_final`` waits for it.
         member._size_unread = member.size is None

@@ -207,6 +207,7 @@ _KEPT_ON_UPDATE = frozenset(
         # What a read proved stays: a level never falls (verification levels).
         "_verified",
         "_verifiable",
+        "_frame_unchecked",
     }
 )
 

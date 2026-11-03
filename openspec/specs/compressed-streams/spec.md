@@ -890,7 +890,14 @@ Every public `ArchiveStream` SHALL expose two read-only properties of type
 - `verifiable`: the highest level a read from the start to the end can reach.
   `verified` SHALL NOT exceed it. Before a lazy stream opens its member it describes
   what the stream knows without opening it. Once the stream is open it MAY rise (a
-  password confirmed by another member) and SHALL NOT fall.
+  password confirmed by another member), and it SHALL fall only when a read finds
+  a stream or frame of an `.xz`, `.zst` or `.lz4` file that carries no check (below).
+  Each says whether it carries a check only in its own header, which a read reaches
+  only as it decodes, and a read that jumps reaches some headers only on a later
+  read from the start. So until such a stream or frame is found, the file's
+  `verifiable` SHALL be `CHECKSUM`: a read from the start can still reach it, and a
+  lower ceiling would let `verified == verifiable` claim that nothing more can be
+  checked.
 
 The levels mean:
 
@@ -938,6 +945,9 @@ level adds no new error and no new way to read.
 | `.gz` file through `open_stream`, read to the end | `CHECKSUM` |
 | `.gz` file, seek forward through an index, then read to the end | `LENGTH`; a `seek(0)` and a read to the end then gives `CHECKSUM` |
 | `.xz` file, every block checked, read to the end | `CHECKSUM` |
+| `.xz`, `.zst` or `.lz4` file, every frame checked, half read, or read after a jump to the end | `verified` is below `CHECKSUM`; `verifiable` is `CHECKSUM` |
+| `.xz`, `.zst` or `.lz4` file with no check, half read, or read after a jump to the end | `verifiable` is `LENGTH` |
+| `.zst` file of three frames with a seek table, the middle one unchecked: a seek into the last frame, then a read | `verifiable` is `CHECKSUM`; `verify()` reaches `LENGTH`, and `verifiable` falls to `LENGTH` |
 | `.xz` file with one stream of check type None, read to the end | `LENGTH` |
 | `.zst` file, every frame with a content checksum, read to the end | `CHECKSUM` |
 | `.lz4` frame with a content checksum, read to the end | `CHECKSUM` |
@@ -977,10 +987,7 @@ raise `ValueError`. It SHALL NOT read past its own member.
 On a stream that can seek, it SHALL read on until `verified` reaches the target, and
 SHALL read and decode nothing when `verified` has already reached the target and is
 above `NONE`. A target of `NONE` is never reached this way, so the length and
-end-of-data checks still run to the end. A `.zst`, `.lz4` or `.xz` member whose
-every frame seen so far carries a check, after a read that reached the end without
-decoding from the start, has not reached its target: its `verifiable` waits on a read
-from the start, which may raise it to `CHECKSUM`. When the reads end below the target and the
+end-of-data checks still run to the end. When the reads end below the target and the
 stream did not start at 0, it SHALL seek to 0 and read on once more. It SHALL then seek
 back to the position it started from, also when a read raised, so a later `read()`
 returns the same bytes.
@@ -1005,8 +1012,8 @@ returned level and the errors SHALL stay those a read to the target gives.
 | ZIP member whose CRC fails | raises `CorruptionError`; `verified` stays `UNLOCKED` |
 | TAR member | returns `LENGTH` |
 | Seekable `.gz` member after a forward seek | reads again from 0; returns `CHECKSUM`; position restored |
-| Seekable `.zst` member with a checksum in every frame, after a jump to the end and a read there (`LENGTH`) | reads again from 0; returns `CHECKSUM`; `verify_all()` reads it again too |
-| Same, with the last frame unchecked | reads again from 0 once; returns `LENGTH`; later calls read nothing |
+| Seekable `.zst` member with a checksum in every frame, after a jump to the end and a read there (`verified` is `LENGTH`, `verifiable` is `CHECKSUM`) | reads again from 0; returns `CHECKSUM`; `verify_all()` reads it again too |
+| Same, with the last frame unchecked | the jump read that frame's header, so `verifiable` is `LENGTH`: reads nothing; returns `LENGTH` |
 | `stream_members()` stream, either mode | reads to the end; later `read()` raises `ArchiveyUsageError`; a second `verify()` reads nothing |
 | `stream_members()` stream whose CRC fails | raises `CorruptionError`; later `read()` raises `ArchiveyUsageError`; a second `verify()` raises `CorruptionError` again |
 | Non-seekable stream whose member is already at `CHECKSUM` (proved by `verify_all()`) | reads nothing; returns `CHECKSUM`; later `read()` raises `ArchiveyUsageError` |
