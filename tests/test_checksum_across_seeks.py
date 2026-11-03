@@ -10,10 +10,12 @@ These run the rule end to end through ``open_archive``.
 from __future__ import annotations
 
 import io
+import lzma
 import random
 import struct
 import zipfile
 import zlib
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -240,17 +242,29 @@ def test_seek_past_the_end_does_not_claim_the_trailer_check(tmp_path: Path) -> N
 
 
 @pytest.mark.parametrize(
+    ("suffix", "compress"),
+    [
+        pytest.param(".lz", make_lzip_member, id="lzip"),
+        pytest.param(
+            ".xz", lambda data: lzma.compress(data, check=lzma.CHECK_CRC64), id="xz"
+        ),
+    ],
+)
+@pytest.mark.parametrize(
     "seek", [(0, io.SEEK_CUR), (1000, io.SEEK_SET)], ids=["cur", "set"]
 )
 def test_a_seek_to_the_current_position_keeps_the_run_from_the_start(
-    tmp_path: Path, seek: tuple[int, int]
+    tmp_path: Path,
+    suffix: str,
+    compress: Callable[[bytes], bytes],
+    seek: tuple[int, int],
 ) -> None:
     # A codec check counts only over a decode from the start with no seek but to 0
     # between. A seek to where the stream stands moves nothing and asks nothing of the
     # inner, so the run goes on: the read to the end proves every byte, and verify()
     # need not decode the member again.
-    path = tmp_path / "good.lz"
-    path.write_bytes(make_lzip_member(_TRAILER_DATA))
+    path = tmp_path / f"good{suffix}"
+    path.write_bytes(compress(_TRAILER_DATA))
     with open_stream(path, seekable=True) as stream:
         assert len(stream.read(1000)) == 1000
         assert stream.seek(*seek) == 1000
