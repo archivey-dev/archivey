@@ -634,12 +634,14 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         decoded), the files with a tail come sorted by block and offset instead, so
         each block decodes once. Writers that fill fragments in name order never reach
         this: mksquashfs and gensquashfs keep one fragment in progress and mksquashfs
-        ``-tailends`` two. sqfstar and tar2sqfs
-        fill them in the tar's order, which needs the same when the tar is in name
-        order. An image built from a tar in another order can reach it, and so can a
-        crafted one, which in listing order would decode a whole fragment block for
-        each small file. An image that lists one name twice keeps listing order, which
-        says which entry is current.
+        ``-tailends`` two. sqfstar and tar2sqfs fill fragments in the tar's order, so
+        they keep listing order when the tar is in name order. An image built from a
+        tar in another order can reach the sort, and so can a crafted one, which in
+        listing order would decode a whole fragment block for each small file.
+
+        An image that lists one name twice keeps listing order, which says which entry
+        is current.
+
         Then the members come as: directories, other members and files with no tail in
         listing order, so a directory still comes before its contents; then the files
         with a tail; then the hard links, in listing order, so each comes after the
