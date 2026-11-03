@@ -1002,8 +1002,10 @@ class ArchiveStreamImpl(ArchiveStream):
             self._fail_unless_closed(e)
         if self._verdict is not None:
             self._verdict_rewound = True
-        if result != before:
-            self._uninterrupted = result == 0
+        # Any seek but one to 0 ends the run from the start, even one that did not
+        # move: the inner may have taken it as a shortcut past bytes or a trailer its
+        # decoder never read (a size from an index ends the stream without decoding).
+        self._uninterrupted = result == 0
         if not self._rewind_quiet:
             self._maybe_warn_rewind(before, result)
         return result
@@ -1187,10 +1189,11 @@ class ArchiveStreamImpl(ArchiveStream):
         land far past the nearest one. A codec with an accelerator adds a sentence
         about it after that.
         """
+        # A decoder seek decodes at the next read, so the cost is the read's: a seek
+        # undone before any read costs nothing.
         cost = (
-            f"Backward seek in a {warning.codec_name} stream discards {distance} "
-            f"decompressed bytes; returning to the previous position re-decompresses "
-            f"them"
+            f"Backward seek in a {warning.codec_name} stream: reading from the target "
+            f"back to the previous position re-decompresses {distance} bytes"
         )
         if resume == 0:
             where = (

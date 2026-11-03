@@ -1897,13 +1897,17 @@ class DecompressorStream(ReadOnlyIOStream):
         """
         if self._spent is not None:
             return False
+        # Within the buffer first: a seek that lands where the decoder stands must not
+        # end the stream on the size. The last output byte can come before the decoder
+        # reads the codec's trailer (lzip CRC32, zstd frame checksum), and the next
+        # read still has to check it.
+        if self._pos <= new_pos <= self._pos + len(self._buffer):
+            del self._buffer[: new_pos - self._pos]
+            self._pos = new_pos
+            return True
         if self._size is not None and new_pos >= self._size:
             self._buffer.clear()
             self._eof = True
-            self._pos = new_pos
-            return True
-        if self._pos <= new_pos <= self._pos + len(self._buffer):
-            del self._buffer[: new_pos - self._pos]
             self._pos = new_pos
             return True
         return False
@@ -1996,13 +2000,14 @@ class DecompressorStream(ReadOnlyIOStream):
             # index claims is at the end.
             self._reset_to_seek_point(self._find_best_seek_point(new_pos))
 
+        if new_pos == self._pos:
+            # Before the size check, for the trailer: see _move_without_decode.
+            return self._pos
+
         if self._size is not None and new_pos >= self._size:
             self._buffer.clear()
             self._eof = True
             self._pos = new_pos
-            return self._pos
-
-        if new_pos == self._pos:
             return self._pos
 
         if new_pos < self._pos:
