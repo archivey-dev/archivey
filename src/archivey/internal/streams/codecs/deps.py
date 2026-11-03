@@ -64,6 +64,8 @@ class LazyOptional:
         self._present = present
         self._module: ModuleType | None = None
         self._import_failed = False
+        # A decoder child could not import it (``failed_in_child``).
+        self.child_import_failed = False
 
     def available(self) -> bool:
         """Whether the package is installed. Does not import it."""
@@ -95,19 +97,18 @@ class LazyOptional:
                 )
         return self._module
 
-    def failed_to_import(self, exc: BaseException) -> None:
-        """Record that the package failed to import where :meth:`load` did not see it
-        (a decoder child process): it is then treated as absent, logged once, as
-        :meth:`load` treats one that fails here."""
-        if not self._import_failed:
-            self._import_failed = True
+    def failed_in_child(self, exc: BaseException) -> None:
+        """Record that a decoder child process could not import the package, and log
+        it once. Only decoders that run in a child read :attr:`child_import_failed`:
+        a child is a fresh interpreter, so this process may still import it."""
+        if not self.child_import_failed:
+            self.child_import_failed = True
             logs.streams.warning(
-                "%r is installed but failed to import (%r); archivey reads as "
-                "if it were absent.",
+                "%r cannot be imported in a decoder process (%r); archivey decodes "
+                "there as if it were absent.",
                 str(self.name),
                 exc,
             )
-        self._present = False
 
     def loaded(self) -> ModuleType | None:
         """The package if it has been imported already, else ``None``. Never imports.

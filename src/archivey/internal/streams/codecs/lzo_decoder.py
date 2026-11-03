@@ -55,10 +55,12 @@ def _python_lzo(
     ``None`` when it is absent or ``excluded``."""
     if OptionalLibrary.LZO in excluded or not natives.package_available(deps.lzo):
         return None
+    if natives.isolated and deps.lzo.child_import_failed:
+        return None
     errors = natives.lzo_errors()
 
     def decompress(data: bytes, limit: int) -> bytes:
-        if not deps.lzo.available():
+        if natives.isolated and deps.lzo.child_import_failed:
             # A child could not import it for an earlier block.
             return lzo1x_decompress_python(data, limit)
         try:
@@ -69,10 +71,11 @@ def _python_lzo(
             # Isolated, the package is only looked up here, not imported, so one
             # that is found but does not import fails in the child. Fall back as
             # ``deps.lzo.load()`` does in this process: the Python decoder needs no
-            # child (DR-11). Any other reason no child starts still raises.
+            # child (DR-11). Any other reason no child starts still raises. Only
+            # isolated decoders take note: this process may import it all the same.
             if not isinstance(exc.__cause__, DecoderChildImportError):
                 raise
-            deps.lzo.failed_to_import(exc.__cause__)
+            deps.lzo.failed_in_child(exc.__cause__)
             return lzo1x_decompress_python(data, limit)
 
     return decompress

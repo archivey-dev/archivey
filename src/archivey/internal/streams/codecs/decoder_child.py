@@ -296,13 +296,6 @@ _BUILTIN_ERRORS: dict[tuple[str, str], type[Exception]] = {
 }
 
 
-# What the first reply to ``OPEN`` may report besides the codec's own errors: the
-# child's import of the codec's library failed.
-_IMPORT_ERRORS: dict[tuple[str, str], type[Exception]] = {
-    ("builtins", cls.__qualname__): cls for cls in (ImportError, ModuleNotFoundError)
-}
-
-
 def rebuild_error(
     payload: bytes,
     known: dict[tuple[str, str], type[Exception]],
@@ -424,13 +417,17 @@ class DecoderChild:
         self._building = False
         tag, state, output = self._exchange(OPEN, 0, (self._open_message,))
         if tag != OK:
-            exc = rebuild_error(output, {**self._known, **_IMPORT_ERRORS})
-            if isinstance(exc, ImportError):
-                raise DecoderChildImportError(
-                    "cannot start the decoder process: cannot import the "
-                    f"{self._codec} library: {exc}"
-                )
-            raise start_error(str(exc))
+            exc = rebuild_error(output, self._known)
+            if isinstance(exc, KeyError):
+                # No loader for this codec name: a bug in this process.
+                raise start_error(str(exc))
+            # Before its first reply the child runs only the library's import, so
+            # any other error there is the import failing, whatever its type, as
+            # ``deps.LazyOptional.load`` counts any exception here.
+            raise DecoderChildImportError(
+                "cannot start the decoder process: cannot import the "
+                f"{self._codec} library: {exc}"
+            )
         self._building = True
         tag, state, output = self._receive_raw()
         if tag != OK:
