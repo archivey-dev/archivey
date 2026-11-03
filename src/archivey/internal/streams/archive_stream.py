@@ -1112,15 +1112,18 @@ class ArchiveStreamImpl(ArchiveStream):
 
         So when every frame this stream has decoded carries a check (``frames_checked``)
         and no read from the start has ended yet: a read that jumped past frames
-        settles nothing (:meth:`_verification_proofs`). On a member stream, also when
-        an earlier stream of the member left it so
-        (``ArchiveMember._ceiling_provisional``).
+        settles nothing (:meth:`_verification_proofs`). On a member stream the
+        member's ``_ceiling_provisional`` answers first: ``False`` means a read from
+        the start has settled the ceiling for good, so it cannot rise; ``True`` means
+        an earlier stream left it waiting on such a read; ``None`` (no stream has
+        said yet) falls back to this stream's own frames, as a stream with no member
+        does.
         """
         if self._ended_from_start or self._ceiling_now() is Verification.CHECKSUM:
             return False
         member = self._level_member
-        if member is not None and member._ceiling_provisional is True:
-            return True
+        if member is not None and member._ceiling_provisional is not None:
+            return member._ceiling_provisional
         return ask_verification_proofs(self._inner).frames_checked
 
     @override

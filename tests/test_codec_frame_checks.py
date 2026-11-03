@@ -269,3 +269,15 @@ def test_a_jump_past_an_unchecked_frame_is_read_again_once(tmp_path: Path) -> No
             assert stream.verify() is LENGTH
         assert member._ceiling_provisional is not True
         assert (member.verified, member.verifiable) == (LENGTH, LENGTH)
+        # A read from the start settles it for good.
+        with reader.open(member) as stream:
+            assert stream.read() == _DATA * 2
+        assert member._ceiling_provisional is False
+        # Settled: a later stream that has seen only the checked frame reads nothing.
+        with reader.open(member) as stream:
+            stream.read(10)
+            reads: list[object] = []
+            stream._verify_read_on = reads.append  # type: ignore[method-assign]
+            assert stream.verify() is LENGTH
+            assert reads == []
+            assert stream.tell() == 10

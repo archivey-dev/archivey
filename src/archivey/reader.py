@@ -650,8 +650,10 @@ class ForwardArchiveReader(ABC):
         Damage to the archive's structure that stops the listing ends the call without
         raising: :meth:`members_report` returns it as ``error``. A failed checksum over
         the whole compressed archive (the gzip trailer of a ``.tar.gz``) ends it the
-        same way, and every listed file is returned with that error, as the checksum
-        covers the bytes of each one. Archive-level findings,
+        same way, and every listed file is returned with that error. The checksum may
+        cover only some of the files (a concatenated ``.tar.gz``, a ``.tar.zst`` of
+        several frames) and nothing says which, so all are returned rather than pass
+        a damaged one. Archive-level findings,
         such as a missing end-of-archive marker, are in ``reader.diagnostics``. To check
         everything about an archive, call ``verify_all()``, then look at
         ``members_report()`` and ``diagnostics``.

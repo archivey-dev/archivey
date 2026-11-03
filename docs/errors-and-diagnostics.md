@@ -271,8 +271,10 @@ findings = reader.diagnostics         # archive-level findings, such as a missin
 
 Damage that stops archivey finding the next member ends `verify_all()` without raising, and
 `members_report().error` holds it. When a checksum over the whole compressed archive fails, such
-as the gzip trailer of a `.tar.gz`, `verify_all()` returns every file with that error, because
-the checksum covers all of their bytes. On a streaming reader `verify_all()` is the one pass, and
+as the gzip trailer of a `.tar.gz`, `verify_all()` returns every file with that error. The
+checksum may cover only some of the files, as in a concatenated `.tar.gz` or a `.tar.zst` of
+several frames, and nothing says which ones, so archivey returns them all rather than pass a
+damaged file. On a streaming reader `verify_all()` is the one pass, and
 `members_report()` returns what it listed without reading again.
 
 [Damaged members](extracting.md#damaged-members) covers what extraction does.

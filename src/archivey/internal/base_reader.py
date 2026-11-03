@@ -4237,8 +4237,10 @@ class BaseArchiveReader(ArchiveReader):
                     raise
                 except _StreamChecksumError as e:
                     # A codec checksum over the archive stream failed (a .tar.gz
-                    # trailer): it covers the bytes of every file listed, read in
-                    # this pass or not, so each is a failure. members_report().error
+                    # trailer). It may cover only some of the files (a concatenated
+                    # .tar.gz, a multi-frame .tar.zst), and nothing says which, so
+                    # every listed file is a failure, read in this pass or not: a
+                    # false failure beats a false pass (DR-1). members_report().error
                     # holds it too.
                     # In listing order; a member that already failed keeps its error.
                     earlier = {id(m): (m, err) for m, err in failures}
