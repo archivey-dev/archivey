@@ -51,6 +51,7 @@ from archivey.internal.streams.streamtools import (
 from archivey.internal.streams.verification import (
     VerificationProofs,
     ask_verification_proofs,
+    note_ceiling_provisional,
     raise_member_level,
 )
 from archivey.internal.streams.verify import (
@@ -1101,6 +1102,34 @@ class ArchiveStreamImpl(ArchiveStream):
         if self._inner is None:
             return
         raise_member_level(member, self._level_now(), self._ceiling_now())
+        if self._ended_from_start:
+            note_ceiling_provisional(member, False)
+        elif self._ceiling_may_rise():
+            note_ceiling_provisional(member, True)
+
+    def _ceiling_may_rise(self) -> bool:
+        """Whether a read from the start may raise the ceiling to ``CHECKSUM``.
+
+        So when every frame this stream has decoded carries a check (``frames_checked``)
+        and no read from the start has ended yet: a read that jumped past frames
+        settles nothing (:meth:`_verification_proofs`). On a member stream, also when
+        an earlier stream of the member left it so
+        (``ArchiveMember._ceiling_provisional``).
+        """
+        if self._ended_from_start or self._ceiling_now() is Verification.CHECKSUM:
+            return False
+        member = self._level_member
+        if member is not None and member._ceiling_provisional is True:
+            return True
+        return ask_verification_proofs(self._inner).frames_checked
+
+    @override
+    def _verify_done(self, level: Verification) -> bool:
+        # A ceiling that may still rise is not reached: read again from the start
+        # (``verify()`` seeks to 0 when the read on from here does not settle it).
+        if level > self.verifiable and self._ceiling_may_rise():
+            return False
+        return super()._verify_done(level)
 
     def _level_now(self) -> Verification:
         """The level the layers' proofs add up to."""

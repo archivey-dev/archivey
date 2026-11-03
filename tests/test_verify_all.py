@@ -8,6 +8,7 @@ members) land with the codec and 7z work; the tests here cover what holds today.
 from __future__ import annotations
 
 import io
+import random
 import struct
 import tarfile
 import threading
@@ -107,6 +108,54 @@ def test_verify_all_stops_at_listing_damage_without_raising(
             "a": (LENGTH, LENGTH),
             "b": (UNLOCKED, LENGTH),
         }
+
+
+def _tar_gz_with_a_bad_trailer(tmp_path: Path, size: int) -> Path:
+    """A ``.tar.gz`` of a directory, two ``size``-byte files and a symlink, with the
+    gzip trailer's CRC-32 flipped. A large ``size`` keeps the CRC out of the decoder's
+    reach until the end-of-archive scan; a small one puts it in the first file's read.
+    """
+    rnd = random.Random(7)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        directory = tarfile.TarInfo("d")
+        directory.type = tarfile.DIRTYPE
+        tf.addfile(directory)
+        for name in ("d/a", "d/b"):
+            info = tarfile.TarInfo(name)
+            info.size = size
+            tf.addfile(info, io.BytesIO(rnd.randbytes(size)))
+        link = tarfile.TarInfo("l")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "d/a"
+        tf.addfile(link)
+    raw = bytearray(buf.getvalue())
+    raw[-8] ^= 0xFF
+    path = tmp_path / "bad.tar.gz"
+    path.write_bytes(bytes(raw))
+    return path
+
+
+@pytest.mark.parametrize("size", [5000, 1 << 20], ids=["small", "large"])
+@pytest.mark.parametrize("first", ["fresh", "listed", "streaming"])
+def test_a_failed_stream_checksum_returns_every_file_it_covers(
+    tmp_path: Path, size: int, first: str
+) -> None:
+    # The gzip CRC covers every file's bytes. Whether the listing ran first, and
+    # whether a file's read or the end-of-archive scan reached the CRC, the files come
+    # back as failures: the same answer each time.
+    path = _tar_gz_with_a_bad_trailer(tmp_path, size)
+    with open_archive(path, streaming=first == "streaming") as reader:
+        if first == "listed":
+            with pytest.raises(CorruptionError):
+                reader.members()
+        failures = reader.verify_all()
+        assert [m.name for m, _e in failures] == ["d/a", "d/b"]
+        assert all(isinstance(e, CorruptionError) for _m, e in failures)
+        assert isinstance(reader.members_report().error, CorruptionError)
+        if first != "streaming":
+            # A second call answers the same.
+            assert [m.name for m, _e in reader.verify_all()] == ["d/a", "d/b"]
 
 
 def test_verify_all_on_a_closed_reader_is_a_usage_error(tmp_path: Path) -> None:

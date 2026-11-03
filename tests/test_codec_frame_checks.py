@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import Verification, open_archive, open_stream
+from archivey import ArchiveStream, Verification, open_archive, open_stream
 from archivey.exceptions import CorruptionError
 from tests.conftest import requires, requires_zstd, zstd_backend
 
@@ -223,3 +223,49 @@ def test_a_legacy_lz4_stream_before_a_checked_frame_keeps_length() -> None:
     with open_stream(io.BytesIO(raw)) as stream:
         assert stream.read() == _DATA * 2
         assert stream.verified is LENGTH
+
+
+def _jump_to_the_end(stream: ArchiveStream) -> None:
+    stream.read(10)
+    stream.seek(-100, io.SEEK_END)
+    stream.read()
+
+
+@pytest.mark.parametrize("call", ["verify", "verify_all"])
+@pytest.mark.parametrize(("compress", "expected"), _CASES)
+def test_a_read_that_jumped_to_the_end_is_read_again_for_its_frame_checks(
+    tmp_path: Path,
+    compress: Callable[[bytes], bytes],
+    expected: Verification,
+    call: str,
+) -> None:
+    # The jump skips frames, so it ends at LENGTH with the ceiling still waiting on a
+    # read from the start: verify() and verify_all() read again to settle it.
+    path = tmp_path / "data.bin.compressed"
+    path.write_bytes(compress(_DATA))
+    with open_archive(path, seekable_members=True) as reader:
+        member = next(m for m in reader.members() if m.is_file)
+        with reader.open(member) as stream:
+            _jump_to_the_end(stream)
+            if call == "verify":
+                assert stream.verify() is expected
+        if call == "verify_all":
+            assert reader.verify_all() == ()
+        assert (member.verified, member.verifiable) == (expected, expected)
+        # Settled: a later verify_all() skips it.
+        assert member._ceiling_provisional is not True
+
+
+@requires_zstd()
+def test_a_jump_past_an_unchecked_frame_is_read_again_once(tmp_path: Path) -> None:
+    # A checked frame, then an unchecked one: the jump sees only the second frame's
+    # header, which carries no check, so nothing waits on a read from the start.
+    path = tmp_path / "mixed.zst"
+    path.write_bytes(_zstd(True)(_DATA) + _zstd(False)(_DATA))
+    with open_archive(path, seekable_members=True) as reader:
+        member = next(m for m in reader.members() if m.is_file)
+        with reader.open(member) as stream:
+            _jump_to_the_end(stream)
+            assert stream.verify() is LENGTH
+        assert member._ceiling_provisional is not True
+        assert (member.verified, member.verifiable) == (LENGTH, LENGTH)

@@ -118,3 +118,15 @@ def raise_member_level(
             settled = member._verifiable
             if settled is None or verifiable > settled:
                 member._verifiable = verifiable
+
+
+def note_ceiling_provisional(member: ArchiveMember, provisional: bool) -> None:
+    """Record whether ``member``'s per-frame checks still wait on a read from the start.
+
+    ``False`` settles it for good: a read from the start has ended, so its answer is
+    the member's ``verifiable``. ``True`` holds only until then
+    (``ArchiveMember._ceiling_provisional``).
+    """
+    with _LEVEL_LOCK:
+        if member._ceiling_provisional is not False:
+            member._ceiling_provisional = provisional

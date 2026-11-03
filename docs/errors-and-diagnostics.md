@@ -215,7 +215,10 @@ a seek, so seeking back can't hand you the damaged member as if it were complete
 
 After seeks, `stream.verified` shows whether the checksum still ran. If it's below
 `stream.verifiable` once you've read to the end, a seek back to the start and a read to the end
-runs every check.
+runs every check. A `.zst`, `.lz4` or `.xz` file whose frames each carry a check is a special
+case: after a jump to the end, `verified` and `verifiable` can both be `LENGTH`, because the
+frames that were skipped may carry no check. `stream.verify()` and `reader.verify_all()` read
+such a file again from the start, which can raise both to `CHECKSUM`.
 
 A compressed TAR, CPIO or ar archive, such as a `.tar.gz`, `.cpio.xz` or `.a.bz2`, has one
 checksum for the whole compressed stream, checked at its end. A member you read to its end is at
@@ -266,7 +269,9 @@ findings = reader.diagnostics         # archive-level findings, such as a missin
 ```
 
 Damage that stops archivey finding the next member ends `verify_all()` without raising, and
-`members_report().error` holds it. On a streaming reader `verify_all()` is the one pass, and
+`members_report().error` holds it. When a checksum over the whole compressed archive fails, such
+as the gzip trailer of a `.tar.gz`, `verify_all()` returns every file with that error, because
+the checksum covers all of their bytes. On a streaming reader `verify_all()` is the one pass, and
 `members_report()` returns what it listed without reading again.
 
 [Damaged members](extracting.md#damaged-members) covers what extraction does.
