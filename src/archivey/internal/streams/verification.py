@@ -142,15 +142,25 @@ def raise_member_level(
     member: ArchiveMember,
     verified: Verification,
     verifiable: Verification | None,
+    *,
+    without_frames: Verification | None = None,
 ) -> None:
     """Raise ``member``'s level to what a stream of it has proved.
 
     ``verified`` only rises. ``verifiable`` is the stream's ceiling once it has opened
     its data (``None`` before): the first one settles the member's, which can lower
     the listing's estimate, and later ones only raise it.
+
+    ``without_frames`` is that ceiling without a codec's per-frame checks, for a stream
+    whose ceiling counts them. It replaces ``verifiable`` once any read of the member
+    has found a frame with no check (``ArchiveMember._frame_unchecked``). The flag is
+    read here, under the lock, so a stream that computed its ceiling before another
+    stream found such a frame does not raise the member back.
     """
     with _LEVEL_LOCK:
         member._verified = max(member._verified, verified)
+        if without_frames is not None and member._frame_unchecked:
+            verifiable = without_frames
         if verifiable is not None:
             settled = member._verifiable
             if settled is None or verifiable > settled:

@@ -1293,6 +1293,12 @@ class ArchiveMember:
     then reach ``CHECKSUM`` through those checks, and a later stream that sees only
     checked frames counts it (``note_frame_unchecked``). Not part of the public
     contract."""
+    _listing_checksum: bool = field(default=False, repr=False, compare=False)
+    """Whether the listing expects a read to the end to check every byte, though
+    ``hashes`` holds no checksum: a single-file member whose codec checks its data
+    (``StreamCodec.checks_content``) or whose frames may each carry a check
+    (``StreamCodec.checks_frames``). Only the listing's estimate of ``verifiable``
+    reads it. Not part of the public contract."""
 
     # Mutable members are intentionally unhashable. ``@dataclass`` (``eq=True``, not
     # frozen) sets ``__hash__ = None``, which is what makes ``isinstance(m, Hashable)``
@@ -1429,11 +1435,15 @@ class ArchiveMember:
         password nothing can prove. A member with no data of its own (a link, a special
         entry, a directory that declares no data) has nothing to read, so it is
         ``verified`` already. Before a stream of the member has opened its data
-        it is the listing's estimate, and it may settle lower once, at that first open
-        (a weak password check is only found then). After that it falls only when a
-        read finds a stream or frame of an ``.xz``, ``.zst`` or ``.lz4`` file with no
-        check, which each says only in its own header. It rises when another member's
-        checksum confirms the password.
+        it is the listing's estimate, and it may settle once, at that first open,
+        lower or higher: a weak password check is found only then, and for some
+        members only the open shows that the data carries a checksum. A single-file
+        member whose codec checks its data, or may check each stream or frame (an
+        ``.xz``, ``.zst`` or ``.lz4`` file), is ``CHECKSUM`` from the listing, and
+        its first open does not change it. After that it falls only when a read finds
+        a stream or frame of an ``.xz``, ``.zst`` or ``.lz4`` file with no check, which
+        each says only in its own header. It rises when another member's checksum
+        confirms the password.
 
         Experimental: any release, a patch included, may change or remove this property,
         its levels or what they mean.
@@ -1444,7 +1454,8 @@ class ArchiveMember:
                 self.is_file or (self.type is MemberType.DIRECTORY and bool(self.size))
             ):
                 return self.verified
-            settled = Verification.CHECKSUM if self.hashes else Verification.LENGTH
+            checksum = bool(self.hashes) or self._listing_checksum
+            settled = Verification.CHECKSUM if checksum else Verification.LENGTH
         return max(settled, self.verified)
 
     @property

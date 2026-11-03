@@ -1164,6 +1164,7 @@ class ArchiveStreamImpl(ArchiveStream):
         if self._inner is None:
             return
         below = ask_verification_proofs(self._inner)
+        without: Verification | None = None
         if below.per_frame:
             possible = self._frame_verdict(below)[1]
             without = self._ceiling_now(frames=False)
@@ -1178,7 +1179,9 @@ class ArchiveStreamImpl(ArchiveStream):
             )
             if self._frames_pending and self._frame_watch is None:
                 self._frame_watch = find_frame_watch(self._inner)
-        raise_member_level(member, self._level_now(), self._ceiling_now())
+        raise_member_level(
+            member, self._level_now(), self._ceiling_now(), without_frames=without
+        )
 
     def _sync_frame_unchecked(self) -> None:
         """Tell the member when a read or seek found a frame with no check.

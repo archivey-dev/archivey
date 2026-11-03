@@ -535,8 +535,12 @@ requirement gives them, applied to this entry's data in this archive.
 - From the listing, a member that is not encrypted SHALL start at `verified ==
   UNLOCKED`, and an encrypted member whose password is not yet confirmed at `NONE`.
 - `verifiable` is known from the listing. It MAY settle once, at the member's first
-  open, which is the first time any stream of that member opens its data (a password
-  watch that only appears then can lower it). After that it SHALL fall only when a
+  open, which is the first time any stream of that member opens its data, lower or
+  higher (a password watch that only appears then can lower it, and a checksum that
+  only the open shows can raise it). A single-file member whose codec checks its data
+  (gzip, bzip2, lzip, zlib) or whose check is optional per frame (`.xz`, `.zst`,
+  `.lz4`) SHALL be listed at `CHECKSUM`, and its first open SHALL NOT change that: no
+  read has found a frame without a check yet. After that it SHALL fall only when a
   read of the member finds a stream or frame of an `.xz`, `.zst` or `.lz4` file that
   carries no check, as the `compressed-streams` verification requirement gives it;
   a later stream of the member that has not read that stream or frame SHALL NOT
@@ -562,3 +566,6 @@ requirement gives them, applied to this entry's data in this archive.
 | `member_state_final` is `True`, then a stream reads the member to the end | `verified` rises to `CHECKSUM` |
 | Two threads read two members of one 7z folder (folder CRC only) under `concurrent_operations=True` | both members end at `CHECKSUM`; neither level is ever seen to fall |
 | 7z AES member in a folder with no CRC, before and after its first open | `verifiable` may settle to `NONE` at the first open and stays there |
+| Single-file `.gz`, `.xz`, `.zst` or `.lz4` member, before and after its first open | `verifiable` is `CHECKSUM` |
+| Single-file `.zst` member whose frames carry no check, read to the end | `verifiable` is `CHECKSUM` until the read finds the first frame's header, then `LENGTH` |
+| `.zst` member of a checked frame and an unchecked one, under `concurrent_operations=True`: one stream finds the unchecked frame while another, which has read only the first frame, stores its own ceiling | `verifiable` stays `LENGTH` |

@@ -9,8 +9,11 @@ tasks group 1). ``verifiable`` is what a read from the start can still reach:
 
 from __future__ import annotations
 
+import bz2
+import gzip
 import io
 import lzma
+import zlib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -95,6 +98,56 @@ def test_single_file_member_reaches_what_its_frames_check(
     with open_archive(path) as reader:
         assert reader.verify_all() == ()
         member = next(m for m in reader.members() if m.is_file)
+        assert (member.verified, member.verifiable) == (expected, expected)
+
+
+# Each file's name, its ``verifiable`` at listing, and after a read to the end. Every
+# case of ``_CASES`` is a file of xz, zstd or LZ4 frames, listed at CHECKSUM. A zlib or
+# LZMA Alone stream is found only by its extension.
+_LISTED_CASES = [
+    *(
+        pytest.param(
+            case.values[0],
+            "data.bin.compressed",
+            CHECKSUM,
+            case.values[1],
+            id=case.id,
+            marks=case.marks,
+        )
+        for case in _CASES
+    ),
+    pytest.param(gzip.compress, "data.gz", CHECKSUM, CHECKSUM, id="gzip"),
+    pytest.param(bz2.compress, "data.bz2", CHECKSUM, CHECKSUM, id="bzip2"),
+    pytest.param(zlib.compress, "data.zz", CHECKSUM, CHECKSUM, id="zlib"),
+    pytest.param(
+        lambda data: lzma.compress(data, format=lzma.FORMAT_ALONE),
+        "data.lzma",
+        LENGTH,
+        LENGTH,
+        id="lzma-alone",
+    ),
+]
+
+
+@pytest.mark.parametrize(("compress", "name", "listed", "expected"), _LISTED_CASES)
+def test_a_single_file_member_is_listed_at_what_a_read_can_still_reach(
+    tmp_path: Path,
+    compress: Callable[[bytes], bytes],
+    name: str,
+    listed: Verification,
+    expected: Verification,
+) -> None:
+    # No read of the member has found a frame without a check at listing, so a file of
+    # xz, zstd or LZ4 frames is listed at CHECKSUM, as a gzip file is. Opening the
+    # member does not change that; the read that finds such a frame lowers it.
+    path = tmp_path / name
+    path.write_bytes(compress(_DATA))
+    with open_archive(path) as reader:
+        member = next(m for m in reader.members() if m.is_file)
+        assert member.verifiable is listed
+        with reader.open(member) as stream:
+            assert member.verifiable is listed
+            assert stream.read() == _DATA
         assert (member.verified, member.verifiable) == (expected, expected)
 
 
@@ -403,4 +456,46 @@ def test_a_frame_found_without_a_check_lowers_the_ceiling(tmp_path: Path) -> Non
             _seek_into_the_last_frame(stream)
             assert member.verifiable is CHECKSUM
         assert reader.verify_all() == ()
+        assert (member.verified, member.verifiable) == (LENGTH, LENGTH)
+
+
+@requires_zstd()
+def test_a_stream_racing_the_finding_of_an_unchecked_frame_does_not_raise_it_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Stream A has seen only the checked first frame, so its ceiling is CHECKSUM.
+    # Stream B finds the unchecked second frame while A's sync is between computing
+    # that ceiling and storing it. The order is forced without threads: B's read runs
+    # inside A's call to ``raise_member_level``.
+    from archivey.internal.streams import archive_stream
+
+    path = tmp_path / "mixed.zst"
+    path.write_bytes(_zstd(True)(_DATA) + _zstd(False)(_DATA))
+    real = archive_stream.raise_member_level
+    armed: list[Callable[[], None]] = []
+
+    def racing(*args: object, **kwargs: object) -> None:
+        if armed:
+            armed.pop()()
+        real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(archive_stream, "raise_member_level", racing)
+    with open_archive(
+        path, seekable_members=True, concurrent_operations=True
+    ) as reader:
+        member = next(m for m in reader.members() if m.is_file)
+        with reader.open(member) as a:
+            a.read(10)
+
+            def read_b() -> None:
+                with reader.open(member) as b:
+                    assert b.read() == _DATA * 2
+                    assert member.verifiable is LENGTH
+
+            armed.append(read_b)
+            assert a.verifiable is LENGTH
+            assert not armed
+            assert member.verifiable is LENGTH
+            a.read(10)
+            assert member.verifiable is LENGTH
         assert (member.verified, member.verifiable) == (LENGTH, LENGTH)

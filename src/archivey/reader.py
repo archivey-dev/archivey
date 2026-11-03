@@ -197,7 +197,8 @@ class ArchiveStream(ReadOnlyIOStream):
         so such a file is ``CHECKSUM`` until a read finds one without a check. A
         member stream answers with its member's
         :attr:`~archivey.ArchiveMember.verifiable`: the listing's estimate until a
-        stream of the member first opens its data, which can settle it lower once.
+        stream of the member first opens its data, which can settle it once, lower or
+        higher.
         After that it falls only when a read finds such a stream or frame without a
         check, and it rises when another member's checksum confirms the password.
         Reading this property reads nothing from the archive.
