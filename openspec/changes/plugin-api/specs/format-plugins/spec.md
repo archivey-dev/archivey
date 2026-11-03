@@ -44,6 +44,8 @@ how unrelated input fails to be detected; `MemoryError` and `OSError` still prop
 | Case | Expected |
 | --- | --- |
 | A plugin declares magic `PK\x03\x04`; a ZIP is detected | `ArchiveFormat.ZIP` |
+| A plugin declares magic `55 AA` at 510; an isohybrid ISO is detected | `ArchiveFormat.ISO` (far magic is a built-in signal) |
+| A plugin declares magic `MZ` at 0; a ZIP behind a PE stub is detected | `ArchiveFormat.ZIP` (the SFX scan is a built-in signal) |
 
 ### Requirement: Plugin member data is checked like built-in member data
 
@@ -150,6 +152,7 @@ codec off, and `FormatInfo.from_plugin` SHALL be true for a format that uses it.
 | --- | --- |
 | `x.toy` with the codec's magic; `open_archive` | `ArchiveFormat(RAW_STREAM, ToyStream.TOY)`, one member, decoded bytes |
 | A TAR inside the codec, no name | `ArchiveFormat(TAR, ToyStream.TOY)` by the inner probe |
+| The same, `FormatPolicy(only={TAR, ToyStream.TOY})` | `ArchiveFormat(TAR, ToyStream.TOY)`: the policy allows a pair with the codec, so its magic stays |
 | A sequential plugin registered after the codec; `x.lha.toy` | `ArchiveFormat(LhaContainer.LHA, ToyStream.TOY)` |
 | The stream cut short | `TruncatedError` |
 | `ReaderContext.decompress(data, ToyStream.TOY, size=n, properties=p)` | the decoder's `CodecCall` has `size=n`, `properties=p` and the caller's limits |

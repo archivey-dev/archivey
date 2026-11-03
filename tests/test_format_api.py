@@ -281,6 +281,71 @@ def test_builtin_magic_wins(clean_registry: None) -> None:
     assert detect_format(io.BytesIO(buf.getvalue())).format == ArchiveFormat.ZIP
 
 
+def _hybrid_iso() -> bytes:
+    """A pycdlib image with the MBR boot signature an isohybrid image carries at 510."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(interchange_level=3)
+    iso.add_fp(io.BytesIO(b"alpha"), 5, "/A.TXT;1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    image = bytearray(out.getvalue())
+    image[510:512] = b"\x55\xaa"
+    return bytes(image)
+
+
+def _sfx_zip() -> bytes:
+    from tests.test_sfx import _pe_stub
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a", b"a")
+    return _pe_stub() + buf.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("build", "magic", "expected"),
+    [
+        pytest.param(
+            _hybrid_iso,
+            Magic(510, b"\x55\xaa"),
+            ArchiveFormat.ISO,
+            id="far-magic",
+            marks=requires("pycdlib"),
+        ),
+        pytest.param(_sfx_zip, Magic(0, b"MZ"), ArchiveFormat.ZIP, id="sfx-scan"),
+    ],
+)
+def test_builtin_magic_past_the_start_wins_over_plugin_near_magic(
+    clean_registry: None,
+    build: Callable[[], bytes],
+    magic: Magic,
+    expected: ArchiveFormat,
+) -> None:
+    """A plugin's magic near the start counts only when no built-in signal matched,
+    and that includes the signals detection looks for further in: ISO's ``CD001`` at
+    32 769, and an archive behind an executable stub."""
+    data = build()
+    assert detect_format(io.BytesIO(data)).format == expected
+
+    class Overlap(PluginContainer):
+        OVERLAP = "overlap"
+
+    class OverlapHandler(ToyHandler):
+        format = ArchiveFormat(Overlap.OVERLAP, StreamFormat.UNCOMPRESSED)
+        extensions = ()
+
+    OverlapHandler.magic = (magic,)
+    register_format(OverlapHandler)
+    assert detect_format(io.BytesIO(data)).format == expected
+    # Where no built-in signal matches, the plugin's magic still finds its format.
+    other = bytearray(64 * 1024)
+    other[magic.offset : magic.offset + len(magic.data)] = magic.data
+    assert detect_format(io.BytesIO(bytes(other))).format == OverlapHandler.format
+
+
 @pytest.mark.parametrize(
     ("attrs", "match"),
     [
