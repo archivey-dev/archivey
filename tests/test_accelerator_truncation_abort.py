@@ -36,13 +36,19 @@ from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
     ReadError,
-    ResourceLimitError,
+    ResourceUnavailableError,
     TruncatedError,
 )
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import codecs as codecs_module
-from archivey.internal.streams.child_process import outside_death
-from archivey.internal.streams.codecs import Codec, open_codec_stream, rapidgzip_child
+from archivey.internal.streams.child_process import is_no_verdict, outside_death
+from archivey.internal.streams.codecs import (
+    Codec,
+    callers_source,
+    open_codec_stream,
+    rapidgzip_child,
+    resolve_codec,
+)
 from archivey.internal.streams.codecs.rapidgzip_child import (
     RapidgzipChildReportedError,
     RapidgzipChildStream,
@@ -550,7 +556,7 @@ def test_a_fault_archivey_raises_about_the_source_is_not_marked_as_the_sources()
     ):
         while stream.read(1 << 16):
             pass
-    assert not rapidgzip_child.from_callers_source(info.value)
+    assert not callers_source.from_callers_source(info.value)
 
 
 class _FailingOnceSource(io.BytesIO):
@@ -579,7 +585,7 @@ def test_after_a_source_fault_every_later_call_raises(codec: Codec) -> None:
         with pytest.raises(OSError, match="transient source fault") as first:
             while stream.read(1 << 16):
                 pass
-        assert rapidgzip_child.from_callers_source(first.value)
+        assert callers_source.from_callers_source(first.value)
         messages = set()
         for call in (
             lambda: stream.read(1 << 16),
@@ -648,7 +654,7 @@ def test_an_interrupt_from_the_callers_source_leaves_the_stream_unusable() -> No
 @pytest.mark.parametrize(
     ("sig", "expected"),
     [
-        ("SIGKILL", ResourceLimitError),
+        ("SIGKILL", ResourceUnavailableError),
         ("SIGTERM", ReadError),
         ("SIGSEGV", CorruptionError),
         ("SIGABRT", CorruptionError),
@@ -673,17 +679,21 @@ def test_a_child_death_is_reported_by_how_it_ended(
         assert rapidgzip_child.crashed_on_data(first.value) is (
             expected is CorruptionError
         )
+        # An end from outside the decoder is no verdict on the data, so a stream
+        # that resumed from an index point keeps that index.
+        assert is_no_verdict(first.value) is (expected is not CorruptionError)
         # Every later call raises the same error again.
         with pytest.raises(expected) as second:
             child.read(1)
         assert type(second.value) is expected
         assert str(second.value) == str(first.value)
+        assert is_no_verdict(second.value) is is_no_verdict(first.value)
 
 
 @_POSIX
 @pytest.mark.parametrize(
     ("sig", "expected"),
-    [("SIGKILL", ResourceLimitError), ("SIGTERM", ReadError)],
+    [("SIGKILL", ResourceUnavailableError), ("SIGTERM", ReadError)],
 )
 def test_a_child_killed_from_outside_ends_the_stream(
     tmp_path: Path, sig: str, expected: type[Exception]
@@ -700,9 +710,11 @@ def test_a_child_killed_from_outside_ends_the_stream(
         with pytest.raises(expected) as first:
             stream.seek(0)
         assert type(first.value) is expected
+        assert is_no_verdict(first.value)
         with pytest.raises(expected) as second:
             stream.read(1)
         assert str(second.value) == str(first.value)
+        assert is_no_verdict(second.value)
 
 
 @pytest.mark.parametrize("returncode", [-9, -15, 1])
@@ -849,15 +861,12 @@ def test_any_runtime_error_rapidgzip_raised_is_translated(message: str) -> None:
 def test_an_eof_error_the_child_reported_is_still_translated() -> None:
     """The mark that keeps the caller's source exception unchanged is on that exception
     only: an ``EOFError`` rapidgzip raised in the child is still a truncation."""
-    for codec in (
-        codecs_module.GzipCodec(),
-        codecs_module.DeflateCodec(),
-        codecs_module.ZlibCodec(),
-    ):
+    for codec in (Codec.GZIP, Codec.DEFLATE, Codec.ZLIB):
         reported = rapidgzip_child._reported_error(
             b"builtins\nEOFError\n\nend of stream"
         )
-        assert isinstance(codec._translate_accelerator(reported), TruncatedError)
+        translate = resolve_codec(codec, _ON).translate
+        assert isinstance(translate(reported), TruncatedError)
 
 
 def test_an_unknown_exception_from_the_child_propagates_unmapped() -> None:
@@ -1091,7 +1100,7 @@ def test_without_a_child_auto_uses_stdlib_and_on_refuses(
         assert not _has_child_stream(stream)
         assert stream.read() == payload
     field = "use_indexed_bzip2" if codec is Codec.BZIP2 else "use_rapidgzip"
-    with pytest.raises(ResourceLimitError, match=rf"{field}.*\(no child here\)"):
+    with pytest.raises(ResourceUnavailableError, match=rf"{field}.*\(no child here\)"):
         open_codec_stream(codec, str(path), config=_ON)
 
 
@@ -1108,7 +1117,7 @@ def test_under_pypy_on_is_refused_with_the_reason(
     )
     path = _write(tmp_path, "valid.gz", gzip.compress(_payload()))
     with pytest.raises(
-        ResourceLimitError, match=r"\(archivey does not use rapidgzip under PyPy"
+        ResourceUnavailableError, match=r"\(archivey does not use rapidgzip under PyPy"
     ):
         open_codec_stream(Codec.GZIP, str(path), config=_ON)
 
@@ -1141,11 +1150,13 @@ def _break_child_start(
 def test_a_child_that_cannot_start_is_a_resource_limit_under_on(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, how: str
 ) -> None:
-    """ON asked for rapidgzip, so a refused child is an error, not a quiet fallback."""
+    """ON asked for rapidgzip, so a refused child is an error, not a quiet fallback,
+    and one that says nothing about the data."""
     path = _write(tmp_path, "valid.gz", gzip.compress(_payload()))
     _break_child_start(monkeypatch, tmp_path, how)
-    with pytest.raises(ResourceLimitError, match="cannot start"):
+    with pytest.raises(ResourceUnavailableError, match="cannot start") as caught:
         open_codec_stream(Codec.GZIP, str(path), config=_ON)
+    assert is_no_verdict(caught.value)
 
 
 @pytest.mark.parametrize("mode", ["path", "bytesio"])
@@ -1246,7 +1257,7 @@ def test_an_auto_fallback_warns_once_per_process(
 
     why = _NO_CHILD_REASONS[how]
     _take_the_child_away(monkeypatch, tmp_path, how)
-    with pytest.raises(ResourceLimitError, match=why):
+    with pytest.raises(ResourceUnavailableError, match=why):
         open_codec_stream(Codec.GZIP, str(path), config=_ON)
     assert _fallback_warnings(caplog) == []
 

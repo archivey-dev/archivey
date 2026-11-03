@@ -13,6 +13,7 @@ allowed-tools:
   - Glob
   - Bash      # reproduce a finding or check a runtime claim — not to re-run the gates (§6)
   - WebFetch  # look up current docs and best practices
+  - Task      # subagents on Sonnet for reading outside the diff (§How to spend turns)
 ---
 
 # Code Review Skill
@@ -54,6 +55,29 @@ this list and §6 disagree, §6 wins; edit both together.
 - End every review body, inline comment and reply with the attribution footer (§6
   "Attribution footer").
 
+## How to spend turns
+
+Each tool call that ends a turn re-sends the whole context, and a review's cost is mostly
+that: the eval reviews of 2026-10-30 made one call per turn, and re-reading the cached
+context was about half the bill. Two habits cut it without reading less. Stated in
+the loop's prompt, they cut the cost of a first look on five recent pull requests by
+about a fifth; important findings held and fewer nits came back, in one run of each
+arm (`dev-docs/review-eval/results.md`):
+
+- **Batch.** When the next calls do not depend on each other's output (the diff stat, a
+  grep, two files, the tier command), send them in one turn. One call per turn only
+  when its output decides the next call.
+- **Read the immediate surroundings yourself; delegate the wider search.** Read
+  yourself the diff, the immediate surroundings of each change (the rest of each
+  changed function and its docstring, the helpers in the same file it calls, the code
+  next to it that a new helper may duplicate, the tests of a touched function), the
+  lines a finding cites, and the review's own instructions and contracts (this skill,
+  the §1 reference doc, `CONTRIBUTING.md`, the deep-tier docs, what pass 2 opens).
+  Send the wider searches to subagents on Sonnet (the `Task` tool, called `Agent` in
+  newer versions): callers across the tree, sibling formats and codecs, shared state
+  in other modules, history. `reference/code-pr.md` §Reading outside the diff says
+  how.
+
 ## 1. What are you reviewing?
 
 | Reviewing | Read | Why it is separate |
@@ -67,6 +91,82 @@ this list and §6 disagree, §6 wins; edit both together.
 **Also read [`CONTRIBUTING.md`](../../../CONTRIBUTING.md) at the start of a first look.**
 It holds the coding and testing rules; `code-pr.md` says which of them PRs here break and
 does not restate them.
+
+### How deep: the tier
+
+A pull request's changed paths set how deep the review goes, not its author or its
+size. Run `python3 scripts/review_prep.py tier` first: it is stdlib only, so it needs no
+project environment, and it compares against `origin/main`. It prints the tier, the paths
+that decided it, and whether `dev-docs/api-surface.txt` changed. The path lists, and why
+each path is on its list, live in that script.
+
+- **Light** — every changed path is prose, tests or benchmarks. An agent's instructions
+  and contracts are never light (skills, commands, `AGENTS.md`, `CONTRIBUTING.md`, the
+  design rules, the threat model, the API surface), and neither are the gates among the
+  tests and benchmarks. Read the diff and the files it touches. Open `CONTRIBUTING.md`,
+  the handbook and the domain checklist only for what a change reaches into. Finding
+  discipline does not change: what you find is still reported and labeled. The verdict
+  is 🔄 only for a 🔴 (§4), so a light PR ends in one round otherwise.
+- **Standard** — the review this skill and its reference docs describe, unchanged. A
+  standard PR can still get the security pass (below, under Deep).
+- **Deep** — a path where one bug breaks a safety guarantee for every format, or a
+  workflow or release file. Format parsers and codecs stay standard by design; the script
+  says why. This tier is not a commissioned deep review: `deep-reviews.md` does not apply.
+  Everything in Standard, plus [`threat-model.md`](../../../dev-docs/threat-model.md) and
+  [`security-review-guide.md`](reference/security-review-guide.md), and the security
+  pass below. On a fix round, trace every fix outward (`fix-round.md`), not only the ones
+  that moved a contract. When every deep path is a workflow that only a dispatch or the
+  schedule starts, with a read-only token and no secret (`quiet_workflow`), the pull
+  request is standard with the security pass still on; take its attacker from the
+  `DEEP_PROCESS` item below, and check what the workflow writes that its token does not
+  scope (the Actions cache, artifacts other jobs restore).
+
+  **Every round on a deep pull request ends with a security pass**, done after the rest
+  of the review and reported on its own. Safe handling of hostile input is what the deep
+  paths carry, so it gets its own attention rather than whatever is left after the
+  general review (maintainer, 2026-10-30). Format code reads hostile bytes too, so a
+  pull request of any tier gets the pass when the script prints `security pass: yes`
+  (a new reader, parser or codec file), when its Risk section's `Security:` line says
+  yes, or when the change meets one of that line's rules in
+  `.github/pull_request_template.md` whatever the line says (maintainer, 2026-10-31).
+  The line can be raised, never lowered: run the pass, and a "no" on a change the rules
+  cover is 🟢, like a wrong tier line. The script's two lists set the attacker:
+
+  - *A library path* (`DEEP_SECURITY`, and format or codec code the rules above cover):
+    the attacker controls the archive or the directory source. Take each defended
+    property in `threat-model.md` §3 the path carries, or, where §3 names none for it,
+    the guarantee every library path carries: writes stay inside the destination,
+    resources stay bounded, and archive-supplied input reaches a command line or a
+    terminal only as inert text. Try to break it with a crafted name, size, offset, link
+    target or member order, a truncated or concatenated stream, or a hostile directory
+    source. Build each attempt and its destination in a fresh temporary directory
+    outside the checkout. Run it under the library configuration the pull request ships
+    (the defaults, unless the diff changes them), never a tighter one; keep a bomb that
+    works cheap from outside the library instead: a small fixture, a `timeout`, a capped
+    `ulimit -v`. Where a `tests/test_cve_regressions*.py` case sits near the change,
+    read it for the shape of a known attack and take its result from CI, or say CI has
+    none yet. A pull request below deep that gets the pass also reads `threat-model.md`
+    for it.
+  - *The release's and the review loop's own files* (`DEEP_PROCESS`: workflows, the
+    release script, the loop's prompt and scripts, this skill): the attacker is whoever
+    can open a pull request or write its title, body, branch name, label or a comment.
+    Try whether that text can reach a `run:` line, a token with more scope than the job
+    needs, a step that runs the pull request's code with secrets, or an agent that it
+    steers into a command, a token or a write it should not make.
+
+  Running an attempt checks a claim; it is not a re-run of the gates (§6). Report one
+  `Security pass:` line per property or file (§3): what you tried and what happened. A
+  finding that breaks a §3 property or the library guarantee starts at 🔴, and comes
+  down only with a measured reason the input cannot reach the code or the harm is
+  bounded, said in the finding. A finding on the loop's or the release's files is rated
+  on its impact like any other, with the reason stated. A fix round runs the pass over
+  what its fixes changed and what they reach (`fix-round.md` §Check what each fix
+  reaches), and writes lines for those alone. A reviewer new to the
+  pull request after an earlier pass reads its lines and runs its own on whatever they
+  left untried or did not trace through.
+
+The Snapshot line names the tier. Check the PR body's Risk section against the script: a
+public API change the body does not declare is 🟡, and a wrong tier line is 🟢.
 
 **Authoritative sources — open when a finding touches them:**
 [`VISION.md`](../../../VISION.md) (product tie-breaker),
@@ -203,9 +303,13 @@ For the maintainer skimming without the code open. Half a screen unless the chan
   (`POST .../pulls/{n}/comments` returns each comment's `html_url`, and §6 records that
   a review body cannot be edited afterwards through the MCP tools). A finding whose thread
   URL you genuinely cannot get is listed with its `file:line` alone rather than held back.
-- **Snapshot** — one line: size (approx. lines / small|medium|large), the scope you
-  reviewed, and gates (CI status, §6). The verdict is already in the header, so the
-  Snapshot does not restate it.
+- **Snapshot** — one line: size (approx. lines / small|medium|large), the tier (§1), who
+  merges (the script's `merge:` line), the scope you reviewed, and gates (CI status,
+  §6). The verdict is already in the header, so the Snapshot does not restate it.
+- **Security pass** — every round that gets the pass (§1): one short line per property or
+  file, `Security pass: <property or file>: <what you tried> → <what happened>`, with the
+  finding ID where it found one. A fix round's lines cover what its fixes change and
+  reach.
 - **Pass 1 (cold)** — first look at a code PR only: one line naming what the code alone did
   not explain before you opened the PR body or the design, each with its finding ID, or
   `nothing`. It makes the cold read checkable; the rule and why it exists are in
@@ -249,7 +353,10 @@ index; a thread is ranked by where it sits in the file.
 **Only** items that need a human call — this block is the maintainer UI; block 2 is worker
 mail for whoever addresses the PR. Use the canonical decision packet in
 [`dev-docs/pair-workflow.md`](../../../dev-docs/pair-workflow.md) §Decision packet —
-same six fields, same cold-start test. Do not invent a shorter parallel list. Routine
+same six fields, same cold-start test. Do not invent a shorter parallel list. List here
+what makes the maintainer merge that the tier script cannot see: a new subsystem or
+public concept, a reversed ruling, a behaviour trade-off, a weakened gate (a job dropped
+from `CI gate`'s `needs:`), a weakened defence the threat model still claims. Routine
 "please add a test for X" fixes belong in block 2. Nothing to decide → `None.` Do not
 invent filler questions, and do not drop a real decision gap to keep the section empty.
 
@@ -303,7 +410,8 @@ so use these meanings and no others:
   full (block 2, inline threads, IDs) — approving is not shorthand for dropping them.
 - **💬 Comment** — findings the implementor should act on, but nothing the maintainer must
   decide and nothing you need to re-review.
-- **🔄 Request Changes** — a 🔴 stands, or a fix needs a look once it lands.
+- **🔄 Request Changes** — a 🔴 stands, or a fix needs a look once it lands. On a light
+  PR (§1), only a 🔴.
 
 **"Only nits left" is not a reason to merge.** In this repo a 🟢 nit is *small*, not
 *optional*: it gets fixed before merge, on this PR. "Leave it for a follow-up" is not an
@@ -313,8 +421,9 @@ fixed, or the verdict is the conditional approval above, which keeps them on the
 implementor's list. Only the maintainer waives a nit, explicitly; when they do, record it
 per the settled-decision rule in block 3.
 
-The 💡 / 📚 / 🎉 tiers are the genuinely optional ones — they propose or teach, they do not
-ask for a change, and they never hold a merge.
+The 💡 / 📚 / 🎉 tiers are the genuinely optional ones — they propose or teach and do not
+ask for a change. Their threads still need a reply and a resolution before the merge, as
+every open thread does (`address-review-findings` §7).
 
 ### Round budget — from round 3, nits do not hold the PR
 
@@ -432,8 +541,12 @@ Use `## ` in a review body and `### ` in an inline comment or reply. The level i
 keeps the raw markdown readable, and it nests a finding's heading under the body's.
 
 Agents post through the maintainer's account, so the avatar says `davitf` on most
-threads; the header is what makes them scannable. Keep the attribution to one line; the
-detail belongs under it.
+threads; the header is what makes them scannable. The attribution line names the tool
+you run in, like the footer, and the model behind it when your session tells you which
+one it is: `**Claude Code** · <model> · ...` (leave the model out rather than guess it).
+The examples above say **Claude Code**; a Cursor review says **Cursor**. The model goes
+here, not in the footer, because the footer line is matched verbatim by the posting
+tools. Keep the attribution to one line; the detail belongs under it.
 
 ### Do not re-run the gates — or re-measure what a previous round recorded
 
@@ -460,8 +573,7 @@ cost to the reader who does not want it:
 ```
 <details><summary>Measured this round · what's fine · outward trace</summary>
 
-- `python scripts/make_7z_bomb.py --members 70000` → 2.1 s, 4.4 MB header
-- `pytest tests/test_sevenzip_limits.py -k bcj2` → 12 passed, RESTART BLOCKS SEEN: [0]
+- `pytest tests/test_sevenzip_bcj2.py -q` → 63 passed
 
 </details>
 ```
@@ -508,7 +620,9 @@ So:
 ### Attribution footer
 
 Every review body, inline comment and reply ends with the attribution footer, written by
-you — `\n\n---\n_Generated by [Claude Code](https://claude.ai/code)_` in Claude Code. Do not
+you, naming the tool you run in: `\n\n---\n_Generated by [Claude Code](https://claude.ai/code)_`
+in Claude Code, `\n\n---\n_Generated by [Cursor](https://cursor.com)_` in Cursor, and the
+same shape naming itself in any other agent. Never sign as a tool you are not. Do not
 count on the posting path to add it: the current paths append nothing, and a review body
 posted without it cannot be edited afterwards through the MCP tools. The rule and why:
 `AGENTS.md` §Review workflow.

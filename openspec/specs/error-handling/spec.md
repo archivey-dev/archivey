@@ -39,6 +39,7 @@ ArchiveyError(Exception)
 │   ├── NameCollisionError            raised only under abort_on=
 │   └── NameRewrittenError            raised only under abort_on=
 ├── ResourceLimitError
+│   └── ResourceUnavailableError
 ├── UnsupportedFeatureError
 ├── PackageNotInstalledError
 └── DiagnosticRaisedError
@@ -48,14 +49,15 @@ Subclass boundaries SHALL keep their existing meanings:
 `UnsupportedFeatureError` / `PackageNotInstalledError` may occur at open or read
 time, and `StreamNotSeekableError` is an `OpenError`. `OpenError` means reading could
 not start (no recognized format, a non-seekable source the format needs to seek, a
-volume file that cannot be opened); a recognized archive whose header is damaged, cut
+volume that is not a regular file); a recognized archive whose header is damaged, cut
 short or encrypted raises a `ReadError` subclass, from `open_archive()` as from any
 later call, except a damaged method, codec or version id in a header with no checksum,
 which raises `UnsupportedFeatureError` (see the error split below). `DiagnosticRaisedError` is direct
 because advisory escalation can happen during detection, open, read, stream, or
 extraction. `ResourceLimitError` is direct because configurable resource caps can
 trip during listing materialization, extraction bomb guarding, opening a member's
-codec, or copying a stream source to temporary storage; it is not an
+codec, or copying a stream source to temporary storage, and its
+`ResourceUnavailableError` can come from opening a volume; it is not an
 `ExtractionError` subclass.
 
 A type SHALL be public only when a caller would act on it differently from its parent;
@@ -66,14 +68,17 @@ type, and a `SpoolLimits` trip is a plain `ResourceLimitError`.
 `TruncatedError` SHALL be a `CorruptionError` subclass: data that ends before its
 structure says it should is damaged data, and from the bytes alone a decoder often cannot
 tell a cut stream from damage that decodes short. So `except CorruptionError` catches
-truncation too. Which of the two is raised is a best-effort label, not a diagnosis, and
-the documentation SHALL NOT tell callers to branch on it.
+truncation too. Which of the two is raised is a best-effort label, not a diagnosis. The
+documentation SHALL present `TruncatedError` as that: a hint that the source was most
+likely cut short, such as an interrupted download that fetching again or resuming may
+complete, and SHALL tell callers to catch `CorruptionError` to handle both.
 
 | Error split | Meaning |
 | --- | --- |
 | `UnsupportedFeatureError` | The archive uses, or its header appears to use, a recognized feature Archivey does not implement (unsupported ZIP method, unknown 7z coder, a 7z coder graph that is not a tree of chains, a raw CD sector image), or the archive or backend cannot serve a valid request (writing any format, a RAR password with a line break for `unrar`). An unknown method, codec or version id read from a header with no checksum (such as a ZIP method) may instead mean that header is damaged; Archivey cannot tell the two apart and SHALL report it as `UnsupportedFeatureError`, with a message that says a damaged header reads the same way. |
 | `PackageNotInstalledError` | A package or external tool the format or member needs is absent: at open for a format whose backend or single codec is missing (ISO without `pycdlib`), at read for one member's codec. |
 | `ResourceLimitError` | A configured resource limit was exceeded (`ListingLimits` materialization caps, `ExtractionLimits` bomb guards, a `DecoderLimits` cap on archive-declared decoder memory or key-derivation work, or `SpoolLimits`). |
+| `ResourceUnavailableError` | A `ResourceLimitError` subclass: the system did not give a resource and no configured limit was exceeded. A decoder child or helper program ended by SIGKILL, a decoder that `process_isolation` runs only in a child when none can start, a PPMd child that cannot allocate its model, a volume file that cannot be opened because the process is out of file descriptors (`EMFILE` / `ENFILE`, the `OSError` as its cause). The caller acts differently (retry with more memory or file descriptors, or where processes can start), and catching `ResourceLimitError` still catches it. |
 
 #### Scenario: archive exception matrix
 
@@ -244,7 +249,7 @@ The system SHALL ensure every `ArchiveyError` instance carries:
 | `archive_name` | `str \| None` | Path or source stream `name`; `None` for anonymous streams; never fabricated; **raw** |
 | `member_name` | `str \| None` | Member in context, if any; **raw** |
 | `link_target` | `str \| None` | Symlink/hardlink target in context, if any; **raw** |
-| `format_unconfirmed` | `bool` | `True` when the format claim rested on a content probe alone, with nothing corroborating it (`detected_by="content_probe"`, no matching extension and no inner-TAR upgrade) — **whatever confidence detection reported**; default `False` for every other raise |
+| `format_unconfirmed` | `bool` | `True` when the format claim rested on a content probe alone, with nothing corroborating it (`detected_by="content_probe"`, no matching extension, no inner-TAR upgrade and no self-checking header) — **whatever confidence detection reported**; default `False` for every other raise |
 | `__cause__` | `BaseException \| None` | Original exception via `raise ... from exc` when wrapping |
 
 `__str__` SHALL append `format_unconfirmed=True` when the flag is set (alongside
@@ -296,6 +301,8 @@ be converted into `CorruptionError`, `TruncatedError`, or another `ArchiveyError
 | Case | Expected |
 | --- | --- |
 | Underlying file read raises `OSError` mid-member | Original `OSError` propagates unchanged |
+| A volume path, listed by the caller or found beside the first, is missing or unreadable, first or later in the set, at open or when a read reaches it | Its `OSError` (`FileNotFoundError`, `PermissionError`) propagates unchanged, not an `OpenError` |
+| Opening a volume fails with `EMFILE` / `ENFILE` | `ResourceUnavailableError` naming the file-descriptor limit, the `OSError` as its cause: the system ran short, not the file |
 | Source bytes are readable but decoder reports corrupt/truncated data | `CorruptionError` / `TruncatedError` because the failure is decoding-origin |
 
 ### Requirement: Exception messages are inert for terminal display
@@ -417,6 +424,9 @@ read raises.
 The rewritten message for a limit trip SHALL say the read was stopped by a limit
 rather than that decoding failed, since a decoder-memory refusal stops the read
 before the dictionary is allocated; it still MUST NOT imply that nothing was produced.
+A `ResourceUnavailableError` is not a limit trip: its rewritten message SHALL say the
+system ran short rather than that a limit stopped the read, and SHALL say that partial
+output may already have been produced, since a decoder process can be killed part-way.
 
 **The trigger is provenance, not confidence.** The question this signal answers is "was
 there any evidence besides one probe?", which `DetectionConfidence` does not track:
@@ -426,11 +436,16 @@ and Brotli's compressed-first class, which was moved to `PROBABLE` precisely *be
 flag was confidence-keyed. Separating them also lets confidence be retuned later without
 silently changing which errors are stamped.
 
-A claim SHALL count as **corroborated**, and therefore not stamped, when either of these
+A claim SHALL count as **corroborated**, and therefore not stamped, when any of these
 holds: the filename agrees with the detected format; or the probe hit was upgraded to a
 `TAR_*` format because a TAR header was found in the decompressed prefix, which is a
-second independent signal obtained by actually decompressing. Exact magic and SFX scans do
-not reach this requirement at all, being different detection paths.
+second independent signal obtained by actually decompressing; or the claim came from a
+self-checking header (a TAR header found by its checksum, `format-detection` step 6).
+That last one corroborates itself, whatever the name says (DR-7, trust self-validating
+data over caller hints): its checksum and every numeric field had to hold, so a name
+that disagrees raises a `FORMAT_EXTENSION_CONFLICT` but does not stamp the error. Exact
+magic and SFX scans do not reach this requirement at all, being different detection
+paths.
 
 **"The filename agrees" SHALL be the exact negation of what raises a
 `FORMAT_EXTENSION_CONFLICT`** — the extension's format equals the detected format, or is
@@ -483,6 +498,7 @@ A corroborated result keeps today's type, message, and `format_unconfirmed=False
 | Probe-only Brotli result, **compressed-first** (`PROBABLE`), decode fails | Same treatment — stamped. Confidence does not gate the signal |
 | Probe-only **LZMA Alone** result (`PROBABLE`), decode fails | Same treatment — stamped |
 | Probe-only **LZMA Alone** result whose header declares a dictionary over `max_decoder_memory` | `ResourceLimitError`, stamped: `format_unconfirmed is True`; message names unconfirmed identification and a limit stop, not a decode failure; `PROBE_FORMAT_UNCONFIRMED` diagnostic |
+| Extension-only `.lzma` read whose decoder needs a child process, and none can start | `ResourceUnavailableError`, stamped: message says the system ran short rather than that a limit stopped the read, and that partial output may already have been produced |
 | Probe match corroborated by extension, decode fails | Ordinary truncation/corruption message; `format_unconfirmed is False`; no probe-unconfirmed diagnostic. A source the probe declined is not a probe match: a `.br` cut below the completion window falls to the extension-only requirement below |
 | Probe hit upgraded to `TAR_BROTLI` via an inner-TAR header, decode fails | Corroborated: `format_unconfirmed is False` |
 | Probe-only result, decode succeeds | Success; no error and no diagnostic |
@@ -600,8 +616,8 @@ directory archive or extract into it.
 | `ArchiveyConfig(on_diagnostic=0)` | `ArchiveyUsageError` at construction, not when the first diagnostic fires |
 | `ArchiveyConfig(rar_allow_glob_member_concatenation="false")` | `ArchiveyUsageError` at construction; the refusal is never switched off by a truthy string |
 | `ListingLimits(max_members="x")` | `ArchiveyUsageError` at construction, not `TypeError` mid-listing |
-| `ExtractionLimits(max_ratio=float("nan"))` | `ArchiveyUsageError`; a NaN would leave the ratio guard switched off silently |
-| `ExtractionLimits(ratio_activation_threshold=None)` or `ExtractionLimits(live_ratio_activation_threshold=None)` | `ArchiveyUsageError`; the field is not optional and `None` disables nothing |
+| `DecoderLimits(max_ratio=float("nan"))`, or the deprecated `ExtractionLimits` field | `ArchiveyUsageError`; a NaN would leave the ratio guard switched off silently |
+| `DecoderLimits(ratio_activation_threshold=None)` or `DecoderLimits(live_ratio_activation_threshold=None)`, or the deprecated `ExtractionLimits` fields | `ArchiveyUsageError`; the field is not optional and `None` disables nothing |
 | `ExtractionLimits(max_extracted_bytes=True)` | `ArchiveyUsageError`; `bool` is an `int` subclass and would cap at one byte |
 | `DetectionBudget(..., max_far_bytes=None)` or a negative or `float` field | `ArchiveyUsageError` at construction naming the field; not a `TypeError` or `ValueError` mid-detection, and not a tier silently switched off |
 | `open_archive(src, encoding="rot13")` | `ArchiveyUsageError` naming the argument; not a `LookupError` during a member-name decode |
@@ -687,3 +703,46 @@ vocabulary rather than two that can drift.
 | `ArchiveyConfig(detection_budget="turbo")` | `ArchiveyUsageError` naming the presets, not `AttributeError` on a budget field |
 | `coerce to OverwritePolicy` given `AbortOn.BLOCKED_MEMBER` | `ArchiveyUsageError` reporting a wrong **type**, though `AbortOn` is a `str` subclass |
 | `except ArchiveyError` around any of the refusals | Does not catch it |
+
+### Requirement: PackageNotInstalledError carries its missing components
+
+`PackageNotInstalledError` SHALL have a `missing: tuple[MissingComponent, ...]`
+attribute holding the packages and programs the raise is about, set on every raise.
+For an absent package or program it SHALL name that component; the `unrar` refusals
+SHALL fill it from the same components `format_availability` reports. It SHALL be empty
+only when the program is found but cannot start, where no component is missing; a
+refusal for no usable `unar` SHALL name `unar`. A
+component that the caller's `FormatPolicy` excludes SHALL have the policy as its
+`reason`, so a caller tells a policy refusal from a missing install by checking
+whether a component's `name` is in its own `exclude_libraries`.
+
+The message SHALL still name the package and its install hint, as the format
+requirements ask. The rule that a structured name is not also interpolated into the
+message covers names that `__str__` renders, and `__str__` does not render `missing`.
+
+#### Scenario: A missing unrar is data on the exception
+
+- **WHEN** a caller reads a compressed RAR member with no RARLAB `unrar` or `rar` on
+  `PATH` and no other usable decompressor
+- **THEN** the read raises `PackageNotInstalledError`
+- **AND** its `missing` holds a component named `unrar`, the same one
+  `format_availability(ArchiveFormat.RAR).missing` names
+
+### Requirement: A file cut inside its signature is truncated
+
+A ZIP, 7z or RAR source that holds only the start of its format's signature, or
+nothing, SHALL raise `TruncatedError`, not "Not a … archive": the bytes that are there
+match the format and the file ends, so it was most likely cut short, as TAR and the
+compressors read an empty file. Only a signature at the start of the source counts,
+since a self-extracting stub in front of one can hold any bytes.
+
+#### Scenario: cut signatures
+
+| Case | Expected |
+| --- | --- |
+| Empty `x.zip`, `x.7z` or `x.rar` | `TruncatedError` "the file is empty" |
+| `x.zip` holding `PK\x03` | `TruncatedError`, from a file and from a source that cannot seek |
+| `x.7z` holding the first 5 bytes of the 7z signature | `TruncatedError` |
+| `x.rar` holding `Rar!\x1a\x07` (the RAR4 and RAR5 signatures share it) | `TruncatedError` |
+| `x.zip` holding `PKx` | `CorruptionError`, not `TruncatedError` |
+| A ZIP, 7z or RAR stub, then a cut signature | `CorruptionError`, not `TruncatedError` |

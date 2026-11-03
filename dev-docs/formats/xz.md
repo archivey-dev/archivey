@@ -89,7 +89,7 @@ to TAR over lzip ([`single-file.md`](single-file.md) §2.1).
 
 LZMA Alone is found by the first of the three content probes. That probe runs only for a
 `.lzma`, `.tar.lzma` or `.tlz` name, under `open_stream`, or with
-`ArchiveyConfig.always_probe_content` ([`detection.md`](../topics/detection.md) §2.5).
+`ArchiveyConfig.always_probe_content` ([`detection.md`](../topics/detection.md) §2.6).
 `_alone_header_plausible` checks that the properties byte encodes a legal `(lc, lp, pb)`
 and that the declared size is not exactly zero. The dictionary size is not checked: every value is legal, and the
 specification rounds one below 4 KiB up. The zero-size rule is there because 18 zero bytes
@@ -195,7 +195,9 @@ bytes with no whole header is `TruncatedError` when it is empty or a prefix of t
 magic, and `CorruptionError` otherwise.
 
 Seek points are the member starts, from the trailer walk. A backward seek resumes at the
-nearest member.
+nearest member. A forward read records a point only for a member with output, by the rule
+on `DecodeOut` (`decompressor_stream.py`): an empty member's output offset is the next
+member's, or the end of the output, as for a zero-size xz block.
 
 **LZMA Alone.** `FramedDecompressorStream` over `lzma.LZMADecompressor(FORMAT_ALONE)`,
 one decompressor per stream ([`single-file.md`](single-file.md) §2.3). Zero bytes are
@@ -274,7 +276,7 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 | Two lzip members, one byte of the second member's `LZIP` damaged | `CorruptionError` on a read and a seek; `size` and the CRC-32 unknown. `lzip` reports a corrupt header, unless `--loose-trailing` |
 | COFF object files | Can be claimed by the LZMA Alone probe, `PROBABLE`; the read then fails, stamped `format_unconfirmed` |
 | MP3s whose ID3 tag starts with padding, any plausible header followed by zeros | Not claimed: the zero run after the header is refused |
-| OLE files (`.msi`, old `.doc`, `Thumbs.db`) | Not probed: the OLE signature stops the content probes ([`detection.md`](../topics/detection.md) §2.5) |
+| OLE files (`.msi`, old `.doc`, `Thumbs.db`) | Not probed: the OLE signature stops the content probes ([`detection.md`](../topics/detection.md) §2.6) |
 
 ## 4. Threat surface
 

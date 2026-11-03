@@ -6,8 +6,7 @@
   PR #481): members up to `DecoderLimits.max_ppmd_in_process_input` (16 MiB of compressed
   input) decoded in this process
 - **Provenance:** `openspec/changes/archive/2026-09-26-ppmd-crash-isolation/proposal.md`;
-  `dev-docs/known-issues.md` §"Intermittent `pyppmd` native aborts on PPMd streams";
-  `dev-docs/investigations/ppmd-native-investigation-results.md` §I, §K.3, §K.4
+  `dev-docs/known-issues.md` §"`pyppmd` crashes on damaged or crafted PPMd data"
 - **Amended (2026-10-22, PR #1007):** `max_ppmd_in_process_input` is kept, renamed
   `max_ppmd_held_input` with no alias. It still bounds the member that is held and
   handed to pyppmd whole, under every `process_isolation` value, so the old name, which
@@ -16,23 +15,15 @@
 
 ## Context
 
-pyppmd, the only PPMd decoder for Python, corrupts its heap in ways that kill the whole
-process: SIGSEGV or SIGABRT on Linux, `STATUS_HEAP_CORRUPTION` on Windows. Two routes are
-known. A decode that asks for more output than the stream holds frees a buffer that its
-worker thread still writes to. A model that has ended early, which random bytes reach (a
-wrong password, a crafted member), segfaults when it is asked to decode again. Nothing in
-pyppmd's Python interface separates "the model ended" from "the worker waits for more
-input". Both set the same flags. Upstream has no fix.
+pyppmd, the only PPMd decoder for Python, has a known issue that can kill the whole
+process on damaged or crafted PPMd data (a wrong password or a crafted member gets there).
+A fix is expected in an upcoming pyppmd release.
 
 ## The previous decision (2026-09-26)
 
 archivey kept PPMd in this process for members up to 16 MiB of compressed input and used a
-child process only above that. Inside the process it followed a discipline meant to keep
-pyppmd out of both routes: it held the whole member, handed it to pyppmd in one call,
-bounded every output request by the remaining size, and stopped at the first short
-return. Before freeing a decoder whose worker was still parked, it sent one single-symbol
-decode to finish the worker (the "quiesce" step), because freeing a parked worker was the
-use-after-free that valgrind pinned.
+child process only above that. Inside the process it followed a call discipline meant to keep pyppmd away from the
+known crash.
 
 The reasons were:
 
@@ -58,23 +49,10 @@ The reasons were:
 
 ## What changed (2026-10-20)
 
-- **The discipline holds only by measurement, and one call separates it from a crash.**
-  A re-measurement on 2026-10-20 (`scripts/pyppmd_crash_repro.py` in PR #905) found no
-  crash on archivey's own call order: crafted members with an overstated `unpack_size` ran
-  clean in 860 fresh children and under valgrind, and archivey's teardown order crashed 0
-  of 100 children. But the margin is thin. When a member ends early, the quiesce step is
-  itself a decode after the end; a spy saw it on 183 of 200 hostile 7z members. It stays
-  safe only because pyppmd happens to stop that call at once. One more decode after
-  pyppmd has raised `ValueError` crashed 59 of 100 children for PPMd8 and 5 of 100 for
-  PPMd7, and archivey avoids it only because `_quiesce_worker` returns early on the state
-  pyppmd reports after the error. Leaving the quiesce step out brings back the
-  use-after-free it exists to prevent. Two candidates for an in-process crash stay open:
-  the quiesce decode after an early end, and empty drains on a member that is declared
-  complete but corrupt. Since pyppmd does not expose the state that would make a call
-  sequence safe by construction, the in-process path rests on test results, not on a
-  rule that can be checked. `known-issues.md` describes the remaining risk as an
-  oversized `unpack_size`; measured, that shape is the free-while-parked route, which
-  quiescing already handles. PR #905 corrects that entry.
+- **The discipline holds only by measurement.** A re-measurement on 2026-10-20 (PR #905)
+  found no crash on archivey's own call order, but the margin was thin, and pyppmd does
+  not expose the state that would make a call sequence safe by construction. The
+  in-process path rested on test results, not on a rule that can be checked.
 - **A child no longer costs a process start per member.** The native-decoder isolation
   design takes children from a pool of reused idle children. In its prototype (Linux,
   CPython 3.11, a child that imports only `struct` and `sys` until it is asked for a
@@ -95,19 +73,17 @@ reachable from Python for pyppmd. A crash costs that member and becomes an archi
 error, as above the threshold today.
 
 Password confirmation follows the same rule. It decodes a PPMd member under each
-candidate key, and a wrong key turns the member into exactly the random input that
-reaches pyppmd's crash routes, so it is the path most likely to need the isolation.
+candidate key, and a wrong key turns the member into random input, so it is the path
+most likely to need the isolation.
 
 The planned `ProcessIsolation.NONE` setting, whose name lands with the native-decoder
 isolation change, keeps PPMd in this process as a risk the caller accepts: for speed, for
 tests, or where processes cannot be started. The docs will discourage it.
 
-Reuse must not move the blame. pyppmd's damage is heap corruption, which can surface
-later, while the same child decodes another member. So a child goes back to the pool only
+Reuse must not move the blame. pyppmd's damage can surface later, while the same child decodes another member. So a child goes back to the pool only
 after a clean finish: its member decoded to the declared end, the stored CRC matched, and
 the decoder closed normally. Any error, early end or refused member retires it, and so
-does a read the caller stops early: freeing a worker that may be parked needs the quiesce
-decode, which is itself one of the suspect calls. A crash in a child that had already
+does a read the caller stops early. A crash in a child that had already
 served other members is not charged to the current member while none of its output has
 reached the caller: that member runs again once in a fresh child, and only a crash there
 becomes its error. Once output has reached the caller, a rerun would have to restart the
@@ -162,9 +138,6 @@ children are recycled after a fixed number of decoders.
 
 ## What would reopen it
 
-- **A pyppmd release that fixes both routes.** It must pass the verification checklist in
-  `ppmd-native-investigation-results.md` §J, on Linux, Windows and a free-threaded build.
-- **A way to tell the two worker states apart from Python.** With that, the quiesce step
-  could run only when it is safe.
+- **A pyppmd release with the fix,** verified on Linux, Windows and a free-threaded build.
 - **A pooled child that costs much more than measured.** For example, if per-member cost on
   Windows comes out near a fresh process start.

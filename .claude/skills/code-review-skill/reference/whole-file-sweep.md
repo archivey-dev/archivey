@@ -4,10 +4,9 @@
 > posting are in [`SKILL.md`](../SKILL.md); read the code as a first look does
 > ([`code-pr.md`](code-pr.md) pass 1 and its checklists), with no PR body to read after.
 
-A **sweep batch** is a cold whole-file reading pass rather than a diff review — the `S*`
-batches posted to [#315](https://github.com/archivey-dev/archivey/pull/315). #315 was closed on
-2026-10-02 after the first pass; the formal sweep is planned for after the release, and
-this file is the convention it will follow (its hub will be named in its brief). Findings post exactly
+A **sweep batch** is a cold whole-file reading pass rather than a diff review. Each sweep
+posts to a hub PR named in its brief (the first pass used
+[#315](https://github.com/archivey-dev/archivey/pull/315), now closed). Findings post exactly
 as any review's do (`SKILL.md` §6), one inline thread each. What a sweep posts *in
 addition* is a per-file record that the file was read at all, **whether or not it found
 anything**:
@@ -49,7 +48,7 @@ anything**:
   is the short one and the valuable one** — it is the only thing that distinguishes a file
   that was read and found sound from a file nobody opened.
 - **A sweep finding's ID is `<pass>-<your initial><n>`** — `S16-K1`, `S17-C1` — which
-  carries both prefixes this file already requires: the batch, so two batches on #315
+  carries both prefixes this file already requires: the batch, so two batches on one hub
   cannot collide, and the reviewer's initial, so two reviewers in one batch cannot either.
   **This applies from the next batch and renames nothing.** An ID that is already anchored
   in a posted thread is never renumbered (`SKILL.md` §6 "Stable IDs"), so a batch that used

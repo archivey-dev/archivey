@@ -11,16 +11,16 @@ import errno
 import gzip
 import io
 import os
+import re
 import shutil
 import struct
 import subprocess
 import tarfile
-import tempfile
 import time
 import unicodedata
 import warnings
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -48,6 +48,7 @@ from archivey.exceptions import (
     ResourceLimitError,
     TruncatedError,
 )
+from archivey.internal import extraction as extraction_module
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.bomb_tracker import AlwaysStopResourceLimitError, BombTracker
 from archivey.internal.extraction import _CHUNK, ExtractionCoordinator
@@ -56,12 +57,13 @@ from archivey.internal.filters import (
     _resolve_with_pathlib,
     apply_name_policy,
     check_universal,
+    parent_resolves_within_root,
     resolve_or_raise_on_loop,
     transform_standard,
     transform_strict,
 )
 from archivey.internal.link_watch import LinkWatch
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import MemberStreamParts
 from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember, MemberType
 from tests.conftest import binary_refusal, case_sensitive
 from tests.corruption_util import raises_corruption_not_truncation
@@ -361,10 +363,13 @@ def test_unrepresentable_name_oserror_is_translated(
     # accepts any bytes) by making the atomic file write raise EILSEQ.
     import archivey.internal.extraction as extraction_mod
 
-    def fake_replace(src: object, dst: object, /) -> None:
+    def fake_replace(src: object, dst: object, /, **kwargs: object) -> None:
         raise OSError(errno.EILSEQ, "Illegal byte sequence")
 
     monkeypatch.setattr(extraction_mod.os, "replace", fake_replace)
+    # Under ERROR a file lands with os.link first (POSIX) or os.rename (Windows).
+    monkeypatch.setattr(extraction_mod.os, "link", fake_replace)
+    monkeypatch.setattr(extraction_mod.os, "rename", fake_replace)
 
     archive = _tar_bytes([("file", "member.txt", b"hi")])
     dest = tmp_path / "out"
@@ -2124,6 +2129,64 @@ def test_resolve_or_raise_on_loop_keeps_a_missing_component(tmp_path: Path) -> N
     assert resolve_or_raise_on_loop(path) == tmp_path.resolve() / "d" / "missing" / "f"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize(
+    ("rel", "inside"),
+    [
+        ("f", True),
+        ("d/f", True),
+        ("d//e/f", True),
+        ("d/./e/f", True),
+        ("missing/f", True),
+        ("in/f", True),
+        ("in/deeper/f", True),
+        ("out/f", False),
+        ("abs/f", False),
+        ("file/x/f", True),
+        ("loop/f", None),
+        ("out/.", True),
+        ("out/./", True),
+        ("d/./.", True),
+    ],
+)
+def test_parent_resolves_within_root_matches_the_full_resolution(
+    tmp_path: Path, rel: str, inside: bool | None
+) -> None:
+    # The coordinator resolves the destination once and walks only below it. The
+    # answer, and the error, must be the full walk's from `/`.
+    root = tmp_path / "root"
+    (root / "d" / "e").mkdir(parents=True)
+    (root / "file").write_bytes(b"")
+    (tmp_path / "outside").mkdir()
+    os.symlink("d", root / "in")
+    os.symlink("../outside", root / "out")
+    os.symlink(str(tmp_path / "outside"), root / "abs")
+    os.symlink("loop", root / "loop")
+    root = resolve_or_raise_on_loop(root)
+
+    def outcome(within: Callable[[], bool]) -> object:
+        try:
+            return within()
+        except OSError as exc:
+            return (exc.errno, exc.filename)
+
+    def full() -> bool:
+        return resolve_or_raise_on_loop((root / rel).parent).is_relative_to(root)
+
+    expected = outcome(full)
+    assert expected == (
+        inside if inside is not None else (errno.ELOOP, str(root / "loop"))
+    )
+    assert outcome(lambda: parent_resolves_within_root(root, rel)) == expected
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX root")
+@pytest.mark.parametrize("rel", ["x", "tmp/x", "x/."])
+def test_parent_resolves_within_root_takes_the_filesystem_root(rel: str) -> None:
+    # "/" + "/" is no prefix of any resolved path, so the root needs its own spelling.
+    assert parent_resolves_within_root(Path("/"), rel)
+
+
 def _link_chain_past_path_max(root: Path) -> None:
     """``root/up``: links whose expansion is longer than PATH_MAX, leading to
     ``root``'s parent."""
@@ -2356,28 +2419,55 @@ def test_link_onto_a_name_of_the_same_file_leaves_no_temp(
     assert os.path.samefile(dest / "f", dest / "h")
 
 
+@pytest.mark.parametrize("windows", [False, True])
 def test_a_temp_that_cannot_be_removed_does_not_fail_the_member(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, windows: bool
 ) -> None:
-    # The swap removes the temp name after ``os.replace``. When that unlink fails (on
-    # Windows, a scanner holding the file open), the member is already in place, so the
-    # failure must not turn a completed write into FAILED.
-    src = tmp_path / "a.tar"
-    src.write_bytes(_tar_bytes([("file", "f", b"AAA")]))
-    dest = tmp_path / "out"
+    # The swap removes the temp name after ``os.replace``: always on Windows, and on
+    # POSIX for a hard link placed through a temp. When that unlink fails (on Windows,
+    # a scanner holding the file open), the member is already in place, so the failure
+    # must not turn a completed write into FAILED. A file this write created leaves no
+    # temp name on POSIX, so no unlink is tried for it there. REPLACE takes that path;
+    # the ERROR landing on a free name is the last block.
     real_unlink = os.unlink
+    refused: list[str] = []
 
     def unlink(path, *args, **kwargs):
         if os.path.basename(path).startswith(".archivey-tmp-"):
+            refused.append(os.fspath(path))
             raise PermissionError(errno.EACCES, "held open", str(path))
         return real_unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "unlink", unlink)
-    with open_archive(src) as r:
-        report = r.extract_all(dest)
+    monkeypatch.setattr(extraction_module, "_WINDOWS", windows)
 
+    src = tmp_path / "file.tar"
+    src.write_bytes(_tar_bytes([("file", "f", b"AAA")]))
+    with open_archive(src) as r:
+        report = r.extract_all(tmp_path / "file", overwrite="replace")
     assert [res.status for res in report.results] == [ExtractionStatus.EXTRACTED]
-    assert (dest / "f").read_bytes() == b"AAA"
+    assert (tmp_path / "file" / "f").read_bytes() == b"AAA"
+    assert len(refused) == (1 if windows else 0)
+
+    refused.clear()
+    src = tmp_path / "link.tar"
+    src.write_bytes(_tar_bytes([("file", "f", b"AAA"), ("hard", "h", "f")]))
+    with open_archive(src) as r:
+        report = r.extract_all(tmp_path / "link", overwrite="replace")
+    assert [res.status for res in report.results] == [ExtractionStatus.EXTRACTED] * 2
+    assert (tmp_path / "link" / "h").read_bytes() == b"AAA"
+    assert refused
+
+    # Under ERROR, POSIX lands a new name with a link and then removes the temp name;
+    # Windows renames it and has none left.
+    refused.clear()
+    src = tmp_path / "error.tar"
+    src.write_bytes(_tar_bytes([("file", "f", b"AAA")]))
+    with open_archive(src) as r:
+        report = r.extract_all(tmp_path / "error")
+    assert [res.status for res in report.results] == [ExtractionStatus.EXTRACTED]
+    assert (tmp_path / "error" / "f").read_bytes() == b"AAA"
+    assert len(refused) == (0 if windows else 1)
 
 
 def test_tar_hardlink_orphan_recovered_seekable(tmp_path: Path) -> None:
@@ -2726,11 +2816,13 @@ def test_streaming_plain_tar_no_live_ratio_trip(tmp_path: Path) -> None:
     raw = _tar_bytes([("file", "a.bin", payload)], mode="w")
     dest = tmp_path / "out"
     with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
-        assert r.compressed_bytes_consumed is None  # uncompressed: nothing counted
+        # Uncompressed: the live denominator is what the pipe gave, so the output
+        # stays near 1:1 of it and the ratio never trips.
         r.extract_all(
             dest,
             limits=ExtractionLimits(max_ratio=10.0, ratio_activation_threshold=1024),
         )
+        assert r.compressed_bytes_consumed == len(raw)
     assert (dest / "a.bin").read_bytes() == payload
 
 
@@ -2849,14 +2941,17 @@ def test_non_seekable_member_stream_keeps_its_declared_size(tmp_path: Path) -> N
             assert inner_ar.compressed_bytes_consumed is None
 
 
-def test_plain_tar_from_sized_pipe_has_no_archive_wide_denominator() -> None:
-    # Pins the documented gap: a plain tar from a non-seekable caller stream has no
-    # trusted size, and only a compressed container installs the live counter, so
-    # neither archive-wide denominator exists and only max_extracted_bytes applies.
+def test_plain_tar_from_sized_pipe_counts_what_the_pipe_gave() -> None:
+    # A plain tar from a non-seekable caller stream has no trusted size (its ``size``
+    # is the caller's claim) and no codec counter: the live denominator is what the
+    # source has taken from the pipe, the whole archive once it is read to its end.
     raw = _tar_bytes([("file", "a.bin", b"x" * 4096)])
     with open_archive(SizedNonSeekable(raw, size=len(raw)), streaming=True) as r:
         assert r.compressed_source_size is None
-        assert r.compressed_bytes_consumed is None
+        for _member, stream in r.stream_members():
+            if stream is not None:
+                stream.read()
+        assert r.compressed_bytes_consumed == len(raw)
 
 
 def test_forged_member_declaration_is_refused_only_after_the_decode(
@@ -3140,14 +3235,14 @@ def test_orphan_link_whose_temp_file_is_refused_fails_alone(
     # makes the real one.
     src = _orphan_tar_with_link_in_ro(tmp_path)
     dest = tmp_path / "out"
-    mkstemp = tempfile.mkstemp
+    open_new_file = extraction_module._open_new_file
 
-    def refuse_in_ro(*args: object, **kwargs: object) -> tuple[int, str]:
-        if Path(str(kwargs["dir"])).name == "ro":
-            raise PermissionError(errno.EACCES, "Permission denied", kwargs["dir"])
-        return mkstemp(*args, **kwargs)  # type: ignore[arg-type]
+    def refuse_in_ro(path: Path, mode: int) -> int:
+        if path.parent.name == "ro":
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        return open_new_file(path, mode)
 
-    monkeypatch.setattr(tempfile, "mkstemp", refuse_in_ro)
+    monkeypatch.setattr(extraction_module, "_open_new_file", refuse_in_ro)
     with open_archive(src) as r:
         results = r.extract_all(
             dest, members=["ro/L1.txt", "L2.txt"], on_error=OnError.CONTINUE
@@ -3681,8 +3776,8 @@ class _FileThenAntiReader(BaseArchiveReader):
         yield ArchiveMember(type=MemberType.FILE, name="a.txt", size=5)
         yield ArchiveMember(type=MemberType.ANTI, name="a.txt")
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
-        return self._wrap_member_stream(io.BytesIO(b"first"), member.name, size=5)
+    def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
+        return self._member_parts(io.BytesIO(b"first"), member.name, size=5)
 
     def _get_archive_info(self) -> ArchiveInfo:
         return ArchiveInfo(
@@ -4171,13 +4266,16 @@ def test_o3_bare_dot_root_not_trailing_dot_under_strict() -> None:
 # --- O7: surrogateescape sanitize ------------------------------------------
 
 
-def test_o7_surrogateescape_sanitized_under_strict(tmp_path: Path) -> None:
-    # caf<0xe9>.txt carries a raw non-UTF-8 byte; STRICT rewrites it to a portable spelling
-    # deterministically on every OS (rather than depending on whether the FS accepts it).
+def test_o7_surrogateescape_sanitized_under_standard(tmp_path: Path) -> None:
+    # caf<0xe9>.txt carries a raw non-UTF-8 byte; STANDARD rewrites it to a portable
+    # spelling deterministically on every OS (rather than depending on whether the FS
+    # accepts it).
     stored = b"caf\xe9.txt".decode("utf-8", errors="surrogateescape")
     archive = _surrogate_tar(stored)
     dest = tmp_path / "out"
-    report = open_and_extract(io.BytesIO(archive), dest, policy=ExtractionPolicy.STRICT)
+    report = open_and_extract(
+        io.BytesIO(archive), dest, policy=ExtractionPolicy.STANDARD
+    )
     assert report.results[0].status is ExtractionStatus.EXTRACTED
     assert sorted(p.name for p in dest.iterdir()) == ["caf%E9.txt"]
 
@@ -4188,9 +4286,64 @@ def test_o7_percent_escaped_when_sanitizing(tmp_path: Path) -> None:
     stored = b"a%b\xe9".decode("utf-8", errors="surrogateescape")
     archive = _surrogate_tar(stored)
     dest = tmp_path / "out"
-    report = open_and_extract(io.BytesIO(archive), dest, policy=ExtractionPolicy.STRICT)
+    report = open_and_extract(
+        io.BytesIO(archive), dest, policy=ExtractionPolicy.STANDARD
+    )
     assert sorted(p.name for p in dest.iterdir()) == ["a%25b%E9"]
     assert report.results[0].status is ExtractionStatus.EXTRACTED
+
+
+@pytest.mark.parametrize(
+    "stored,what",
+    [
+        (b"caf\xe9.txt".decode("utf-8", errors="surrogateescape"), "not UTF-8"),
+        ("hi\ud800", "a lone surrogate"),
+        ("line\nbreak", "U+000A"),
+        ("bell\x01", "U+0001"),
+        ("dir\\file", "a backslash"),
+    ],
+)
+def test_strict_blocks_a_name_other_readers_take_differently(
+    stored: str, what: str
+) -> None:
+    """STRICT refuses these names; STANDARD writes the portable spelling (O7).
+
+    Undecodable bytes, a control character and a ``\\`` each name a different file on
+    another OS or in another reader, so the safe default writes nothing for them.
+    """
+    member = _member(stored, raw=stored.encode("utf-8", "surrogatepass"))
+    with pytest.raises(FilterRejectionError, match=re.escape(what)) as caught:
+        apply_name_policy(member, ExtractionPolicy.STRICT)
+    assert "STANDARD writes a portable spelling" in caught.value.message
+    # The name is shown once, by ``member=``, not again in the message.
+    assert caught.value.member_name == stored
+    assert stored not in caught.value.message
+    assert apply_name_policy(member, ExtractionPolicy.STANDARD).name != stored
+    assert apply_name_policy(member, ExtractionPolicy.TRUSTED).name == stored
+
+
+def test_strict_blocks_only_the_member_with_an_unportable_name(tmp_path: Path) -> None:
+    stored = b"caf\xe9.txt".decode("utf-8", errors="surrogateescape")
+    buf = io.BytesIO()
+    with tarfile.open(
+        fileobj=buf, mode="w", encoding="utf-8", errors="surrogateescape"
+    ) as tf:
+        for nm in (stored, "ok.txt"):
+            info = tarfile.TarInfo(nm)
+            info.size = 1
+            tf.addfile(info, io.BytesIO(b"x"))
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(buf.getvalue()),
+        dest,
+        policy=ExtractionPolicy.STRICT,
+        on_error=OnError.CONTINUE,
+    )
+    assert [r.status for r in report.results] == [
+        ExtractionStatus.BLOCKED,
+        ExtractionStatus.EXTRACTED,
+    ]
+    assert sorted(p.name for p in dest.iterdir()) == ["ok.txt"]
 
 
 def test_o7_plain_percent_name_untouched(tmp_path: Path) -> None:
@@ -4205,19 +4358,21 @@ def test_o7_plain_percent_name_untouched(tmp_path: Path) -> None:
     "name,expected",
     [
         ("foo. /bar", "foo/bar"),
-        ("foo. \\bar", "foo/bar"),
-        ("a\\b.\\c ", "a/b/c"),
-        ("mixed. /x \\y.", "mixed/x/y"),
+        ("foo. \\bar", "foo. /bar"),
+        ("a\\b.\\c ", "a/b./c "),
+        ("mixed. /x \\y.", "mixed. /x /y."),
     ],
 )
-def test_o3_strip_treats_a_backslash_as_a_separator(name: str, expected: str) -> None:
-    """Trailing dot/space stripping splits on ``\\`` too, like the rest of the module.
+def test_a_backslash_is_a_separator_under_standard(name: str, expected: str) -> None:
+    """STANDARD writes each ``\\`` as ``/`` and keeps trailing dots and spaces.
 
     TAR keeps ``\\`` as a literal character and Windows writes it as a separator, so
-    ``foo. \\bar`` has to lose its trailing space as ``foo. /bar`` does. The name
-    policy then writes each ``\\`` as ``/``, so the result is the same on every OS.
+    writing ``/`` gives the same tree on every OS. STRICT refuses the backslash names
+    (``test_strict_blocks_a_name_other_readers_take_differently``) and strips the
+    trailing dot and space of the rest.
     """
-    out = apply_name_policy(_member(name), ExtractionPolicy.STRICT)
+    policy = ExtractionPolicy.STANDARD if "\\" in name else ExtractionPolicy.STRICT
+    out = apply_name_policy(_member(name), policy)
     assert out.name == expected
 
 
@@ -4823,7 +4978,10 @@ def test_o7_sanitized_name_collides_with_literal_percent_name(tmp_path: Path) ->
             tf.addfile(info, io.BytesIO(data))
     dest = tmp_path / "out"
     report = open_and_extract(
-        io.BytesIO(buf.getvalue()), dest, overwrite=OverwritePolicy.REPLACE
+        io.BytesIO(buf.getvalue()),
+        dest,
+        policy=ExtractionPolicy.STANDARD,
+        overwrite=OverwritePolicy.REPLACE,
     )
     assert sorted(p.name for p in dest.iterdir()) == ["caf%E9.txt"]
     assert len(_overwritten(report)) == 1
@@ -6077,3 +6235,30 @@ def test_a_staging_file_the_filesystem_keeps_is_logged(
     with open_archive(archive) as reader:
         reader.extract_all(tmp_path / "out", on_error="continue")
     assert "staged for 'f.txt'" in caplog.text
+
+
+def test_a_taken_temp_name_moves_on_to_the_next(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The run's temp names are a token and a count; one that is taken (O_EXCL) is
+    # skipped, the file lands, and no temp file is left.
+    src = tmp_path / "a.tar"
+    src.write_bytes(_tar_bytes([("file", "d/f.txt", b"x")]))
+    open_new_file = extraction_module._open_new_file
+    tried: list[str] = []
+
+    def first_name_taken(path: Path, mode: int) -> int:
+        tried.append(path.name)
+        if len(tried) == 1:
+            raise FileExistsError(errno.EEXIST, "File exists", str(path))
+        return open_new_file(path, mode)
+
+    monkeypatch.setattr(extraction_module, "_open_new_file", first_name_taken)
+    dest = tmp_path / "out"
+    with open_archive(src) as r:
+        r.extract_all(dest)
+    assert (dest / "d" / "f.txt").read_bytes() == b"x"
+    assert len(tried) == 2
+    assert len(set(tried)) == 2
+    assert all(name.startswith(".archivey-tmp-") for name in tried)
+    assert sorted(p.name for p in (dest / "d").iterdir()) == ["f.txt"]

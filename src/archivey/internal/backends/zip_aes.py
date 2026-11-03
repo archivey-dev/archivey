@@ -22,15 +22,17 @@ from typing import BinaryIO, NamedTuple
 
 from archivey.exceptions import (
     CorruptionError,
-    PackageNotInstalledError,
     TruncatedError,
 )
+from archivey.internal.excluded_libraries import NO_EXCLUSIONS
+from archivey.internal.overrides import override
 from archivey.internal.password import wrong_password_error
 from archivey.internal.streams.crypto import (
-    CRYPTO_REQUIREMENT,
+    CRYPTO_PACKAGE,
     AesCtrParams,
     KeystreamStage,
     _crypto_available,
+    crypto_missing,
     open_aes_ctr_stage,
 )
 from archivey.internal.streams.streamtools import (
@@ -38,6 +40,8 @@ from archivey.internal.streams.streamtools import (
     read_exact,
     resolve_seek,
 )
+from archivey.internal.streams.verification import VerificationProofs
+from archivey.types import OptionalLibrary
 
 # The wrong-password message of every ZIP decrypt path (ZipCrypto and WinZip AES), so
 # the paths cannot drift apart.
@@ -249,22 +253,23 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
         enc_key: bytes,
         auth_key: bytes,
         cipher_len: int,
+        excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
     ) -> None:
         super().__init__()
         # First: close() reads it, and IOBase.__del__ runs close() on a refused instance.
         self._source = source
+        self._excluded = excluded
         if cipher_len < 0:
             raise ValueError("cipher_len must be non-negative")
-        if not _crypto_available():
-            raise PackageNotInstalledError(
-                CRYPTO_REQUIREMENT.message("WinZip AES decryption")
-            )
+        if CRYPTO_PACKAGE in excluded or not _crypto_available():
+            raise crypto_missing("WinZip AES decryption", excluded)
         self._enc_key = enc_key
         self._ctr = self._ctr_stage_at(0)
         self._hmac = hmac.new(auth_key, digestmod=hashlib.sha1)
         self._hashed = 0  # length of the ciphertext prefix the HMAC has taken in
         self._authenticated = False
         self._mac_failed = False
+        self._mac_matched = False
         self._cipher_len = cipher_len
         # The plaintext length, exactly (CTR adds no bytes). ``source_byte_size`` reads
         # it, so the codec layer's accelerator threshold and source bound see the true
@@ -281,7 +286,8 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
         stage = open_aes_ctr_stage(
             AesCtrParams(
                 self._enc_key, initial_counter=1 + block, counter_byteorder="little"
-            )
+            ),
+            excluded=self._excluded,
         )
         if into:
             stage.process(bytes(into))  # discard the keystream before ``offset``
@@ -329,7 +335,14 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
             # Every later read raises too: the last chunk it withheld stays withheld.
             self._mac_failed = True
             raise _mac_mismatch()
+        self._mac_matched = True
 
+    def _verification_proofs(self) -> VerificationProofs:
+        # The HMAC covers the whole ciphertext, so its match covers every byte decoded
+        # from it, below any codec. The source is ciphertext: nothing below counts.
+        return VerificationProofs(content=self._mac_matched, content_possible=True)
+
+    @override
     def read(self, size: int | None = -1) -> bytes:
         if size is None:  # read to EOF, as on any ``io`` stream
             size = -1
@@ -359,14 +372,17 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
             self._authenticate()
         return out
 
+    @override
     def seekable(self) -> bool:
         return self._source.seekable()
 
+    @override
     def tell(self) -> int:
         return (
             self._cipher_len - self._cipher_remaining - len(self._buf) + self._overshoot
         )
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         pos = self.tell()
         target = resolve_seek(offset, whence, pos=pos, end=lambda: self._cipher_len)
@@ -380,6 +396,7 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
         self._overshoot = target - reach
         return target
 
+    @override
     def close(self) -> None:
         if self.closed:
             return
@@ -419,16 +436,16 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
         header_len: int,
         hold_back: int | None,
         read_ahead: bytes = b"",
+        excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
     ) -> None:
         # First: close() reads it, and IOBase.__del__ runs close() on a refused instance.
         self._source = source
         super().__init__()
-        if not _crypto_available():
-            raise PackageNotInstalledError(
-                CRYPTO_REQUIREMENT.message("WinZip AES decryption")
-            )
+        if CRYPTO_PACKAGE in excluded or not _crypto_available():
+            raise crypto_missing("WinZip AES decryption", excluded)
         self._ctr = open_aes_ctr_stage(
-            AesCtrParams(enc_key, initial_counter=1, counter_byteorder="little")
+            AesCtrParams(enc_key, initial_counter=1, counter_byteorder="little"),
+            excluded=excluded,
         )
         self._hmac = hmac.new(auth_key, digestmod=hashlib.sha1)
         self._header_len = header_len
@@ -442,6 +459,7 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
         self._buf = bytearray()
         self._ended = False
         self._mac_failed = False
+        self._mac_matched = False
 
     def _pull(self) -> None:
         chunk = self._source.read(FORWARD_READ)
@@ -467,7 +485,14 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
             # Every later read raises too: the last chunk it withheld stays withheld.
             self._mac_failed = True
             raise _mac_mismatch()
+        self._mac_matched = True
 
+    def _verification_proofs(self) -> VerificationProofs:
+        # The HMAC covers the whole ciphertext, so its match covers every byte decoded
+        # from it, below any codec. The source is ciphertext: nothing below counts.
+        return VerificationProofs(content=self._mac_matched, content_possible=True)
+
+    @override
     def readall(self) -> bytes:
         # Through ``read(-1)``, so a ``hold_back`` stream refuses it too.
         return self.read(-1)
@@ -496,6 +521,7 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
         self._hmac.update(rest[: cipher_len - hashed])
         self._check_mac(rest[cipher_len - hashed : cipher_len - hashed + _HMAC_LEN])
 
+    @override
     def read(self, size: int | None = -1) -> bytes:
         if size is None:
             size = -1
@@ -518,6 +544,7 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
             del self._buf[:size]
         return out
 
+    @override
     def close(self) -> None:
         if self.closed:
             return
@@ -528,7 +555,12 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
 
 
 def open_winzip_aes_forward(
-    raw: BinaryIO, *, aes: WinZipAesInfo, password: bytes, hold_back: int | None
+    raw: BinaryIO,
+    *,
+    aes: WinZipAesInfo,
+    password: bytes,
+    hold_back: int | None,
+    excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
 ) -> WinZipAesForwardStream:
     """Like :func:`open_winzip_aes_member`, for data whose size is not known up front
     (see :class:`WinZipAesForwardStream` for ``hold_back``).
@@ -547,10 +579,8 @@ def open_winzip_aes_forward(
         raise CorruptionError(
             f"WinZip AES member too short for salt/verify/HMAC ({len(head)} < {overhead})"
         )
-    if not _crypto_available():
-        raise PackageNotInstalledError(
-            CRYPTO_REQUIREMENT.message("WinZip AES decryption")
-        )
+    if CRYPTO_PACKAGE in excluded or not _crypto_available():
+        raise crypto_missing("WinZip AES decryption", excluded)
     if len(head) < header_len:
         raise TruncatedError("Truncated WinZip AES salt or password-verification value")
     salt, stored_verify = head[: aes.salt_len], head[aes.salt_len : header_len]
@@ -566,6 +596,7 @@ def open_winzip_aes_forward(
         header_len=header_len,
         hold_back=hold_back,
         read_ahead=head[header_len:],
+        excluded=excluded,
     )
 
 
@@ -575,6 +606,7 @@ def open_winzip_aes_member(
     aes: WinZipAesInfo,
     password: bytes,
     compress_size: int,
+    excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
 ) -> BinaryIO:
     """Peel salt/pw_verify from ``raw``, verify the password, return a decrypt stream.
 
@@ -593,10 +625,8 @@ def open_winzip_aes_member(
         raise CorruptionError(
             f"WinZip AES member too short for salt/verify/HMAC ({compress_size} < {overhead})"
         )
-    if not _crypto_available():
-        raise PackageNotInstalledError(
-            CRYPTO_REQUIREMENT.message("WinZip AES decryption")
-        )
+    if CRYPTO_PACKAGE in excluded or not _crypto_available():
+        raise crypto_missing("WinZip AES decryption", excluded)
     salt = read_exact(raw, salt_len)
     if len(salt) != salt_len:
         raise TruncatedError("Truncated WinZip AES salt")
@@ -612,5 +642,9 @@ def open_winzip_aes_member(
 
     cipher_len = compress_size - overhead
     return WinZipAesDecryptStream(
-        raw, enc_key=enc_key, auth_key=auth_key, cipher_len=cipher_len
+        raw,
+        enc_key=enc_key,
+        auth_key=auth_key,
+        cipher_len=cipher_len,
+        excluded=excluded,
     )

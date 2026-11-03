@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, BinaryIO
 
 from archivey.exceptions import ArchiveyError
@@ -14,15 +14,20 @@ from archivey.internal.config import (
     DEFAULT_STREAM_CONFIG,
     StreamConfig,
 )
+from archivey.internal.dataclass_copy import copy_with
+from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.streams.archive_stream import (
-    ArchiveStream,
+    ArchiveStreamImpl,
     ExceptionTranslator,
     RewindWarning,
+    compose_translators,
     raise_translated,
 )
 from archivey.internal.streams.codecs.base import (
     _DEFAULT_PARAMS,
+    AnyStreamFormat,
     Codec,
+    CodecId,
     CodecParams,
     CodecSource,
     StreamCodec,
@@ -39,9 +44,11 @@ from archivey.internal.streams.codecs.lzma_codec import (
     LzmaCodec,
     XzCodec,
 )
+from archivey.internal.streams.codecs.lzo_codec import Lzo1xCodec, LzopCodec
 from archivey.internal.streams.codecs.ppmd_codec import PpmdCodec
 from archivey.internal.streams.codecs.stored_codec import StoredCodec
 from archivey.internal.streams.codecs.unix_compress_codec import UnixCompressCodec
+from archivey.internal.streams.codecs.zip_legacy_codec import ImplodeCodec, ShrinkCodec
 from archivey.internal.streams.codecs.zlib_codec import (
     DeflateCodec,
     ZlibCodec,
@@ -54,7 +61,7 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.types import (
     MissingComponent,
-    StreamFormat,
+    OptionalLibrary,
 )
 
 if TYPE_CHECKING:
@@ -62,10 +69,12 @@ if TYPE_CHECKING:
 
 
 # Single source of truth for *openable* codecs. Detection, the single-file reader, and
-# the backend registry iterate these. Filter-only ``Codec`` enum members (DELTA / BCJ_*)
-# are intentionally absent — they compose into raw LZMA via ``LZMA_FILTER_IDS``, not
+# the backend registry read them through the functions below, at call time, so a codec
+# added later by :func:`add_stream_codec` (``archivey.formats.register_codec``) reaches
+# every one of them. Filter-only ``Codec`` enum members (DELTA / BCJ_*) are
+# intentionally absent — they compose into raw LZMA via ``LZMA_FILTER_IDS``, not
 # standalone ``StreamCodec.open``.
-STREAM_CODECS: tuple[StreamCodec, ...] = (
+_STREAM_CODECS: list[StreamCodec] = [
     StoredCodec(),
     GzipCodec(),
     Bzip2Codec(),
@@ -82,42 +91,93 @@ STREAM_CODECS: tuple[StreamCodec, ...] = (
     UnixCompressCodec(),
     PpmdCodec(),
     Deflate64Codec(),
-)
+    ShrinkCodec(),
+    ImplodeCodec(),
+    LzopCodec(),
+    Lzo1xCodec(),
+]
 
-# The codecs presented as standalone single-file formats (a subset of STREAM_CODECS).
-SINGLE_FILE_CODECS: tuple[StreamCodec, ...] = tuple(
-    c for c in STREAM_CODECS if c.single_file_format is not None
-)
-
-_BY_CODEC: dict[Codec, StreamCodec] = {c.codec: c for c in STREAM_CODECS}
-_BY_STREAM_FORMAT: dict[StreamFormat, StreamCodec] = {
-    c.stream_format: c for c in STREAM_CODECS if c.stream_format is not None
+_BY_CODEC: dict[CodecId, StreamCodec] = {c.codec: c for c in _STREAM_CODECS}
+_BY_STREAM_FORMAT: dict[AnyStreamFormat, StreamCodec] = {
+    c.stream_format: c for c in _STREAM_CODECS if c.stream_format is not None
 }
 
 
-def stream_codec(codec: Codec) -> StreamCodec:
+def stream_codecs() -> tuple[StreamCodec, ...]:
+    """Every openable codec, built-in ones first, then registered ones in order."""
+    return tuple(_STREAM_CODECS)
+
+
+def single_file_codecs() -> tuple[StreamCodec, ...]:
+    """The codecs presented as standalone single-file formats (a subset of
+    :func:`stream_codecs`): each one is also read around a TAR or a sequential
+    format (``.tar.gz``, ``.cpio.gz``)."""
+    return tuple(c for c in _STREAM_CODECS if c.single_file_format is not None)
+
+
+def single_file_codec(stream_format: AnyStreamFormat) -> StreamCodec | None:
+    """The single-file codec for ``stream_format``, or ``None`` when no codec decodes
+    it as a standalone stream (``UNCOMPRESSED`` included)."""
+    sc = _BY_STREAM_FORMAT.get(stream_format)
+    return sc if sc is not None and sc.single_file_format is not None else None
+
+
+def add_stream_codec(sc: StreamCodec) -> None:
+    """Add ``sc`` after every codec there already is. The caller has checked that its
+    ``codec`` and ``stream_format`` are new."""
+    assert sc.codec not in _BY_CODEC, sc.codec
+    assert sc.stream_format is None or sc.stream_format not in _BY_STREAM_FORMAT
+    _STREAM_CODECS.append(sc)
+    _BY_CODEC[sc.codec] = sc
+    if sc.stream_format is not None:
+        _BY_STREAM_FORMAT[sc.stream_format] = sc
+
+
+def save_codec_state() -> Callable[[], None]:
+    """Save what :func:`add_stream_codec` writes; the result restores it (tests)."""
+    codecs = list(_STREAM_CODECS)
+    by_codec = dict(_BY_CODEC)
+    by_format = dict(_BY_STREAM_FORMAT)
+
+    def restore() -> None:
+        _STREAM_CODECS[:] = codecs
+        _BY_CODEC.clear()
+        _BY_CODEC.update(by_codec)
+        _BY_STREAM_FORMAT.clear()
+        _BY_STREAM_FORMAT.update(by_format)
+
+    return restore
+
+
+def stream_codec(codec: CodecId) -> StreamCodec:
     """The codec object for ``codec`` (raises ``KeyError`` for a filter-only codec)."""
     return _BY_CODEC[codec]
 
 
-def stream_codec_for_format(stream_format: StreamFormat) -> StreamCodec:
+def stream_codec_for_format(stream_format: AnyStreamFormat) -> StreamCodec:
     """The codec object that decodes a single-file/TAR ``StreamFormat``."""
     return _BY_STREAM_FORMAT[stream_format]
 
 
-def codec_for_stream_format(stream_format: StreamFormat) -> Codec:
+def codec_for_stream_format(stream_format: AnyStreamFormat) -> CodecId:
     """Map a single-file/TAR ``StreamFormat`` to its codec."""
     return _BY_STREAM_FORMAT[stream_format].codec
 
 
-def codec_requirement(codec: Codec) -> MissingComponent | None:
-    """The optional-dependency requirement declared by ``codec``, if any."""
+def codec_requirement(
+    codec: CodecId, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
+) -> MissingComponent | None:
+    """The optional-dependency requirement declared by ``codec``, if any, as a call
+    with ``excluded`` reports it (:meth:`StreamCodec.requirement_under`)."""
     sc = _BY_CODEC.get(codec)
-    return sc.requirement if sc is not None else None
+    return sc.requirement_under(excluded) if sc is not None else None
 
 
-def is_codec_available(codec: Codec) -> bool:
-    """Whether ``codec``'s decompression backend is importable right now.
+def is_codec_available(
+    codec: CodecId, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
+) -> bool:
+    """Whether ``codec``'s decompression backend is importable right now, and
+    ``excluded`` (a call's ``FormatPolicy.exclude_libraries``) does not turn it off.
 
     A codec with no ``requirement`` is stdlib-backed and always available; an optional codec
     reports on its backing package's live sentinel. Used by the registry to compute a
@@ -125,7 +185,7 @@ def is_codec_available(codec: Codec) -> bool:
     sentinels live, so it reflects test monkeypatching.
     """
     sc = _BY_CODEC.get(codec)
-    return sc is None or sc.available
+    return sc is None or sc.available(excluded)
 
 
 @dataclass(frozen=True)
@@ -138,13 +198,15 @@ class CodecBackend:
     reader's collector reports every stream it opens into that reader.
     """
 
-    codec: Codec
+    codec: CodecId
     config: StreamConfig
     translate: ExceptionTranslator
     rewind_warning: RewindWarning | None
     _open: Callable[[CodecSource, CodecParams, StreamConfig], BinaryIO] = field(
         repr=False
     )
+    # The codec's ``StreamCodec.checks_content``.
+    checks_content: bool = False
 
     def open(
         self, source: CodecSource, params: CodecParams = _DEFAULT_PARAMS
@@ -153,13 +215,14 @@ class CodecBackend:
 
 
 def resolve_codec(
-    codec: Codec, config: StreamConfig = DEFAULT_STREAM_CONFIG
+    codec: CodecId, config: StreamConfig = DEFAULT_STREAM_CONFIG
 ) -> CodecBackend:
     """Resolve ``codec`` to its backend (open function + translator) without opening anything.
 
     The translator must match the *active* backend: when an accelerator
     (``rapidgzip`` / ``indexed_bzip2``) is the chosen backend, its exception taxonomy
     differs from stdlib's, so the codec's :meth:`StreamCodec.translator` selects the right one.
+    Whichever it is, :meth:`StreamCodec.eof_truncation` maps the ``EOFError`` it leaves.
     The ``rewind_warning`` is likewise config-dependent (an active accelerator gives indexed
     random access, so it carries none); it is attached to the ``ArchiveStream`` by
     :func:`open_codec_stream`.
@@ -171,14 +234,15 @@ def resolve_codec(
     return CodecBackend(
         codec=codec,
         config=config,
-        translate=sc.translator(config),
+        translate=compose_translators(sc.translator(config), sc.eof_truncation),
         rewind_warning=sc.rewind_warning(config),
         _open=sc.open,
+        checks_content=sc.checks_content,
     )
 
 
 def open_codec_stream(
-    codec: Codec,
+    codec: CodecId,
     source: CodecSource,
     *,
     config: StreamConfig = DEFAULT_STREAM_CONFIG,
@@ -188,13 +252,15 @@ def open_codec_stream(
     seekable: bool | None = None,
     on_close: Callable[[], None] | None = None,
     repeat_verdict: bool = True,
-) -> ArchiveStream:
+) -> ArchiveStreamImpl:
     """Open a decompressing stream for ``codec`` with exceptions translated/stamped.
 
     The returned stream wraps the backend so corrupt/truncated/non-seekable errors surface
     as ``ArchiveyError`` subclasses (never raw codec exceptions).
 
-    ``config.seekable`` gates accelerator ``AUTO`` resolution and native index construction.
+    ``config.seekable`` gates native index construction and accelerator ``AUTO``
+    resolution; for the DEFLATE family, ``AUTO`` also takes a large sequential read
+    (``_sequential_read_pays`` in ``rapidgzip_select.py``).
     The ArchiveStream seekability hint is separate: pass ``seekable=False`` to force a
     forward-only public handle (as :func:`~archivey.open_stream` does by default). When
     ``seekable`` is omitted the handle stays seekable so format backends that need
@@ -212,7 +278,7 @@ def open_codec_stream(
     reaches only the returned stream and ``config`` is passed on unchanged.
 
     ``repeat_verdict=False`` makes the stream raise each error as the decoder raises
-    it, and not repeat the first one after a seek (``ArchiveStream._fail``). It is for
+    it, and not repeat the first one after a seek (``ArchiveStreamImpl._fail``). It is for
     a stream that only a reader's own views read. A read seeks the shared handle when it
     is not already there. Some reads still seek, and one seek is enough to mark the
     stream rewound.
@@ -222,7 +288,7 @@ def open_codec_stream(
     # ``config.seekable`` is False (no accelerator/index). Public ``open_stream`` passes
     # the caller's ``seekable=`` explicitly.
     stream_seekable = True if seekable is None else seekable
-    return ArchiveStream(
+    return ArchiveStreamImpl(
         lambda: backend.open(source, params),
         translate=backend.translate,
         stamp=stamp,
@@ -232,6 +298,7 @@ def open_codec_stream(
         collector=collector if collector is not None else config.collector,
         on_close=on_close,
         repeat_verdict=repeat_verdict,
+        checks_content=backend.checks_content,
     )
 
 
@@ -249,7 +316,7 @@ class OpenedCodec:
 
 
 def open_codec_raw(
-    codec: Codec,
+    codec: CodecId,
     source: CodecSource,
     *,
     config: StreamConfig = DEFAULT_STREAM_CONFIG,
@@ -280,7 +347,7 @@ def open_codec_raw(
 
 
 def _prepared_backend(
-    codec: Codec,
+    codec: CodecId,
     source: CodecSource,
     config: StreamConfig,
     collector: DiagnosticCollector | None,
@@ -307,31 +374,35 @@ def _prepared_backend(
 
 
 def _decoder_config(
-    codec: Codec,
+    codec: CodecId,
     source: CodecSource,
     config: StreamConfig,
     collector: DiagnosticCollector | None,
 ) -> StreamConfig:
     """``config`` as :func:`open_codec_stream`'s decoder sees it.
 
-    Carries ``collector``, drops seek demand that a stream source cannot meet, fills the
-    known input size, then lets the codec adjust it.
+    Carries ``collector``, drops seek demand that a stream source cannot meet, notes
+    whether the source can seek, fills the known input size, then lets the codec adjust
+    it.
     """
-    # One copy for all three adjustments, and none when nothing changes: a ZIP reader
+    # One copy for all four adjustments, and none when nothing changes: a ZIP reader
     # opens a codec per member, and each copy of this dataclass is a few microseconds.
     changes: dict[str, Any] = {}
     if collector is not None and config.collector is not collector:
         changes["collector"] = collector
-    if (
-        not isinstance(source, (str, os.PathLike))
-        and config.seekable
-        and not is_seekable(source)
-    ):
+    # ``ZipReader._member_config`` fills ``source_seekable`` and clears ``seekable`` by
+    # these two rules before it gets here, so a ZIP member's config is copied once: a
+    # change to either rule belongs there too.
+    source_seekable = isinstance(source, (str, os.PathLike)) or is_seekable(source)
+    if config.seekable and not source_seekable:
         # Seek demand on a source that cannot seek cannot be met, and it would make
         # accelerator AUTO pick a decoder that fails at open when it asks the
         # source for ``tell``. A compressed TAR opened ``streaming=True`` with
         # ``seekable_members=True`` over a forward-only stream arrives here so.
         changes["seekable"] = False
+    if source_seekable != config.source_seekable:
+        # Lets accelerator AUTO consider a sequential read (``_rapidgzip_wanted``).
+        changes["source_seekable"] = source_seekable
     # Fill the AUTO size gate when the caller did not already supply a known length
     # (path ``stat``, ``SlicingStream.size``, ``BytesIO``, …). Unknown stays ``None``.
     if config.compressed_input_size is None:
@@ -339,6 +410,6 @@ def _decoder_config(
         if size is not None:
             changes["compressed_input_size"] = size
     if changes:
-        config = replace(config, **changes)
+        config = copy_with(config, **changes)
     # Fill before resolve_codec so the translator and rewind_warning agree with open.
     return _BY_CODEC[codec].prepare_config(source, config)

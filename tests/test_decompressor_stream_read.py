@@ -23,7 +23,8 @@ from archivey.diagnostics import DiagnosticPolicy
 from archivey.exceptions import DiagnosticRaisedError
 from archivey.internal.config import StreamConfig
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.streams.codecs.bzip2_codec import _stdlib_bzip2
+from archivey.internal.streams.codecs.base import CodecParams
+from archivey.internal.streams.codecs.bzip2_codec import Bzip2Codec
 from archivey.internal.streams.codecs.deflate_decoder import ZlibDecoder
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
@@ -31,6 +32,7 @@ from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     SeekPoint,
 )
+from tests.conftest import assert_raised_again
 
 _DATA = bytes(range(256)) * 97  # 24_832 bytes, not a multiple of any read size below
 
@@ -194,8 +196,8 @@ def test_a_decoder_error_is_raised_again_after_a_seek_to_the_same_place() -> Non
     # must still restart the decoder rather than feed the spent one. Whether a spent
     # bz2 decoder raises ValueError or repeats its OSError depends on the CPython build,
     # so the fake decoder below is the check that does not.
-    stream = _stdlib_bzip2(
-        io.BytesIO(b"not bzip2"), StreamConfig(seekable=True), single_stream=False
+    stream = Bzip2Codec().open_framed(
+        io.BytesIO(b"not bzip2"), CodecParams(), StreamConfig(seekable=True)
     )
     with pytest.raises(OSError, match="Invalid data stream"):
         stream.read(10)
@@ -245,6 +247,33 @@ class _FailsOnFeed(BaseDecoder):
         return True
 
 
+class _BigThenFails(_FailsOnFeed):
+    """Emits 1 MiB on its first feed, then raises on the second."""
+
+    def __init__(self) -> None:
+        super().__init__(2)
+
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> _BigThenFails:
+        del point, inner
+        return _BigThenFails()
+
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        out = super().feed(chunk, max_length)
+        return DecodeOut(bytes(1 << 20)) if self._feeds == 1 else out
+
+
+def test_a_decoder_error_after_a_short_chunk_does_not_keep_the_chunk_alive() -> None:
+    """As above, for a decoder error on the decode after a short chunk: the raise's
+    frames hold no second copy, and the chunk comes back on the next read."""
+    stream = DecompressorStream(
+        io.BytesIO(_DATA), make_decoder=lambda point, inner: _BigThenFails()
+    )
+    with pytest.raises(OSError, match="Invalid data stream") as caught:
+        stream.read(4 << 20)
+    assert _largest_library_local(caught.value) < 4096
+    assert stream.read(4 << 20) == bytes(1 << 20)
+
+
 def test_a_spent_decoder_is_restarted_by_a_seek_to_the_same_place() -> None:
     # The decoder raises on its first feed, so the stream is still at 0 and seek(0)
     # moves nothing. It must restart the decoder anyway: the spent one would answer
@@ -275,7 +304,7 @@ def test_a_decoder_error_after_output_hands_back_the_buffer_then_raises() -> Non
     for _ in range(2):
         with pytest.raises(OSError) as again:
             stream.read(len(_DATA))
-        assert again.value is first.value
+        assert_raised_again(again.value, first.value)
     # A seek restarts the decoder, which hands back its first chunk again.
     assert stream.seek(0) == 0
     assert stream.read(len(got)) == got

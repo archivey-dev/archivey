@@ -170,7 +170,7 @@ detection census in the investigation linked in §9.
 | A Brotli file followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA`; from a pipe, `CorruptionError` |
 | A cut Brotli file | `TruncatedError` |
 | A `/usr` tree of 150 623 files, none of them Brotli | 29 claimed as Brotli (0.019%), measured with the 256-byte sample before the 4 KiB window; each claim's read error is stamped `format_unconfirmed` |
-| OLE files (`.msi`, old `.doc`, `Thumbs.db`) | Not probed: the OLE signature stops the content probes ([`detection.md`](../topics/detection.md) §2.5). `FormatDetectionError`, or the extension guess |
+| OLE files (`.msi`, old `.doc`, `Thumbs.db`) | Not probed: the OLE signature stops the content probes ([`detection.md`](../topics/detection.md) §2.6). `FormatDetectionError`, or the extension guess |
 | COFF object files | Can be claimed by a probe, LZMA Alone or Brotli ([`xz.md`](xz.md) §3) |
 | A 7z, ZIP or RAR behind a low-entropy stub | Found by the SFX scan, not claimed as Brotli |
 | CPython 3.11 / 3.14 `.pyc` over ~269 KiB, a Type 1 font (`.pfb`), random data over 64 KiB | Not claimed under `BALANCED`: the chain decode rejects them (§2.1). Before it, these were the 5 non-OLE false claims in 148 255 local files, and 1.2 % of random blobs |

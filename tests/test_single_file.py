@@ -46,6 +46,7 @@ from archivey.internal.hashing import crc32_digest
 from archivey.types import HashAlgorithm
 from tests.conftest import requires, requires_zstd, zstd_backend
 from tests.corruption_util import raises_corruption_not_truncation
+from tests.lzop_build import make_lzop
 from tests.streams_util import (
     MemberSeek,
     NonSeekableBytesIO,
@@ -1051,7 +1052,7 @@ def _lz4_compress(data: bytes) -> bytes:
     return lz4.frame.compress(data)
 
 
-# suffix -> (compressor, skip marks). The ten single-file codecs.
+# suffix -> (compressor, skip marks). The eleven single-file codecs.
 _SINGLE_FILE_CODECS = {
     ".gz": (gzip.compress, ()),
     ".bz2": (bz2.compress, ()),
@@ -1063,6 +1064,7 @@ _SINGLE_FILE_CODECS = {
     ".br": (_brotli_compress, (requires("brotli"),)),
     ".lz4": (_lz4_compress, (requires("lz4"),)),
     ".Z": (make_unix_compress, (requires("ncompress"),)),
+    ".lzo": (make_lzop, ()),
 }
 
 _NOT_A_STREAM = {"zeros": b"\x00" * 40_000, "zero-byte": b""}
@@ -1071,10 +1073,12 @@ _NOT_A_STREAM = {"zeros": b"\x00" * 40_000, "zero-byte": b""}
 def test_open_validation_table_covers_every_single_file_codec() -> None:
     # A new standalone codec gets open-time validation without a backend change; this
     # makes it fail here until the tables below cover it too.
-    from archivey.internal.streams.codecs import SINGLE_FILE_CODECS
+    from archivey.internal.streams.codecs import single_file_codecs
 
     # The canonical extension only: an alias (``.brotli``) is the same codec.
-    suffixes = {codec.extensions[0] for codec in SINGLE_FILE_CODECS if codec.extensions}
+    suffixes = {
+        codec.extensions[0] for codec in single_file_codecs() if codec.extensions
+    }
     assert suffixes == set(_SINGLE_FILE_CODECS)
 
 
@@ -1274,6 +1278,7 @@ def test_open_raises_for_an_accelerator_on_with_no_child_process(
     as_stream: bool,
 ) -> None:
     # ON where no rapidgzip child can run fails at open too, and starts nothing.
+    from archivey.internal.streams.child_process import is_no_verdict
     from archivey.internal.streams.codecs import deps, rapidgzip_select
 
     monkeypatch.setattr(deps, "rapidgzip", deps.LazyOptional("rapidgzip", present=True))
@@ -1283,8 +1288,10 @@ def test_open_raises_for_an_accelerator_on_with_no_child_process(
     path = tmp_path / f"data{suffix}"
     path.write_bytes(compress(b"payload"))
     source = io.BytesIO(path.read_bytes()) if as_stream else path
-    with pytest.raises(ResourceLimitError, match="test says no"):
+    with pytest.raises(ResourceLimitError, match="test says no") as caught:
         open_archive(source, config=ArchiveyConfig(**{field: AcceleratorMode.ON}))
+    # A child that cannot start says nothing about the data.
+    assert is_no_verdict(caught.value)
 
 
 @_ACCELERATED_CODECS

@@ -737,18 +737,18 @@ def spy_member_seeks(patch: pytest.MonkeyPatch) -> list[MemberSeek]:
     ``SEEK_CUR`` that reach the same place record the same thing, so no ``whence`` can
     slip past :func:`assert_no_member_tail_seek`.
     """
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
     seeks: list[MemberSeek] = []
-    real_seek = ArchiveStream.seek
+    real_seek = ArchiveStreamImpl.seek
 
-    def spy(self: ArchiveStream, offset: int, whence: int = io.SEEK_SET, /) -> int:
+    def spy(self: ArchiveStreamImpl, offset: int, whence: int = io.SEEK_SET, /) -> int:
         before = self.tell()
         pos = real_seek(self, offset, whence)
         seeks.append(MemberSeek(id(self), before, pos))
         return pos
 
-    patch.setattr(ArchiveStream, "seek", spy)
+    patch.setattr(ArchiveStreamImpl, "seek", spy)
     return seeks
 
 

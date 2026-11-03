@@ -1,15 +1,16 @@
 # archivey
 
-[![CI](https://github.com/archivey-dev/archivey/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/archivey-dev/archivey/actions/workflows/ci.yml?query=branch%3Amain)
+[![CI](https://github.com/archivey-dev/archivey/actions/workflows/ci.yml/badge.svg?branch=main&event=schedule)](https://github.com/archivey-dev/archivey/actions/workflows/ci.yml?query=branch%3Amain+event%3Aschedule)
 
 Python library for reading, streaming, and safely extracting archives (ZIP, TAR, RAR, 7z, ISO, and more) through a unified interface.
 
 ## Features
 
 - **One interface for every format:** ZIP, TAR (plain or compressed with gzip, bzip2, xz,
-  zstd, lz4 or Unix compress), 7z, RAR, ISO 9660, plain directories, and single-file
-  streams (gzip, bzip2, xz, lzip, LZMA, zstd, lz4, zlib, Brotli, Unix compress).
-  List members, read one, or stream them all in one pass, the same way for each.
+  zstd, lz4 or Unix compress), 7z, RAR, ISO 9660, SquashFS, CPIO, ar (static libraries,
+  `.deb`), plain directories, and single-file streams (gzip, bzip2, xz, lzip, LZMA, zstd,
+  lz4, zlib, Brotli, Unix compress). List members, read one, or stream them all in one
+  pass, the same way for each.
 - **Automatic format detection** from the file's content, so a misnamed file still opens.
 - **Safe extraction by default:** path traversal, symlink and hardlink escapes, special
   files and archive bombs are blocked unless you opt out.
@@ -21,8 +22,8 @@ Python library for reading, streaming, and safely extracting archives (ZIP, TAR,
   Integrity errors come from reads, never from `close()`.
 - **Built for streaming:** `stream_members()` hands out each member as a stream, in
   archive order and in one pass, so a solid 7z or RAR is decoded once and a large member
-  is read in chunks rather than held in memory. TAR, ZIP and the single-file formats also
-  read straight from a pipe.
+  is read in chunks rather than held in memory. TAR, ZIP and the single-file formats can
+  also be read straight from a pipe.
 - **Encrypted archives:** ZipCrypto and WinZip AES in ZIP, AES in 7z, and RAR encryption.
 - **Native 7z and RAR metadata readers.** 7z data decodes in-process; RAR data needs
   RARLAB `unrar` or `rar`, or `unar`.

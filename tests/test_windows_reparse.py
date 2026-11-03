@@ -310,6 +310,7 @@ def _rar_info(redirect_type: int) -> SimpleNamespace:
         file_redir=(redirect_type, 0, "target"),
         is_file_version_history=lambda: False,
         is_file_copy=lambda: redirect_type == 5,
+        has_unknown_redirect=lambda: not 1 <= redirect_type <= 5,
         file_version=None,
         extract_version=None,
         file_encryption=None,
@@ -924,7 +925,8 @@ def test_a_reparse_target_over_the_link_cap_is_refused(tmp_path: Path) -> None:
 
 
 # Deflated zeros: a ~64 KiB member that decodes to 64 MiB.
-_LARGE_CONTENT = b"\0" * (64 << 20)
+# Zeros, but under max_ratio, which a read holds too: 64 MiB of them alone deflate past it.
+_LARGE_CONTENT = (bytes(255) + b"\1") * (1 << 18)
 
 
 def test_a_large_non_link_reparse_member_keeps_all_its_content(
@@ -969,7 +971,7 @@ def test_a_link_buffer_is_read_only_as_far_as_it_declares(
     buffer, so the member is a file, and the rest is decoded only when it is read.
     """
     delivered: list[int] = []
-    original_open = ZipReader._open_member
+    original_open = ZipReader._open_member_handle
 
     def counting_open(self: ZipReader, member: ArchiveMember) -> object:
         stream = original_open(self, member)
@@ -983,7 +985,7 @@ def test_a_link_buffer_is_read_only_as_far_as_it_declares(
         stream.read = read  # type: ignore[method-assign]
         return stream
 
-    monkeypatch.setattr(ZipReader, "_open_member", counting_open)
+    monkeypatch.setattr(ZipReader, "_open_member_handle", counting_open)
 
     buffer = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, "C:\\target", "C:\\target")
     archive = tmp_path / "padded_reparse.zip"

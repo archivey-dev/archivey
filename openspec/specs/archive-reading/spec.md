@@ -219,6 +219,29 @@ logical `ArchiveReader`:
   different container than the sibling, raise `ArchiveyUsageError`.
 - **Explicit ordered `source` sequence**: use that order as volumes
 
+A part found by discovery (a sibling, or the set a stub leads to) that is a symbolic
+link SHALL raise `OpenError` naming it: archivey does not follow a link it found on
+its own. The path the caller named and its directory may be links, and a sequence
+that names a link reads it. `ArchiveyConfig(discover_volumes=False)` SHALL turn
+discovery off for `open_archive()` and `detect_format()` alike: a path is read as
+the one file it names, a stub does not lead to its set, the RAR reader does not
+look for volumes beside the path either, and a lone numbered part is not refused as
+a set with parts missing. The link check runs once, at discovery; a part swapped for
+a link afterwards is not caught.
+
+#### Scenario: discovery matrix
+
+| Case | Expected |
+| --- | --- |
+| `x.zip.001` beside `x.zip.002`, a symlink to another file | `OpenError` naming `x.zip.002`; the same two passed as a list read |
+| A set in a directory reached through a symlink | Read as before |
+| `tinyvol.part1.rar` with `discover_volumes=False` | `TruncatedError` (volume 2 is missing); the set passed as a list reads |
+| A stub `vol.exe` beside `vol.zip.001` with `discover_volumes=False` | `FormatDetectionError` from `open_archive()` and `detect_format()` |
+| A stub `vol.exe` beside `vol.zip.001`, a symlink | `OpenError` naming `vol.zip.001` |
+| `l.zip.001`, a symlink the caller named, beside a regular `l.zip.002` | Read as before |
+| `x.zip.001` with `discover_volumes=False`, `x.zip.002` beside it | Refused by its name as a ZIP split segment (`UnsupportedFeatureError`) with nothing opened, not "part 2 missing" |
+| `x.7z.001` with `discover_volumes=False`, `x.7z.002` beside it | Opened alone; the 7z reader refuses what it finds (`TruncatedError`), not "part 2 missing" |
+
 Joining is format-specific (`format-7z` / `format-rar`): 7z concatenates a split
 byte stream; RAR parses self-describing volumes in order and stitches
 boundary-spanning members. Incomplete/out-of-order sets SHALL raise
@@ -772,7 +795,8 @@ that is not a `bool` SHALL raise `ArchiveyUsageError` at the call.
 are lazy: unselected/unread members are not opened/decompressed and do not request
 passwords. Yields the original mutable `ArchiveMember` so late-bound fields stay
 visible. A yielded stream whose deferred open fails on its first read (a wrong password,
-an unsupported method) SHALL raise the same error object on every later read and SHALL
+an unsupported method) SHALL raise that error again on every later read, as a content
+verdict is raised again (same type and arguments, first raise as its cause), and SHALL
 NOT try the open again.
 
 Symlink targets stored as member data (ZIP, 7z, RAR3/4) are the one exception, and only
@@ -1207,10 +1231,10 @@ The system SHALL define these complete frozen schemas:
 @dataclass(frozen=True)
 class ExtractionLimits:
     max_extracted_bytes: int | None = 2 * 2**30
-    max_ratio: float | None = 1000.0
-    ratio_activation_threshold: int = 5 * 2**20
+    max_ratio: float | None = <unset>  # deprecated: DecoderLimits.max_ratio
+    ratio_activation_threshold: int = <unset>  # deprecated
     max_entries: int | None = 262_144
-    live_ratio_activation_threshold: int = 256 * 2**20
+    live_ratio_activation_threshold: int = <unset>  # deprecated
     UNLIMITED: ClassVar["ExtractionLimits"]
 
 @dataclass(frozen=True)
@@ -1224,6 +1248,9 @@ class DecoderLimits:
     max_decoder_memory: int | None = 2 * 2**30
     max_key_derivation_rounds: int | None = 2**25
     max_ppmd_held_input: int | None = 16 * 2**20
+    max_ratio: float | None = 800.0
+    ratio_activation_threshold: int = 5 * 2**20
+    live_ratio_activation_threshold: int = 256 * 2**20
     UNLIMITED: ClassVar["DecoderLimits"]
 
 @dataclass(frozen=True)
@@ -1278,7 +1305,7 @@ candidate iteration. Under `process_isolation=KNOWN_CRASHES` (the default) and
 "Native decoders run where process_isolation puts them"), where a crash of the native
 decoder (a fault signal such as SIGSEGV, or the Windows status for the same fault) SHALL
 surface as `CorruptionError`. A child killed by SIGKILL, or one that dies allocating the
-member's model, SHALL raise `ResourceLimitError`, as SHALL a member where no child process
+member's model, SHALL raise `ResourceUnavailableError`, as SHALL a member where no child process
 can be started. A child that ends any other way (another signal, a plain exit status)
 SHALL raise `ReadError`, which is not a verdict on the data. `max_ppmd_held_input`
 SHALL bound the compressed bytes of one PPMd member the process holds to hand to pyppmd
@@ -1334,13 +1361,14 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 | Case | Expected |
 | --- | --- |
 | `ArchiveyConfig()` | AUTO accelerators; documented extraction, listing and spool defaults (spool 1 GiB); COLLECT; budget 256; no callback |
-| `open_archive(..., config=ArchiveyConfig(extraction_limits=ExtractionLimits(max_ratio=100)))` then `extract_all(dest)` | 100:1 per-member ratio enforced (`safe-extraction`) |
+| `open_archive(..., config=ArchiveyConfig(decoder_limits=DecoderLimits(max_ratio=100)))` then `extract_all(dest)` | 100:1 per-member ratio enforced (`safe-extraction`), and on member reads |
+| `ExtractionLimits(max_ratio=100)` | `DeprecationWarning`; in `extraction_limits` it overrides `decoder_limits.max_ratio` for the reader, in `extract_all(limits=...)` for that extraction; an `<unset>` ratio field reads as the `DecoderLimits` default and warns nothing |
 | Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime; `extract_all()` has no `config=` to change them |
 | `detect_format(BytesIO(zlib_bytes))`, then with `always_probe_content=True` | `FormatDetectionError`, then `ZLIB` / `content_probe` |
 | Reader opened with `read_link_targets=False` | No data-stored link target is read by listing or a pass for the reader lifetime |
 | Header-encrypted RAR5 set of four parts, one encryption record repeated, `max_key_derivation_rounds` one round short of key + PswCheck | `ResourceLimitError` at `open_archive`; at exactly key + PswCheck the set lists |
-| 7z PPMd member of 200 KB compressed, no child process possible | `ResourceLimitError` on the first read, naming `process_isolation` |
-| Same member; the child crashes / is killed by SIGKILL / by SIGTERM | `CorruptionError` / `ResourceLimitError` / `ReadError`, not `CorruptionError` |
+| 7z PPMd member of 200 KB compressed, no child process possible | `ResourceUnavailableError` on the first read, naming `process_isolation` |
+| Same member; the child crashes / is killed by SIGKILL / by SIGTERM | `CorruptionError` / `ResourceUnavailableError` / `ReadError`, not `CorruptionError` |
 | Same member, `process_isolation=NONE`, `max_ppmd_held_input=1024` / default | In-process, fed in pieces / held and decoded whole |
 | Valid 7z PPMd member of 8 MiB (one random 1 MiB block, 8 times), default config | Held, decoded whole in a child, read in full |
 | Same member, `max_ppmd_held_input` of 1 MiB, in a child or with `process_isolation=NONE` | Fed in pieces, read in full |
@@ -1753,3 +1781,82 @@ install cannot vouch for that link.
 | ZIP Zstandard, ZIP WinZip AES or 7z PPMd symlink with the library it needs absent | Every member listed; `reason="package_not_installed"`; `open()` raises `PackageNotInstalledError` |
 | Same, `extract_all(on_error=CONTINUE)` | Link `FAILED` with `PackageNotInstalledError`; other members extract |
 | Same, `DiagnosticPolicy.STRICT` | Listing raises `DiagnosticRaisedError`, though the archive is intact |
+
+### Requirement: Streams and passes come from archivey
+
+`ArchiveStream` and `MemberPass` SHALL stay public types for annotations and
+`isinstance`, as base classes with no public constructor: every stream and pass
+archivey hands out SHALL be an instance of an internal subclass, so how one is built
+can change in any release. Until archivey 0.4.0, calling either base directly SHALL
+still work, building that internal subclass, and SHALL emit a `DeprecationWarning`
+(DR-12a).
+
+#### Scenario: construction matrix
+
+| Call | Result |
+|---|---|
+| `ArchiveStream(open_fn, translate=…)` | Working stream; `DeprecationWarning` naming `ArchiveReader.open()` |
+| `MemberPass(generator)` | Working pass; `DeprecationWarning` naming `stream_members()` |
+| `reader.open()`, `reader.read()`, `stream_members()`, iterating a reader, `open_stream()` | No `DeprecationWarning` |
+
+#### Scenario: internal subclasses
+
+`isinstance(stream, ArchiveStream)` and `isinstance(members, MemberPass)` hold for
+everything archivey hands out. The subclasses' names and constructors are not public
+API.
+
+#### Scenario: no published constructor
+
+`dev-docs/api-surface.txt` lists no `init` line for `archivey.ArchiveStream` or
+`archivey.MemberPass`.
+
+### Requirement: verify_all checks every member and keeps going
+
+Every reader SHALL have `verify_all()`, which reads every listed member to the end,
+does not stop at a member's failure, and returns a tuple of `(member, error)` pairs,
+one for each member whose read raised an `ArchiveyError`. An empty tuple SHALL mean no
+member failed. A member whose password the password input did not supply SHALL be a
+failure, returned with its `EncryptionError`. A per-member limit (a decode ratio
+breach) SHALL be a member failure.
+
+`verify_all()` SHALL NOT raise a member's failure. It SHALL raise only:
+`ArchiveyUsageError` (a closed reader, a call during an active pass, or, on a
+streaming-only reader, any call after a pass has started, its own included); the
+`ResourceLimitError` that `members_report()` raises when the listing exceeds
+`ListingLimits`; an error the caller's diagnostic policy escalates; and errors that
+are not `ArchiveyError` (`OSError`, `KeyboardInterrupt`). Damage that stops the listing
+SHALL NOT raise: `verify_all()` stops there, and `members_report().error` holds it.
+A failed checksum over the archive's whole compressed stream (a `.tar.gz` trailer) that
+ends the listing or the pass SHALL make every listed file a failure, returned with that
+error, whether or not the listing ran before the call.
+
+After `verify_all()` returns, every listed member that is not among its failures SHALL
+have `verified == verifiable`, checks that span members included. On a random-access
+reader it SHALL NOT touch streams the caller holds. A second call SHALL re-read the
+members whose `verified` is below their `verifiable`, the earlier failures, the
+members whose `verifiable` is `NONE`, and the members whose per-frame checks wait on a
+read from the start (a `.zst`, `.lz4` or `.xz` member read only past a jump); it MAY
+skip any other member. On a
+streaming-only reader, `members_report()` after `verify_all()` SHALL return the report
+of that same pass without reading again.
+
+Archive-level damage and findings are reported by `members_report()` and
+`reader.diagnostics`, never as a verification level.
+
+#### Scenario: verify_all matrix
+
+| Case | Expected |
+| --- | --- |
+| Intact ZIP | returns `()`; every member `verified == verifiable` |
+| ZIP with one member whose CRC fails | returns that member with `CorruptionError`; the other members at `CHECKSUM` |
+| Encrypted ZIP, no password given | returns each encrypted member with `EncryptionError` |
+| Second call after a password provider now supplies the password | re-reads only the members that failed; returns `()` |
+| `.tar.gz` with a matching trailer | returns `()`; every member at `CHECKSUM` |
+| `.tar.gz` whose trailer CRC fails, with or without `members()` first | returns every file with `CorruptionError`; so does a second call |
+| TAR cut inside the member listing | returns the failures before the cut; `members_report().error` is a `TruncatedError` |
+| TAR with no end-of-archive blocks | returns `()`; `reader.diagnostics` holds `ARCHIVE_EOF_MARKER_MISSING` (raises only when the policy escalates it) |
+| 7z AES folder with no CRC, truncated | returns the member with `TruncatedError`, on a first and a second call |
+| Streaming-only reader, second call | raises `ArchiveyUsageError` |
+| Streaming-only reader, call after `stream_members()` has started | raises `ArchiveyUsageError` |
+| Streaming-only reader, `members_report()` after `verify_all()` | returns the cached report; reads nothing |
+| Random-access reader with a caller stream open at position 100 | the caller's stream stays at position 100 |

@@ -40,6 +40,7 @@ from archivey.cli.info_cmd import _can_reread
 from archivey.cli.main import _inject_default_list, _parse_cli_args, build_parser, main
 from archivey.diagnostics import DiagnosticSummary
 from archivey.exceptions import ArchiveyError, TruncatedError
+from archivey.internal.member_pass import MemberPassImpl
 from archivey.types import ArchiveMember, MemberType
 from tests.conftest import case_sensitive, requires_binary
 
@@ -48,7 +49,7 @@ def _as_pass(
     fake: Callable[..., Generator[tuple[ArchiveMember, object], None, None]],
 ) -> Callable[..., MemberPass]:
     """A generator standing in for ``stream_members()``, returned the way it returns."""
-    return lambda self, members=None: MemberPass(fake(self, members))  # type: ignore[arg-type]
+    return lambda self, members=None: MemberPassImpl(fake(self, members))  # type: ignore[arg-type]
 
 
 def _zip(path: Path, entries: dict[str, bytes]) -> Path:
@@ -787,13 +788,20 @@ def _zip_bytes(entries: dict[str, bytes]) -> bytes:
 
 
 def _main_on_fifo(fifo: Path, argv: list[str]) -> int:
-    """Run ``main(argv)`` in a thread and fail the test if it blocks on ``fifo``."""
+    """Run ``main(argv)`` in a thread and fail the test if it blocks on ``fifo``.
+
+    A second open of a FIFO blocks every time, not now and then, so the window only
+    has to outlast a slow runner: 10 s was missed once on macOS under ``-n auto``
+    (a test that passed on the same commit in another run). 40 s plus the 5 s
+    unblock stays under the suite's 60 s ``--timeout``, so a real block still fails
+    here with its message.
+    """
     import threading
 
     result: list[int] = []
     worker = threading.Thread(target=lambda: result.append(main(argv)), daemon=True)
     worker.start()
-    worker.join(10)
+    worker.join(40)
     if worker.is_alive():
         # Unblock a stuck second open so the thread can finish, then fail.
         fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
@@ -802,6 +810,10 @@ def _main_on_fifo(fifo: Path, argv: list[str]) -> int:
         pytest.fail(f"archivey {argv[0]} blocked on a FIFO")
     return result[0]
 
+
+# STRICT, the CLI's default, refuses a name with a control character, a backslash or
+# bytes that are not UTF-8; STANDARD writes the portable spelling tests here check.
+_REWRITE = ("--policy", "standard")
 
 _FIFO_TAR = {"a.txt": b"hello", "b/c.txt": b"see"}
 # The formats the CLI reads from a pipe in one forward pass.
@@ -2611,8 +2623,8 @@ def test_indexed_single_root_never_replaces_the_operators_entry(
 
 
 @pytest.mark.parametrize(
-    ("stored", "mine"),
-    [("top /f", "top/f"), ("c\x02", "c%02")],
+    ("stored", "mine", "policy"),
+    [("top /f", "top/f", ()), ("c\x02", "c%02", _REWRITE)],
     ids=["trailing-space", "control-character"],
 )
 @pytest.mark.parametrize("overwrite", ["skip", "replace"])
@@ -2622,6 +2634,7 @@ def test_indexed_single_root_rewritten_onto_the_operators_entry_is_hoisted(
     capsys: pytest.CaptureFixture[str],
     stored: str,
     mine: str,
+    policy: tuple[str, ...],
     overwrite: str,
 ) -> None:
     """The stored root name is free but its written spelling is the operator's entry:
@@ -2632,7 +2645,7 @@ def test_indexed_single_root_rewritten_onto_the_operators_entry_is_hoisted(
         zf.writestr(stored, b"ARCHIVE")
     (tmp_path / mine).parent.mkdir(parents=True, exist_ok=True)
     (tmp_path / mine).write_bytes(b"MINE")
-    assert main(["x", str(archive), "--overwrite", overwrite]) == EXIT_OK
+    assert main(["x", str(archive), "--overwrite", overwrite, *policy]) == EXIT_OK
     err = capsys.readouterr().err
     assert _report_lines(err, "kept in ") == [f"kept in one/: {mine} already exists"]
     assert (tmp_path / mine).read_bytes() == b"MINE"
@@ -2704,7 +2717,7 @@ def test_may_land_on_existing_matches_the_spelling_extraction_writes(
     archive = tmp_path / "n.zip"
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr(zipfile.ZipInfo(stored), b"x")
-    assert main(["x", str(archive), "-d", str(out)]) == EXIT_OK
+    assert main(["x", str(archive), "-d", str(out), *_REWRITE]) == EXIT_OK
     assert len(os.listdir(out)) == 1  # the one spelling extraction wrote
     monkeypatch.chdir(out)
     assert _may_land_on_existing(stored)
@@ -2722,7 +2735,7 @@ def test_may_land_on_existing_matches_an_escaped_lone_surrogate(
     out = tmp_path / "out"
     archive = tmp_path / "n.7z"
     archive.write_bytes(_surrogate_7z([(stored, b"x")]))
-    assert main(["x", str(archive), "-d", str(out)]) == EXIT_OK
+    assert main(["x", str(archive), "-d", str(out), *_REWRITE]) == EXIT_OK
     assert len(os.listdir(out)) == 1  # the one spelling extraction wrote
     monkeypatch.chdir(out)
     assert _may_land_on_existing(stored)
@@ -2742,7 +2755,7 @@ def test_indexed_lone_surrogate_root_never_replaces_the_operators_entry(
     archive.write_bytes(_surrogate_7z([("hi\ud800", b"ARCHIVE")]))
     mine = "hi%ED%A0%80"
     (tmp_path / mine).write_bytes(b"MINE")
-    assert main(["x", str(archive), "--overwrite", overwrite]) == EXIT_OK
+    assert main(["x", str(archive), "--overwrite", overwrite, *_REWRITE]) == EXIT_OK
     err = capsys.readouterr().err
     assert _report_lines(err, "kept in ") == [f"kept in one/: {mine} already exists"]
     assert (tmp_path / mine).read_bytes() == b"MINE"
@@ -4083,7 +4096,7 @@ def test_hoist_reports_member_paths_where_they_landed(
     """
     entries = {"top/": b"", "top/c\x02": b"c", "top/a\x01b/f": b"f"}
     (hoisted, hoist_err), (direct, direct_err) = _hoist_and_direct(
-        tmp_path, monkeypatch, capsys, "t.tar", entries, mine
+        tmp_path, monkeypatch, capsys, "t.tar", entries, mine, args=_REWRITE
     )
     assert "extracting into t/" in hoist_err
     assert hoisted == direct
@@ -4106,16 +4119,16 @@ def test_hoist_reports_member_paths_where_they_landed(
             "t.tar",
             {"top/": b"", "top/c\x02": b"ARCHIVE"},
             {"top/c%02": b"MINE"},
-            (),
+            _REWRITE,
         ),
         (
             "t3.tar",
             {"top/": b"", "top/a\x01": b"A", "top/c\x02": b"ARCHIVE"},
             {"top/c%02": b"MINE"},
-            (),
+            _REWRITE,
         ),
-        ("c.tar", {"c\x02": b"ARCHIVE"}, {"c%02": b"MINE"}, ()),
-        ("c.tar", {"c\x02": b"ARCHIVE"}, {"c%02": b"MINE"}, ("-v",)),
+        ("c.tar", {"c\x02": b"ARCHIVE"}, {"c%02": b"MINE"}, _REWRITE),
+        ("c.tar", {"c\x02": b"ARCHIVE"}, {"c%02": b"MINE"}, ("-v", *_REWRITE)),
         (
             "c.tar",
             {"/c\x02": b"ARCHIVE"},
@@ -4270,7 +4283,7 @@ def test_stopped_hoist_names_members_left_in_the_wrapper(
     cwd.mkdir()
     (cwd / "c%02").write_bytes(b"MINE")
     monkeypatch.chdir(cwd)
-    assert main(["x", str(archive), "--overwrite", "error"]) == EXIT_FAIL
+    assert main(["x", str(archive), "--overwrite", "error", *_REWRITE]) == EXIT_FAIL
     err = capsys.readouterr().err
     assert "hoist stopped; remaining files left in c/" in err
     assert _report_lines(err, "name rewritten: ") == [
@@ -4563,14 +4576,16 @@ def test_abort_notice_escapes_an_ansi_spoof(
 ) -> None:
     """The real spoof through the abort print site.
 
-    The default policy writes the control bytes as %XX, so the path in the notice is
+    STANDARD writes the control bytes as %XX, so the path in the notice is
     already safe; the member name it also carries is the stored one, raw bytes and
     all. With the bytes escaped on disk the member is written on Windows too, so this
     runs on every platform.
     """
     archive = _zip(tmp_path / "c.zip", {_SPOOF_ANSI: b"A", _SPOOF_ANSI.upper(): b"B"})
     dest = tmp_path / "out"
-    main(["x", str(archive), "-d", str(dest), "--abort-on", "name-collision"])
+    main(
+        ["x", str(archive), "-d", str(dest), "--abort-on", "name-collision", *_REWRITE]
+    )
     err = capsys.readouterr().err
     assert "Name collision" in err
     assert "\x1b" not in err
@@ -4597,7 +4612,7 @@ def test_test_verb_escapes_failure_detail(
             raise ArchiveyError(f"Error reading member: /out/{_SPOOF_ANSI}")
             yield  # pragma: no cover - unreachable, makes this a generator
 
-        return MemberPass(_gen())
+        return MemberPassImpl(_gen())
 
     monkeypatch.setattr(
         "archivey.internal.base_reader.BaseArchiveReader.stream_members", boom

@@ -27,7 +27,8 @@ always `None`, because nothing short of the walk knows it (§1). Listing a `.tar
 decompresses the whole stream, members included, and opening a member after that seeks
 backwards in the decompressor (§2.3). A plain tar has no checksum over member data, so a
 flipped byte in a member comes back as a wrong byte with no error (§4). And a pre-POSIX
-"v7" tar has no magic at all, so detection finds it only by its extension (§2.1).
+"v7" tar has no magic at all, so detection finds it by its first header's checksum
+(`PROBABLE`, §2.1).
 
 ## 1. Shape
 
@@ -102,19 +103,27 @@ and the GNU one (`ustar  \x00`). Extensions: `.tar`, the compound forms `.tar.gz
 A compressed tar carries only its compressor's magic. Detection first finds the
 compressed stream, then runs the **inner-TAR probe** (`_probe_inner_tar` in
 `internal/detection.py`): decompress 512 bytes, from at most 1 MiB of compressed input,
-and look for `ustar` at 257. A hit upgrades `GZ` to `TAR_GZ` and reports it as
-`PROBABLE`, because a structural check is weaker than an exact magic. If the codec is
-not installed or the probe's budget does not cover it, detection reports the bare
-compressor, and a `.tar.gz` extension over a bare `GZ` result is treated as the expected
-deferral rather than a mismatch.
+and look for `ustar` at 257, or a first header that passes the header check below. A hit
+upgrades `GZ` to `TAR_GZ` and reports it as `PROBABLE`, because a structural check is
+weaker than an exact magic. If the codec is not installed or the probe's budget does not
+cover it, detection reports the bare compressor, and a `.tar.gz` extension over a bare
+`GZ` result is treated as the expected deferral rather than a mismatch.
 
-Two things the magic cannot do. A **v7 tar**, written before POSIX added the magic
-(`tar --format=v7`), has none, and without a `.tar` extension it fails with
-`FormatDetectionError`. Inside a compressor it opens as the bare compressor even when
-named `.tar.gz`, and its one member is the uncompressed tar. And
-a **zero-filled file** named `.tar` opens as an empty archive by extension, while
-`detect_format()` on the same bytes refuses it, because an empty tar has no header to
-carry the magic ([`docs/formats.md`](../../docs/formats.md)).
+A **v7 tar**, written before POSIX added the magic (`tar --format=v7`, old bsdtar,
+star), has none. Detection finds it by its first header instead
+(`TarReadBackend.HEADER_CHECKS`, `tar_parser.starts_with_header`): the first 512 bytes
+must parse as the walker parses a header, so the stored checksum equals the block's
+unsigned or signed sum and every numeric field is a number, and the name must be
+non-empty. A hit is `PROBABLE` / `content_probe`, from any source, named or not, and the
+inner-TAR probe accepts it too, so a gzipped v7 tar is `TAR_GZ`.
+[`topics/detection.md`](../topics/detection.md) §2.5 has why it runs on nameless sources
+when the content probes do not. Before this check, a v7 tar with no `.tar` name raised
+`FormatDetectionError`, and inside a compressor it opened as the bare compressor.
+
+The magic cannot tell one more thing. A **zero-filled file** named `.tar` opens as an
+empty archive by extension, while `detect_format()` on the same bytes refuses it,
+because an empty tar has no header to carry the magic
+([`docs/formats.md`](../../docs/formats.md)).
 
 TAR takes no part in the prefixed-archive scan. `open_read` calls `reject_start_offset`,
 so a tar behind a stub is not found or opened.
@@ -162,7 +171,8 @@ archives": a sized read gives the readable prefix and the next read raises, and 
 with no size raises with nothing.
 
 **A random-access member view stops at the end of the archive** and then returns no
-bytes. `_MemberDataView` sits on it and knows the member's stored length, so a read that
+bytes. `MemberDataView` (`internal/walk_handoff.py`, shared with the sequential
+adapter's handoff view) sits on it and knows the member's stored length, so a read that
 ends short raises `TruncatedError` under the same contract. It does not need the source
 size, so a seekable source with no cheap size gets the same errors as a file.
 
@@ -174,10 +184,12 @@ than a block is `TruncatedError`.
 member's `max_metadata_bytes` budget at its declared size before it is read, then read with
 `read_within_reach` in 64 KiB steps, so the allocation follows the bytes that exist, not
 the size field ([`threat-model.md`](../threat-model.md) O15). A member's data area is
-skipped with one seek on a seekable stream. A forward-only walk reads through it in
-64 KiB steps and raises `TruncatedError` at the first short read, so the skip costs the
-bytes present: a 2 KiB archive declaring a 2**45-byte member fails at once instead of
-looping on the declared size. On a seekable stream a seek past the end succeeds, so when
+skipped with one seek on a seekable stream. A forward-only walk skips it in 64 KiB steps
+and raises `TruncatedError` at the first short read, so the skip costs the bytes
+present: a 2 KiB archive declaring a 2**45-byte member fails at once instead of looping
+on the declared size. Member data a caller reads through a forward-only walk is read in
+1 MiB steps (`DATA_READ_STEP`, the piece the member verifier reads), so a size field
+there causes at most a 1 MiB allocation. On a seekable stream a seek past the end succeeds, so when
 the walk finds nothing where the next header should start, it checks that the last byte
 of the previous member's data area exists: a member cut short is `TruncatedError`, not a
 clean end.
@@ -290,17 +302,17 @@ pass.
 
 | Field | From |
 | --- | --- |
-| `type` | The typeflag. `5`, and GNU's dumpdir `D` (from `tar -G`; its contents list is structure GNU tar defines and reads itself, so it is skipped with no `size` and no report), are directories; `2` a symlink; `1` a hardlink; `0`, NUL, contiguous `7` and old GNU sparse `S` files. A typeflag outside `_KNOWN_TYPES` (`9`, `z`, the obsolete GNU `N` ...) that declares data is a `FILE` of that size, readable and extracted, as GNU tar 1.35 extracts it with "Unknown file type '9', extracted as normal file" and 7-Zip 23.01 lists and extracts it (both measured on `9` and `z`; DR-25; maintainer ruling 2026-10-17); with no data it is `OTHER`. Both are reported with `MEMBER_TYPE_UNKNOWN` (advisory). Devices, FIFOs, multi-volume (`M`) and volume (`V`) headers (§6 says why) and an unknown type with no data are `OTHER`; every member has `extra["tar.type"]` holding the typeflag byte; a device or FIFO (`3`, `4`, `6`) also gets `extra["special_file_type"]`, the cross-format kind. TAR has no data-bearing special entry: GNU tar and libarchive ignore the size field of a device or FIFO header, so a non-zero size there is damage (`CorruptionError`), never a `FILE`. A `DIRTYPE` (`5`) header with a non-zero size is not refused by itself: GNU tar, bsdtar and 7-Zip read the next header straight after it, and so does the walker (`NO_DATA_TYPES`), so when that header parses the directory lists with no `size`; when the walk ends on a zero block inside the span the size declares, `_verify_tar_eof` reports the directory with `MEMBER_DIRECTORY_DATA_IGNORED` (the declared blocks, if there, were read as the marker and hid the members behind them; nothing tells that from a trailer after blocks never written), and a block that is neither a header nor zero where the data would begin is `CorruptionError` naming the directory (§6). A walk that stops at or past the span's end, behind an extended-header chain that filled it, read all the size could hide and reports nothing. A symlink or hardlink (`2`, `1`) header with a non-zero size is in `NO_DATA_TYPES` too, but `TarWalker._place_link_data` decides at its header where the next one starts: when the block right after it parses as a member header, the size names no data and nothing is reported (the `DIRTYPE` clean case); otherwise the declared blocks are skipped, so a zero block among them does not end the walk (unless they are all zeros with no member header after them: then the span's first block ends the walk and the trailer checks run from it), and the link is reported with `MEMBER_LINK_DATA_IGNORED` (maintainer ruling, 2026-10-17; §6). An old-style (v7) regular-file header, typeflag NUL (`AREGTYPE`), `0` (`REGTYPE`) or `7` (`CONTTYPE`), whose final name ends in `/` is a directory, as in GNU tar 1.35, whose `extract.c` sends all three to `extract_dir` on a trailing slash. 7-Zip agrees for NUL and `0`; it lists a contiguous `d/` as the file `d` and then fails to extract `d/f` under it, so GNU tar decides. DR-25's ruling names NUL and `0`, where the two tools agree; `7` follows from the "When consistency and the official tool disagree" factors in `design-rules.md`: 7-Zip's reading leaves `d/f` unextractable, and extraction output is what users compare with the tool. Old GNU sparse `S` named `d/` stays a file, as GNU tar extracts it. The final name is the one after a PAX `path` or a GNU long name; `TarWalker._resolve` decides it. `extra["tar.type"]` stays the stored byte. The data blocks its `size` declares are skipped by extraction, which creates the directory as GNU tar and 7-Zip do; such a directory keeps the declared `size`, is reported with `MEMBER_DIRECTORY_DATA_IGNORED` (in `ARCHIVE_INTEGRITY_CODES`, so `STRICT` refuses the archive), and `open()` delivers the bytes from its data area, as does the stream `stream_members()` yields for it in both access modes (DR-3: the bytes are named and reachable, never silently dropped) |
-| `name` | The name the walker resolved: a PAX `GNU.sparse.name` or `path` record, else a GNU long name, else the header's `name` (with `prefix` joined under the ustar magic only). Decoded as below and normalized with `backslash_is_separator=False`, since a backslash is a legal POSIX filename character. `./` prefixes go and a directory gets a trailing `/`, with `MEMBER_NAME_NORMALIZED` for each change |
+| `type` | The typeflag. `5`, and GNU's dumpdir `D` (from `tar -G`; its contents list is structure GNU tar defines and reads itself, so it is skipped with no `size` and no report), are directories; `2` a symlink; `1` a hardlink; `0`, NUL, contiguous `7` and old GNU sparse `S` files. A typeflag outside `_KNOWN_TYPES` (`9`, `z`, the obsolete GNU `N` ...) that declares data is a `FILE` of that size, readable and extracted, as GNU tar 1.35 extracts it with "Unknown file type '9', extracted as normal file" and 7-Zip 23.01 lists and extracts it (both measured on `9` and `z`; DR-25; maintainer ruling 2026-10-17); with no data it is `OTHER`. Both are reported with `MEMBER_TYPE_UNKNOWN` (advisory). Devices, FIFOs, multi-volume (`M`) and volume (`V`) headers (§6 says why) and an unknown type with no data are `OTHER`; every member has `extra["tar.type"]` holding the typeflag byte; a device or FIFO (`3`, `4`, `6`) also gets `extra["special_file_type"]`, the cross-format kind. TAR has no data-bearing special entry: GNU tar and libarchive ignore the size field of a device or FIFO header, so a non-zero size there is damage (`CorruptionError`), never a `FILE`. A `DIRTYPE` (`5`) header with a non-zero size is not refused by itself: GNU tar, bsdtar and 7-Zip read the next header straight after it, and so does the walker (`NO_DATA_TYPES`), so when that header parses the directory lists with no `size`; when the walk ends on a zero block inside the span the size declares, `_verify_tar_eof` reports the directory with `MEMBER_DIRECTORY_DATA_IGNORED` (the declared blocks, if there, were read as the marker and hid the members behind them; nothing tells that from a trailer after blocks never written), and a block that is neither a header nor zero where the data would begin is `CorruptionError` naming the directory (§6). A walk that stops at or past the span's end, behind an extended-header chain that filled it, read all the size could hide and reports nothing. A symlink or hardlink (`2`, `1`) header with a non-zero size is in `NO_DATA_TYPES` too, but `TarWalker._place_link_data` decides at its header where the next one starts: when the block right after it parses as a member header, the size names no data and nothing is reported (the `DIRTYPE` clean case); otherwise the declared blocks are skipped, so a zero block among them does not end the walk (unless they are all zeros with no member header after them: then the span's first block ends the walk and the trailer checks run from it), and the link is reported with `MEMBER_LINK_DATA_IGNORED` (maintainer ruling, 2026-10-17; §6). All of this is about the header's own size field. A PAX `size`, the member's own or a global one, frames a data area after a `DIRTYPE` or link header, as GNU tar 1.35 skips it (measured 2026-10-30): the `DIRTYPE` directory keeps that `size` and is reported with `MEMBER_DIRECTORY_DATA_IGNORED` like an old-style one (`_directory_has_data`), and a link's blocks are skipped whatever follows them and reported with `MEMBER_LINK_DATA_IGNORED` (`LinkData.FRAMED`), with no all-zero exception, so a span the archive cuts short is `TruncatedError` and one ending the archive reports `ARCHIVE_EOF_MARKER_MISSING`. A device or FIFO with a PAX `size` stays `CorruptionError` (§6). An old-style (v7) regular-file header, typeflag NUL (`AREGTYPE`), `0` (`REGTYPE`) or `7` (`CONTTYPE`), whose final name ends in `/` is a directory, as in GNU tar 1.35, whose `extract.c` sends all three to `extract_dir` on a trailing slash. 7-Zip agrees for NUL and `0`; it lists a contiguous `d/` as the file `d` and then fails to extract `d/f` under it, so GNU tar decides. DR-25's ruling names NUL and `0`, where the two tools agree; `7` follows from the "When consistency and the official tool disagree" factors in `design-rules.md`: 7-Zip's reading leaves `d/f` unextractable, and extraction output is what users compare with the tool. Old GNU sparse `S` named `d/` stays a file, as GNU tar extracts it. The final name is the one after a PAX `path` or a GNU long name; `TarWalker._resolve` decides it. `extra["tar.type"]` stays the stored byte. The data blocks its `size` declares are skipped by extraction, which creates the directory as GNU tar and 7-Zip do; such a directory keeps the declared `size`, is reported with `MEMBER_DIRECTORY_DATA_IGNORED` (in `ARCHIVE_INTEGRITY_CODES`, so `STRICT` refuses the archive), and `open()` delivers the bytes from its data area, as does the stream `stream_members()` yields for it in both access modes (DR-3: the bytes are named and reachable, never silently dropped) |
+| `name` | The name the walker resolved: a PAX `GNU.sparse.name` or `path` record, else a GNU long name, else the header's `name` (with `prefix` joined under the ustar magic only). Decoded as below and normalized with `backslash_is_separator=False`, since a backslash is a legal POSIX filename character. `./` prefixes go and a directory gets a trailing `/`, with `MEMBER_NAME_NORMALIZED` for other changes (`//`, a `/./` inside the name, a trailing `/` on a link). A leading `./` alone is not reported (maintainer ruling 2026-10-31): `tar czf a.tar.gz .` writes it on every member, and every reader strips it |
 | `raw_name` | The stored bytes of whatever supplied the name, always. Never `None` |
 | `link_target` | The link name as stored (a PAX `linkpath`, else a GNU long link name, else the header's `linkname`), decoded as below, for symlinks and hardlinks; the walker drops a link name on any other type before keeping it. A hardlink stores an archive path, so a tar made from `./d` stores `./d/b` while the member it names is listed as `d/b`. `link_target_member` is the resolved one |
 | `size` | The logical size for a file, which for a sparse member is the size its sparse records declare, not the bytes stored. `None` for everything else. `compressed_size` is never set |
-| `modified` | The PAX `mtime` record when there is one, parsed once with its fraction, else the header's `mtime`. A value `datetime` cannot hold is `None` plus `MEMBER_TIMESTAMP_INVALID`. So is a PAX `mtime` that is not a number: it lists as `None`, not as the Unix epoch |
+| `modified` | The PAX `mtime` record when there is one, parsed once with its fraction, else the header's `mtime`. A value `datetime` cannot hold is `None` plus `MEMBER_TIMESTAMP_INVALID`. So is a PAX `mtime` that is not a number: it lists as `None`, not as the Unix epoch. A header `mtime` field of only NUL bytes and blanks is `None` with no report (`HeaderBlock.mtime`): it records no time, and reading it as 0, as GNU tar 1.35 and `tarfile` do for all NULs, would be a guess (DR-1; maintainer ruling 2026-10-30; §6). An octal zero stays the epoch |
 | `accessed` | PAX `atime` only. A record that is not a number, or out of range, is `None` plus `MEMBER_TIMESTAMP_INVALID`, as for `modified`; the same holds for `created` and `ctime`. A number is what GNU tar 1.35 reads, `-?digits(.digits*)?`; Python float syntax beyond that (`+1000`, `1e3`, `1_000`, blanks, `.5`, `inf`) is not one, and the report quotes the first 40 characters of the value |
 | `created` | The PAX `LIBARCHIVE.creationtime` keyword, which libarchive writes when the source OS has a birth time. No other TAR writer is known to store one, so it is `None` for most archives |
 | `ctime` | PAX `ctime` only. It is the inode-change time (`st_ctime`), so it never fills `created`. A libarchive tar can carry both |
 | `mode`, `uid`, `gid`, `uname`, `gname` | From the header; a PAX record of the same name overrides `uid`, `gid`, `uname` or `gname`. A PAX `uid` or `gid` that is not a number, or is past 4294967295 (2**32 - 1, the range of `uid_t` and `gid_t` on every platform GNU tar ships on), is ignored and the header's value kept, as GNU tar 1.35 keeps it. GNU tar also reports such an id ("out of range", exit 2); archivey keeps the header's value silently. A v7 header has no `uname` or `gname`: its bytes 257.. are not fields, and GNU tar reads none there. `mode` keeps the permission and setuid/setgid/sticky bits only, masked before `stat.S_IMODE`, so a negative or wider-than-32-bit base-256 mode cannot fail the listing |
-| `is_sparse` | True for the old GNU `S` typeflag and for all three PAX sparse encodings. Sparse records on a link, device, FIFO or directory make no sparse member |
+| `is_sparse` | True for an `S` typeflag in an old GNU header and for all three PAX sparse encodings. Sparse records on a link, device, FIFO or directory make no sparse member |
 | `extra` | `tar.type` always; `special_file_type` on device and FIFO members; `tar.pax_headers` when there are any (read-only, a `dict` subclass whose changes raise `TypeError`; members with no records of their own share one per set of global records); `tar.devmajor` / `tar.devminor` for a character or block device (`3`, `4`) in a ustar or GNU header, the only headers GNU tar reads them from; a FIFO or a v7 header has none, and bytes in those fields there are not read. A device whose field is not a number has none either, and carries `MEMBER_HEADER_RECORD_SKIPPED` |
 
 A pass that is the listing (a streaming pass, or a random-access pass with no listing
@@ -328,6 +340,150 @@ tried before the codec for ASCII too, so an ASCII name never reaches it: `cp037`
 `abc` as `/ÂÄ`, and `utf-16` failed the open. A codec that fails on bytes that are not
 UTF-8 (`utf-16` on an odd byte count, `utf-7` on a bad `+` shift, `idna`) gives way to
 the UTF-8 escape decode, as in ZIP, RAR and ISO, and nothing is reported. `extra["tar.pax_headers"]` decodes each value by the same rule.
+
+PAX records combine as GNU tar 1.35 combines them, which is not quite what POSIX says or
+what `tarfile` does; each difference below would frame or name a member differently from
+GNU tar (DR-6, measured 2026-10-30):
+
+- A global (`g`) header replaces the global records of any earlier one; it does not merge
+  with them. `hdrcharset` alone carries over, which is archivey's reading: a listing cannot
+  show what GNU tar does with it.
+- A later `x` header for one member replaces an earlier one, its sparse 0.0 map too; a `g`
+  header between them does not drop it. Merging them, as archivey did, let a dropped
+  `size` frame the next member as data. GNU tar cannot read a 0.0 map split across `x`
+  headers either ("excess GNU.sparse.offset").
+- A key repeated in one header keeps its last value in an `x` header and its first in a
+  `g` header. `hdrcharset` follows the same rule, and the one kept decides how the
+  header's names decode.
+- An empty value sets `linkpath`, `uname` and `gname` to empty: a symlink or hard link with
+  an empty `linkpath` has no target (`SYMLINK_TARGET_UNAVAILABLE`, and
+  `LINK_TARGET_UNAVAILABLE` at extraction, which goes on; GNU tar substitutes `.` for an
+  empty hard link target and fails that link). An empty `size` is
+  `CorruptionError`, as GNU tar calls it malformed. An empty `path`, `mtime`, `atime`,
+  `ctime`, `uid`, `gid` or `hdrcharset` is skipped (`_EMPTY_VALUE_SKIPPED`), so the
+  global record or the header field stays: POSIX would delete both, and GNU tar keeps
+  an empty `path` from naming anything. Any other empty value is stored, so a key
+  archivey does not read, such as GNU tar's `SCHILY.xattr.<name>` for an empty
+  extended attribute, stays in `extra["tar.pax_headers"]` with an empty value
+  (maintainer ruling 2026-10-31: it is the only trace that the attribute exists).
+- A `path`, `GNU.sparse.name`, `linkpath`, `uname` or `gname` value ends at its first
+  NUL, as a header field and an `L` or `K` name do. The cut comes first (in
+  `parse_pax_records`), so a `path` that is empty after it is skipped and the earlier
+  record, the global one or the header field stays.
+
+Where a difference above, or a shape like it, comes from no known writer, the member is
+reported with `MEMBER_HEADER_AMBIGUOUS` (`HeaderAmbiguityContext`, in
+`ARCHIVE_INTEGRITY_CODES`; maintainer request 2026-10-30: match GNU tar, and report what
+no real writer writes), once per shape. `TarWalker._next_entry` collects them as
+`TarEntry.ambiguities` (`Ambiguity`), one entry per shape and field, and the reader folds
+the entries of one shape into one report: `field` is the first, `more_fields` counts the
+others, and the message names at most three of them; a global header's are reported on the member
+after it, and a global header with no member after it frames and names nothing, so it is
+not reported.
+
+The tar-minefield cases cited below are in [`../tar-minefield-results.md`](../tar-minefield-results.md),
+with every case's result under each policy.
+
+- `global_replaced`: a `g` header that drops a key an earlier `g` header set (one entry per dropped key, folded into one report, `hdrcharset` aside). GNU tar writes one
+  `g` header; `tarfile` and POSIX merge them.
+- `repeated`: one field set twice for one member: two `L` or two `K` headers (GNU tar
+  keeps the last, `tarfile` the first), a PAX key twice in one `x` or `g` header, or two `x` headers for one member (field `x`: GNU tar drops
+  all but the last, `tarfile` merges them). The sparse 0.0 map's `GNU.sparse.offset` and
+  `GNU.sparse.numbytes` repeat by design and are not reported.
+- `nul_in_value`: a NUL inside one of the string values above; `tarfile` keeps the bytes after it.
+  Or a NUL in any PAX keyword: archivey uses the whole keyword, and a reader that cuts it
+  at the NUL reads another key (`path\0junk=evil` as `path=evil`).
+- `both_families`: a GNU `L` (or `K`) header whose name a PAX record overrode, as
+  `_resolve` decided it (`name_source`/`linkname_source` is `PAX`): the member's own or a
+  global `path`, its `GNU.sparse.name`, or a `linkpath` on a link. GNU tar uses the PAX
+  record; `tarfile` uses whichever comes first. A PAX `path` that the NUL cut leaves empty,
+  or a `linkpath` on a typeflag with no link, overrides nothing and is not reported.
+- `global_member_field`: a `g` header carrying `path`, `linkpath` or `size`, which then
+  names or frames every later member.
+- `mixed_chain` (field `x`): `L` or `K` headers and an `x` header in one member's chain,
+  in either order, when `both_families` (on `path` or `linkpath`) is not reported, which
+  already names the mix. GNU tar applies both to the
+  member. To a reader that knows only PAX an `L` header is a member of an unknown type,
+  so an `x` header before it, and its `size`, applies to the `L` header (tar-minefield F10 and N23).
+- `global_in_chain` (field `g`): a `g` header between an `x` or `L` header and its
+  member. GNU tar applies the `x` or `L` header to the member; a reader that applies it to
+  the `g` header names the member by its header (tar-minefield F19).
+- `empty_value`: an `x` record whose empty value the rule above skips: `path` (a reader
+  that follows POSIX's "delete" literally can drop the header name too) or a number (GNU
+  tar reports it as invalid and exits 2). Not in a `g` header, where an empty value is
+  how POSIX unsets a global record (tar-minefield N22). Only `path`, `mtime`, `atime`,
+  `ctime`, `uid` and `gid` count (`_EMPTY_VALUE_REPORTED`): GNU tar writes an empty
+  `SCHILY.xattr.<name>` record for an empty extended attribute with `--xattrs`, and
+  other keywords name and frame nothing. Only the key's last record in the header
+  counts: `path=` then `path=foo` names the member `foo` and is `repeated`. A value
+  empty only after the NUL cut is `nul_in_value` alone.
+- `leading_zero` (field `size`, `GNU.sparse.size` or `GNU.sparse.realsize`): an `x`
+  header number such as `0777`. It is decimal (777), as GNU tar and POSIX read it; a
+  reader using `strtoul(s, NULL, 0)` reads 511 (tar-minefield F26). These are the
+  numbers that frame a member or give its listed size. A sparse map's offsets and
+  lengths are not checked: the walk requires the chunks to sum to the stored size, so a
+  map read as octal frames nothing differently.
+- `field_tail` (field `size`, `name`, `prefix` or `linkname`, or `x size`, `g size`,
+  `L size` or `K size` for an extended header's own size): the field has a tail after
+  the byte that ends it. For a size that is bytes other than NULs and blanks after the
+  digits; for a name field (`prefix` only under the ustar magic, the one that joins
+  it) it is any byte after the first NUL, the NUL padding aside, a blank included,
+  since a blank is a byte of a name. They are ignored, as GNU tar ignores them. A size
+  field of `000000 1000` is 0 to GNU tar and 512 to a reader that skips the blank,
+  which then reads the next header as data (tar-minefield F12, N14); in an extended
+  header that reader also reads other records or another long name. The walk checks
+  the member fields inline for every member and calls `_field_tails` only when that
+  check trips. A member field that an extended header overrode (a PAX `size`, an `L`,
+  `K` or PAX name) is not reported.
+- `size_on_no_data` (field `size`): a `5`, `1` or `2` header with a size of its own,
+  when the block after it is a header, member or extended, which the walk reads next
+  (no PAX `size`, and for a link, `link_data` is `None`). A reader that skips the size
+  reads that header as data (tar-minefield F33, F34).
+- `signed_checksum` (field `chksum`): a header whose checksum matches only the signed
+  sum of its bytes (`HeaderBlock.signed_checksum`), as SunOS 4 and Ultrix tars wrote
+  it. GNU tar and `tarfile` accept it; a reader that takes only the POSIX unsigned
+  sum refuses the header, or skips ahead and frames every later member differently
+  (tar-minefield F06). No current writer produces it, and the corpus's scan of real
+  tarballs found none.
+- `magic_version` (field `version`): the POSIX magic `ustar\0` with a version other
+  than `00` or NULs (`_USTAR_VERSIONS`; some Java archivers write NULs). GNU tar reads
+  it as ustar and joins the prefix; a reader that takes it as v7 drops the prefix
+  (tar-minefield F11).
+- `newline_in_value` (field: the PAX keyword): a value holding a newline, outside
+  `_NEWLINE_ALLOWED_PREFIXES` (`SCHILY.xattr.`, `LIBARCHIVE.xattr.`, `SCHILY.acl.`,
+  whose values are arbitrary bytes or lines). Records are framed by their length, so
+  the newline is a byte of the value, as POSIX and GNU tar read it; a reader that
+  splits records on lines reads another record, a `path` or a `size`, even from a
+  `comment` (tar-minefield F13, F28). A newline in the keyword is reported too, whatever
+  the keyword: it is the same smuggled record one byte earlier (`k\n12 size=512`).
+
+The empty-value rule is not reported for `uname`, `gname` or `linkpath`, which it
+stores as empty: an empty `uname` or `linkpath` is how a writer clears a global value
+(an empty link target is reported as `SYMLINK_TARGET_UNAVAILABLE`), and an empty `size`
+is already `CorruptionError`. A ustar or GNU header field that differs from the PAX record
+overriding it is not reported either: writers put a cut name or a capped size there on
+purpose.
+
+Shapes real writers produce, which other readers make another tree of, are read as GNU
+tar reads them and reported with `MEMBER_READERS_DISAGREE` (`ReaderDisagreementContext`,
+attached to the member; advisory, out of `ARCHIVE_INTEGRITY_CODES` and logged at INFO:
+maintainer request 2026-10-31, so a caller checking an archive that another tool will
+extract can refuse them with `PEDANTIC` or `raise_on=`). `_to_member` emits the TAR ones:
+
+- `file_named_as_directory`: an old-style directory, a regular-file header whose final
+  name ends in `/` (tar-minefield K01; v7 tars of sendmail and tcp_wrappers).
+- `link_name_on_file`: a regular file whose header field or PAX `linkpath` stores a link
+  name (K02; bgen 1.1.7 writes the header field).
+- `star_prefix`: a ustar header with star's `tar\0` at 508 whose prefix runs past star's
+  131 bytes (N10; star's archives of berkeley-db and ncurses). `parse_header_block` sets
+  `HeaderBlock.prefix_shape`; only a name taken from the header counts.
+- `gnu_prefix_bytes`: an old GNU header, not `S`, with a byte at 345, where GNU tar's
+  incremental archives keep atime (N11). `tarfile` joins the prefix for that magic.
+
+The base reader reports two shapes every format can hold, in `_register_member`: a hard
+link whose target is a symlink listed before it (`hardlink_to_symlink`, S06), and a
+member with the name of an earlier one, with or without a final `/`, when the two are not
+both directories (`MEMBER_NAME_DUPLICATE`, S04, S07 to S10).
 
 ### 2.3 Member data
 
@@ -376,7 +532,17 @@ walker turns each into the same `SparseMap` of offsets and lengths.
 whatever 0.x records it also carries. GNU tar 1.35 reads it so: with a `GNU.sparse.size`
 it lists the realsize, and with a `GNU.sparse.map` it warns and still reads the 1.0 map.
 Without such a major, the 0.x records choose: `GNU.sparse.map` is 0.1, then
-`GNU.sparse.size` or `GNU.sparse.offset`/`numbytes` is 0.0.
+`GNU.sparse.size` or `GNU.sparse.offset`/`numbytes` is 0.0. A 1.0 member with no
+`GNU.sparse.realsize` ends at its greatest chunk end, which is what GNU tar 1.35 extracts
+(it lists the stored size, the header's or a PAX `size` record's, map blocks included); a
+chunk ending past the stored size is damage, as GNU tar calls it malformed. A realsize of
+0 is kept, so a chunk ends past it and the member fails, as in GNU tar. An empty
+`GNU.sparse.realsize` is damage, as GNU tar and `tarfile` both refuse it.
+
+**Only an old GNU header holds sparse slots.** Typeflag `S` under ustar or v7 magic is a
+regular file of its stored size, with the ustar prefix joined to its name: in a ustar header
+bytes 345.. are the prefix. GNU tar 1.35 reads it so; `tarfile` reads the slots whatever
+the magic says.
 
 **A seek the filesystem refuses reads as the end of the data.** The walker seeks to
 offsets it adds up from size fields, and a PAX or base-256 size can put one anywhere. An
@@ -480,7 +646,7 @@ opened from a path is checked against the file's size; one read from a stream is
 live against compressed bytes consumed, once `live_ratio_activation_threshold` (256 MiB)
 has been written, which is why a piped `.tar.gz` bomb stops mid-pass. The floor exists
 because a disk image whose data starts with a long blank run reads as a bomb until the
-data after that run arrives; from a path the same file passes on the whole-file ratio. A plain tar has nothing to decompress and is checked against the archive size.
+data after that run arrives; from a path the same file passes on the whole-file ratio. A plain tar has nothing to decompress and is checked against the archive size. A member read through `open()` or `stream_members()` gets a ratio guard of its own only when it is sparse; every other member's data is its own bytes of the stream, and is counted toward the archive-wide total at its size (§6).
 
 **`extract_all` is one forward pass in both modes.** Random access does not list the
 archive first: `TarReader._list_before_extraction` leaves the listing to the pass,
@@ -568,32 +734,35 @@ ours.
 | What you see | Where it lives | More |
 | --- | --- | --- |
 | `member_count` is `None`, even after listing | **format** | No index (§1). `len(reader.members())` after the walk is the count |
-| Listing a `.tar.gz` takes as long as extracting it | **format** | Headers are spread through the compressed stream, so finding them decodes everything (§1) |
+| Listing a `.tar.gz` takes as long as extracting it | **format** | Headers are spread through the compressed stream, so finding them decodes everything (§1). The decode is held to `decoder_limits.max_ratio` (`DecodeRatioGuard`, ruling in [DR-9](../design-rules.md)), so a tiny bomb is refused within a few MiB instead of listing for minutes |
 | Reading members of a `.tar.gz` by name is slow, and reports `STREAM_REWIND_REDECOMPRESSES` | **format** / **archivey** | Each backward seek decodes from the nearest resume point (§2.3). `stream_members()` decodes once. `[seekable]` adds resume points for gzip and bzip2 |
 | A tar with no trailer warns `ARCHIVE_EOF_MARKER_MISSING` and still lists | **format** | Complete-without-trailer and truncated-at-a-boundary are the same bytes. Set the code to `RAISE` when completeness matters |
 | Two tars joined with `cat` list as one archive's members plus `ARCHIVE_TRAILING_DATA` | **format** / **archivey** | The first trailer ends the walk. archivey does not read past it the way `tar -i` does (§6) |
 | A byte more than 1 MiB past the trailer goes unreported | **archivey** | The trailing-data scan is an effort bound, not a guarantee (§2.2). On a compressed tar that also leaves the stream checksum unchecked, reported as `DIGEST_UNVERIFIABLE` |
 | A `.tar` of nothing but zeros opens as an empty archive | **format** | That is what an empty tar is ([ADR 0015](../decisions/0015-zero-filled-files-are-valid-empty-tars.md)). `detect_format()` still refuses it |
-| A v7 tar with no extension is not detected | **format** | No magic to find (§2.1). Pass `format=ArchiveFormat.TAR` |
 | A hardlink's `link_target` is `./d/b` while the member it names is `d/b` | **format** / **archivey** | `link_target` is documented as stored text. Use `link_target_member` |
 | A hardlink placed before the only member it names does not extract | **format** | A hardlink refers to an earlier member, as tarfile and `tar(1)` read it; `LinkTargetNotFoundError` in both modes (§2.3) |
 | Extracting a sparse file refuses with a ratio error, or fills the disk with zeros | **archivey** | Holes are written as zeros and counted as output (§2.4). Measured: a 10 MiB sparse file with one byte of data is a 10 240-byte tar, and `extract_all()` refuses it at 1024:1. By design (§6); raise `max_ratio` for an archive known to hold sparse files |
 | GNU tar extracts a sparse file and archivey refuses it with `UnsupportedFeatureError` | **archivey** | The sparse map is out of order or overlapping. Serving its chunks in logical order would buffer up to the member's logical size in a streaming pass, so archivey refuses the map (§2.3). Only crafted archives are known to hold one. By design (§6); there is no plan to support it, and it is revisited if a real archive appears |
+| A PAX 1.0 sparse member with no `GNU.sparse.realsize` lists smaller than in `tar -tvf` | **archivey** | archivey lists the greatest chunk end, which is what GNU tar 1.35 extracts; GNU tar and `tarfile` list the stored size (header or PAX `size`), map blocks included. A chunk past the stored size fails in archivey and GNU tar; `tarfile` lists the stored size and serves that many bytes (§2.2) |
 | A plain member after a global PAX header carrying `GNU.sparse.realsize` or `GNU.sparse.size` lists its stored bytes; GNU tar 1.35 and `tarfile` list it at the global size | **archivey** | Only a member's own `x` records choose its sparse encoding, so a global sparse size makes no member sparse. For `[g: GNU.sparse.realsize=20][a: 3 bytes "abc"]` GNU tar and `tarfile` list `a` as 20 bytes, `abc` padded with NULs; archivey lists the 3 stored bytes. A global `GNU.sparse.major` is ignored by all three |
-| A directory lists with a `size` and `MEMBER_DIRECTORY_DATA_IGNORED` | **format** / **archivey** | An old-style (NUL, `0` or `7`) `d/` header declared data blocks (§2.2). GNU tar creates the directory and drops them without a word, as 7-Zip does for NUL and `0`; archivey does the same and says so. `read()` on the directory, and the stream `stream_members()` yields for it, deliver the bytes |
+| A directory lists with a `size` and `MEMBER_DIRECTORY_DATA_IGNORED` | **format** / **archivey** | An old-style (NUL, `0` or `7`) `d/` header declared data blocks (§2.2), or a `DIRTYPE` header came with a PAX `size`, which GNU tar 1.35 skips. GNU tar creates the directory and drops them without a word, as 7-Zip does for NUL and `0`; archivey does the same and says so. `read()` on the directory, and the stream `stream_members()` yields for it, deliver the bytes |
 | A member lists as a `FILE` with `MEMBER_TYPE_UNKNOWN` | **format** | Its typeflag is one archivey does not know, and the header declares data (§2.2). GNU tar extracts it as a regular file with a warning; archivey lists, reads and extracts it the same way. With no data it is `OTHER` and is not extracted, where GNU tar writes an empty file |
-| A symlink or hardlink lists with `MEMBER_LINK_DATA_IGNORED`, and GNU tar lists fewer members after it | **format** / **archivey** | The link header declared data blocks. GNU tar and `tarfile` read the next header right after a link, so a zero block there ends their listing; archivey skips the declared blocks and lists on (§2.2, §6) |
+| A symlink or hardlink lists with `MEMBER_LINK_DATA_IGNORED`, and GNU tar lists fewer members after it | **format** / **archivey** | The link header declared data blocks. GNU tar and `tarfile` read the next header right after a link, so a zero block there ends their listing; archivey skips the declared blocks and lists on (§2.2, §6). A PAX `size` on a link is skipped by GNU tar too, and by archivey whatever follows it |
+| GNU tar extracts a device or FIFO whose PAX header carries a `size`, and archivey refuses it with `CorruptionError` | **archivey** | GNU tar 1.35 skips the bytes a PAX `size` declares after such a header and extracts the entry. archivey refuses any size on a device or FIFO header (§6). Only a crafted archive has the shape |
 | A member's data changed and nothing noticed | **format** | No data checksum in a plain tar (§4) |
 | A streaming pass over millions of members uses memory in proportion | **archivey** | The pass keeps one list of members for `members_report()`; the walker keeps nothing behind it (§2.2) |
 | `encoding=` has no effect on some names | **archivey** | PAX names are UTF-8 by definition, and a ustar or GNU name whose bytes are valid UTF-8 is read as UTF-8 too; `encoding=` decodes only bytes that are not valid UTF-8 (§2.2) |
 | `encoding=` is accepted and changes nothing at all (`utf-16`, `idna`) | **archivey** | Where the codec cannot decode a field's stored bytes, the field decodes as with no `encoding=`, with no diagnostic, as ZIP and ISO do; a codec that cannot read ASCII as ASCII fails on most names (§2.2) |
 | A tar that GNU tar lists to the end stops listing at an old GNU sparse header, with `CorruptionError` | **archivey** | The header's real size is negative or past 2**63 - 1. GNU tar 1.35 reports it ("out of off_t range"), lists the member with size 0 and reads on; archivey refuses the header, as for an old GNU sparse map slot it cannot read (§6) |
+| A member GNU tar dates 1970-01-01 lists with no `modified` | **archivey** | Its header `mtime` field holds only NULs or blanks, so it records no time; GNU tar 1.35 and `tarfile` read it as 0 (§2.2, §6). A PAX `mtime` record, when there is one, still gives the time |
 
 ## 6. Decisions
 
 | Choice | Why | Rejected |
 | --- | --- | --- |
 | Parse headers with archivey's own walker (`tar_parser.py`) | `tarfile` does not say why a walk stopped, overwrites a sparse member's stored size with its logical size, decides on directories before it knows the final name with a check that differs between Python patch releases; about a third of the backend worked around it. The walker reports why it stopped, keeps exact sizes and name bytes, and lists the same on every Python version ([ADR 0021](../decisions/0021-native-tar-reader.md), [design](../../openspec/changes/archive/2026-10-10-native-tar-reader/design.md)) | Keeping `tarfile` behind overrides of its private methods and copies of its function bodies |
+| Detect a tar with no magic by its first header's checksum, on any source (davi chose it 2026-10-28, thread "Compare with Apache Commons Compress") | 6 of Apache Commons Compress's 86 `.tar` test files have no `ustar`, two of them from users' bug reports; `tarfile.is_tarfile`, Commons Compress and GNU tar all accept them. The check is arithmetic over the window, and a scan of 200 333 local files found no block outside a real tar that passes it | Extension-only, which refused these tars from a pipe and opened them gzipped as bare `GZ`; running the check only for a `.tar` name, as the content probes run, which would leave nameless sources where they were |
 | Read a compressed tar through archivey's own codec stream | One codec layer for every format: the same seek points, accelerators, ratio guard, diagnostics and error translation as a bare `.gz` | A decompression path of the TAR backend's own |
 | Classify the end by the walker's `TarEnd`, then by the block after the stop | The walker knows why it stopped at the block it stopped on. That is the same answer in both access modes and needs no backward seek, which on a compressed tar would mean decoding again | Computing the next header's offset from `offset_data + size`, which is wrong for sparse members; treating every early end as a warning |
 | A rejected header is `CorruptionError` whatever the policy; a missing trailer is a warning | A complete tar never stops on a rejected header, so that one is certain. A missing trailer is ambiguous by construction | One disposition for both, which is either too loud for ordinary trailer-less tars or silent about corruption |
@@ -607,15 +776,17 @@ ours.
 | Count a sparse member's holes as output (maintainer ruling, 2026-09-25) | Extraction writes them as zeros, so they cost the disk what any decompressed byte costs, and the ratio guard is what protects the disk. Revisit if extraction ever preserves holes, as `tar -x` does, since the disk would then hold only the data | Counting only the data blocks, which would let a few hundred bytes of sparse map fill the disk |
 | Refuse an out-of-order or overlapping sparse map with `UnsupportedFeatureError` (maintainer decision, 2026-10-10) | GNU tar 1.35 reads such a map, so it is valid data that archivey does not serve, and DR-4 types that as unsupported. To serve it, the sparse stream would place chunks out of order, and the streaming path would buffer up to the member's logical size (DR-9). No real writer is known to produce such a map; only crafted archives hold one. Reopen if a real producer writes such maps | Reading the map as GNU tar does, which needs that placement and buffering. `CorruptionError`, as the first version of the check raised, dropped because DR-4 types a layout the reference tool reads as unsupported |
 | Refuse a sparse map whose chunks name 1 to 511 bytes fewer than the member stores (maintainer decision, 2026-10-10) | Bytes inside a member that nothing names are damage (DR-3), and every writer checked (GNU tar 1.26 to 1.35 in all five forms, bsdtar 3.7.2) writes the exact sum. Revisit if a writer is found that leaves such slack | Reading the slack silently, as GNU tar does (DR-6) |
-| A backslash is part of the name | TAR is a POSIX format, and `a\b` is a legal filename there. Extraction under `STRICT` and `STANDARD` still writes it as `a/b`, the tree Windows would create, and rewrites a link target the same way so a link to that member follows it; the result is the same on every OS | Treating it as a separator in `name` the way the ZIP and 7z backends do |
-| A `DIRTYPE` header with a non-zero size lists when the next header parses; when the walk ends on a zero block inside the declared span it is listed with no `size` and reported with `MEMBER_DIRECTORY_DATA_IGNORED`, and a block that is neither a header nor zero where the data would begin is `CorruptionError` naming the directory | A directory has no data area, and GNU tar, bsdtar and 7-Zip all read the next header straight after the header, listing an archive whose size field is set but whose blocks are absent (a writer carrying `st_size`). The walker does the same (`NO_DATA_TYPES`), so archivey lists it too, with no `size`. When the declared blocks are present they are read as the next header by every reader: non-zero ones do not parse, zero ones read as the end-of-archive marker (a lone block, or a complete marker when the span is two blocks or more), and GNU tar drops the later members either way ("Skipping to next header", "A lone zero block", or no word at all). A zero block inside the declared span has two readings nobody can tell apart: a zero span hiding the members behind it, or blocks never written before the trailer and whatever follows it (junk, or a concatenated archive, which GNU tar lists past with exit 0). So `_report_directory_span` says what the header declares and what the walk saw, with the weight DR-3 gives a directory's declared data in every format (a warning; `STRICT` refuses), and the marker and trailing-data checks report the trailer as after a file. A walk that stops at or past the span's end (an extended-header chain filled it) read everything the size could hide, so nothing is reported. The device row below refuses at the header instead | Refusing at the header like a device: it would call an archive the reference tools read whole damaged (DR-1, DR-6). Refusing when a member header sits right after the declared span (rounds 3 and 4 of PR 763's review): the same bytes are a concatenated archive after a directory whose blocks were never written, which GNU tar lists and archivey warns about after a file, and no condition on unreadable bytes can hold both readings; a report needs no inference about them |
-| A symlink or hardlink header with a non-zero size: when the block right after it parses as a member header, nothing is skipped or reported; otherwise the declared blocks are skipped and `MEMBER_LINK_DATA_IGNORED` reports the link; when the declared blocks are all zeros (as many as the archive holds) and no member header follows them, the walk ends on their first block, the trailer checks run from it and the link is reported; other cut-short blocks are `TruncatedError` after the link is listed | Maintainer ruling (2026-10-17, "skip and report"): a link has no data area, and GNU tar 1.35 and `tarfile` read the next header right after it, so declared zero blocks read as the end-of-archive marker and every later member disappears with only `ARCHIVE_TRAILING_DATA` (GNU tar exits 0); declared non-zero blocks are "Skipping to next header" (exit 2), and 7-Zip skips a symlink's blocks but not a hard link's. POSIX pax lets a hard link carry data. A member header right after the link header is the `DIRTYPE` clean case of PR 763: a writer carried `st_size` and wrote no blocks, which GNU tar, `tarfile` and bsdtar list whole, and skipping by the size there would hide real members, as 7-Zip hides one behind a symlink. The block after the header is read once at the link header and kept for the next step, so a forward-only walk needs no read-back. The all-zero span case keeps a last link whose size was never backed by blocks from turning a whole archive into a truncated one, or an intact trailer into `ARCHIVE_EOF_MARKER_MISSING` (round 1 of PR 874's review: a link declaring 600 bytes before a 1024-byte trailer had both trailer blocks skipped as its data). The span is read once at the link, to its end and no further, in both access modes, and the bytes the walk read past are replayed from memory rather than seeked back to (round 2: on a `.tar.gz` a seek back decodes the stream again and reports `STREAM_REWIND_REDECOMPRESSES`). The decision waits until the next header is read, as `_verify_tar_eof` decides a `DIRTYPE` zero span at the end of the walk; scanning to the end of the archive at each link would read a crafted all-zero archive once per link. A new code, `MEMBER_LINK_DATA_IGNORED`, mirrors `MEMBER_DIRECTORY_DATA_IGNORED` (in `ARCHIVE_INTEGRITY_CODES`, attached to the member); the bytes stay unreachable, since `open()` on a link reads its target | Reading the next header right after the link, as GNU tar does: zero data hides every later member. Skipping by the size always, as 7-Zip does for a symlink: a size with no blocks behind it hides the next member. Widening `MEMBER_DIRECTORY_DATA_IGNORED` to links: its name and `DirectoryDataContext` say directory |
-| A device, FIFO or socket header with a non-zero size is `CorruptionError` at the header | The typeflag is the structure, so the entry has no data. The reader refuses the header. Ignoring the size and reading the next header right after this one, as GNU tar and libarchive do, would parse non-zero declared bytes as a header, and an all-zero payload would look like the end-of-archive marker and drop every later member without a word. Refusing makes both shapes the same damage | Reporting the size and resyncing at the next header, as GNU tar does ("Skipping to next header", exit 2) and as DR-1 would prefer. Not done for a crafted-only shape |
+| Hold only a sparse member's read to the ratio; count every other member at its size (thread "Plan the 0.3.0 release", 2026-11-01, davi: "tar is either compressed or not as a whole") | A member's data is a slice of the archive stream: it cannot pass 1:1, and a compressed tar's stream is already held to the archive-wide ratio by `DecodeRatioGuard`. The per-member guard cost about 20 µs a member for nothing (`tar_read_all` 1.24x 0.2.1's time). A sparse member's holes are not stored, so it keeps the guard, and the total it is judged by counts the other members at their recorded size when their stream is handed out, which can only refuse sooner | A guard on every member, as #1143 shipped; dropping the other members from the total, which would let a sparse member pass with up to one archive-wide limit's worth of output uncounted |
+| A backslash is part of the name | TAR is a POSIX format, and `a\b` is a legal filename there. Extraction under `STRICT` refuses it, since Windows reads it as `a/b` and POSIX as one file (maintainer ruling 2026-10-31, ADR 0013 amendment; the tar-minefield corpus rejects it, case N13). `STANDARD` writes it as `a/b`, the tree Windows would create, and both rewrite a link target the same way so a link to that member follows it; the result is the same on every OS | Treating it as a separator in `name` the way the ZIP and 7z backends do |
+| A `DIRTYPE` header with a non-zero size lists when the next header parses, reported with `MEMBER_HEADER_AMBIGUOUS` (`size_on_no_data`; maintainer ruling 2026-10-30, reversing the silent listing of PR 763); when the walk ends on a zero block inside the declared span it is listed with no `size` and reported with `MEMBER_DIRECTORY_DATA_IGNORED`, and a block that is neither a header nor zero where the data would begin is `CorruptionError` naming the directory. All of this is about the header's own size field: a PAX `size` frames a data area (§2.2) | A directory has no data area, and GNU tar, bsdtar and 7-Zip all read the next header straight after the header, listing an archive whose size field is set but whose blocks are absent (a writer carrying `st_size`). The walker does the same (`NO_DATA_TYPES`), so archivey lists it too, with no `size`. When the declared blocks are present they are read as the next header by every reader: non-zero ones do not parse, zero ones read as the end-of-archive marker (a lone block, or a complete marker when the span is two blocks or more), and GNU tar drops the later members either way ("Skipping to next header", "A lone zero block", or no word at all). A zero block inside the declared span has two readings nobody can tell apart: a zero span hiding the members behind it, or blocks never written before the trailer and whatever follows it (junk, or a concatenated archive, which GNU tar lists past with exit 0). So `_report_directory_span` says what the header declares and what the walk saw, with the weight DR-3 gives a directory's declared data in every format (a warning; `STRICT` refuses), and the marker and trailing-data checks report the trailer as after a file. A walk that stops at or past the span's end (an extended-header chain filled it) read everything the size could hide, so nothing is reported. The device row below refuses at the header instead | Refusing at the header like a device: it would call an archive the reference tools read whole damaged (DR-1, DR-6). Refusing when a member header sits right after the declared span (rounds 3 and 4 of PR 763's review): the same bytes are a concatenated archive after a directory whose blocks were never written, which GNU tar lists and archivey warns about after a file, and no condition on unreadable bytes can hold both readings; a report needs no inference about them |
+| A symlink or hardlink header with a non-zero size: when the block right after it parses as a member header, nothing is skipped and the link is reported with `MEMBER_HEADER_AMBIGUOUS` (`size_on_no_data`; maintainer ruling 2026-10-30, reversing "nothing reported"); otherwise the declared blocks are skipped and `MEMBER_LINK_DATA_IGNORED` reports the link; when the declared blocks are all zeros (as many as the archive holds) and no member header follows them, the walk ends on their first block, the trailer checks run from it and the link is reported; other cut-short blocks are `TruncatedError` after the link is listed. All of this is about the header's own size field: a PAX `size` frames the blocks whatever follows, with no all-zero exception (§2.2) | Maintainer ruling (2026-10-17, "skip and report"): a link has no data area, and GNU tar 1.35 and `tarfile` read the next header right after it, so declared zero blocks read as the end-of-archive marker and every later member disappears with only `ARCHIVE_TRAILING_DATA` (GNU tar exits 0); declared non-zero blocks are "Skipping to next header" (exit 2), and 7-Zip skips a symlink's blocks but not a hard link's. POSIX pax lets a hard link carry data. A member header right after the link header is the `DIRTYPE` clean case of PR 763: a writer carried `st_size` and wrote no blocks, which GNU tar, `tarfile` and bsdtar list whole, and skipping by the size there would hide real members, as 7-Zip hides one behind a symlink. That disagreement is why the shape is reported since 2026-10-30: no real writer was found to write it (none of tar-minefield's 82,586 scanned tarballs), so a caller checking an archive for another tool is told. The block after the header is read once at the link header and kept for the next step, so a forward-only walk needs no read-back. The all-zero span case keeps a last link whose size was never backed by blocks from turning a whole archive into a truncated one, or an intact trailer into `ARCHIVE_EOF_MARKER_MISSING` (round 1 of PR 874's review: a link declaring 600 bytes before a 1024-byte trailer had both trailer blocks skipped as its data). The span is read once at the link, to its end and no further, in both access modes, and the bytes the walk read past are replayed from memory rather than seeked back to (round 2: on a `.tar.gz` a seek back decodes the stream again and reports `STREAM_REWIND_REDECOMPRESSES`). The decision waits until the next header is read, as `_verify_tar_eof` decides a `DIRTYPE` zero span at the end of the walk; scanning to the end of the archive at each link would read a crafted all-zero archive once per link. A new code, `MEMBER_LINK_DATA_IGNORED`, mirrors `MEMBER_DIRECTORY_DATA_IGNORED` (in `ARCHIVE_INTEGRITY_CODES`, attached to the member); the bytes stay unreachable, since `open()` on a link reads its target | Reading the next header right after the link, as GNU tar does: zero data hides every later member. Skipping by the size always, as 7-Zip does for a symlink: a size with no blocks behind it hides the next member. Widening `MEMBER_DIRECTORY_DATA_IGNORED` to links: its name and `DirectoryDataContext` say directory |
+| A device, FIFO or socket header with a non-zero size, its own or a PAX one, is `CorruptionError` at the header | The typeflag is the structure, so the entry has no data. The reader refuses the header. Ignoring the size and reading the next header right after this one, as GNU tar and libarchive do, would parse non-zero declared bytes as a header, and an all-zero payload would look like the end-of-archive marker and drop every later member without a word. Refusing makes both shapes the same damage. A PAX `size` is refused too, although GNU tar 1.35 skips the bytes it declares and extracts the entry (measured 2026-10-30): only a crafted archive puts one there, and one rule for the typeflag keeps the reader simple (DR-5a) | Reporting the size and resyncing at the next header, as GNU tar does ("Skipping to next header", exit 2) and as DR-1 would prefer. Not done for a crafted-only shape |
 | An unknown typeflag that declares data is a `FILE` of that size; one with no data stays `OTHER`; both report `MEMBER_TYPE_UNKNOWN` (davi, 2026-10-17, project thread decision card; the diagnostic at his request the same day) | GNU tar 1.35 extracts such a member as a regular file, 7-Zip 23.01 lists and extracts it as a file (both measured on `9` and `z`) and `tarfile` keeps its size; listed as `OTHER` with no size, its bytes were unreachable, since `open()` refuses an `OTHER` member. The data area is the structure (DR-25). The type byte stays in `extra["tar.type"]`, and the report says what was not understood, as GNU tar's warning does. Advisory: `STRICT` would refuse an archive GNU tar extracts. `V` and `M` are known GNU types; the next row covers them | `OTHER` with the data skipped, as the native reader shipped (its design's "unknown typeflags stay `OTHER`", superseded by this row); an empty `FILE` for a sized-0 header, as GNU tar writes, which would make an empty file of an entry nothing says is one |
 | A `V` (volume header) or `M` (multi-volume continuation) header stays `OTHER` with no `size`; data its size declares is skipped by size and not reported | The typeflag says what the data is, so the data does not decide the type as it does for an unknown typeflag (DR-25). GNU tar knows both and extracts neither. A `V` names the volume; GNU tar writes it with size 0 and skips data declared on one without a word. An `M` holds the tail of a file whose start is in an earlier volume; GNU tar refuses to extract it ("Cannot extract -- file is continued from another volume", exit 2). Archivey reads one volume, so an `M` listed as a `FILE` would deliver a fragment as a whole file, a wrong answer (DR-1). No writer is known to put data on a `V`; an `M` with data is the tail of a real file, and its bytes go unreported (measured 2026-10-17: GNU tar 1.35 and 7-Zip 23.01 on a 5-byte `V` and `M`) | Listing them as `FILE`, as 7-Zip 23.01 does (it extracts both): an `M` file would be a fragment. Reporting the declared bytes, as DR-3 reports a directory's data, needs a maintainer ruling and is not done here. Reopen if the maintainer rules that their bytes are reported |
 | AppleDouble sidecars (`._name`, `__MACOSX/`) stay ordinary members with no marking key (davi, 2026-10-16, project thread) | Marked by name alone, a key adds nothing over the name filter in `docs/formats.md` and also marks a real file named `._x` | `extra["macos.resource_of"]` set from the name (#839, closed). Reopen with a mark that checks the AppleDouble magic in the data (`IDEAS.md`) |
 | Walk one header per pull | Each member is registered, and counted against the caps, before the next header is parsed, so the caps bound what the walker parses, not only what archivey keeps | Batches of headers per lock hold, which come back only if the listing benchmark needs them |
 | An old GNU sparse real size that is negative or past 2**63 - 1 refuses the header and stops the walk | The real size is the member's listed size, and there is no honest one to list. The walk already stops on an old GNU sparse map slot it cannot read, so every old GNU sparse number is treated alike. The shape is crafted (no writer stores such a value), and DR-5a allows the stricter rule for it. Read as it stands, a negative size with an empty map lists as an empty file with no error | Listing the member with size 0 and reading on, as GNU tar 1.35 does, which serves a size the archive does not hold. Listing it with no size and a diagnostic, which would be the same change for every number field whose damage ends the walk |
+| A header `mtime` field of only NULs and blanks lists no `modified`, with no report (maintainer ruling 2026-10-30, thread "Compare our TAR reader with tar-codec") | The field records no time, and 1970 would be a guess presented as a fact (DR-1). Nothing else in the header is wrong, so there is nothing to report | Read it as 0, as GNU tar 1.35 and `tarfile` both do for all NULs (measured 2026-10-30; GNU tar reports an all-blank field and lists -1) |
 
 ## 7. Open questions
 
@@ -624,11 +795,6 @@ ours.
   header"), instead of raising `CorruptionError` after the members before it. It would
   not settle the missing-trailer ambiguity, which is in the bytes. What would answer it:
   whether a real caller needs it; `IDEAS.md` lists salvage mode as *Needs design*.
-- **Whether to detect v7 tars by their header checksum.** A 512-byte block whose checksum
-  field matches its byte sum is strong evidence, and it is what `tarfile.is_tarfile`
-  checks. It would also admit random blocks that happen to match, which the current
-  magic never does. What would answer it: how often v7 tars without an extension reach
-  archivey, which nothing measures.
 
 ## 8. Verify
 
@@ -652,6 +818,7 @@ ours.
 | ustar and GNU names, link targets, `uname` and `gname` are UTF-8 by default, not the locale's codec; `encoding=` decodes only bytes that are not valid UTF-8; a PAX record that is not UTF-8 falls back to that same codec |
 | Out-of-range `mtime` degrades |
 | A bad PAX `mtime`, `atime`, `ctime` or `LIBARCHIVE.creationtime` is `None` and reported, each once; a PAX `mtime` of `0` stays the epoch |
+| An all-NUL or all-blank header `mtime` is `None` with no report, an octal zero the epoch, and a PAX `mtime` fills an all-NUL field |
 | Old GNU and PAX 0.0, 0.1 and 1.0 sparse members list as sparse and read back logically |
 | A sparse member cut in its stored data, inside a chunk or at a chunk's first byte, delivers its prefix, then raises `TruncatedError`, in every encoding and both modes |
 | A PAX size past `int()`'s digit limit is `CorruptionError`, not `ValueError`; such a `uid` or `gid` is ignored |
@@ -702,7 +869,7 @@ GNU `tar` writes the real thing; BSD and Windows `tar` refuse
 truncate -s 10M f && printf x | dd of=f bs=1 seek=5000000 conv=notrunc
 tar cf sparse.tar --sparse f     # 10 240 bytes; add --format=pax for the PAX encoding
 python -c "import archivey; archivey.open_archive('sparse.tar').extract_all('out')"
-# AlwaysStopResourceLimitError: Archive-wide decompression ratio 1024:1 exceeds limit max_ratio=1000:1
+# AlwaysStopResourceLimitError: Archive-wide decompression ratio 1024:1 exceeds limit max_ratio=800:1
 ```
 
 ## 9. References

@@ -51,7 +51,14 @@ from archivey.exceptions import (
     _UsageValueError,
 )
 from archivey.internal.enum_args import _lookup, normalize_spelling, spelling_table
-from archivey.types import _FORMAT_NAMES, ArchiveFormat, ContainerFormat, StreamFormat
+from archivey.types import (
+    _FORMAT_NAMES,
+    ArchiveFormat,
+    ContainerFormat,
+    PluginContainer,
+    PluginStream,
+    StreamFormat,
+)
 
 __all__ = ["coerce_archive_format", "coerce_stream_or_archive_format"]
 
@@ -72,6 +79,57 @@ def _archive_format_spellings() -> dict[str, ArchiveFormat]:
     )
 
 
+# Spellings of plugin formats (``archivey.formats.register_format``), looked up after
+# the built-in table, so a plugin never changes what a built-in spelling means. A
+# built-in format read in one pass puts its compressed pairs here too (``ar.gz``): they
+# have no named constant, so the built-in table cannot spell them.
+_plugin_spellings: dict[str, ArchiveFormat] = {}
+
+# The built-in containers read in one forward pass, so also inside any single-file
+# compression stream. ``register_builtin_format`` adds each sequential format-API
+# container. ``cli/common.py`` keeps a copy of the rule that uses this, and
+# ``tests/test_cli_outer.py`` pins the copy to it.
+SEQUENTIAL_CONTAINERS: set[ContainerFormat] = {ContainerFormat.TAR}
+
+# The built-in containers whose compressed pairs are spelled as a plugin's (``ar.gz``),
+# because they have no named constant. TAR is not one: its pairs are named constants,
+# and the three without one (``(TAR, LZIP)`` and the rest) are unspelled on purpose.
+# ``register_builtin_format`` adds each; ``register_codec`` spells a later codec's
+# pair for them too.
+PAIR_SPELLED_CONTAINERS: set[ContainerFormat] = set()
+
+
+def _plugin_format_spellings(fmt: ArchiveFormat) -> tuple[str, str]:
+    return fmt.file_extension(), fmt.display_name
+
+
+def plugin_spelling_clash(fmt: ArchiveFormat) -> tuple[str, ArchiveFormat] | None:
+    """The first of ``fmt``'s two spellings that already names another format, and that
+    format, if any.
+
+    A spelling a built-in format or an earlier plugin holds would resolve to that
+    format, so registration refuses it rather than leave ``fmt`` unspellable.
+    """
+    for spelling in _plugin_format_spellings(fmt):
+        key = normalize_spelling(spelling)
+        owner = _archive_format_spellings().get(key) or _plugin_spellings.get(key)
+        if owner is not None:
+            return spelling, owner
+    return None
+
+
+def add_sequential_container(container: ContainerFormat) -> None:
+    """Read ``container`` inside a compression layer too (``open_stream`` peels it)."""
+    SEQUENTIAL_CONTAINERS.add(container)
+
+
+def add_plugin_spellings(fmt: ArchiveFormat) -> None:
+    """Make ``fmt``'s extension and display name accepted as ``format=`` spellings."""
+    assert plugin_spelling_clash(fmt) is None, "checked at registration"
+    for spelling in _plugin_format_spellings(fmt):
+        _plugin_spellings[normalize_spelling(spelling)] = fmt
+
+
 def _accepted_archive_formats() -> str:
     """The spellings worth recommending, for a refusal message.
 
@@ -81,35 +139,41 @@ def _accepted_archive_formats() -> str:
     has an extension, and offering it would do the same — the spelling resolves,
     then open refuses the image — so it is excluded by name. Lowercasing keeps the
     list from implying that case is significant, in a message whose subject is a
-    spelling that ignores it.
+    spelling that ignores it. A registered plugin's extension is listed too, so a typo
+    of its name is not answered with a list that leaves it out.
     """
     spellings = sorted(
-        fmt.file_extension().lower()
-        for fmt in _FORMAT_NAMES
-        if fmt.file_extension() and fmt.container is not ContainerFormat.DMG
+        {
+            fmt.file_extension().lower()
+            for fmt in _FORMAT_NAMES
+            if fmt.file_extension() and fmt.container is not ContainerFormat.DMG
+        }
+        | {fmt.file_extension().lower() for fmt in _plugin_spellings.values()}
     )
     return ", ".join(repr(s) for s in spellings)
 
 
-def outer_stream_format(fmt: ArchiveFormat) -> StreamFormat | None:
+def outer_stream_format(fmt: ArchiveFormat) -> StreamFormat | PluginStream | None:
     """The codec ``open_stream`` decodes for ``fmt``, or ``None`` when it has none.
 
     A raw stream is its codec. A compressed tar is a tar inside a single-file
     compressed stream, and the pair's stream half is that outer codec (detection
-    builds the pair from it): ``open_stream`` peels that layer only and returns the tar
-    bytes, as ``gzip.open`` does for a ``.tar.gz``. One rule for an explicit
-    ``format=``, a detected format and the accepted-spellings message, so the three
-    cannot disagree. Every other container, an uncompressed tar included, has no
-    compression layer to remove. ``(RAW_STREAM, UNCOMPRESSED)`` comes back as
-    ``UNCOMPRESSED``, which ``open_stream`` does not decode: it refuses it at the open,
-    where the message that names ``open_archive`` belongs.
+    builds the pair from it): ``open_stream`` peels that layer only and returns the
+    tar bytes, as ``gzip.open`` does for a ``.tar.gz``. The compressed pair of every
+    other container read in one pass (``.a.gz``, ``.cpio.gz``, a sequential plugin's
+    ``.lha.gz``) is the same. One rule for an explicit ``format=``, a detected format
+    and the accepted-spellings message, so the three cannot disagree. Every other
+    container, an uncompressed tar included, has no compression layer to remove.
+    ``(RAW_STREAM, UNCOMPRESSED)`` comes back as ``UNCOMPRESSED``, which ``open_stream``
+    does not decode: it refuses it at the open, where the message that names
+    ``open_archive`` belongs.
     """
     if fmt.container is ContainerFormat.RAW_STREAM:
         return fmt.stream
     if (
-        fmt.container is ContainerFormat.TAR
-        and fmt.stream is not StreamFormat.UNCOMPRESSED
-    ):
+        fmt.container in SEQUENTIAL_CONTAINERS
+        or isinstance(fmt.container, PluginContainer)
+    ) and fmt.stream is not StreamFormat.UNCOMPRESSED:
         return fmt.stream
     return None
 
@@ -126,12 +190,15 @@ def _accepted_stream_formats() -> str:
     ``UNKNOWN`` are left out above. The list is built from ``_FORMAT_NAMES``, so the
     three compressed tars with no named constant — ``(TAR, LZIP)``, ``(TAR, ZLIB)``,
     ``(TAR, BROTLI)`` — are not in it: they have no spelling, and ``open_stream``
-    takes them only as the ``ArchiveFormat`` object.
+    takes them only as the ``ArchiveFormat`` object. A registered codec's spellings
+    are listed too, as :func:`_accepted_archive_formats` lists a plugin's.
     """
     spellings = sorted(
-        fmt.file_extension().lower()
-        for fmt in _FORMAT_NAMES
-        if outer_stream_format(fmt) is not None and fmt.file_extension()
+        {
+            fmt.file_extension().lower()
+            for fmt in (*_FORMAT_NAMES, *_plugin_spellings.values())
+            if outer_stream_format(fmt) is not None and fmt.file_extension()
+        }
     )
     return ", ".join(repr(s) for s in spellings)
 
@@ -174,7 +241,8 @@ def coerce_archive_format(
     if isinstance(value, Enum):
         _reject_wrong_enum(value, call=call, expected="an ArchiveFormat")
     if isinstance(value, str):
-        fmt = _archive_format_spellings().get(normalize_spelling(value))
+        key = normalize_spelling(value)
+        fmt = _archive_format_spellings().get(key) or _plugin_spellings.get(key)
         if fmt is not None:
             return fmt
     raise _usage_error_for(value)(
@@ -185,7 +253,7 @@ def coerce_archive_format(
 
 def coerce_stream_or_archive_format(
     value: object, *, call: str
-) -> ArchiveFormat | StreamFormat | None:
+) -> ArchiveFormat | StreamFormat | PluginStream | None:
     """Return ``value`` as one of the two format types, or raise ``ArchiveyUsageError``.
 
     ``open_stream``'s wider argument is deliberate, not an inconsistency to iron out:
@@ -193,7 +261,7 @@ def coerce_stream_or_archive_format(
     """
     if value is None:
         return None
-    if isinstance(value, (ArchiveFormat, StreamFormat)):
+    if isinstance(value, (ArchiveFormat, StreamFormat, PluginStream)):
         return value
     # As in ``coerce_archive_format``: a ``StrEnum`` member of a third enum would
     # otherwise be read as a spelling. ``ContainerFormat.ZIP`` survived here only
@@ -212,6 +280,11 @@ def coerce_stream_or_archive_format(
         stream = _lookup(StreamFormat).get(spelling)
         if stream is not None:
             return stream
+        # A registered codec, or a compressed pair a sequential format reads through
+        # (``ar.gz``): the same rule as the accepted list below.
+        plugin = _plugin_spellings.get(spelling)
+        if plugin is not None and outer_stream_format(plugin) is not None:
+            return plugin
     raise _usage_error_for(value)(
         f"{call} takes a StreamFormat or an ArchiveFormat (or either spelled as a "
         f"string), but got {_describe(value)}. "

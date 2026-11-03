@@ -1,8 +1,7 @@
 """Subprocess stress for PPMd native flakes (non-required CI / local investigation).
 
-These tests deliberately re-run scenarios from ``scripts/ppmd_native_stress.py`` so the
-Linux ``warmup_codecs`` abort and the Windows fresh-process heap corruption have a
-pytest entry point. They are **excluded from the default suite** via the
+These tests deliberately re-run scenarios from ``scripts/ppmd_native_stress.py`` so they
+have a pytest entry point. They are **excluded from the default suite** via the
 ``ppmd_native_stress`` marker (selected only by the non-blocking stress workflow).
 
 See ``dev-docs/known-issues.md``.
@@ -82,7 +81,7 @@ def test_raw_ppmd_minimal_surface_subprocess_stress() -> None:
 
 @requires("py7zr")
 def test_fresh_baseline_7z_subprocess_stress() -> None:
-    """Original CI fixture shape in isolated children (Windows heap-corruption lead)."""
+    """Original CI fixture shape in isolated children."""
     proc = _run_scenarios("fresh_baseline")
     assert proc.returncode == 0, (
         "fresh_baseline 7z PPMd stress saw crashes/failures "

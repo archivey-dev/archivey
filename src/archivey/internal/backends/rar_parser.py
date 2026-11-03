@@ -58,9 +58,16 @@ from archivey.exceptions import (
     raw_message_of,
 )
 from archivey.internal.config import KeyDerivationBudget
+from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.listing_limits import metadata_limit_error, text_bytes
 from archivey.internal.password import wrong_password_error
-from archivey.internal.sfx import SFX_MAX, describe_scan_miss, scan_for_magic
+from archivey.internal.sfx import (
+    SFX_MAX,
+    cut_signature_error,
+    describe_scan_miss,
+    is_cut_signature,
+    scan_for_magic,
+)
 from archivey.internal.streams.crypto import AesParams, open_aes_decrypt_stage
 from archivey.internal.streams.streamtools import read_exact
 from archivey.internal.timestamps import (
@@ -71,6 +78,7 @@ from archivey.internal.timestamps import (
 from archivey.internal.trailing_scan import first_nonzero_offset
 from archivey.internal.windows_reparse import normalize_windows_link_target
 from archivey.terminal import quoted
+from archivey.types import OptionalLibrary
 
 
 class _Readable(Protocol):
@@ -208,6 +216,10 @@ _RAR5_MAIN_SOLID = 0x04
 _RAR5_FILE_ISDIR = 0x01
 _RAR5_FILE_HAS_MTIME = 0x02
 _RAR5_FILE_HAS_CRC32 = 0x04
+# The unpacked size is unknown: ``rar a -v -si`` sets it on each part of a member read
+# from stdin but the last, which carries the size once the input has ended. ``unrar``
+# lists the size as "?" and reads such a member to the end of its packed data.
+_RAR5_FILE_UNKNOWN_SIZE = 0x08
 
 _RAR5_COMPR_SOLID = 0x40
 
@@ -285,6 +297,18 @@ _RAR5_XREDIR_WINDOWS_SYMLINK = 2
 _RAR5_XREDIR_WINDOWS_JUNCTION = 3
 _RAR5_XREDIR_HARD_LINK = 4
 _RAR5_XREDIR_FILE_COPY = 5
+# ``unrar``'s ``FSREDIR_NONE``: a record of this type names no redirect, and ``unrar``
+# treats the member as a plain file.
+_RAR5_XREDIR_NONE = 0
+_RAR5_KNOWN_REDIRECTS = frozenset(
+    {
+        _RAR5_XREDIR_UNIX_SYMLINK,
+        _RAR5_XREDIR_WINDOWS_SYMLINK,
+        _RAR5_XREDIR_WINDOWS_JUNCTION,
+        _RAR5_XREDIR_HARD_LINK,
+        _RAR5_XREDIR_FILE_COPY,
+    }
+)
 
 _RAR5_ENDARC_NEXT_VOLUME = 0x01
 
@@ -411,6 +435,10 @@ class RarMemberInfo:
     split_after: bool
     comment: str | _Rar3Comment | None = None
     spanned_volumes: bool = False
+    # RAR5 ``_RAR5_FILE_UNKNOWN_SIZE``: ``file_size`` is not the member's size. A
+    # merge takes the size from a later part that knows it; a plaintext stored member
+    # that no part sizes takes its packed size, which is its size.
+    size_unknown: bool = False
     # Where each part's packed bytes sit, as ``(data_offset, size)`` in the
     # concatenated volume space, for a member merged across volumes; empty for a
     # member in one part. ``data_offset`` and ``compress_size`` stay the first part's
@@ -497,7 +525,25 @@ class RarMemberInfo:
 
     def is_payload_file(self) -> bool:
         """True if ``unrar p`` emits this member's bytes (regular file, not dir/link/redir)."""
-        return not (self.is_directory or self.is_symlink or self.is_hardlink_or_copy)
+        return not (
+            self.is_directory
+            or self.is_symlink
+            or self.is_hardlink_or_copy
+            or self.has_unknown_redirect()
+        )
+
+    def has_unknown_redirect(self) -> bool:
+        """True for a RAR5 redirect of a type this parser does not know (not 1 to 5;
+        a type-0 record is no redirect and is not kept, see ``_RAR5_XREDIR_NONE``).
+
+        ``unrar`` 7.00 lists such a member as a file, or as a directory under the
+        directory flag, warns "Unknown extra field", creates nothing for it either
+        way and emits no bytes for it in ``unrar p``, so a solid pass must not count
+        it either (measured on ``redirect_unknown_solid__.rar`` and on a copy with
+        the directory flag set).
+        """
+        redir = self.file_redir
+        return redir is not None and redir[0] not in _RAR5_KNOWN_REDIRECTS
 
     def is_file_copy(self) -> bool:
         """True for a RAR5 ``FILE_COPY`` redirect (``rar -oi``, "file reference").
@@ -678,6 +724,7 @@ def parse_rar_archive(
     max_members: int | None = _DEFAULT_MAX_MEMBERS,
     max_metadata_bytes: int | None = _DEFAULT_MAX_METADATA_BYTES,
     kdf_cache: RarKdfCache | None = None,
+    excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
     name_encoding: str | None = None,
 ) -> RarArchive:
     """Parse from current position (archive start). Source must be seekable.
@@ -703,6 +750,7 @@ def parse_rar_archive(
         source,
         password=password,
         kdf_cache=kdf_cache if kdf_cache is not None else RarKdfCache(),
+        excluded=excluded,
         volume_index=0,
         use_qo=use_qo,
         max_members=max_members,
@@ -719,6 +767,7 @@ def parse_rar_volumes(
     max_members: int | None = _DEFAULT_MAX_MEMBERS,
     max_metadata_bytes: int | None = _DEFAULT_MAX_METADATA_BYTES,
     kdf_cache: RarKdfCache | None = None,
+    excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
     name_encoding: str | None = None,
     volume_numbers: Sequence[int] | None = None,
 ) -> RarArchive:
@@ -784,6 +833,7 @@ def parse_rar_volumes(
                 volume,
                 password=password,
                 kdf_cache=kdf_cache,
+                excluded=excluded,
                 volume_index=number - 1,
                 use_qo=use_qo,
                 max_members=max_members,
@@ -1080,6 +1130,7 @@ def _parse_rar_volume(
     *,
     password: str | bytes | None,
     kdf_cache: RarKdfCache,
+    excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
     volume_index: int,
     use_qo: bool = True,
     max_members: int | None,
@@ -1107,6 +1158,7 @@ def _parse_rar_volume(
                 source,
                 password=password,
                 kdf_cache=kdf_cache,
+                excluded=excluded,
                 sfx_offset=sfx_offset,
                 volume_index=volume_index,
                 use_qo=use_qo,
@@ -1118,6 +1170,7 @@ def _parse_rar_volume(
                 source,
                 password=password,
                 kdf_cache=kdf_cache,
+                excluded=excluded,
                 sfx_offset=sfx_offset,
                 volume_index=volume_index,
                 max_members=max_members,
@@ -1150,6 +1203,10 @@ def _find_sfx_header(source: BinaryIO, start: int) -> tuple[int, int]:
     candidate that fails :func:`~archivey.internal.backends.rar_detect.validate_rar_main_header`
     is skipped while a later ``VALID`` hit is sought; if none validate, the first
     identified candidate is used so a damaged payload still reaches the parser.
+
+    Raises ``TruncatedError`` when the source ends before a whole signature, every
+    byte of it matching (:func:`~archivey.internal.sfx.is_cut_signature`), and
+    ``CorruptionError`` when no signature is found.
     """
     source.seek(start)
     # Fast path: magic at current position.
@@ -1158,6 +1215,10 @@ def _find_sfx_header(source: BinaryIO, start: int) -> tuple[int, int]:
         return 5, 0
     if head.startswith(RAR_ID):
         return 4, 0
+    # A source that ends inside the signature it starts with was cut short, not a
+    # stub to scan past.
+    if is_cut_signature(head, (RAR5_ID, RAR_ID)):
+        raise cut_signature_error("RAR", len(head))
 
     source.seek(start)
     # Imported here: rar_detect imports this module for the ids / CRC helpers.
@@ -1304,7 +1365,8 @@ def _rar5_end_block_shaped(hdata: bytes, pos: int) -> bool:
     """Whether a RAR5 header from ``pos`` (its type field) has an end block's shape.
 
     That is the type, block flags with neither an extra nor a data area, then the
-    end-of-archive flags, and nothing after them. A FILE or service header declares
+    end-of-archive flags (absent, or cut by the header's end, as the walk reads
+    them: ``_load_vint_or_zero``), and nothing after them. A FILE or service header declares
     a data area. A MAIN header with no extra and no data area passes this; the blocks
     that follow it in any archive with members keep it out (see
     ``dev-docs/formats/rar.md``).
@@ -1314,7 +1376,7 @@ def _rar5_end_block_shaped(hdata: bytes, pos: int) -> bool:
         block_flags, pos = load_vint(hdata, pos)
         if block_flags & (_RAR5_FLAG_EXTRA | _RAR5_FLAG_DATA):
             return False
-        _end_flags, pos = load_vint(hdata, pos)
+        _end_flags, pos = _load_vint_or_zero(hdata, pos)
     except CorruptionError:
         return False
     return pos == len(hdata)
@@ -1569,6 +1631,22 @@ def load_vint(buf: bytes | bytearray | memoryview, pos: int) -> tuple[int, int]:
     raise CorruptionError("Invalid RAR5 variable-length integer")
 
 
+def _load_vint_or_zero(
+    buf: bytes | bytearray | memoryview, pos: int
+) -> tuple[int, int]:
+    """A RAR5 vint, or 0 when the header ends before the vint does.
+
+    unrar's ``RawRead::GetV`` reads a field that is absent, or cut by the header's
+    end, as zero; checked with unrar 7.00 on MAIN and end blocks without their flags,
+    with them cut after one and after twelve continuation bytes, and on a MAIN volume
+    number. A vint that ends inside the header but is longer than ``load_vint``
+    allows still raises.
+    """
+    if all(b & 0x80 for b in buf[pos:]):
+        return 0, len(buf)
+    return load_vint(buf, pos)
+
+
 def _load_byte(buf: bytes | bytearray | memoryview, pos: int) -> tuple[int, int]:
     if pos >= len(buf):
         raise CorruptionError("Unexpected EOF while reading byte")
@@ -1807,6 +1885,28 @@ def _set_uow_owner(member: RarMemberInfo, owner: RarOwner) -> None:
         )
 
 
+def _settle_unknown_stored_size(member: RarMemberInfo) -> None:
+    """Size a stored member whose header leaves the size unknown by its packed bytes.
+
+    Only for the whole member: a member in one part, or a merged one whose last part
+    is in. A part before the last would give the size so far, and an unmerged
+    continuation (``split_before``) only its own share. Only for plaintext, which
+    packs exactly its own bytes; ciphertext is padded to the AES block, and a member
+    whose encryption is unknown may be ciphertext. Any other member keeps its
+    declared value, which no known writer leaves unresolved on the last part.
+    """
+    if (
+        member.size_unknown
+        and member.is_stored
+        and not member.split_after
+        and not member.split_before
+        and not member.is_encrypted
+        and not member.encryption_unknown
+    ):
+        member.file_size = member.compress_size
+        member.size_unknown = False
+
+
 def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
     """Collapse a SPLIT_AFTER continuation into the first part (rarfile-style).
 
@@ -1855,6 +1955,11 @@ def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
     )
     old.split_after = new.split_after
     old.spanned_volumes = True
+    if old.size_unknown and not new.size_unknown:
+        # The part that knows the size is the last one ``rar -v -si`` writes.
+        old.file_size = new.file_size
+        old.size_unknown = False
+    _settle_unknown_stored_size(old)
 
 
 # ---------------------------------------------------------------------------
@@ -1901,9 +2006,18 @@ class _HeaderDecryptStream:
     header as ``wrong password?``.
     """
 
-    def __init__(self, source: BinaryIO, key: bytes, iv: bytes) -> None:
+    def __init__(
+        self,
+        source: BinaryIO,
+        key: bytes,
+        iv: bytes,
+        *,
+        excluded: frozenset[OptionalLibrary],
+    ) -> None:
         self._source = source
-        self._stage = open_aes_decrypt_stage(AesParams(key=key, iv=iv))
+        self._stage = open_aes_decrypt_stage(
+            AesParams(key=key, iv=iv), excluded=excluded
+        )
         self._buf = bytearray()
         #: Set once a read found fewer than 16 ciphertext bytes left. Whether that
         #: means the file was cut inside this header is the caller's to judge: an
@@ -2368,6 +2482,7 @@ def _parse_rar3(
     *,
     password: str | bytes | None,
     kdf_cache: RarKdfCache,
+    excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
     sfx_offset: int,
     volume_index: int = 0,
     max_members: int | None,
@@ -2414,7 +2529,9 @@ def _parse_rar3(
             if len(salt) < 8:
                 truncated = _no_header(source, header_start, encrypted_cut=bool(salt))
                 break
-            header_fd = _rar3_decrypt_header(source, salt, password, kdf_cache)
+            header_fd = _rar3_decrypt_header(
+                source, salt, password, kdf_cache, excluded=excluded
+            )
 
         try:
             header_offset = header_fd.tell()
@@ -2710,10 +2827,15 @@ def _parse_rar3(
 
 
 def _rar3_decrypt_header(
-    source: BinaryIO, salt: bytes, password: str | bytes, kdf_cache: RarKdfCache
+    source: BinaryIO,
+    salt: bytes,
+    password: str | bytes,
+    kdf_cache: RarKdfCache,
+    *,
+    excluded: frozenset[OptionalLibrary],
 ) -> _HeaderDecryptStream:
     key, iv = kdf_cache.rar3(password, salt)
-    return _HeaderDecryptStream(source, key, iv)
+    return _HeaderDecryptStream(source, key, iv, excluded=excluded)
 
 
 def _parse_rar3_file_header(
@@ -3384,6 +3506,7 @@ def _parse_rar5(
     *,
     password: str | bytes | None,
     kdf_cache: RarKdfCache,
+    excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
     sfx_offset: int,
     volume_index: int = 0,
     use_qo: bool = True,
@@ -3429,7 +3552,9 @@ def _parse_rar5(
             if len(iv) < 16:
                 truncated = _no_header(source, header_start, encrypted_cut=bool(iv))
                 break
-            header_fd = _rar5_decrypt_header(source, iv, hdr_enc, password, kdf_cache)
+            header_fd = _rar5_decrypt_header(
+                source, iv, hdr_enc, password, kdf_cache, excluded=excluded
+            )
 
         skipped = _emit_and_skip_qo_run(
             source,
@@ -3488,9 +3613,9 @@ def _parse_rar5(
         ) = parsed
 
         if block_type == _RAR5_MAIN:
-            main_flags, pos = load_vint(hdata, pos)
+            main_flags, pos = _load_vint_or_zero(hdata, pos)
             if main_flags & _RAR5_MAIN_HAS_VOLNR:
-                volnr, pos = load_vint(hdata, pos)
+                volnr, pos = _load_vint_or_zero(hdata, pos)
                 # RAR5: first volume omits the field (implicit 0); later volumes
                 # store 1 for the second volume, 2 for the third, …
                 if volume_index == 0 and volnr != 0:
@@ -3568,7 +3693,7 @@ def _parse_rar5(
             continue
 
         if block_type == _RAR5_ENDARC:
-            endarc_flags, _ = load_vint(hdata, pos)
+            endarc_flags = _load_vint_or_zero(hdata, pos)[0]
             needs_next_volume = bool(endarc_flags & _RAR5_ENDARC_NEXT_VOLUME)
             end_block_seen = True
             trailing_at = _scan_after_end_block(
@@ -3751,11 +3876,13 @@ def _rar5_decrypt_header(
     hdr_enc: _Rar5HdrEnc,
     password: str | bytes,
     kdf_cache: RarKdfCache,
+    *,
+    excluded: frozenset[OptionalLibrary],
 ) -> _HeaderDecryptStream:
     if hdr_enc.kdf_count > _RAR_MAX_KDF_SHIFT:
         raise CorruptionError(f"RAR5 kdf_count too large: {hdr_enc.kdf_count}")
     key = kdf_cache.rar5(password, hdr_enc.salt, 1 << hdr_enc.kdf_count)
-    return _HeaderDecryptStream(source, key, iv)
+    return _HeaderDecryptStream(source, key, iv, excluded=excluded)
 
 
 def _check_rar5_password(
@@ -3971,11 +4098,12 @@ def _parse_rar5_file_block(
                     redir_type, xpos = load_vint(xdata, xpos)
                     redir_flags, xpos = load_vint(xdata, xpos)
                     redir_name, xpos = _load_vstr(xdata, xpos)
-                    file_redir = (
-                        redir_type,
-                        redir_flags,
-                        redir_name.decode("utf8", "surrogateescape"),
-                    )
+                    if redir_type != _RAR5_XREDIR_NONE:
+                        file_redir = (
+                            redir_type,
+                            redir_flags,
+                            redir_name.decode("utf8", "surrogateescape"),
+                        )
                 elif xtype == _RAR5_XFILE_VERSION:
                     _vflags, xpos = load_vint(xdata, xpos)
                     file_version, xpos = load_vint(xdata, xpos)
@@ -4026,10 +4154,15 @@ def _parse_rar5_file_block(
         elif rtype in (_RAR5_XREDIR_HARD_LINK, _RAR5_XREDIR_FILE_COPY):
             is_hardlink_or_copy = True
 
-    if is_directory and not is_symlink:
+    # An unknown redirect is not a directory even under the directory flag: ``unrar``
+    # creates nothing for it (``RarMemberInfo.has_unknown_redirect``).
+    unknown_redirect = (
+        file_redir is not None and file_redir[0] not in _RAR5_KNOWN_REDIRECTS
+    )
+    if is_directory and not is_symlink and not unknown_redirect:
         filename = filename + "/"
 
-    return RarMemberInfo(
+    member = RarMemberInfo(
         filename=filename,
         orig_filename=orig_filename,
         file_size=file_size,
@@ -4062,6 +4195,7 @@ def _parse_rar5_file_block(
         volume_index=volume_index,
         split_before=split_before,
         split_after=split_after,
+        size_unknown=bool(file_flags & _RAR5_FILE_UNKNOWN_SIZE),
         file_version=file_version,
         owner=owner,
         # RAR5 keeps the directory flag apart from the dictionary bits, so a
@@ -4074,6 +4208,8 @@ def _parse_rar5_file_block(
         header_walk_stop_reason=stop_reason,
         timestamp_issues=tuple(timestamp_issues) if timestamp_issues else (),
     )
+    _settle_unknown_stored_size(member)
+    return member
 
 
 def _parse_rar5_owner(xdata: bytes, pos: int) -> RarOwner:

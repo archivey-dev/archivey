@@ -36,7 +36,7 @@ import struct
 import zlib
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.exceptions import (
     CorruptionError,
@@ -50,8 +50,9 @@ from archivey.internal.config import (
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.hashing import crc32_combine
+from archivey.internal.overrides import override
 from archivey.internal.resource_usage import ResourceUsageRecorder
-from archivey.internal.streams.codecs.isolated import IN_PROCESS, Decompressor, Natives
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
 from archivey.internal.streams.codecs.xz_decoder import lzma_error_to_archivey
 from archivey.internal.streams.decompressor_stream import (
     TRAILING_DATA_CANDIDATES,
@@ -67,6 +68,9 @@ from archivey.internal.streams.decompressor_stream import (
     near_stream_magic,
     release_decoder,
 )
+
+if TYPE_CHECKING:
+    from archivey.formats import Decompressor
 
 _MAGIC = b"LZIP"
 _HEADER_SIZE = 6
@@ -594,22 +598,27 @@ class LzipDecoder(BaseDecoder):
         return self._state.is_finished() and not self._state.truncated
 
     @property
+    @override
     def trailing_bytes(self) -> int | None:
         return self._state.trailing_bytes
 
     @property
+    @override
     def needs_input(self) -> bool:
         return self._state.needs_input
 
     def _points_for_units(self, units: list[tuple[int, int]]) -> list[SeekPoint]:
         points: list[SeekPoint] = []
         for decompressed_size, compressed_size in units:
-            # Before-placement: point at member start, then advance cursors.
-            points.append(SeekPoint(self._decomp_cursor, self._comp_cursor))
+            # Before-placement: point at member start, then advance cursors. A member
+            # with no output gets no point (the rule on DecodeOut.points).
+            if decompressed_size:
+                points.append(SeekPoint(self._decomp_cursor, self._comp_cursor))
             self._comp_cursor += compressed_size
             self._decomp_cursor += decompressed_size
         return points
 
+    @override
     def build_index(
         self, inner: BinaryIO, last_known: SeekPoint
     ) -> tuple[list[SeekPoint], int | None]:

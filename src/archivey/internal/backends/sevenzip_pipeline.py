@@ -76,6 +76,7 @@ from archivey.internal.config import (
     check_decoder_memory,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs import (
     LZMA_DICTIONARY_FILTERS,
     Codec,
@@ -86,7 +87,7 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64
 from archivey.internal.streams.codecs.bcj2_filter import Bcj2DecoderStream
-from archivey.internal.streams.codecs.isolated import IN_PROCESS, natives_for
+from archivey.internal.streams.codecs.isolated import IN_PROCESS
 from archivey.internal.streams.codecs.lzma_filter_decoder import FilterStream
 from archivey.internal.streams.codecs.riscv_filter import FILTER_RISCV
 from archivey.internal.streams.codecs.zstd_framing import (
@@ -106,6 +107,8 @@ from archivey.internal.streams.streamtools.binaryio import (
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
+
+    from archivey.types import OptionalLibrary
 
 # The most filters one liblzma chain holds (``LZMA_FILTERS_MAX`` in lzma/filter.h).
 _LIBLZMA_MAX_FILTERS = 4
@@ -615,6 +618,7 @@ def _open_aes_stage(
     *,
     password: bytes | None,
     key_cache: SevenZipKeyCache,
+    excluded: frozenset[OptionalLibrary],
 ) -> BinaryIO:
     if password is None:
         raise EncryptionError("Password required to decrypt this 7z folder")
@@ -624,7 +628,7 @@ def _open_aes_stage(
         params = key_cache.aes_params_from_properties(password, coder.properties)
     except ValueError as exc:
         raise CorruptionError(f"Malformed 7z AES properties: {exc}") from exc
-    return open_aes_decrypt_stream(source, params)
+    return open_aes_decrypt_stream(source, params, excluded=excluded)
 
 
 def _filter_stage(coder: SevenZipCoder, unpack_size: int) -> _FilterStage:
@@ -725,6 +729,7 @@ class _DecodedPastSizeCheck(DelegatingStream):
         self._position = 0
         self._checked = False
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         if n == 0:
             return b""
@@ -732,6 +737,7 @@ class _DecodedPastSizeCheck(DelegatingStream):
         self._count(len(data))
         return data
 
+    @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         n = try_readinto(self._inner, b)
         if n is None:
@@ -762,6 +768,7 @@ class _DecodedPastSizeCheck(DelegatingStream):
             f"{self._size} bytes"
         )
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         self._position = self._inner.seek(offset, whence)
         self._checked = False
@@ -792,7 +799,11 @@ def _execute_stage(
     """
     if isinstance(stage, _AesStage):
         return _open_aes_stage(
-            stream, stage.coder, password=password, key_cache=key_cache
+            stream,
+            stage.coder,
+            password=password,
+            key_cache=key_cache,
+            excluded=stream_config.excluded_libraries,
         )
     if isinstance(stage, _CodecStage):
         if stage.pack_size is not None:
@@ -858,7 +869,7 @@ def _execute_stage(
         unpack_size=stage.unpack_size,
         seekable=seekable,
         owns_inner=owns_input,
-        natives=natives_for(stream_config.process_isolation),
+        natives=stream_config.natives,
     )
 
 

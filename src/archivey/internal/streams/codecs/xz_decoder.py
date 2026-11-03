@@ -31,7 +31,7 @@ import struct
 import zlib
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.diagnostics import DiagnosticCode, DigestContext, SeekIndexContext
 from archivey.exceptions import (
@@ -47,13 +47,15 @@ from archivey.internal.diagnostics_collector import (
     resolve_collector,
 )
 from archivey.internal.logs import streams as logger
-from archivey.internal.streams.codecs.isolated import IN_PROCESS, Decompressor, Natives
+from archivey.internal.overrides import override
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
 from archivey.internal.streams.decompressor_stream import (
     TRAILING_DATA_CANDIDATES,
     TRAILING_DATA_SEARCH,
     BaseDecoder,
     DecodeOut,
     DecompressorStream,
+    FrameChecks,
     PrebuiltIndex,
     SeekPoint,
     SpacedCollector,
@@ -64,6 +66,9 @@ from archivey.internal.streams.decompressor_stream import (
     release_decoder,
     truncated_message,
 )
+
+if TYPE_CHECKING:
+    from archivey.formats import Decompressor
 
 _XZ_STREAM_MAGIC = b"\xfd7zXZ\x00"
 _XZ_FOOTER_MAGIC = b"YZ"
@@ -340,12 +345,12 @@ def _skip_stream_padding_backwards(
         groups = -(-(compressed_end - stop_at) // 4)
         groups = min(groups, chunk_limit // 4, compressed_end // 4)
         if groups == 0:
-            raise CorruptionError("XZ file too small to contain a valid stream")
+            raise CorruptionError("XZ data too small to contain a valid stream")
         start = compressed_end - 4 * groups
         stream.seek(start)
         chunk = stream.read(4 * groups)
         if len(chunk) < 4 * groups:
-            raise CorruptionError("XZ file truncated during backward scan")
+            raise CorruptionError("XZ data truncated during backward scan")
         nonzero_end = len(chunk.rstrip(b"\x00"))
         if nonzero_end:
             return start + _round_up_4(nonzero_end)
@@ -659,6 +664,12 @@ def _report_unverifiable_check(
     )
 
 
+def _note_check(check: int, frame_checks: FrameChecks) -> None:
+    """Note whether a stream's check is one liblzma runs: not ``CHECK_NONE``, and one it
+    implements (an unknown ID is decoded without it, ``_report_unverifiable_check``)."""
+    frame_checks.note(check != lzma.CHECK_NONE and lzma.is_check_supported(check))
+
+
 class _XzState:
     """Streaming state machine for multi-stream XZ decompression."""
 
@@ -697,6 +708,9 @@ class _XzState:
         self.truncated = False
         # Bytes fed past the last stream that start no further one (see Decoder).
         self.trailing_bytes: int | None = None
+        # Whether any byte that is not stream padding followed the last stream, a zero
+        # too (see Decoder.input_after_end).
+        self.input_after_end = False
 
     def feed(
         self, data: bytes, max_length: int = -1
@@ -712,10 +726,17 @@ class _XzState:
         """End the data before ``rest``: bytes past a stream that start no further one.
 
         Zeros are padding, as XZ's own stream padding is; the first non-zero byte
-        starts the trailing data.
+        starts the trailing data. Any byte of ``rest`` is input after the end, a zero
+        too. From ``_process`` and ``flush``, ``rest`` holds no complete stream
+        padding, because the 4-byte groups of zeros are stripped before a header is
+        looked for: what is left is zeros that do not fill a group of four, which
+        xz-utils and 7-Zip refuse, or bytes that start no stream. From ``feed`` the
+        data is already past the end, where nothing is padding.
         """
         self._finished = True
         self._buf.clear()
+        if rest:
+            self.input_after_end = True
         rest = rest.lstrip(b"\x00")
         if rest:
             self.trailing_bytes = len(rest)
@@ -727,7 +748,7 @@ class _XzState:
                 # magic, is a cut-short xz file; anything else was never one.
                 head = bytes(self._buf[:6])
                 if self._padding_before_stream or head != _XZ_STREAM_MAGIC[: len(head)]:
-                    raise CorruptionError("Not a valid XZ file: no streams found")
+                    raise CorruptionError("Not valid XZ data: no streams found")
                 self.truncated = True
                 return b"", []
             if len(self._buf) >= 6 and bytes(self._buf[:6]) == _XZ_STREAM_MAGIC:
@@ -794,7 +815,7 @@ class _XzState:
                 if header[:6] != _XZ_STREAM_MAGIC:
                     if self._streams_seen == 0:
                         raise CorruptionError(
-                            f"Not a valid XZ file: expected magic {_XZ_STREAM_MAGIC!r}, "
+                            f"Not valid XZ data: expected magic {_XZ_STREAM_MAGIC!r}, "
                             f"got {header[:6]!r}"
                         )
                     if near_stream_magic(header, _XZ_STREAM_MAGIC):
@@ -969,8 +990,11 @@ class XzDecoder(BaseDecoder):
         reported_checks: set[int],
         handoff: SeekPoint | None = None,
         natives: Natives = IN_PROCESS,
+        frame_checks: FrameChecks | None = None,
     ) -> None:
         self._engine = engine
+        # Each stream's check, as its header (or a resumed block's footer) gives it.
+        self.frame_checks = frame_checks if frame_checks is not None else FrameChecks()
         self._natives = natives
         self._reported_checks = reported_checks
         self._limits = limits
@@ -998,7 +1022,10 @@ class XzDecoder(BaseDecoder):
         """``reported_checks`` is shared by every decoder of one file (see
         :func:`_report_unverifiable_check`)."""
 
+        frame_checks = FrameChecks()
+
         def on_check(check: int) -> None:
+            _note_check(check, frame_checks)
             _report_unverifiable_check(check, reported_checks, collector)
 
         handoff: SeekPoint | None = None
@@ -1027,6 +1054,7 @@ class XzDecoder(BaseDecoder):
             reported_checks=reported_checks,
             handoff=handoff,
             natives=natives,
+            frame_checks=frame_checks,
         )
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> XzDecoder:
@@ -1050,7 +1078,7 @@ class XzDecoder(BaseDecoder):
     def flush(self) -> DecodeOut:
         data, units = self._engine.flush()
         if getattr(self._engine, "truncated", False):
-            self._pending_error = TruncatedError("XZ file is truncated")
+            self._pending_error = TruncatedError("XZ data is truncated")
         elif self._handoff is not None and self._engine.is_finished():
             # A guard, not a path DecompressorStream reaches today: feed() hands off as
             # soon as the resume finishes, and flush() runs only once inner is
@@ -1058,7 +1086,7 @@ class XzDecoder(BaseDecoder):
             # point was read from. Should a resume ever finish here with the hand-off
             # still owed (a seek table that outlived the file it was built from), fail
             # loudly rather than report finished and publish a size that stops short.
-            self._pending_error = TruncatedError("XZ file is truncated")
+            self._pending_error = TruncatedError("XZ data is truncated")
         return DecodeOut(data, self._points_for_units(units))
 
     def _hand_off_if_resume_done(self) -> None:
@@ -1072,11 +1100,17 @@ class XzDecoder(BaseDecoder):
         point = self._handoff
         self._handoff = None
         self._inner.seek(point.compressed_offset)
+
+        frame_checks = self.frame_checks
+        assert frame_checks is not None  # set in __init__
+
+        def on_check(check: int) -> None:
+            _note_check(check, frame_checks)
+            _report_unverifiable_check(check, self._reported_checks, self._collector)
+
         self._engine = _XzState(
             self._limits,
-            lambda check: _report_unverifiable_check(
-                check, self._reported_checks, self._collector
-            ),
+            on_check,
             after_stream=True,
             start_offset=point.compressed_offset,
             natives=self._natives,
@@ -1091,12 +1125,21 @@ class XzDecoder(BaseDecoder):
         )
 
     @property
+    @override
     def trailing_bytes(self) -> int | None:
         # Only the sequential engine meets the end of the data; a block resume hands
         # off to one before then.
         return getattr(self._engine, "trailing_bytes", None)
 
     @property
+    @override
+    def input_after_end(self) -> bool:
+        # Further streams and stream padding are part of the xz data, so they are not
+        # input after its end: 7-Zip reads them in a ZIP member too.
+        return getattr(self._engine, "input_after_end", False)
+
+    @property
+    @override
     def needs_input(self) -> bool:
         return self._engine.needs_input
 
@@ -1189,6 +1232,7 @@ class XzDecoder(BaseDecoder):
             self._decomp_cursor += decompressed_size
         return points
 
+    @override
     def build_index(
         self, inner: BinaryIO, last_known: SeekPoint
     ) -> tuple[list[SeekPoint], int | None]:
@@ -1214,6 +1258,7 @@ def XzDecompressorStream(
     seekable: bool = True,
     decoder_limits: DecoderLimits = DecoderLimits(),
     report_trailing_data: bool = False,
+    refuse_input_after_end: bool = False,
     initial_index: PrebuiltIndex | None = None,
     natives: Natives = IN_PROCESS,
 ) -> DecompressorStream:
@@ -1257,6 +1302,7 @@ def XzDecompressorStream(
         codec_name="xz",
         seekable=seekable,
         report_trailing_data=report_trailing_data,
+        refuse_input_after_end=refuse_input_after_end,
         initial_index=initial_index,
     )
     stream_cell[0] = stream

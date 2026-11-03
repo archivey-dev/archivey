@@ -10,18 +10,18 @@ from __future__ import annotations
 import bz2
 import io
 import random
+from typing import cast
 
 import pytest
 
 from archivey.exceptions import TruncatedError
+from archivey.internal.config import DEFAULT_STREAM_CONFIG
+from archivey.internal.streams.codecs.base import CodecParams
+from archivey.internal.streams.codecs.bzip2_codec import Bzip2Codec
 from archivey.internal.streams.codecs.bzip2_resume import (
     BitShifter,
     Bzip2Resume,
     Bzip2ResumeDecoder,
-)
-from archivey.internal.streams.codecs.framed_decoder import (
-    FramedDecompressorStream,
-    stream_magic,
 )
 from archivey.internal.streams.decompressor_stream import DecompressorStream, SeekPoint
 from archivey.internal.streams.resume import ResumeReachedStreamEnd
@@ -36,13 +36,12 @@ from tests.test_accelerator_takeover import (
 pytestmark = requires("rapidgzip")
 
 
-def _stdlib_bzip2(blob: bytes) -> DecompressorStream:
-    return FramedDecompressorStream(
-        io.BytesIO(blob),
-        bz2.BZ2Decompressor,
-        codec_name="bzip2",
-        magic=stream_magic((b"B", b"Z", b"h", b"123456789")),
+def _plain_bzip2(blob: bytes) -> DecompressorStream:
+    """The codec's own plain decode, with the accelerator off."""
+    stream = Bzip2Codec().open_framed(
+        io.BytesIO(blob), CodecParams(), DEFAULT_STREAM_CONFIG
     )
+    return cast(DecompressorStream, stream)
 
 
 @pytest.mark.parametrize("bit", range(8))
@@ -71,7 +70,7 @@ def test_every_block_resumes_to_the_stream_end(blob_name: str) -> None:
         if decoded >= len(full):
             continue
         tried += 1
-        stream = _stdlib_bzip2(blob)
+        stream = _plain_bzip2(blob)
         stream.add_seek_points([SeekPoint(decoded, bit // 8, Bzip2Resume(bit % 8))])
         got = bytearray()
         with pytest.raises(ResumeReachedStreamEnd):

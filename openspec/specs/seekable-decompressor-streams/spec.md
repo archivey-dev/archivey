@@ -24,8 +24,9 @@ forward-only streams free of seek machinery.
 The system SHALL construct seek support only when seekability is declared:
 `seekable_members=True` on `open_archive()` or `seekable=True` on the
 single-stream API. Undeclared streams SHALL NOT parse XZ footers, scan lzip
-trailers, instantiate rapidgzip accelerators, retain rewind buffers, or retain
-seek-point tables; they are forward-only.
+trailers, retain rewind buffers, or retain seek-point tables, and SHALL NOT
+instantiate rapidgzip accelerators except for the large sequential DEFLATE-family
+read below; they are forward-only, whichever decoder reads them.
 
 `use_rapidgzip` and `use_indexed_bzip2` SHALL resolve their `AUTO` / `ON` / `OFF`
 configuration against declared seek demand, not the `streaming` access-mode
@@ -44,6 +45,15 @@ when otherwise eligible). `ON` ignores the threshold; `OFF` never selects rapidg
 (`INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`), fixed by benchmark the same way, with the same
 rules for an unknown size, `ON` and `OFF`.
 
+Without declared seek demand, `use_rapidgzip=AUTO` SHALL select rapidgzip for a
+DEFLATE-family stream only when it is otherwise eligible, the platform is Linux or macOS, the
+source can seek, the compressed input size is known and reaches the same threshold, and the
+decoded size (container-declared, else the gzip ISIZE trailer as an estimate) is at most three
+times the compressed size (an ISIZE below 99% of the compressed size counts as unknown).
+rapidgzip decodes in parallel, which repays the child process on a full read only for data
+that is not very compressible, and not on Windows, where the child costs more than it saves
+(`formats/gzip.md` §2.3). The stream stays forward-only.
+
 Over a ZipCrypto decrypt stage `AUTO` SHALL resolve to `OFF` for the codec that reads
 it, because every backward seek restarts decryption from the member's start.
 
@@ -51,7 +61,8 @@ it, because every backward seek restarts decryption from the member's start.
 
 | Case | Expected |
 | --- | --- |
-| gzip/xz/bzip2/lzip opened without seekability under `AUTO` | No index, no accelerator, forward-only |
+| gzip/xz/bzip2/lzip opened without seekability under `AUTO` | No index, no accelerator, forward-only, except as the next row says |
+| DEFLATE-family stream opened without seekability under `AUTO`, on Linux or macOS, seekable source, known size ≥ threshold, decoded size ≤ 3× compressed | rapidgzip decodes it; the stream stays forward-only |
 | Same stream opened with seekability, `AUTO`, accelerator installed, size ≥ threshold | Accelerator or native index provides random access |
 | Declared-seekable deflate/zlib/gzip under `AUTO`, known size < threshold | rapidgzip not selected; stdlib backend used |
 | Declared-seekable DEFLATE-family stream, `use_rapidgzip=ON`, size below threshold | rapidgzip still selected (threshold ignored) |
@@ -64,7 +75,8 @@ it, because every backward seek restarts decryption from the member's start.
 The system SHALL support random access in XZ and lzip by reading their embedded
 index structures. XZ SHALL use the footer and block index to map uncompressed
 offsets to compressed block positions. Lzip SHALL scan trailers to locate block
-boundaries. A seek SHALL decompress only the block range needed for the requested
+boundaries. A forward read SHALL record a member start as a seek point only for a member
+that has output. A seek SHALL decompress only the block range needed for the requested
 uncompressed offset.
 
 #### Scenario: native index matrix
@@ -96,7 +108,7 @@ requirement): the child opens a path source itself, a stream source stays in the
 process, a child that dies on the data is a verdict the standard library takes over from,
 and where no child can be started `AUTO` decodes with the stdlib backend, logging one
 warning per process that names `use_indexed_bzip2=OFF`, and `ON` raises
-`ResourceLimitError`. No crash of that decoder has been seen; it is isolated as a precaution,
+`ResourceUnavailableError`. No crash of that decoder has been seen; it is isolated as a precaution,
 because it comes from the same library as the DEFLATE decoder, whose crashes cannot always be
 avoided. A maintainer script SHALL run each rapidgzip decoder
 in-process on damaged input in a watched process and report every crash by its
@@ -109,7 +121,7 @@ signature, so that whether the isolation is still needed stays measurable.
 | `use_rapidgzip` enabled and package installed | gzip seeks without full re-decompression |
 | `use_indexed_bzip2` enabled and rapidgzip installed | bzip2 uses `rapidgzip.IndexedBzip2File` in a child process; the caller's process imports neither rapidgzip nor standalone `indexed_bzip2` |
 | `use_indexed_bzip2=AUTO`, no child process can start | stdlib decoder; one warning per process naming `use_indexed_bzip2=OFF` |
-| `use_indexed_bzip2=ON`, no child process can start | `ResourceLimitError`; never decoded in-process |
+| `use_indexed_bzip2=ON`, no child process can start | `ResourceUnavailableError`; never decoded in-process |
 | rapidgzip absent or flag `OFF` | stdlib decoder; backward seek re-decompresses from the start, or from a known gzip member start, and warns when it re-decodes past the threshold |
 
 ### Requirement: DEFLATE-family random access uses rapidgzip
@@ -119,9 +131,10 @@ random-access/parallel backend for raw DEFLATE (`deflate` codec) and zlib-wrappe
 (`zlib` codec), in addition to gzip. rapidgzip auto-detects `GZIP`/`ZLIB`/`DEFLATE`, so the
 codec SHALL pass the stream through unwrapped — no synthetic gzip header/footer. Selection is
 gated identically to gzip (`use_rapidgzip` × declared seekability × availability, plus the
-`AUTO` minimum-input-size threshold). The default sequential backend is unchanged: when
-rapidgzip is unavailable, `OFF`, or below the `AUTO` threshold, deflate/zlib decode through
-stdlib `zlib`.
+`AUTO` minimum-input-size threshold, and the large sequential read of the demand
+requirement above). The default sequential backend is stdlib `zlib`, except for that large
+sequential read. When rapidgzip is unavailable, `OFF`, or below the `AUTO` threshold,
+deflate/zlib always decode through stdlib `zlib`.
 
 Because rapidgzip auto-detects the format, the codec SHALL decode with the stdlib backend a
 source rapidgzip could take for another format: a `deflate` source that starts with `1f 8b`, a
@@ -157,7 +170,7 @@ temporary file the operating system refuses, a child that cannot import rapidgzi
 SHALL decode with the stdlib backend, as it does when rapidgzip is absent, and SHALL log one
 warning per process on the `archivey.streams` logger naming the reason and
 `use_rapidgzip=OFF` (none where rapidgzip is absent). `ON` in that case SHALL raise
-`ResourceLimitError` naming the reason and `use_rapidgzip=OFF`; it MUST NOT decode
+`ResourceUnavailableError` naming the reason and `use_rapidgzip=OFF`; it MUST NOT decode
 in-process.
 
 rapidgzip keeps decoded chunks in memory, so its memory grows with what the data decodes to,
@@ -184,7 +197,7 @@ the member's compressed length); an unbounded or over-long stream MAY raise a sp
 | rapidgzip absent, `OFF`, or size < `AUTO` threshold | stdlib `zlib` (`-15` / `MAX_WBITS`); backward seek re-decompresses from start |
 | Accelerator fed an over-long/unbounded slice | May raise a spurious decode error on trailing bytes; callers MUST bound the input |
 | No child can be started (frozen interpreter, zip import, refused spawn or temporary file), `AUTO` | stdlib backend |
-| No child can be started, `ON` | `ResourceLimitError` at open |
+| No child can be started, `ON` | `ResourceUnavailableError` at open |
 | A `deflate` source that starts like gzip, zlib or bzip2, or a `zlib` source with no valid zlib header or with a preset dictionary, `ON` | The bytes and error of `OFF` (`CorruptionError` at the header) |
 | A raw DEFLATE stream cut before any output (`03`), `ON`, with or without a declared size | `TruncatedError`, as with `OFF` |
 | A raw DEFLATE stream cut after a whole block or inside its last one, `ON`, with or without a declared size equal to the output before the cut | `TruncatedError`, as with `OFF` |
@@ -249,7 +262,7 @@ translated `compressed-streams` error rather than aborting the process.
 A DEFLATE-family child process that ends during a request SHALL be reported by how it ended,
 and every later call on the child stream SHALL raise the same error: a fault signal (or its
 Windows status) is a verdict on the data — `TruncatedError` when rapidgzip's abort names the
-truncation, else `CorruptionError`; SIGKILL is `ResourceLimitError`; any other end is
+truncation, else `CorruptionError`; SIGKILL is `ResourceUnavailableError`; any other end is
 `ReadError`.
 
 A fault signal, like a data error rapidgzip reports on a read or a seek, SHALL hand the read
@@ -316,7 +329,7 @@ inside a DEFLATE block SHALL still surface as `CorruptionError`.
 | Truncated gzip/zlib/deflate that aborts rapidgzip, any source, any access pattern | The process survives; the bytes and the error of the standard library decoder (`TruncatedError`) |
 | A fault signal ends the child on a valid stream | The standard library reads on from the delivered position; the caller loses nothing |
 | A resumed standard-library decode reaches the end of a DEFLATE stream (a later member, bytes after the data) | It starts over from the start of the stream; the stream's checksum is checked |
-| DEFLATE-family child killed by SIGKILL / ended by SIGTERM | `ResourceLimitError` / `ReadError`; later calls raise the same |
+| DEFLATE-family child killed by SIGKILL / ended by SIGTERM | `ResourceUnavailableError` / `ReadError`; later calls raise the same |
 | Caller-owned source raises while the child reads it | That exception, unchanged; a later child death is `ReadError` |
 | Caller-owned source after the archivey stream closes | Still open and readable; accelerator/wrapper closed only its own view |
 | Damaged standalone zlib through rapidgzip, read to its end | `CorruptionError`; never a silent wrong read (Adler-32 check) |

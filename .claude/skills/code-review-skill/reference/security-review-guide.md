@@ -4,9 +4,10 @@ Security-focused checklist for reviewing changes in a **pure Python archive libr
 (read / stream / extract untrusted archives). Prefer this over web/app checklists —
 there is no browser UI, SQL/ORM layer, or HTTP API in this project.
 
-Primary references in-repo: `dev-docs/threat-model.md`, `docs/extracting.md`
-(§Trust boundaries, §Known and accepted limits, §What is enforced), `VISION.md`
-(safe-by-default + memory-safe parsing of hostile input).
+Primary references in-repo: `dev-docs/threat-model.md` (§2 Trust boundaries),
+`docs/security.md` (§Where the guarantees stop), `docs/extracting.md` (§What each
+policy does with unusual members), `VISION.md` (safe-by-default + memory-safe parsing
+of hostile input).
 
 ## Hostile Archive Input
 
@@ -58,7 +59,8 @@ subprocess.run(["unrar", "x", "-y", str(archive), str(dest)], check=True)
 
 ## Cryptography (encrypted archives)
 
-- [ ] Use established primitives via the `[crypto]` extra — no homemade crypto
+- [ ] Use established primitives via `cryptography` (the `[recommended]` extra) — no
+  homemade crypto
 - [ ] Password/key handling does not leave secrets in exceptions or `__repr__`
 - [ ] Wrong-password paths fail closed with a clear error type
 - [ ] RNG for any nonces/salts uses `secrets` / OS CSPRNG — not `random`

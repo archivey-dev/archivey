@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import os
+import sys
 import threading
 from collections.abc import Callable
 from typing import BinaryIO
@@ -15,7 +16,7 @@ from archivey.config import RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE, ProcessIsolation
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
-    ResourceLimitError,
+    ResourceUnavailableError,
     StreamNotSeekableError,
     TruncatedError,
     exception_detail,
@@ -25,16 +26,23 @@ from archivey.internal.config import (
     AcceleratorMode,
     StreamConfig,
 )
+from archivey.internal.excluded_libraries import (
+    EXCLUDED_REASON,
+    NO_EXCLUSIONS,
+    as_reported,
+)
+from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import RewindWarning
+from archivey.internal.streams.child_process import mark_no_verdict
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.base import (
     CodecParams,
     CodecSource,
 )
+from archivey.internal.streams.codecs.callers_source import from_callers_source
 from archivey.internal.streams.codecs.rapidgzip_child import (
     RapidgzipChildStartError,
     RapidgzipChildStream,
-    from_callers_source,
     rapidgzip_child_unavailable_reason,
     reported_by_child,
 )
@@ -50,21 +58,45 @@ from archivey.internal.streams.streamtools import (
     source_byte_size,
 )
 from archivey.internal.streams.streamtools.slice import SlicingStream
-from archivey.types import MissingComponent
+from archivey.types import MissingComponent, OptionalLibrary
 
 
 # The DEFLATE-family codecs are stdlib-backed, so they declare no ``requirement`` — rapidgzip
 # is an *accelerator* they only demand when random access was explicitly requested. It still
 # needs one install hint, shared with the rewind diagnostic that suggests the same package.
-def _rapidgzip_requirement() -> MissingComponent:
+def _rapidgzip_requirement(
+    excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
+) -> MissingComponent:
     """rapidgzip as a missing component, with the reason archivey does not use it on this
-    interpreter (``deps.unused_reason``) read when the error is raised, not at import."""
-    return MissingComponent(
-        "rapidgzip",
-        "pip install archivey[seekable]",
-        ("random-access",),
-        reason=deps.unused_reason("rapidgzip"),
+    interpreter (``deps.unused_reason``) read when the error is raised, not at import,
+    or the policy's reason when ``excluded`` turns it off."""
+    return as_reported(
+        MissingComponent(
+            OptionalLibrary.RAPIDGZIP,
+            "pip install archivey[seekable]",
+            ("random-access",),
+            reason=deps.unused_reason(OptionalLibrary.RAPIDGZIP),
+        ),
+        excluded,
     )
+
+
+def _rapidgzip_present(config: StreamConfig) -> bool:
+    """Whether rapidgzip is installed and ``config``'s excluded libraries leave it on.
+    Never imports it: the child process does."""
+    return (
+        OptionalLibrary.RAPIDGZIP not in config.excluded_libraries
+        and deps.rapidgzip.available()
+    )
+
+
+def _rapidgzip_unused_reason(config: StreamConfig) -> str:
+    """Why archivey does not use rapidgzip for ``config`` although it may be installed:
+    the policy's reason when ``config`` excludes it, else the interpreter's
+    (``deps.unused_reason``), else ``""``."""
+    if OptionalLibrary.RAPIDGZIP in config.excluded_libraries:
+        return EXCLUDED_REASON
+    return deps.unused_reason(OptionalLibrary.RAPIDGZIP)
 
 
 # The settings whose AUTO fallback has been logged (_warn_child_fallback).
@@ -96,7 +128,8 @@ def _warn_child_fallback(why: str, setting: str = "use_rapidgzip") -> None:
 
 def _rapidgzip_wanted(config: StreamConfig, *, available: bool) -> bool:
     """Resolve ``use_rapidgzip`` including the DEFLATE-family AUTO size gate, before
-    asking whether a child process can run it.
+    asking whether a child process can run it. ``AUTO`` counts a large sequential read
+    whose data is not very compressible as seek demand (:func:`_sequential_read_pays`).
 
     AUTO also requires truncation to be verifiable: a container-declared
     ``expected_decompressed_size``, or (gzip only) a readable ISIZE trailer flagged
@@ -107,6 +140,15 @@ def _rapidgzip_wanted(config: StreamConfig, *, available: bool) -> bool:
     """
     if config.process_isolation is ProcessIsolation.NONE:
         return False
+    size = config.compressed_input_size
+    if (
+        config.use_rapidgzip is AcceleratorMode.AUTO
+        and size is not None
+        and size < RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
+    ):
+        # What ``enabled_for`` answers below for a small input, without first working
+        # out the seek demand: a ZIP of small members asks this several times each.
+        return False
     if (
         config.use_rapidgzip is AcceleratorMode.AUTO
         and config.expected_decompressed_size is None
@@ -114,19 +156,68 @@ def _rapidgzip_wanted(config: StreamConfig, *, available: bool) -> bool:
     ):
         return False
     return config.use_rapidgzip.enabled_for(
-        seekable=config.seekable,
+        seekable=config.seekable or _sequential_read_pays(config),
         available=available,
         input_size=config.compressed_input_size,
         min_size=RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE,
     )
 
 
+# AUTO takes a sequential read through rapidgzip only up to this ratio of decoded to
+# compressed size. The child's cost grows with the bytes it hands back, the decoding it
+# saves with the bytes it reads, so the gain shrinks as data gets more compressible: on 4
+# cores, a full read under ON took a third to a half of the standard library's time from
+# 1.2:1 to 2.6:1, the same time at 6:1, and 2.4 times as long at 17:1
+# (dev-docs/formats/gzip.md §2.3).
+_SEQUENTIAL_MAX_RATIO = 3
+# Whether this platform takes a sequential read through rapidgzip at all: Linux and
+# macOS, where it was measured to pay. Windows was measured not to
+# (:func:`_sequential_read_pays`); other platforms were not measured.
+_SEQUENTIAL_PLATFORM = sys.platform in ("linux", "darwin")
+
+
+def _sequential_read_pays(config: StreamConfig) -> bool:
+    """Whether ``AUTO`` takes a read with no declared seek demand through rapidgzip.
+
+    Only on Linux and macOS, and only for a large stream of a known size whose source
+    can seek and that compresses ``_SEQUENTIAL_MAX_RATIO``:1 or less. On Windows the
+    child takes longer to start and reads its source through a pipe, and a full read was
+    slower under ``ON`` than with the standard library at 40 MiB, on a 16-core machine.
+    The ratio uses the declared decoded size, else the gzip ISIZE trailer, an estimate
+    (it is mod 2**32, and covers only the last member). An ISIZE below 99% of the
+    compressed size is no estimate at all: DEFLATE never shrinks data that much below its
+    input, so the trailer is a last member's (a BGZF file ends with an empty one, and
+    reads 0), or a wrapped one. The read then stays on the standard library.
+    """
+    if not (_SEQUENTIAL_PLATFORM and config.source_seekable):
+        return False
+    compressed = config.compressed_input_size
+    if compressed is None or compressed < RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE:
+        return False
+    decoded = config.expected_decompressed_size
+    if decoded is None:
+        decoded = config.gzip_isize
+        if decoded is not None and decoded * 100 < compressed * 99:
+            return False
+    return decoded is not None and decoded <= _SEQUENTIAL_MAX_RATIO * compressed
+
+
 def _auto_without_child(config: StreamConfig, *, available: bool) -> str | None:
     """Why an ``AUTO`` open that wants rapidgzip cannot have it here (no child process
     can run it: :func:`rapidgzip_child_unavailable_reason`), or ``None``."""
     if config.use_rapidgzip is not AcceleratorMode.AUTO:
+        # What ``_wanted_auto_without_child`` answers below, without first asking
+        # whether rapidgzip is wanted.
         return None
     if not _rapidgzip_wanted(config, available=available):
+        return None
+    return _wanted_auto_without_child(config)
+
+
+def _wanted_auto_without_child(config: StreamConfig) -> str | None:
+    """:func:`_auto_without_child` for an open :func:`_rapidgzip_wanted` already wants:
+    the one place its reasons live, for it and for :func:`_rapidgzip_enabled`."""
+    if config.use_rapidgzip is not AcceleratorMode.AUTO:
         return None
     return rapidgzip_child_unavailable_reason()
 
@@ -141,13 +232,13 @@ def _rapidgzip_enabled(config: StreamConfig, *, available: bool) -> bool:
     """
     if not _rapidgzip_wanted(config, available=available):
         return False
-    return _auto_without_child(config, available=available) is None
+    return _wanted_auto_without_child(config) is None
 
 
 def _warn_if_auto_without_child(config: StreamConfig) -> None:
     """At a DEFLATE-family open: warn (once per process) if ``AUTO`` wanted rapidgzip
     and reads with the stdlib because no child process can run here."""
-    why = _auto_without_child(config, available=deps.rapidgzip.available())
+    why = _auto_without_child(config, available=_rapidgzip_present(config))
     if why is not None:
         _warn_child_fallback(why)
 
@@ -166,17 +257,19 @@ def _rapidgzip_rewind_warning(
     threshold covers it, and covers it better (a small member cannot produce a large
     re-decode distance). ``suggest_install`` stays False when the accelerator is present
     or engaged, so a caller is never told to install what they already have. On an
-    interpreter where archivey does not use it, ``unused_reason`` carries why
-    (``deps.unused_reason``) and the report says that instead.
+    interpreter where archivey does not use it, or under a policy that excludes it,
+    ``unused_reason`` carries why (``_rapidgzip_unused_reason``) and the report says
+    that instead.
     """
     engaged = _deflate_family_uses_accelerator(config)
+    unused_reason = _rapidgzip_unused_reason(config)
     return RewindWarning(
         codec_name,
         accelerator="rapidgzip",
         suggest_install=not engaged
         and not deps.rapidgzip.available()
-        and not deps.unused_reason("rapidgzip"),
-        unused_reason=deps.unused_reason("rapidgzip"),
+        and not unused_reason,
+        unused_reason=unused_reason,
     )
 
 
@@ -200,6 +293,7 @@ class _StdlibSeekContract(DelegatingStream):
         # The position when a seek went past the end, which the stream below cannot hold.
         self._past_end: int | None = None
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         # tell() can be a round trip to the child: ask only when the seek is relative.
         pos = self.tell() if whence == io.SEEK_CUR else 0
@@ -213,6 +307,7 @@ class _StdlibSeekContract(DelegatingStream):
         """Return the size, by seeking the stream below to its end."""
         return self._inner.seek(0, io.SEEK_END)
 
+    @override
     def tell(self, /) -> int:
         if self._past_end is not None:
             return self._past_end
@@ -239,7 +334,7 @@ def _wrap_accelerated_length(stream: BinaryIO, config: StreamConfig) -> BinaryIO
 
 def _deflate_family_uses_accelerator(config: StreamConfig) -> bool:
     """Whether gzip/zlib/deflate will open through rapidgzip for this config."""
-    return deps.rapidgzip.available() and _rapidgzip_enabled(config, available=True)
+    return _rapidgzip_present(config) and _rapidgzip_enabled(config, available=True)
 
 
 def _bound_rapidgzip_source(
@@ -248,9 +343,10 @@ def _bound_rapidgzip_source(
     """Clip a stream source to the known compressed length before rapidgzip.
 
     rapidgzip over-reads past EOS looking for a concatenated member (raw
-    deflate) or prints trailing-garbage to stderr (bzip2). A 7z AES stage
-    decrypts a padded block, so the next coder's ``pack_size`` (AES
-    unpack_size) is the bound that drops those pad bytes. Only
+    deflate); for bzip2, input past the coder's data would meet the end check
+    under ``refuse_input_after_end``. A 7z AES stage decrypts a padded block,
+    so the next coder's ``pack_size`` (AES unpack_size) is the bound that drops
+    those pad bytes. Only
     ``pack_size`` is pad-free; the two fallbacks assume a non-AES source
     (an AES stream's ``.size`` is the padded plaintext length). Paths stay
     paths: rapidgzip opens its own fd.
@@ -298,7 +394,7 @@ def _accelerator_field(label: str) -> str:
 
 
 def _no_child_reason(label: str) -> str:
-    """The start of the ``ResourceLimitError`` message for a ``label`` stream whose
+    """The start of the ``ResourceUnavailableError`` message for a ``label`` stream whose
     rapidgzip child cannot run."""
     field_name = _accelerator_field(label)
     return (
@@ -309,11 +405,14 @@ def _no_child_reason(label: str) -> str:
 
 
 def _require_rapidgzip_child(label: str) -> None:
-    """Raise ``ResourceLimitError`` where no rapidgzip child process can run here
+    """Raise ``ResourceUnavailableError`` where no rapidgzip child process can run here
     (:func:`rapidgzip_child_unavailable_reason`). Starts nothing."""
     unavailable = rapidgzip_child_unavailable_reason()
     if unavailable is not None:
-        raise ResourceLimitError(f"{_no_child_reason(label)} ({unavailable}).")
+        # A child that cannot start is no verdict on the data (process-isolation §2.5).
+        raise mark_no_verdict(
+            ResourceUnavailableError(f"{_no_child_reason(label)} ({unavailable}).")
+        )
 
 
 def _open_rapidgzip(
@@ -337,7 +436,7 @@ def _open_rapidgzip(
     import rapidgzip), ``AUTO`` returns ``None`` and the caller decodes with the
     standard library, as ``AUTO`` does when rapidgzip is absent. Each of those fails
     before the child reads any of ``source``, so the caller's source is where it was.
-    ``ON`` raises ``ResourceLimitError`` rather than decode in-process.
+    ``ON`` raises ``ResourceUnavailableError`` rather than decode in-process.
 
     The child's memory is capped at ``DecoderLimits.max_decoder_memory``: rapidgzip
     keeps decoded chunks, so a small file that decodes to gigabytes would otherwise
@@ -357,7 +456,9 @@ def _open_rapidgzip(
         )
     except RapidgzipChildStartError as exc:
         if getattr(config, field_name) is not AcceleratorMode.AUTO:
-            raise ResourceLimitError(f"{reason} ({exc}).") from exc
+            raise mark_no_verdict(
+                ResourceUnavailableError(f"{reason} ({exc}).")
+            ) from exc
         _warn_child_fallback(str(exc), field_name)
         return None
 

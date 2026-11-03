@@ -19,10 +19,14 @@ from archivey.config import (
     ProcessIsolation,
 )
 from archivey.exceptions import ResourceLimitError
+from archivey.internal.excluded_libraries import NO_EXCLUSIONS
+from archivey.internal.overrides import override
+from archivey.types import OptionalLibrary
 
 if TYPE_CHECKING:
     from archivey.internal.diagnostics_collector import DiagnosticCollector
     from archivey.internal.resource_usage import ResourceUsageRecorder
+    from archivey.internal.streams.codecs.isolated import Natives
     from archivey.internal.streams.decompressor_stream import PrebuiltIndex
 
 # Only the names other modules import from here. ``ArchiveyConfig`` and
@@ -58,6 +62,12 @@ class StreamConfig:
     seekable gzip source has a readable ISIZE trailer — enough for AUTO to select
     rapidgzip with the ISIZE truncation check, but *not* a hard ``VerifyingStream``
     bound (ISIZE is mod 2**32 and multi-member trailers only cover the last member).
+    ``gzip_isize`` is that trailer's value, which AUTO's ratio gate for a sequential
+    read uses as an estimate of the decoded size and nothing else. ``source_seekable``
+    is set by :func:`open_codec_stream` when the source is a path or a stream that can
+    seek: a sequential read (no declared seek demand) can still go through an
+    accelerator under AUTO, which needs a source it can seek. A reader may fill it
+    first with the same value, as the ZIP reader does to save a copy per member.
     ``decoder_limits`` is the caller's :class:`~archivey.config.DecoderLimits`,
     carried down so a codec can refuse an archive-declared allocation before making
     it; it defaults to the public default rather than to "unlimited", because a
@@ -86,13 +96,15 @@ class StreamConfig:
     ``window_log_max``). Past the bound the stream may end or fail, so the probe reads
     no further. ``process_isolation`` is the caller's
     :class:`~archivey.config.ProcessIsolation`: a codec builds its native decoder
-    through :func:`~archivey.internal.streams.codecs.isolated.natives_for` with it.
+    through :attr:`natives`, which that setting selects.
     ``seek_index`` is an xz index scan the single-file reader already
     made over this same source; the xz stream uses it in place of its own scan. Like
     ``collector`` it is left out of equality. So is ``usage``, the reader's
     :class:`~archivey.internal.resource_usage.ResourceUsageRecorder`: a codec passes it
     to :func:`check_decoder_memory`, which notes each declaration there. A detection
     probe builds its config without one, so a probe's sizes are never recorded.
+    ``excluded_libraries`` is the caller's ``FormatPolicy.exclude_libraries``: a codec
+    whose package it names opens as if the package were not installed.
     """
 
     streaming: bool = False
@@ -102,6 +114,8 @@ class StreamConfig:
     compressed_input_size: int | None = None
     expected_decompressed_size: int | None = None
     gzip_isize_backstop: bool = False
+    gzip_isize: int | None = None
+    source_seekable: bool = False
     decoder_limits: DecoderLimits = DecoderLimits()
     process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES
     collector: DiagnosticCollector | None = field(default=None, compare=False)
@@ -110,6 +124,16 @@ class StreamConfig:
     refuse_input_after_end: bool = False
     seek_index: PrebuiltIndex | None = field(default=None, compare=False)
     usage: ResourceUsageRecorder | None = field(default=None, compare=False)
+    excluded_libraries: frozenset[OptionalLibrary] = NO_EXCLUSIONS
+
+    @property
+    def natives(self) -> Natives:
+        """The native decoders ``process_isolation`` selects: in a child process
+        under ``NATIVE_DECODERS``, else in this one."""
+        # Imported here: the codecs package imports this module.
+        from archivey.internal.streams.codecs.isolated import natives_for
+
+        return natives_for(self.process_isolation)
 
 
 def stream_config_from_archivey(
@@ -130,6 +154,7 @@ def stream_config_from_archivey(
         use_indexed_bzip2=config.use_indexed_bzip2,
         decoder_limits=config.decoder_limits,
         process_isolation=config.process_isolation,
+        excluded_libraries=config.formats.exclude_libraries,
     )
 
 
@@ -257,6 +282,7 @@ class KeyDerivationBudget:
         self._spent = 0
         self._lock = threading.Lock()
 
+    @override
     def __repr__(self) -> str:
         return f"<KeyDerivationBudget: {self._spent} of {self._cap} rounds spent>"
 

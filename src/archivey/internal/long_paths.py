@@ -29,8 +29,9 @@ import os
 # on POSIX.
 _ENABLED = os.name == "nt"
 
-# Below MAX_PATH (260) and CreateDirectory's 248 with room to spare: ``mkstemp`` adds a
-# temporary name of about 25 characters to a directory that passed through here.
+# Below MAX_PATH (260) and CreateDirectory's 248 with room to spare: extraction adds a
+# temporary name of up to 46 characters (``.archivey-tmp-`` and a uuid4) to a directory
+# that passed through here.
 _SHORT_LIMIT = 200
 
 _EXTENDED = "\\\\?\\"

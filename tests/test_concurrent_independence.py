@@ -18,7 +18,7 @@ import pytest
 
 from archivey import ArchiveyConfig, open_archive
 from archivey.diagnostics import DiagnosticCode
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 from tests.test_concurrent_pass_workers import _in_thread, _run_together
 
 pytestmark = pytest.mark.concurrent_reader
@@ -30,7 +30,7 @@ def test_pass_stream_diagnostics_leave_out_another_threads_walk(
     """The names another thread's ``members()`` normalizes are not the stream's."""
     path = tmp_path / "names.tar"
     with tarfile.open(path, "w") as tf:
-        for name in ("a.txt", "./b.txt", "./c.txt"):
+        for name in ("a.txt", ".//b.txt", ".//c.txt"):
             info = tarfile.TarInfo(name)
             info.size = 3
             tf.addfile(info, io.BytesIO(b"abc"))
@@ -51,12 +51,12 @@ def test_random_stream_diagnostics_are_its_own(tmp_path: Path) -> None:
     """A stream opened on one thread keeps the emits its own reads make, only."""
     path = tmp_path / "names.tar"
     with tarfile.open(path, "w") as tf:
-        for name in ("a.txt", "./b.txt"):
+        for name in ("a.txt", ".//b.txt"):
             info = tarfile.TarInfo(name)
             info.size = 3
             tf.addfile(info, io.BytesIO(b"abc"))
     with open_archive(path, concurrent_operations=True) as reader:
-        # Opening a.txt walks only as far as a.txt; the walk to ./b.txt, which
+        # Opening a.txt walks only as far as a.txt; the walk to .//b.txt, which
         # emits, then happens on another thread while the stream is open.
         with reader.open("a.txt") as stream:
             _in_thread(lambda: reader.read("b.txt"))
@@ -182,7 +182,7 @@ def test_close_during_a_read_raises_the_closed_file_error() -> None:
 
         return TruncatedError(f"looks damaged: {exc}")
 
-    stream = ArchiveStream(Inner, translate=translate)  # type: ignore[arg-type]
+    stream = ArchiveStreamImpl(Inner, translate=translate)  # type: ignore[arg-type]
     errors: list[BaseException] = []
 
     def read() -> None:

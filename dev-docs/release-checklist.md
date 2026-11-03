@@ -47,6 +47,11 @@ goes in it:
 
 Internal refactors, review docs and chore work stay out.
 
+Write the lines in the user docs voice
+([`write-user-docs`](../.claude/skills/write-user-docs/SKILL.md) §Voice). In particular,
+the library does the reading: "archivey reads ar archives" or "ZIP Shrink members are
+supported", not "ar archives read".
+
 Previous release tag: `PREV=$(git describe --tags --abbrev=0 2>/dev/null || true)`
 (0.2.0, the first release, has its entry written already under
 `## [0.2.0] - Unreleased`: a feature summary rather than a change list. Re-read it
@@ -82,6 +87,11 @@ A patch release (bug fixes only) can skip this section unless one of its fixes t
 performance. §3 is never skipped: a bug-fix release is when `dev-docs/known-issues.md`
 entries go stale and a security fix needs its public line.
 
+- [ ] **Preferred:** start `benchmark-compare.yml` (Actions, "Run workflow") on the
+      release PR's branch with `baseline_ref` set to the previous tag. It runs both
+      refs' harnesses alternately on one runner and writes the comparison table to
+      the job summary, which removes most of the runner noise that the steps below
+      have. Use the steps below when that cannot run, or for a quick local check.
 - [ ] On a quiet machine (or after pulling the latest successful
       `benchmark-wall-realistic` artifact), measure current `main`:
 

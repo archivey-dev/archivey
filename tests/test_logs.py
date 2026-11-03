@@ -29,12 +29,15 @@ _ALLOWED = {
 def test_no_module_hand_types_an_archivey_logger_name() -> None:
     found: set[tuple[str, str]] = set()
     pattern = re.compile(r"""getLogger\(\s*["'](archivey[^"']*)["']""")
+    # Any other argument (``__name__``, a variable) also names a logger by hand.
+    other = re.compile(r"""getLogger\((?!\s*["']archivey)""")
     for path in _SRC.rglob("*.py"):
         rel = path.relative_to(_SRC).as_posix()
         if rel == "internal/logs.py":
             continue
         text = path.read_text(encoding="utf-8")
         found.update((rel, name) for name in pattern.findall(text))
+        found.update((rel, "<not a literal>") for _ in other.findall(text))
     assert found == _ALLOWED
 
 

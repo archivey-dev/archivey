@@ -34,9 +34,14 @@ from typing import BinaryIO, Self
 
 from archivey.internal.streams.streamtools.binaryio import (
     is_seekable,
+    read_exact,
     source_byte_size,
 )
-from archivey.internal.streams.streamtools.slice import SharedView, _clamp_slice_length
+from archivey.internal.streams.streamtools.slice import (
+    SharedView,
+    _already_at,
+    _clamp_slice_length,
+)
 
 
 class SharedSource:
@@ -110,6 +115,27 @@ class SharedSource:
             source_size=self._size,
             probe_source_size=False,
         )
+
+    def read_at(self, offset: int, n: int) -> bytes:
+        """Up to ``n`` bytes from ``offset``; fewer only at the end of the source.
+
+        One locked seek and read of the shared handle, with no view built: for a
+        parser's many small reads at offsets, where a view per read costs several
+        times the read. The seek is skipped when the handle is already there, as a
+        view's is.
+        """
+        self._raise_if_closed()
+        if offset < 0 or n < 0:
+            raise ValueError(f"offset {offset} or length {n} is negative")
+        if self._size is not None:
+            n = max(0, min(n, self._size - offset))
+        if n == 0:
+            return b""
+        with self._lock:
+            self._raise_if_closed()
+            if not _already_at(self._handle, offset):
+                self._handle.seek(offset)
+            return read_exact(self._handle, n)
 
     def close(self) -> None:
         """Mark closed; the source it was built over stays open, as its owner's."""

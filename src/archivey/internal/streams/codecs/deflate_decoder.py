@@ -8,6 +8,7 @@ from typing import BinaryIO
 
 from archivey.exceptions import TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.base import (
     GZIP_MAGIC,
     GZIP_WBITS,
@@ -64,6 +65,14 @@ class ZlibDecoder(BaseDecoder):
             )
         return ZlibDecoder(self._wbits, natives=self._natives)
 
+    @override
+    def close(self) -> None:
+        # An in-process ``zlib`` object holds no decoder process and needs no ending,
+        # so the attribute walk of ``BaseDecoder.close`` would find nothing (its
+        # docstring allows the skip); ZIP closes one decoder per member.
+        if self._natives.isolated:
+            super().close()
+
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
         if self._decomp.eof:
             # Past the end; the stream stops reading once these hold a non-zero byte.
@@ -90,6 +99,7 @@ class ZlibDecoder(BaseDecoder):
         return self._decomp.eof
 
     @property
+    @override
     def needs_input(self) -> bool:
         return not self._decomp.unconsumed_tail
 
@@ -313,6 +323,7 @@ class GzipDecoder(BaseDecoder):
         return self._finished
 
     @property
+    @override
     def needs_input(self) -> bool:
         if self._pending_error is not None or self._finished:
             return True
@@ -321,6 +332,7 @@ class GzipDecoder(BaseDecoder):
         # Full next-member prefix retained — drain without reading more.
         return not self._retained.startswith(GZIP_MAGIC)
 
+    @override
     def build_index(
         self, inner: BinaryIO, last_known: SeekPoint
     ) -> tuple[list[SeekPoint], int | None]:

@@ -52,8 +52,8 @@ Archivey itself needs no third-party package. Optional packages add formats and 
   AES ZIP files.
 - **[pycdlib](https://github.com/clalancette/pycdlib):** ISO images.
 - **[tqdm](https://github.com/tqdm/tqdm):** progress bars in the command-line tool.
-- **[rapidgzip](https://github.com/mxmlnkn/rapidgzip):** faster seeking in large gzip and bzip2
-  files, and in large DEFLATE members of ZIP archives.
+- **[rapidgzip](https://github.com/mxmlnkn/rapidgzip):** faster seeking in large gzip, bzip2 and
+  DEFLATE data, such as ZIP members, and faster reading of large DEFLATE data where it pays off.
 
 Compressed or encrypted RAR data is read with RARLAB's `unrar` (or `rar`), or with [The
 Unarchiver](https://theunarchiver.com/)'s `unar`. [Install](install.md) says which one runs when.

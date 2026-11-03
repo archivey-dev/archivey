@@ -127,12 +127,12 @@ binds.
 - [DR-24](#dr-24-tests-pin-behaviour-against-real-producers). **Tests pin behaviour
   against real producers.** A bug fix starts red; tests check behaviour against fixtures
   from real tools.
-- [DR-25](#dr-25-type-comes-from-structure-data-decides-when-structure-is-silent)
-  (in §Consistency). **Type comes from structure; data decides when structure is
-  silent.** A mode attribute never
-  overrides a format's directory marker or typeflag; an entry with a data stream and no
-  structural type is `FILE`; bytes extraction does not deliver are reported and stay
-  readable.
+- [DR-25](#dr-25-type-follows-the-formats-own-type-field-contradictions-are-reported-and-lose-no-bytes)
+  (in §Consistency). **Type follows the format's own type field; contradictions are
+  reported and lose no bytes.** The field the format defines as the type decides (in ZIP
+  the host's attributes and the trailing `/`); a contradiction takes the reference tools'
+  reading and is reported; bytes extraction does not deliver stay readable; every access
+  mode agrees, or the exception is written down.
 
 ## The principles
 
@@ -212,9 +212,9 @@ factor came out.
   DR-25; applied by PR 730).
 - **Would the tool's result break a promise archivey makes?** Principles 1 and 2, and the
   policy levels' promises, come first. A 7z name holding a lone UTF-16 surrogate lists
-  the way 7-Zip does, but is percent-escaped under STRICT and STANDARD, which promise the
-  same result on every OS. TRUSTED, the faithful level, writes 7-Zip's bytes (PRs 564 and
-  577).
+  the way 7-Zip does, but is refused under STRICT and percent-escaped under STANDARD, which
+  both promise the same result on every OS (ADR 0013 amendment, 2026-10-31). TRUSTED, the
+  faithful level, writes 7-Zip's bytes (PRs 564 and 577).
 - **Could the lenient behaviour hide bytes or weaken a check?** Then the stricter side
   wins. Leftover compressed input inside a ZIP or 7z member raises, as 7-Zip does, though
   unzip accepts some of it (2026-10-07).
@@ -294,7 +294,8 @@ verified (DR-1 wins).
 
 **Rule.**
 - Leftover compressed input inside a member's declared data is a `CorruptionError` by
-  default.
+  default. rapidgzip on a DEFLATE member is the one exception, for a long second stream
+  (DR-5a).
 - Bytes after the end of an archive or stream are reported as `ARCHIVE_TRAILING_DATA`: a
   warning by default, refused under strict.
 - Zero padding is silent.
@@ -332,8 +333,9 @@ the right weight.
   blocks are skipped so the members after them stay listed, and
   `MEMBER_LINK_DATA_IGNORED` reports it (a warning; strict refuses), with the weight
   of the directory case (2026-10-17, "skip and report"). A member header right after
-  the link header means the size names no data: nothing is skipped or reported, as for
-  a `DIRTYPE` header with a size (PR 763).
+  the link header means the size names no data: nothing is skipped, as for a `DIRTYPE`
+  header with a size (PR 763), and both are reported with `MEMBER_HEADER_AMBIGUOUS`
+  (`size_on_no_data`; 2026-10-30, as no real writer puts a size there).
 
 **Reopen if** a real producer writes the extra bytes routinely (then check DR-6).
 
@@ -342,7 +344,8 @@ the right weight.
 **Rule.** A valid file using a feature archivey cannot decode raises
 `UnsupportedFeatureError`. `CorruptionError` is only for data that is actually damaged.
 The truncated/corrupt split is best-effort: `TruncatedError` is a `CorruptionError`
-subclass, and callers should not branch on it.
+subclass, and the docs present it as a hint that the source was most likely cut short,
+so fetching it again or resuming a download may help.
 
 **Why.** Exception types are control flow. A caller sorting a backup corpus treats
 "corrupt" files differently from "needs a newer tool".
@@ -350,7 +353,10 @@ subclass, and callers should not branch on it.
 **Rulings.** lzip version 0 is unsupported, not corrupt (2026-10-03, PR 567). LZMA with
 `lc + lp > 4` stays unsupported because liblzma cannot decode it, and the handbook names
 the one library that could (2026-10-08, PR 621). `TruncatedError` became a
-`CorruptionError` subclass before 0.2.0 (2026-09-27, PR 508).
+`CorruptionError` subclass before 0.2.0 (2026-09-27, PR 508). `TruncatedError` is a
+resume hint, kept best effort, instead of a label not to branch on: an aborted download
+is the common cause, and a caller can act on that (davi, 2026-10-30, PR 1140); reopen if
+a common cut raises plain `CorruptionError`.
 
 ### DR-4a. The integrity guarantee is for a start-to-end read
 
@@ -388,9 +394,10 @@ where the reads had reached completes a paused digest, maintainer 2026-10-13.
 - **Access mode.** Streaming and random access end up the same on disk "unless there's a
   strong reason that makes it impossible" (2026-09-25).
 - **Operating system.** The same archive extracts the same way on Linux, macOS and
-  Windows, or is refused everywhere.
+  Windows, or is refused everywhere, but for the same crafted shape under rapidgzip
+  (DR-5a).
 - **Accelerators and extras.** An accelerator changes speed, never the result or the
-  error type.
+  error type, but for one crafted shape (DR-5a).
 - **Entry point.** Public functions agree with each other (`detect_format` recognises
   what `open_archive` opens).
 - **When and where a call is made.** A call that works on one archive, or at one point in
@@ -456,6 +463,15 @@ meaning instead of 7-Zip's three bytes, because matching would mean carrying eac
 origin through the filters "for a name nobody writes on purpose" (2026-10-03, PR 564).
 The quadratic crafted hard-link shape was settled by the simpler backward-only rule
 rather than more memo state (2026-10-02, PR 532).
+rapidgzip on a ZIP or 7z DEFLATE member checks only the tail after the last point of its
+index, so a second stream that holds that point, with a size and CRC that cover both
+streams, reads as both; with the accelerator off it raises. Finding the first stream's
+end takes a decode from the start, which "negates the whole point of accelerators", so
+the limitation is accepted and documented (2026-10-24). Whether the second stream holds
+the point depends on the data, rapidgzip's thread count and the platform, so the same
+member may read on one machine and be refused on another; that is accepted as well, and
+the docs say "may" (2026-10-25). It does not relax DR-1: the output is what the member's
+own size and CRC describe.
 
 **Reopen if** a real producer writes the shape.
 
@@ -500,32 +516,53 @@ directory path raises `ArchiveyUsageError` (#225). An empty listing under an exp
 `format=` is reported, not refused, because an override is obeyed (diagnostics design,
 2026-08).
 
-### DR-25. Type comes from structure; data decides when structure is silent
+### DR-25. Type follows the format's own type field; contradictions are reported and lose no bytes
 
-**Rule.** A member's `type` follows the format's structural marker: the trailing separator
-in the name (ZIP, and the V7 spelling in TAR), the typeflag (TAR), the directory flag
-(RAR), stream presence (7z: a record with a stream is never a directory), the directory
-record (ISO). A mode attribute, the Unix `st_mode` bits a ZIP, 7z, RAR or Rock Ridge
-writer stored, never overrides that marker. Where the structure says nothing about what
-the entry is, the data decides: an entry with a data stream is `FILE`; a special-mode entry
-(device, FIFO, socket, unknown) with no stream is `OTHER`. What the archive said is always
-visible: `extra["special_file_type"]` is set on every member whose stored type is special,
-`FILE` and `OTHER` alike, and a special-mode entry typed `FILE` for its data also gets
-`MEMBER_SPECIAL_FILE_HAS_DATA` (advisory). Bytes that extraction does not deliver, a
-directory entry that declares data, are reported with `MEMBER_DIRECTORY_DATA_IGNORED` (a
-warning; strict refuses) and stay readable: `open()` refuses a member that has no data (an
-anti item, a stream-less `OTHER`, a directory with none), not a member by its type, and
-`stream_members()` yields a stream for exactly the directories `open()` reads.
+**What it is for.** Three things. No bytes vanish silently: an entry that holds data never
+gets a type that makes every read skip it without a word. One entry has one type whoever
+reads it: a file read, a pipe read, `open()`, `stream_members()` and extraction agree. And
+fields that are often junk do not decide the type on their own.
 
-Ruled 2026-10-10. Applied by PR 730 (special-mode entries, every format), PR 731
-(directory data in ZIP and RAR, and `open()` by data) and PR 763 (directory data in TAR;
-a `DIRTYPE` header with a size that the walk ends right after is reported the same
-way, since its blocks cannot be told from the trailer). Extended 2026-10-17 (maintainer
-decision): `stream_members()` yields a data stream for a directory that declares data, in
-every format, with the bytes and checks `open()` gives, where it had yielded `None` for
-every directory and left the bytes out of a forward-only reader's reach. The one shape
-left out is a ZIP directory written with a data descriptor (bit 3) and read from a pipe:
-the pass meets it before its size, and its message says so.
+**Rule.**
+
+1. A member's `type` comes from the field the format defines as the entry's type: the
+   typeflag (TAR, with the V7 trailing `/` on a regular-file header), the directory flag
+   (RAR), the attribute word together with an empty stream (7z), the directory record
+   (ISO), and in ZIP the external attributes read by their host (APPNOTE 4.4.15: a Unix
+   creator's mode, a DOS/Windows creator's attribute byte) together with the trailing `/`
+   (Info-ZIP's convention, which the spec does not define but every writer follows).
+   Where the spec says nothing, the field the format's reference extractor reads decides.
+   A field the format does not define as a type, such as Unix mode bits a 7z, RAR or
+   Rock Ridge writer stored in an extension, describes the entry but does not type it.
+2. Where an entry's fields contradict each other, or its type contradicts its data, the
+   reading the reference tools agree on wins, the shape is reported, and bytes extraction
+   does not write stay readable. A special-mode entry (device, FIFO, socket, unknown)
+   that owns a data stream is `FILE` with `MEMBER_SPECIAL_FILE_HAS_DATA` (advisory); with
+   no stream it is `OTHER`. `extra["special_file_type"]` is set on every member whose
+   stored type is special, `FILE` and `OTHER` alike. A directory entry that declares data
+   stays a directory, reported with `MEMBER_DIRECTORY_DATA_IGNORED` (a warning; strict
+   refuses). Where the reference tools split, the reading the format's spec supports wins
+   and `MEMBER_READERS_DISAGREE` says which tools read it otherwise.
+3. Every access mode gives the same answer where the reader can know it. `open()` refuses
+   a member that has no data (an anti item, a stream-less `OTHER`, a directory with none),
+   not a member by its type, and `stream_members()` yields a stream for exactly the
+   directories `open()` reads. Where a forward-only reader cannot know in time, the
+   exception is written here and in the format's page, and its message or docs say so.
+   Two stand today, both ZIP read from a pipe: a directory written with a data descriptor
+   (bit 3), whose size the pass meets after its data; and an entry that only its
+   attributes mark a directory, which the pass yields as the `FILE` its name says, with
+   its stream, and which becomes a `DIRECTORY` when the central directory is read after
+   the pass (extraction from a pipe still writes the directory).
+
+Ruled 2026-10-10 as "type comes from structure; data decides when structure is silent".
+Applied by PR 730 (special-mode entries, every format), PR 731 (directory data in ZIP
+and RAR, and `open()` by data) and PR 763 (directory data in TAR; a `DIRTYPE` header with
+a size that the walk ends right after is reported the same way, since its blocks cannot
+be told from the trailer). Extended 2026-10-17 (maintainer decision): `stream_members()`
+yields a data stream for a directory that declares data, in every format, with the bytes
+and checks `open()` gives. Restated 2026-10-31 (davi, PR 1192) around its goals, since
+"structure" against "mode attribute" depended on the format: in ZIP the attributes are
+the type field the spec defines, so they type the entry with or without the slash.
 
 **Why.** Info-ZIP's `zip -FI` stores a named pipe's content under the pipe's own FIFO
 mode, and libarchive carries a workaround for exactly that shape; unzip, 7-Zip, bsdtar
@@ -546,6 +583,13 @@ empty entry; `jar` 21.0.12, measured for this rule, stores directories with both
 - Both halves accepted by the maintainer on that report (2026-10-10).
 - A 7z record with a stream is a file whatever its attribute word says, as in 7-Zip (PR
   698).
+- A ZIP entry whose attributes mark it a directory (a Unix creator's directory mode, or
+  the DOS directory bit `0x10` from a DOS/Windows creator) is a `DIRECTORY` without the
+  trailing `/`, even over data, which is then a directory's data, as 7-Zip and libarchive
+  read it and as APPNOTE 4.4.15 and 4.3.8 support; unzip and `zipfile` go by the name and
+  write a file, so `MEMBER_READERS_DISAGREE` (`directory_attribute_without_slash`)
+  reports it (davi, 2026-10-31, PR 1192). 7z keeps its attribute plus empty stream: its
+  format marks a directory that way, and 7-Zip writes a record with a stream as a file.
 - A TAR device or directory typeflag followed by data is damage, not a file: GNU tar and
   libarchive ignore the size field for those typeflags and resync, so archivey's
   `CorruptionError` stands. A TAR regular-file typeflag (NUL, `0` or contiguous `7`)
@@ -632,6 +676,24 @@ field would be false for most members of an ordinary read.
 - ISO path-table entries count against `max_members` (2026-10-06, PR 612).
 - Hard-link copies at the link-count limit count toward `max_ratio`; cross-device copies
   count only toward bytes (2026-10-07, PR 623).
+- A container inside a compression stream (a `.tar.gz`, a handler's `.cpio.xz`) holds
+  its whole decode to the archive-wide `max_ratio` in every use, listing included
+  (`DecodeRatioGuard`): listing one decodes everything, and extraction would refuse the
+  same archive anyway (davi, 2026-10-29, PR 1138). Cost: an honest archive over 1000:1
+  past the first 5 MiB no longer lists by default (800:1 since 2026-10-30). Reopen if a real archive class
+  (not a test of zeros) is refused there.
+- `max_ratio` holds every member read (`open()`, `read()`, `stream_members()`), by the
+  per-member and archive-wide rules extraction applies (`MemberRatioGuard`): scanning
+  or hashing members pays for the decode as extracting does, and holding only the
+  compressed-tar spelling of a bzip2 bomb left the ZIP, 7z and bare `.bz2` spellings
+  open (davi, 2026-10-30, after PR 1138). Cost: an honest member over 1000:1 past
+  5 MiB no longer reads by default. Extraction's passes keep their own tracker.
+- The ratio fields move from `ExtractionLimits` to `DecoderLimits`, since they now hold
+  every decode; the `ExtractionLimits` fields stay one minor, deprecated, and override
+  when set (davi, 2026-10-30). Default `max_ratio` 800, below Deflate's ceiling of about
+  1032:1, so a gzip of zeros (about 1003 to 1032:1) is refused every time rather than
+  by chance, as zeros are in every other codec (davi, 2026-10-30). Raising it so gzip
+  of zeros passes was weighed: bzip2, xz and zstd of zeros would still be refused.
 - Default numbers (decided 2026-10-07): `max_members` and `max_entries` 262,144;
   `max_key_derivation_rounds` 2**25. These replace the 2026-10-01 decision to keep
   1,048,576 and 2**27, after measuring per-member listing cost.
@@ -677,7 +739,9 @@ footgun on TAR/7z" (ADR 0003). Blocking a cheap read too catches the mistake dur
 development, not in production on a different archive (2026-09-29).
 
 **Rulings.** ADR 0003, 0004, 0010. `stream_members()` is never seekable (2026-09-26).
-The gzip AUTO accelerator stays seek-only for 0.2.0 (2026-09-27). `ListingCost` names
+The gzip AUTO accelerator stays seek-only for 0.2.0 (2026-09-27); after it, AUTO also
+takes a large sequential DEFLATE-family read at 3:1 or less, on Linux and macOS, and the
+stream stays forward-only (2026-10-26). `ListingCost` names
 how the member list is read through the source the archive was opened on (index, header
 walk or decompression), not the work of finding the index or when it is paid: RAR
 reports `REQUIRES_SCANNING` although it walks its headers inside `open_archive`
@@ -773,6 +837,25 @@ the rulings above.
   minor release. A minor release may add a verb, which then wins over a file of that
   name; `archivey list <path>` and `./<path>` always reach the file (`cli` spec).
 - `archivey.internal` is not public and changes freely.
+- The plugin interface is experimental and outside this rule: `archivey.formats` and the
+  names that exist only for it (`PluginContainer`, `PluginStream`,
+  `FormatPolicy.replace`, `FormatInfo.from_plugin`) may change or go in any release,
+  with no deprecation release (maintainer, 2026-10-31: it should not freeze before
+  the maintainer has reviewed it closely). `scripts/api_surface.py` `EXPERIMENTAL`
+  lists them, and `release.py notes` does not ask for a minor for a line whose own
+  name is one of them.
+  A stable signature that only mentions one (`FormatPolicy`'s constructor with
+  `replace=`, `ArchiveFormat`'s `container` field typed `ContainerFormat |
+  PluginContainer`) still shows as a minor; the maintainer judges that change.
+  `FormatPolicy.plugins` stays stable (maintainer, 2026-10-31): a switch that refuses
+  plugin formats keeps working whatever happens to the interface it refuses. Declaring
+  the interface stable is the maintainer's call.
+- The verification level is experimental too, on the same terms: `Verification`,
+  `ArchiveStream.verified` and `ArchiveStream.verifiable` may change or be removed in any
+  release (maintainer, 2026-11-01: the levels are still confusing and need a redesign,
+  such as a level for every byte covered by some check, and one for a full read with no
+  checksum). `EXPERIMENTAL` lists them. The checks themselves are not experimental: a
+  failed check raises as it always did.
 
 Public docs: `docs/how-it-is-built.md` §Versioning and stability.
 
@@ -1152,10 +1235,13 @@ reaches him.
 - A **clash between consistency and the official tool** where the factors split.
 - Anything **outside the repo**: upstream bug reports (agents draft them, the maintainer
   files them), repository settings, publishing.
-- Merging a **tricky** pull request: a behaviour trade-off, a design reversal, removing
-  or renaming a public name (DR-12a), a very large diff, or anything an open
-  decision touches. A straightforward one an agent may merge once its review approves and
-  CI is green.
+- Merging a **tricky** pull request: one that makes a decision of the maintainer's, such
+  as a behaviour trade-off, a design reversal, removing or renaming a public name
+  (DR-12a), or anything an open decision touches (the list is in `AGENTS.md`, and
+  `scripts/review_prep.py tier` finds most of it). Size alone is not one of them. Any
+  other one an agent may merge once its review approves and CI is green; on standard and
+  deep that approval includes the Opus pass, and on deep Cursor's too (maintainer,
+  2026-10-31).
 
 How to ask is in `AGENTS.md` §Working with the maintainer.
 

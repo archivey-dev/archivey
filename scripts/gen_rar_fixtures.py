@@ -130,6 +130,12 @@ _SYMLINKS: tuple[_File, ...] = (
     _File("subdir_link_with_slash", link_target="subdir/"),
 )
 
+_UNKNOWN_REDIRECT: tuple[_File, ...] = (
+    _File("a.txt", _hex_lines(b"unknown-redirect-a", 300)),
+    _File("link", link_target="a.txt"),
+    _File("b.txt", _hex_lines(b"unknown-redirect-b", 300)),
+)
+
 _HARDLINKS: tuple[_File, ...] = (
     _File("file1.txt", b"Hello 1!"),
     _File("subdir/file2.txt", b"Hello 2!"),
@@ -226,10 +232,10 @@ def _build_xtime(rar_bin: Path, out: Path, *, extra: Sequence[str] = ()) -> None
     print(f"wrote {_shown(out)}")
 
 
-def _run(cmd: Sequence[str], *, cwd: Path) -> None:
+def _run(cmd: Sequence[str], *, cwd: Path, input: bytes | None = None) -> None:
     env = os.environ.copy()
     env["TZ"] = "UTC"
-    subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, env=env)
+    subprocess.run(cmd, cwd=cwd, input=input, check=True, capture_output=True, env=env)
 
 
 def _write_tree(root: Path, files: Iterable[_File]) -> list[str]:
@@ -602,21 +608,31 @@ def _read_vint(data: bytes | bytearray, pos: int) -> tuple[int, int]:
             return value, pos
 
 
-def _strip_file_crc32(archive: Path, member: str) -> None:
-    """Drop ``member``'s CRC32 from its RAR5 FILE header, leaving it no digest.
+@dataclass(frozen=True)
+class _FileHeader:
+    """Where the fields of one RAR5 FILE header sit in the archive's bytes."""
 
-    RAR5 makes the CRC32 optional (file flag ``0x0004``); ``rar`` always writes one.
-    The header is rewritten without it and its header CRC recomputed.
-    """
-    data = bytearray(archive.read_bytes())
+    block_at: int  # the header CRC32
+    body_at: int  # the header body, after its size vint; the CRC covers from pos + 4
+    end: int  # the end of the header (its data area follows)
+    extra_at: int  # the extra area, ``end`` when there is none
+    flags_at: int  # the file flags vint
+    flags_end: int
+    file_flags: int
+    crc_at: int  # where the CRC32 is, or would be
+
+
+def _find_file_header(data: bytes | bytearray, member: str) -> _FileHeader:
+    """The RAR5 FILE header named ``member``, walking the blocks from the signature."""
     pos = 8  # the RAR5 signature
     while pos < len(data):
         size, body_at = _read_vint(data, pos + 4)
         end = body_at + size
         block_type, q = _read_vint(data, body_at)
         flags, q = _read_vint(data, q)
+        extra_size = 0
         if flags & 0x0001:  # extra area
-            _, q = _read_vint(data, q)
+            extra_size, q = _read_vint(data, q)
         data_size = 0
         if flags & 0x0002:  # data area
             data_size, q = _read_vint(data, q)
@@ -629,27 +645,83 @@ def _strip_file_crc32(archive: Path, member: str) -> None:
             if file_flags & 0x0002:  # mtime
                 q += 4
             crc_at = q
-            if file_flags & 0x0004:
+            if file_flags & 0x0004:  # CRC32
                 q += 4
             _, q = _read_vint(data, q)  # compression info
             _, q = _read_vint(data, q)  # host OS
             name_len, q = _read_vint(data, q)
-            if file_flags & 0x0004 and data[q : q + name_len] == member.encode():
-                body = (
-                    data[body_at:flags_at]
-                    + _vint(file_flags & ~0x0004)
-                    + data[flags_end:crc_at]
-                    + data[crc_at + 4 : end]
-                )
-                head = _vint(len(body)) + body
-                crc = binascii.crc32(head) & 0xFFFFFFFF
-                data[pos:end] = crc.to_bytes(4, "little") + head
-                archive.write_bytes(bytes(data))
-                return
+            if data[q : q + name_len] == member.encode():
+                return _FileHeader(
+                    pos, body_at, end, end - extra_size, flags_at, flags_end,
+                    file_flags, crc_at,
+                )  # fmt: skip
         if block_type == 5:  # end of archive
             break
         pos = end + data_size
-    raise ValueError(f"no RAR5 FILE header with a CRC32 for {member!r} in {archive}")
+    raise ValueError(f"no RAR5 FILE header for {member!r}")
+
+
+def _recompute_header_crc(data: bytearray, header: _FileHeader) -> None:
+    crc = binascii.crc32(data[header.block_at + 4 : header.end]) & 0xFFFFFFFF
+    data[header.block_at : header.block_at + 4] = crc.to_bytes(4, "little")
+
+
+def _strip_file_crc32(archive: Path, member: str) -> None:
+    """Drop ``member``'s CRC32 from its RAR5 FILE header, leaving it no digest.
+
+    RAR5 makes the CRC32 optional (file flag ``0x0004``); ``rar`` always writes one.
+    The header is rewritten without it and its header CRC recomputed.
+    """
+    data = bytearray(archive.read_bytes())
+    h = _find_file_header(data, member)
+    if not h.file_flags & 0x0004:
+        raise ValueError(f"{member!r} in {archive} has no CRC32")
+    body = (
+        data[h.body_at : h.flags_at]
+        + _vint(h.file_flags & ~0x0004)
+        + data[h.flags_end : h.crc_at]
+        + data[h.crc_at + 4 : h.end]
+    )
+    head = _vint(len(body)) + body
+    crc = binascii.crc32(head) & 0xFFFFFFFF
+    data[h.block_at : h.end] = crc.to_bytes(4, "little") + head
+    archive.write_bytes(bytes(data))
+
+
+def _set_redirect_type(archive: Path, member: str, redirect_type: int) -> None:
+    """Rewrite ``member``'s RAR5 redirect record to ``redirect_type``.
+
+    The type is the record's first field after its size and record type, a one-byte
+    vint for every value written here, so the header keeps its length and only its
+    CRC is recomputed.
+    """
+    assert redirect_type < 0x80
+    data = bytearray(archive.read_bytes())
+    h = _find_file_header(data, member)
+    x = h.extra_at
+    while x < h.end:
+        record_size, record_at = _read_vint(data, x)
+        record_type, type_end = _read_vint(data, record_at)
+        if record_type == 5:  # FHEXTRA_REDIR
+            data[type_end] = redirect_type
+            _recompute_header_crc(data, h)
+            archive.write_bytes(bytes(data))
+            return
+        x = record_at + record_size
+    raise ValueError(f"no RAR5 redirect record for {member!r} in {archive}")
+
+
+def _build_unknown_redirect(rar5_bin: Path, out_dir: Path) -> None:
+    """A solid run with a redirect of type 6, which no RAR version writes, between
+    two compressed files. ``unrar`` 7.00 lists it as a file, warns "Unknown extra
+    field" and emits nothing for it; ``-ds`` keeps the files in this order."""
+    out = out_dir / "redirect_unknown_solid__.rar"
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        names = _write_tree(root, _UNKNOWN_REDIRECT)
+        _rar_a(rar5_bin, out, names, cwd=root, extra=("-s", "-ds", "-m3"))
+    _set_redirect_type(out, "link", 6)
+    print(f"wrote {_shown(out)}")
 
 
 def _build_unar_drop(rar5_bin: Path, out_dir: Path) -> None:
@@ -712,6 +784,30 @@ def _build_missing_last_volume(rar5_bin: Path, out_dir: Path) -> None:
             raise RuntimeError(f"expected {stem} to span at least four volumes")
         volumes[-1].unlink()
         for volume in volumes[:-1]:
+            print(f"wrote {_shown(volume)}")
+
+
+# ``rar a -v -si``: one member read from stdin, split across volumes. Every part but
+# the last has the "unpacked size unknown" file flag and no real size; the last part
+# carries it. (stem, extra switches, payload)
+_STDIN_SETS: tuple[tuple[str, tuple[str, ...], bytes], ...] = (
+    ("stdin_vol", ("-m0", "-v900b"), _hex_lines(b"stdin-vol", 2000)),
+    ("stdin_vol_m3", ("-m3", "-v900b"), _hex_lines(b"stdin-vol-m3", 4000)),
+)
+
+
+def _build_stdin_volumes(rar5_bin: Path, out_dir: Path) -> None:
+    """Volume sets whose one member ``rar`` read from stdin (``-si``)."""
+    for stem, extra, payload in _STDIN_SETS:
+        for stale in out_dir.glob(f"{stem}.part*.rar"):
+            stale.unlink()
+        cmd = [str(rar5_bin), "a", "-idq", *extra, "-sistdin.txt"]
+        with tempfile.TemporaryDirectory() as td:
+            _run([*cmd, str(out_dir / f"{stem}.rar")], cwd=Path(td), input=payload)
+        volumes = sorted(out_dir.glob(f"{stem}.part*.rar"))
+        if len(volumes) < 2:
+            raise RuntimeError(f"expected {stem} to span at least two volumes")
+        for volume in volumes:
             print(f"wrote {_shown(volume)}")
 
 
@@ -868,6 +964,7 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         extra=("-m0", "-ppassword"),
     )
     _build_unar_drop(rar5_bin, out_dir)
+    _build_unknown_redirect(rar5_bin, out_dir)
     _build_file_version(
         rar5_bin,
         out_dir / "file_version__.rar",
@@ -999,6 +1096,7 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         print(f"wrote {_shown(part2)}")
 
     _build_missing_last_volume(rar5_bin, out_dir)
+    _build_stdin_volumes(rar5_bin, out_dir)
 
     # --- RAR4 (needs -ma4) ---
     # Classic extension volumes (name.rar + name.r00…): RAR4-only via -vn.

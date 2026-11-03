@@ -6,7 +6,7 @@ Two scales:
 - ``realistic`` — multi-MiB corpora for wall-time ratios vs stdlib (VISION ≤1.3× surface).
 
 Large solid 7z/RAR archives are generated when py7zr / ``rar`` are available.
-WinZip AES ZIPs need the ``[crypto]`` extra to build (and to decrypt under archivey).
+WinZip AES ZIPs need the ``[recommended]`` extra to build (and to decrypt under archivey).
 """
 
 from __future__ import annotations
@@ -47,6 +47,8 @@ class Scale:
     # Tiny-payload listing corpora (header/member-build cost, not codec cost).
     list_members: int
     nonsolid_list_members: int
+    # Many small files (20-600 bytes) for ``benchmarks/peers.py``: per-member cost.
+    small_members: int
 
 
 SCALES: dict[str, Scale] = {
@@ -67,6 +69,7 @@ SCALES: dict[str, Scale] = {
         solid_member_size=64 * 1024,
         list_members=1_000,
         nonsolid_list_members=256,
+        small_members=200,
     ),
     # ~16 MiB ZIP/TAR, 32 MiB gzip, ~16 MiB solid — wall-time vs stdlib.
     "realistic": Scale(
@@ -78,6 +81,7 @@ SCALES: dict[str, Scale] = {
         solid_member_size=256 * 1024,
         list_members=10_000,
         nonsolid_list_members=1_000,
+        small_members=4_000,
     ),
 }
 
@@ -147,7 +151,7 @@ def build_zip_aes(
 ) -> int:
     """Build a multi-member WinZip AES-256 (AE-2) ZIP; return unpacked bytes.
 
-    Requires ``cryptography`` (the same ``[crypto]`` extra needed to decrypt). Returns
+    Requires ``cryptography`` (the same ``[recommended]`` extra needed to decrypt). Returns
     0 and leaves ``path`` absent when the extra is missing.
     """
     try:

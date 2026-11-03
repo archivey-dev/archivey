@@ -24,7 +24,7 @@ else is here. A release is four commands, run from a clean, up-to-date ``main``:
    installs from ``main`` stay distinguishable from the release.
 
 ``--dry-run`` on any step prints the commands and changes nothing. The text edits are
-pure functions, tested in ``tests/test_release_script.py``.
+pure functions, tested in ``scripts/tests/test_release_script.py``.
 
 Stdlib only; GitHub is reached through the ``gh`` command.
 """
@@ -69,16 +69,17 @@ _LINK_RE = re.compile(r"^\[[^\]]+\]: ", re.MULTILINE)
 #: pull request was open, which only ``ci.yml`` has seen; when that matters, merge
 #: ``main`` into the release branch and run the gates again before merging.
 #: ``benchmark-wall.yml`` is left out: the release checklist §2 runs
-#: the benchmark by hand. ``tests/test_release_script.py`` fails when a scheduled
-#: workflow is neither here nor in its list of workflows that are not gates.
+#: the benchmark by hand. ``scripts/tests/test_release_script.py`` fails when a
+#: scheduled workflow is neither here nor in its list of workflows that are not gates.
 RELEASE_GATE_WORKFLOWS = (
     "accelerator-crash-search.yml",
     "accelerator-fuzz-soak.yml",
-    # Its pull request mode runs each target for 1 to 3 seconds; a dispatched run uses
+    # Its merge-queue mode runs each target for 1 to 3 seconds; a dispatched run uses
     # the nightly budgets, about ten times longer.
     "atheris-fuzz.yml",
     "rapidgzip-resume-stress.yml",
-    # Pull requests skip PyPy's core-only suite; a dispatched run includes it.
+    # Pull requests run a reduced set of jobs and the merge queue skips PyPy's core-only
+    # suite; a dispatched run includes everything, as the daily run on main does.
     "ci.yml",
 )
 

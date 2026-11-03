@@ -34,12 +34,16 @@ from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.filters import resolve_or_raise_on_loop
 from archivey.internal.logs import backends as logger
 from archivey.internal.open_site import OpenSite
+from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import MemberStreamParts
 from archivey.internal.timestamps import unix_to_datetime
-from archivey.internal.windows_reparse import FILE_ATTRIBUTE_REPARSE_POINT
+from archivey.internal.windows_reparse import (
+    FILE_ATTRIBUTE_REPARSE_POINT,
+    IO_REPARSE_TAG_MOUNT_POINT,
+)
 from archivey.terminal import display_path, quoted
 from archivey.types import (
     EXTRA_IS_JUNCTION,
@@ -137,14 +141,18 @@ def _changed_since_listing(name: str, what: str, action: str = "reading") -> OSE
     )
 
 
-def _is_junction(entry: os.DirEntry[str]) -> bool:
+def _is_junction(entry: os.DirEntry[str], st: os.stat_result) -> bool:
     """True if a scandir entry is a Windows NTFS junction.
 
-    ``os.DirEntry.is_junction()`` only exists on Python 3.12+; on older interpreters
-    (and on every non-Windows platform, where junctions don't exist) this returns False.
+    ``st`` is the entry's ``stat(follow_symlinks=False)``. ``os.DirEntry.is_junction()``
+    only exists on Python 3.12+; before it, the junction's reparse tag in ``st`` says
+    so (``st_reparse_tag``, set on Windows only). On every other platform, where
+    junctions don't exist, this returns False.
     """
     is_junction = getattr(entry, "is_junction", None)
-    return bool(is_junction()) if is_junction is not None else False
+    if is_junction is not None:
+        return bool(is_junction())
+    return getattr(st, "st_reparse_tag", 0) == IO_REPARSE_TAG_MOUNT_POINT
 
 
 class DirectoryReader(BaseArchiveReader):
@@ -182,6 +190,7 @@ class DirectoryReader(BaseArchiveReader):
         self._uname_cache: dict[int, str | None] = {}
         self._gname_cache: dict[int, str | None] = {}
 
+    @override
     def _check_extraction_dest(self, dest: Path) -> None:
         # Extracting a tree into a directory inside it reads its own output: a
         # streaming walk descends into what it just wrote (`copy/copy/copy/...`)
@@ -206,6 +215,7 @@ class DirectoryReader(BaseArchiveReader):
                 f"inside the source {display_path(self._root)}"
             )
 
+    @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
         # An explicit stack rather than recursion: a tree deeper than the interpreter's
         # recursion limit (easy to produce by extracting an archive of `a/a/a/…/f`)
@@ -338,7 +348,7 @@ class DirectoryReader(BaseArchiveReader):
                 if _STAT_LACKS_IDENTITY and stat.S_ISREG(st.st_mode):
                     st = self._stat_with_identity(entry_path, st)
                 is_symlink = stat.S_ISLNK(st.st_mode)
-                is_junction = not is_symlink and _is_junction(entry)
+                is_junction = not is_symlink and _is_junction(entry, st)
                 link_target = (
                     self._read_link_target(entry_path, entry.name, dir_fd)
                     if is_symlink or is_junction
@@ -565,8 +575,9 @@ class DirectoryReader(BaseArchiveReader):
                 self._gname_cache[gid] = None
         return self._gname_cache[gid]
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
-        # Wrapped like every backend's member stream (the uniform-handle contract): the
+    @override
+    def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
+        # Served like every backend's member stream (the uniform-handle contract): the
         # directory backend has no translator (a genuine OSError propagates unchanged,
         # and the refusals `_open_listed_file` raises for a member that no longer
         # matches the listing are OSError too: a backend serving raw bytes through no
@@ -577,7 +588,7 @@ class DirectoryReader(BaseArchiveReader):
         raw = os.fdopen(
             self._open_listed_file(member.name, member.size, identity), "rb"
         )
-        return self._wrap_member_stream(raw, member.name, size=member.size)
+        return self._member_parts(raw, member.name, size=member.size)
 
     def _open_listed_file(
         self, name: str, listed_size: int | None, expected: _Identity | None
@@ -655,6 +666,7 @@ class DirectoryReader(BaseArchiveReader):
         finally:
             os.close(fd)
 
+    @override
     def _get_archive_info(self) -> ArchiveInfo:
         cost = CostReceipt(
             # A directory has no O(1) index; listing walks the tree header-to-header
@@ -675,6 +687,7 @@ class DirectoryReader(BaseArchiveReader):
             cost=cost,
         )
 
+    @override
     def _close_archive(self) -> None:
         pass  # nothing to close for filesystem directory
 
@@ -686,6 +699,7 @@ class DirectoryReadBackend(ReadBackend):
     EXTENSIONS: Mapping[str, ArchiveFormat] = {}
     MAGIC: tuple[MagicSignature, ...] = ()
 
+    @override
     def open_read(
         self,
         source: ArchiveSource,

@@ -225,7 +225,8 @@ The others, checked on the files:
   raw LZ4 block, not an LZ4 frame. Archivey detects it by extension only and fails it as
   unconfirmed. Reading it would be a small feature.
 - **ZIP methods 1 (Shrink) and 6 (Implode).** Two old DOS-era archives use them. `unzip`
-  and 7-Zip read both; archivey does not support either method.
+  and 7-Zip read both; archivey did not support either method. Read since 2026-10-30
+  (`codecs/zip_legacy_decoder.py`).
 - **Raw exception reprs in messages.** The ISO reader, and some gzip, tar and bzip2
   paths, put `repr(exc)` in the `CorruptionError` text (`error('unpack_from requires a
   buffer of at least 16 bytes…')`, `IndexError(…)`). The ZIP path double-escapes a byte

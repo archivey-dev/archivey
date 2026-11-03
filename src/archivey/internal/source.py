@@ -74,11 +74,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 
 from archivey.internal.arg_checks import raise_if_text_stream
+from archivey.internal.overrides import override
 
 # ``archive_stream`` imports nothing back from the source boundary (this module, the
 # detection workspace, ``volumes``), so :func:`seek_is_expensive` can type-test it here
 # without a lazy import.
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 from archivey.internal.streams.streamtools import (
     DEFAULT_UNKNOWN_LENGTH_READ_STEP,
     ReadOnlyIOStream,
@@ -242,6 +243,7 @@ class _ArrivedView(ReadOnlyIOStream):
         super().__init__()
         self._source = source
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
@@ -349,6 +351,10 @@ class ArchiveSource(ReadOnlyIOStream):
         # clamp needs it, and it is only ever moved through this object. A caller's
         # seekable stream starts wherever the caller left it.
         self._pos = position
+        # The furthest position a seekable source left before its last seek
+        # (``bytes_reached``). Reads only move forward, so that and ``_pos`` hold the
+        # furthest position reached, and a read does not pay to keep it.
+        self._reached = position
         # Only a non-seekable source replays a prefix; a seekable one is rewound instead.
         self._replay = None if seekable else bytearray()
         # Set for a non-seekable raw source, whose full-count reads all go through it.
@@ -559,18 +565,50 @@ class ArchiveSource(ReadOnlyIOStream):
         return self._size
 
     @property
+    def bytes_pulled(self) -> int | None:
+        """How many bytes this source has taken from a non-seekable stream so far, or
+        ``None`` for a seekable source and for a directory, which has no stream.
+
+        What was consumed plus the replay prefix detection peeked and nothing has read
+        yet: every byte the pipe has given up. The live ratio denominator of an archive
+        read straight from a pipe, where no codec input counter stands in
+        (``BaseArchiveReader.compressed_bytes_consumed``). A forward-only source never
+        re-reads, so this is exactly the archive bytes read, and at the end of the
+        source it is the whole size.
+        """
+        replay = self._replay
+        if replay is None or self._is_directory:
+            return None
+        return self._pos + len(replay)
+
+    @property
+    def bytes_reached(self) -> int | None:
+        """The furthest offset a seekable source has been read or moved to, or
+        ``None`` for a non-seekable source and for a directory.
+
+        The live ratio denominator of an archive read from a seekable stream whose
+        size archivey does not know (``BaseArchiveReader.compressed_bytes_consumed``),
+        as :attr:`bytes_pulled` is for a pipe. It never passes the bytes the archive
+        has, since a read stops at the end; reading again what was read adds nothing.
+        """
+        if self._replay is not None or self._is_directory:
+            return None
+        return max(self._reached, self._pos)
+
+    @property
     def seek_is_expensive(self) -> bool:
         """Whether a seek on this source may re-decode what it skips.
 
-        True when the caller's stream is an :class:`~archivey.ArchiveStream`, under any
-        pass-through buffer (see :func:`seek_is_expensive`), and for a joined set with
-        such a stream among its volumes: a read near the end of the set seeks that
-        volume. A path, and a caller stream that is a file or a ``BytesIO``, answer
-        ``False``.
+        True when the caller's stream is archivey's own member stream
+        (``ArchiveStreamImpl``), under any pass-through buffer (see
+        :func:`seek_is_expensive`), and for a joined set with such a stream among its
+        volumes: a read near the end of the set seeks that volume. A path, and a caller
+        stream that is a file or a ``BytesIO``, answer ``False``.
         """
         return self._seek_is_expensive
 
     @property
+    @override
     def name(self) -> str:  # pyrefly: ignore[bad-override]  # ty: ignore[invalid-property-type-override]  # base is Never; a source has a path when the caller gave one
         """The source's path, or raise :exc:`AttributeError` if it has none.
 
@@ -583,6 +621,7 @@ class ArchiveSource(ReadOnlyIOStream):
 
     # --- stream surface ------------------------------------------------------------------
 
+    @override
     def seekable(self) -> bool:
         return self._seekable
 
@@ -603,6 +642,7 @@ class ArchiveSource(ReadOnlyIOStream):
         # or is not a regular file) stays a non-fact: reads step.
         return handle
 
+    @override
     def read(self, n: int | None = -1, /) -> bytes:
         if n is None or n < 0:
             return self._read_all()
@@ -700,6 +740,7 @@ class ArchiveSource(ReadOnlyIOStream):
             self._pos += len(rest)
         return head + rest if head else rest
 
+    @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         # The caller already allocated ``b``, so only the clamp matters here, not the
         # step. A replayed prefix or the gathering strategy goes through ``read``.
@@ -838,12 +879,15 @@ class ArchiveSource(ReadOnlyIOStream):
             replay.extend(read_arrived(self._stream(), missing))
         return bytes(replay[start:n])
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if not self._seekable:
             raise io.UnsupportedOperation("seek")
+        self._reached = max(self._reached, self._pos)
         self._pos = self._stream().seek(offset, whence)
         return self._pos
 
+    @override
     def tell(self, /) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
@@ -855,6 +899,7 @@ class ArchiveSource(ReadOnlyIOStream):
         # and answering that must not open it.
         return self._pos
 
+    @override
     def fileno(self) -> int:
         """Forward ``fileno`` for a file or a caller's buffered stream.
 
@@ -903,6 +948,7 @@ class ArchiveSource(ReadOnlyIOStream):
             self._size = max(self._size - start, 0)
         if self._length is not None:
             self._length = max(self._length - start, 0)
+        self._reached = max(self._reached - start, 0)
         self._pos = 0
 
     def on_close(self, callback: Callable[[], None]) -> None:
@@ -918,6 +964,7 @@ class ArchiveSource(ReadOnlyIOStream):
             return
         self._close_callbacks = (*self._close_callbacks, callback)
 
+    @override
     def close(self) -> None:
         if self.closed:
             return
@@ -951,6 +998,7 @@ class ArchiveSource(ReadOnlyIOStream):
                 self._full_count = None
                 super().close()
 
+    @override
     def __repr__(self) -> str:
         if self._is_directory:
             return f"ArchiveSource(directory={self._path!r})"
@@ -973,8 +1021,9 @@ def _check_peek_range(n: int, start: int) -> None:
 def seek_is_expensive(stream: BinaryIO) -> bool:
     """Whether repositioning ``stream`` may cost a re-decode rather than a pointer move.
 
-    True for an :class:`~archivey.ArchiveStream`: many codecs serve a backward seek by
-    decoding again from the start, and a seek to the end decodes everything before it.
+    True for archivey's own member stream (``ArchiveStreamImpl``): many codecs serve a
+    backward seek by decoding again from the start, and a seek to the end decodes
+    everything before it.
     The same holds under a pass-through layer (a ``BufferedReader``, a seek counter),
     which :func:`underlying_stream` peels the way :func:`source_byte_size` does. True as
     well for an :class:`ArchiveSource` that borrows one, which is how ``open_archive``
@@ -990,7 +1039,7 @@ def seek_is_expensive(stream: BinaryIO) -> bool:
     own = getattr(stream, "seek_is_expensive", None)
     if isinstance(own, bool):
         return own
-    return isinstance(underlying_stream(stream), ArchiveStream)
+    return isinstance(underlying_stream(stream), ArchiveStreamImpl)
 
 
 __all__ = ["ArchiveSource", "JoinedVolumes", "seek_is_expensive"]

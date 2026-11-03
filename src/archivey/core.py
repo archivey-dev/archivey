@@ -21,7 +21,7 @@ import errno
 import os
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, Literal, cast, overload
+from typing import TYPE_CHECKING, BinaryIO, Literal, NoReturn, cast, overload
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
@@ -63,6 +63,7 @@ from archivey.internal.detection import (
     probe_config,
 )
 from archivey.internal.diagnostics_collector import collector_from_config
+from archivey.internal.format_adapter import replacement_backend
 from archivey.internal.format_args import (
     coerce_archive_format,
     coerce_stream_or_archive_format,
@@ -78,9 +79,16 @@ from archivey.internal.registry import (
     list_supported_formats,
 )
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStream
-from archivey.internal.streams.codecs import codec_for_stream_format, open_codec_stream
-from archivey.internal.streams.streamtools import OneReadEachStream, is_stream
+from archivey.internal.streams.codecs import (
+    codec_for_stream_format,
+    open_codec_stream,
+    single_file_codec,
+)
+from archivey.internal.streams.streamtools import (
+    OneReadEachStream,
+    is_stream,
+    source_name,
+)
 from archivey.internal.volumes import (
     OpenSourceInput,
     ResolvedSource,
@@ -89,7 +97,7 @@ from archivey.internal.volumes import (
     is_sfx_stub_name,
     resolve_source,
 )
-from archivey.reader import ArchiveReader, ForwardArchiveReader
+from archivey.reader import ArchiveReader, ArchiveStream, ForwardArchiveReader
 from archivey.terminal import display_path
 from archivey.types import (
     ArchiveFormat,
@@ -98,10 +106,12 @@ from archivey.types import (
     FormatSupport,
     MemberStreams,
     MissingComponent,
+    PluginStream,
     StreamFormat,
 )
 
 if TYPE_CHECKING:
+    from archivey.formats import FormatHandler
     from archivey.internal.base_reader import ReadBackend
     from archivey.internal.diagnostics_collector import DiagnosticCollector
 
@@ -171,13 +181,18 @@ def _refuse_unjoined_volume_names(
     resolved: ResolvedSource,
     format: ArchiveFormat | None,
     archive_name: str | None,
+    *,
+    discover_volumes: bool = True,
 ) -> None:
     if resolved.volume_count != 1:
         return
     # Numbered parts are joined for ZIP and 7z. An explicit other format= (P8)
     # must be honoured or refused as a format conflict, not rewritten as a
-    # missing-volume error.
-    if format is None or format in (ArchiveFormat.ZIP, ArchiveFormat.SEVEN_Z):
+    # missing-volume error. With discovery off nothing looked for the other parts,
+    # so the part is read as the one file it is, and its reader says what it finds.
+    if discover_volumes and (
+        format is None or format in (ArchiveFormat.ZIP, ArchiveFormat.SEVEN_Z)
+    ):
         error = incomplete_lone_numbered_volume_error(archive_name)
         if error is not None:
             raise error
@@ -198,11 +213,12 @@ def _follow_stub_volume(
 
     Returns the resolved first volume, or ``None`` when no split volume sits beside
     the stub (``slot`` is then unchanged). Raises :class:`ArchiveyUsageError` when
-    ``format`` names a different container than the volume's, and the volume-name
-    refusals of :func:`_refuse_unjoined_volume_names`.
+    ``format`` names a different container than the volume's, :class:`OpenError` when
+    the volume found is a symbolic link, and the volume-name refusals of
+    :func:`_refuse_unjoined_volume_names`.
     """
     stub = slot.current.path
-    if stub is None:
+    if stub is None or (config is not None and not config.discover_volumes):
         return None
     alt = first_volume_for_stub(stub)
     if alt is None:
@@ -342,17 +358,17 @@ def open_archive(
     without manual slicing).
 
     ``encoding`` names the codec for member names whose encoding the archive does not
-    declare and whose bytes are not valid UTF-8 (ZIP, TAR, ISO and RAR 1.5-4). A name
-    whose bytes are valid UTF-8 is decoded as UTF-8 in every format, with or without
-    ``encoding``, and ``encoding`` replaces only the format's fallback (cp437 or
-    ``ArchiveyConfig.zip_unflagged_fallback_encoding`` for ZIP, the host's code page for
-    RAR 1.5-4, surrogate escapes for TAR and ISO). ``member.raw_name`` keeps the stored
-    bytes. A ZIP comment without the UTF-8 flag (the archive comment always) and an
-    8-bit RAR 1.5-4 comment decode the same way as a name without a declared encoding,
-    and a byte the codec does not define survives as a lone surrogate. The one
-    difference is that a RAR comment's last fallback is always windows-1252. 7z,
-    directory and single-file sources decode names another way, ignore it, and record
-    ``ENCODING_ARGUMENT_UNUSED``.
+    declare and whose bytes are not valid UTF-8 (ZIP, TAR, ISO, RAR 1.5-4, CPIO, ar and
+    SquashFS). A name whose bytes are valid UTF-8 is decoded as UTF-8 in every format,
+    with or without ``encoding``, and ``encoding`` replaces only the format's fallback
+    (cp437 or ``ArchiveyConfig.zip_unflagged_fallback_encoding`` for ZIP, the host's code
+    page for RAR 1.5-4, surrogate escapes for TAR, ISO, CPIO, ar and SquashFS).
+    ``member.raw_name`` keeps the stored bytes. A ZIP comment without the UTF-8 flag
+    (the archive comment always) and an 8-bit RAR 1.5-4 comment decode the same way as
+    a name without a declared encoding, and a byte the codec does not define survives
+    as a lone surrogate. The one difference is that a RAR comment's last fallback is
+    always windows-1252. 7z, directory and single-file sources decode names another way,
+    ignore it, and record ``ENCODING_ARGUMENT_UNUSED``.
 
     ``source`` may be an ordered sequence of paths or binary streams that together form
     a multi-volume archive (7z concatenates volumes; RAR opens volume 1 and lets
@@ -403,7 +419,8 @@ def open_archive(
         EncryptionError: The member list is encrypted (7z, RAR) and no password given
             opens it.
         UnsupportedFeatureError: The format is recognized, but this archive uses a
-            variant or feature archivey cannot read.
+            variant or feature archivey cannot read, or ``config.formats`` does not
+            allow the format.
         PackageNotInstalledError: The format needs an optional package that is not
             installed, such as ``pycdlib`` for ISO.
         ResourceLimitError: The archive exceeds a limit that is checked at open, such as
@@ -459,7 +476,9 @@ def open_archive(
     # Collector is created before detection so open + detect share one budget /
     # occurrence order, and reader.diagnostics covers both.
     collector = collector_from_config(effective_config)
-    resolved = resolve_source(source)
+    resolved = resolve_source(
+        source, discover_volumes=effective_config.discover_volumes
+    )
     slot = _SourceSlot(resolved.source)
     try:
         return _open_resolved(
@@ -478,6 +497,31 @@ def open_archive(
         # Once a reader exists it closes its source; until then nobody else will.
         slot.current.close()
         raise
+
+
+def _refuse_format_off_by_policy(
+    config: ArchiveyConfig, fmt: ArchiveFormat, archive_name: str | None
+) -> None:
+    """Raise ``UnsupportedFeatureError`` when ``config.formats`` does not allow ``fmt``."""
+    refusal = config.formats._refusal(fmt)
+    if refusal is not None:
+        raise UnsupportedFeatureError(
+            refusal, source_format=fmt, archive_name=archive_name
+        )
+
+
+def _refuse_for_replacement(
+    plugin: type[FormatHandler],
+    what: str,
+    fmt: ArchiveFormat,
+    archive_name: str | None,
+) -> NoReturn:
+    raise UnsupportedFeatureError(
+        f"{fmt.display_name} is read by {plugin.__name__} (ArchiveyConfig.formats."
+        f"replace), and a replacement plugin cannot read {what}.",
+        source_format=fmt,
+        archive_name=archive_name,
+    )
 
 
 class _SourceSlot:
@@ -501,13 +545,19 @@ def _note_unused_arguments(
     passwords: _PasswordCandidates,
     encoding: str | None,
     collector: DiagnosticCollector,
+    replacement: type[FormatHandler] | None,
 ) -> None:
     """Emit the ``password=`` / ``encoding=`` hygiene diagnostics for ``backend_cls``.
 
     Reads only class attributes, so it runs for a backend whose optional package is
     missing too. Both access-mode refusals call it first, so a refused open reports the
     same hygiene whichever half refuses it.
+
+    For a ``replacement`` reader the text names the reader, not the format: ZIP, 7z
+    and RAR carry encryption and the built-in reader applies ``encoding=``, so what
+    cannot use the argument is the plugin.
     """
+    fmt_name = resolved_format.display_name
     # `password=` and `encoding=` are *resources offered for use if needed*, not
     # assertions about this archive, so a backend that cannot use one is a diagnostic
     # rather than a refusal (``archive-reading`` §"assertion vs resource"). `format=` is
@@ -517,34 +567,53 @@ def _note_unused_arguments(
         # because a provider callable offers a password only if asked, and a format
         # with no encryption never asks. A caller (the CLI, a batch job) can then pass
         # one provider everywhere without a warning on every TAR or gzip.
+        if replacement is not None:
+            message = (
+                f"password= was supplied for {fmt_name}, but {replacement.__name__} "
+                "reads it (ArchiveyConfig.formats.replace) and takes no password; it "
+                "will not be used."
+            )
+            reason = "replacement reader takes no password"
+        else:
+            message = (
+                f"password= was supplied for {fmt_name}, which carries no encryption "
+                "a password could unlock; it will not be used."
+            )
+            reason = "format carries no encryption"
         collector.emit(
             code=DiagnosticCode.PASSWORD_ARGUMENT_UNUSED,
-            message=(
-                f"password= was supplied for {resolved_format.display_name}, which "
-                f"carries no encryption a password could unlock; it will not be used."
-            ),
+            message=message,
             context=UnusedArgumentContext(
                 archive_name=archive_name,
                 argument="password",
-                format=resolved_format.display_name,
-                reason="format carries no encryption",
+                format=fmt_name,
+                reason=reason,
             ),
         )
 
     if encoding is not None and not backend_cls.USES_ENCODING:
         # Only the caller's explicit encoding: an open that passed none asked for nothing.
+        if replacement is not None:
+            message = (
+                f"encoding={encoding!r} was supplied for {fmt_name}, but "
+                f"{replacement.__name__} reads it (ArchiveyConfig.formats.replace) and "
+                "does not apply one; the value will not be applied."
+            )
+            reason = "replacement reader does not apply a caller-supplied encoding"
+        else:
+            message = (
+                f"encoding={encoding!r} was supplied for {fmt_name}, which decodes "
+                "member names without it; the value will not be applied."
+            )
+            reason = "backend decodes member names without a caller-supplied encoding"
         collector.emit(
             code=DiagnosticCode.ENCODING_ARGUMENT_UNUSED,
-            message=(
-                f"encoding={encoding!r} was supplied for "
-                f"{resolved_format.display_name}, which decodes member names without "
-                f"it; the value will not be applied."
-            ),
+            message=message,
             context=UnusedArgumentContext(
                 archive_name=archive_name,
                 argument="encoding",
-                format=resolved_format.display_name,
-                reason="backend decodes member names without a caller-supplied encoding",
+                format=fmt_name,
+                reason=reason,
             ),
         )
 
@@ -581,7 +650,9 @@ def _open_resolved(
     # A lone numbered part names the missing siblings (``TruncatedError``). Info-ZIP
     # ``.zNN`` stays the ZIP rejoin-first ``UnsupportedFeatureError`` — those are
     # never concatenated.
-    _refuse_unjoined_volume_names(resolved, format, archive_name)
+    _refuse_unjoined_volume_names(
+        resolved, format, archive_name, discover_volumes=config.discover_volumes
+    )
 
     # --- Resolve format: a directory path is DIRECTORY (and a conflicting explicit
     # format= is rejected, not ignored); else caller format, else magic detect. ---
@@ -664,6 +735,27 @@ def _open_resolved(
     archive_source = slot.current
     archive_name = resolved.archive_name
 
+    # The caller's format policy first: a format it turns off is refused whatever else
+    # would be said about the file, so the caller is not told to install a package or
+    # buffer a pipe for a format it does not want to open.
+    _refuse_format_off_by_policy(config, resolved_format, archive_name)
+    replacement = config.formats._replacement_for(resolved_format)
+    if replacement is not None:
+        # A replacement gets what any indexed plugin gets: the archive from its start,
+        # in one file. What the built-in reader does around that is not offered.
+        if resolved.volume_count > 1:
+            _refuse_for_replacement(
+                replacement, "a multi-volume set", resolved_format, archive_name
+            )
+        if detected is not None and detected.payload_offset > 0:
+            _refuse_for_replacement(
+                replacement,
+                "an archive behind a prefix (a self-extracting stub or other leading "
+                "bytes)",
+                resolved_format,
+                archive_name,
+            )
+
     # ZIP is here for 7-Zip's ``-v`` byte slices, which rejoin into an ordinary ZIP.
     # Info-ZIP's spanned sets never reach this point as a joined source (they are not
     # volume-shaped to ``discover_volume_siblings``); an explicitly passed sequence of
@@ -678,7 +770,8 @@ def _open_resolved(
     # A raw CD sector image is claimed as ISO only so it can be refused by name. Ahead
     # of the availability check, so the answer does not depend on pycdlib; a
     # non-seekable source is left to the read-once refusal below, which is also ahead
-    # of it.
+    # of it. A replacement reader is refused it too: the bytes are not an ISO 9660
+    # image, whichever reader would open them.
     if resolved_format == ArchiveFormat.ISO and archive_source.seekable():
         refuse_raw_sector_image(archive_source, resolved_format, archive_name)
 
@@ -712,8 +805,17 @@ def _open_resolved(
     # half below: a refused open reports the same ``password=`` / ``encoding=``
     # diagnostics whichever half refuses it. They read only class attributes, so they
     # need no optional package.
-    if source_is_read_once and registry.needs_seekable_source(resolved_format):
-        refused_cls = registry.registered_reader(resolved_format)
+    needs_seek = (
+        not replacement_backend(replacement).SUPPORTS_STREAMING_NON_SEEKABLE
+        if replacement is not None
+        else registry.needs_seekable_source(resolved_format)
+    )
+    if source_is_read_once and needs_seek:
+        refused_cls = (
+            replacement_backend(replacement)
+            if replacement is not None
+            else registry.registered_reader(resolved_format)
+        )
         assert refused_cls is not None  # needs_seekable_source is False without one
         _note_unused_arguments(
             refused_cls,
@@ -722,6 +824,7 @@ def _open_resolved(
             passwords=passwords,
             encoding=encoding,
             collector=collector,
+            replacement=replacement,
         )
         raise StreamNotSeekableError(
             f"Format {resolved_format.display_name} cannot be read from a non-seekable source "
@@ -731,7 +834,11 @@ def _open_resolved(
             archive_name=archive_name,
         )
 
-    backend_cls = registry.reader_for_format(resolved_format)
+    backend_cls = registry.reader_for_format(
+        resolved_format,
+        replacement=replacement,
+        excluded=config.formats.exclude_libraries,
+    )
 
     # The capability half above emits these too, so either refusal half reports them.
     _note_unused_arguments(
@@ -741,6 +848,7 @@ def _open_resolved(
         passwords=passwords,
         encoding=encoding,
         collector=collector,
+        replacement=replacement,
     )
 
     # The mode half of the access-mode refusal; the capability half is above. This one
@@ -805,7 +913,7 @@ def _open_resolved(
 def open_stream(
     source: str | Path | BinaryIO,
     *,
-    format: StreamFormat | ArchiveFormat | str | None = None,
+    format: StreamFormat | PluginStream | ArchiveFormat | str | None = None,
     seekable: bool = False,
     config: ArchiveyConfig | None = None,
 ) -> ArchiveStream:
@@ -851,6 +959,7 @@ def open_stream(
         ResourceLimitError: The stream asks a decoder for more memory than
             :class:`~archivey.DecoderLimits` allows, raised by the read of the returned
             stream that starts the decoder.
+        UnsupportedFeatureError: ``config.formats`` does not allow the format.
         PackageNotInstalledError: The format needs an optional package that is not
             installed.
         DiagnosticRaisedError: A diagnostic that the :class:`~archivey.DiagnosticPolicy`
@@ -932,7 +1041,7 @@ def open_stream(
 
 def _open_stream_from_source(
     codec_input: ArchiveSource,
-    format: StreamFormat | ArchiveFormat | None,
+    format: StreamFormat | PluginStream | ArchiveFormat | None,
     seekable: bool,
     effective_config: ArchiveyConfig,
     collector: DiagnosticCollector,
@@ -946,7 +1055,7 @@ def _open_stream_from_source(
             "forward-only pass."
         )
 
-    stream_format = _resolve_stream_format(
+    opened_format, stream_format = _resolve_stream_format(
         format, codec_input, collector, effective_config
     )
     # Only an explicit format= can be UNCOMPRESSED: detection never returns a
@@ -956,7 +1065,21 @@ def _open_stream_from_source(
             "open_stream requires a compressed stream format "
             f"(got {stream_format!r}); use open_archive for uncompressed containers."
         )
+    # The format the stream is, as open_archive would name it: a bare StreamFormat is
+    # its raw stream, and a compressed tar stays a tar, so a policy that refuses TAR
+    # refuses its gzip layer here too.
+    _refuse_format_off_by_policy(
+        effective_config, opened_format, source_name(codec_input)
+    )
 
+    if single_file_codec(stream_format) is None:
+        # Only a PluginStream member can get here: every StreamFormat but UNCOMPRESSED
+        # has a built-in codec. Refused as open_archive refuses it.
+        raise UnsupportedFeatureError(
+            f"No codec registered for {stream_format!r}: call "
+            "archivey.formats.register_codec() with its CodecHandler first.",
+            source_format=opened_format,
+        )
     codec = codec_for_stream_format(stream_format)
     # The codec stream is the whole source, so bytes after its end are reported.
     stream_config = replace(
@@ -989,20 +1112,21 @@ def _open_stream_from_source(
 
 
 def _resolve_stream_format(
-    format: StreamFormat | ArchiveFormat | None,
+    format: StreamFormat | PluginStream | ArchiveFormat | None,
     open_source: ArchiveSource,
     collector: DiagnosticCollector,
     config: ArchiveyConfig,
-) -> StreamFormat:
-    """Map open_stream's ``format=`` argument (or auto-detect) to a StreamFormat.
+) -> tuple[ArchiveFormat, StreamFormat | PluginStream]:
+    """Map open_stream's ``format=`` argument (or auto-detect) to the format the source
+    is and the StreamFormat to decode.
 
     Only ``None`` reaches the detection branch below: ``open_stream`` has already
     converted a string spelling and refused a value of neither format type
     (``coerce_stream_or_archive_format``), so falling through here means the caller
     asked for auto-detection.
     """
-    if isinstance(format, StreamFormat):
-        return format
+    if isinstance(format, (StreamFormat, PluginStream)):
+        return ArchiveFormat(ContainerFormat.RAW_STREAM, format), format
     if isinstance(format, ArchiveFormat):
         # An UNKNOWN container never reaches here: open_stream refuses it before any I/O.
         outer = outer_stream_format(format)
@@ -1012,7 +1136,7 @@ def _resolve_stream_format(
                 "pass a StreamFormat, a raw-stream ArchiveFormat "
                 "(e.g. ArchiveFormat.GZ) or a compressed tar, or use open_archive."
             )
-        return outer
+        return format, outer
 
     # The invariant the docstring states, enforced rather than described: without it a
     # future caller of this private helper would auto-detect a value it was handed,
@@ -1033,4 +1157,4 @@ def _resolve_stream_format(
             "containers.",
             source_format=detected.format,
         )
-    return outer
+    return detected.format, outer

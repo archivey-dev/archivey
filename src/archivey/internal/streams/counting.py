@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, BinaryIO
 
+from archivey.internal.overrides import override
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.internal.streams.streamtools.binaryio import (
@@ -42,6 +43,9 @@ class CountingReader(DelegatingStream):
     *pulled from the source*; with a decompressor reading fixed-size chunks it overshoots the
     strictly-decoded amount by at most one read, which is negligible against the output of a
     real decompression bomb.
+
+    It sets no ``forwards_verification``: it wraps a compressed archive input, and a raw
+    source has no check of its own to forward.
     """
 
     def __init__(self, inner: BinaryIO) -> None:
@@ -52,11 +56,13 @@ class CountingReader(DelegatingStream):
     def bytes_read(self) -> int:
         return self._bytes_read
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         data = read_blocking(self._inner, n)
         self._bytes_read += len(data)
         return data
 
+    @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         n = try_readinto(self._inner, b)
         if n is None:
@@ -77,15 +83,20 @@ class OutputCountingStream(DelegatingStream):
     and member-level wrappers can share one archive total when needed.
     """
 
+    # Counts bytes and changes none of them: the verification level looks through.
+    forwards_verification = True
+
     def __init__(self, inner: BinaryIO, counter: ByteCounter) -> None:
         super().__init__(inner)
         self._counter = counter
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         data = read_blocking(self._inner, n)
         self._counter.add(len(data))
         return data
 
+    @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         n = try_readinto(self._inner, b)
         if n is None:
@@ -117,6 +128,7 @@ class SeekCountingStream(DelegatingStream):
         super().__init__(inner)
         self._counter = counter
 
+    @override
     def seek(self, offset: int, whence: int = 0, /) -> int:
         self._counter.record()
         return self._inner.seek(offset, whence)

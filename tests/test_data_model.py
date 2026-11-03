@@ -10,6 +10,7 @@ construction of uncommon container×codec pairs, ``file_extension``) and the
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 import pickle
 from collections.abc import Hashable
@@ -17,6 +18,7 @@ from datetime import UTC
 
 import pytest
 
+from archivey.internal import dataclass_copy
 from archivey.internal.hashing import crc32_digest
 from archivey.types import (
     EXTRA_IS_JUNCTION,
@@ -99,6 +101,27 @@ def test_replace_returns_copy_without_mutating_original() -> None:
     assert copy.name == "b.txt"
     assert copy.mode == 0o644  # untouched fields carried over
     assert m.name == "a.txt"  # original never mutated
+
+
+def test_replace_copies_every_field_as_dataclasses_replace_does() -> None:
+    # ``replace`` copies by position (``copy_with``), not by ``dataclasses.replace``.
+    fields = dataclasses.fields(ArchiveMember)
+    assert dataclass_copy._plan(ArchiveMember) is not None
+    # A distinct object in every field, so a field copied into the wrong position
+    # shows up as the wrong object, not as an equal default.
+    given = {f.name: object() for f in fields}
+    m = ArchiveMember(**given)  # type: ignore[arg-type]
+    every = {f.name: object() for f in fields}  # each keyword to its own position
+    for changes in ({}, {"name": "b", "mode": None}, {"_member_id": 8}, every):
+        fast = m.replace(**changes)
+        slow = dataclasses.replace(m, **changes)
+        for f in fields:
+            if f.name in ("_listing_pending", "_size_unread"):
+                continue  # replace() clears both on the copy
+            assert getattr(fast, f.name) is getattr(slow, f.name), f.name
+            assert getattr(fast, f.name) is changes.get(f.name, given[f.name]), f.name
+    with pytest.raises(TypeError, match="unexpected keyword argument 'nope'"):
+        m.replace(nope=1)
 
 
 def test_unavailable_fields_default_to_none() -> None:
@@ -246,3 +269,43 @@ def test_modified_utc_normalizes_mixed_timestamps() -> None:
     # The stored field is untouched: provenance stays checkable.
     assert naive.modified is not None and naive.modified.tzinfo is None
     assert ArchiveMember(type=MemberType.FILE, name="none").modified_utc() is None
+
+
+# Every public timestamp field: ``types.py`` uses postponed annotations, so a field's
+# type is its annotation text. A new one with no ``*_utc()`` helper fails below.
+_TIMESTAMP_FIELDS = [
+    f.name for f in dataclasses.fields(ArchiveMember) if f.type == "datetime | None"
+]
+
+
+def test_the_timestamp_fields_are_found() -> None:
+    """The derivation finds the fields it must (an annotation spelled differently
+    would leave the inventory below empty and passing)."""
+    assert {"modified", "accessed", "created", "ctime"} <= set(_TIMESTAMP_FIELDS)
+
+
+@pytest.mark.parametrize("field", _TIMESTAMP_FIELDS)
+def test_every_timestamp_has_a_utc_helper(field: str) -> None:
+    """Each timestamp converts as ``modified_utc`` does, and reads only its own field."""
+    from datetime import datetime, timedelta, timezone
+
+    helper = f"{field}_utc"
+    minus3 = timezone(timedelta(hours=-3))
+    naive = ArchiveMember(
+        type=MemberType.FILE, name="naive", **{field: datetime(2020, 6, 1, 14, 0)}
+    )
+    assert getattr(naive, helper)(tz_for_naive=minus3) == datetime(
+        2020, 6, 1, 17, 0, tzinfo=UTC
+    )
+    assert getattr(naive, helper)().tzinfo == UTC
+    aware = ArchiveMember(
+        type=MemberType.FILE,
+        name="aware",
+        **{field: datetime(2020, 6, 1, 14, 0, tzinfo=timezone(timedelta(hours=2)))},
+    )
+    assert getattr(aware, helper)(tz_for_naive=minus3) == datetime(
+        2020, 6, 1, 12, 0, tzinfo=UTC
+    )
+    assert getattr(naive, field).tzinfo is None
+    others = {"modified", "accessed", "created", "ctime"} - {field}
+    assert all(getattr(naive, f"{other}_utc")() is None for other in others)

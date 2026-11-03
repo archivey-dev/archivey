@@ -866,6 +866,33 @@ def test_lzip_multi_member_seek_after_forward_read_serves_the_right_bytes() -> N
             assert stream.read(length) == content[start : start + length]
 
 
+@pytest.mark.parametrize(
+    "parts",
+    [
+        [b"data", b"", b""],
+        [b"da", b"", b"ta", b""],
+        [b"", b"", b"data"],
+    ],
+)
+def test_lzip_empty_members_reread_after_a_seek(parts: list[bytes]) -> None:
+    """Empty members share an output offset with the next one; a re-read is clean.
+
+    A member with no output records no seek point, so the second read's points cannot
+    collide with the first read's at a lower compressed offset.
+    """
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
+
+    compressed = make_multi_member_lzip(parts)
+    seen: list[Any] = []
+    collector = DiagnosticCollector(on_diagnostic=seen.append)
+    with LzipDecompressorStream(io.BytesIO(compressed), collector=collector) as stream:
+        assert stream.read() == b"data"
+        for offset in range(5):
+            stream.seek(offset)
+            assert stream.read() == b"data"[offset:]
+    assert seen == []
+
+
 # --- lzip seeking via the trailer scan -------------------------------------------------
 
 
@@ -1647,7 +1674,7 @@ def test_a_planned_index_report_raises_from_the_deferred_seek(wrapper: str) -> N
     from archivey.exceptions import DiagnosticRaisedError
     from archivey.internal.diagnostics_collector import DiagnosticCollector
     from archivey.internal.hashing import crc32_digest
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
     from archivey.internal.streams.decompressor_stream import TRAILING_DATA_SEARCH
     from archivey.internal.streams.verify import VerifyingStream
     from archivey.types import HashAlgorithm
@@ -1661,7 +1688,7 @@ def test_a_planned_index_report_raises_from_the_deferred_seek(wrapper: str) -> N
     hashes = {HashAlgorithm.CRC32: crc32_digest(zlib.crc32(data))}
     stream: BinaryIO
     if wrapper == "ArchiveStream":
-        stream = ArchiveStream(
+        stream = ArchiveStreamImpl(
             lambda: LzipDecompressorStream(io.BytesIO(compressed), collector=collector),
             translate=lambda _exc: None,
             collector=collector,
@@ -1697,10 +1724,14 @@ def test_a_raise_from_seek_leaves_the_member_verifier_in_step(
     position and drop the digest on the read that skips the gap, or reading on
     reports a false truncation or mismatch. The target lies past an index point, so
     the seek jumps rather than decoding the gap through the verifier.
+
+    The decoder's own seek is lazy: the read after it decodes the gap, and the seek
+    table thins on the way, which STRICT raises from that read. It raises before
+    returning anything, and the read after it goes on from the same position.
     """
     from archivey.exceptions import DiagnosticRaisedError
     from archivey.internal.hashing import crc32_digest
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
     from archivey.internal.streams.verify import VerifyingStream
     from archivey.types import HashAlgorithm
 
@@ -1710,7 +1741,7 @@ def test_a_raise_from_seek_leaves_the_member_verifier_in_step(
     hashes = {HashAlgorithm.CRC32: crc32_digest(zlib.crc32(full))}
     stream: BinaryIO
     if wrapper == "ArchiveStream":
-        stream = ArchiveStream(
+        stream = ArchiveStreamImpl(
             lambda: LzipDecompressorStream(io.BytesIO(compressed), collector=collector),
             translate=lambda _exc: None,
             collector=collector,
@@ -1727,6 +1758,9 @@ def test_a_raise_from_seek_leaves_the_member_verifier_in_step(
     with stream:
         with pytest.raises(DiagnosticRaisedError):
             stream.seek(4000)
+        assert stream.tell() == 4000
+        with pytest.raises(DiagnosticRaisedError, match="seek table"):
+            stream.read()
         assert stream.tell() == 4000
         assert stream.read() == full[4000:]
 
@@ -1933,13 +1967,13 @@ def test_brotli_reports_a_rewind(caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.seek(0) == 0
             assert stream.read(10) == REWIND_CONTENT[:10]
-    assert (
-        sum(
-            "restarts from the start of the stream" in r.getMessage()
-            for r in caplog.records
-        )
-        == 1
-    )
+    rewinds = [
+        r.getMessage()
+        for r in caplog.records
+        if "restarts from the start of the stream" in r.getMessage()
+    ]
+    assert len(rewinds) == 1
+    assert "brotli stream" in rewinds[0]
 
 
 @requires("lz4")

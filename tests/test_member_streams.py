@@ -316,12 +316,12 @@ def test_reader_close_closes_streams_in_open_order(tmp_path: Path) -> None:
     for name in names:
         (root / name).write_bytes(name.encode())
 
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
     closed_order: list[int] = []
-    real_close = ArchiveStream.close
+    real_close = ArchiveStreamImpl.close
 
-    def recording_close(self: ArchiveStream) -> None:
+    def recording_close(self: ArchiveStreamImpl) -> None:
         closed_order.append(id(self))
         real_close(self)
 
@@ -329,10 +329,10 @@ def test_reader_close_closes_streams_in_open_order(tmp_path: Path) -> None:
     try:
         streams = [reader.open(name) for name in names]
         opened_order = [id(s) for s in streams]
-        ArchiveStream.close = recording_close  # type: ignore[method-assign]
+        ArchiveStreamImpl.close = recording_close  # type: ignore[method-assign]
         reader.close()
     finally:
-        ArchiveStream.close = real_close  # type: ignore[method-assign]
+        ArchiveStreamImpl.close = real_close  # type: ignore[method-assign]
 
     ours = [sid for sid in closed_order if sid in set(opened_order)]
     assert ours == opened_order

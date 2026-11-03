@@ -78,7 +78,10 @@ no member replaces the destination itself.
   (`filters.disk_spelling`, which the coordinator applies first), special files
   (devices, FIFOs, sockets), and a non-directory member whose normalized name is
   `"."` or `""` (which would replace the destination root with a file). It resolves
-  the parent and checks containment, and checks symlink targets lexically. A
+  the parent and checks containment, and checks symlink targets lexically. The
+  coordinator resolves the destination once per run; `parent_resolves_within_root`
+  then walks only the member's own components below it, so the destination's
+  ancestors are trusted to stay as they are for the run. A
   rejection names the member as listed, not its disk spelling. The resolution
   (`resolve_or_raise_on_loop`) is archivey's own walk on POSIX, one link at a time as
   the kernel goes: a component it cannot look at raises and the member is refused.
@@ -259,11 +262,16 @@ bytes. The outcome is the same on every platform. ADR
   `STANDARD` and `TRUSTED` otherwise keep the name. Under `STRICT` and `STANDARD` the collision key
   drops a trailing dot or space too, so `notes.` and `notes` collide on every platform, as
   Win32 would merge them.
+- `STRICT` refuses a name holding a `\`, a control character 0x01 to 0x1F, a non-UTF-8
+  byte or a lone surrogate (`_reject_unportable_name`): each reads as another name on
+  another OS or in another reader (ADR 0013 amendment, 2026-10-31).
 - Two classes of character are percent-escaped (`_sanitize_portable_name`: `%XX`,
   literal `%` as `%25`), a deterministic and reversible spelling: non-UTF-8 bytes, and
-  the characters Win32 refuses in a name, `<>"|?*` and the controls 0x01 to 0x1F.
-- A `\` in a name, which TAR keeps as a literal character, is written as `/`, as
-  Windows writes it, and a symlink or hard link target gets the same rewrite. A hard
+  the characters Win32 refuses in a name, `<>"|?*` and the controls 0x01 to 0x1F. Under
+  `STRICT` only `<>"|?*` reach it; the rest were refused above.
+- Under `STANDARD` a `\` in a name, which TAR keeps as a literal character, is written
+  as `/`, as Windows writes it. Under both a symlink or hard link target gets the same
+  rewrite. A hard
   link still resolves to the member the reader matched to its stored target.
 - The coordinator (`ExtractionCoordinator._transform`) runs `check_universal` again on
   a member `apply_name_policy` rewrote. A rewrite can change which directories a path
@@ -355,7 +363,8 @@ data its pass keeps for link targets beside it.
 **Mechanism.**
 - `ListingLimits` (`max_members` 262,144, `max_metadata_bytes` 64 MiB) is enforced by
   `internal/listing_limits.py` `ListingLimitTracker` as members are registered into the
-  reader's member walk, by every call that lists: `members()`, `members_report()`,
+  reader's member walk (and as a plugin reader holds one back to yield later, through
+  `ReaderContext.hold()`: CPIO's newc hard links waiting for their data), by every call that lists: `members()`, `members_report()`,
   `stream_members()`, `for member in reader` and `extract_all()`, in both access modes.
   Crossing a cap raises `ResourceLimitError` at the member that crosses it, before it
   is listed; a TAR walk parses no header after it. `None` (`ListingLimits.UNLIMITED`)
@@ -564,11 +573,14 @@ without a bound, read with one `read(size)` as stdlib `tarfile` and pycdlib read
 size to the member's `max_metadata_bytes` budget before it reads anything
 ([Listing](#listing)), then reads it with `streams/streamtools/binaryio.py`
 `read_within_reach` in 64 KiB steps. A forward-only walk skips a member's data area in
-64 KiB steps too, and stops with `TruncatedError` at the first short read. pycdlib reads
+64 KiB steps too, and stops with `TruncatedError` at the first short read. Member data a
+caller reads through that walk is read in 1 MiB steps (`DATA_READ_STEP`): a member that
+declares 3 GiB over 100 KB of data peaks at 1 MiB. pycdlib reads
 through archivey's source (`internal/source.py` `ArchiveSource`), which applies
 `read_within_reach` as well. Where the remaining length is a fact (a path's `stat`, a
 `BytesIO` buffer, a regular file's `fstat`) the read is clamped to it; otherwise it is
-served in bounded steps, so the peak tracks the bytes that exist. An fsspec `size`
+served in bounded steps, so the peak is the bytes that exist plus at most one step: the
+step is the granularity of the overshoot a hostile size field can cause. An fsspec `size`
 attribute is a hint, not a fact, and is stepped. A short read then fails: the TAR walker
 raises `TruncatedError`, and pycdlib's error is translated to `CorruptionError`. The ISO
 reader passes every source to `open_fp` as an `ArchiveSource`, a path included, so there
@@ -734,8 +746,9 @@ the pass, and declined rather than refused when the cap has no room.
 
 **Property.** `extract` stops a decompression bomb before it fills the disk.
 
-**Mechanism.** `internal/bomb_tracker.py` `BombTracker` enforces `ExtractionLimits`: total
-bytes (2 GiB), per-member ratio and archive-wide ratio (1000, active after 5 MiB), a
+**Mechanism.** `internal/bomb_tracker.py` `BombTracker` enforces `ExtractionLimits` and the
+ratio fields of `DecoderLimits`: total
+bytes (2 GiB), per-member ratio and archive-wide ratio (800, active after 5 MiB), a
 live ratio for sources of unknown size (active after 256 MiB, so an honest blank start
 read from a pipe is not judged before the data after it arrives), and an entry cap
 (262,144). Where a member records its size and compressed size, `check_recorded_size()`
@@ -759,11 +772,14 @@ link-count limit is written as a copy, so a declared link count drives real writ
 copy of the source per limit's worth of links (1024 names on NTFS, 65000 on ext4).
 `BombTracker.count_copy` counts those copies toward `max_extracted_bytes` and the
 archive-wide `max_ratio` (maintainer ruling, 2026-10-07), so a small archive declaring
-many links to one member trips the ratio when the archive has a denominator. A plain tar
-read from a non-seekable stream has none (no trusted size, and the live counter is
-installed only for a compressed container), so there only `max_extracted_bytes` applies. A cross-device copy counts toward
-`max_extracted_bytes` only: it depends on the destination, not the archive.
-From a source of unknown size the archive-wide ratio waits for
+many links to one member trips the ratio. An archive read from a non-seekable stream has
+no trusted size: a compressed container counts what its decoder pulls, and a plain ZIP or
+TAR counts what its source has taken from the pipe (`ArchiveSource.bytes_pulled`), so the
+live ratio holds there too. A seekable stream whose size archivey does not know (no
+`size`, not a file or a `BytesIO`) counts the furthest offset its source has reached
+(`ArchiveSource.bytes_reached`), which never passes the archive's size. A cross-device
+copy counts toward `max_extracted_bytes` only: it depends on the destination, not the
+archive. From a source of unknown size the archive-wide ratio waits for
 `live_ratio_activation_threshold` (256 MiB), so a bomb read from a pipe writes about that
 much before the ratio refuses it, where it wrote about 5 MiB before that floor existed.
 `max_extracted_bytes` still bounds the total, and a caller can lower the floor.
@@ -775,7 +791,12 @@ much before the ratio refuses it, where it wrote about 5 MiB before that floor e
 `::test_pipe_size_claim_does_not_switch_off_live_ratio`,
 `::test_live_ratio_waits_for_its_own_floor`,
 `::test_live_ratio_default_floor`, `::test_piped_blank_start_passes_like_a_file`,
-`::test_plain_tar_from_sized_pipe_has_no_archive_wide_denominator`,
+`::test_plain_tar_from_sized_pipe_counts_what_the_pipe_gave`,
+`tests/test_member_read_ratio.py::test_a_piped_zip_pass_is_held_to_the_live_ratio`,
+`::test_a_piped_zip_extraction_is_held_to_the_live_ratio`,
+`::test_a_piped_sparse_tar_is_held_to_the_live_ratio`,
+`::test_a_seekable_zip_of_unknown_size_is_held_to_the_live_ratio`,
+`::test_a_seekable_source_counts_the_furthest_offset_once`,
 `::test_forged_member_declaration_is_refused_only_after_the_decode`,
 `::test_link_limit_copies_count_toward_the_archive_wide_ratio`,
 `::test_recorded_size_refuses_a_member_before_its_data`,
@@ -794,8 +815,9 @@ much before the ratio refuses it, where it wrote about 5 MiB before that floor e
 
 **Property.** Reading one RAR member never quietly decodes other members first.
 
-**Mechanism.** `unrar` selects members by mask, and a member whose name is a glob that
-matches earlier entries would make `unrar -n` decompress every earlier match first. The
+**Mechanism.** `unrar` selects members by mask, and a member whose mask selects earlier
+entries (a glob, a duplicate name, two names `unrar` reads alike) would make `unrar -n`
+decompress every earlier match first. The
 read is refused by default when that skip is nonzero (`internal/backends/rar_reader.py`,
 `rar_allow_glob_member_concatenation` as the escape hatch). The refusal is narrower
 than it looks: on a solid archive an out-of-order `open()` decodes everything ahead of
@@ -804,9 +826,10 @@ there. Whether the refusal earns its keep is parked with the general unbounded-r
 question ([`formats/rar.md`](formats/rar.md) §5 to §7).
 
 **Residual.** A mask with no glob that still selects earlier members (a duplicate name,
-or two names `unrar` reads the same way) is not refused, so `unrar` decodes those
-members first. Their dictionaries count against `DecoderLimits.max_decoder_memory`
-([Decoder memory](#decoder-memory)); the bytes they decode count against no limit.
+or two names `unrar` reads the same way) is refused the same way since 2026-10-29. With
+the flag set, `unrar` decodes those members first: their dictionaries count against
+`DecoderLimits.max_decoder_memory` ([Decoder memory](#decoder-memory)); the bytes they
+decode count against no limit.
 
 **Tests.** `tests/test_rar_reader.py::test_glob_member_with_earlier_matches_is_refused`,
 `::test_solid_glob_refusal_does_not_claim_an_avoidable_decode`,
@@ -871,8 +894,8 @@ raw library exception, and never a silent wrong answer. Genuine I/O errors propa
 unchanged, and no handler swallows or reclassifies an unknown exception.
 
 **Mechanism.** Each backend translates its library's exceptions. For ISO,
-`IsoReader._translate_exception` maps `_PYCDLIB_ERRORS`: pycdlib's exception base plus
-the bare `IndexError`, `struct.error`, `UnicodeDecodeError`, `AttributeError`,
+`IsoHandler.translate_exception` maps `_PYCDLIB_ERRORS`, for errors in `open()` and those
+the reader does not translate itself: pycdlib's exception base plus the bare `IndexError`, `struct.error`, `UnicodeDecodeError`, `AttributeError`,
 `KeyError` and `ValueError` fuzzing found it raising, but never `OSError`. Advisories
 that are not errors are `Diagnostic` values with stable codes and a per-code policy
 (`IGNORE` / `COLLECT` / `RAISE`), attached to the surface they concern, with logging as
@@ -919,7 +942,9 @@ writes itself) is exercised against mutated and coverage-guided input.
    ZIP member or 7z coder does, since `AUTO` engages rapidgzip on them only with one.
    libFuzzer's own `-timeout` and `-rss_limit_mb` bound those targets: unlike a Python
    alarm, they fire while the main thread is inside native code. A
-   short partition runs on every pull request; the full one on a change-guarded nightly
+   short partition runs on every merge-queue group that changes a library, test, dependency
+   or CI path (`scripts/ci_scope.py`; the fuzz targets live under `tests/`, so a change to
+   one always counts); the full one on a change-guarded nightly
    and on `workflow_dispatch` (`.github/workflows/atheris-fuzz.yml`,
    `openspec/specs/testing-contract/spec.md`). `atheris` is in the `fuzz` dependency
    group only.
@@ -1031,8 +1056,8 @@ the ANSI/CR spoof tests extract under `TRUSTED`, which writes the raw bytes, so 
 are Unix-only, since NTFS refuses control bytes in names.
 `tests/test_cve_regressions_7z_rar.py::test_unrar_cve_2024_33899_escape_sequences_in_names`
 replays the unrar advisory over a RAR's member names through `list`, `test -v` and
-`extract`. It runs on every platform, because the default policy writes each control
-byte as `%XX` before the write.
+`extract`. It runs on every platform: the default policy refuses each name with a control
+byte, and `STANDARD` writes each one as `%XX` before the write.
 
 ### Detection is bounded and says when it guessed
 
@@ -1053,7 +1078,7 @@ member as fact.
 - Brotli has no magic, so it is found by a content probe, which without gates accepted
   about 8% of random data. `open_archive` and `detect_format` run that probe only for a
   `.br` or `.brotli` name unless `always_probe_content` is set; `open_stream` always runs
-  it ([`topics/detection.md`](topics/detection.md) §2.5). The probe rejects a first meta-block larger than a
+  it ([`topics/detection.md`](topics/detection.md) §2.6). The probe rejects a first meta-block larger than a
   known-length source, a fully visible source that does not decode to completion, and
   later overruns or trailing bytes found by a bounded block-chain walk, and decodes up
   to the first compressed block that walk reaches (within 1 MiB and the decode allowance),
@@ -1086,10 +1111,11 @@ the program that runs is one whose behaviour we have characterized.
 default") takes RARLAB `unrar` or `rar` when installed and `unar` otherwise, decided once
 at open. A read `unar` refuses is not retried with `unrar`, and reads `unar` gets wrong
 are refused before it runs. The other direction has one exception: a member `unrar`
-cannot address by name (a glob mask that also matches earlier members, a glob in a
-directory component, a backslash) is read with an accepted `unar` by index, unless the
-read needs a password, the archive is a stream or has a prefix (a copy), or `unar` refuses it
-(`_unar_for_unaddressable`). `unrar-free`, `7z` and `bsdtar` are never used: their
+cannot address by name (any refusal `_UnrarCannotAddress` carries, such as a glob mask
+that also matches earlier members, a glob in a directory component, a backslash, or an
+earlier name whose reading by this host's `unrar` cannot be modelled) is read with an
+accepted `unar` by index, unless the read needs a password, the archive is a stream or has
+a prefix (a copy), or `unar` refuses it (`_unar_for_unaddressable`). `unrar-free`, `7z` and `bsdtar` are never used: their
 failures (empty files with a success exit, a missing plugin, gigabytes written for a
 stored member) are invisible to the caller. A non-RARLAB `unrar` raises
 `PackageNotInstalledError`. Both paths use a banner probe with a timeout and a
@@ -1166,7 +1192,11 @@ consumes the stream once, and the entries its directory places in the bytes kept
 its members consume those at most twice more, however many it names there
 ([Resource use is bounded](#resource-use-is-bounded)). A "work per output byte" limit
 for BCJ2 was considered and not added: no other codec has one, and `ExtractionLimits`
-still bounds the amount, only the rate is lower. Callers who need a time bound run
+still bounds the amount, only the rate is lower. Detection of an unrecognised file with
+no known extension scans up to 2 MiB for an archive behind leading bytes, and 2 MiB of
+back-to-back ZIP local-header signatures costs about 2.4 s to reject, one validation each
+([prefixed archives §3](topics/prefixed-archives.md#3-cost-is-what-tiers-this-not-false-positives)).
+Callers who need a time bound run
 archivey in a worker they can kill. Public:
 [where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 
@@ -1175,9 +1205,8 @@ archivey in a worker they can kill. Public:
 Under the default `process_isolation` the stdlib `zlib`, `bz2` and `lzma`, zstd, lz4,
 brotli and inflate64 run in-process (`NATIVE_DECODERS` isolates them too; under `NONE`
 pyppmd decodes in-process as well and rapidgzip is not used). A crash nobody has found yet
-would abort the process. pyppmd runs in a child by default because the single-byte decode
-that frees a waiting worker at teardown is a decode after the end on a stream that has
-ended ([`known-issues.md`](known-issues.md) §Intermittent `pyppmd` native aborts). Both rapidgzip decoders run in a child process;
+would abort the process. pyppmd runs in a child by default because of a known pyppmd issue
+([`known-issues.md`](known-issues.md) §`pyppmd` crashes on damaged or crafted PPMd data). Both rapidgzip decoders run in a child process;
 `scripts/accelerator_crash_search.py` tells whether they still need to. `MemoryError` is not translated, so
 running out of memory is never mistaken for a damaged archive; the limits above exist to
 keep a hostile archive from getting that far. Public:
@@ -1186,7 +1215,15 @@ keep a hostile archive from getting that far. Public:
 ### Accelerators on by default, and unbounded in time
 
 `AcceleratorMode.AUTO` engages the `[seekable]` accelerators when installed and a caller
-asks for seeking. They are third-party C++ that can busy-loop on crafted input, in a
+asks for seeking, and, for the DEFLATE family on Linux and macOS, on a large sequential
+read too: 16 MiB or more that compresses 3:1 or less ([`formats/gzip.md`](formats/gzip.md)
+§2.3). The sizes behind that choice come from the file (a ZIP or 7z member's declared
+sizes, the gzip ISIZE trailer), so a hostile file picks which decoder a default open
+gets. Either one is a decoder the caller accepted by installing `[seekable]`, and either
+way the checks of [`docs/security.md`](../docs/security.md#where-the-guarantees-stop) apply:
+the shapes that read differently under rapidgzip (DR-5a), and the crafted cut `.gz` it
+can read short, are now on the default path of a plain open, not only of a declared
+seek. They are third-party C++ that can busy-loop on crafted input, in a
 thread no Python timeout can cleanly interrupt. The gzip-family decoder runs in a child
 process, so an abort costs only the member, but a loop there has no read timeout. The
 Atheris accelerator targets fuzz them ([Parsers survive hostile bytes](#parsers-survive-hostile-bytes))
@@ -1271,9 +1308,7 @@ parent's scan and its own lists the target's entries. Reads are still refused wh
 listing recorded an identity. For an identity-less member the reparse check covers only
 the leaf and runs after the open, so a junction swapped in above it, or a swap racing
 the check, reads a same-size file outside the root. Both inferred from the code, not
-measured. On Python 3.11, `DirEntry.is_junction()` does not exist, so a junction may be
-walked ([`formats/directory.md`](formats/directory.md) §7). Public:
-[where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
+measured. Public: [where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 
 ### Nested-archive amplification
 
@@ -1285,9 +1320,59 @@ budget one level at a time. The caller bounds depth and total size. Public:
 
 ### Reads have no output bound
 
-`read()` and `open()` return whatever the member decodes to; `ExtractionLimits` apply to
-`extract` only. Chunk untrusted payloads. Public:
+`read()` and `open()` have no byte cap: `max_extracted_bytes` and `max_entries` apply to
+`extract` only, and a `read()` of an honest 1 GiB member holds 1 GiB. `max_ratio` does
+hold reads: each member stream is held to the per-member and archive-wide ratios
+(`bomb_tracker.MemberRatioGuard`, one `ReadRatioTally` per reader), so a scan or hash of a
+bzip2 or xz bomb stops within a step past 5 MiB. A member whose data is the archive
+stream's own bytes (every TAR member but a sparse one) gets no guard: it cannot pass 1:1
+and a compressed stream is held as a whole. It counts toward the archive-wide total at its
+recorded size when its stream is handed out. The archive-wide rule divides by the
+archive's size when it is known, and otherwise by a live count (see
+[Extraction bombs](#extraction-bombs)): the bytes taken from a pipe, or the
+furthest offset a seekable stream of unknown size has reached. The live rule waits for
+`live_ratio_activation_threshold` (256 MiB), so before that only the per-member rule
+holds reads from such a source. A container inside a
+compression stream (a `.tar.gz`) holds its whole decode, listing included, to the
+archive-wide ratio (`bomb_tracker.DecodeRatioGuard`), since listing it decodes everything.
+A sequential format handler's walk is held the same way to what it decodes by itself
+(`format_adapter.SequentialReaderAdapter._ratio_guarded`): the layers that
+`ForwardStream.decompress()` opens share one total, each layer counted at the furthest
+offset it decoded, so nesting a payload in another does not multiply the bound; a
+member's decoded data (`MemberSpan.data`), drained by listing too, counts toward a second
+total keyed by the member's place in the walk, so a walk started over adds nothing.
+**Residual:** each level is judged on its own, against the same denominator: the outer
+compression stream, the `decompress()` layers, the decoded member data, and member reads
+(`ReadRatioTally`). Their totals add up, so one archive can decode about one `max_ratio`
+of its size per level, not one in all. Chunk untrusted payloads. Tests:
+`tests/test_compressed_container_ratio.py`,
+`tests/test_format_api_sequential.py::test_decompress_part_way_listing_is_held_to_the_ratio`,
+`::test_decompress_part_way_layers_share_one_ratio_count`,
+`::test_decoded_data_drained_by_listing_is_held_to_the_ratio`,
+`::test_decoded_data_read_is_held_to_the_ratio`,
+`::test_decoded_data_of_all_members_shares_one_total`,
+`::test_decoded_data_listed_again_counts_once`,
+`tests/test_member_read_ratio.py::test_a_seekable_zip_of_unknown_size_is_held_to_the_live_ratio`.
+Public:
 [security.md §Where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
+
+### Volume discovery trusts the folder
+
+Opening one part of a set by path reads the other parts beside it
+(`internal/volumes.py` `discover_volume_siblings`, and the RAR reader's own walk). A part
+found that way that is a symlink is refused, so a user who can only add files to a
+shared folder cannot point a planted `x.part2.rar` at a file the caller can read and they
+cannot, and have its bytes come out inside an extracted member. The check is an `lstat`
+at discovery; the parts are opened by name afterwards (`join_volumes` reopens them, and
+`unrar` opens RAR volumes itself), so the same writer can swap a checked part for a link
+before the read. That is the swapping writer of §1, here for the folder beside an archive
+path rather than a directory source, and it is not defended. A hard link looks like any
+file and passes; Linux's `protected_hardlinks` stops an unprivileged user making one to a
+file they cannot read, macOS does not. `ArchiveyConfig(discover_volumes=False)` reads a
+path as the one file it names. `unrar`, run on volume 1's path, may still open later
+volumes by name, but a member that continues into a volume archivey was not given is
+refused before `unrar` reads it. Public:
+[security.md §Hardening](../docs/security.md#hardening).
 
 ### A probe can fabricate a member
 

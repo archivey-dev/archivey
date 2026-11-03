@@ -24,6 +24,8 @@ Multi-volume fixtures:
 | `tinyvol_rnn.rar` / `tinyvol_rnn.r00` | RAR4 `-ma4 -vn` classic `.rar` + `.r00` naming |
 | `tinyvol_cut.part1.rar` … `tinyvol_cut.part3.rar` | RAR5 `-m0 -v1500b`, members `a.txt` … `d.txt`; the fourth volume was deleted, so `d.txt` runs into a missing volume |
 | `tinyvol_cut_solid.part01.rar` … `tinyvol_cut_solid.part04.rar` | RAR5 `-s -m3 -v900b`, same members; the last volume was deleted |
+| `stdin_vol.part1.rar` … `stdin_vol.part3.rar` | RAR5 `-m0 -v900b -sistdin.txt`, 2000 bytes piped in (`_build_stdin_volumes`); parts 1 and 2 have the "unpacked size unknown" flag and a placeholder size, part 3 the real one |
+| `stdin_vol_m3.part1.rar` … `stdin_vol_m3.part3.rar` | Same with `-m3` and 4000 bytes |
 
 File-version (`-ver`) fixtures:
 
@@ -140,6 +142,15 @@ RAR 7.00; another `rar` build may compress them so `unar` reads them, so rerun
 | `unar_drop_solid__.rar` | RAR5 `-s -m3`; `a.txt` (`hello`), then the 7-byte `f.txt` (`ababbaa`) |
 | `unar_stale_solid__.rar` | RAR5 `-s -m3`; `a.txt` … `e.txt`. One `unar` run drops `c.txt`, writes stale bytes of `d.txt`'s length and drops `e.txt` |
 | `unar_stale_nocrc_solid__.rar` | Same, with `c.txt`'s CRC32 removed from its FILE header (header CRC recomputed), so it has no digest |
+
+A redirect type no RAR version writes. Built by `_build_unknown_redirect` with RAR 7.00:
+`rar` stores `link` as a Unix symlink (type 1), then `_set_redirect_type` rewrites the
+type to 6 and recomputes the header CRC. `unrar` 7.00 lists `link` as a file, warns
+"Unknown extra field", creates nothing for it and emits nothing for it in `unrar p`.
+
+| Files | Notes |
+| --- | --- |
+| `redirect_unknown_solid__.rar` | RAR5 `-s -ds -m3`; `a.txt` and `b.txt` (300 bytes each) with `link`, a redirect of type 6 to `a.txt`, between them |
 
 ## Legacy (not regenerated)
 

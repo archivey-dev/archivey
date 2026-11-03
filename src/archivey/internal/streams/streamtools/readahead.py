@@ -24,6 +24,7 @@ import io
 from collections.abc import Callable
 from typing import BinaryIO, Protocol, cast
 
+from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools.base import DelegatingStream
 from archivey.internal.streams.streamtools.binaryio import (
     ask_resume_offset,
@@ -84,6 +85,7 @@ class ReadAheadStream(DelegatingStream):
         )
         super().__init__(inner)
 
+    @override
     def read(self, n: int | None = -1, /) -> bytes:
         n = check_read_size(n)
         if self.closed:
@@ -139,6 +141,21 @@ class ReadAheadStream(DelegatingStream):
         self._offset = take
         return held + data[:take]
 
+    def read_arrived(self, n: int, /) -> bytes:
+        """Between 1 and ``n`` bytes, or ``b""`` only at the end: the buffered bytes
+        when there are any, else one fill. With ``fill_arrived`` that fill is what the
+        decoder's next feed gives, so a consumer that reads until ``b""`` (a decoder
+        fed from this buffer) never waits for bytes a held-open pipe has not sent."""
+        if n <= 0:
+            raise ValueError("n must be positive")
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        buffered = len(self._buffer) - self._offset
+        if buffered or self._held is not None or self._read_ahead is None:
+            return self.read(min(n, buffered) if buffered else n)
+        return self._read_ahead(1, n)
+
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         offset, whence = check_seek_args(offset, whence)
         if self._buffer and whence != io.SEEK_END:
@@ -159,6 +176,7 @@ class ReadAheadStream(DelegatingStream):
         self._held = None
         return position
 
+    @override
     def tell(self, /) -> int:
         return self._inner.tell() - (len(self._buffer) - self._offset)
 

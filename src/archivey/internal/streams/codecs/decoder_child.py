@@ -31,7 +31,7 @@ from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
     ReadError,
-    ResourceLimitError,
+    ResourceUnavailableError,
 )
 from archivey.internal.streams.child_process import (
     describe_exit,
@@ -53,6 +53,7 @@ from archivey.internal.streams.codecs.decoder_worker import (
     parse_error_payload,
     read_exact_or_none,
 )
+from archivey.internal.streams.kept_errors import unraised
 
 WORKER = Path(__file__).with_name("decoder_worker.py")
 
@@ -76,6 +77,11 @@ class DecoderChildStartError(RuntimeError):
     could not import the codec's library. The caller turns it into the error its
     setting calls for.
     """
+
+
+class DecoderChildImportError(DecoderChildStartError):
+    """The child started but could not import the codec's library: a package that is
+    found but does not import (a broken wheel, a missing shared library)."""
 
 
 class DecoderChildReportedError(RuntimeError):
@@ -245,6 +251,21 @@ def _release(holder: list[_Lease]) -> None:
     holder[0].release()
 
 
+def _unraised(exc: Exception) -> Exception:
+    """A copy of ``exc`` that has never been raised (:func:`unraised`).
+
+    A decoder keeps the error its child died with and raises it again on every later
+    call (:class:`DecoderChild`), and the kept instance must never be the one raised
+    (see :mod:`kept_errors`). When the raise comes from a decoder that the collector
+    is finalizing (``PpmdDecoder.__del__`` sends its one-symbol decode at close), the
+    new frames also reach, through ``f_back``, the code the collection interrupted,
+    and the cycle keeps that code's locals alive past its return: a decoder there
+    keeps its child process leased. A recorded death is built fresh and carries no
+    notes.
+    """
+    return unraised(exc)
+
+
 class _Died(Exception):
     """The child went away during a request (internal to :class:`DecoderChild`)."""
 
@@ -347,6 +368,7 @@ class DecoderChild:
         self._unused = b""
         self._unused_stale = False
         self._interrupted = False
+        # Never raise this instance: raise ``_unraised(self._death)`` (see there).
         self._death: Exception | None = None
         # True between the two replies to ``OPEN``: the library is imported and the
         # decoder is being built (see ``_death_error``).
@@ -396,9 +418,16 @@ class DecoderChild:
         tag, state, output = self._exchange(OPEN, 0, (self._open_message,))
         if tag != OK:
             exc = rebuild_error(output, self._known)
-            if isinstance(exc, ImportError):
-                raise start_error(f"cannot import the {self._codec} library: {exc}")
-            raise start_error(str(exc))
+            if isinstance(exc, KeyError):
+                # No loader for this codec name: a bug in this process.
+                raise start_error(str(exc))
+            # Before its first reply the child runs only the library's import, so
+            # any other error there is the import failing, whatever its type, as
+            # ``deps.LazyOptional.load`` counts any exception here.
+            raise DecoderChildImportError(
+                "cannot start the decoder process: cannot import the "
+                f"{self._codec} library: {exc}"
+            )
         self._building = True
         tag, state, output = self._receive_raw()
         if tag != OK:
@@ -410,7 +439,7 @@ class DecoderChild:
 
     def _check_usable(self) -> _Process:
         if self._death is not None:
-            raise self._death
+            raise _unraised(self._death)
         if self._interrupted:
             raise ArchiveyUsageError(
                 f"the {self.describe} was interrupted in the middle of a request "
@@ -508,10 +537,11 @@ class DecoderChild:
             # must not reach the caller as a different error because it came later.
             self._lease.reusable = False
             self._lease.release()
-            self._death = self._fresh_child_error(exc)
-            if self._death is exc:
+            death = self._fresh_child_error(exc)
+            self._death = _unraised(death)
+            if death is exc:
                 raise
-            raise self._death from exc
+            raise death from exc
         for tag, arg, parts, crc in log:
             if zlib.crc32(self._request(tag, arg, *parts)) != crc:
                 self._lease.reusable = False
@@ -535,7 +565,8 @@ class DecoderChild:
         return exc
 
     def _death_from(self, died: _Died) -> Exception:
-        """Record and return the error for a child that went away."""
+        """Record the error for a child that went away, and return the error to raise,
+        a copy where the type can be copied (:func:`_unraised`)."""
         self._lease.reusable = False
         self._lease.release()
         if not died.answered:
@@ -546,7 +577,7 @@ class DecoderChild:
             )
         else:
             self._death = self._death_error(died.returncode)
-        return self._death
+        return _unraised(self._death)
 
     def _death_error(self, returncode: int | None) -> Exception:
         """The error for a child that ended during a request (``returncode``): a crash
@@ -656,7 +687,7 @@ class DecoderChild:
 
 def isolation_error(
     reason: str, setting: str = "NATIVE_DECODERS", *, isolated_unless_none: bool = False
-) -> ResourceLimitError:
+) -> ResourceUnavailableError:
     """The error for a decoder that ``process_isolation`` (``setting``) runs only in a
     child process, when no child can start. ``isolated_unless_none``: the decoder runs
     in a child under every setting but ``NONE`` (PPMd), so ``NONE`` is the only advice
@@ -666,7 +697,7 @@ def isolation_error(
         if setting == "NATIVE_DECODERS" and not isolated_unless_none
         else "ProcessIsolation.NONE (not recommended for files you do not trust)"
     )
-    error = ResourceLimitError(
+    error = ResourceUnavailableError(
         f"{reason}. process_isolation={setting} decodes this only in a child "
         f"process; use {instead} to decode it in this process."
     )

@@ -979,7 +979,9 @@ def test_inner_tar_skip_reason_precedence(
     from archivey.internal.streams import codecs
 
     if not backend_present:
-        monkeypatch.setattr(codecs, "is_codec_available", lambda codec: False)
+        monkeypatch.setattr(
+            codecs, "is_codec_available", lambda codec, excluded=frozenset(): False
+        )
     budget = replace(BALANCED_BUDGET, **budget_change)
     info = detect_format(
         io.BytesIO(gzip.compress(_small_tar_bytes())),
@@ -1140,7 +1142,7 @@ def test_inner_tar_probe_over_small_reads_passes_each_byte_through_the_view_once
     ``reads × prefix / 2`` bytes here (over 15 MB), and the probe time would grow
     with the square of the read count.
     """
-    from archivey.internal.detection import _probe_inner_tar
+    from archivey.internal.detection import _probe_inner_container
     from archivey.types import StreamFormat
 
     payload, chunks = _trickled_tar_bz2(step=256)
@@ -1155,8 +1157,11 @@ def test_inner_tar_probe_over_small_reads_passes_each_byte_through_the_view_once
             passed += len(data)
             return data
 
-        assert _probe_inner_tar(
-            StreamFormat.BZIP2, counting_view, ws, view_arrived=True
+        assert (
+            _probe_inner_container(
+                StreamFormat.BZIP2, counting_view, ws, view_arrived=True
+            )
+            == ArchiveFormat.TAR
         )
     assert 0 < passed <= len(payload)
 
@@ -1171,7 +1176,7 @@ def test_inner_tar_probe_over_small_reads_takes_each_byte_from_the_source_once(
     every read would hand over about ``reads × prefix / 2`` bytes here (over 20 MB).
     The count is what the source's read and peek calls return.
     """
-    from archivey.internal.detection import _probe_inner_tar
+    from archivey.internal.detection import _probe_inner_container
     from archivey.types import StreamFormat
 
     payload, chunks = _trickled_tar_bz2(step=256)
@@ -1191,5 +1196,8 @@ def test_inner_tar_probe_over_small_reads_takes_each_byte_from_the_source_once(
     with PrefixWorkspace(source, BALANCED_BUDGET) as ws:
         assert ws.forward_only
         view = ws.candidate_view(0, arrived=True)
-        assert _probe_inner_tar(StreamFormat.BZIP2, view, ws, view_arrived=True)
+        assert (
+            _probe_inner_container(StreamFormat.BZIP2, view, ws, view_arrived=True)
+            == ArchiveFormat.TAR
+        )
     assert 0 < taken <= len(payload)

@@ -106,7 +106,7 @@ steps run strongest signal first — near magic, the SFX scan, far magic, conten
 extension — so a probe only sees what nothing stronger claimed. By default a probe runs
 only when the source's extension names its format; `always_probe_content=True` and
 `open_stream` run them all
-([`topics/detection.md`](../topics/detection.md) §2.5).
+([`topics/detection.md`](../topics/detection.md) §2.6).
 [`topics/detection.md`](../topics/detection.md) has the order and why.
 
 What is codec-specific about a probe: it runs with accelerators off and decoder memory
@@ -132,8 +132,11 @@ The extension is the last resort (`GUESS`): `.gz`, `.zz`, `.bz2`, `.xz`, `.lz`, 
 **`SingleFileReader` serves every codec.** It is codec-agnostic: the codec is picked by the
 format, and everything format-specific is a method on that codec's `StreamCodec` subclass.
 Adding a codec is one subclass in its own `codecs/<name>_codec.py`, listed in
-`codecs/registry.py`'s `STREAM_CODECS`, with no edit to the detector, the reader or the
-backend registry.
+`codecs/registry.py`'s codec list, with no edit to the detector, the reader or the
+backend registry. Each of those reads the list when asked (`stream_codecs()`,
+`single_file_codecs()`), so a codec registered later with `archivey.formats.register_codec`
+reaches them too, and the backend registry makes the `RAW_STREAM` and TAR pairs from it
+(`ReadBackend.RAW_STREAMS`, `STREAM_PAIRS`).
 
 **The source decides how members are opened.** A path is handed to the codec on every
 open, so concurrent opens get independent handles. A seekable stream is wrapped once in a
@@ -238,7 +241,7 @@ Where resume points come from, per codec:
 | Codec | Resume points |
 | --- | --- |
 | xz | Every block, and every stream in a multi-stream file. Default `xz` writes one block; `xz -T0` and `--block-size` write many |
-| lzip | Every member. Default `lzip` writes one; `plzip` one per data block, many with a small `-B` |
+| lzip | Every member from the trailer walk; every member with output from a forward read (an empty member's output offset is the next member's, or the end of the output). Default `lzip` writes one; `plzip` one per data block, many with a small `-B` |
 | `.Z` | Every CLEAR code, which `compress` emits when the dictionary stops paying |
 | gzip | On declared seek demand: every member after the first, recorded as a forward read reaches it, and every BGZF member, walked without decoding ([`gzip.md`](gzip.md) §2.3). With `rapidgzip` engaged, its own index, built as it decodes |
 | zlib, raw DEFLATE, bzip2 | None natively. With `rapidgzip` engaged, its own index, built as it decodes |
@@ -266,7 +269,8 @@ always does, and raises `PackageNotInstalledError` without it and
 seeking was declared (`seekable_members=True`, `open_stream(seekable=True)`) and it is
 installed. For the DEFLATE family `AUTO` adds two conditions, a compressed input of at
 least 16 MiB and a way to check the decoded length, and `rapidgzip` runs there in a
-child process. Both are on [`gzip.md`](gzip.md) §2.3; bzip2 stays in-process
+child process. It also takes a large sequential read there, at 3:1 or less, on Linux
+and macOS. All of it is on [`gzip.md`](gzip.md) §2.3; bzip2 stays in-process
 ([`bzip2.md`](bzip2.md) §2.3).
 
 **Truncation.** A decoder's `flush` runs once, at compressed end of file. When the stream
@@ -371,7 +375,7 @@ codecs' own tools disagree; archivey treats every codec with an end marker the s
 | --- | --- | --- |
 | gzip, zlib, bzip2, xz, lzip, LZMA Alone, zstd, LZ4, Brotli | The whole payload, then `ARCHIVE_TRAILING_DATA` at the junk's offset; `DiagnosticRaisedError` under `STRICT`. xz and lzip keep `size` and seeks | — |
 | gzip | as above | `gzip -t`: "trailing garbage ignored", exit 2 |
-| bzip2 | as above; the accelerator also prints a warning to standard error | `bzip2 -t`: "trailing garbage after EOF ignored", exit 0 |
+| bzip2 | as above; the accelerator's own warning goes to its process's temporary standard error file, not the caller's | `bzip2 -t`: "trailing garbage after EOF ignored", exit 0 |
 | xz | as above | `xz -t`: "Unexpected end of input", exit 1 |
 | lzip | as above | `plzip -t`: exit 0; the lzip manual allows trailing data |
 | zstd | as above | `zstd -t`: "unsupported format", exit 1 |

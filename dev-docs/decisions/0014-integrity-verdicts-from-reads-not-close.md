@@ -4,7 +4,8 @@
 - **Date:** 2026-07 (review of `gzip-zlib-truncation-recovery`, PR #183)
 - **Provenance:** OpenSpec `compressed-streams` (digest verification, read-vs-close
   fault split); `VISION.md` (no silent success; damaged input is first-class);
-  `verification-integrity-mode` change (STRICT opt-in)
+  `verification-level` change (the level a stream reports; it replaced the closed
+  `verification-integrity-mode` STRICT opt-in)
 
 ## Context
 
@@ -29,7 +30,9 @@ asked for a verdict at all.
   raises it again until the caller seeks. A seek restarts the decode, so the prefix
   reads again, and the read that reaches the end raises the verdict again, even after a
   seek that forfeited the digest check. (Since 2026-10-01 a seek to 0 re-arms the
-  digest instead of forfeiting it; the same error object is still the one raised.) Reaching the end is a position, not a short return:
+  digest instead of forfeiting it. Since 2026-10-29 the verdict is raised again as an
+  equal copy, not the same object, so no raise keeps the stream alive: see
+  `internal/streams/kept_errors.py`.) Reaching the end is a position, not a short return:
   a full `read(member.size)` reaches it too. Without this, a caller who caught the
   verdict and seeked back re-read the damaged member with no error, because a verifier
   checks a member once. The maintainer chose to keep raising on 2026-09-26 (sweep
@@ -65,8 +68,11 @@ asked for a verdict at all.
 - `close()` never raises a content error (target contract; best-effort on a few
   backends today).
 
-Callers who need verification regardless of access pattern use
-`VerificationMode.STRICT` (`verification-integrity-mode`).
+A caller who needs a verdict reads the member to its end, which checks it after any
+seeks, and reads `stream.verified` to see which checks ran (`verification-level`).
+A mode that forced a verdict however the caller reads (`VerificationMode.STRICT`,
+`verification-integrity-mode`) was closed unimplemented in favour of that level
+(maintainer ruling, 2026-10-22).
 
 ## Consequences
 

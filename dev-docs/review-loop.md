@@ -79,6 +79,56 @@ this replaced. A round that did not finish or did not run leaves the label as it
 A label left on after later pushes is stale; the closing comment names the commit that
 was reviewed. `OUTCOME_LABELS` in the gate holds the mapping.
 
+**The risk tier shows as a label too.** `risk-label.yml` labels every pull request
+`risk: light`, `risk: standard` or `risk: deep` when it opens and again on each push,
+from `python3 scripts/review_prep.py tier` (the review skill's §1 says what each tier
+asks of a reviewer). It runs the base branch's copy of the script, so a pull request
+cannot lower its own tier by editing the path lists. It only reports, like the outcome
+labels. A deep pull request's rounds end with a security pass, and so do those of a pull
+request whose format or codec code the template's `Security:` rules cover (skill §1).
+The same step adds `merge: maintainer` when the script's `merge:` line names a decision
+of the maintainer's, and takes it off when a push removes the last one. That label
+reports too: a fork's pull request gets none, a cancelled run leaves it stale, and a
+label can be removed by hand, so the merging agent runs the base branch's script itself
+(`address-review-findings` §7).
+
+**Opus reads a pull request once, first; Sonnet re-reads the fixes.** The round
+installs the project at the pull request's own lockfile (`uv sync --frozen --group dev
+--extra all`, what `scripts/setup-dev-env.sh` installs), so the reviewer can measure with
+the optional accelerators and codecs a change is about. The first round that reaches a
+verdict on a `standard` or `deep` pull request runs `claude-opus-5-5`: a full first look,
+and its closing comment's marker carries `pass=opus`, which is how later rounds know it
+ran. Every other round runs `claude-sonnet-5-5`: the rounds that re-read fixes, and
+every round of a `light` pull request. An Opus round that dies before its verdict is
+not counted, so the next round is Opus again. The tier comes from the base branch's
+`review_prep.py`, as for the risk label, before the gate runs; a failure to compute it
+makes the round Sonnet's. `OPUS_PASS_TIERS` in the gate holds the rule.
+
+Why this order (davitf, 2026-10-30): for one day Sonnet reviewed first and Opus read the
+pull request once Sonnet approved. On the ten pull requests that ran that way, Sonnet's
+first rounds took about two minutes and raised 1 blocking and 7 important findings; the
+Opus pass after them raised 4 blocking and about 30 important, nearly all fixed. Sonnet
+in front only delayed Opus by a round. Sonnet re-reading fixes did catch a regression
+that one fix introduced, at about a twentieth of an Opus round's cost. Before that, Opus
+reviewed every round until 2026-10-29, and on the [review-eval](review-eval/README.md)
+set Sonnet caught as many of the bugs the loop had missed, at about an eighth of the
+cost; the day of live rounds showed that it reads far less deeply on a first look.
+
+The prompt every round gets is
+[`.github/review-loop-prompt.md`](../.github/review-loop-prompt.md), filled in by
+`scripts/review_loop_prompt.py`; both closes run `scripts/review_loop_close.sh`.
+
+Each close also checks the round's posts against the shape `code-review-skill` §3 and
+§6 ask for (`scripts/review_shape.py`): the `## Round <n> ·` heading and attribution
+line, the collapsed `Measured this round` list, a `### K<n> ·` heading on every inline
+finding and reply, the footer on every post, no tables outside a code fence, and no
+GitHub API error pasted in. The closing comment lists any miss under **Posting
+shape**, and the round marker carries their count (`shape=N`) for the weekly tally. A
+miss is a reviewer defect to fix in the skill or the prompt; it never changes the
+verdict or the next step. When the close cannot read the pull request's comments, it
+says so instead and the marker carries `shape=skipped`, which the tally counts apart
+from the rounds that passed.
+
 ## Counting rounds
 
 Each finished round posts one closing comment from `github-actions[bot]` whose first line
@@ -96,8 +146,12 @@ can fall out of step with what actually ran:
   comments are read.
 - If the workflow fails before deciding, it says so on the pull request, and nothing is
   counted.
-- Nothing ever runs without a fresh label, so a failed step cannot make a round repeat
-  by itself.
+- Nothing ever runs without a fresh label, so a failed step cannot make a round
+  repeat by itself.
+- An agent's label at the commit the last round already read is refused, unless that
+  round stopped for a decision: with nothing pushed there is nothing new to read, and
+  the answer to a decision is new even when it needed no code. A person's label reviews
+  it again as is.
 
 ## Who is asking
 
@@ -113,7 +167,8 @@ evidence for it.
   five verdicts. `clean`, `approved` and `conditional` mean it does not need to see the
   result: `approved` is a plain "✅ Approve", and `conditional` covers "✅ Approve,
   conditional on the listed fixes" and "💬 Comment". The findings are still posted in
-  full and still fixed, but the closing comment does not ask for another round. `findings` (🔄 Request Changes) asks for one.
+  full and still fixed, but the closing comment does not ask for another round.
+  `findings` (🔄 Request Changes) asks for one.
   `decision` stops until the maintainer answers. `VERDICT_STOPS` in
   [`scripts/review_loop_gate.py`](../scripts/review_loop_gate.py) holds the mapping.
 - **The verdict advises; it does not refuse.** After a verdict that needs no other
@@ -146,18 +201,29 @@ assistant, answers only people.
 
 - **Merging.** Nothing here merges, approves, or pushes to `main`. An agent may merge a
   straightforward PR by hand once its review approves and CI is green; tricky ones go to
-  the maintainer (`AGENTS.md` §Working with the maintainer).
+  the maintainer (`AGENTS.md` §Working with the maintainer). Every review thread must
+  be resolved first ([`address-review-findings`](../.claude/skills/address-review-findings/SKILL.md) §7).
 - **The review's own judgement.** `code-review-skill` runs with `Read`, `Grep`, `Glob`,
   `Bash` and `WebFetch`. It reports; it does not edit.
 - **Reaching the maintainer.** The workflow puts the question on the pull request.
   Carrying it into the project chat, in plain language and one at a time, is a separate
   hop and not GitHub's to make.
+- **Measuring the reviewer.** After changing the review skill, the prompt
+  (`.github/review-loop-prompt.md`) or the model, rerun the bugs the loop missed ([`review-eval/`](review-eval/README.md))
+  and add the score to its results.
+- **Counting what it found.** `review-tally.yml` runs `scripts/review_tally.py` each
+  Monday over the week's merged pull requests: rounds per pull request, findings by
+  severity and by who raised them (the Opus round or a Sonnet round), each finding's
+  disposition, findings an earlier fix caused, and rounds whose posts missed the posting
+  shape. The report is the run's job summary.
+  Run the script by hand for any window (`--since`, `--pr`).
 
 ## Setup
 
 The workflow reads the `CLAUDE_CODE_OAUTH_TOKEN` repository secret (`claude setup-token`,
 then Settings → Secrets and variables → Actions). The `review` and `no-review` labels and
-the four outcome labels must exist: `gh pr edit` cannot create a missing one.
+the four outcome labels must exist: `gh pr edit` cannot create a missing one. So must
+the three `risk:` labels.
 
 ## Known rough edges
 
@@ -177,6 +243,27 @@ the four outcome labels must exist: `gh pr edit` cannot create a missing one.
   Each round is a fresh session with no memory of the last one, which is deliberate: a
   reviewer that remembers proposing a fix is a poor judge of that fix. Keeping one warm
   session across rounds was considered and rejected (davitf, 2026-09-19).
+- **The pull request under review supplies its own gate and prompt.** The tier is read
+  from the base branch, but `review_loop_gate.py` (which tiers get the Opus round),
+  `review_loop_close.sh`, the prompt template and its renderer, and the review skill all
+  come from the pull request's checkout. So a pull request can edit the rules its own
+  review runs under, and `claude-code-action` does not refuse it as it does an edited
+  workflow file. Instead, those files are deep (`review_prep.py` `DEEP_PROCESS`), and
+  the gate's own (`review_loop_gate.py`, `review_loop_close.sh`, `review_prep.py`,
+  `review-loop.yml`, `risk-label.yml`) make the maintainer merge. The tier and the merge
+  line come from the base branch's script (the merging agent runs that copy,
+  `address-review-findings` §7), so the pull request cannot take itself off either list
+  (davitf, 2026-10-29). Since 2026-10-31 an edit to the prompt or the skill merges like
+  the rest of the deep tier, after the Opus pass and Cursor; only the files that decide
+  whether a round runs and approves, and who merges, stay with the maintainer, and so
+  does an edit that talks about merging in the prose the merging agent follows
+  (`MERGE_RULE_FILES`).
+- **Cursor reviews a deep pull request's Opus round.** The workflow posts an
+  `@cursoragent` request when that round starts, with the `CURSOR_TRIGGER_TOKEN`
+  secret: a fine-grained personal token limited to pull request comments on this
+  repository. Cursor drops comments from bots and GitHub Apps, so the request posted
+  as `github-actions[bot]` went unanswered on five pull requests. Without the secret
+  the step skips and says so in the job summary; ask Cursor by hand then.
 
 ## What this replaced
 

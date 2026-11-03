@@ -2,35 +2,34 @@
 
 from __future__ import annotations
 
-from typing import BinaryIO
-
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     UnsupportedFeatureError,
     exception_detail,
 )
+from archivey.formats import Decompressor
 from archivey.internal.config import StreamConfig
-from archivey.internal.streams.archive_stream import RewindWarning
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.base import (
     _SKIPPABLE_FRAME,
     Codec,
     CodecParams,
-    CodecSource,
     StreamCodec,
 )
 from archivey.internal.streams.codecs.framed_decoder import (
-    FramedDecompressorStream,
+    FrameCheck,
+    StreamStart,
     stream_magic,
 )
-from archivey.internal.streams.codecs.isolated import natives_for
 from archivey.internal.streams.codecs.lz4_legacy import LEGACY_MAGIC, Lz4Decompressor
 from archivey.internal.streams.decompressor_stream import _StreamChecksumError
 from archivey.types import (
     ArchiveFormat,
     MagicSignature,
     MissingComponent,
+    OptionalLibrary,
     StreamFormat,
 )
 
@@ -43,6 +42,33 @@ _LZ4_STREAMS = stream_magic(
 )
 
 
+# What an LZ4 stream or block needs, shared with the SquashFS reader's LZ4 blocks.
+LZ4_REQUIREMENT = MissingComponent(
+    OptionalLibrary.LZ4,
+    "pip install archivey[recommended]",
+    ("lz4",),
+    reason=deps.unused_reason(OptionalLibrary.LZ4),
+)
+
+
+_LZ4_FRAME_MAGIC = b"\x04\x22\x4d\x18"
+
+
+def _lz4_frame_has_checksum(head: bytes) -> bool | None:
+    """Whether an LZ4 frame checks every byte: its FLG byte (after the magic) sets the
+    content checksum (bit 2) or the block checksum (bit 4), which then covers every
+    block. liblz4 checks both when set. A legacy stream carries no checksum; a
+    skippable frame holds no content (``None``)."""
+    if head[:4] == _LZ4_FRAME_MAGIC:
+        return bool(head[4] & 0x14)
+    if head[:4] == LEGACY_MAGIC:
+        return False
+    return None
+
+
+_LZ4_FRAME_CHECK = FrameCheck(head=5, judge=_lz4_frame_has_checksum)
+
+
 class Lz4Codec(StreamCodec):
     codec = Codec.LZ4
     stream_format = StreamFormat.LZ4
@@ -51,36 +77,30 @@ class Lz4Codec(StreamCodec):
         # The legacy stream ``lz4 -l`` writes, and Linux kernel images use.
         MagicSignature(0, LEGACY_MAGIC, ArchiveFormat.LZ4),
     )
-    requirement = MissingComponent(
-        "lz4",
-        "pip install archivey[recommended]",
-        ("lz4",),
-        reason=deps.unused_reason("lz4"),
-    )
+    requirement = LZ4_REQUIREMENT
 
+    @override
     def _backend_present(self) -> bool:
         return deps.lz4_frame is not None and deps.lz4_block is not None
 
-    def open(
-        self, source: CodecSource, params: CodecParams, config: StreamConfig
-    ) -> BinaryIO:
-        if deps.lz4_frame is None or deps.lz4_block is None:
-            raise self._missing("lz4 streams")
-        # A rewind re-decompresses from the start (the outer ArchiveStream warns on a
-        # rewind — see rewind_warning).
-        natives = natives_for(config.process_isolation)
-        return FramedDecompressorStream(
-            source,
-            lambda: Lz4Decompressor(natives),
-            codec_name="lz4",
-            # Every frame is content, in a .lz4 file and in a 7z coder alike: the LZ4
-            # frame format lets frames be appended.
-            magic=_LZ4_STREAMS,
-            collector=config.collector,
-            report_trailing_data=config.report_trailing_data,
-            refuse_input_after_end=config.refuse_input_after_end,
-        )
+    @override
+    def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
+        # A frame or a legacy stream, whichever the data starts with.
+        return Lz4Decompressor(config.natives)
 
+    @override
+    def frame_check(self) -> FrameCheck:
+        return _LZ4_FRAME_CHECK
+
+    @override
+    def stream_start(self, params: CodecParams) -> StreamStart:
+        # Every frame is content, in a .lz4 file and in a 7z coder alike: the LZ4
+        # frame format lets frames be appended. A skippable frame may come between
+        # them, which ``magic`` does not match.
+        del params
+        return _LZ4_STREAMS
+
+    @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, RuntimeError) and str(exc).startswith("LZ4"):
             if "headerVersion_wrong" in str(exc):
@@ -100,7 +120,4 @@ class Lz4Codec(StreamCodec):
         if deps.lz4_block is not None and isinstance(exc, deps.lz4_block.LZ4BlockError):
             # A block of a legacy stream; it has no checksum to fail.
             return CorruptionError(f"Error reading lz4 stream: {exception_detail(exc)}")
-        return self._eof_truncation(exc, "lz4")
-
-    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
-        return RewindWarning("lz4")
+        return None

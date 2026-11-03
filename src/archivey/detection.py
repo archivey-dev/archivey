@@ -15,7 +15,7 @@ from typing import Literal
 
 from archivey.detection_cost import DetectionCostReceipt, TierSkip
 from archivey.diagnostics import DiagnosticSummary
-from archivey.types import ArchiveFormat
+from archivey.types import ArchiveFormat, PluginContainer, PluginStream
 
 __all__ = ["DetectionConfidence", "FormatInfo"]
 
@@ -67,16 +67,18 @@ class FormatInfo:
     self-extractor's executable stub."""
 
     payload_offset: int = 0
-    """Where the archive starts in the source. Nonzero only for a self-extracting
-    archive, so ``payload_offset > 0`` is the test for one."""
+    """Where the archive starts in the source: nonzero when other bytes come first, such
+    as a self-extractor's executable stub, a ``#!`` launcher, or an image or text the
+    archive was appended to. So ``payload_offset > 0`` says the archive is behind a
+    prefix, not that the file is a self-extracting archive."""
 
     diagnostics: DiagnosticSummary = field(default_factory=DiagnosticSummary.empty)
     """What detection reported on its way to the answer."""
 
     corroborated: bool = field(default=False, compare=False, repr=False)
     """Provisional and informational, not part of the :func:`~archivey.detect_format`
-    contract: whether a matching extension or an inner-TAR upgrade corroborated a
-    content-probe claim.
+    contract: whether a matching extension, an inner-TAR upgrade, or a self-checking
+    header (a TAR header checksum) corroborated a content-probe claim.
 
     Read it only together with ``detected_by == "content_probe"``. ``False`` also means
     "not a probe at all", so an exact magic hit reads ``False`` too. A later release may
@@ -107,3 +109,14 @@ class FormatInfo:
     :class:`~archivey.detection_cost.TierSkip` with its
     :class:`~archivey.detection_cost.TierSkipReason`: not enabled by policy, a
     capability the source lacks, or the budget ran out. Empty when every tier ran."""
+
+    @property
+    def from_plugin(self) -> bool:
+        """Whether ``format`` is one a plugin added (``archivey.formats``), not a
+        built-in one: its container or its compression stream. A plugin's parser or
+        decoder is not covered by archivey's limits, so a caller that reads untrusted
+        input can refuse such a format. Experimental, with ``archivey.formats``: any
+        release may change it."""
+        return isinstance(self.format.container, PluginContainer) or isinstance(
+            self.format.stream, PluginStream
+        )

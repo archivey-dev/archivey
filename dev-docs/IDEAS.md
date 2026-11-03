@@ -81,7 +81,7 @@ Each idea carries a status:
 - **Extension-first detection, and stopping early on agreement.** *Needs design.* Try the
   formats a filename suggests first, then fall back to the full sweep, so a misnamed file
   is still found. Content probes already follow the name: by default only the probe the
-  extension names runs ([`topics/detection.md`](topics/detection.md) §2.5). A second step is to stop as soon as the extension and the content agree, which
+  extension names runs ([`topics/detection.md`](topics/detection.md) §2.6). A second step is to stop as soon as the extension and the content agree, which
   saves the later scan tiers; the sound version may skip the expensive tiers but never a
   cheap exact-magic check. On `/usr`, near magic already settles almost every file, so the
   saving needs a Brotli-heavy corpus to show (the detection-algorithm
@@ -118,13 +118,15 @@ Each idea carries a status:
 
 ## Reading and verification
 
-- **Verification state as data.** *Needs design.* A member stream does not say whether
-  its stored digest was checked. For ZipCrypto and 7z AES, an unchecked partial read can
-  be garbage decrypted with the wrong key. The proposed shape is an ordered level on the
-  stream (`NONE`, `KEY`, `STRUCTURE`, `CONTENT`), paired with the highest level that
-  member can reach, and a `verify(at_least=…)` method. It would replace the
-  `ENCRYPTED_MEMBER_UNVERIFIED` diagnostic. The `verification-integrity-mode` change under
-  `openspec/changes/` depends on this design.
+- **Raise a stream's verification level on demand.** *Open idea.* A member stream
+  reports `verified` and `verifiable` (`Verification`: `NONE`, `UNLOCKED`, `LENGTH`,
+  `CHECKSUM`). A `verify(at_least=…)` method could read what is left to reach a level,
+  and a `reader.verify(member)` could check a member without handing out its bytes.
+  Retiring `ENCRYPTED_MEMBER_UNVERIFIED` in favour of the level is a separate call.
+- **Count the xz, zstd and LZ4 checksums in the level.** *Open idea.* These formats
+  carry a checksum per stream or frame only when the writer added one, so their
+  streams stop at `LENGTH` today. Each decoder would report, per frame, that a check
+  was present and passed.
 - **Say when a WinZip AES seek re-reads the ciphertext.** *Open idea.* **Good first
   contribution.** To keep the HMAC across seeks, the read that returns an AES member's last
   byte first reads the ciphertext the seeks skipped. The user docs don't state this, and
@@ -138,6 +140,16 @@ Each idea carries a status:
   dictionary, which surfaces as a resource limit. Real encoders write only a few sizes, so
   an off-grid size could be reported as a wrong password. Measure what real writers emit
   first.
+- **Investigate whether a source's `EOFError` should stay untranslated.** *Open idea.*
+  Every codec maps an `EOFError` to `TruncatedError` (`StreamCodec.eof_truncation`).
+  Python file objects, pipes and sockets return `b""` at the end, so an `EOFError` is
+  normally the decoder's. A few source libraries raise it for a dropped connection
+  (paramiko does for SSH/SFTP), and that I/O failure then reads as a truncated archive
+  (DR-15a). Only the accelerator paths mark an exception from the caller's source
+  (`from_callers_source`), so that it passes through unchanged. Marking source reads on
+  every path would do the same everywhere. It is not clear cut: for a member cut short
+  inside a truncated archive, `TruncatedError` is the right answer, so first find out
+  which sources raise it, and when.
 - **Salvage mode.** *Needs design.* Backups are full of truncated and corrupt archives.
   Reads already return the readable prefix and then raise, and a member's data error
   already leaves `stream_members()` running wherever the next member is reachable (ZIP,
@@ -183,6 +195,12 @@ Each idea carries a status:
   rounds, and possibly a lower `max_members`. The name is open (`UNTRUSTED` is the
   suggestion). It may also want to be a mode, for example refusing a decode that could
   take the process down.
+- **Predefined `ArchiveyConfig` objects for safety and for speed.** *Needs design.* Like
+  `DiagnosticPolicy.STRICT`: one tuned for safety (accelerators `OFF`, so results do not
+  depend on the machine, and possibly the stricter limits above) and one for speed
+  (accelerators `AUTO`). Until then, "The same result everywhere" in
+  `docs/reading.md` shows the settings by hand. Not to be built yet (maintainer,
+  2026-10-26).
 - **Resource usage against the limits, as data.** *Open idea.* A caller cannot ask how
   close an archive came to each limit. A usage record on the reader and on the extraction
   report would help tune limits against a real corpus. `scripts/scan_archives.py` shows
@@ -217,8 +235,13 @@ Each idea carries a status:
   contribution.** A helper that returns the strongest digest an archive already stores
   for a member, and says whether it was stored or computed. The recipe is in
   `docs/formats.md`.
-- **A library `verify()` primitive.** *Open idea.* `archivey test` writes its own loop
-  today. Decide whether callers verify without extracting often enough for a public API.
+- **A cheaper `ArchiveStream.verify()`.** *Open idea.* `verify()` (0.3.0) reads and
+  discards until the target is reached (`verifiable`, or `UNLOCKED` with
+  `password_only=True`). Some levels could cost less: `UNLOCKED` from the 7z AES
+  tail padding (`openspec/changes/sevenzip-aes-tail-key-check`) or from decoding only the
+  start of a self-checking stream, and `CHECKSUM` without a full decode where a format allows
+  it (`reports/partial-crc-candidates-2026-10-22.md`). The result and the errors must stay
+  the same, so each can land in a patch release.
 - **Public backend API.** *Needs design.* Export the backend base class and registry so
   rare formats (CAB, CPIO, SquashFS, WIM, XAR) can be third-party plugins. It constrains
   how freely the backend contract can change, so decide before 1.0.
@@ -253,10 +276,6 @@ Each idea carries a status:
   `rar` writer at test time and skip on every CI leg. Generate their archives once and
   commit them, as ADR 0016 did for the corpus. Inventory: `tests/fixtures/rar/README.md`
   §"Tests that still need the `rar` writer at runtime".
-- **Check that the Windows `unrar` download is rarlab's.** *Open idea.* The Windows CI leg
-  downloads `unrarw64.exe` from an unversioned URL, so a pinned digest would go stale. An
-  Authenticode check for the win.rar GmbH signature is the likely answer
-  (`scripts/install-rarlab-unrar.ps1`).
 - **Move the `unrar` finder onto `CliToolFinder`.** *Open idea.* `find_rarlab_unrar` repeats
   the policy in `internal/external/cli.py`, so a probe or cache fix lands twice. About
   sixty test sites patch the finder's internals, so do it as its own change, with those

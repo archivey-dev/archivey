@@ -6,7 +6,7 @@ length are checked on a clean sequential read to EOF.
 Two delivery shapes (same rules, different wrappers):
 
 - :class:`MemberVerifier` — the logic object. **Fused into**
-  :class:`~archivey.internal.streams.archive_stream.ArchiveStream` on the member
+  :class:`~archivey.internal.streams.archive_stream.ArchiveStreamImpl` on the member
   hot path (one fewer Python layer; nested codec ``ArchiveStream``s can collapse).
 - :class:`VerifyingStream` — standalone ``BinaryIO`` wrapper around an inner +
   verifier. Kept for codec length backstops and tests; prefer fusion for members.
@@ -65,6 +65,7 @@ from archivey.internal.diagnostics_collector import (
 )
 from archivey.internal.hashing.blake2sp import Blake2sp
 from archivey.internal.logs import integrity as logger
+from archivey.internal.overrides import override
 from archivey.internal.streams.decompressor_stream import (
     _COMPRESSED_READ_SIZE_MAX,
     retire_decoder_children,
@@ -77,6 +78,10 @@ from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     is_closed_file_error,
     is_seekable,
+)
+from archivey.internal.streams.verification import (
+    VerificationProofs,
+    ask_verification_proofs,
 )
 from archivey.types import HashAlgorithm
 
@@ -117,10 +122,13 @@ def _algo_key(algorithm: HashAlgorithm | str) -> str:
 class _IncrementalHasher(Protocol):
     """The subset of the ``hashlib`` hash interface this stage uses."""
 
-    @property
-    def digest_size(self) -> int: ...
     def update(self, data: bytes, /) -> None: ...
     def digest(self) -> bytes: ...
+
+
+#: Digests whose hasher the caller supplies (a format plugin's SHA-1 or CRC-16): name to
+#: (stored value, factory of a fresh hasher). Checked exactly as ``expected`` is.
+CustomDigests = Mapping[str, tuple[bytes, Callable[[], _IncrementalHasher]]]
 
 
 class _Crc32Hasher:
@@ -138,7 +146,7 @@ class _Crc32Hasher:
         return (self._value & 0xFFFFFFFF).to_bytes(self.digest_size, "big")
 
 
-def _make_hasher(
+def hasher_factory(
     algorithm: HashAlgorithm | str,
 ) -> Callable[[], _IncrementalHasher] | None:
     """Return a zero-arg factory for an incremental hasher, or ``None`` if unavailable."""
@@ -180,7 +188,7 @@ class MemberVerifier:
     """Incremental digest/length checker over bytes read from an inner stream.
 
     Not a ``BinaryIO`` itself — :class:`VerifyingStream` and
-    :class:`~archivey.internal.streams.archive_stream.ArchiveStream` own one and
+    :class:`~archivey.internal.streams.archive_stream.ArchiveStreamImpl` own one and
     call :meth:`read` / :meth:`note_seek` / :meth:`finish_on_close` against their
     inner handle.
     """
@@ -196,8 +204,14 @@ class MemberVerifier:
         digest_transforms: _DigestTransforms | None = None,
         end_check: Callable[[int], None] | None = None,
         fill_size: bool = False,
+        custom_digests: CustomDigests | None = None,
+        bounded: bool = False,
     ) -> None:
         self._expected_size = expected_size
+        # The inner stream never returns a byte past ``expected_size`` (a plugin's
+        # ``MemberData.bounded``), so the over-run probe is skipped. A short stream
+        # still raises TruncatedError.
+        self._bounded = bounded
         # With no declared size: called with the member's length before the digest
         # verdict, to refuse a length the archive rules out (it raises).
         self._end_check = end_check
@@ -216,7 +230,7 @@ class MemberVerifier:
         self._hasher_factories: dict[str, Callable[[], _IncrementalHasher]] = {}
         for algorithm, value in expected.items():
             key = _algo_key(algorithm)
-            factory = _make_hasher(key)
+            factory = hasher_factory(key)
             if factory is None:
                 message = (
                     f"Cannot verify digest {key!r} (unknown algorithm or backend "
@@ -240,6 +254,14 @@ class MemberVerifier:
             self._hasher_factories[key] = factory
             self._hashers[key] = factory()
             self._expected[key] = value
+        for name, (value, factory) in (custom_digests or {}).items():
+            key = _algo_key(name)
+            assert key not in self._expected, (
+                "the adapter renames a digest whose name the member already lists"
+            )
+            self._hasher_factories[key] = factory
+            self._hashers[key] = factory()
+            self._expected[key] = value
         # The length / over-run verdict has been given (``_conclude``).
         self._concluded = False
         # The digest verdict has been given: the hashers reached the end and matched.
@@ -259,6 +281,11 @@ class MemberVerifier:
         self._hashed_to = 0
         # Decode-error abandon: skip all end-of-stream checks on later reads.
         self._abandoned = False
+        # What the checks have proved, kept across a rewind (``_rearm``): the member's
+        # bytes do not change, so a check that passed once stays passed. Read by the
+        # stream's verification level (``proofs``).
+        self._ended_clean = False
+        self._digest_matched = False
         # Where a size-unknown member was seen to end, once a read reached its end at
         # the read frontier. ``None`` until then, and unused with a declared size.
         self._end_seen: int | None = None
@@ -388,6 +415,14 @@ class MemberVerifier:
             and self._hashed_to == self._furthest_read_pos
         )
 
+    def proofs(self) -> VerificationProofs:
+        """What this verifier has proved, for the stream's verification level."""
+        return VerificationProofs(
+            ended=self._ended_clean,
+            content=self._digest_matched,
+            content_possible=bool(self._expected),
+        )
+
     @property
     def pos(self) -> int:
         return self._pos
@@ -458,6 +493,7 @@ class MemberVerifier:
         if self._expected_size is None and self._end_check is not None:
             self._end_check(end)
         self._verify_digests()
+        self._digest_matched = True
         fill = self._fill_member
         if fill is not None:
             if fill.size is None:
@@ -525,7 +561,7 @@ class MemberVerifier:
             # trailing byte is corruption independent of the checksum, so a seek that
             # reached the size must not silence it. This probe also drains post-payload
             # authenticators (e.g. WinZip AES HMAC).
-            if _probe_past_declared(inner):
+            if not self._bounded and _probe_past_declared(inner):
                 raise CorruptionError(
                     "Decompressed content exceeds its declared size of "
                     f"{expected_size} bytes."
@@ -541,6 +577,7 @@ class MemberVerifier:
         if resume is not None:
             inner.seek(resume)
         self._check_digests_if_complete()
+        self._ended_clean = True
 
     def _after_conclusion(self, data: bytes, *, at_eof: bool) -> bytes:
         """Record a read made after the length verdict; it may complete the hash.
@@ -898,6 +935,8 @@ def build_member_verifier(
     digest_transforms: _DigestTransforms | None = None,
     end_check: Callable[[int], None] | None = None,
     fill_size: bool = False,
+    custom_digests: CustomDigests | None = None,
+    bounded: bool = False,
 ) -> MemberVerifier | None:
     """Return a :class:`MemberVerifier` when there is something to check, else ``None``.
 
@@ -911,7 +950,7 @@ def build_member_verifier(
     """
     hashes = expected if expected is not None else {}
     fills = fill_size and member is not None and expected_size is None
-    if not hashes and expected_size is None and not fills:
+    if not hashes and not custom_digests and expected_size is None and not fills:
         return None
     return MemberVerifier(
         hashes,
@@ -922,6 +961,8 @@ def build_member_verifier(
         digest_transforms=digest_transforms,
         end_check=end_check,
         fill_size=fills,
+        custom_digests=custom_digests,
+        bounded=bounded,
     )
 
 
@@ -929,7 +970,7 @@ class VerifyingStream(ReadOnlyIOStream):
     """Wrap ``inner`` and verify digests/length via a :class:`MemberVerifier`.
 
     Kept for codec length backstops and tests. Member backends fuse the same
-    verifier into :class:`~archivey.internal.streams.archive_stream.ArchiveStream`.
+    verifier into :class:`~archivey.internal.streams.archive_stream.ArchiveStreamImpl`.
     """
 
     def __init__(
@@ -970,6 +1011,7 @@ class VerifyingStream(ReadOnlyIOStream):
                 super().close()
             raise
 
+    @override
     def read(self, n: int | None = -1, /) -> bytes:
         try:
             return self._verifier.read(self._inner, n)
@@ -977,9 +1019,11 @@ class VerifyingStream(ReadOnlyIOStream):
             retire_decoder_children(self._inner)
             raise
 
+    @override
     def seekable(self) -> bool:
         return is_seekable(self._inner)
 
+    @override
     def seek(self, offset: int, whence: int = 0, /) -> int:
         try:
             return self._verifier.seek(self._inner, offset, whence)
@@ -990,6 +1034,10 @@ class VerifyingStream(ReadOnlyIOStream):
     def _digest_intact(self) -> bool | None:
         return self._verifier.digest_intact
 
+    def _verification_proofs(self) -> VerificationProofs:
+        return self._verifier.proofs().combine(ask_verification_proofs(self._inner))
+
+    @override
     def tell(self) -> int:
         return self._verifier.tell(self._inner)
 
@@ -997,6 +1045,7 @@ class VerifyingStream(ReadOnlyIOStream):
         # Length backstop around a codec stream; preserve the inner's offset space.
         return ask_resume_offset(self._inner, target)
 
+    @override
     def close(self) -> None:
         if self.closed:
             return

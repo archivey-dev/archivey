@@ -40,10 +40,15 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import BinaryIO, TypeVar
 
+from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.streams.codecs import Codec
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools.base import DelegatingStream
+from archivey.internal.streams.verification import (
+    VerificationProofs,
+    ask_verification_proofs,
+)
 from archivey.internal.streams.verify import ask_digest_intact
 from archivey.types import ArchiveMember
 
@@ -67,6 +72,9 @@ REJECTING_CODECS = frozenset(
         Codec.DEFLATE64,
         Codec.ZSTD,
         Codec.LZ4,
+        Codec.XZ,
+        Codec.SHRINK,
+        Codec.IMPLODE,
     }
 )
 
@@ -80,7 +88,7 @@ PASSWORD_CONFIRM_PREFIX_BYTES = 64 * 1024
 # plaintext prefix. An output-only bound does not constrain a block-transform codec: 64
 # KiB of bzip2 output costs ~905 KB of input on incompressible data, because bzip2 emits
 # nothing until it has read a whole block. The number is the inner-TAR probe's
-# (``detection._INNER_TAR_MAX_PROBE_BYTES``), sized for the same worst-case bzip2 block;
+# (``detection._INNER_CONTAINER_MAX_PROBE_BYTES``), sized for the same worst-case bzip2 block;
 # a test pins the two equal. The probes do not share a helper: detection decodes through
 # a non-consuming peek callable under a detection budget ledger and ends in a ``ustar``
 # check, confirmation decodes a borrowed pack view through a decrypting pipeline. The
@@ -346,6 +354,11 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
     for a digest that survives seeks (the WinZip AES HMAC, which the decrypt stage
     completes over the ciphertext at the end): only a read that reaches ``size`` counts
     there, wherever it started.
+
+    ``key_in_doubt`` says whether the password is still unconfirmed, for the stream's
+    verification level (``_verification_proofs``). Reaching ``size`` does not clear it:
+    the digest can run on a later read (the over-run probe drives the WinZip AES HMAC),
+    and only its match, which the layers below report, proves the key.
     """
 
     readinto_passthrough = False
@@ -357,6 +370,7 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         size: int,
         on_unverified: Callable[[str], None],
         seek_forfeits: bool = True,
+        key_in_doubt: Callable[[], bool] | None = None,
     ) -> None:
         # Set before the base constructor, which ``close()`` must survive: IOBase's
         # finalizer calls ``close()`` on an instance whose ``__init__`` raised.
@@ -369,7 +383,16 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         self._reached = size <= 0
         self._forfeited = False
         self._seek_forfeits = seek_forfeits
+        self._key_in_doubt = key_in_doubt
         super().__init__(inner)
+
+    def _verification_proofs(self) -> VerificationProofs:
+        below = ask_verification_proofs(self._inner)
+        # A watch exists because a weak check took the password: without a callable
+        # to say otherwise, the key stays in doubt.
+        if self._key_in_doubt is not None and not self._key_in_doubt():
+            return below
+        return VerificationProofs(key_in_doubt=True).combine(below)
 
     def _digest_lost(self) -> bool:
         """Whether a read on to the end would no longer run the digest."""
@@ -396,6 +419,7 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         if self._watch_pos >= self._watch_size and not self._digest_lost():
             self._reached = True
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         start = self._watch_pos
         try:
@@ -425,6 +449,7 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
             self._reached = True
         return data
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         try:
             position = super().seek(offset, whence)
@@ -453,7 +478,7 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         """Keep the position true to where a seek that raised left the stream.
 
         A refused seek (a negative position) moves nothing, and the digest is intact.
-        A seek can also raise after it moved (``ArchiveStream._note_raised_seek``), and
+        A seek can also raise after it moved (``ArchiveStreamImpl._note_raised_seek``), and
         then it counts as a seek. When the position cannot be read, the stream may
         have moved and no later read can be placed, so the digest counts as forfeited
         even where seeks do not forfeit it.
@@ -467,6 +492,7 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
             return
         self._note_moved(position)
 
+    @override
     def close(self) -> None:
         if self.closed:
             return

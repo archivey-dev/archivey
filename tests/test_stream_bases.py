@@ -11,6 +11,7 @@ from typing import Never, get_type_hints
 
 import pytest
 
+from archivey import ArchiveStream
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     OneReadEachStream,
@@ -66,6 +67,14 @@ def test_readonly_base_read_is_the_runtime_guard() -> None:
 
     with pytest.raises((TypeError, NotImplementedError)):
         _ForgotRead().read()
+
+
+def test_archive_stream_base_read_is_the_runtime_guard() -> None:
+    # The public base redeclares read(), so it needs the same raising body: on 3.11 a
+    # subclass that omits read() can still be built. Calling the body directly pins it
+    # on every Python version.
+    with pytest.raises(NotImplementedError):
+        ArchiveStream.read(object(), 1)  # type: ignore[arg-type]
 
 
 def test_readonly_base_name_is_absent() -> None:
@@ -398,9 +407,14 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.source as source_mod
     import archivey.internal.streams.codecs.bcj2_filter as bcj2
     import archivey.internal.streams.streamtools.slice as slice_mod
-    from archivey.internal import detection, password_confirm
+    from archivey.internal import (
+        bomb_tracker,
+        detection,
+        format_adapter,
+        password_confirm,
+        walk_handoff,
+    )
     from archivey.internal.backends import (
-        iso_reader,
         rar_copy_sources,
         rar_reader,
         sevenzip_pipeline,
@@ -416,17 +430,28 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     from archivey.internal.external import cli, unar
     from archivey.internal.streams import (
         archive_stream,
+        blocks,
         codecs,
         counting,
         crypto,
         decompressor_stream,
+        respawn,
         verify,
     )
     from archivey.internal.streams.codecs import rapidgzip_child
-    from archivey.internal.streams.streamtools import locked, readahead, solid, sparse
+    from archivey.internal.streams.streamtools import (
+        fullcount,
+        locked,
+        readahead,
+        solid,
+        sparse,
+    )
 
     forwards_or_owns = {
-        archive_stream.ArchiveStream,
+        # The public base declares it; its one implementation is the next entry.
+        ArchiveStream,
+        archive_stream.ArchiveStreamImpl,
+        blocks.BlockStream,  # owns its resume points: every block start
         bcj2.Bcj2DecoderStream,  # owns its one resume point: the folder start
         rapidgzip_child.RapidgzipChildStream,  # asks the child's rapidgzip index
         codecs.zlib_codec._DeflateEndCheckStream,
@@ -436,10 +461,15 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         codecs.stdlib_takeover._StdlibOnAcceleratorError,
         codecs.rapidgzip_select._StdlibSeekContract,
         counting.OutputCountingStream,
+        bomb_tracker.DecodeRatioGuard,  # the codec's offsets
+        bomb_tracker.MemberRatioGuard,  # the member stream's offsets
         readahead.ReadAheadStream,  # the inner's offsets
         decompressor_stream.DecompressorStream,
         crypto.AesDecryptStream,  # dense CBC restart; compose with inner
         sevenzip_pipeline._DecodedPastSizeCheck,  # same offsets as the codec it wraps
+        sevenzip_reader._FolderChecks,  # the folder decode's offsets
+        sevenzip_reader._FolderEndCheck,  # the member slice's offsets
+        tar_reader._DecodeThroughSkips,  # the codec stream's offsets
         slice_mod.SlicingStream,  # translates remapped offset space; clamp at 0
         verify.VerifyingStream,
     }
@@ -452,14 +482,15 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     }
     remaps_or_not_on_chain = {
         locked.LockedStream,
+        # Over a format plugin's own member stream, which has no table below it.
+        fullcount.FullCountStream,
         counting.CountingReader,
         counting.SeekCountingStream,
         rar_reader._UnrarOwnedStream,
-        rar_reader._RespawnStream,
+        respawn.RespawnStream,
         # Subprocess stdout, like the unrar pipe: nothing below it has a table.
         unar.UnarOutputStream,
         cli.ProcessOutputStream,  # the base of the two subprocess stdout streams
-        iso_reader._PyCdlibStream,
         solid._MemberSlice,
         # A table below it (gzip under a .tar.gz) is in stored offsets, and the map
         # from logical to stored offsets is not a contiguous shift, so a slice's
@@ -492,11 +523,24 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         # the decompressed stream) in one pass. TAR stores member data as is, so no
         # codec above it has a table, and a pass's member streams are forward-only.
         tar_parser._ForwardSlice,
-        # A random-access pass's member data: the slice above, or a member view from
-        # where the slice stopped once the walk moves on. Forward-only, stored bytes.
-        tar_reader._WalkHandoffStream,
+        # A random-access pass's member data: the slice above (or a sequential
+        # format's span window), or a view from where it stopped once the walk moves
+        # on. Forward-only, stored bytes.
+        walk_handoff.WalkHandoffStream,
         # A random-access member's data view: the view's offsets, forwarded.
-        tar_reader._MemberDataView,
+        walk_handoff.MemberDataView,
+        # A sequential plugin's member data in a streaming pass: stored bytes read
+        # forward from the walk's stream, like TAR's slice; no codec above it.
+        format_adapter._SpanWindow,
+        # A sequential plugin's decoded member data (``MemberSpan.data``), read
+        # forward through the walk that yielded it or through a walk of its own; the
+        # plugin decodes, so no archivey codec above it keeps a table.
+        format_adapter._DecodedWindow,
+        format_adapter._DataWalkStream,
+        # The compressed input of a stream a streaming walk decompresses part-way
+        # (``ForwardStream.decompress``): the walk's buffer read forward, below the
+        # codec, which keeps no table over it.
+        format_adapter._ForwardInput,
         # A ZIP member's compressed bytes, read forward from the local-header walk's
         # stream in one pass, below any codec: compressed offsets, no table.
         zip_local_walk.MemberData,
@@ -523,6 +567,8 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         # A 7z pass's member stream, forward-only like the folder decode under it:
         # nothing seeks it, so nothing asks it for a resume offset.
         sevenzip_reader._ReadAheadStream,
+        # The ratio guards' base: never on a chain itself; each guard answers.
+        bomb_tracker._RatioGuard,
     }
 
     found = _readonly_stream_subclasses()
@@ -637,25 +683,32 @@ def test_delegating_stream_close_inventory() -> None:
     """
     _import_all_archivey_modules()
 
-    from archivey.internal import password_confirm
+    from archivey.internal import bomb_tracker, password_confirm, walk_handoff
     from archivey.internal.backends import (
-        iso_reader,
         rar_copy_sources,
         rar_reader,
         sevenzip_pipeline,
-        tar_reader,
+        sevenzip_reader,
         zip_reader,
     )
     from archivey.internal.external import cli, unar
     from archivey.internal.streams import codecs, counting
-    from archivey.internal.streams.streamtools import locked, readahead, sparse
+    from archivey.internal.streams.streamtools import (
+        fullcount,
+        locked,
+        readahead,
+        sparse,
+    )
 
     owns_via_base = {
         locked.LockedStream,
+        fullcount.FullCountStream,
         counting.CountingReader,
         counting.OutputCountingStream,
         counting.SeekCountingStream,
-        iso_reader._PyCdlibStream,
+        bomb_tracker._RatioGuard,
+        bomb_tracker.DecodeRatioGuard,
+        bomb_tracker.MemberRatioGuard,
         codecs.zlib_codec._DeflateEndCheckStream,
         codecs.gzip_codec._GzipTruncationCheckStream,
         codecs.zlib_codec._ZlibAdlerCheckStream,
@@ -663,12 +716,14 @@ def test_delegating_stream_close_inventory() -> None:
         codecs.stdlib_takeover._StdlibOnAcceleratorError,
         codecs.rapidgzip_select._StdlibSeekContract,
         sevenzip_pipeline._DecodedPastSizeCheck,
+        sevenzip_reader._FolderChecks,
+        sevenzip_reader._FolderEndCheck,
         zip_reader._UnconfirmedZipCryptoStream,
         password_confirm.UnverifiedPasswordReadWatch,
         rar_copy_sources._TeeBlock,
         sparse.SparseStream,
         readahead.ReadAheadStream,
-        tar_reader._MemberDataView,
+        walk_handoff.MemberDataView,
     }
     subclass_closes_inner = {
         cli.ProcessOutputStream,
@@ -803,12 +858,16 @@ def test_delegating_stream_peel_inventory() -> None:
     ``source_byte_size`` from its own ``size`` rather than by being peeled.
     """
     _import_all_archivey_modules()
+    from archivey.internal import bomb_tracker
     from archivey.internal.streams import counting
 
     found = _delegating_stream_subclasses()
     peels = {cls for cls in found if cls.peel_for_source_size is True}
     assert peels == {
         counting.SeekCountingStream,
+        bomb_tracker._RatioGuard,
+        bomb_tracker.DecodeRatioGuard,
+        bomb_tracker.MemberRatioGuard,
     }, (
         "DelegatingStream subclass peel_for_source_size does not match "
         "the inventory (only a pass-through wrapper whose size is the "

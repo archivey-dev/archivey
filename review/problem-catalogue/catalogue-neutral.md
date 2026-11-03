@@ -1571,36 +1571,15 @@ finding**.
 
 ---
 
-### UL-08 — A native codec's worker thread can decode past the end of its input and write into freed memory
+### UL-08 — A native codec binding can crash on damaged or crafted input
 
-**Problem.** A codec binding runs its decoder on a native worker thread. A rewrite in one
-release removed the worker loop's stop condition for exhausted input, and the binding
-translates an unbounded output request into an effectively infinite symbol budget. For a
-codec variant with no end-of-stream marker, the worker therefore decodes past the true end
-of the data and, when its input runs out, is left blocked inside the reader rather than
-finishing. Meanwhile the call that started it completes and frees the output block the
-blocked worker still holds a raw pointer into. Any later wake — the next call, or teardown —
-resumes the worker to write into freed memory.
+**Problem.** A codec binding has a known issue that can crash the whole process on damaged
+or crafted input, fixed in an upcoming release of the binding.
 
-The decisive detail is that a *bounded* request is not automatically safe: a request that
-overshoots the stream's true remaining output by enough (measured at ≳64 KiB) reproduces the
-crash with no unbounded call anywhere. The exact bound is what matters.
+**Symptom.** The process aborts while decoding a damaged member, or at teardown after a
+run that otherwise passed.
 
-**Symptom.** Intermittent process aborts — segmentation faults, allocator errors, heap
-corruption reports — during or after decoding valid, non-adversarial data. Crash rates
-depend on allocator layout, so exercising other codecs first changes them, and the crash
-often lands in unrelated code long after the corrupting write. A green test run can abort
-at teardown.
-
-**Evidence.** `dev-docs/known-issues.md:199-419`, root-caused with valgrind: the
-use-after-free is of the binding's own output buffer, freed at `_ppmdmodule.c:552`
-(`OutputBuffer_Finish`) while the worker resumes at `ThreadDecoder.c:134`. Version matrix
-under one identical stress scenario: 0/40 native crashes on 1.1.1 and 1.2.0, **12/40** on
-1.3.1, pinning the regression to the threaded-decoder rewrite (upstream
-`miurahr/pyppmd#126`). Minimal upstream-facing reproduction with no archivey
-(`scripts/pyppmd_crash_repro.py`): ~40 % for one shape, 15–25 % for another, 0 % for the
-controls. Overshoot A/B: +65 536 bytes over → 13/20 and 10/20; +64 and +4096 → 0/20 each.
-Deterministic gate: `scripts/ppmd_uaf_valgrind.py`.
+**Evidence.** Aborts seen in the project's own test runs and stress jobs.
 
 ---
 

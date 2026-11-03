@@ -535,5 +535,9 @@ def test_windows_mask_counts_an_astral_character_as_two_units(
 ) -> None:
     """Windows ``wchar_t`` is a UTF-16 unit, so one ``?`` cannot take U+1F600 whole."""
     monkeypatch.setattr(rar_unrar.sys, "platform", "win32")
-    assert not rar_unrar.unrar_mask_selects("./pair?.txt", "pair\U0001f600.txt")
-    assert rar_unrar.unrar_mask_selects("./pair??.txt", "pair\U0001f600.txt")
+    assert not rar_unrar.unrar_mask_selects(
+        "./pair?.txt", "pair\U0001f600.txt", dot_rule=True
+    )
+    assert rar_unrar.unrar_mask_selects(
+        "./pair??.txt", "pair\U0001f600.txt", dot_rule=True
+    )

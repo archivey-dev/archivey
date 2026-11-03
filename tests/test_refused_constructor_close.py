@@ -22,7 +22,6 @@ import pytest
 
 from archivey.diagnostics import DiagnosticPolicy
 from archivey.exceptions import (
-    ArchiveyError,
     ArchiveyUsageError,
     DiagnosticRaisedError,
     OpenError,
@@ -32,7 +31,7 @@ from archivey.exceptions import (
 from archivey.internal.backends import zip_aes
 from archivey.internal.backends.zip_aes import WinZipAesDecryptStream
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import ArchiveStreamImpl, _Opened
 from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     SeekPoint,
@@ -66,7 +65,9 @@ def _assert_closes_cleanly(obj: io.IOBase) -> None:
     ("sources", "error"),
     [
         pytest.param(lambda _tmp: [], ArchiveyUsageError, id="no-volumes"),
-        pytest.param(lambda tmp: [tmp / "gone.bin"], OpenError, id="missing-path"),
+        pytest.param(
+            lambda tmp: [tmp / "gone.bin"], FileNotFoundError, id="missing-path"
+        ),
         pytest.param(lambda tmp: [tmp], OpenError, id="directory"),
         pytest.param(
             lambda _tmp: [ShortReadNonSeekable(b"abc", 1)],
@@ -76,7 +77,7 @@ def _assert_closes_cleanly(obj: io.IOBase) -> None:
     ],
 )
 def test_concatenated_file_refusal_closes_cleanly(
-    tmp_path: Path, sources: object, error: type[ArchiveyError]
+    tmp_path: Path, sources: object, error: type[Exception]
 ) -> None:
     with pytest.raises(error) as caught:
         ConcatenatedFile(sources(tmp_path))  # type: ignore[operator]
@@ -184,14 +185,31 @@ def test_archive_stream_refused_by_verifier_diagnostic_closes_cleanly() -> None:
 
     collector = DiagnosticCollector(policy=DiagnosticPolicy.STRICT)
     with pytest.raises(DiagnosticRaisedError) as caught:
-        ArchiveStream(
+        ArchiveStreamImpl(
             open_fn,
             translate=lambda _e: None,
             collector=collector,
             expected_hashes={"no-such-digest": b"\x00"},  # type: ignore[dict-item]
         )
-    _assert_closes_cleanly(_refused(ArchiveStream, caught))
+    _assert_closes_cleanly(_refused(ArchiveStreamImpl, caught))
     assert opened == []  # refused before the member was opened
+
+
+def test_archive_stream_built_open_refused_by_verifier_closes_its_inner() -> None:
+    """A handle built open (``_Opened``) owns its inner before the verifier build
+    raises, so the half-built handle's close takes the inner down too."""
+    inner = io.BytesIO(b"payload")
+    collector = DiagnosticCollector(policy=DiagnosticPolicy.STRICT)
+    with pytest.raises(DiagnosticRaisedError) as caught:
+        ArchiveStreamImpl(
+            _Opened(inner),
+            translate=lambda _e: None,
+            collector=collector,
+            expected_hashes={"no-such-digest": b"\x00"},  # type: ignore[dict-item]
+        )
+    assert not inner.closed
+    _assert_closes_cleanly(_refused(ArchiveStreamImpl, caught))
+    assert inner.closed
 
 
 @pytest.mark.parametrize(
@@ -221,10 +239,11 @@ def test_winzip_aes_stream_refusals_close_cleanly(
 # ``__init__`` that raised on its first line. A class that survives it needs no entry. Every
 # other ``IOBase`` subclass in ``src/`` is listed below, either because a test above covers
 # its refusals or with the reason its ``__init__`` cannot raise before it assigns what
-# ``close()`` reads. A new stream class fails here until someone makes that call.
+# ``close()`` reads. A listed class skips the ``__new__``-alone check, so its tests above
+# must reach every raise in its ``__init__``. A new stream class fails here until someone
+# makes that call.
 _REFUSALS_TESTED_ABOVE = {
     "archivey.internal.volumes.ConcatenatedFile",
-    "archivey.ArchiveStream",  # its __module__ is pinned to the public package
     "archivey.internal.streams.decompressor_stream.DecompressorStream",
     "archivey.internal.streams.verify.VerifyingStream",
     "archivey.internal.backends.zip_aes.WinZipAesDecryptStream",
@@ -236,18 +255,34 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.streams.streamtools.locked.LockedStream": (
         "DelegatingStream.__init__, then a plain _lock assignment"
     ),
-    "archivey.internal.backends.tar_reader._WalkHandoffStream": (
+    "archivey.internal.walk_handoff.WalkHandoffStream": (
         "assigns _data and _view, all close() reads, before ReadOnlyIOStream.__init__"
     ),
-    "archivey.internal.backends.tar_reader._MemberDataView": (
+    "archivey.internal.format_adapter._DataWalkStream": (
+        "assigns _adapter, _walk and _window, all close() reads, before "
+        "ReadOnlyIOStream.__init__"
+    ),
+    "archivey.internal.walk_handoff.MemberDataView": (
         "DelegatingStream.__init__ first; close() reads nothing assigned after it"
+    ),
+    "archivey.internal.streams.streamtools.fullcount.FullCountStream": (
+        "no __init__ of its own: DelegatingStream's"
     ),
     "archivey.internal.streams.streamtools.readahead.ReadAheadStream": (
         "assigns every field close() reads before DelegatingStream.__init__"
     ),
+    "archivey.internal.backends.sevenzip_reader._FolderChecks": (
+        "DelegatingStream.__init__ first; close() reads nothing assigned after it"
+    ),
+    "archivey.internal.backends.sevenzip_reader._FolderEndCheck": (
+        "no __init__ of its own; close() is DelegatingStream's"
+    ),
     "archivey.internal.streams.streamtools.sparse.SparseStream": (
         "DelegatingStream.__init__ first; close() reads nothing assigned after it"
     ),
+    "archivey.internal.bomb_tracker.DecodeRatioGuard": "plain assignments only",
+    "archivey.internal.bomb_tracker.MemberRatioGuard": "plain assignments only",
+    "archivey.internal.bomb_tracker._RatioGuard": "plain assignments only",
     "archivey.internal.streams.counting.CountingReader": "plain assignments only",
     "archivey.internal.streams.counting.OutputCountingStream": "plain assignments only",
     "archivey.internal.streams.counting.SeekCountingStream": "plain assignments only",
@@ -267,12 +302,9 @@ _CLOSE_STATE_FIRST = {
         "plain assignments only"
     ),
     "archivey.internal.streams.codecs.rapidgzip_select._StdlibSeekContract": "plain assignments only",
-    "archivey.internal.backends.rar_reader._JoinedParts": (
+    "archivey.internal.volumes.JoinedViews": (
         "assigns _views, then ConcatenatedFile.__init__, which sets its close state "
         "first; its views come from SharedSource.view, which has already checked them"
-    ),
-    "archivey.internal.backends.iso_reader._PyCdlibStream": (
-        "raw.__enter__() runs after DelegatingStream.__init__ has set what close() reads"
     ),
     "archivey.internal.backends.zip_reader._UnconfirmedZipCryptoStream": (
         "assigns _payload_complete, then DelegatingStream.__init__"
@@ -289,7 +321,7 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.backends.rar_reader._UnrarOwnedStream": (
         "assigns every field close() reads before DelegatingStream.__init__"
     ),
-    "archivey.internal.backends.rar_reader._RespawnStream": "plain assignments only",
+    "archivey.internal.streams.respawn.RespawnStream": "plain assignments only",
     "archivey.internal.backends.rar_copy_sources._TeeBlock": "plain assignments only",
     "archivey.internal.backends.sevenzip_pipeline._DecodedPastSizeCheck": (
         "plain assignments only"

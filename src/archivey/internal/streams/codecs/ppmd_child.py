@@ -1,14 +1,8 @@
 """Run a pyppmd decoder in a child process, so a native crash cannot kill the caller.
 
-pyppmd 1.3.1 (and 1.2.0) segfaults when it is asked to decode after a corrupt stream
-has already hit its end: the model returns its end symbol early, ``eof`` goes up, and
-the next ``decode`` starts a new worker on a model that has finished. From Python that
-state cannot be told apart from a valid stream that is waiting for more input, because
-``eof`` also rises (and never clears) on a valid stream whose compressed bytes happen to
-end in zeros at a chunk boundary. The one-symbol decode ``PpmdDecoder`` sends at close
-to stop a worker that may be parked reaches the same state on a member that ended early.
-So every PPMd member decodes in a child
-process unless ``process_isolation`` is ``NONE``.
+pyppmd has a known issue that can crash it on damaged or crafted data
+(``dev-docs/known-issues.md``), so every PPMd member decodes in a child process unless
+``process_isolation`` is ``NONE``.
 
 :func:`open_ppmd_child` returns a :class:`ChildPpmdDecoder`, which has the surface of
 ``pyppmd.Ppmd7Decoder`` / ``Ppmd8Decoder`` as ``PpmdDecoder`` uses it, so all the
@@ -20,7 +14,8 @@ cleanly: ``PpmdDecoder`` calls ``spoil`` otherwise.
 
 from __future__ import annotations
 
-from archivey.exceptions import ResourceLimitError
+from archivey.exceptions import ResourceUnavailableError
+from archivey.internal.overrides import override
 from archivey.internal.streams.child_process import describe_exit
 from archivey.internal.streams.codecs.decoder_child import (
     DecoderChild,
@@ -45,7 +40,7 @@ class PpmdChildAllocationError(RuntimeError):
 
 def _allocation_error(mem_size: int, detail: str) -> PpmdChildAllocationError:
     return PpmdChildAllocationError(
-        f"the PPMd decoder process could not allocate this member's model "
+        f"The PPMd decoder process could not allocate this member's model "
         f"(mem_size={mem_size} bytes): {detail}. A memory limit on this process (a "
         "container limit, RLIMIT_AS) is the likely cause, and decoding in-process "
         "would fail the same way and take this process down with it. Run with more "
@@ -70,14 +65,17 @@ class _PpmdChild(DecoderChild):
         self._mem_size = mem_size
         super().__init__(codec, args, known=PPMD_ERRORS, setting=setting)
 
+    @override
     def _fresh_child_error(self, exc: Exception) -> Exception:
         if isinstance(exc, MemoryError):
             exc = _allocation_error(self._mem_size, str(exc) or "MemoryError")
         if isinstance(exc, PpmdChildAllocationError):
             # The words ``PpmdDecoder`` uses when the first child cannot allocate it.
-            return ResourceLimitError(f"Decoder limit reached: {exc}")
+            # No configured limit was reached, so not "Decoder limit reached".
+            return ResourceUnavailableError(str(exc))
         return super()._fresh_child_error(exc)
 
+    @override
     def _death_error(self, returncode: int | None) -> Exception:
         if self._building:
             return _allocation_error(self._mem_size, describe_exit(returncode))

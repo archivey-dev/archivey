@@ -9,7 +9,8 @@ Each member is yielded with what its local header says, and its data is read thr
 the walk as the caller reads it. The fields only the central directory holds (mode,
 host, comment, the types those decide) arrive after the last member, so the members
 already yielded are updated in place then, before the pass ends; until then each has
-``member_state_final`` false. ``openspec/changes/native-zip-reader/design.md``
+``member_state_final`` false.
+``openspec/changes/archive/2026-10-30-native-zip-reader/design.md``
 §"Streaming: a forward walk over local headers" is the contract.
 
 A seekable source never comes here: :class:`~archivey.internal.backends.zip_reader.ZipReader`
@@ -36,6 +37,7 @@ from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
     ResourceLimitError,
+    ResourceUnavailableError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -102,6 +104,7 @@ from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPas
 from archivey.internal.hashing import crc32_digest
 from archivey.internal.listing_limits import member_metadata_bytes
 from archivey.internal.logs import backends as logger
+from archivey.internal.overrides import override
 from archivey.internal.password import unverified_data_error, wrong_password_error
 from archivey.internal.password_confirm import (
     PASSWORD_CONFIRM_CHUNK_BYTES,
@@ -115,7 +118,10 @@ from archivey.internal.password_confirm import (
     run_password_confirm_plan,
 )
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import (
+    ArchiveStreamImpl,
+    MemberStreamParts,
+)
 from archivey.internal.streams.codecs import open_codec_stream
 from archivey.internal.streams.decompressor_stream import DataAfterEndError
 from archivey.internal.streams.streamtools import (
@@ -124,6 +130,10 @@ from archivey.internal.streams.streamtools import (
     read_exact,
 )
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
+from archivey.internal.streams.verification import (
+    ask_verification_proofs,
+    raise_member_level,
+)
 from archivey.internal.trailing_scan import first_nonzero_offset
 from archivey.internal.windows_reparse import (
     REPARSE_HEADER_BYTES,
@@ -138,6 +148,7 @@ from archivey.types import (
     ArchiveMember,
     HashAlgorithm,
     MemberType,
+    Verification,
 )
 
 # Read size when the pass reads through data nobody asked for.
@@ -193,6 +204,9 @@ _KEPT_ON_UPDATE = frozenset(
         "_link_target_unread",
         "is_current",
         "link_target_member",
+        # What a read proved stays: a level never falls (verification levels).
+        "_verified",
+        "_verifiable",
     }
 )
 
@@ -433,6 +447,9 @@ class _PassData:
         #: A bit-3 WinZip AES codec member's decrypt stage, which authenticates once
         #: the descriptor says where the data ended (``_finish``).
         self._aes_pass: WinZipAesForwardStream | None = None
+        #: Any WinZip AES decrypt stage this member's read opened (not a confirm's
+        #: trial): ``_finish`` asks it whether its code matched.
+        self._aes_stage: BinaryIO | None = None
         #: Which weaker check the password was taken on, for the report when the
         #: caller's stream closes before the end; ``None`` once a confirm settled it.
         self._check: Literal["weak_open_check", "confirm_budget_exhausted"] | None = (
@@ -670,14 +687,18 @@ class _PassData:
         except ResourceLimitError as exc:
             # The LZMA or PPMd settings a ZipCrypto key decrypted ask for more than
             # the cap: the password may be wrong, or the size real (as from a file).
+            # Only the settings are read here, no decoder is built, so this is never
+            # a ResourceUnavailableError, which the decode below lets through.
             if not keyed or not note_limit:
                 raise
             noted = _unconfirmed_resource_limit(exc)
             reader._stamp_error_context(noted, member.name)
             raise noted from exc
-        if deferred and method == 98:
+        if deferred and method in (1, 98):
             # PPMd holds a sized member's input until it is all in; a bit-3 member
             # has no size to wait for, so it is fed in pieces, in a child process.
+            # Shrink, which has no end marker, refuses it (Implode needs the size
+            # anyway).
             params = replace(params, input_runs_on=True)
         if deferred:
             # The data reads ahead in small steps (``MemberData._read_ahead``),
@@ -768,21 +789,29 @@ class _PassData:
             ends_with_data = not self._runs_on()
         aes = loc.aes
         if aes is not None:
+            excluded = self._reader._stream_config.excluded_libraries
             if not deferred:
-                return open_winzip_aes_member(
+                stage = open_winzip_aes_member(
                     raw,
                     aes=aes,
                     password=password,
                     compress_size=header.compressed_size,
+                    excluded=excluded,
                 )
+                if not probe:
+                    self._aes_stage = stage
+                return stage
             forward = open_winzip_aes_forward(
                 raw,
                 aes=aes,
                 password=password,
                 hold_back=None if ends_with_data else _AES_HOLD_BACK,
+                excluded=excluded,
             )
-            if not ends_with_data and not probe:
-                self._aes_pass = forward
+            if not probe:
+                self._aes_stage = forward
+                if not ends_with_data:
+                    self._aes_pass = forward
             return forward
         # Inside the attempt, so a missing password is reported first, as from a
         # file.
@@ -912,6 +941,10 @@ class _PassData:
         try:
             try:
                 decoded = self._decode(loc, body, keyed=keyed, note_limit=False)
+            except ResourceUnavailableError:
+                # A shortage, not what the decrypted settings asked for: it must not
+                # become a candidate failure below.
+                raise
             except ResourceLimitError as exc:
                 if not keyed:
                     raise
@@ -1222,6 +1255,20 @@ class _PassData:
             )
         if error is None:
             self.verified = True
+            # A pass that decoded the data raises its member as a read would (design
+            # Decision 4): to CHECKSUM once the CRC (a sized member's local header's,
+            # or a bit-3 member's descriptor's) or the WinZip AES code covered every
+            # byte, which also proves the key; else LENGTH, never past a ceiling a key
+            # nothing proved holds lower. The AES stage answers only once its code
+            # matched.
+            stage = self._aes_stage
+            mac_matched = stage is not None and ask_verification_proofs(stage).content
+            if mac_matched or self._crc_is_digest(crc, file_size):
+                raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
+            else:
+                raise_member_level(
+                    member, min(Verification.LENGTH, member.verifiable), None
+                )
         elif raise_mismatch:
             raise error
         return error
@@ -1579,15 +1626,18 @@ class _KeptData(MemberData):
         self._kept = kept.data
         self._descriptor = kept.descriptor
 
+    @override
     def _read_some(self, size: int) -> bytes:
         chunk = self._kept[self.consumed : self.consumed + size]
         self.consumed += len(chunk)
         return chunk
 
     @property
+    @override
     def found_descriptor(self) -> DataDescriptor | None:
         return self._descriptor
 
+    @override
     def settle(
         self,
         used: int | None = None,
@@ -1615,6 +1665,7 @@ class _SpoolView(ReadOnlyIOStream):
         """How many of the kept bytes the trial has read."""
         return self._pos
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         end = len(self._data) if n < 0 else self._pos + n
         chunk = self._data[self._pos : end]
@@ -1639,6 +1690,7 @@ class _Replay(ReadOnlyIOStream):
         """The kept bytes not read yet."""
         return self._kept[self._pos :]
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         if self._pos < len(self._kept):
             end = len(self._kept) if n < 0 else self._pos + n
@@ -1661,6 +1713,7 @@ class _CutShortWatch(ReadOnlyIOStream):
         self._data = data
         self._owner = owner
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         try:
             chunk = self._data.read(n)
@@ -1690,6 +1743,7 @@ class _PassStream(ReadOnlyIOStream):
         super().__init__()
         self._pass_data = data
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         if self.closed:
             raise ValueError("read from a closed ZIP member stream")
@@ -1714,8 +1768,11 @@ class ZipForwardReader(ZipReader):
 
     # The member list exists only once the walk has passed every member.
     _MEMBER_LIST_UPFRONT = False
+    # Names come from the central directory, read last (_read_directory).
+    _NAMES_FINAL_AT_REGISTRATION = False
     _REVISES_YIELDED_MEMBERS = True
 
+    @override
     def _open_index(self, source: ArchiveSource, start_offset: int) -> None:
         self._fp = None
         self._walker = LocalHeaderWalk(source, offset=0, find_start=True)
@@ -1787,6 +1844,7 @@ class ZipForwardReader(ZipReader):
 
     # -- the walk ----------------------------------------------------------------
 
+    @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
         walker = self._walker
         self._local_count = 0
@@ -2210,6 +2268,8 @@ class ZipForwardReader(ZipReader):
         self._kept_heap = []
         self._kept_bytes = 0
         self._report_unlisted(unlisted)
+        # The names are the directory's now, and the unlisted members are gone.
+        self._emit_name_duplicates(order)
         for finding in () if damage is not None else walk.findings:
             self._emit_walk_finding(finding)
         # The kept bytes end where the stream does, so the last ``trailing`` of them
@@ -2241,6 +2301,7 @@ class ZipForwardReader(ZipReader):
             _, _, error = failed[0]
             raise error
 
+    @override
     def _local_crc_for(self, entry: CentralEntry) -> int | None:
         """The seekable read's :meth:`ZipReader._local_crc_for`, from the local header
         the pass met at ``entry``'s offset rather than a read of it."""
@@ -2252,6 +2313,7 @@ class ZipForwardReader(ZipReader):
             return None
         return local.crc
 
+    @override
     def _directory_data_reach(self, entry: CentralEntry) -> str | None:
         """A directory whose local header defers its sizes to a data descriptor (bit
         3) has no size when a pass reaches it, so the pass yields no stream and its
@@ -2336,6 +2398,7 @@ class ZipForwardReader(ZipReader):
             descriptor.file_size,
         )
 
+    @override
     def _listed_in_index_order(self) -> list[ArchiveMember]:
         """The kept members in the directory's order, once it has been read.
 
@@ -2428,22 +2491,24 @@ class ZipForwardReader(ZipReader):
 
     # -- data ----------------------------------------------------------------------
 
+    @override
     def _iter_with_data(
         self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
-    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
         # close_previous=False: moving to the next header reads past the previous
         # member's data, and its stream reads nothing after that.
 
-        def _open(member: ArchiveMember) -> ArchiveStream | None:
+        def _open(member: ArchiveMember) -> ArchiveStreamImpl | None:
             if not pass_has_data(member):
                 return None
-            return self._open_member(member)
+            return self._open_member_handle(member)
 
         yield from self._drive_pass_streams(
             self._begin_forward_pass(), open_member=_open, close_previous=False
         )
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+    @override
+    def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         current = self._pass_data
         if current is None or current.member is not member:
             raise ValueError(
@@ -2469,8 +2534,9 @@ class ZipForwardReader(ZipReader):
                 digest="integrity check",
                 why="the password was accepted on a weaker check",
             )
-        return self._wrap_member_stream(stream, member.name, size=member.size)
+        return self._member_parts(stream, member.name, size=member.size)
 
+    @override
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         member_id = member._member_id
         why = None if member_id is None else self._uncaptured.get(member_id)
@@ -2506,6 +2572,7 @@ class ZipForwardReader(ZipReader):
             target_in_archive=True,
         )
 
+    @override
     def _link_target_opener(
         self, member: ArchiveMember
     ) -> Callable[[], AbstractContextManager[ReadableStream]]:
@@ -2590,6 +2657,7 @@ class ZipForwardReader(ZipReader):
 
     # -- what the caller sees ------------------------------------------------------
 
+    @override
     def _account_archive_comment(self) -> None:
         # The walk starts before the end record is read: ``_read_directory`` weighs
         # the comment once it is. The base call at the start of the walk has to be
@@ -2599,18 +2667,22 @@ class ZipForwardReader(ZipReader):
         if self._end_record is not None:
             super()._account_archive_comment()
 
+    @override
     def _archive_comment(self) -> str | None:
         end = self._end_record
         if end is None or not end.comment:
             return None
         return self._decode_unflagged_comment(end.comment)
 
+    @override
     def _known_member_count(self) -> int | None:
         return self._entries_read
 
+    @override
     def _cost_receipt(self) -> CostReceipt:
         return _ZIP_FORWARD_COST
 
+    @override
     def _get_archive_info(self) -> ArchiveInfo:
         return ArchiveInfo(
             format=ArchiveFormat.ZIP,
@@ -2624,6 +2696,7 @@ class ZipForwardReader(ZipReader):
             extra=ArchiveInfoExtra({"zip.volume_count": self._volume_count}),
         )
 
+    @override
     def _close_archive(self) -> None:
         current, self._pass_data = self._pass_data, None
         if current is not None:

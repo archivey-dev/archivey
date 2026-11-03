@@ -1,7 +1,7 @@
 """Seek-point plumbing shared by the decompressing streams.
 
 ``ask_resume_offset`` is the rewind-cost query used by
-``ArchiveStream._maybe_warn_rewind``. This is an archivey concept — seek-point tables
+``ArchiveStreamImpl._maybe_warn_rewind``. This is an archivey concept — seek-point tables
 on decompressing streams. Implementations:
 
 - own a table — ``DecompressorStream``, ``RapidgzipChildStream`` (the child's index)
@@ -94,7 +94,9 @@ class ResumeReachedStreamEnd(Exception):
 
     It is control flow, not an error a caller may see: it is not an ``ArchiveyError``.
     Only ``_StdlibOnAcceleratorError`` in ``codecs/stdlib_takeover.py`` adds resume points to a
-    decoder, and every call of its that can decode (``read`` and ``seek``; ``readinto``
-    and ``readall`` go through ``read``) catches it. A new caller of either decoder
+    decoder, and every call of its that can decode catches it: ``read`` (``readinto``
+    and ``readall`` go through it) and ``seek``, which decodes only before the switch
+    (rapidgzip's own seek) or for a ``SEEK_END`` that finds the size: the decoder's
+    other seeks decode at the next read. A new caller of either decoder
     must catch it the same way.
     """

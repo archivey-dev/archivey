@@ -73,6 +73,7 @@ from archivey.diagnostics import (
     LocalHeaderContext,
     MemberHeaderRecordContext,
     OffsetWrapContext,
+    ReaderDisagreementContext,
     SizeWrapContext,
     raw_name_to_base64,
 )
@@ -82,6 +83,7 @@ from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
     ResourceLimitError,
+    ResourceUnavailableError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -141,15 +143,17 @@ from archivey.internal.backends.zipcrypto import (
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import StreamConfig, stream_config_from_archivey
+from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.hashing import crc32_digest
-from archivey.internal.logs import backends as logger
+from archivey.internal.logs import backends as logger, integrity as integrity_logger
 from archivey.internal.naming import (
     emit_member_name_normalized,
     normalize_member_name,
 )
 from archivey.internal.open_site import OpenSite
+from archivey.internal.overrides import override
 from archivey.internal.password import (
     _PasswordCandidates,
     _PasswordCandidatesExhausted,
@@ -170,8 +174,9 @@ from archivey.internal.password_confirm import (
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import (
-    ArchiveStream,
+    ArchiveStreamImpl,
     ExceptionTranslator,
+    MemberStreamParts,
     RewindWarning,
 )
 from archivey.internal.streams.codecs import (
@@ -246,6 +251,10 @@ _ZIP_MASK_ENCRYPTED = 0x1
 # end-of-stream marker. When it is clear there is no marker, and APPNOTE 4.4.4 says the
 # decoder stops at the declared uncompressed size.
 _ZIP_MASK_LZMA_EOS_MARKER = 0x2
+# ZIP general-purpose bits 1 and 2 on an Implode (method 6) member: an 8 KiB window
+# (else 4 KiB), and three Shannon-Fano trees (else two, with literals stored as bytes).
+_ZIP_MASK_IMPLODE_8K_WINDOW = 0x2
+_ZIP_MASK_IMPLODE_3_TREES = 0x4
 # ZIP general-purpose bit 5: the body is PKWARE "compressed patched data", a patch
 # against some other file rather than the file itself. Nothing implements it; stdlib
 # zipfile refuses it too.
@@ -269,11 +278,14 @@ _STRONG_ENCRYPTION_MSG = (
 # raising, matching the open-ended CompressionAlgorithm contract.
 _ZIP_COMPRESSION_ALGOS: dict[int, CompressionAlgorithm] = {
     0: CompressionAlgorithm.STORED,
+    1: CompressionAlgorithm.SHRINK,
+    6: CompressionAlgorithm.IMPLODE,
     8: CompressionAlgorithm.DEFLATE,
     9: CompressionAlgorithm.DEFLATE64,
     12: CompressionAlgorithm.BZIP2,
     14: CompressionAlgorithm.LZMA,
     93: CompressionAlgorithm.ZSTD,
+    95: CompressionAlgorithm.XZ,
     98: CompressionAlgorithm.PPMD,
 }
 
@@ -289,11 +301,14 @@ _UNKNOWN_COMPRESSION = (CompressionMethod(algo=CompressionAlgorithm.UNKNOWN),)
 # ZIP method id -> shared codec-layer Codec for member decode, after any decrypt stage.
 _ZIP_METHOD_CODECS: dict[int, Codec] = {
     0: Codec.STORED,
+    1: Codec.SHRINK,
+    6: Codec.IMPLODE,  # settings from general-purpose bits 1 and 2
     8: Codec.DEFLATE,
     9: Codec.DEFLATE64,
     12: Codec.BZIP2,
     14: Codec.LZMA,  # after peeling the ZIP LZMA header (see _open_codec_member)
     93: Codec.ZSTD,
+    95: Codec.XZ,
     98: Codec.PPMD,  # after peeling the ZIP PPMd8 header
 }
 
@@ -571,18 +586,23 @@ class _UnconfirmedZipCryptoStream(DelegatingStream):
     (see :func:`_is_candidate_integrity_failure`).
     """
 
+    # Translates errors and changes no byte: the verification level looks through.
+    forwards_verification = True
+
     def __init__(
         self, inner: BinaryIO, *, payload_complete: Callable[[], bool]
     ) -> None:
         self._payload_complete = payload_complete
         super().__init__(inner)
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         try:
             return super().read(n)
         except Exception as exc:  # noqa: BLE001 - classified, then re-raised
             self._reraise(exc)
 
+    @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         # Overridden too, so the zero-copy passthrough stays on and still translates.
         try:
@@ -590,8 +610,12 @@ class _UnconfirmedZipCryptoStream(DelegatingStream):
         except Exception as exc:  # noqa: BLE001 - classified, then re-raised
             self._reraise(exc)
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        # A forward seek decrypts and decodes what it skips.
+        # A seek of a compressed member decodes nothing until the next read, which the
+        # overrides above classify. The seek still raises for a ``SEEK_END`` (finding
+        # the size decodes to the end), a seek of a stored member (decryption), and a
+        # report the collector escalates.
         try:
             return super().seek(offset, whence)
         except Exception as exc:  # noqa: BLE001 - classified, then re-raised
@@ -1234,6 +1258,32 @@ def _stored_as_directory(name: str, create_system: CreateSystem) -> bool:
     )
 
 
+# The MS-DOS directory attribute, in the low byte of a DOS/Windows creator's
+# ``external_attr`` (APPNOTE 4.4.15).
+_DOS_DIRECTORY_ATTRIBUTE = 0x10
+
+
+def _marked_directory(
+    external_attr: int, full_mode: int, create_system: CreateSystem
+) -> bool:
+    """Whether the entry's attributes mark it a directory: a Unix creator's directory
+    mode, or a DOS/Windows creator's directory attribute bit.
+
+    APPNOTE never says a directory's name ends in ``/``; that is Info-ZIP's
+    convention, and unzip, ``zipfile`` and Java's ``ZipEntry`` go by the name alone.
+    The spec marks the type in the attributes (4.4.15), and 7-Zip and libarchive
+    read it there, so an entry these mark is a directory with or without the slash.
+    An entry that also carries the reparse-point bit is a link instead, and one whose
+    data turns out not to be a link buffer falls back by its name alone
+    (``_reparse_fallback_type``); only a crafted archive reaches that.
+    """
+    if create_system is CreateSystem.UNIX:
+        return stat.S_ISDIR(full_mode)
+    return create_system in _DOS_ATTRIBUTE_SYSTEMS and bool(
+        external_attr & _DOS_DIRECTORY_ATTRIBUTE
+    )
+
+
 def _is_flagged_reparse_point(external_attr: int, create_system: CreateSystem) -> bool:
     """Whether a DOS/Windows creator set ``FILE_ATTRIBUTE_REPARSE_POINT`` on the entry."""
     return create_system in _DOS_ATTRIBUTE_SYSTEMS and bool(
@@ -1736,6 +1786,7 @@ class ZipReader(BaseArchiveReader):
             logger=logger,
         )
 
+    @override
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, io.UnsupportedOperation):
             if "seek" in str(exc):
@@ -1769,6 +1820,7 @@ class ZipReader(BaseArchiveReader):
             return TruncatedError(f"Truncated ZIP member data: {exception_detail(exc)}")
         return None
 
+    @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
         """Walk the central directory, yielding each member as its entry is parsed.
 
@@ -2050,9 +2102,10 @@ class ZipReader(BaseArchiveReader):
             logger=logger,
         )
 
+    @override
     def _iter_with_data(
         self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
-    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
         """Read the whole directory before the first member's data, then go forward.
 
         The directory is read once and member data in file order after it, so the
@@ -2450,6 +2503,14 @@ class ZipReader(BaseArchiveReader):
             member_type = MemberType.OTHER
         else:
             member_type = MemberType.FILE
+        # A directory by its attributes whose name lacks the final "/": a directory,
+        # as 7-Zip and libarchive extract it, even over data (APPNOTE 4.3.8 gives a
+        # directory none; the bytes are reported below, as for a "d/" entry's).
+        directory_by_attribute = member_type is MemberType.FILE and _marked_directory(
+            external_attr, full_mode, create_system
+        )
+        if directory_by_attribute:
+            member_type = MemberType.DIRECTORY
         # Convert "\\" to "/" only for DOS/Windows-origin entries (where it is a separator);
         # a Unix (or other) entry keeps a backslash as a literal filename character.
         backslash_is_separator = host in _BACKSLASH_SEPARATOR_HOSTS
@@ -2742,6 +2803,25 @@ class ZipReader(BaseArchiveReader):
             self._emit_offset_wrapped(member, entry, index)
         if size_wrapped:
             self._emit_size_wrapped(member, entry, index)
+        if directory_by_attribute:
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_READERS_DISAGREE,
+                message=(
+                    f"ZIP entry {quoted(name_source)} is a directory by its "
+                    "attributes but its name has no final '/': it is listed as the "
+                    f"directory {quoted(member.name)}, as 7-Zip and bsdtar extract "
+                    "it; unzip and zipfile go by the name and write a file."
+                ),
+                context=ReaderDisagreementContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=index,
+                    shape="directory_attribute_without_slash",
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=integrity_logger,
+            )
         if member.type is MemberType.DIRECTORY and _zip_directory_stores_data(entry):
             # APPNOTE 4.3.8 gives a directory no data; unzip, 7-Zip and bsdtar create
             # the directory and drop the bytes silently. Say so; a read delivers them.
@@ -3125,7 +3205,7 @@ class ZipReader(BaseArchiveReader):
                     source_format=ArchiveFormat.ZIP,
                 )
         if local_method == loc.method:
-            return replace(loc, data_start=header.data_start)
+            return copy_with(loc, data_start=header.data_start)
         if _WINZIP_AES_METHOD in (local_method, loc.method):
             raise CorruptionError(
                 f"ZIP member {quoted(member.name)}: its local header names compression "
@@ -3136,7 +3216,7 @@ class ZipReader(BaseArchiveReader):
                 source_format=ArchiveFormat.ZIP,
             )
         self._report_local_method(loc, member, local_method)
-        return replace(loc, method=local_method, data_start=header.data_start)
+        return copy_with(loc, method=local_method, data_start=header.data_start)
 
     def _front_cut_message(self, header_offset: int) -> str:
         """The refusal for a local header the directory puts before byte 0.
@@ -3299,7 +3379,7 @@ class ZipReader(BaseArchiveReader):
         codec: Codec,
         sequential_body: bool = False,
         keyed_settings: bool = False,
-    ) -> ArchiveStream:
+    ) -> ArchiveStreamImpl:
         """Decode a member body through the shared codec layer.
 
         ``body`` is the member's data as the codec sees it: the raw payload of an
@@ -3389,16 +3469,24 @@ class ZipReader(BaseArchiveReader):
         # where the opener would read the same value from the same object. A codec
         # header read (LZMA, PPMd) moves it, and the opener then measures the view
         # it puts over the rest.
-        if not is_seekable(body) or body.tell() == 0:
+        body_seekable = is_seekable(body)
+        if not body_seekable or body.tell() == 0:
             input_size = source_byte_size(body)
             if input_size is not None:
                 changes["compressed_input_size"] = input_size
+        # What ``open_codec``'s own config pass would set, by its rules
+        # (``registry._decoder_config``, which points back here), so it finds nothing to
+        # change and makes no second copy.
+        if body_seekable != base.source_seekable:
+            changes["source_seekable"] = body_seekable
+        if base.seekable and not body_seekable:
+            changes["seekable"] = False
         if sequential_body:
             changes["use_rapidgzip"] = _sequential_accelerator(base.use_rapidgzip)
             changes["use_indexed_bzip2"] = _sequential_accelerator(
                 base.use_indexed_bzip2
             )
-        return replace(base, **changes)
+        return copy_with(base, **changes)
 
     def _member_codec_params(
         self,
@@ -3441,9 +3529,18 @@ class ZipReader(BaseArchiveReader):
             # (93) reads every frame instead, as a .zst file and a 7z coder do: RFC
             # 8878 defines Zstd data as one or more frames.
             return CodecParams(single_stream=True)
+        if method in (1, 6):  # Shrink, Implode: no end marker, so the size ends them
+            known = size if size is not None and size >= 0 else None
+            if method == 1:
+                return CodecParams(unpack_size=known)
+            return CodecParams(
+                unpack_size=known,
+                implode_large_window=bool(loc.flags & _ZIP_MASK_IMPLODE_8K_WINDOW),
+                implode_literal_tree=bool(loc.flags & _ZIP_MASK_IMPLODE_3_TREES),
+            )
         return CodecParams()
 
-    def _verified_member_stream(
+    def _verified_member_parts(
         self,
         decoded: BinaryIO,
         member: ArchiveMember,
@@ -3451,11 +3548,11 @@ class ZipReader(BaseArchiveReader):
         translate: ExceptionTranslator | None = None,
         rewind_warning: RewindWarning | None = None,
         seekable: bool | None = None,
-    ) -> ArchiveStream:
-        """The public member stream, with the stored CRC and size fused in.
+    ) -> MemberStreamParts:
+        """The member's parts, with the stored CRC and size fused in.
 
         ``translate``, ``rewind_warning`` and ``seekable`` go to
-        :meth:`_wrap_member_stream`, for a ``decoded`` that is a bare codec stream
+        :meth:`_member_parts`, for a ``decoded`` that is a bare codec stream
         rather than an ``ArchiveStream`` (:meth:`_open_codec_member`).
         """
         hashes = member.hashes
@@ -3471,7 +3568,7 @@ class ZipReader(BaseArchiveReader):
             # it stores, and filled in once the CRC-32 matches, on the listed member
             # (a ``replace()`` copy stands for it but is never filled).
             fill = None if unknown is None else self._own_member(member)
-            return self._wrap_member_stream(
+            return self._member_parts(
                 decoded,
                 member.name,
                 size=size,
@@ -3488,7 +3585,7 @@ class ZipReader(BaseArchiveReader):
         # no CRC-32, ``_to_member`` keeps the stored size); only a caller's own
         # copy rebuilt with ``replace(size=None, hashes={})`` gets here, and is then
         # not verified.
-        return self._wrap_member_stream(
+        return self._member_parts(
             decoded,
             member.name,
             size=size,
@@ -3499,7 +3596,7 @@ class ZipReader(BaseArchiveReader):
 
     def _open_codec_member(
         self, loc: _ZipLocator, member: ArchiveMember
-    ) -> ArchiveStream:
+    ) -> MemberStreamParts:
         """Decode an unencrypted ZIP member through the shared codec layer.
 
         The codec opens bare (``open_codec_raw``), and the member stream carries its
@@ -3526,7 +3623,7 @@ class ZipReader(BaseArchiveReader):
         # demand, would have answered: seekable only with that demand set and a
         # decoder that can seek, and with a rewind warning only under that demand.
         seek_demand = self._stream_config.seekable
-        return self._verified_member_stream(
+        return self._verified_member_parts(
             opened.stream,
             member,
             translate=opened.translate,
@@ -3599,6 +3696,7 @@ class ZipReader(BaseArchiveReader):
                     aes=aes,
                     password=password,
                     compress_size=loc.compressed_size,
+                    excluded=self._stream_config.excluded_libraries,
                 )
             except ArchiveyError as exc:
                 raw.close()
@@ -3612,7 +3710,7 @@ class ZipReader(BaseArchiveReader):
 
     def _open_encrypted_member(
         self, loc: _ZipLocator, member: ArchiveMember
-    ) -> ArchiveStream:
+    ) -> MemberStreamParts:
         """Open a ZipCrypto or WinZip AES member: decrypt stage, then the codec layer.
 
         Both schemes share one password ladder (``password_confirm``). Their cheap key
@@ -3665,7 +3763,7 @@ class ZipReader(BaseArchiveReader):
                 is_aes=False,
             )
 
-        def decode_body(body: BinaryIO) -> ArchiveStream:
+        def decode_body(body: BinaryIO) -> ArchiveStreamImpl:
             return self._decode_body(
                 loc,
                 member,
@@ -3699,7 +3797,7 @@ class ZipReader(BaseArchiveReader):
             # bounded confirm too.
             winner = self._open_stored_confirmed(loc, member, cipher.crc_anchor)
             decoded = decode_body(cipher.stage(winner))
-            return self._verified_member_stream(decoded, member)
+            return self._verified_member_parts(decoded, member)
         return self._open_encrypted_confirmed(
             loc, member, cipher, decode_body, payload_complete=payload_complete
         )
@@ -3709,10 +3807,10 @@ class ZipReader(BaseArchiveReader):
         loc: _ZipLocator,
         member: ArchiveMember,
         cipher: _ZipCipher,
-        decode_body: Callable[[BinaryIO], ArchiveStream],
+        decode_body: Callable[[BinaryIO], ArchiveStreamImpl],
         *,
         payload_complete: Callable[[], bool],
-    ) -> ArchiveStream:
+    ) -> MemberStreamParts:
         """Open with the one possible password, accepted on its cheap key check."""
         stage = cipher.stage
         if cipher.is_aes:
@@ -3729,7 +3827,7 @@ class ZipReader(BaseArchiveReader):
             decoded = self._watch_unverified(
                 decoded, loc, member, cipher, check="weak_open_check"
             )
-            return self._verified_member_stream(decoded, member)
+            return self._verified_member_parts(decoded, member)
 
         size = member.size
         hashes = member.hashes
@@ -3738,6 +3836,9 @@ class ZipReader(BaseArchiveReader):
             body = stage(password)
             try:
                 decoded = decode_body(body)
+            except ResourceUnavailableError:
+                # The system ran short (no decoder child, say): not the settings.
+                raise
             except ResourceLimitError as exc:
                 # The LZMA or PPMd settings decrypted to a size over the cap. The
                 # password may be wrong, but the size may be real: say both, and keep
@@ -3778,17 +3879,17 @@ class ZipReader(BaseArchiveReader):
         stream = self._watch_unverified(
             stream, loc, member, cipher, check="weak_open_check"
         )
-        return self._wrap_member_stream(stream, member.name, size=size)
+        return self._member_parts(stream, member.name, size=size)
 
     def _open_encrypted_confirmed(
         self,
         loc: _ZipLocator,
         member: ArchiveMember,
         cipher: _ZipCipher,
-        decode_body: Callable[[BinaryIO], ArchiveStream],
+        decode_body: Callable[[BinaryIO], ArchiveStreamImpl],
         *,
         payload_complete: Callable[[], bool],
-    ) -> ArchiveStream:
+    ) -> MemberStreamParts:
         """Pick among several possible passwords with a bounded confirm per candidate."""
         # The central directory's size, which the plan trusts;
         # the fused verifier on the caller's stream checks it at EOF.
@@ -3848,11 +3949,15 @@ class ZipReader(BaseArchiveReader):
             # check all raise from the stage, before anything below can mistake them
             # for a wrong key's garbage.
             body = stage(password)
-            probe: ArchiveStream | None = None
+            probe: ArchiveStreamImpl | None = None
             ended_early: TruncatedError | None = None
             try:
                 try:
                     probe = decode_body(body)
+                except ResourceUnavailableError:
+                    # A shortage, not what the decrypted settings asked for: it must
+                    # not become a candidate failure below.
+                    raise
                 except ResourceLimitError as exc:
                     if not cipher.keyed_settings:
                         raise
@@ -3914,7 +4019,7 @@ class ZipReader(BaseArchiveReader):
             stream = self._watch_unverified(
                 decoded, loc, member, cipher, check="confirm_budget_exhausted"
             )
-        return self._verified_member_stream(stream, member)
+        return self._verified_member_parts(stream, member)
 
     def _reraise_member_error(self, exc: Exception, member_name: str) -> NoReturn:
         """Translate a raw member-read error, stamp it with member context, and raise.
@@ -4151,6 +4256,7 @@ class ZipReader(BaseArchiveReader):
             self._stamp_error_context(exc, member.name)
             raise
 
+    @override
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         if member.type != MemberType.SYMLINK or member.link_target is not None:
             return
@@ -4187,9 +4293,10 @@ class ZipReader(BaseArchiveReader):
     ) -> Callable[[], AbstractContextManager[ReadableStream]]:
         """How ``_ensure_link_target`` opens a link's data: the member itself here; the
         bytes the pass kept in a forward walk."""
-        return lambda: self._open_member(member)
+        return lambda: self._open_member_handle(member)
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+    @override
+    def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         # The member carries its own locator (`_raw`), so data access needs no name/id
         # map, and a duplicate member name can't resolve to the wrong entry.
         loc = member._raw
@@ -4229,14 +4336,17 @@ class ZipReader(BaseArchiveReader):
             return self._open_encrypted_member(loc, member)
         return self._open_codec_member(loc, member)
 
+    @override
     def _archive_comment(self) -> str | None:
         comment = self._end.comment
         # The archive comment has no UTF-8 flag of its own.
         return self._decode_unflagged_comment(comment) if comment else None
 
+    @override
     def _cost_receipt(self) -> CostReceipt:
         return _ZIP_COST
 
+    @override
     def _get_archive_info(self) -> ArchiveInfo:
         info_extra = ArchiveInfoExtra({"zip.volume_count": self._volume_count})
         return ArchiveInfo(
@@ -4254,6 +4364,7 @@ class ZipReader(BaseArchiveReader):
             extra=info_extra,
         )
 
+    @override
     def _close_archive(self) -> None:
         # Wait out an in-flight read before the handle goes; a later read then fails
         # its SharedView check_open with the closed-archive error. The base closes the
@@ -4459,6 +4570,7 @@ class ZipReadBackend(ReadBackend):
     SUPPORTS_PASSWORD = True  # per-member ZipCrypto/AES encryption
     USES_ENCODING = True  # decodes unflagged names that are not valid UTF-8
 
+    @override
     def open_read(
         self,
         source: ArchiveSource,

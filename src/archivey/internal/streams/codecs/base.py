@@ -15,7 +15,7 @@ from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import BinaryIO, ClassVar
+from typing import TYPE_CHECKING, BinaryIO, ClassVar
 
 from archivey.config import ProcessIsolation
 from archivey.exceptions import (
@@ -30,11 +30,22 @@ from archivey.internal.config import (
     StreamConfig,
 )
 from archivey.internal.detection_workspace import DETECTION_LIMIT
+from archivey.internal.excluded_libraries import NO_EXCLUSIONS, as_excluded
+from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
 )
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64
+from archivey.internal.streams.codecs.callers_source import from_callers_source
+from archivey.internal.streams.codecs.framed_decoder import (
+    FrameCheck,
+    FramedDecompressorStream,
+    StreamIndex,
+    StreamStart,
+    never_starts,
+    offset0_start,
+)
 from archivey.internal.streams.codecs.riscv_filter import FILTER_RISCV
 from archivey.internal.streams.decompressor_stream import truncated_message
 from archivey.types import (
@@ -43,8 +54,13 @@ from archivey.types import (
     ContainerFormat,
     MagicSignature,
     MissingComponent,
+    OptionalLibrary,
+    PluginStream,
     StreamFormat,
 )
+
+if TYPE_CHECKING:
+    from archivey.formats import Decompressor
 
 CodecSource = str | os.PathLike[str] | BinaryIO
 
@@ -74,6 +90,10 @@ class Codec(Enum):
     UNIX_COMPRESS = "unix_compress"  # LZW (.Z)
     PPMD = "ppmd"
     DEFLATE64 = "deflate64"
+    SHRINK = "shrink"  # ZIP method 1 (LZW)
+    IMPLODE = "implode"  # ZIP method 6 (LZ77 + Shannon-Fano)
+    LZOP = "lzop"  # the .lzo file format
+    LZO = "lzo"  # raw LZO1X (a SquashFS block)
     # Filter-only (composed with raw LZMA; see LZMA_FILTER_IDS).
     DELTA = "delta"
     BCJ_X86 = "bcj_x86"
@@ -84,6 +104,13 @@ class Codec(Enum):
     BCJ_IA64 = "bcj_ia64"
     BCJ_ARM64 = "bcj_arm64"
     BCJ_RISCV = "bcj_riscv"
+
+
+# What names a codec: a built-in :class:`Codec`, or the stream format of a codec a
+# plugin registered (``archivey.formats.register_codec``), which has no ``Codec``.
+CodecId = Codec | PluginStream
+# A compression stream around a container, built-in or a plugin's.
+AnyStreamFormat = StreamFormat | PluginStream
 
 
 # liblzma raw-filter ids for the filter-only codecs. Each one but ARM64 and RISC-V can
@@ -123,6 +150,10 @@ class CodecParams:
       pad after it is not input after the end marker. Must match the bytes passed to
       ``PpmdDecoder.feed`` (not an enclosing member size). Gates post-eof empty
       drains; when omitted, PPMd recovery stays conservative (single capped NUL only).
+    - ``implode_large_window`` / ``implode_literal_tree`` — ZIP method-6 Implode
+      settings, from general-purpose bits 1 (an 8 KiB window, else 4 KiB) and 2 (three
+      Shannon-Fano trees, else two). Implode also needs ``unpack_size``: its data has no
+      end marker. Shrink (method 1) ends at ``unpack_size`` when it is given.
     - ``single_stream`` — the coder's data is one stream of its codec: a bzip2 ZIP
       member or 7z coder. The decoder ends at the first stream's end rather than
       reading a further stream as a concatenated file's, so a further stream is
@@ -148,6 +179,8 @@ class CodecParams:
     ppmd_order: int | None = None
     ppmd_mem_size: int | None = None
     ppmd_restore_method: int = 0
+    implode_large_window: bool = False
+    implode_literal_tree: bool = False
     unpack_size: int | None = None
     pack_size: int | None = None
     single_stream: bool = False
@@ -293,6 +326,7 @@ class _ProbeSample(io.BytesIO):
     milliseconds.
     """
 
+    @override
     def read(self, size: int | None = -1, /) -> bytes:
         if size is None or size < 0 or size > _PROBE_PREFIX:
             size = _PROBE_PREFIX
@@ -321,22 +355,32 @@ _PROBE_STREAM_CONFIG = replace(
 class StreamCodec:
     """One single-stream codec: its behavior, detection signals, and requirement.
 
-    Subclasses override the behavior methods (:meth:`open`, :meth:`translate`, optionally
-    :meth:`translator` / :meth:`extract_metadata` / :meth:`content_probe`) and declare the
+    Subclasses override the behavior methods (:meth:`decompressor` or :meth:`open`,
+    :meth:`translate`, optionally :meth:`translator` / :meth:`extract_metadata` /
+    :meth:`content_probe`) and declare the
     detection data as class attributes (``stream_format`` / ``magic``) plus an
     optional-dependency ``requirement``. The standalone single-file ``ArchiveFormat`` and its
     file extension are *derived* from ``stream_format`` (see the properties below). Instances
-    are collected in :data:`STREAM_CODECS`, which the detector, the single-file reader, and
-    the registry read directly — so a new standalone codec is a single subclass, with no edits
-    to those consumers (see ``compressed-streams``). Container-only / filter-only codecs
-    override just ``open`` + ``translate``.
+    are collected in the codec registry (``registry.stream_codecs()``), which the detector
+    and the single-file reader read — so a new standalone codec is a single subclass, with
+    no edits to those consumers (see ``compressed-streams``). Container-only / filter-only codecs
+    override just :meth:`decompressor`, or ``open`` + ``translate``.
+
+    A codec whose library decodes one stream at a time, with the interface of
+    ``bz2.BZ2Decompressor`` (:class:`~archivey.formats.Decompressor`), overrides
+    :meth:`decompressor` instead of :meth:`open`: the default :meth:`open` decodes
+    through :class:`FramedDecoder`, which applies the same rules for padding, further
+    streams, trailing data and truncation to every such codec, a plugin's
+    (:class:`~archivey.formats.CodecHandler`) included. :meth:`stream_start` and
+    :meth:`stream_index` tune those rules, and an override of :meth:`open` that decodes
+    another way (an accelerator) still calls the default for the plain decode.
     """
 
-    codec: ClassVar[Codec]
+    codec: ClassVar[CodecId]
     # The single-file/TAR StreamFormat this codec decodes, when it is a stream format at all
     # (raw container coders such as DEFLATE/LZMA have none). This drives the derived
     # single-file format + extension below.
-    stream_format: ClassVar[StreamFormat | None] = None
+    stream_format: ClassVar[AnyStreamFormat | None] = None
     # Exact magic signals for the standalone format, aggregated by the detector.
     magic: ClassVar[tuple[MagicSignature, ...]] = ()
     # The optional-dependency requirement (package / extra / hint + unlocked capability);
@@ -346,6 +390,26 @@ class StreamCodec:
     # They matter most for the formats only a content probe recognises, whose probe runs
     # only for a name that claims the format.
     extension_aliases: ClassVar[tuple[str, ...]] = ()
+    # Whether the decoder checks every byte it decodes against a checksum the format
+    # requires (gzip's CRC-32, bzip2's CRCs, lzip's CRC-32, zlib's Adler-32), raising on
+    # a mismatch before it reports the end. Formats whose checksum is optional per
+    # frame (xz, zstd, LZ4) leave it False: their decoders report, per frame, whether
+    # one was present (``frame_check``, ``FrameChecks``). Read by a stream's
+    # verification level.
+    checks_content: ClassVar[bool] = False
+    # The name diagnostics and messages give the stream (:attr:`stream_name`), when not
+    # ``codec.value``.
+    codec_name: ClassVar[str | None] = None
+    # More install advice for the error a missing ``requirement`` raises.
+    missing_note: ClassVar[str] = ""
+    # Whether a further stream after the first one continues the output, for the
+    # default :meth:`stream_start`.
+    concatenated: ClassVar[bool] = True
+
+    @property
+    def stream_name(self) -> str:
+        """The stream's name in messages and diagnostics."""
+        return self.codec_name or self.codec.value
 
     # --- derived single-file identity ---
 
@@ -376,7 +440,66 @@ class StreamCodec:
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
+        """Decode ``source``. Default: through :meth:`decompressor`, one stream at a
+        time (:meth:`open_framed`)."""
+        return self.open_framed(source, params, config)
+
+    def open_framed(
+        self, source: CodecSource, params: CodecParams, config: StreamConfig
+    ) -> BinaryIO:
+        """Decode ``source`` through :meth:`decompressor` (:class:`FramedDecoder`),
+        after checking that the codec's library is installed and not excluded.
+
+        A codec whose plain decode is this one and whose :meth:`open` tries another
+        engine first (bzip2's accelerator) opens its fallback here too, so both agree
+        on the stream rule (DR-5). They agree on where the data ends only when the
+        caller hands both engines the same extent of ``source``."""
+        excluded = config.excluded_libraries
+        if not self.available(excluded):
+            raise self._missing(
+                f"{self.stream_name} streams", note=self.missing_note, excluded=excluded
+            )
+        return FramedDecompressorStream(
+            source,
+            lambda: self.decompressor(params, config),
+            codec_name=self.stream_name,
+            magic=self.stream_start(params),
+            index=self.stream_index(params, config),
+            collector=config.collector,
+            report_trailing_data=config.report_trailing_data,
+            refuse_input_after_end=config.refuse_input_after_end,
+            frame_check=self.frame_check(),
+        )
+
+    def frame_check(self) -> FrameCheck | None:
+        """How to tell, from a frame's first bytes, whether it carries a check, for a
+        codec whose check is optional per frame (zstd, LZ4). ``None`` for the others."""
+        return None
+
+    def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
+        """A new decoder for one stream, for the default :meth:`open`. Called for each
+        stream: reach the library through ``codecs.deps``, which imports it once and
+        lazily, rather than importing it here."""
         raise NotImplementedError
+
+    def stream_start(self, params: CodecParams) -> StreamStart:
+        """How a further stream starts, for the default :meth:`open`: one of ``magic``
+        at offset 0, or nothing for a coder that is one stream
+        (``params.single_stream``) or a codec that is not ``concatenated``. Override
+        for a test stricter than ``magic``."""
+        if params.single_stream:
+            return never_starts
+        return offset0_start(
+            ((m.offset, m.magic) for m in self.magic), self.concatenated
+        )
+
+    def stream_index(
+        self, params: CodecParams, config: StreamConfig
+    ) -> StreamIndex | None:
+        """Further streams as seek points, for the default :meth:`open`. Default:
+        none."""
+        del params, config
+        return None
 
     def check_accelerator(self, source: CodecSource, config: StreamConfig) -> None:
         """For an accelerator set to ``ON``, raise what :meth:`open` raises before
@@ -392,17 +515,24 @@ class StreamCodec:
         return
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
-        """Map a raw decoder exception to an ``ArchiveyError`` subclass, or ``None``."""
+        """Map a raw decoder exception to an ``ArchiveyError`` subclass, or ``None``.
+
+        An ``EOFError`` needs no arm here: :meth:`eof_truncation` maps the one a
+        translator leaves, for every codec."""
         return None
 
-    @staticmethod
-    def _eof_truncation(exc: Exception, label: str) -> TruncatedError | None:
-        """The :class:`TruncatedError` for an ``EOFError`` from a ``label`` stream's
-        decoder, or ``None`` for any other exception. A :meth:`translate` calls it for
-        its ``EOFError`` arm, so every codec words a truncation the same way."""
-        if isinstance(exc, EOFError):
+    def eof_truncation(self, exc: Exception) -> TruncatedError | None:
+        """The :class:`TruncatedError` for an ``EOFError`` from this codec's decoder, or
+        ``None`` for any other exception.
+
+        :func:`~archivey.internal.streams.codecs.registry.resolve_codec` asks it after
+        :meth:`translator`, so every codec words a truncation the same way and none
+        repeats the arm. An ``EOFError`` from the caller's own source
+        (``from_callers_source``) is not the decoder's: it reaches the caller as itself,
+        as an accelerator translator leaves it."""
+        if isinstance(exc, EOFError) and not from_callers_source(exc):
             return TruncatedError(
-                f"{truncated_message(label)}: {exception_detail(exc)}"
+                f"{truncated_message(self.stream_name)}: {exception_detail(exc)}"
             )
         return None
 
@@ -466,7 +596,7 @@ class StreamCodec:
         ``STORED``. The default names the codec and no accelerator; ``suggest_install``
         is meaningless without one.
         """
-        return RewindWarning(self.codec.value, suggest_install=False)
+        return RewindWarning(self.stream_name, suggest_install=False)
 
     def prepare_config(self, source: CodecSource, config: StreamConfig) -> StreamConfig:
         """Fill in what this codec can learn from ``source`` before it is resolved.
@@ -479,25 +609,73 @@ class StreamCodec:
 
     # --- availability ---
 
-    @property
-    def available(self) -> bool:
-        """Whether this codec's decompression backend is importable right now."""
-        return self.requirement is None or self._backend_present()
+    def available(self, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS) -> bool:
+        """Whether this codec's decompression backend is importable right now, and
+        ``excluded`` (a call's ``FormatPolicy.exclude_libraries``) does not turn it
+        off."""
+        return self.requirement is None or (
+            not self.excluded_by(excluded) and self._backend_present()
+        )
 
     def _backend_present(self) -> bool:
         """Whether the optional backing package is importable (optional codecs override)."""
         return True
 
-    def _missing(self, purpose: str, *, note: str = "") -> PackageNotInstalledError:
-        """The error to raise from ``open()`` when this codec's backend is absent.
+    def _library(self) -> OptionalLibrary | str | None:
+        """The package the decoder uses, when ``requirement`` may not name it (zstd: the
+        standard library's module on 3.14+, else the backport), or ``None`` to go by
+        ``requirement``, which is also what an absent package's error names."""
+        return None
+
+    def _excludable(self) -> OptionalLibrary | str | None:
+        """The package ``exclude_libraries`` turns off: the one in use, or
+        ``requirement``'s when none is installed, so an excluded package that is
+        absent is reported as excluded, not as one to install."""
+        if self.requirement is None:
+            return None
+        return self._library() or self.requirement.name
+
+    def excluded_by(self, excluded: frozenset[OptionalLibrary]) -> bool:
+        """Whether ``excluded`` names the package this codec decodes with."""
+        library = self._excludable()
+        return library is not None and library in excluded
+
+    def requirement_under(
+        self, excluded: frozenset[OptionalLibrary]
+    ) -> MissingComponent | None:
+        """The ``requirement`` as a call with ``excluded`` reports it: with the policy as
+        its ``reason``, and the package in use as its name, when ``excluded`` turns the
+        package off."""
+        requirement = self.requirement
+        if requirement is None or not self.excluded_by(excluded):
+            return requirement
+        library = self._excludable()
+        assert library is not None
+        return as_excluded(replace(requirement, name=library))
+
+    def _missing(
+        self,
+        purpose: str,
+        *,
+        note: str = "",
+        excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
+    ) -> PackageNotInstalledError:
+        """The error to raise from ``open()`` when this codec's backend is absent, or
+        ``excluded`` turns it off.
 
         Built from the declared ``requirement`` so the install advice matches what
-        ``format_availability()`` reports for the same codec.
+        ``format_availability()`` reports for the same codec. ``note`` is install
+        advice, so it is left out for an excluded package.
         """
-        assert self.requirement is not None, (
+        requirement = self.requirement_under(excluded)
+        assert requirement is not None, (
             f"{type(self).__name__} raises PackageNotInstalledError but declares no requirement"
         )
-        return PackageNotInstalledError(self.requirement.message(purpose, note=note))
+        if self.excluded_by(excluded):
+            note = ""
+        return PackageNotInstalledError(
+            requirement.message(purpose, note=note), missing=(requirement,)
+        )
 
     @property
     def probes_content(self) -> bool:
@@ -542,7 +720,7 @@ class StreamCodec:
         # The registry imports every codec module, and so this one: import it here.
         from archivey.internal.streams.codecs.registry import open_codec_stream
 
-        if not self.available:
+        if not self.available():
             return False
         fully_visible = source_length is not None and source_length <= len(prefix)
         # Feed the whole source when it is fully visible so "needs more input" means

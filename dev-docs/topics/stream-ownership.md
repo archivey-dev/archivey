@@ -57,10 +57,11 @@ Flipping it to borrow was the tempting unification: then swapping
 catches that swap (`tests/leak_oracle.py` pins `owns_inner=True` slices and
 live children). The remaining risk is the other direction.
 
-Fourteen production subclasses, each classified by the close-inventory test. Ten ride the
-owning default with no keyword. Counting wrappers (`CountingReader`,
-`OutputCountingStream`, `SeekCountingStream`) are spliced mid-chain, and their inner must
-therefore be a wrapper rather than the caller's own object.
+Every production subclass is classified by the close-inventory test
+(`test_delegating_stream_close_inventory`), and most ride the owning default with no
+keyword. Counting wrappers (`CountingReader`, `OutputCountingStream`,
+`SeekCountingStream`) are spliced mid-chain, and their inner must therefore be a wrapper
+rather than the caller's own object.
 
 That inner is never the caller's own object, because every source crosses the
 boundary before any backend sees it, and what comes out is an `ArchiveSource`. Closing
@@ -69,8 +70,7 @@ to reach.
 
 | Class | Close must reach |
 | --- | --- |
-| `LockedStream` | tar `extractfile` / the `_PyCdlibStream` underneath |
-| `_PyCdlibStream` | `PyCdlibIO.__exit__` via `inner.close()` |
+| `LockedStream` | tar `extractfile` / the stream a plugin's `open_member` returned |
 | `_GzipTruncationCheckStream` | the rapidgzip accelerator |
 | `OutputCountingStream` | mid-chain; inner is already a non-closing wrapper (see above) |
 | `SeekCountingStream` | mid-chain; inner is already a non-closing wrapper (see above) |
@@ -86,7 +86,7 @@ The other three own too, but close themselves and tell the base to skip the seco
 | --- | --- |
 | `ProcessOutputStream` (`_UnrarOwnedStream`, `UnarOutputStream`) | close the pipe, then reap the process, then mark closed |
 
-The ten that ride the default would need `owns_inner=True` after a flip. A missed one
+The ones that ride the default would need `owns_inner=True` after a flip. A missed one
 leaks a handle the oracle does not pin: default `DelegatingStream` constructors wrap
 `BytesIO` by the thousand and are excluded on purpose. The oracle catching the
 #336 shape is not a reason to create a new silent-miss on `LockedStream`.
@@ -148,12 +148,13 @@ the fd budget, not a working-set size: a fourth live Path volume evicts on
 every miss, so those reads pay `open()`+`close()` again. A 100-part set still
 reads; growing the cache to the volume count would hold one descriptor per
 part. `close()` releases every cached Path handle and is safe when none are
-open. A missing or unstatable file fails at construction as `OpenError`
-chaining the `OSError` from `stat()`. That is a path the caller named; a
-numbering gap among paths that exist is `TruncatedError` from the numbered
-sequence check. A permission error on `open()`
-surfaces on the first read of that part as `OpenError` chaining that
-`OSError`. Opening every Path at construction just to fail-fast would put
+open. A missing or unstatable file fails at construction with the
+`OSError` from `stat()` itself (`FileNotFoundError`, `PermissionError`), as a
+single path does; a numbering gap among paths that exist is `TruncatedError`
+from the numbered sequence check. A permission error on `open()` surfaces on
+the first read of that part as that `OSError`. Running out of descriptors
+(`EMFILE` / `ENFILE`) at either point raises `ResourceUnavailableError` with
+the `OSError` as its cause. Opening every Path at construction just to fail-fast would put
 the descriptors back. Volume bytes are sampled at read time, not pinned by a
 construction-time fd: replacing a part after construction is visible on the
 next open of that part. A borrowed `BinaryIO` volume is re-seeked before every

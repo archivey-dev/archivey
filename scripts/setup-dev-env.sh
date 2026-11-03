@@ -70,7 +70,8 @@ install_linux_packages() {
   #   tests/test_zip_extra_fields.py compares extra-field times with.
   # tabix: ships bgzip, the reference BGZF writer tests/test_bgzf_seek.py checks the
   #   block walk against (the test skips without it).
-  ${SUDO} apt-get install -y unrar rar p7zip-full unar xorriso zip unzip tabix
+  # liblzo2-dev: python-lzo builds against it (below).
+  ${SUDO} apt-get install -y unrar rar p7zip-full unar xorriso zip unzip tabix liblzo2-dev
   # 7zz 26.05: Ubuntu's 7z predates the RISC-V filter that tests/test_sevenzip_riscv.py
   # checks against. Built from source (about half a minute); a no-op once installed.
   # Non-fatal: without it only those live checks skip.
@@ -156,6 +157,9 @@ fi
 
 log "python dependencies"
 uv sync --group dev --extra all
+# python-lzo: the liblzo2 oracle tests/test_lzo.py and tests/test_squashfs.py compare
+# archivey's LZO decoder with. Not a dependency (GPL, no Linux wheels), so a later `uv sync` removes it.
+uv pip install python-lzo >/dev/null 2>&1 || echo "! python-lzo did not build" >&2
 
 log "git hooks"
 ./scripts/install-git-hooks.sh
@@ -224,6 +228,16 @@ else:
         "MISSING 7-Zip with RISC-V: tests/test_sevenzip_riscv.py skips its live 7-Zip "
         "checks. Build: scripts/install-7zip-from-source.sh --dest ~/.local/bin"
     )
+
+try:
+    import lzo  # noqa: F401
+except ImportError:
+    print(
+        "MISSING python-lzo: tests/test_lzo.py skips its liblzo2 comparison. "
+        "Install: apt-get install liblzo2-dev && uv pip install python-lzo"
+    )
+else:
+    print("ok   python-lzo")
 
 missing = missing_baseline_requirements()
 if missing:

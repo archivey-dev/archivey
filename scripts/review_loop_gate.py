@@ -16,10 +16,13 @@ Two modes, each reading one JSON object on stdin and writing one on stdout.
      "label_since": "2026-09-23T01:00:00Z",
      "label_events": [{"at": "2026-09-23T01:00:00Z", "actor": "claude[bot]",
                        "app": "claude"}],
-     "repository": "archivey-dev/archivey"}
+     "repository": "archivey-dev/archivey", "tier": "standard"}
     -> {"run": true, "round": 2, "final": false, "person": false, "reason": "...",
-        "comment": "", "max_rounds": 5}
+        "comment": "", "max_rounds": 5, "opus_pass": false}
 
+``tier`` is the pull request's review tier (``python3 scripts/review_prep.py tier``),
+empty when it could not be worked out. ``opus_pass`` says the round to run is the
+pull request's Opus review (`OPUS_PASS_TIERS`).
 ``markers`` are the first lines of the workflow's own earlier comments on the pull
 request (`ROUND_MARKER` and `ATTEMPT_MARKER`). They are the only state: which rounds ran,
 what each one's verdict was, and which commits a review already failed on.
@@ -31,8 +34,9 @@ the pull request's ``updated_at`` in the webhook, which labelling bumps; see
 **Finish** (``--finish``)::
 
     {"round": 3, "final": false, "head_sha": "abc...", "live_head_sha": "def...",
-     "repository": "...",
-     "verdict": {"verdict": "findings", "summary": "...", "question": ""}}
+     "repository": "...", "opus_pass": false,
+     "verdict": {"verdict": "findings", "summary": "...", "question": ""},
+     "shape": ["inline finding 123 has no `### K<n> ·` heading"]}
     -> {"verdict": "findings", "stop": false, "counted": true,
         "comment": "...", "reason": "...", "label": "changes-requested",
         "unlabel": ["approved", "approved-with-fixes", "needs-decision"]}
@@ -44,6 +48,10 @@ commits the review did not see.
 The comment says what happened and what the implementer does next, and it carries
 the marker that makes the round count. ``label`` is the outcome label the workflow puts
 on, taking the ``unlabel`` ones off; see `OUTCOME_LABELS`.
+
+``shape`` lists what the round's posts missed of the posting shape
+(`scripts/review_shape.py`); the comment lists it and the marker counts it.
+``opus_pass`` says this round was the Opus review, which its marker records.
 """
 
 from __future__ import annotations
@@ -94,6 +102,10 @@ ATTEMPT_MARKER = "<!-- archivey-review-attempt"
 
 _FIELD = re.compile(r"(\w+)=(\S+)")
 
+#: How many of a round's posts missed the posting shape (`scripts/review_shape.py`).
+#: On the round marker only when some did; `scripts/review_tally.py` counts them.
+SHAPE_FIELD = "shape"
+
 #: What a round's verdict says about whether another round is wanted.
 #:
 #: The reviewer decides this, per `code-review-skill` §4: a plain approval,
@@ -125,6 +137,21 @@ VERDICT_STOPS = {
     # the next round; the workflow cannot tell an answered question from an open one.
     "decision": False,
 }
+
+#: The tiers whose pull requests Opus reads once: the first round that reaches a
+#: verdict on a standard or deep pull request is Opus's, and every round after it, which
+#: re-reads the fixes, is Sonnet's. A light pull request is Sonnet's throughout.
+#:
+#: Opus first (davitf, 2026-10-30). For a day Sonnet reviewed first and Opus read the
+#: pull request once Sonnet approved. On the ten pull requests that ran that way,
+#: Sonnet's first rounds raised 1 blocking and 7 important findings in about two
+#: minutes each, and the Opus pass after them 4 blocking and about 30 important,
+#: so Sonnet in front only delayed Opus by a round. Sonnet re-reading fixes did catch a
+#: regression one fix introduced, cheaply, which is why it keeps those rounds.
+OPUS_PASS_TIERS = frozenset({"standard", "deep"})
+
+#: The field the Opus round's marker carries, so later runs know it happened.
+OPUS_PASS_FIELD = "pass=opus"
 
 #: What an unreadable or unrecognised verdict is treated as. See `VERDICT_STOPS`.
 DEFAULT_VERDICT = "findings"
@@ -165,21 +192,30 @@ class History:
     rounds: int
     #: Commits a review stopped on before reaching a verdict.
     failed_shas: frozenset[str]
+    #: The Opus round already ran on this pull request.
+    opus_pass_done: bool = False
+    #: The commit the last counted round read, and its verdict.
+    last_sha: str = ""
+    last_verdict: str = ""
 
 
 def read_history(markers: object) -> History:
     """What the workflow's own earlier comments record, from their first lines."""
     rounds = 0
     failed: set[str] = set()
+    opus = False
+    last_sha = last_verdict = ""
     for line in markers if isinstance(markers, list) else []:
         if not isinstance(line, str):
             continue
         fields = dict(_FIELD.findall(line))
         if line.startswith(ROUND_MARKER + " "):
             rounds += 1
+            opus = opus or fields.get("pass") == "opus"
+            last_sha, last_verdict = fields.get("sha", ""), fields.get("verdict", "")
         elif line.startswith(ATTEMPT_MARKER + " ") and fields.get("sha"):
             failed.add(fields["sha"])
-    return History(rounds, frozenset(failed))
+    return History(rounds, frozenset(failed), opus, last_sha, last_verdict)
 
 
 def _when(value: object) -> datetime | None:
@@ -250,6 +286,8 @@ class Decision:
     comment: str = ""
     #: The cap, so the workflow's prompt has one source for it.
     max_rounds: int = MAX_ROUNDS
+    #: This round is the pull request's Opus review (`OPUS_PASS_TIERS`).
+    opus_pass: bool = False
 
 
 def decide(event: dict) -> Decision:
@@ -303,6 +341,19 @@ def decide(event: dict) -> Decision:
                 "of the review workflow differs from `main`'s: merge `main` and add "
                 f"the {label} label again. A person adding the label retries as is.",
             )
+        if (
+            head_sha
+            and head_sha == history.last_sha
+            and history.last_verdict != "decision"
+        ):
+            # Nothing new to read. After a decision a round at the same commit is
+            # fair: the answer is new, even when it needed no code.
+            return refuse(
+                "nothing pushed since the last round, and an agent asked",
+                f"**Not reviewed: round {done} already read this commit.** Push the "
+                f"fixes first, then add the {label} label again. A person adding the "
+                "label reviews it again as is.",
+            )
 
     return Decision(
         True,
@@ -310,6 +361,7 @@ def decide(event: dict) -> Decision:
         "requested by a person" if person else "requested by an agent",
         final=nxt >= MAX_ROUNDS,
         person=person,
+        opus_pass=event.get("tier") in OPUS_PASS_TIERS and not history.opus_pass_done,
     )
 
 
@@ -410,6 +462,7 @@ def finish(event: dict) -> Finish:
 
     v = read_verdict(event.get("verdict"))
     summary = f" {v.summary}" if v.summary else ""
+    opus_pass = bool(event.get("opus_pass"))
     live = str(event.get("live_head_sha") or "")
     unseen = (
         f"\n\n**Pushed during the round.** The review read `{sha[:8]}`; the branch is "
@@ -442,7 +495,11 @@ def finish(event: dict) -> Finish:
     elif v.verdict == "clean":
         body = (
             f"**Round {rnd} found nothing to fix.**{summary}\n\n"
-            "This is ready for a person to look at and merge."
+            "An agent merges it once CI is green"
+            + (" and Cursor's review approves" if event.get("tier") == "deep" else "")
+            + ", unless the base branch's `review_prep.py tier` says the maintainer "
+            "merges this one or the review lists a maintainer decision "
+            "(`address-review-findings` §7)."
         )
     elif v.stop:
         # Not "the review approved it": this covers ✅ Approve, the conditional
@@ -479,18 +536,42 @@ def finish(event: dict) -> Finish:
             "this way."
         )
 
+    # `null` (present but empty) is a check the close could not run.
+    unchecked = "shape" in event and event["shape"] is None
+    shape = [str(miss) for miss in event.get("shape") or []]
+    misshapen = (
+        "\n\n**Posting shape.** The review's posts miss the shape "
+        "`code-review-skill` §3 and §6 ask for, which the fixes and the weekly tally "
+        "read by. It is a reviewer defect, to fix in the skill or the prompt, not on "
+        "this pull request, and it does not change the verdict:\n\n"
+        + "\n".join(f"- {miss}" for miss in shape)
+        if shape
+        else "\n\n**Posting shape.** Not checked: the pull request's comments "
+        "could not be read."
+        if unchecked
+        else ""
+    )
+    shape_field = (
+        f" {SHAPE_FIELD}=skipped"
+        if unchecked
+        else f" {SHAPE_FIELD}={len(shape)}"
+        if shape
+        else ""
+    )
     marker = (
-        f"{ROUND_MARKER} n={rnd}{f' sha={sha}' if sha else ''} verdict={v.verdict} -->"
+        f"{ROUND_MARKER} n={rnd}{f' sha={sha}' if sha else ''} verdict={v.verdict}"
+        f"{f' {OPUS_PASS_FIELD}' if opus_pass else ''}"
+        f"{shape_field} -->"
     )
     outcome = OUTCOME_LABELS[v.verdict]
     return Finish(
         v.verdict,
         v.stop,
         True,
-        f"{marker}\n\n{body}{unseen}{footer}",
+        f"{marker}\n\n{body}{unseen}{misshapen}{footer}",
         v.reason,
         outcome,
-        tuple(sorted({other for other in OUTCOME_LABELS.values() if other != outcome})),
+        tuple(sorted(o for o in set(OUTCOME_LABELS.values()) if o != outcome)),
     )
 
 

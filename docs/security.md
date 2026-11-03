@@ -36,14 +36,12 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   abort yours, unless you [run every decoder in a child process](#decoders-in-a-child-process).
 
     ??? note "Why every PPMd member?"
-        pyppmd, the PPMd decoder, can crash when it's asked to keep decoding after a damaged
-        stream has ended early, and a wrong password or a crafted member gets it there. Archivey
-        stops asking once it sees the end, but stopping a decoder that might still be waiting for
-        input takes one more call, and that call can crash it too, on members of any size. In a
-        child process the crash becomes a `CorruptionError` for that member. Archivey reuses the
-        processes, so each PPMd member costs about 1.4 to 2 ms more than decoding in your
-        process. A solid PPMd folder is decoded as one, so it pays that once, plus about 0.1
-        to 0.35 ms for each 4 KiB member read from it.
+        pyppmd, the PPMd decoder, has a known issue that can crash it on damaged or crafted
+        data, fixed in an upcoming pyppmd release. Until then, archivey decodes every PPMd
+        member in a child process, where a crash becomes a `CorruptionError` for that member.
+        Archivey reuses the processes, so each PPMd member costs about 1.4 to 2 ms more than
+        decoding in your process. A solid PPMd folder is decoded as one, so it pays that once,
+        plus about 0.1 to 0.35 ms for each 4 KiB member read from it.
 
 - **Running out of memory raises `MemoryError`, not an `ArchiveyError`,** so it's never mistaken for
   a damaged archive. `DecoderLimits` caps the memory an archive can ask one decoder for, 2 GiB by
@@ -76,17 +74,26 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
     except subprocess.CalledProcessError:
         ...  # archivey refused the archive or stopped part-way; it said why on stderr
     ```
-- **Reading a member has no size limit.** `read()` returns the whole decompressed member as bytes in
+- **Reading a member has no byte cap.** `read()` returns the whole decompressed member as bytes in
   memory. A stream from `open()` decodes only as much as you ask for, so `stream.read(n)` holds
   about `n` bytes however large the member is, but a `stream.read()` with no size returns the rest
   of the member. `DecoderLimits` is the main limit that applies to a read. It caps the decoder's own
-  memory, so the data you read takes additional memory on top. `ExtractionLimits` doesn't apply,
-  because it covers only what `extract_all` writes to disk. A RAR archive opened from a file object
-  rather than a path is copied to a temporary file the first time a member needs `unrar` or `unar`.
-  `spool_limits.max_bytes` caps that copy, along with the few other temporary files archivey makes
-  for RAR archives, listed in the table below. When the archive records a member's size in
-  `member.size`, archivey never decodes more than that, and a member holding more raises
-  `CorruptionError`.
+  memory, so the data you read takes additional memory on top. The byte and entry caps in
+  `ExtractionLimits` cover only what `extract_all` writes to disk, but `decoder_limits.max_ratio` holds
+  every read too: a member that decodes to more than 800 times its compressed size raises
+  `ResourceLimitError` from the read that crosses the limit, and so do the reads of one reader
+  together past 800 times the archive's size. When archivey doesn't know the archive's size (a
+  pipe, or a seekable stream that doesn't report one), that second check divides by the bytes
+  read from it so far. A `read()` stops there rather than first holding the
+  whole member in memory. A container inside a compression stream (a `.tar.gz`, a format handler's
+  `.cpio.xz`) is held to it whenever it's decoded, listing included, since listing one decodes all
+  of it. So is what a format handler's walk decodes by itself: a compressed payload it opens
+  part-way through the archive, and a member's decoded data. A RAR archive opened from a
+  file object rather than a path is copied to a temporary file the first time a member needs
+  `unrar` or `unar`. `spool_limits.max_bytes` caps that copy, along with the few other temporary
+  files archivey makes for RAR archives, listed in the table below. When the archive records a
+  member's size in `member.size`, archivey never decodes more than that, and a member holding
+  more raises `CorruptionError`.
 - **A pass that reads members as it goes checks the listing limits as it goes.** On a TAR,
   `stream_members()` yields members up to the limit and then raises, and `extract_all` leaves the
   files it wrote before then on disk. 7z, RAR and ISO archives check the limits before they give you
@@ -107,16 +114,31 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
 - **Limits apply to each archive separately.** A small archive can hold archives that each expand
   up to the limit, and those can hold more, so the total grows with every level you extract. Be
   careful if you extract archives found inside other archives.
-- **Accelerators are on by default for seekable streams.** If you open an archive with
+- **Accelerators are on by default for large streams.** If you open an archive with
   `seekable_members=True` and the `seekable` extra is installed, archivey reads bzip2 data of 1 MiB
-  or more compressed, and DEFLATE data of 16 MiB or more, through rapidgzip. DEFLATE is the
-  compression in gzip files and in most ZIP members. rapidgzip marks places in the stream it can
+  or more compressed, and DEFLATE data of 16 MiB or more, through rapidgzip. On Linux and macOS it
+  also reads DEFLATE data of 16 MiB or more through rapidgzip without that option, when the file can
+  seek and the data compresses 3:1 or less, because rapidgzip decompresses in parallel. DEFLATE is
+  the compression in gzip files and in most ZIP members. rapidgzip marks places in the stream it can
   restart from as it reads, so a seek jumps to the nearest one instead of decompressing from the
   start. rapidgzip can crash on some damaged data, so it runs in a separate process, for bzip2 too,
   and if it crashes, the standard library's decoder takes over and reports what it finds. To avoid
-  it, pass
-  `config=archivey.ArchiveyConfig(use_rapidgzip=archivey.AcceleratorMode.OFF,
+  it, pass `config=archivey.ArchiveyConfig(use_rapidgzip=archivey.AcceleratorMode.OFF,
   use_indexed_bzip2=archivey.AcceleratorMode.OFF)`.
+
+    rapidgzip gives the same results as the standard library except for one crafted shape: a ZIP
+    member or 7z coder holding two DEFLATE streams, with a size and CRC that cover both. With
+    rapidgzip you may get both streams when the second is long. It depends on the data, on
+    how many cores the machine has and on the platform, so the same member may read on one
+    machine and be refused on another. Without rapidgzip you get `CorruptionError`, and 7-Zip
+    and unzip read the first stream and report a bad CRC. No known tool writes such a member.
+    Turn rapidgzip off if your code must refuse it.
+
+    ??? note "Why not check for it?"
+        rapidgzip doesn't say where a DEFLATE stream ends. Archivey checks the end of the data
+        from the last place rapidgzip can restart from, which catches a cut stream and any bytes
+        after the last one. Finding where an earlier stream ended would mean decompressing the
+        member again from the start, which costs as much as reading it without rapidgzip.
 
     ??? note "Why a separate process, and why those sizes?"
         The crashes seen so far are in rapidgzip's DEFLATE decoder. Its bzip2 decoder hasn't been
@@ -154,7 +176,7 @@ costs only the member being read:
   each PPMd member, or each solid PPMd folder, costs about 1.4 to 2 ms more, and each 4 KiB
   member read from a solid PPMd folder about 0.1 to 0.35 ms, with the copying of larger members
   on top ([why every PPMd member](#where-the-guarantees-stop)). Where no child process can start, such as in a frozen
-  application, a PPMd member raises `ResourceLimitError`, and rapidgzip gives way to the standard
+  application, a PPMd member raises `ResourceUnavailableError`, and rapidgzip gives way to the standard
   library's decoder with one warning.
 - **`ProcessIsolation.NATIVE_DECODERS`** also isolates zlib, bz2, lzma, zstd, lz4, brotli and
   inflate64 (Deflate64), detection's trial decodes included. Reads take longer. Measured on one
@@ -165,27 +187,22 @@ costs only the member being read:
   folder is one decoder, plus about 0.1 to 0.3 ms for each 4 KiB member read from it, with the
   copying of larger members on top. Each process
   holds about 9 MB while it waits to be reused. Where no child process can start, reading raises
-  `ResourceLimitError`; nothing is decoded in your process instead.
+  `ResourceUnavailableError`; nothing is decoded in your process instead.
   [`scripts/bench_process_isolation.py`](https://github.com/archivey-dev/archivey/blob/main/scripts/bench_process_isolation.py)
   in the repository measures these costs on your machine.
 - **`ProcessIsolation.NONE`** decodes everything in your process. It's for trusted files, tests,
   and places that can't start processes. A damaged or crafted PPMd member can crash your process,
   and rapidgzip isn't used.
 
-pyppmd bundles a copy of 7-Zip's PPMd code from before the fix for
-[CVE-2023-31102](https://nvd.nist.gov/vuln/detail/CVE-2023-31102), an integer underflow and
-invalid read, so it may still have that bug. Under the default, a crash or a wild read there costs
-that member, not your process, though a crafted member may still decode to wrong data.
-
 AES decryption and checksums always run in your process. A child that crashes raises
-`CorruptionError`, and one killed from outside raises `ResourceLimitError` (most often the
-out-of-memory killer) or `ReadError`. No setting limits how long a decoder takes; for that, see
+`CorruptionError`, and one killed from outside raises `ResourceUnavailableError` (SIGKILL, most
+often the out-of-memory killer) or `ReadError`. No setting limits how long a decoder takes; for that, see
 the time-limit recipe [above](#where-the-guarantees-stop).
 
 ??? note "Why are processes reused, and what if a member damages one?"
     Starting a process costs 12 to 18 ms, which on an archive of thousands of small members
     would be minutes, so a process that finished a member cleanly decodes the next one. One that
-    reported an error, or a PPMd member that ended early, isn't reused. A crash in a reused process
+    reported an error, or a PPMd member that didn't end cleanly, isn't reused. A crash in a reused process
     isn't blamed on the member being read, since an earlier member may have caused it: that member
     is decoded again in a new process, and only a crash there counts. A process decodes at most 64
     members before it's replaced.
@@ -199,7 +216,7 @@ with its version, which can be several years old. Older versions can have securi
 ones fixed, so an up-to-date version is safer. `unar` receives the password on its command line,
 where other users on the same machine can see it while it runs. If you set
 `rar_decompressor=RarDecompressor.UNRAR` in `ArchiveyConfig`, archivey never runs `unar`. With
-`RarDecompressor.NONE` it runs no external program at all, so stored RAR members still read
+`RarDecompressor.NONE` it runs no external program at all, so stored RAR members can still be read
 (archivey decrypts an encrypted one itself if `cryptography` is installed, and raises
 `PackageNotInstalledError` if it isn't), and the rest raise `UnsupportedFeatureError`.
 
@@ -219,10 +236,14 @@ in the repository measures what each limit costs in time and memory on your mach
   It costs disk space, plus 5-10 ms per MiB written, 10-20 s at the default.
 - **`extraction_limits.max_entries`**, default 262,144, caps the members one extraction writes. It
   costs about 0.6 ms per file written, under 3 minutes at the default.
-- **`extraction_limits.max_ratio`**, default 1000, caps how much a member, or the whole archive,
-  expands. It's checked as data is written, and for a member whose size and compressed size the
-  archive records, before any of it is written. Outputs under 5 MiB, or 256 MiB for a whole archive
-  read from a pipe, aren't checked. It has no cost of its own.
+- **`decoder_limits.max_ratio`**, default 800, caps how much a member, or the whole archive,
+  expands. It's checked as data is written or read, and for a member whose size and compressed size
+  the archive records, before any of it is written. Outputs under 5 MiB, or 256 MiB for a whole
+  archive read from a pipe, aren't checked. It has no cost of its own. A compressed tar is held to it
+  whenever archivey decodes it, listing included, since listing one decodes all of it. The default
+  sits below DEFLATE's ceiling of about 1032:1, so a gzip of zeros (1003 to 1032:1) is refused every
+  time rather than by a few bytes. It used to be `extraction_limits.max_ratio`; that field still
+  works, deprecated, and set there it overrides this one.
 - **`listing_limits.max_members`**, default 262,144, caps the members an archive can list. It costs
   about 25-50 µs and 1.5 KiB of memory per member, under 15 s and 384 MiB at the default.
 - **`listing_limits.max_metadata_bytes`**, default 64 MiB, caps the text kept for names, comments
@@ -235,9 +256,8 @@ in the repository measures what each limit costs in time and memory on your mach
 - **`decoder_limits.max_key_derivation_rounds`**, default 2^25, caps the password-hashing work per
   open archive. It costs 0.2-0.7 µs per round, 7-25 s at the default.
 - **`decoder_limits.max_ppmd_held_input`**, default 16 MiB, caps the largest PPMd member
-  that's held and handed to the decoder whole. A larger one is fed in pieces, where pyppmd can't
-  tell a corrupt member that ended from one waiting for more input, the case that can crash it
-  and that `process_isolation` keeps in a child process. It costs up to twice the limit in memory
+  that's held and handed to the decoder whole. A larger one is fed in pieces, which
+  `process_isolation` keeps in a child process. It costs up to twice the limit in memory
   while a PPMd member decodes, 32 MiB at the default.
 - **`spool_limits.max_bytes`**, default 1 GiB, caps the temporary disk space for RAR archives.
   `unrar` and `unar` need the archive as a file, so a RAR opened from a file object is copied, and
@@ -258,6 +278,30 @@ The costs were measured on one 2.8 GHz core.
 
 Going over a limit raises `ResourceLimitError`.
 
+If you know which formats you accept, a [`FormatPolicy`](opening.md#configuration) with an
+`only=` list refuses the rest before any reader runs on them, including formats a later archivey
+release adds and plugin formats that another library registers. An `exclude=` list refuses only
+what it names, so a format added later opens. The policy decides which reader runs, not what
+detection reads: detection still looks for every built-in format, within `detection_budget`.
+
+An optional package that's installed is used whenever a file needs it, even one installed system-wide
+that your program doesn't depend on. If you'd rather a package didn't parse your input, for
+example because of a bug reported against it, list it in the policy's
+[`exclude_libraries=`](opening.md#configuration). archivey then decodes nothing with it in calls
+made with that config. It doesn't import `brotli`, `pyppmd`, `inflate64` or `rapidgzip` for them;
+`lz4`, `zstd` and `pycdlib` are imported when archivey loads, but not used. The standard library's
+`zlib`, `bz2` and `lzma` can't be excluded; refuse the formats that carry them with `only=` or
+`exclude=` instead.
+
+Opening one part of a multi-volume set by path, such as `x.part1.rar` or `x.7z.001`, also reads
+the other parts in the same folder. A part found that way that is a symbolic link is refused with
+`OpenError`, so someone who can only add files to a shared folder can't link a planted part to a
+file you can read and they can't. That check runs once, when the parts are found, and the parts are
+opened by name later, so it doesn't stop someone who swaps a part for a link in between. A hard link
+also gets past it, and some systems, macOS among them, let any user make one. If others can write to
+the folder, set `ArchiveyConfig(discover_volumes=False)`: a path is then read as the one file it
+names, and you pass a set's volumes as a list.
+
 For archives from strangers, the default `policy="strict"` refuses or rewrites every kind of unsafe
 member archivey knows of. The [policy
 table](extracting.md#what-each-policy-does-with-unusual-members) on the Extracting page shows what
@@ -270,7 +314,8 @@ Archivey's test suite replays published vulnerabilities of other archive readers
 apply to it: path traversal, link and hard link escapes, header parsing bugs, decompression bombs,
 structures built to make a reader hang, member names that drive the terminal, and permissions that
 leave extracted files writable by others. They come from GNU tar, libarchive, Info-ZIP, 7-Zip,
-unrar and WinRAR, py7zr, rarfile, Apache Commons Compress, and Python's `tarfile` and `zipfile`.
+unrar and WinRAR, py7zr, rarfile, Apache Commons Compress, the Rust `zip` crate, and Python's
+`tarfile` and `zipfile`.
 Each test builds the archive the advisory describes and checks that archivey refuses it, keeps it
 inside the destination, ends it with a typed error rather than a hang, or reads it as the format
 defines without allocating more than the archive's size pays for. The decompression libraries
@@ -284,6 +329,7 @@ it replays:
 - [`tests/test_cve_regressions_7z_rar.py`](https://github.com/archivey-dev/archivey/blob/main/tests/test_cve_regressions_7z_rar.py)
 - [`tests/test_cve_regressions_libarchive.py`](https://github.com/archivey-dev/archivey/blob/main/tests/test_cve_regressions_libarchive.py)
 - [`tests/test_cve_regressions_codecs.py`](https://github.com/archivey-dev/archivey/blob/main/tests/test_cve_regressions_codecs.py)
+- [`tests/test_cve_regressions_zip2.py`](https://github.com/archivey-dev/archivey/blob/main/tests/test_cve_regressions_zip2.py)
 - [`tests/test_cve_parsing.py`](https://github.com/archivey-dev/archivey/blob/main/tests/test_cve_parsing.py)
 
 ## Reporting a vulnerability

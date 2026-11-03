@@ -17,6 +17,7 @@ See [Opening an archive](opening.md).
 ::: archivey.FormatAvailability
 ::: archivey.FormatSupport
 ::: archivey.MissingComponent
+::: archivey.OptionalLibrary
 ::: archivey.list_supported_formats
 ::: archivey.list_known_formats
 
@@ -32,6 +33,7 @@ flags calls to them. The object is still an `ArchiveReader` at run time, and tho
 ::: archivey.ForwardArchiveReader
 ::: archivey.ArchiveReader
 ::: archivey.ArchiveStream
+::: archivey.Verification
 ::: archivey.MemberPass
 ::: archivey.MemberSelector
 ::: archivey.MemberListReport
@@ -61,7 +63,9 @@ See [Format](opening.md#format).
 
 ::: archivey.ArchiveFormat
 ::: archivey.ContainerFormat
+::: archivey.PluginContainer
 ::: archivey.StreamFormat
+::: archivey.PluginStream
 ::: archivey.MemberType
 ::: archivey.CompressionMethod
 ::: archivey.CompressionAlgorithm
@@ -90,6 +94,7 @@ See [Configuration](opening.md#configuration), [Passwords](opening.md#passwords)
 
 ::: archivey.ArchiveyConfig
 ::: archivey.DEFAULT_ARCHIVEY_CONFIG
+::: archivey.FormatPolicy
 ::: archivey.ExtractionLimits
 ::: archivey.ListingLimits
 ::: archivey.DecoderLimits
@@ -120,7 +125,8 @@ or its environment. `ArchiveyUsageError` covers mistakes in the calling code and
 deliberately outside that tree, so `except ArchiveyError` does not hide them. The
 entries below follow the class tree: each group starts with its base class, except the
 group from `ResourceLimitError` to `DiagnosticRaisedError`. Those four are direct
-subclasses of `ArchiveyError` and unrelated to each other.
+subclasses of `ArchiveyError` and unrelated to each other, and only `ResourceLimitError`
+has a subclass, `ResourceUnavailableError`, listed after it.
 [Errors and diagnostics](errors-and-diagnostics.md) explains which one to catch.
 
 ::: archivey.ArchiveyError
@@ -142,6 +148,7 @@ subclasses of `ArchiveyError` and unrelated to each other.
 ::: archivey.NameRewrittenError
 
 ::: archivey.ResourceLimitError
+::: archivey.ResourceUnavailableError
 ::: archivey.UnsupportedFeatureError
 ::: archivey.PackageNotInstalledError
 ::: archivey.DiagnosticRaisedError

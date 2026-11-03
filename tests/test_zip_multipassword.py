@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import lzma
 import os
 import struct
 import tempfile
@@ -36,7 +37,7 @@ from archivey.internal import password as password_module, password_confirm
 from archivey.internal.backends import zip_reader, zipcrypto
 from archivey.internal.password import is_wrong_password
 from archivey.internal.password_confirm import PASSWORD_CONFIRM_PREFIX_BYTES
-from tests.conftest import requires, requires_zstd, zstd_backend
+from tests.conftest import assert_raised_again, requires, requires_zstd, zstd_backend
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import NonSeekableBytesIO
 from tests.zip_aes_fixture import build_aes_zip
@@ -160,7 +161,7 @@ def test_single_colliding_password_is_reported_as_a_password_failure(
     "compression", [p for p in COMPRESSION_METHODS if p.id != "stored"]
 )
 def test_single_colliding_password_fails_a_forward_seek(compression: int) -> None:
-    """A forward seek decodes what it skips, so the seek itself names both causes."""
+    """A forward seek decodes what it skips at the next read, which names both causes."""
     blob = build_zipcrypto_zip(RIGHT, NAME.encode(), DATA, compression=compression)
     collider = find_check_byte_collision(blob, NAME, RIGHT)
 
@@ -170,6 +171,7 @@ def test_single_colliding_password_fails_a_forward_seek(compression: int) -> Non
         _open_decoding_header(ar, compression) as stream,
     ):
         stream.seek(len(DATA))
+        stream.read(1)
 
 
 def test_single_colliding_password_stored_seek_reports_unverified() -> None:
@@ -440,7 +442,7 @@ def test_unverified_zipcrypto_error_keeps_raising_after_a_seek_back() -> None:
         stream.seek(0)
         with pytest.raises(EncryptionError) as again:
             stream.read()
-        assert again.value is first.value
+        assert_raised_again(again.value, first.value)
 
 
 def test_stored_crc_floor_counts_the_body_not_the_declared_size(
@@ -873,6 +875,38 @@ def test_zipcrypto_zstd_confirm_is_bounded(monkeypatch: pytest.MonkeyPatch) -> N
     compressed = zstd_backend().compress(payload)
     blob = build_zipcrypto_zip(
         RIGHT, NAME.encode(), payload, compression=93, compressed=compressed
+    )
+    plans: list[password_confirm.PasswordConfirmPlan] = []
+    real_plan = zip_reader.plan_password_confirm
+
+    def spy(*args: Any, **kwargs: Any) -> password_confirm.PasswordConfirmPlan:
+        plans.append(real_plan(*args, **kwargs))
+        return plans[-1]
+
+    monkeypatch.setattr(zip_reader, "plan_password_confirm", spy)
+    assert _read_member(blob, [b"wrong", RIGHT]) == payload
+    assert [plan.read_bytes for plan in plans] == [PASSWORD_CONFIRM_PREFIX_BYTES]
+
+
+def test_zipcrypto_xz_member_decodes() -> None:
+    """ZipCrypto over XZ (method 95), with one candidate and with two."""
+    payload = DATA * 50
+    blob = build_zipcrypto_zip(
+        RIGHT, NAME.encode(), payload, compression=95, compressed=lzma.compress(payload)
+    )
+    assert _read_member(blob, RIGHT) == payload
+    assert _read_member(blob, [b"wrong", RIGHT]) == payload
+
+
+def test_zipcrypto_xz_confirm_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Several candidates on a large XZ member confirm on a prefix, not the CRC.
+
+    Mutation check: dropping ``Codec.XZ`` from ``REJECTING_CODECS`` fails here, as
+    the plan then reads the whole member.
+    """
+    payload = os.urandom(PASSWORD_CONFIRM_PREFIX_BYTES * 4)
+    blob = build_zipcrypto_zip(
+        RIGHT, NAME.encode(), payload, compression=95, compressed=lzma.compress(payload)
     )
     plans: list[password_confirm.PasswordConfirmPlan] = []
     real_plan = zip_reader.plan_password_confirm

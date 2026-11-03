@@ -214,7 +214,8 @@ def _zip(entries: list[tuple[str, str, str | bytes]]) -> bytes:
         warnings.filterwarnings("ignore", "Duplicate name", UserWarning)
         for kind, name, value in entries:
             if kind == "dir" and not name.endswith("/"):
-                # archivey, like zipfile, takes a directory from the name's slash.
+                # zipfile takes a directory from the name's slash, so add it for a
+                # reader of these cases that goes by the name.
                 name += "/"
             info = zipfile.ZipInfo()
             # Set after construction: ZipInfo(name) turns backslashes into slashes
@@ -446,6 +447,29 @@ _LINK_CASES: dict[str, _Case] = {
             ("file", "a/victim", b"overwritten"),
         ],
         (("a", MemberType.SYMLINK),),
+    ),
+    # Rust zip GHSA-4v9h-p7m9-rh26: a lone symlink to a file outside, which the
+    # caller then reads or writes through.
+    "symlink-to-a-file-outside": (
+        [("sym", "outside-link", "{outside}/victim")],
+        ("outside-link",),
+    ),
+    # Rust zip GHSA-x2x8-gq67-9mq6: a link out to a path that does not exist yet,
+    # which the crate checked by spelling when it could not resolve it.
+    "symlink-dangling-out": (
+        [("sym", "l", "../outside/missing")],
+        ("l",),
+    ),
+    # The same advisory's ordering bypass: ``x/../outside`` stays inside while ``x``
+    # does not exist, and a later ``x -> .`` makes it lead out. The later link
+    # changes what the earlier one resolves through, so the earlier one is removed.
+    "symlink-redirected-by-a-later-link": (
+        [
+            ("sym", "l", "x/../outside"),
+            ("sym", "x", "."),
+            ("file", "l/victim", b"overwritten"),
+        ],
+        ("l",),
     ),
     # tarfile CVE-2026-19672 goes up through a link with a ``..`` in a member name.
     # archivey refuses any name with a ``..`` before it resolves anything, so the

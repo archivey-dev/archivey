@@ -18,7 +18,12 @@ from archivey.cli.common import outer_layer_format
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
 from archivey.cli.main import main
 from archivey.internal.format_args import outer_stream_format
-from archivey.types import ArchiveFormat, ContainerFormat, StreamFormat
+from archivey.types import (
+    ArchiveFormat,
+    ContainerFormat,
+    PluginContainer,
+    StreamFormat,
+)
 
 
 def _tar_bytes() -> bytes:
@@ -152,12 +157,17 @@ def test_outer_on_a_pipe_points_at_cat(tmp_path: Path) -> None:
     assert "archivey cat --outer" in err
 
 
-@pytest.mark.parametrize("container", list(ContainerFormat))
+class _PluginContainer(PluginContainer):
+    SEQ = "outer-rule-seq"
+
+
+@pytest.mark.parametrize("container", [*ContainerFormat, _PluginContainer.SEQ])
 @pytest.mark.parametrize("stream", list(StreamFormat))
 def test_outer_rule_matches_what_open_stream_accepts(
-    container: ContainerFormat, stream: StreamFormat
+    container: ContainerFormat | PluginContainer, stream: StreamFormat
 ) -> None:
-    """extract/test --outer and cat --outer (open_stream) peel the same formats."""
+    """extract/test --outer and cat --outer (open_stream) peel the same formats,
+    a plugin container's compressed pair (``.cpio.gz``) included."""
     fmt = ArchiveFormat(container, stream)
     outer = outer_layer_format(fmt)
     codec = outer_stream_format(fmt)

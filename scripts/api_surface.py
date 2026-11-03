@@ -54,6 +54,7 @@ PUBLIC_MODULES = (
     "archivey.detection_cost",
     "archivey.diagnostics",
     "archivey.paths",
+    "archivey.formats",
     "archivey.terminal",
 )
 
@@ -68,10 +69,37 @@ OPEN_ENUMS = frozenset(
         "archivey.DiagnosticCode",
     }
 )
+#: The experimental names: the format and codec plugin interface and the names that
+#: exist only for it, and the verification level (DR-12a). The stability policy leaves them out (``docs/how-it-is-built.md``
+#: §Versioning and stability): any release may change or remove them, with no
+#: deprecation release. A line whose own name is one of them (or under one) never makes
+#: a release a minor; a stable line that only mentions one in a signature still does,
+#: and the maintainer judges it (see :func:`classify`). ``tests/test_api_surface.py``
+#: pins the list: adding a name takes away a promise to callers.
+EXPERIMENTAL = (
+    "archivey.formats",
+    "archivey.PluginContainer",
+    "archivey.PluginStream",
+    "archivey.FormatPolicy.replace",
+    "archivey.FormatInfo.from_plugin",
+    "archivey.Verification",
+    "archivey.ArchiveStream.verified",
+    "archivey.ArchiveStream.verifiable",
+    "archivey.ArchiveStream.verify",
+    "archivey.ArchiveMember.verified",
+    "archivey.ArchiveMember.verifiable",
+    "archivey.ForwardArchiveReader.verify_all",
+    "archivey.ArchiveReader.verify_all",
+)
 #: The literal type that lists every diagnostic code string, which grows with them.
 CODE_LITERALS = frozenset({"archivey.diagnostics.DiagnosticCodeStr"})
 
 _SKIP_NAMES = frozenset({"__version__"})
+#: Classes whose constructor only archivey calls: a plugin receives these objects,
+#: so their ``__init__`` is internal even though the class is public.
+_SKIP_INIT = frozenset(
+    {"archivey.formats.ReaderContext", "archivey.formats.ReaderSource"}
+)
 
 
 # ── Formatting ───────────────────────────────────────────────────────────────────────
@@ -91,6 +119,8 @@ def _fmt_type(tp: object) -> str:
         return "..."
     if isinstance(tp, typing.ForwardRef):
         return tp.__forward_arg__
+    if isinstance(tp, typing.TypeVar):
+        return tp.__name__
     origin = typing.get_origin(tp)
     if origin is typing.Union or isinstance(tp, types.UnionType):
         return " | ".join(_fmt_type(arg) for arg in typing.get_args(tp))
@@ -202,8 +232,22 @@ def _own_classes(cls: type) -> list[type]:
     ]
 
 
+def _bases(cls: type) -> list[object]:
+    """``cls.__bases__``, with a bare ``Generic`` given its type parameters."""
+    generic = [
+        b
+        for b in cls.__dict__.get("__orig_bases__", ())
+        if typing.get_origin(b) is typing.Generic
+    ]
+    return [
+        generic[0] if b is typing.Generic and generic else b
+        for b in cls.__bases__
+        if b is not object
+    ]
+
+
 def _class_lines(qualname: str, cls: type) -> Iterator[str]:
-    bases = ", ".join(_fmt_type(b) for b in cls.__bases__ if b is not object)
+    bases = ", ".join(_fmt_type(b) for b in _bases(cls))
     yield f"class {qualname}({bases})"
     if issubclass(cls, enum.Enum):
         tag = "open-enum" if qualname in OPEN_ENUMS else "enum"
@@ -211,9 +255,11 @@ def _class_lines(qualname: str, cls: type) -> Iterator[str]:
         for member in cls:
             yield f"value {qualname}.{member.name} = {member.value!r}"
     own = _own_classes(cls)
-    if not issubclass(cls, enum.Enum) and "__init__" in {
-        n for c in own for n in vars(c)
-    }:
+    if (
+        not issubclass(cls, enum.Enum)
+        and qualname not in _SKIP_INIT
+        and "__init__" in {n for c in own for n in vars(c)}
+    ):
         yield f"init {qualname}{_fmt_signature(cls)}"
     fields: dict[str, str] = {}
     for c in reversed(own):
@@ -366,14 +412,27 @@ def _owner(line: str) -> str:
     return target.rsplit(".", 1)[0] if line.startswith("value ") else target
 
 
+def is_experimental(line: str) -> bool:
+    """Whether ``line`` describes a name under :data:`EXPERIMENTAL`."""
+    parts = line.split(" ", 2)
+    if len(parts) < 2:
+        return False
+    # ``init archivey.X(...)`` and ``function archivey.f(...)`` carry their signature.
+    target = parts[1].split("(", 1)[0].rstrip(":")
+    return any(target == name or target.startswith(name + ".") for name in EXPERIMENTAL)
+
+
 def classify(old: list[str], new: list[str]) -> tuple[list[str], list[str]]:
     """Split the changes into (needs a minor release, allowed in a patch).
 
     Each entry is a ``+`` or ``-`` line. A removed or changed line needs a minor
-    release. An added line is allowed in a patch only when it adds a value to an
-    open-ended enum or a diagnostic code string (DR-12a). Anything else added (a name,
-    a parameter, a field, an item of ``ARCHIVE_INTEGRITY_CODES``, a CLI option) needs a
-    minor release.
+    release, unless the line's own name is experimental (:func:`is_experimental`). An
+    added line is allowed in a patch only when its own name is experimental, or it adds
+    a value to an open-ended enum or a diagnostic code string (DR-12a). Anything else
+    added (a name, a parameter, a field, an item of ``ARCHIVE_INTEGRITY_CODES``, a CLI
+    option) needs a minor release. A stable line that only mentions an experimental
+    name, such as ``FormatPolicy``'s constructor with its ``replace=`` parameter, is
+    judged as a stable line: the maintainer then decides whether the change is a minor.
     """
     old_set, new_set = set(old), set(new)
     open_enums = {
@@ -383,12 +442,14 @@ def classify(old: list[str], new: list[str]) -> tuple[list[str], list[str]]:
     patch: list[str] = []
     for line in old:
         if line not in new_set:
-            minor.append("- " + line)
+            (patch if is_experimental(line) else minor).append("- " + line)
     for line in new:
         if line in old_set:
             continue
-        allowed = (line.startswith("value ") and _owner(line) in open_enums) or (
-            line.startswith("code-literal ")
+        allowed = (
+            (line.startswith("value ") and _owner(line) in open_enums)
+            or line.startswith("code-literal ")
+            or is_experimental(line)
         )
         (patch if allowed else minor).append("+ " + line)
     return minor, patch
@@ -401,7 +462,7 @@ def report(old: list[str], new: list[str]) -> str:
         out.append("The public API changed in a way a patch release may not:")
         out.extend("  " + line for line in minor)
     if patch:
-        out.append("Additions a patch release may make:")
+        out.append("Changes a patch release may make:")
         out.extend("  " + line for line in patch)
     if not minor and not patch:
         out.append("The public API did not change.")

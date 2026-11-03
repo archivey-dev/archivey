@@ -19,8 +19,8 @@ follow, and rules on the trade-offs they can't settle from the code. Two example
 
 - **When formats disagree.** Archivey weighs following each format's official tool, such as `unrar`
   for RAR and GNU tar for TAR, against being the same across formats. Neither wins automatically.
-  Device files that store no data are one case where being the same won: every format lists them as
-  "other".
+  Device files that store no data are one case where being the same won: they are listed as "other"
+  in every format.
 - **What counts as damage.** Some problems refuse the archive, and others, which are only unusual,
   are reported as diagnostics.
 
@@ -91,7 +91,7 @@ others miss.
   limits archivey accepts rather than fixes. [Security](security.md) covers what you need to know as
   a user, and the [full threat
   model](https://github.com/archivey-dev/archivey/blob/main/dev-docs/threat-model.md) has the rest.
-- **Bugs found in other libraries.** Comparing decoders turned up a use-after-free in pyppmd, three
+- **Bugs found in other libraries.** Comparing decoders turned up a known issue in pyppmd, three
   decoder bugs in pybcj and a hang in py7zr. Archivey avoids or works around each one.
 
 ## What this makes practical
@@ -136,6 +136,33 @@ To find deprecated calls anywhere in your code, run your tests with
 
 The public API is what `archivey` and its public submodules export, as listed on the
 [API page](api.md). Anything under `archivey.internal` can change in any release.
+
+A few things you can see aren't part of the API either, and can change in any release:
+
+- The text of messages: an exception's, a diagnostic's `message` and a log record's. Match on
+  archivey's exception types and diagnostic codes, not on message text. A diagnostic's
+  `occurrence_id` means something only within the process that made it.
+- Which library or program decodes the data, such as rapidgzip, pyppmd or `unrar`, as
+  long as the result stays the same. What follows from it can change with it:
+  - the type and message of the library's exception that archivey chains to its own as
+    `__cause__`, so catch archivey's exception types, not the cause;
+  - `accelerator` in a stream rewind's diagnostic context, and `scan` and `error_type`
+    in a seek index's. The diagnostic codes, and the other fields of those contexts, are
+    part of the API.
+- The experimental plugin interface: the `archivey.formats` module and the names that exist
+  only for it (`PluginContainer`, `PluginStream`, `FormatPolicy.replace` and
+  `FormatInfo.from_plugin`). Any release may change or remove them, with no deprecation
+  warning first, until the interface is declared stable. See
+  [Adding a format](adding-a-format.md).
+- The experimental verification level: `Verification`, `ArchiveMember.verified`,
+  `ArchiveMember.verifiable`, `ArchiveStream.verified`, `ArchiveStream.verifiable`,
+  `ArchiveStream.verify()` and `verify_all()` on readers. Any release may change or remove
+  them, their names, levels or meaning, with no deprecation warning first. The checks they
+  report on are not experimental: a failed checksum or a cut member raises as before. See
+  [Damaged archives](errors-and-diagnostics.md#damaged-archives).
+- Where a compressed stream can resume after a backward seek, which
+  `ArchiveStream.nearest_resume_offset()` reports, and so which seeks report
+  `STREAM_REWIND_REDECOMPRESSES`. It depends on the decoder.
 
 The same promise covers the `archivey` command's verbs, options and exit codes, as listed on
 the [command-line page](cli.md): a removed or renamed one keeps working for one more minor

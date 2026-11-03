@@ -52,10 +52,12 @@ from archivey.exceptions import (
     TruncatedError,
     exception_detail,
 )
+from archivey.internal.overrides import override
 from archivey.internal.streams.child_process import (
     REAP_TIMEOUT,
     describe_exit,
     is_crash,
+    mark_no_verdict,
     outside_death,
     python_argv,
     reap,
@@ -63,6 +65,7 @@ from archivey.internal.streams.child_process import (
     unavailable_reason,
 )
 from archivey.internal.streams.codecs import deps
+from archivey.internal.streams.codecs.callers_source import mark_callers_source
 from archivey.internal.streams.codecs.decoder_worker import (
     RAPIDGZIP_ARG,
     parse_error_payload,
@@ -105,6 +108,7 @@ from archivey.internal.streams.codecs.rapidgzip_worker import (
 from archivey.internal.streams.decompressor_stream import SeekPoint, truncated_message
 from archivey.internal.streams.streamtools import ReadOnlyIOStream
 from archivey.internal.streams.streamtools.slice import file_region
+from archivey.types import OptionalLibrary
 
 _WORKER = Path(__file__).with_name("decoder_worker.py")
 
@@ -196,7 +200,7 @@ def rapidgzip_child_unavailable_reason() -> str | None:
     ``deps.rapidgzip`` already reads as absent, so this arm is the backstop for a
     ``deps.rapidgzip`` that reads as present.
     """
-    pypy_reason = deps.unused_reason("rapidgzip")
+    pypy_reason = deps.unused_reason(OptionalLibrary.RAPIDGZIP)
     if pypy_reason:
         return pypy_reason
     return unavailable_reason(_WORKER, "rapidgzip")
@@ -228,29 +232,6 @@ def reported_by_child(exc: BaseException) -> bool:
     marked, so a translator can treat every marked ``RuntimeError`` as rapidgzip's.
     """
     return getattr(exc, _FROM_CHILD, False) is True
-
-
-_FROM_SOURCE = "_archivey_raised_by_callers_source"
-
-
-def from_callers_source(exc: BaseException) -> bool:
-    """Whether ``exc`` came from the caller's own source, parked while a decoder read it
-    (the rapidgzip child's reads, or the in-process bzip2 decoder's), or raised by a
-    file region's check before a call to the child (what reading that source would
-    have raised; see ``file_region``).
-
-    Such an exception is raised to the caller as itself, so a translator must leave it
-    alone, including one whose types (``EOFError``) it would map for a decoder.
-    """
-    return getattr(exc, _FROM_SOURCE, False) is True
-
-
-def mark_callers_source(exc: BaseException) -> None:
-    """Mark ``exc`` as raised by the caller's own source (see :func:`from_callers_source`)."""
-    try:
-        setattr(exc, _FROM_SOURCE, True)
-    except AttributeError:  # an exception type that refuses new attributes
-        pass
 
 
 def _reported_error(payload: bytes) -> Exception:
@@ -520,6 +501,9 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._served = 0
         # Whether the child's death was a crash on the data (``crashed_on_data``).
         self._crashed = False
+        # Whether something outside the decoder ended the child (``outside_death``):
+        # every error built from ``_death`` is then marked as no verdict on the data.
+        self._outside_death = False
         # Where a standard-library decoder can take over (``resume_point``): index
         # points the child reported, each with the output before it from what it sent,
         # by decompressed offset, oldest capture first.
@@ -775,6 +759,8 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         exc = cls(message)
         if self._crashed:
             setattr(exc, _CRASHED, True)
+        if self._outside_death and isinstance(exc, ArchiveyError):
+            mark_no_verdict(exc)
         return exc
 
     def _abandon(self) -> None:
@@ -916,6 +902,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
                 returncode,
                 f"the rapidgzip decoder process for this {label} stream ended ({how})",
             )
+            self._outside_death = True
         self._death = (cls, message)
         self._crashed = caused_by_source is None and (
             is_crash(returncode) or returncode == MEMORY_LIMIT_EXIT
@@ -1029,6 +1016,66 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         usable = [offset for offset in self._checkpoints if offset <= at]
         return self._checkpoints[max(usable)] if usable else None
 
+    def end_check_point(self, end: int) -> SeekPoint | None:
+        """The resume point the DEFLATE end check decodes from, when the output ends
+        at decompressed offset ``end``: the last point of rapidgzip's complete index
+        before ``end``, with the 32 KiB of output before it. ``None`` when the index
+        has no such point, or the child cannot give it. The errors the other probes let
+        through (an archivey error, ``OSError``, ``MemoryError``) raise, as the next
+        read would: ``None`` would read as "no point", and the check would decode from
+        the start instead.
+
+        :meth:`resume_point` gives the newest point this stream kept, and which points
+        it kept depends on how far the child had decoded when each ``POINTS`` query
+        went out. The end check's verdict can depend on the point it starts from (a
+        point in a second stream finds that stream's end, not the first one's), so it
+        takes the point from the complete index instead, which depends only on the
+        data and on how many threads rapidgzip runs, which follows the core count. A
+        point this stream did not keep has its window read back from the child, and
+        the stream returns to where it was.
+        """
+        if self._bzip2 or self._death is not None or self._proc is None:
+            return None
+        try:
+            offsets = self.block_offsets()
+        except (ArchiveyError, ArchiveyUsageError, OSError, MemoryError):
+            raise
+        except Exception:  # noqa: BLE001 - None decodes from the start, the full check
+            return None
+        points = [
+            (decoded, bit) for bit, decoded in offsets.items() if 0 < decoded < end
+        ]
+        if not points:
+            return None
+        decoded, bit = max(points)
+        kept = self._checkpoints.get(decoded)
+        if kept is not None:
+            return kept
+        start = max(0, decoded - WINDOW_SIZE)
+        window = bytearray()
+        position = self.tell()
+        try:
+            self.seek(start)
+            while len(window) < decoded - start:
+                data = self.read(decoded - start - len(window))
+                if not data:
+                    break
+                window += data
+        except (ArchiveyError, ArchiveyUsageError, OSError, MemoryError):
+            raise
+        except Exception:  # noqa: BLE001 - as above
+            window = bytearray()
+        finally:
+            # A seek the child refuses raises here: the stream must not stay at start.
+            # When the read already failed, this raises the same error: each failure
+            # there (a dead child, a closed or forked stream, a broken pipe) fails the
+            # seek the same way.
+            self.seek(position)
+        if len(window) != decoded - start:
+            return None
+        return SeekPoint(decoded, bit // 8, DeflateResume(bit % 8, bytes(window)))
+
+    @override
     def read(self, n: int | None = -1, /) -> bytes:
         # Before the buffer: a closed or dead stream raises even with read-ahead left.
         self._raise_if_unusable()
@@ -1113,12 +1160,15 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._pos += len(result)
         return result
 
+    @override
     def readall(self) -> bytes:
         return self.read(-1)
 
+    @override
     def seekable(self) -> bool:
         return True
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         self._raise_if_unusable()
         if whence in (io.SEEK_SET, io.SEEK_CUR):
@@ -1163,6 +1213,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._moved_to(position)
         return position
 
+    @override
     def tell(self) -> int:
         self._raise_if_unusable()
         if self._pos is None:
@@ -1245,6 +1296,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._known_offsets = dict(offsets)
         return offsets
 
+    @override
     def close(self) -> None:
         if self.closed:
             return

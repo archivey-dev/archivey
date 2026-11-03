@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "archivey"
-version = "0.2.1"
+version = "0.3.0.dev0"
 description = "Python library for reading, streaming, and safely extracting archives"
 readme = "README.md"
 license = { text = "MIT" }
@@ -60,9 +60,7 @@ archivey = "archivey.cli.main:main"
 [project.optional-dependencies]
 recommended = [
     # >=1.3.1: 1.1.x/1.2.0 return silently wrong bytes on chunked bounded PPMd
-    # decodes (premature eof mid-stream); 1.3.1 fixes that but needs bounded
-    # max_length to avoid native heap corruption — archivey always bounds.
-    # See dev-docs/investigations/ppmd-native-investigation-results.md §K.2.
+    # decodes (premature eof mid-stream); 1.3.1 fixes that.
     "pyppmd>=1.3.1",
     "inflate64>=1.0.0",
     "backports.zstd>=1.0.0; python_version < '3.14'",
@@ -137,12 +135,12 @@ dev = [
     # just by having a newer one. Bump these deliberately, together, in their own commit.
     #
     # Keep `ruff` in step with the `rev:` in .pre-commit-config.yaml — the framework hook
-    # path resolves its own copy. tests/test_tooling_pins.py enforces that.
+    # path resolves its own copy. scripts/tests/test_tooling_pins.py enforces that.
     "pyrefly==1.4.0",
     "ty==0.0.90",
     "ruff==0.17.1",
     "pre-commit>=4.0.0",
-    # tests/test_release_script.py reads the workflow files with it.
+    # scripts/tests/test_release_script.py reads the workflow files with it.
     "pyyaml>=6.0",
     "coverage[toml]>=7.6.0",
     # >=1.1: earlier releases pin pyppmd<1.3.0, the range the pyppmd>=1.3.1 floor
@@ -275,9 +273,27 @@ python-version = "3.11"
 root = ["src"]
 
 [tool.ty.src]
-# Type-check only the library, mirroring pyrefly's `project-includes = ["src"]`, so a
-# bare `uv run ty check` is clean — no `src/` path argument needed.
+# Type-check the library, mirroring pyrefly's
+# `project-includes`, so a bare `uv run ty check` is the gate with no path arguments.
 include = ["src"]
+
+[tool.ty.rules]
+# Every method that overrides one of a base class carries ``@override``
+# (archivey.internal.overrides); ``invalid-explicit-override``, on by default, refuses
+# the decorator on a method that overrides nothing.
+missing-override-decorator = "error"
+
+[[tool.ty.overrides]]
+# The CLI and the plugin packages use only archivey's public API, which has no
+# ``override``. tests/test_cli_uses_public_api.py checks that for the CLI; no test
+# checks it for the plugin packages. The CLI's overrides are of stdlib
+# classes, which an archivey rename cannot strand. The plugins' are of archivey's own
+# hooks, and one is unprotected: ``FormatReader.archive_info`` has a default, so a
+# rename leaves each plugin's override silently unused. The packages are being folded
+# into the library, where the rule covers their readers.
+include = ["src/archivey/cli/**", "packages/**"]
+[tool.ty.overrides.rules]
+missing-override-decorator = "ignore"
 
 [tool.coverage.run]
 source = ["archivey"]
@@ -292,7 +308,7 @@ exclude_also = [
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "tests", "."]
-testpaths = ["tests"]
+testpaths = ["tests", "scripts/tests"]
 # --timeout: a hung test fails fast (with a traceback of all threads) instead of stalling
 # the whole job until the CI hard limit. 60s is far above any real test here (all run in
 # milliseconds), so only a genuine hang trips it.
@@ -345,6 +361,6 @@ timeout_method = "thread"
 markers = [
     "sample_archives: declarative parametrization over sample archives and config variants",
     "concurrent_reader: post-materialization MemberStreams.CONCURRENT seam (also run under free-threaded CI)",
-    "ppmd_native_stress: intermittent pyppmd native-abort stress (non-blocking PPMd native stress workflow only)",
+    "ppmd_native_stress: PPMd native stress (non-blocking PPMd native stress workflow only)",
     "allow_resource_leaks: skip the leak-oracle fail for this test (still reaps)",
 ]

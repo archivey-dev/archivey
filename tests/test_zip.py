@@ -33,7 +33,7 @@ from archivey import (
     open_archive,
 )
 from archivey.cost import AccessCost, ListingCost, StreamCapability
-from archivey.diagnostics import raw_name_to_base64
+from archivey.diagnostics import NameEncodingContext, raw_name_to_base64
 from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
@@ -2416,9 +2416,19 @@ def test_a_flag_overridden_name_collides_as_a_duplicate(
     assert (first.raw_name, second.raw_name) == (b"\xc3\xa9.txt", e_acute + b".txt")
     assert (first.is_current, second.is_current) == (False, True)
     assert (tmp_path / "é.txt").read_bytes() == b"second"
-    assert [d.context.declared_encoding for d in second.diagnostics] == ["utf-8"]
-    assert [d.context.declared_encoding for d in first.diagnostics] == [
-        encoding or "cp437"
+    assert [
+        d.context.declared_encoding
+        for d in second.diagnostics
+        if isinstance(d.context, NameEncodingContext)
+    ] == ["utf-8"]
+    assert [
+        d.context.declared_encoding
+        for d in first.diagnostics
+        if isinstance(d.context, NameEncodingContext)
+    ] == [encoding or "cp437"]
+    # The collision is reported on the later member.
+    assert [d.code for d in second.diagnostics][-1:] == [
+        DiagnosticCode.MEMBER_NAME_DUPLICATE
     ]
 
 

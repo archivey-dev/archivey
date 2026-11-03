@@ -293,10 +293,18 @@ def test_a_short_version_record_does_not_promote_a_stale_revision(
         members = archive.members()
         current = [m for m in members if m.is_current]
         assert [m.name for m in current] == ["file.txt"]
-        assert not current[0].diagnostics, (
-            "the live revision must be the untouched one, not the damaged member"
+        # The live revision is reported only as the later copy of the name.
+        assert [d.code for d in current[0].diagnostics] == [
+            DiagnosticCode.MEMBER_NAME_DUPLICATE
+        ], "the live revision must be the untouched one, not the damaged member"
+        damaged = next(
+            m
+            for m in members
+            if any(
+                d.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+                for d in m.diagnostics
+            )
         )
-        damaged = next(m for m in members if m.diagnostics)
         assert damaged.name == "file.txt" and not damaged.is_current
 
 
@@ -850,7 +858,7 @@ def test_a_checksum_this_install_cannot_compute_does_not_count_as_survival(
     bytes handed back.
     """
     _no_rar_binaries(monkeypatch, tmp_path)
-    monkeypatch.setattr(verify, "_make_hasher", lambda key: None)
+    monkeypatch.setattr(verify, "hasher_factory", lambda key: None)
     path = _cut_short(tmp_path, "stored_m0.rar", "cut_short_crc32.rar")
 
     with open_archive(path) as archive:

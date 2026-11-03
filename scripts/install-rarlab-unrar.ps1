@@ -3,11 +3,12 @@
     Install the official x64 RARLAB UnRAR binary on Windows.
 
 .DESCRIPTION
-    Downloads and unpacks RARLAB's ``unrarw64.exe`` self-extractor, leaving
-    ``<Dest>\UnRAR.exe`` behind. No-ops when that path already exists, so the
-    caller can restore <Dest> from a cache and skip the network entirely — the
-    reason this is a script and not an inline CI step, and the same
-    already-present contract as scripts/install-rarlab-unrar.sh on macOS.
+    Downloads a pinned WinRAR x64 installer from rarlab and takes ``UnRAR.exe``
+    out of it with 7-Zip, leaving ``<Dest>\UnRAR.exe`` behind. No-ops when that
+    path already exists, so the caller can restore <Dest> from a cache and skip
+    the network entirely — the reason this is a script and not an inline CI
+    step, and the same already-present contract as
+    scripts/install-rarlab-unrar.sh on macOS.
 
     Chocolatey's ``unrar`` package is not a substitute: it is the x86 build
     behind a ShimGen shim, and the shim has broken solid ``unrar p`` pipes on
@@ -20,8 +21,7 @@
     common case; the retry only covers a cache miss.
 
 .PARAMETER Dest
-    Directory to install into. Created if missing. Must not contain spaces —
-    see the check below.
+    Directory to install into. Created if missing.
 
 .PARAMETER Retries
     Download attempts before giving up. Backoff doubles from 2s.
@@ -44,26 +44,26 @@ $ErrorActionPreference = 'Stop'
 # banner check below reads them itself.
 $PSNativeCommandUseErrorActionPreference = $false
 
-# Unversioned by design: rarlab publishes only "current" at this path, so a
-# cache entry pins whichever build was current when it was filled. CI's key
-# therefore carries a rotating window as well as this file's hash, bounding how
-# stale the tested binary can get; see the "Compute unrar cache window" step in
-# ci.yml. Editing anything here also refills it. There is no content pin here, unlike the macOS installer's git
-# commit; rarlab offers no per-version URL to pin against.
+# Pinned to a stable release, with its digest. rarlab's unversioned
+# ``unrarw64.exe`` is whatever is newest, betas included: it served "7.30 beta
+# 1" and then "7.30 beta 2", and beta 2 broke a RAR test on both Windows legs
+# (a member named "ab." no longer reads by name) with no stable WinRAR behind
+# it. CI should test a release, and move to the next one on purpose.
+# The WinRAR installer is the only download rarlab publishes per version, and
+# the UnRAR.exe inside it is the one WinRAR users run. 7.23 is also the version
+# the macOS installer compiles, so both legs test the same unrar.
 #
-# Do not "fix" that by building from source the way the macOS installer does.
-# CI exists to test archivey against the binary Windows users actually run,
-# which is rarlab's own build — a self-compiled one diverges in toolchain (this
-# library parses unrar's output and pipes `unrar p`) and in version. Maintainer
-# decision on #320 (F2); the integrity options that remain open are tracked
-# internally.
-$Url = 'https://www.rarlab.com/rar/unrarw64.exe'
-
-function Find-UnRARExe {
-    param([string] $Root)
-    Get-ChildItem -Path $Root -Recurse -Filter 'UnRAR.exe' -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-}
+# Do not build from source the way the macOS installer does. CI exists to test
+# archivey against the binary Windows users actually run, which is rarlab's own
+# build — a self-compiled one diverges in toolchain (this library parses
+# unrar's output and pipes `unrar p`). Maintainer decision on #320 (F2).
+#
+# To move to a newer stable release, change both lines; a run with the old
+# digest fails and prints the new one. Editing this file also refreshes CI's
+# cache, whose key is this file's hash.
+$Version = '723'
+$Sha256 = '8ff0daf3ed564cc743c0e23ff2e253997ffc74460f9673f0b6dd037b2db4ce7b'
+$Url = "https://www.rarlab.com/rar/winrar-x64-$Version.exe"
 
 # The RARLAB banner is what archivey's finder actually requires, so it is the
 # test for "is this binary the right one" on every path through this script —
@@ -87,14 +87,6 @@ function Get-UnRARBanner {
 New-Item -ItemType Directory -Force -Path $Dest | Out-Null
 $Dest = (Resolve-Path -LiteralPath $Dest).Path
 
-# The SFX takes its destination as /d<path> — one token, with no documented
-# quoting for a path containing spaces. CI's RUNNER_TEMP (D:\a\_temp) has none,
-# so rather than guess at the escaping and have extraction fail somewhere
-# unhelpful, refuse the path up front and say why.
-if ($Dest -match '\s') {
-    throw "install-rarlab-unrar: -Dest must not contain whitespace (the RARLAB SFX /d switch takes an unquoted path): $Dest"
-}
-
 $installed = Join-Path $Dest 'UnRAR.exe'
 if (Test-Path -LiteralPath $installed) {
     # Re-check rather than trusting the file: the caller caches <Dest> with
@@ -114,14 +106,18 @@ if (Test-Path -LiteralPath $installed) {
     Remove-Item -LiteralPath $installed -Force
 }
 
-$sfx = Join-Path $Dest 'unrarw64.exe'
+# Download outside <Dest>, so neither the installer nor its other files end up
+# in the cached tree or on PATH (callers add <Dest> to it).
+$work = Join-Path ([System.IO.Path]::GetTempPath()) "archivey-winrar-$Version"
+New-Item -ItemType Directory -Force -Path $work | Out-Null
+$installer = Join-Path $work "winrar-x64-$Version.exe"
 $attempt = 0
 $delay = 2
 while ($true) {
     $attempt++
     try {
         Write-Host "install-rarlab-unrar: downloading $Url (attempt $attempt/$Retries)"
-        Invoke-WebRequest -Uri $Url -OutFile $sfx -TimeoutSec 60
+        Invoke-WebRequest -Uri $Url -OutFile $installer -TimeoutSec 60
         break
     }
     catch {
@@ -134,34 +130,30 @@ while ($true) {
     }
 }
 
-# A captive portal or an error page saved as .exe would otherwise fail later,
-# inside the SFX, with nothing pointing at the download.
-$header = New-Object byte[] 2
-$stream = [System.IO.File]::OpenRead($sfx)
-try { $read = $stream.Read($header, 0, 2) } finally { $stream.Dispose() }
-if ($read -lt 2 -or $header[0] -ne 0x4D -or $header[1] -ne 0x5A) {
-    $size = (Get-Item -LiteralPath $sfx).Length
-    throw "install-rarlab-unrar: $Url did not return a PE executable ($size bytes)"
+# The digest also catches a captive portal or an error page saved as .exe,
+# which would otherwise fail later, inside 7-Zip, with nothing pointing at the
+# download.
+$got = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($got -ne $Sha256) {
+    $size = (Get-Item -LiteralPath $installer).Length
+    throw "install-rarlab-unrar: $Url has SHA-256 $got ($size bytes), expected $Sha256"
 }
 
-# RARLAB SFX: /s silent, /d<path> extract destination.
-Start-Process -FilePath $sfx -ArgumentList '/s', "/d$Dest" -Wait -NoNewWindow
-
-$real = Find-UnRARExe -Root $Dest
-if (-not $real) {
-    Get-ChildItem -Path $Dest -Recurse | Format-Table FullName
-    throw 'install-rarlab-unrar: UnRAR.exe not found after extracting unrarw64.exe'
+# The installer is a RAR self-extractor, which 7-Zip opens as an archive. Take
+# UnRAR.exe only: running the installer would install WinRAR, including the
+# `rar` writer CI must never have.
+$sevenZip = Get-Command 7z -ErrorAction SilentlyContinue
+if (-not $sevenZip) {
+    $sevenZip = Get-Command (Join-Path $env:ProgramFiles '7-Zip\7z.exe') -ErrorAction SilentlyContinue
 }
-# The SFX drops UnRAR.exe straight into $Dest; the copy is for the day it does
-# not. Guard it — Windows is case-insensitive, so copying onto itself would
-# truncate the file.
-if ($real.DirectoryName -ne $Dest) {
-    Copy-Item -LiteralPath $real.FullName -Destination $installed -Force
+if (-not $sevenZip) {
+    throw 'install-rarlab-unrar: 7-Zip (7z) is needed to unpack the WinRAR installer'
 }
-
-# Keep the self-extractor out of the cached tree (and off PATH, since callers
-# add <Dest> to it).
-Remove-Item -LiteralPath $sfx -Force -ErrorAction SilentlyContinue
+& $sevenZip.Source e $installer "-o$Dest" 'UnRAR.exe' -y | Out-Host
+if ($LASTEXITCODE -ne 0) {
+    throw "install-rarlab-unrar: 7z exited $LASTEXITCODE unpacking UnRAR.exe from $installer"
+}
+Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 
 # Check the banner here rather than discovering a wrong binary two steps later.
 # Delete one that fails, so a cache save cannot carry it forward; the

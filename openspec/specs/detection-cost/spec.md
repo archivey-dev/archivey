@@ -114,7 +114,9 @@ rejected-candidate cap, or in which a hit validator's view is clamped at the val
 allowance, SHALL be recorded as `sfx_scan` *budget exhausted* too, whether or not it
 answers. A near signature that ends past a positive `max_prefix_bytes` SHALL be recorded
 as `near_magic` *budget exhausted*, and as *not enabled by policy* when `max_prefix_bytes`
-is 0.
+is 0. The self-checking header step needs one whole 512-byte block: a positive
+`max_prefix_bytes` under 512 SHALL record `header_check` *budget exhausted*, and 0 SHALL
+record it *not enabled by policy*.
 
 A receipt is within its budget when each bounded counter is at most `passes` times its
 limit: `far_bytes`, `scanned_bytes`, `decode_input` and `decode_output` against the field

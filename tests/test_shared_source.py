@@ -252,3 +252,76 @@ class TestSharedSourceMisuse:
         view = shared.view(0, 10)
         with pytest.raises(ValueError, match="Negative seek position"):
             view.seek(-1)
+
+
+class TestSharedSourceReadAt:
+    def test_read_at_does_not_move_an_open_view(self) -> None:
+        shared = SharedSource(io.BytesIO(DATA))
+        view = shared.view(0, 10)
+        assert view.read(3) == b"012"
+        assert shared.read_at(20, 4) == DATA[20:24]
+        assert view.read(3) == b"345"
+        assert shared.read_at(0, 2) == b"01"
+        assert view.read() == b"6789"
+
+    def test_read_at_is_short_only_at_the_end(self) -> None:
+        shared = SharedSource(io.BytesIO(DATA))
+        assert shared.read_at(len(DATA) - 3, 10) == DATA[-3:]
+        assert shared.read_at(len(DATA) + 5, 10) == b""
+        assert shared.read_at(4, 0) == b""
+
+    def test_read_at_asks_again_after_a_short_raw_read(self) -> None:
+        class Trickle(io.RawIOBase):
+            """Returns at most 3 bytes a call, as a raw stream may."""
+
+            def __init__(self) -> None:
+                self._inner = io.BytesIO(DATA)
+
+            def readable(self) -> bool:
+                return True
+
+            def seekable(self) -> bool:
+                return True
+
+            def seek(self, offset: int, whence: int = 0) -> int:
+                return self._inner.seek(offset, whence)
+
+            def tell(self) -> int:
+                return self._inner.tell()
+
+            def readinto(self, buffer: memoryview) -> int:  # type: ignore[override]
+                data = self._inner.read(min(3, len(buffer)))
+                buffer[: len(data)] = data
+                return len(data)
+
+        shared = SharedSource(Trickle())  # type: ignore[arg-type]
+        assert shared.read_at(5, 10) == DATA[5:15]
+
+    def test_read_at_refuses_negative_and_closed(self) -> None:
+        shared = SharedSource(io.BytesIO(DATA))
+        with pytest.raises(ValueError, match="negative"):
+            shared.read_at(-1, 2)
+        with pytest.raises(ValueError, match="negative"):
+            shared.read_at(0, -2)
+        shared.close()
+        with pytest.raises(ValueError, match="closed"):
+            shared.read_at(0, 2)
+
+    def test_read_at_from_threads_is_byte_exact(self) -> None:
+        payload = bytes(range(256)) * 64
+        shared = SharedSource(io.BytesIO(payload))
+        errors: list[BaseException] = []
+
+        def worker(step: int) -> None:
+            try:
+                for offset in range(0, len(payload) - 17, step):
+                    assert shared.read_at(offset, 17) == payload[offset : offset + 17]
+            except BaseException as exc:  # noqa: BLE001 — collect for the main thread
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(s,)) for s in (7, 11, 13)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert errors == []

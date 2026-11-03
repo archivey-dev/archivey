@@ -1,0 +1,37 @@
+name: Review tally
+
+# Once a week, counts what the review loop found on the pull requests merged that week
+# and what the implementer did with each finding: rounds per pull request, findings by
+# severity and by who raised them (a loop round or the Opus pass), fixed, disproven,
+# escalated or split, and findings an earlier fix caused. The report is the run's job
+# summary; nothing is posted or changed. `scripts/review_tally.py` does the counting.
+
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Monday 06:17 UTC
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Pull requests merged in the last N days
+        default: "7"
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  tally:
+    name: Tally the week's reviews
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      DAYS: ${{ inputs.days || '7' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tally
+        run: |
+          python3 scripts/review_tally.py --repo "$GITHUB_REPOSITORY" --days "$DAYS" \
+            >> "$GITHUB_STEP_SUMMARY"

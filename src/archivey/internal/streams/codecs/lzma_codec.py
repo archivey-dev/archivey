@@ -8,7 +8,7 @@ import functools
 import lzma
 import os
 from collections.abc import Callable
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.config import ProcessIsolation
 from archivey.exceptions import (
@@ -24,7 +24,8 @@ from archivey.internal.config import (
     probe_lzma_dictionary,
 )
 from archivey.internal.hashing import crc32_digest
-from archivey.internal.streams.archive_stream import ExceptionTranslator, RewindWarning
+from archivey.internal.overrides import override
+from archivey.internal.streams.archive_stream import ExceptionTranslator
 from archivey.internal.streams.codecs.base import (
     Codec,
     CodecParams,
@@ -34,12 +35,14 @@ from archivey.internal.streams.codecs.base import (
     ProbeReadAt,
     StreamCodec,
 )
-from archivey.internal.streams.codecs.framed_decoder import FramedDecompressorStream
+from archivey.internal.streams.codecs.framed_decoder import (
+    FramedDecompressorStream,
+    StreamStart,
+    never_starts,
+)
 from archivey.internal.streams.codecs.isolated import (
     IN_PROCESS,
-    Decompressor,
     Natives,
-    natives_for,
 )
 from archivey.internal.streams.codecs.lzip_decoder import LzipDecompressorStream
 from archivey.internal.streams.codecs.xz_decoder import (
@@ -65,6 +68,9 @@ from archivey.types import (
     StreamFormat,
 )
 
+if TYPE_CHECKING:
+    from archivey.formats import Decompressor
+
 _ALONE_HEADER_SIZE = 13
 # Alone header marks unknown uncompressed size with all-ones uint64.
 _ALONE_UNKNOWN_SIZE = (1 << 64) - 1
@@ -75,15 +81,17 @@ def _translate_lzma(
 ) -> ArchiveyError | None:
     if isinstance(exc, lzma.LZMAError):
         return lzma_error_to_archivey(exc, "Error reading LZMA/XZ stream", limits)
-    return StreamCodec._eof_truncation(exc, "LZMA/XZ")
+    return None
 
 
 class _LzmaErrorCodec(StreamCodec):
     """Shared LZMA/XZ error taxonomy for the lzma-family codecs (xz, lzip, raw LZMA)."""
 
+    @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
         return _translate_lzma(exc)
 
+    @override
     def translator(self, config: StreamConfig) -> ExceptionTranslator:
         # The limits the stream's decompressors are built with, so a memlimit refusal
         # names the cap (``.lzma``: ``new_capped_decompressor``).
@@ -93,6 +101,7 @@ class _LzmaErrorCodec(StreamCodec):
 class _SizedLzmaCodec(_LzmaErrorCodec):
     """xz / lzip: surface the decompressed size recorded in the stream index/trailer."""
 
+    @override
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
         member.size = ctx.probe_decompressed_size()
 
@@ -102,6 +111,7 @@ class XzCodec(_SizedLzmaCodec):
     stream_format = StreamFormat.XZ
     magic = (MagicSignature(0, b"\xfd7zXZ\x00", ArchiveFormat.XZ),)
 
+    @override
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
@@ -111,7 +121,7 @@ class XzCodec(_SizedLzmaCodec):
             return open_xz_head(
                 source,
                 config.probe_read_bound,
-                natives_for(config.process_isolation),
+                config.natives,
             )
         return XzDecompressorStream(
             source,
@@ -119,16 +129,19 @@ class XzCodec(_SizedLzmaCodec):
             seekable=config.seekable,
             decoder_limits=config.decoder_limits,
             report_trailing_data=config.report_trailing_data,
+            refuse_input_after_end=config.refuse_input_after_end,
             initial_index=config.seek_index,
-            natives=natives_for(config.process_isolation),
+            natives=config.natives,
         )
 
 
 class LzipCodec(_SizedLzmaCodec):
     codec = Codec.LZIP
+    checks_content = True
     stream_format = StreamFormat.LZIP
     magic = (MagicSignature(0, b"LZIP", ArchiveFormat.LZIP),)
 
+    @override
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
@@ -139,10 +152,11 @@ class LzipCodec(_SizedLzmaCodec):
             decoder_limits=config.decoder_limits,
             report_trailing_data=config.report_trailing_data,
             probe_read_bound=config.probe_read_bound,
-            natives=natives_for(config.process_isolation),
+            natives=config.natives,
             usage=config.usage,
         )
 
+    @override
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
         """Surface decompressed size and whole-member CRC-32 from one seekable index scan.
 
@@ -340,34 +354,34 @@ def _new_alone_decompressor(
 
 
 class LzmaAloneCodec(_LzmaErrorCodec):
-    """Legacy LZMA Alone (``.lzma``) — framed standalone stream, not raw FORMAT_RAW."""
+    """Legacy LZMA Alone (``.lzma``) — framed standalone stream, not raw FORMAT_RAW.
+
+    The stream takes ``refuse_input_after_end`` from the config, as every codec that
+    decodes through the default ``open`` does. No caller sets it for Alone today, since
+    no container uses Alone as a coder; one that does gets the same refusal as every
+    other codec.
+    """
 
     codec = Codec.LZMA_ALONE
+    codec_name = "lzma"
     stream_format = StreamFormat.LZMA_ALONE
     # No exact magic: the properties byte is too weak; recognition is by content probe.
 
-    def open(
-        self, source: CodecSource, params: CodecParams, config: StreamConfig
-    ) -> BinaryIO:
-        # A rewind re-decompresses from the start; the outer ArchiveStream warns (see
-        # rewind_warning).
-        return FramedDecompressorStream(
-            source,
-            functools.partial(
-                _new_alone_decompressor,
-                config.probe_read_bound,
-                config.decoder_limits,
-                natives_for(config.process_isolation),
-            ),
-            codec_name="lzma",
-            magic=_starts_alone_stream,
-            collector=config.collector,
-            report_trailing_data=config.report_trailing_data,
+    @override
+    def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
+        return _new_alone_decompressor(
+            config.probe_read_bound,
+            config.decoder_limits,
+            config.natives,
         )
 
-    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
-        return RewindWarning("lzma")
+    @override
+    def stream_start(self, params: CodecParams) -> StreamStart:
+        # No magic: a further stream is one whose header liblzma would decode.
+        del params
+        return _starts_alone_stream
 
+    @override
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
         header = ctx.peek_header(_ALONE_HEADER_SIZE)
         if len(header) < _ALONE_HEADER_SIZE:
@@ -376,6 +390,7 @@ class LzmaAloneCodec(_LzmaErrorCodec):
         if size != _ALONE_UNKNOWN_SIZE:
             member.size = size
 
+    @override
     def content_probe(
         self,
         prefix: bytes,
@@ -397,7 +412,7 @@ class LzmaAloneCodec(_LzmaErrorCodec):
         Completeness and the bounded decode share ``_decodes_sample``; Alone additionally
         requires a positive output length (an empty successful read is not a claim).
         """
-        if not _alone_header_plausible(prefix) or not self.available:
+        if not _alone_header_plausible(prefix) or not self.available():
             return False
         if _alone_payload_has_zero_run(prefix):
             return False
@@ -454,6 +469,7 @@ def decode_lzma_filter_properties(filter_id: int, props: bytes, *, what: str) ->
 class _RawLzmaCodec(_LzmaErrorCodec):
     """Raw LZMA1/LZMA2 (FORMAT_RAW + properties); container-only (no standalone stream)."""
 
+    @override
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
@@ -492,7 +508,7 @@ class _RawLzmaCodec(_LzmaErrorCodec):
         # there and DataAfterEndError here. ``LZMAFile`` would instead have started
         # a second raw stream on those bytes and delivered it as content. Raw LZMA
         # is container-only, so the stream always refuses them (``refuse_input_after_end``).
-        natives = natives_for(config.process_isolation)
+        natives = config.natives
         if params.unpack_size is None:
             return FramedDecompressorStream(
                 source,
@@ -500,7 +516,7 @@ class _RawLzmaCodec(_LzmaErrorCodec):
                     format=lzma.FORMAT_RAW, filters=filters
                 ),
                 codec_name="lzma",
-                magic=_no_second_lzma_stream,
+                magic=never_starts,
                 zero_padding=False,
                 collector=config.collector,
                 refuse_input_after_end=True,
@@ -516,12 +532,6 @@ class _RawLzmaCodec(_LzmaErrorCodec):
             codec_name="lzma",
             refuse_input_after_end=True,
         )
-
-
-def _no_second_lzma_stream(data: bytes) -> bool:
-    """A raw LZMA coder holds one stream: what follows its end starts no other."""
-    del data
-    return False
 
 
 # Input held back from liblzma until the source ends (see _LzmaToSizeDecoder): the
@@ -595,6 +605,17 @@ class _LzmaToSizeDecoder(BaseDecoder):
             format=lzma.FORMAT_RAW, filters=filters
         )
         self._produced = 0
+        # Delta filters in the chain (7z's Delta coders over LZMA1) turn the zeros
+        # that the range-coder check decodes into copies of earlier output, so the
+        # last ``sum(dist)`` bytes of output are kept (_decoded_zeros). The chain's
+        # other filters are LZMA itself, last: the 7z planner ends an LZMA1 chain
+        # before its first BCJ (sevenzip_pipeline._plan_lzma_family), and a filter dict
+        # without ``dist`` gets liblzma's default, 1.
+        self._deltas = [
+            f.get("dist", 1) for f in filters if f.get("id") == lzma.FILTER_DELTA
+        ]
+        self._history = sum(self._deltas)
+        self._tail = b""
         # Input not yet given to liblzma: the bytes held back, and input kept while
         # a zero output limit allowed no decoding.
         self._held = b""
@@ -618,6 +639,9 @@ class _LzmaToSizeDecoder(BaseDecoder):
     def _decode(self, data: bytes, limit: int) -> bytes:
         out = self._decomp.decompress(data, limit)
         self._produced += len(out)
+        if self._history and out:
+            keep = self._history
+            self._tail = out[-keep:] if len(out) >= keep else (self._tail + out)[-keep:]
         if self._decomp.eof:
             # An end marker: at the size, or before it.
             self._state = _DONE if self._produced == self._size else _ENDED_SHORT
@@ -657,11 +681,38 @@ class _LzmaToSizeDecoder(BaseDecoder):
             self._state = _DONE
             return
         else:
-            ok = not more.strip(b"\x00")
+            ok = more == self._decoded_zeros(len(more))
         if ok:
             self._state = _DONE
         else:
             self._surplus()
+
+    def _decoded_zeros(self, n: int) -> bytes:
+        """The first ``n`` bytes the chain outputs when LZMA decodes only zeros.
+
+        Zeros, unless Delta filters follow LZMA. A Delta decoder adds to each byte
+        the output ``dist`` bytes before it (a history that starts as zeros), and
+        that is invertible: its input is ``out[i] - out[i - dist]``. So the chain's
+        last ``sum(dist)`` bytes give every stage's last output bytes, outermost
+        (``filters[0]``, whose output is the chain's) first, and the zeros are run
+        through the stages from LZMA outwards.
+        """
+        if not self._history:
+            return bytes(n)
+        out = self._tail.rjust(self._history, b"\x00")
+        histories = []
+        for dist in self._deltas:
+            histories.append(out[-dist:])
+            out = bytes((out[i] - out[i - dist]) & 0xFF for i in range(dist, len(out)))
+        data = bytes(n)
+        for dist, history in zip(
+            reversed(self._deltas), reversed(histories), strict=True
+        ):
+            buf = bytearray(history)
+            for byte in data:
+                buf.append((byte + buf[-dist]) & 0xFF)
+            data = bytes(buf[dist:])
+        return data
 
     def _probe(self, data: bytes) -> None:
         """Look for an end marker in ``data``, input after the output reached size.
@@ -795,6 +846,7 @@ class _LzmaToSizeDecoder(BaseDecoder):
         return self._state == _DONE and not self._input_after_end
 
     @property
+    @override
     def needs_input(self) -> bool:
         if self._state != _RUN:
             return True

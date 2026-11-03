@@ -17,6 +17,7 @@ import lzma
 import random
 import re
 import shutil
+import subprocess
 import sys
 import sysconfig
 import types
@@ -53,7 +54,9 @@ from archivey.internal.streams.codecs import (
     open_codec_stream,
     resolve_codec,
     stream_codec,
+    stream_codecs,
 )
+from archivey.internal.streams.codecs.callers_source import mark_callers_source
 from archivey.internal.streams.codecs.stored_codec import StoredCodec
 from archivey.internal.streams.codecs.unix_compress_decoder import (
     _MAX_ENTRY_TAIL,
@@ -61,7 +64,7 @@ from archivey.internal.streams.codecs.unix_compress_decoder import (
     LzwState,
 )
 from archivey.internal.streams.verify import VerifyingStream
-from archivey.types import HashAlgorithm, StreamFormat
+from archivey.types import HashAlgorithm, OptionalLibrary, StreamFormat
 from tests.conftest import (
     CPYTHON,
     UNUSED_UNDER_PYPY_NAMES,
@@ -69,12 +72,16 @@ from tests.conftest import (
     requires,
     requires_binary,
     requires_zstd,
+    run_7z,
+    sevenzip_version,
+    sevenzip_version_text,
     zstd_backend,
 )
 from tests.corruption_util import (
     is_corruption_not_truncation,
     raises_corruption_not_truncation,
 )
+from tests.source_trees import source_files
 from tests.streams_util import (
     NonSeekableBytesIO,
     compress_lzma2_raw,
@@ -738,6 +745,23 @@ def test_a_rewind_after_a_failed_read_all_recovers_the_prefix(codec: Codec) -> N
         assert stream.read(1000) == _TRUNCATION_PAYLOAD[:1000]
 
 
+@pytest.mark.parametrize("codec", _TRUNCATED_CODECS)
+def test_a_seek_in_place_after_a_failed_read_restarts_the_decoder(
+    codec: Codec,
+) -> None:
+    """With no verdict kept, a seek to where the stream stands after a failed read
+    still reaches the decoder, which restarts: the next read returns data again."""
+    source = io.BytesIO(_truncated(codec, "tail"))
+    with open_codec_stream(
+        codec, source, config=_STDLIB_SEEKABLE, repeat_verdict=False
+    ) as stream:
+        assert stream.read(1000) == _TRUNCATION_PAYLOAD[:1000]
+        with pytest.raises(TruncatedError):
+            stream.read()
+        assert stream.seek(stream.tell()) == 1000
+        assert stream.read(500) == _TRUNCATION_PAYLOAD[1000:1500]
+
+
 @pytest.mark.parametrize("chunked", [False, True], ids=["read-all", "read-n"])
 @pytest.mark.parametrize("codec", _TRUNCATED_CODECS)
 def test_a_read_after_the_truncation_error_raises_again(
@@ -1066,6 +1090,7 @@ def _lzw_compress(
     block_mode: bool = False,
     clear_every: int = 0,
     table_limit: int | None = None,
+    nine_bit_widens: bool = False,
 ) -> bytes:
     """An LZW encoder for ``compress`` streams, without block mode by default.
 
@@ -1089,6 +1114,12 @@ def _lzw_compress(
     ``table_limit`` is the last free code the table may take, ``2 ** max_bits - 1`` by
     default. ncompress 5.0's ``-b9`` bug is ``table_limit=512``: a code that does not
     fit in 9 bits, written anyway.
+
+    ``nine_bit_widens`` writes a 9-bit stream the way compress 4.0 (1985) does: once the
+    table is full, the code after the one written with the table full starts a padded
+    10-bit era, though no value reaches 512. Its output matched a build of compress 4.0
+    (ncompress repository commit ``6235344``) byte for byte at ``-b9`` on inputs short
+    enough that compress 4.0 writes no CLEAR.
     """
     out = bytearray(b"\x1f\x9d" + bytes([max_bits | (0x80 if block_mode else 0)]))
     width, in_group, bits, nbits = 9, 0, 0, 0
@@ -1097,6 +1128,7 @@ def _lzw_compress(
     last_free = (1 << max_bits) - 1 if table_limit is None else table_limit
     table = {bytes([i]): i for i in range(256)}
     codes = 0
+    codes_with_full_table = 0
 
     def put(code: int) -> None:
         nonlocal bits, nbits, in_group
@@ -1109,8 +1141,12 @@ def _lzw_compress(
             nbits -= 8
 
     def emit(code: int) -> None:
-        nonlocal width, codes
-        if free_code > 1 << width and width < max_bits:
+        nonlocal width, codes, codes_with_full_table
+        widen = free_code > 1 << width and width < max_bits
+        if nine_bit_widens and width == max_bits == 9 and free_code > last_free:
+            codes_with_full_table += 1
+            widen = codes_with_full_table == 2
+        if widen:
             while in_group:
                 put(0)
             width += 1
@@ -1134,6 +1170,7 @@ def _lzw_compress(
                 put(0)
             width = 9
             free_code = first_free
+            codes_with_full_table = 0
             table = {bytes([i]): i for i in range(256)}
     if prefix:
         emit(table[prefix])
@@ -1188,15 +1225,108 @@ def test_unix_compress_non_block_mode_streams_match_gzip(
         assert _lzw_decode_in_chunks(compressed, chunk) == data
 
 
-def _seven_zip_decompress(compressed: bytes, tmp_path: Path) -> bytes:
-    """``7z``'s reading of a ``.Z`` stream, through a file in ``tmp_path``."""
-    import subprocess
+def _seven_zip_decompress(
+    compressed: bytes, tmp_path: Path, program: str = "7z"
+) -> bytes:
+    """``program``'s reading of a ``.Z`` stream, through a file in ``tmp_path``.
 
+    A refusal fails with the 7-Zip version and its stderr, so a CI log says which
+    7-Zip read the stream and why it stopped."""
     path = tmp_path / "data.Z"
     path.write_bytes(compressed)
-    return subprocess.run(
-        ["7z", "e", "-so", str(path)], capture_output=True, check=True
-    ).stdout
+    result = run_7z(["e", "-so", str(path)], program=program)
+    if result.returncode != 0:
+        pytest.fail(
+            f"{program} (7-Zip {sevenzip_version_text(sevenzip_version(program))}) exited {result.returncode} on "
+            f"{path.name}: {result.stderr.decode(errors='replace').strip()}"
+        )
+    return result.stdout
+
+
+# 7-Zip 26.05 added a 9-bit path "compatible with the original Z decoder": once a 9-bit
+# table fills, it skips the code-group padding and reads codes 10 bits wide (values stay
+# below 512), as compress 4.0 writes them. 7-Zip up to 26.04 keeps 9-bit codes, the
+# layout ncompress 4.2 to 5.0 writes. archivey reads both (``unix-compress.md`` §3), so
+# each 7-Zip checks the layout it reads.
+_SEVEN_ZIP_WIDENS_NINE_BITS = (26, 5)
+
+
+def _requires_nine_bit_7z() -> pytest.MarkDecorator:
+    """Skip unless ``7z`` is a 7-Zip that keeps 9-bit codes once the table fills."""
+    version = sevenzip_version()
+    return pytest.mark.skipif(
+        version is not None and version >= _SEVEN_ZIP_WIDENS_NINE_BITS,
+        reason=(
+            f"7z is 7-Zip {sevenzip_version_text(version)}, which widens a full 9-bit"
+            " .Z table to 10 bits"
+        ),
+    )
+
+
+def _seven_zip_widening_nine_bits() -> str | None:
+    """The first of ``7zz`` and ``7z`` that is 7-Zip 26.05 or later, or None."""
+    for program in ("7zz", "7z"):
+        version = sevenzip_version(program)
+        if version is not None and version >= _SEVEN_ZIP_WIDENS_NINE_BITS:
+            return program
+    return None
+
+
+@pytest.mark.parametrize(
+    ("banner", "version", "text", "widens"),
+    [
+        ("7-Zip 23.01 (x64) : Copyright (c) 1999-2023", (23, 1), "23.01", False),
+        ("7-Zip (z) 26.05 (x64) : Copyright (c) 1999-2026", (26, 5), "26.05", True),
+        ("7-Zip (a) 26.04 (x64) : Copyright (c) 1999-2026", (26, 4), "26.04", False),
+        # p7zip numbers its own releases; 16.02 must stay below the 7-Zip threshold.
+        ("p7zip Version 16.02 (locale=C,Utf16=off)", (16, 2), "16.02", False),
+        # An older banner shape is unknown, and an unknown 7z keeps the oracle running.
+        ("7-Zip [64] 16.02 : Copyright (c) 1999-2016", None, "unknown version", False),
+    ],
+)
+def test_sevenzip_version_reads_the_banner(
+    monkeypatch: pytest.MonkeyPatch,
+    banner: str,
+    version: tuple[int, int] | None,
+    text: str,
+    widens: bool,
+) -> None:
+    """The version that decides whether the 9-bit oracle tests run."""
+    from tests import conftest
+
+    monkeypatch.setattr(conftest.shutil, "which", lambda _name: "7z")
+    monkeypatch.setattr(
+        conftest,
+        "run_7z",
+        lambda *_a, **_k: subprocess.CompletedProcess(["7z", "i"], 0, f"\n{banner}\n"),
+    )
+    conftest.sevenzip_version.cache_clear()
+    try:
+        assert conftest.sevenzip_version() == version
+    finally:
+        conftest.sevenzip_version.cache_clear()
+    assert conftest.sevenzip_version_text(version) == text
+    assert (version is not None and version >= _SEVEN_ZIP_WIDENS_NINE_BITS) is widens
+
+
+def test_sevenzip_version_probe_that_does_not_finish_is_reported(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A ``7z i`` that raises is written to stderr and answers None."""
+    from tests import conftest
+
+    monkeypatch.setattr(conftest.shutil, "which", lambda _name: "7z")
+
+    def fail(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd=["7z", "i"], timeout=30)
+
+    monkeypatch.setattr(conftest, "run_7z", fail)
+    conftest.sevenzip_version.cache_clear()
+    try:
+        assert conftest.sevenzip_version() is None
+    finally:
+        conftest.sevenzip_version.cache_clear()
+    assert "7z i did not finish" in capsys.readouterr().err
 
 
 # (block_mode, clear_every): without block mode, block mode with no CLEAR, and block
@@ -1204,38 +1334,238 @@ def _seven_zip_decompress(compressed: bytes, tmp_path: Path) -> bytes:
 _NINE_BIT_LAYOUTS = [(False, 0), (True, 0), (True, 300)]
 
 
-@requires_binary("7z")
+@pytest.mark.parametrize("widens", [True, False], ids=["compress-4.0", "ncompress"])
 @pytest.mark.parametrize(("block_mode", "clear_every"), _NINE_BIT_LAYOUTS)
 @pytest.mark.parametrize("payload", sorted(_NON_BLOCK_PAYLOADS))
 def test_unix_compress_nine_bit_streams_decode_exactly(
-    payload: str, block_mode: bool, clear_every: int, tmp_path: Path
+    payload: str, block_mode: bool, clear_every: int, widens: bool
 ) -> None:
-    """At 9 bits the table fills and codes stay 9 bits wide; after a CLEAR the table
-    restarts at 9 bits. ``7z`` is the reference. GNU gzip is not: it moves to 10-bit
-    codes when the table fills even at 9 bits, and refuses these streams. See
-    ``dev-docs/formats/unix-compress.md`` §3."""
+    """At 9 bits the table fills. compress 4.0 then writes 10-bit codes, ncompress keeps
+    9-bit ones; after a CLEAR the table restarts at 9 bits. Both layouts decode to their
+    input whatever the feed size, down to one byte, which feeds the layout probe a
+    byte at a time. See ``dev-docs/formats/unix-compress.md`` §3."""
     data = _NON_BLOCK_PAYLOADS[payload]
-    compressed = _lzw_compress(data, 9, block_mode=block_mode, clear_every=clear_every)
-    assert _seven_zip_decompress(compressed, tmp_path) == data
+    compressed = _lzw_compress(
+        data, 9, block_mode=block_mode, clear_every=clear_every, nine_bit_widens=widens
+    )
     for chunk in (1 << 20, 4097, 7):
         assert _lzw_decode_in_chunks(compressed, chunk) == data
+    # A byte at a time is slow, so that pass reads the first 20 000 input bytes.
+    short = data[:20_000]
+    short_compressed = _lzw_compress(
+        short, 9, block_mode=block_mode, clear_every=clear_every, nine_bit_widens=widens
+    )
+    assert _lzw_decode_in_chunks(short_compressed, 1) == short
+
+
+@pytest.mark.parametrize(("block_mode", "clear_every"), _NINE_BIT_LAYOUTS)
+@pytest.mark.parametrize("payload", sorted(_NON_BLOCK_PAYLOADS))
+def test_unix_compress_nine_bit_compress_4_0_layout_matches_gzip(
+    payload: str, block_mode: bool, clear_every: int
+) -> None:
+    """GNU gzip reads compress 4.0's 9-bit layout, as archivey does."""
+    data = _NON_BLOCK_PAYLOADS[payload]
+    compressed = _lzw_compress(
+        data, 9, block_mode=block_mode, clear_every=clear_every, nine_bit_widens=True
+    )
+    reference = _gnu_gzip_decompress(compressed)
+    if reference is None:
+        pytest.skip("needs GNU gzip as the .Z reference")
+    assert reference == data
+
+
+@pytest.mark.skipif(
+    _seven_zip_widening_nine_bits() is None, reason="needs 7-Zip 26.05 or later"
+)
+@pytest.mark.parametrize(("block_mode", "clear_every"), _NINE_BIT_LAYOUTS)
+def test_unix_compress_nine_bit_compress_4_0_layout_matches_7zip_26_05(
+    block_mode: bool, clear_every: int, tmp_path: Path
+) -> None:
+    """7-Zip 26.05 reads compress 4.0's 9-bit layout, as archivey does."""
+    program = _seven_zip_widening_nine_bits()
+    assert program is not None
+    data = _NON_BLOCK_PAYLOADS["random"]
+    compressed = _lzw_compress(
+        data, 9, block_mode=block_mode, clear_every=clear_every, nine_bit_widens=True
+    )
+    assert _seven_zip_decompress(compressed, tmp_path, program) == data
 
 
 @requires_binary("7z")
-def test_unix_compress_ncompress_5_0_nine_bit_damage_reads_as_wrong_bytes(
+@_requires_nine_bit_7z()
+@pytest.mark.parametrize(("block_mode", "clear_every"), _NINE_BIT_LAYOUTS)
+@pytest.mark.parametrize("payload", sorted(_NON_BLOCK_PAYLOADS))
+def test_unix_compress_nine_bit_streams_match_7zip_up_to_26_04(
+    payload: str, block_mode: bool, clear_every: int, tmp_path: Path
+) -> None:
+    """``7z`` up to 26.04 reads ncompress's 9-bit layout, as archivey does."""
+    data = _NON_BLOCK_PAYLOADS[payload]
+    compressed = _lzw_compress(data, 9, block_mode=block_mode, clear_every=clear_every)
+    assert _seven_zip_decompress(compressed, tmp_path) == data
+
+
+def _nine_bit_fill_offset(block_mode: bool) -> int:
+    """Where the first 9-bit era ends: the header, then 256 codes (257 without block
+    mode, padded to 264) of 9 bits."""
+    codes = 256 if block_mode else 264
+    return 3 + codes * 9 // 8
+
+
+@pytest.mark.parametrize("block_mode", [True, False])
+def test_unix_compress_nine_bit_short_tail_after_the_fill(block_mode: bool) -> None:
+    """A source that ends inside the layout probe is decided on what it has, and the
+    original layout wins a tie. So compress 4.0's layout reads back from every end
+    point near the fill. ncompress's reads back once a probe's worth of codes follows
+    the fill; with only a few codes after it, it can be read as the 10-bit layout."""
+    data = random.Random(1).randbytes(400)  # one code per byte until the table fills
+    probe_codes = 32
+    for end in range(250, len(data)):
+        prefix = data[:end]
+        for widens in (True, False):
+            encoded = _lzw_compress(
+                prefix, 9, block_mode=block_mode, nine_bit_widens=widens
+            )
+            if not widens and end < 257 + 3 + probe_codes:
+                continue
+            for chunk in (1 << 20, 1):
+                assert _lzw_decode_in_chunks(encoded, chunk) == prefix, (end, widens)
+
+
+# Few distinct bytes keep the codes after a CLEAR small, which is where the probe has
+# the least to go on: a reading off by a byte still sees literals.
+_LOW_VARIETY_PAYLOADS = {
+    "four-symbol": bytes(random.Random(3).choices(range(4), k=30_000)),
+    "nine-symbol": bytes(random.Random(5).choices(b"abcdefgh ", k=30_000)),
+}
+
+
+@pytest.mark.parametrize("widens", [True, False], ids=["compress-4.0", "ncompress"])
+@pytest.mark.parametrize("payload", ["text", "random", "four-symbol", "nine-symbol"])
+def test_unix_compress_nine_bit_clear_inside_the_probe(
+    payload: str, widens: bool
+) -> None:
+    """A CLEAR soon after a 9-bit table fills sends both layouts back to 9-bit codes
+    inside the probe. Both are still told apart for every CLEAR position measured here,
+    the very first code after the fill included, where an ncompress CLEAR reads as a
+    CLEAR in the 10-bit layout too."""
+    data = _LOW_VARIETY_PAYLOADS.get(payload) or _NON_BLOCK_PAYLOADS[payload][:30_000]
+    for clear_every in range(250, 320):
+        compressed = _lzw_compress(
+            data, 9, block_mode=True, clear_every=clear_every, nine_bit_widens=widens
+        )
+        assert _lzw_decode_in_chunks(compressed, 1 << 20) == data, clear_every
+
+
+def test_unix_compress_nine_bit_ten_bit_era_refuses_code_512() -> None:
+    """In compress 4.0's 10-bit era the table stays at 511 entries, so code 512 has no
+    entry to stand for and is corrupt."""
+    data = _NON_BLOCK_PAYLOADS["random"][:2000]
+    compressed = bytearray(
+        _lzw_compress(data, 9, block_mode=True, nine_bit_widens=True)
+    )
+    fill = _nine_bit_fill_offset(True)
+    # The probe must still see the 10-bit layout, so the bad code goes after it.
+    at = fill + 80
+    value = int.from_bytes(compressed[at : at + 10], "little")
+    value = (value & ~((1 << 10) - 1)) | 512
+    compressed[at : at + 10] = value.to_bytes(10, "little")
+    with pytest.raises(CorruptionError, match="invalid code 512"):
+        _lzw_decode_in_chunks(bytes(compressed), 1 << 20)
+
+
+@pytest.mark.parametrize("widens", [True, False], ids=["compress-4.0", "ncompress"])
+@pytest.mark.parametrize(("block_mode", "clear_every"), _NINE_BIT_LAYOUTS)
+@pytest.mark.parametrize("max_length", [7, 1000, 4096])
+def test_unix_compress_output_budget_holds_across_the_nine_bit_fill(
+    max_length: int, block_mode: bool, clear_every: int, widens: bool
+) -> None:
+    """A budgeted ``feed`` stops at the first code that reaches ``max_length``, so it
+    overshoots by less than one code's string (at most 256 bytes at 9 bits). That holds
+    when one call runs past a 9-bit table fill into the next step, which gets only
+    what is left of the budget. Everything is buffered up front, so each call's size is
+    set by the budget alone."""
+    from archivey.internal.streams.codecs.unix_compress_decoder import LzwState
+
+    data = _NON_BLOCK_PAYLOADS["text"][:60_000]
+    compressed = _lzw_compress(
+        data, 9, block_mode=block_mode, clear_every=clear_every, nine_bit_widens=widens
+    )
+    state = LzwState()
+    chunks = [state.feed(compressed, max_length=max_length)[0]]
+    while not state.needs_input:
+        chunks.append(state.feed(b"", max_length=max_length)[0])
+    largest = max(len(chunk) for chunk in chunks)
+    assert largest <= max_length + 256, largest
+    assert b"".join(chunks) + state.flush()[0] == data
+
+
+def test_unix_compress_nine_bit_layout_survives_a_seek_back() -> None:
+    """A decoder recreated at a CLEAR point keeps the layout the stream was read with."""
+    data = _NON_BLOCK_PAYLOADS["text"][:60_000]
+    compressed = _lzw_compress(
+        data, 9, block_mode=True, clear_every=2000, nine_bit_widens=True
+    )
+    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(compressed)) as stream:
+        assert stream.read() == data
+        for offset in (len(data) - 1000, 40_000, 5, 0):
+            stream.seek(offset)
+            assert stream.read(500) == data[offset : offset + 500]
+
+
+@pytest.mark.skipif(
+    _seven_zip_widening_nine_bits() is None, reason="needs 7-Zip 26.05 or later"
+)
+def test_unix_compress_nine_bit_full_table_is_refused_by_7zip_26_05(
     tmp_path: Path,
 ) -> None:
-    """ncompress 5.0's ``-b9`` bug: the table takes code 512, which is later written in
-    9 bits. The stream decodes with no error to wrong bytes, the same as ``7z`` reads,
-    because nothing in the format marks the damage (``unix-compress.md`` §3)."""
+    """7-Zip 26.05 reads codes after a full 9-bit table as 10 bits wide, so a stream
+    that keeps 9-bit codes, which archivey decodes to its input, is a data error there.
+    The same 7-Zip reads a 16-bit stream, so the refusal is about 9 bits, not ``.Z``.
+    If 7-Zip goes back to 9-bit codes this fails, and the skip above can go."""
+    program = _seven_zip_widening_nine_bits()
+    assert program is not None
     data = _NON_BLOCK_PAYLOADS["random"]
-    damaged = _lzw_compress(data, 9, block_mode=True, table_limit=512)
+    control = tmp_path / "control"
+    control.mkdir()
+    assert _seven_zip_decompress(_lzw_compress(data, 16), control, program) == data
+    compressed = _lzw_compress(data, 9, block_mode=True)
+    assert _lzw_decode_in_chunks(compressed, 1 << 20) == data
+    path = tmp_path / "data.Z"
+    path.write_bytes(compressed)
+    result = run_7z(["e", "-so", str(path)], program=program)
+    assert result.returncode == 2, result
+    assert b"Data Error" in result.stderr
+
+
+def _ncompress_5_0_nine_bit_damage() -> tuple[bytes, bytes]:
+    """(the input, its 9-bit stream with ncompress 5.0's extra code 512)."""
+    data = _NON_BLOCK_PAYLOADS["random"]
+    return data, _lzw_compress(data, 9, block_mode=True, table_limit=512)
+
+
+def test_unix_compress_ncompress_5_0_nine_bit_damage_reads_as_wrong_bytes() -> None:
+    """ncompress 5.0's ``-b9`` bug: the table takes code 512, which is later written in
+    9 bits. The stream decodes with no error to wrong bytes, because nothing in the
+    format marks the damage (``unix-compress.md`` §3)."""
+    data, damaged = _ncompress_5_0_nine_bit_damage()
     assert damaged != _lzw_compress(data, 9, block_mode=True)
     state = LzwState()
     out, _ = state.feed(damaged)
     tail, _ = state.flush()
     assert out + tail != data
     assert state.truncation is None
+
+
+@requires_binary("7z")
+@_requires_nine_bit_7z()
+def test_unix_compress_ncompress_5_0_nine_bit_damage_matches_7zip_up_to_26_04(
+    tmp_path: Path,
+) -> None:
+    """``7z`` up to 26.04 reads the damaged stream to the same wrong bytes as archivey."""
+    _data, damaged = _ncompress_5_0_nine_bit_damage()
+    state = LzwState()
+    out, _ = state.feed(damaged)
+    tail, _ = state.flush()
     assert out + tail == _seven_zip_decompress(damaged, tmp_path)
 
 
@@ -2237,9 +2567,9 @@ def test_verify_sized_readall_propagates_memoryerror_not_truncation() -> None:
 
 def test_archive_stream_passthrough_full_count() -> None:
     """Unverified ArchiveStream.read(n) is n-or-terminal over a full-count inner."""
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
-    stream = ArchiveStream(
+    stream = ArchiveStreamImpl(
         lambda: io.BytesIO(CONTENT),
         translate=lambda _exc: None,
     )
@@ -2256,7 +2586,7 @@ def test_archive_stream_passthrough_read_stops_on_short_inner() -> None:
     deferred truncation into the same call and drop the recoverable prefix. An inner
     that shorts mid-stream is fixed by the ``ArchiveSource`` in front.
     """
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
     class ShortOnce(io.BytesIO):
         """Returns at most 3 bytes per read, but empty only at true EOF."""
@@ -2266,7 +2596,7 @@ def test_archive_stream_passthrough_read_stops_on_short_inner() -> None:
                 return super().read(n)
             return super().read(min(3, n)) if n else b""
 
-    stream = ArchiveStream(
+    stream = ArchiveStreamImpl(
         lambda: ShortOnce(CONTENT),
         translate=lambda _exc: None,
     )
@@ -2850,10 +3180,10 @@ def test_unix_compress_truncated_close_quiet_and_size_unknown() -> None:
 
 def test_verify_fused_archive_stream_slurp_raises() -> None:
     """Fused MemberVerifier on ArchiveStream: read() raises on bad CRC (not close)."""
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
     bad = crc32_digest(zlib.crc32(CONTENT) ^ 0xFFFF)
-    stream = ArchiveStream(
+    stream = ArchiveStreamImpl(
         lambda: io.BytesIO(CONTENT),
         translate=lambda _exc: None,
         expected_hashes={HashAlgorithm.CRC32: bad},
@@ -2912,6 +3242,9 @@ def test_absent_codec_backend_hint_is_installable(
     with pytest.raises(PackageNotInstalledError) as ei:
         open_codec_stream(codec, io.BytesIO(b""))
     _assert_hint_is_installable(str(ei.value))
+    assert requirement is not None
+    assert ei.value.missing == (requirement,)
+    assert isinstance(requirement.name, OptionalLibrary)
 
 
 @pytest.fixture
@@ -3058,14 +3391,14 @@ def test_an_unused_package_reports_its_reason_on_every_channel(
 def _rapidgzip_rewind_messages(config: StreamConfig) -> list[str]:
     """The rewind report for a seek back to 0 in gzip and bzip2, the two sites that
     name rapidgzip."""
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
     warnings = [
         codecs_module.rapidgzip_select._rapidgzip_rewind_warning("gzip", config),
         stream_codec(Codec.BZIP2).rewind_warning(config),
     ]
     return [
-        ArchiveStream._rewind_message(w, 5_000_000, 0, 5_000_000)
+        ArchiveStreamImpl._rewind_message(w, 5_000_000, 0, 5_000_000)
         for w in warnings
         if w is not None
     ]
@@ -3109,6 +3442,30 @@ def test_rewind_report_gives_the_reason_rapidgzip_is_unused(
         ), message
 
 
+@pytest.mark.parametrize("present", [False, True], ids=["absent", "installed"])
+def test_rewind_report_gives_the_policy_when_rapidgzip_is_excluded(
+    monkeypatch: pytest.MonkeyPatch, present: bool
+) -> None:
+    """Excluded, rapidgzip is reported like a rapidgzip archivey does not use: the
+    report gives the policy, not install advice or the index."""
+    deps = codecs_module.deps
+    monkeypatch.setattr(deps, "UNDER_PYPY", False)
+    monkeypatch.setattr(
+        deps, "rapidgzip", deps.LazyOptional("rapidgzip", present=present)
+    )
+    messages = _rapidgzip_rewind_messages(
+        StreamConfig(
+            seekable=True, excluded_libraries=frozenset({OptionalLibrary.RAPIDGZIP})
+        )
+    )
+    assert len(messages) == 2
+    for message in messages:
+        assert message.endswith(
+            "The 'rapidgzip' accelerator is not available: "
+            "ArchiveyConfig.formats.exclude_libraries turns it off."
+        ), message
+
+
 def test_absent_crypto_hint_is_installable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(crypto, "_crypto_available", lambda: False)
     with pytest.raises(PackageNotInstalledError) as ei:
@@ -3130,6 +3487,21 @@ def test_conftest_names_the_same_unused_packages_as_deps() -> None:
     assert set(UNUSED_UNDER_PYPY_NAMES) == set(codecs_module.deps._UNUSED_UNDER_PYPY)
 
 
+def _missing_component_calls() -> Iterator[tuple[str, ast.Call]]:
+    """Every ``MissingComponent(...)`` call with a positional name, in archivey and in
+    the plugin packages of this repository."""
+    for rel, path in source_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "MissingComponent"
+                and node.args
+            ):
+                yield f"{rel}:{node.lineno}", node
+
+
 def test_every_requirement_on_an_unused_package_carries_its_reason() -> None:
     """Each ``MissingComponent`` naming a package in ``deps._UNUSED_UNDER_PYPY`` passes
     ``reason=deps.unused_reason(<name>)``, so a read under PyPy gives the reason and not
@@ -3137,32 +3509,127 @@ def test_every_requirement_on_an_unused_package_carries_its_reason() -> None:
 
     Read from the source: the requirement is built when its module is imported, and on
     CPython both the argument and its default are ``""``, so a live object cannot tell.
+    A plugin package cannot call archivey's internal ``unused_reason``, so there any
+    ``reason=`` will do: it must say why itself.
     """
-    unused = set(codecs_module.deps._UNUSED_UNDER_PYPY)
-    src = Path(__file__).resolve().parent.parent / "src"
+    # Member *names* (``"LZ4"``), which is what ``OptionalLibrary.LZ4`` unparses to
+    # once its prefix is cut; the members' values are the package names.
+    unused_member_names = {lib.name for lib in codecs_module.deps._UNUSED_UNDER_PYPY}
     seen: set[str] = set()
     offenders = []
-    for path in sorted(src.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "MissingComponent"
-                and node.args
-                and isinstance(node.args[0], ast.Constant)
-                and node.args[0].value in unused
-            ):
-                continue
-            name = node.args[0].value
-            seen.add(name)
-            reason = next((k.value for k in node.keywords if k.arg == "reason"), None)
-            if reason is None or ast.unparse(reason) != f"deps.unused_reason({name!r})":
-                offenders.append(f"{path.relative_to(src)}:{node.lineno}: {name}")
+    for where, node in _missing_component_calls():
+        member = ast.unparse(node.args[0])
+        name = member.removeprefix("OptionalLibrary.")
+        if name not in unused_member_names:
+            continue
+        seen.add(name)
+        reason = next((k.value for k in node.keywords if k.arg == "reason"), None)
+        in_archivey = where.startswith("src/archivey/")
+        if reason is None or (
+            in_archivey and ast.unparse(reason) != f"deps.unused_reason({member})"
+        ):
+            offenders.append(f"{where}: {name}")
     assert not offenders, "requirement without its unused reason:\n" + "\n".join(
         offenders
     )
-    assert seen == unused, f"no requirement found for {sorted(unused - seen)}"
+    assert seen == unused_member_names, (
+        f"no requirement found for {sorted(unused_member_names - seen)}"
+    )
+
+
+def test_archivey_names_its_own_packages_by_the_member() -> None:
+    """The maintainer's rule (2026-10-28): a ``MissingComponent`` for one of
+    archivey's optional packages names it by its ``OptionalLibrary`` member, not a
+    string, so the name cannot drift from what ``exclude_libraries`` accepts."""
+    values = set(OptionalLibrary)
+    offenders = [
+        f"{where}: {node.args[0].value!r}"
+        for where, node in _missing_component_calls()
+        if isinstance(node.args[0], ast.Constant) and node.args[0].value in values
+    ]
+    assert not offenders, "a package named by a string:\n" + "\n".join(offenders)
+
+
+# What archivey imports outside the standard library that is not an optional package
+# of its own, with why.
+_NOT_OPTIONAL_LIBRARIES = {
+    "__pypy__": "PyPy's own module, for memory pressure",
+    "_typeshed": "type-checking stubs, imported only under TYPE_CHECKING",
+    "typing_extensions": "the type checkers' override, imported only under TYPE_CHECKING",
+    "tqdm": "the CLI's progress bar, a dependency of archivey-cli, not a decoder",
+}
+
+
+def _optional_library_of(module: str) -> OptionalLibrary | None:
+    """The member whose package ``module`` is, or is part of."""
+    for library in OptionalLibrary:
+        if module == library or module.startswith(f"{library}."):
+            return library
+    return None
+
+
+def _imported_modules(path: Path) -> Iterator[tuple[int, str]]:
+    """Each module ``path`` imports, by statement or by name, outside archivey."""
+    importers = {"import_module", "find_spec", "_optional", "LazyOptional"}
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        modules: list[str] = []
+        if isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            modules = [node.module]
+        elif isinstance(node, ast.Call) and node.args:
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+            first = node.args[0]
+            if name in importers and isinstance(first, ast.Constant):
+                modules = [str(first.value)]
+            elif (
+                name in importers
+                and isinstance(first, ast.Attribute)
+                and isinstance(first.value, ast.Name)
+                and first.value.id == "OptionalLibrary"
+            ):
+                # ``LazyOptional(OptionalLibrary.BROTLI)``: how ``deps.py`` names
+                # every optional library it loads lazily.
+                modules = [OptionalLibrary[first.attr].value]
+        for module in modules:
+            if module.split(".")[0] != "archivey":
+                yield node.lineno, module
+
+
+def test_every_optional_package_archivey_imports_is_an_optional_library() -> None:
+    """``OptionalLibrary`` lists exactly the optional packages archivey imports.
+
+    A package missing from it could not be turned off with
+    ``FormatPolicy(exclude_libraries=)``, and nothing else would say so. So every
+    module archivey imports outside the standard library, by an ``import`` statement or
+    by name through ``import_module``, ``find_spec``, ``_optional`` or
+    ``LazyOptional``, must belong to a member's package or be listed above with its
+    reason; and every member must be imported somewhere, so the list cannot keep a
+    package archivey no longer uses.
+    """
+    imported: set[OptionalLibrary] = set()
+    offenders = []
+    for rel, path in source_files():
+        if not rel.startswith("src/archivey/"):
+            continue
+        for line, module in _imported_modules(path):
+            library = _optional_library_of(module)
+            top = module.split(".")[0]
+            # A member first: ``compression.zstd`` is in the standard library on 3.14.
+            if library is not None:
+                imported.add(library)
+            elif (
+                top not in sys.stdlib_module_names
+                and top not in _NOT_OPTIONAL_LIBRARIES
+            ):
+                offenders.append(f"{rel}:{line}: {module}")
+    assert not offenders, "imported but not an OptionalLibrary:\n" + "\n".join(
+        offenders
+    )
+    assert imported == set(OptionalLibrary), (
+        f"never imported: {sorted(set(OptionalLibrary) - imported)}"
+    )
 
 
 def test_no_source_file_advertises_a_deleted_extra() -> None:
@@ -3320,30 +3787,26 @@ def test_a_cut_stream_names_its_format(codec: Codec, label: str) -> None:
         stream.read()
 
 
-@pytest.mark.parametrize(
-    ("codec", "label"),
-    [
-        (Codec.GZIP, "gzip"),
-        (Codec.BZIP2, "bzip2"),
-        (Codec.XZ, "LZMA/XZ"),
-        (Codec.ZLIB, "zlib"),
-        (Codec.DEFLATE, "deflate"),
-        (Codec.DEFLATE64, "deflate64"),
-        (Codec.ZSTD, "zstd"),
-        (Codec.LZ4, "lz4"),
-        (Codec.PPMD, "PPMd"),
-    ],
-)
-def test_a_translated_eof_names_its_format(codec: Codec, label: str) -> None:
-    """Every translator that maps a library's ``EOFError`` words it the same way.
+@pytest.mark.parametrize("sc", stream_codecs(), ids=lambda sc: sc.stream_name)
+def test_a_translated_eof_names_its_format(sc: StreamCodec) -> None:
+    """Every codec's translator maps a library's ``EOFError`` the same way, naming the
+    stream.
 
-    A cut stream does not reach every one of these arms: the archivey decoders for XZ,
+    A cut stream does not reach this arm for every codec: the archivey decoders for XZ,
     bzip2 and LZ4 raise their own ``TruncatedError`` first. The translator is called
     directly instead, which needs no optional library.
     """
-    translated = stream_codec(codec).translate(EOFError("cut"))
+    translated = resolve_codec(sc.codec).translate(EOFError("cut"))
     assert type(translated) is TruncatedError
-    assert str(translated) == f"{label} stream is truncated: cut"
+    assert str(translated) == f"{sc.stream_name} stream is truncated: cut"
+
+
+def test_an_eof_from_the_callers_source_is_not_translated() -> None:
+    """An ``EOFError`` marked as the caller's own source's reaches the caller as
+    itself, whichever codec read it."""
+    exc = EOFError("the caller's")
+    mark_callers_source(exc)
+    assert resolve_codec(Codec.GZIP).translate(exc) is None
 
 
 @requires("lz4")
@@ -3425,7 +3888,7 @@ def test_open_codec_raw_raises_what_open_codec_stream_raises(
     codec's translator itself. Every outcome, an open failure, a read failure or the
     bytes, must match ``open_codec_stream``'s.
     """
-    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
     from archivey.internal.streams.codecs import open_codec_raw
 
     kwargs = {} if params is None else {"params": params}
@@ -3436,7 +3899,7 @@ def test_open_codec_raw_raises_what_open_codec_stream_raises(
 
     def via_raw() -> bytes:
         opened = open_codec_raw(codec, io.BytesIO(data), **kwargs)
-        with ArchiveStream(
+        with ArchiveStreamImpl(
             lambda: opened.stream,
             translate=opened.translate,
             rewind_warning=opened.rewind_warning,

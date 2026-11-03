@@ -254,10 +254,8 @@ def test_cve_2026_6100_no_decoder_reuse_after_memory_error(
 
 # --- pyppmd: the decoder runs in a child process --------------------------------------
 #
-# CVE-2023-31102: an integer underflow and invalid read in 7-Zip's Ppmd7.c before
-# 23.00. pyppmd 1.3.1, the newest release, bundles Ppmd7.c dated 2017-04-03, from
-# before that fix, and pyppmd also crashes on some corrupt input (see
-# test_ppmd_crash_isolation.py). archivey's answer is ProcessIsolation.KNOWN_CRASHES,
+# pyppmd has a known issue on some corrupt input (see test_ppmd_crash_isolation.py).
+# archivey's answer is ProcessIsolation.KNOWN_CRASHES,
 # the default, which decodes every PPMd member in a child process: a crash or a wild
 # read there costs that member, not the caller. This test decodes under the stream
 # configuration built from the default ArchiveyConfig, so it fails if either the
@@ -265,7 +263,7 @@ def test_cve_2026_6100_no_decoder_reuse_after_memory_error(
 
 
 @requires("pyppmd")
-def test_cve_2023_31102_ppmd_decodes_in_a_child_by_default(
+def test_ppmd_decodes_in_a_child_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from tests.test_ppmd_raw_streams import _MEM, _ORDER, _encode_ppmd7

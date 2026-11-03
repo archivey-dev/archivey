@@ -170,7 +170,10 @@ duplicate-name rule (`archive-data-model`): the later one is current.
 In the Rock Ridge namespace a record whose System Use area carries no Rock Ridge
 entries SHALL still be listed, under its ISO 9660 identifier (version and
 empty-extension dot removed), with `MEMBER_HEADER_RECORD_SKIPPED` emitted and
-attached to it.
+attached to it. A record whose `NM` entries spell an empty name SHALL be listed the
+same way, with `MEMBER_HEADER_RECORD_SKIPPED` and `record="NM"`, as Linux's isofs
+falls back; an `NM` entry with more than one of its CONTINUE, CURRENT and PARENT flags
+SHALL end the record's System Use area there rather than refuse the image.
 
 In the Rock Ridge namespace the relocation directory (a root-level directory
 every child of which is a relocated directory, its `..` carrying a PL record)
@@ -194,6 +197,8 @@ SHALL NOT be listed; the relocated subtrees appear at their logical place.
 | Directory record `DUP`, then a file record `DUP` | `DUP/` and the file `DUP` both list, as 7-Zip lists them |
 | File record `DUP` then directory `DUP`, or two directories `DUP` | `CorruptionError` at open (pycdlib refuses the duplicate name) |
 | Rock Ridge image, one record with its System Use area zeroed | Listed under its ISO 9660 name; `MEMBER_HEADER_RECORD_SKIPPED` attached |
+| Rock Ridge directory `top/dddd` (holding `in`) whose `NM` spells an empty name | `top/`, `top/DDDD/`, `top/DDDD/in`; `MEMBER_HEADER_RECORD_SKIPPED` with `record="NM"` on `top/DDDD/` |
+| Rock Ridge directory whose `NM` flags are 3, 5, 6 or 7 | The image lists; that member carries `MEMBER_HEADER_RECORD_SKIPPED` with `list_truncated` |
 | Directory record pointing back at an ancestor extent | Listed once there; not descended again |
 | Rock Ridge tree 12 directories deep | Logical tree lists in full; no `rr_moved` member |
 

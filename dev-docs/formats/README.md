@@ -14,11 +14,17 @@ For a format or topic that has no page yet, point briefs at
 Formats:
 
 - [`zip.md`](zip.md) — the first page, and the worked example for the shape below.
-- [`rar.md`](rar.md) — the only format whose read path crosses a process boundary.
+- [`rar.md`](rar.md) — the only format whose read path runs an external program.
 - [`7z.md`](7z.md) — the format whose header is a decode program.
 - [`tar.md`](tar.md) — no index, archivey's own header walker, and how archivey decides
   why a walk ended.
 - [`iso.md`](iso.md) — a filesystem read through a library written to author it.
+- [`squashfs.md`](squashfs.md) — a compressed filesystem image, its index after the
+  data, its blocks decoded by archivey's codecs.
+- [`cpio.md`](cpio.md) — initramfs and RPM payloads, four header variants, and hard
+  links whose data, in newc and crc, comes with the last name.
+- [`ar.md`](ar.md) — static libraries and `.deb`, a built-in written against
+  `archivey.formats`.
 - [`dmg.md`](dmg.md) — a UDIF image, recognised by the `koly` block and refused.
 - [`single-file.md`](single-file.md) — the stream codecs as one-member archives, with a
   page per codec: [gzip](gzip.md), [bzip2](bzip2.md), [xz, lzip and LZMA Alone](xz.md),
@@ -36,6 +42,8 @@ Topics:
   inner.
 - [`exception-handlers.md`](../topics/exception-handlers.md) — when a blind
   `except Exception` is right in `src/`, and which shape it takes.
+- [`process-isolation.md`](../topics/process-isolation.md) — which native decoders run
+  in a child process, how the children are reused, and what a caller sees when one dies.
 
 ## Format page structure
 

@@ -156,23 +156,25 @@ claim.
 
 Two things are ZIP-specific rather than general in the shared detector:
 
-- Prefixed ZIPs are found only when the leading bytes look like an executable or script
-  (`MZ`, ELF, or `#!` at offset 0). That gate is what keeps the forward search from reading
-  up to 2 MiB of every file a caller opens. A hit is reported as `ZIP` with a
-  `payload_offset`, ahead of the content probes (the tier that reports headerless stream
-  codecs), so a stub with a ZIP behind it comes back as a ZIP rather than as a guess at the
-  stub's own bytes. `THOROUGH` does not lift the gate today — `THOROUGH_BUDGET` raises probe
-  links, index bytes and the completion window but keeps the same 2 MiB window, and the gate
-  itself is unconditional (`detection.py:609`); a gate-free exhaustive scan is designed and
-  not shipped. The cue set, the scan window, the budget tiers and why a hit is
-  validated are shared with 7z and RAR —
-  [`topics/prefixed-archives.md`](../topics/prefixed-archives.md). What is ZIP's alone: the
-  local-header search and its validator above, the offset conventions in §3, and the fact
-  that ZIP is the only format that can locate itself from the end.
+- Prefixed ZIPs are found early when the leading bytes look like an executable or script
+  (`MZ`, ELF, or `#!` at offset 0). Behind any other leading bytes they are found by the
+  same scan run last, on a source every other step declined and whose name names no
+  format. That ordering is what keeps the forward search from reading up to 2 MiB of every
+  file a caller opens. A cued hit is reported as `ZIP` with a `payload_offset`, ahead of
+  the content probes (the tier that reports headerless stream codecs), so a stub with a
+  ZIP behind it comes back as a ZIP rather than as a guess at the stub's own bytes.
+  `THOROUGH` does not lift the gate today — `THOROUGH_BUDGET` raises probe links, index
+  bytes and the completion window but keeps the same 2 MiB window; a scan past that window
+  is designed and not shipped. The cue set, the scan window, the budget tiers and why a
+  hit is validated are shared with 7z and RAR —
+  [`topics/prefixed-archives.md`](../topics/prefixed-archives.md). What is ZIP's alone:
+  the local-header search and its validator above, the offset conventions in §3, and the
+  fact that ZIP is the only format that can locate itself from the end.
 - A **tail probe** — locating the EOCD directly instead of scanning forward — is designed and
   not shipped, and ZIP is the only format it can serve. Until it lands, a prefixed ZIP behind
   bytes that look like neither an executable nor a script (a JPEG polyglot, a plain
-  concatenation) is not detected, though `open_archive(..., format=ZIP)` reads it. The probe
+  concatenation) is detected only when it starts within the 2 MiB window and the name has
+  no known extension, though `open_archive(..., format=ZIP)` reads it anywhere. The probe
   cannot be gated the same way: a ZIP an executable cue would reach is already found. So it
   means one tail read on every source — free on a hit, since the backend reads the EOCD
   anyway, and pure waste on a miss, which is most files. Calling `open_archive` rather than
@@ -384,7 +386,7 @@ took nothing from in `extra["zip.extra_fields"]`.
 | `uid` / `gid` | The owner extra fields, read in blob order as unzip 6.00 reads them (§6): Info-ZIP new Unix `0x7875` (version 1, ids of 2, 4 or 8 bytes; Info-ZIP `zip` writes it on Unix by default, 4-byte ids) and Info-ZIP Unix type 2 `0x7855` (16-bit ids) each decide the owner afresh, readable or not, and a `0x7855` after a `0x7875` is ignored; PKWARE Unix `0x000d` and Info-ZIP old Unix `0x5855` (16-bit ids after two times) count only when neither came before, and then the last one that holds ids wins. The two 16-bit Info-ZIP fields hold the ids in local headers only (their central copies are empty, or the two times alone), so a file read finds them only from writers that copy the ids into the directory. A forward pass yields no owner, and takes the directory's at the end | No such field, or the deciding field holds none. A `0x7875` of another version and the central short copies are silent; a deciding field that is cut short, too short for its ids, a `0x7855` neither empty nor exactly 4 bytes, or a `0x7875` with an id size unzip does not read gives none and is dropped with `MEMBER_HEADER_RECORD_SKIPPED` (`record="unix_owner"`, `record_id` the tag). Writers on Windows store none |
 | `uname` / `gname` | — | Always: no ZIP extra field records owner names |
 | `modified` / `accessed` / `created` / `ctime` | CDH DOS date-time (naive local, 2-second granularity) ← NTFS extra `0x000A` (UTC) ← PKWARE Unix `0x000d` or Info-ZIP old Unix `0x5855` (access and modification time, UTC) ← Extended Timestamp `0x5455` (UTC), later overriding earlier — parsed by archivey. macOS `ditto` and Archive Utility write only `0x5855`, so without it a macOS archive would list naive local DOS times. The Unix fields' times follow unzip 6.00 (measured with `unzip` on crafted local headers): ignored in a blob that holds a `0x5455` with data, or after a `0x7855` or `0x7875` (the rule their ids follow), the last one long enough for both times winning. They sit above NTFS, which unzip on Unix does not read. The two "creation" slots (NTFS FILETIME, Extended Timestamp third time; the latter wins) mean what the writer's host says, not what the field says: on Linux and macOS, 7-Zip and p7zip fill the NTFS one from `st_ctime` and libarchive the UT one; Info-ZIP and `ditto` there store no creation time. From a FAT / OS2 / NTFS / VFAT host ("version made by", `_ZIP_BIRTH_TIME_HOSTS`) the time is a birth time and is `created`; from any other host, unknown included, it goes to `ctime` and `created` is `None`. libarchive on Windows stamps host 3 but stores the birth time, so its time lands in `ctime` too. Info-ZIP on Windows puts its birth time in the UT field of the local header only, which listing does not read. Per-writer measurements: [`writer-timestamp-slots.md`](../investigations/writer-timestamp-slots.md) | 1980 sentinel, or every layer invalid. Each invalid layer emits `MEMBER_TIMESTAMP_INVALID`, whose `field` is the member attribute that layer would have filled (the creation slot `created` or `ctime` by the same host rule), even when a lower layer still fills it |
-| `type` | Symlink via the `FILE_ATTRIBUTE_REPARSE_POINT` bit in the low word of `external_attr` — provisionally, until the member's data confirms it (§2.2.1) — or via Unix mode bits in its high word; directory when the decoded name (the one `name` comes from) ends in `/`, or in `\` for a DOS/FAT-origin entry, the same on every host OS and Python version. A directory whose `file_size` is not 0 (APPNOTE 4.3.8 forbids it; unzip, 7-Zip and bsdtar create the directory and drop the bytes silently, Go's `archive/zip` refuses the archive) stays a directory, emits `MEMBER_DIRECTORY_DATA_IGNORED` with both sizes, carries its stored CRC-32 in `hashes` (the central directory's, or the local header's on a listing from local headers) (unless that field is 0, the conventional value for a directory: then no digest, and `DIGEST_UNVERIFIABLE` where the CRC was the only check, unencrypted or ZipCrypto; a WinZip AES entry, AE-1 with a zeroed field or AE-2 which stores 0 by design, is checked by its HMAC instead and reports nothing), and reads through `open()` like a file: `_open_with_link_follow` refuses a directory by data and a tombstone or special entry by type. `stream_members()` yields a stream for the same directories (`pass_has_data`), from a file and from a pipe, except a bit-3 directory from a pipe: its `size` is `None` until the descriptor, so the pass yields `None` and `ZipForwardReader._directory_data_reach` words the message to say so. The pipe pass checks the bytes against the CRC-32 by the same zero-field rule (`_PassData._crc_is_digest`). `file_size == 0` over a body larger than an empty one of its method (`_ZIP_EMPTY_BODY_SIZES`: 0 stored, 2 deflated, 14 bzip2, 19 LZMA) is reported too and not readable; `compress_size == 2` deflated is the Java `jar` tool's empty body and is silent. A Unix FIFO, device or socket mode makes `OTHER` only when `file_size` is 0; with data it is a `FILE` (`zip -FI` stores a named pipe's content so, and unzip, 7-Zip, bsdtar and `zipfile` all write it as a file) with `MEMBER_SPECIAL_FILE_HAS_DATA`, DR-25. Both carry `extra["special_file_type"]` | — |
+| `type` | Symlink via the `FILE_ATTRIBUTE_REPARSE_POINT` bit in the low word of `external_attr` — provisionally, until the member's data confirms it (§2.2.1) — or via Unix mode bits in its high word; directory when the decoded name (the one `name` comes from) ends in `/`, or in `\` for a DOS/FAT-origin entry, the same on every host OS and Python version, or when the attributes mark it one without the slash (a Unix creator's directory mode, or the DOS directory bit `0x10` from a DOS/Windows creator, APPNOTE 4.4.15): 7-Zip and libarchive read that as a directory, even over data, while unzip, `zipfile` and Java go by the name alone and write a file. archivey follows the spec and 7-Zip (davi, 2026-10-31), appends the `/`, and reports `MEMBER_READERS_DISAGREE` (`directory_attribute_without_slash`); data on such an entry is a directory's data, below. From a pipe the pass yields it as a `FILE` with its stream, since the attributes come with the central directory after the pass (§2.2.2). One exception: an entry that also carries the reparse-point bit is a link, and if its data is not a link buffer it falls back by its name alone (§2.2.1), which only a crafted archive reaches. A directory whose `file_size` is not 0 (APPNOTE 4.3.8 forbids it; unzip, 7-Zip and bsdtar create the directory and drop the bytes silently, Go's `archive/zip` refuses the archive) stays a directory, emits `MEMBER_DIRECTORY_DATA_IGNORED` with both sizes, carries its stored CRC-32 in `hashes` (the central directory's, or the local header's on a listing from local headers) (unless that field is 0, the conventional value for a directory: then no digest, and `DIGEST_UNVERIFIABLE` where the CRC was the only check, unencrypted or ZipCrypto; a WinZip AES entry, AE-1 with a zeroed field or AE-2 which stores 0 by design, is checked by its HMAC instead and reports nothing), and reads through `open()` like a file: `_open_with_link_follow` refuses a directory by data and a tombstone or special entry by type. `stream_members()` yields a stream for the same directories (`pass_has_data`), from a file and from a pipe, except a bit-3 directory from a pipe: its `size` is `None` until the descriptor, so the pass yields `None` and `ZipForwardReader._directory_data_reach` words the message to say so. The pipe pass checks the bytes against the CRC-32 by the same zero-field rule (`_PassData._crc_is_digest`). `file_size == 0` over a body larger than an empty one of its method (`_ZIP_EMPTY_BODY_SIZES`: 0 stored, 2 deflated, 14 bzip2, 19 LZMA) is reported too and not readable; `compress_size == 2` deflated is the Java `jar` tool's empty body and is silent. A Unix FIFO, device or socket mode makes `OTHER` only when `file_size` is 0; with data it is a `FILE` (`zip -FI` stores a named pipe's content so, and unzip, 7-Zip, bsdtar and `zipfile` all write it as a file) with `MEMBER_SPECIAL_FILE_HAS_DATA`, DR-25. Both carry `extra["special_file_type"]` | — |
 | `link_target` | The member's **data**, not its metadata — a bare path for a Unix symlink, a `REPARSE_DATA_BUFFER` for a Windows one (§2.2.1) | The member is encrypted and no password is available, so there is nothing to read it from — `SYMLINK_TARGET_UNAVAILABLE(reason="password_required")`, whose context carries the member's identity and the reason and nothing out of the member; or the ZipCrypto data failed its integrity check under a password only the check byte vouched for, with `reason="password_or_damage"`; or the data failed its CRC, HMAC or decompressor under a password that was not in doubt (or no password at all), with `reason="target_data_damaged"` and the damage raised when the link is opened or extracted; or the data uses a method or flag this reader does not decode (`reason="target_data_unsupported"`) or needs an optional library that is not installed, a codec or `cryptography` for AES (`reason="package_not_installed"`), with that error raised when the link is opened or extracted; or the writer stored no usable reparse data, with `reason="reparse_data_absent"` (no data at all), `"reparse_data_unrecognized"` (data that is not a link buffer — a file-shaped member is re-typed to carry it, a directory-shaped one stays a targetless link, §2.2.1) or `"reparse_data_nameless"` (a link buffer that parsed but named no target); or, from a pipe only, the pass dropped the data to stay within its bound on what it keeps for link targets, with `reason="target_data_dropped"` (§2.2.2) |
 | `compression` | CDH method → `CompressionMethod` | — |
 | `is_encrypted` | general-purpose bit 0, or method 99: a WinZip AES member is encrypted even when a writer left bit 0 clear, and opening it asks for a password either way, so listing and opening share one predicate | — |
@@ -578,7 +580,9 @@ known), a `\` inside a name is a literal character, and `member_state_final` is 
 last member the pass keeps what follows (bounded by the listing limits, see
 `_tail_bound`) and parses it with `find_end_record` and `CentralDirectoryWalk`, so it
 picks the end record and reads the directory exactly as a file read does. Each member is
-then updated in place from the directory entry at its offset: type, name (a DOS host
+then updated in place from the directory entry at its offset: type (an entry whose
+attributes alone mark it a directory was yielded as a `FILE`, with its stream, and becomes
+a `DIRECTORY` here; DR-25), name (a DOS host
 makes `\` a separator), mode, host, comment, times and owner ids from the directory's
 extra fields, and `is_current`, which follows the directory order. Member ids and listing
 order stay the file's. A local entry no directory entry points to is dropped and reported
@@ -782,7 +786,8 @@ the ZIP method id to the shared codec layer.
 
 The reason is coverage and uniformity, in that order. `ZipExtFile` handles STORED, DEFLATE,
 BZIP2 and LZMA; the codec layer adds Deflate64 (9), Zstd (93) and PPMd (98), which the
-registry already advertised for ZIP. It also puts ZIP member reads on the same
+registry already advertised for ZIP, and XZ (95), Shrink (1) and Implode (6), which are
+core. It also puts ZIP member reads on the same
 `VerifyingStream` and the same exception translation as every other backend, so a corrupt
 body raises `CorruptionError` and a cut-short one raises `TruncatedError` through shared
 code — and it is what lets a ZIP member use the accelerators when the caller turns them on,
@@ -799,12 +804,14 @@ reports "Unsupported Method" and "Data Error". Each of these errors names the me
 Under ZipCrypto those settings are decrypted with a key one byte vouched for, so both
 stay `CorruptionError` there and count as the candidate failing.
 
-A member's compressed data is one stream of its codec and nothing else, as 7-Zip,
-Info-ZIP and `zipfile` read it: each codec ends the member at its stream's end (an LZMA
-member at its end marker; `lzma.LZMAFile` would start a second raw stream on the bytes
-after it and read that as content). The reader opens every member with
-`StreamConfig.refuse_input_after_end`, so any byte of the compressed data the codec
-leaves after that end, a zero too, and a second stream, are `DataAfterEndError` (a
+A member's compressed data is its codec's data and nothing else, as 7-Zip, Info-ZIP and
+`zipfile` read it. For most methods that is one stream; for Zstd and XZ it is the frames
+or streams their formats define as the data (below). Each codec ends the member at the
+end of that data (an LZMA member at its end marker; `lzma.LZMAFile` would start a second
+raw stream on the bytes after it and read that as content). The reader opens every
+member with `StreamConfig.refuse_input_after_end`, so any byte of the compressed data
+the codec leaves after that end, a zero too, and a second stream where the format defines
+one, are `DataAfterEndError` (a
 `CorruptionError`), raised once the output before them has been read, whatever the
 declared size and CRC cover. 7-Zip 23.01 `7z t` fails every such member ("Data Error",
 or "There are some data after the end of the payload data"), and the bytes may be a side
@@ -814,19 +821,63 @@ table below records. A Zstd member (method 93) reads every frame, skippable ones
 a `.zst` file and a 7z Zstd coder do: RFC 8878 defines Zstd data as one or more frames,
 and the member's sizes and CRC check the whole output (maintainer, 2026-10-21). Bytes
 after the last frame that start no frame are refused like any other input after the end. An
-LZMA member with bit 1 clear, and a PPMd member, end at their declared size, and their
-input must end there too: right after it for LZMA (or one zero byte later, which 7-Zip's
-encoder sometimes writes), after the end mark PPMd8 must carry. So a declared size short
+XZ member (method 95) reads the same way, for the same reason: the xz format (spec §2.2)
+defines its data as one or more streams with stream padding (groups of four zero bytes)
+between and after them, and 7-Zip 23.01 and 26.05 read such a member in full. Zero bytes that
+do not fill a group of four, or any other byte after the last stream, are input after the
+end; 7-Zip fails those members too. An LZMA member with bit 1 clear, and a PPMd member,
+end at their declared size, and their input must end there too: right after it for LZMA
+(or one zero byte later, which 7-Zip's encoder sometimes writes), after the end mark
+PPMd8 must carry. So a declared size short
 of the stream's data is `CorruptionError`, not `TruncatedError`: the input is too long,
-not short. The 7z handbook (§ coders, *Input after the stream*) has how each codec finds
+not short. Shrink (method 1) and Implode (method 6) have no end marker at all, so the
+declared size is their end too: the bits left in the last byte are padding, and a whole
+byte after it is input after the end, as for LZMA. A member whose size is only in a data
+descriptor (bit 3) therefore reads from a file, where the central directory has the size,
+and is `UnsupportedFeatureError` from a pipe. PKZIP 1.x, the only writer of either,
+predates bit 3. Their decoders (`codecs/zip_legacy_decoder.py`) follow 7-Zip's
+`ShrinkDecoder` and Info-ZIP's `unshrink.c` / `explode.c`: a partial clear can free the
+code just read, which stays the parent of the next entry (7-Zip's "orphan"), and a Shrink
+table that fills with no clear is refused, as both tools refuse it; where the two differ
+(an unknown control code, a code that names a free slot) the decoder refuses as 7-Zip
+does, and `unshrink` would leave it to the CRC-32. An Implode copy from before the start
+of the output reads zeros, as both read it. The test-only encoders in
+`tests/zip_legacy_build.py` make the fixtures, checked with `unzip` and 7-Zip 26.05;
+Commons Compress's five PKZIP archives match it in the corpus test. A partial clear
+makes no output, so no limit sees it: the decoder keeps a child count per slot and the
+set of leaves, and a clear costs the slots it frees, not a walk over the table.
+Shrink stores each slot's string as unix-compress's LZW decoder does (flat up to 256
+bytes, then links with 128-byte tails, its `_expand`), so a code is one lookup, not a
+walk up its parents; only a slot added under a free parent (an orphan) and the slots
+below it walk, since that parent slot can be taken over. That and an inline bit loop
+made it 1.5 to 1.9x faster on text and about 36x on long runs (3 to 6 MB/s on text, about
+half the unix-compress decoder's speed). The caps bound the memory: a full 13-bit table
+of long entries peaks at about 1.8 MiB (0.7 MiB when every code walked), where flat
+strings would hold about 32 MiB. `unshrink_reference` in `tests/zip_legacy_build.py`
+walks every code and scans the table at each clear; the tests check the decoder against
+it on mutated streams with long links, clears and orphans.
+The 7z handbook (§ coders, *Input after the stream*) has how each codec finds
 its end, and what it cannot see; `inflate64` drops input after a Deflate64 stream's end
 and has no `unused_data`, so `Deflate64Decoder` holds back the last byte it is given,
 and input follows the end when `eof` is already True as that byte goes in. The
 accelerators read on into a second stream; at the bytes after the first they hand the
 read over to the standard library, which refuses them, so the verdict does not depend on
-the accelerator. Finding where a DEFLATE member's first stream ends takes a zlib decode
-from its start (a rapidgzip resume point may lie in a second stream), so a full read
-under rapidgzip pays that decode too; the accelerator still speeds up seeks.
+the accelerator, with one exception. rapidgzip does not say where a DEFLATE stream ends,
+so when its output ends zlib decodes only the tail, from the last point of rapidgzip's
+complete index before the end, to find a final block and any input after it. The index
+is taken whole, not from the points the stream kept as it read, so the result does not
+depend on timing; it depends on the data and on how many threads rapidgzip runs, which
+follows the core count (it places points every few hundred KiB to a few MiB of output on
+Linux and macOS; on the windows-latest CI runner a ZIP member's index held none past 0,
+so there the check decodes from the start). A second stream that holds that point is
+then the stream whose end the check sees, and a member whose size and CRC cover both
+streams reads as both under rapidgzip; with the accelerator off it is
+`DataAfterEndError`, and 7-Zip and Info-ZIP read the first stream and fail the CRC. No
+known writer makes such a member. Finding the first stream's end would take a zlib
+decode from the start, which cost a full read under rapidgzip as much as the
+standard-library read it replaces (maintainer decision, 2026-10-24; `design-rules.md`
+DR-5a). A shorter second stream, junk, zeros and a cut stream keep the standard
+library's verdict.
 
 Encrypted members take the same route with a decrypt stage between the slice and the codec
 layer, so they decode every method an unencrypted member does, and their CRC runs through
@@ -947,10 +998,25 @@ store different numbers:
 
 The difference is self-correcting: the EOCD's own position is known once it is found, so
 `(eocd_pos - size_cd) - offset_cd` recovers the base under either convention and every
-entry offset is read through it. This is why `payload_offset` is defined as the absolute
-position of the earliest local file header rather than as the adjustment — the adjustment
-is 0 for `zipapp`, which would report the motivating case as unprefixed. An empty archive
-has no local header to point at, so there `payload_offset` is the EOCD-derived base.
+entry offset is read through it. Every member sits at the base plus a stored offset that
+is not negative, so **the base is never after any member**.
+
+`payload_offset` is where to start reading: **never after the archive's first member, and
+exactly that member when the detection step saw it.** It is not only a label:
+`open_archive` hands it to the reader, which cuts the source there, so a value after the
+first member would cut members off. The forward scan meets the earliest local header and
+reports it; an empty archive has no local header, so there it reports the base. A planned
+step that finds the ZIP from its end record (the tail probe of the `pe-aware-sfx-location`
+change) sees only the base, and will report that with no read to refine it.
+
+**A base of 0 is a real answer, not a missing one.** For a ZIP written in place, the
+stored offsets count from byte 0 of the file, stub included, so by the ZIP's own numbers
+the archive starts at byte 0, and reading from there finds every member. The forward scan
+reports the same ZIP at its first local header, after the stub; both are correct starts.
+Today only the forward scan reports a prefixed ZIP, so `payload_offset > 0` still marks
+one, as the `FormatInfo` docstring says. Once the tail probe ships it can report 0 for a
+prefixed ZIP, and the test moves to a separate field (`FormatInfo.prefixed`, planned in the
+same change).
 
 **Producers disagree about encodings.** Info-ZIP and others write valid UTF-8 names without
 setting bit 11, which is the case the sniff exists for; `tests/fixtures/external/encoding_infozip_jules.zip`
@@ -1187,6 +1253,7 @@ ours.
 | An archive cut before its end record lists its members without mode, host or comment, then raises | **format** | Those fields live only in the directory. With no end record in the tail, the reader walks the local headers, lists what they hold as a pipe read does before its directory, then raises the walk's error (`TruncatedError` for a cut). A damaged *directory* lists the entries before the damage and the local headers' past it, then raises (§2.2) |
 | A legacy name that is not valid UTF-8 renders garbled and no setting fixes it | **format** | Unless the writer added a Unicode Path field (§2.2), which Info-ZIP `zip` does and many writers do not, every candidate codepage decodes every byte, so there is no oracle, and a filename is far too short for a statistical detector. The garble is honest and `raw_name` round-trips; a wrong guess is neither. Opt-in detection is post-1.0 ([`IDEAS.md`](../IDEAS.md)) |
 | A wrong ZipCrypto password can be accepted, and a damaged ZipCrypto member reads as a password error | **format** | One-byte verifier. With several candidates, confirmation narrows it; nothing eliminates it. Data that then fails its CRC or decompressor raises `EncryptionError` naming both causes, because a damaged member read with the right password fails the same way |
+| A DEFLATE member that holds two streams, with a size and CRC that cover both, reads as both under rapidgzip and is `DataAfterEndError` without it | **library** / **archivey** | Only when the second stream holds the last point of rapidgzip's index, so a short second stream is refused either way. rapidgzip does not say where a stream ends, and finding the first one's end costs a decode from the start (§2.3, DR-5a). 7-Zip and Info-ZIP read the first stream and fail the CRC; no known writer makes such a member. `use_rapidgzip=OFF` refuses it |
 | After a forward seek in a STORED ZipCrypto member, no CRC checks it, and a wrong password that passed the check byte goes unnoticed | **format** / **archivey** | The CRC is the only content check ZipCrypto has, and it covers the plaintext in order. A seek back keeps it, and so does a compressed member's forward seek, whose skipped bytes the verifier reads and hashes (ADR 0014, since 2026-10-10). A STORED member's forward seek jumps, so a read past it gives the CRC up and returns whatever the key produced. `ENCRYPTED_MEMBER_UNVERIFIED` (`reason="seek"`) says so on close when only the check byte vouched for the password (§2.3). WinZip AES keeps its HMAC across seeks |
 | A ZIP over 4 GiB written without ZIP64 (macOS Archive Utility) reads, with an `ARCHIVE_OFFSET_WRAPPED` per corrected offset (advisory: macOS writes and reads them by default, so `STRICT` reads them too) | **format** | The writer stores offsets modulo 2³². The walk adds 2³² to an offset below the furthest end of the members before it and keeps it only when a local header with the member's name is there (§3) |
 | A large deflated member of a macOS ZIP can list with `size=None` until it is read | **format** | Archive Utility stores sizes modulo 2³² and records the real size nowhere. Deflate's ratio settles it for members under about 4.16 MB compressed; for larger ones, `extra["size_mod_2_32"]` holds the stored one and a read to the end fills `size` in after the length and CRC-32 checks (§3). Members without the writer's fingerprint keep their stored sizes |
@@ -1201,6 +1268,7 @@ ours.
 | Choice | Why | Rejected |
 | --- | --- | --- |
 | archivey's own parser for the end record, central directory and local headers ([ADR 0020](../decisions/0020-native-zip-reader.md), superseding [0006](../decisions/0006-stdlib-zipfile.md)) | Zero-dependency still. Stdlib parsed the whole directory at open before `ListingLimits` saw a member, lost the archive over one damaged entry, varied by Python version and was reached through private names and exception text; the parser lists lazily, lists up to damage, and behaves the same everywhere | Stdlib `zipfile` (ADR 0006); `python-libarchive-c`, faster and broader at the cost of a native dependency |
+| Under rapidgzip, check a DEFLATE member's end from the last point of rapidgzip's complete index (2026-10-24) | The check finds a cut stream and bytes after the last stream for the cost of the tail, where the index has a point before the end; where it has none (seen on the windows-latest CI runner) the check decodes from the start and costs what it did before. The complete index makes the result the same on every run on one machine, where the points a stream keeps as it reads depend on timing | A zlib decode from the start, which doubled a full read under rapidgzip (about 500 ms against 320 ms without it, 40 MiB member); a parallel zlib check of the stretches between resume points, prototyped at about 300 ms, which still costs as much as the read rapidgzip replaces |
 | Report bytes after the end record as `ARCHIVE_TRAILING_DATA` | DR-3: the TAR, 7z, RAR and ISO rule. 7-Zip warns on any tail; zero padding stays silent here as there | Ignoring the tail, as Info-ZIP `unzip` and stdlib do |
 | Refuse at open an end record declaring more entries than `max_members` | Every walk keeps an offset per entry for the overlap guard, so the count bounds memory in every mode (DR-15b); the directory must be 46 bytes per declared entry, so a wrong count field alone does not refuse a small archive | Charging only on `members()`, which left a streaming pass unbounded |
 | A central entry whose fields run past the directory's end, hold the headers after it (they chain from a signature inside exactly to the end), or whose name is shorter than its local header's with no header after it, is damage (§2.2) | Cutting the field, as stdlib does, listed a member named after the swallowed entries' bytes and dropped those entries with only a count warning, where a pipe listed every member (DR-1, DR-5); `unzip` and 7-Zip both stop with an error. As damage, both reads list every member from the local headers and raise | Cutting at the directory's end (the native reader's first choice; superseded by davi's 2026-10-17 ruling, PR 860); treating a signature with a wrong count as damage, which refuses an intact directory over a name and a count field |

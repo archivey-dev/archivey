@@ -60,6 +60,7 @@ from archivey.internal.backends.rar_parser import (
     parse_rar_volumes,
 )
 from archivey.internal.external.cli import terminate_process
+from archivey.internal.streams.respawn import RespawnStream
 from archivey.reader import ArchiveReader
 from archivey.terminal import display_path
 from archivey.types import (
@@ -397,7 +398,7 @@ def test_unrar_respawn_overrun_probe_sees_trailing_bytes() -> None:
     def spawn() -> io.BytesIO:
         return io.BytesIO(payload)
 
-    stream = rar_reader._RespawnStream(spawn, spawn(), size=declared)
+    stream = RespawnStream(spawn, spawn(), size=declared, what="unrar output")
     assert stream.read(declared) == payload[:declared]
     assert stream.read(1) == payload[declared : declared + 1]
     stream.seek(0)
@@ -413,16 +414,16 @@ def test_unrar_respawn_boundary_read_is_one_byte() -> None:
     def spawn() -> io.BytesIO:
         return io.BytesIO(payload)
 
-    stream = rar_reader._RespawnStream(spawn, spawn(), size=declared)
+    stream = RespawnStream(spawn, spawn(), size=declared, what="unrar output")
     assert stream.read(declared) == payload[:declared]
     assert stream.read(-1) == payload[declared : declared + 1]
 
 
 def test_unrar_respawn_overrun_probe_noop_seek_does_not_kill_pipe() -> None:
-    """After a probe byte past declared size, clamp ``_pipe_pos`` so SEEK_CUR is free.
+    """After a probe byte past declared size, clamp ``_inner_pos`` so SEEK_CUR is free.
 
     The probe is the fused-verify one-byte read at ``pos == size``. Without the
-    clamp, ``_pipe_pos`` sits at ``_size + 1`` and the next seek — including a
+    clamp, ``_inner_pos`` sits at ``_size + 1`` and the next seek — including a
     no-op ``SEEK_CUR`` — kills the live process. That only happens when unrar
     emitted extra bytes (already ``CorruptionError`` on the same call).
     """
@@ -440,7 +441,7 @@ def test_unrar_respawn_overrun_probe_noop_seek_does_not_kill_pipe() -> None:
         return _TrackClose(payload)
 
     inner = spawn()
-    stream = rar_reader._RespawnStream(spawn, inner, size=declared)
+    stream = RespawnStream(spawn, inner, size=declared, what="unrar output")
     assert stream.read(declared) == payload[:declared]
     assert stream.read(1) == payload[declared : declared + 1]
     assert closed == []
@@ -463,7 +464,7 @@ def test_unrar_respawn_failed_seek_leaves_position() -> None:
     def spawn() -> io.BytesIO:
         return io.BytesIO(b"x" * 20)
 
-    stream = rar_reader._RespawnStream(spawn, _CloseBoom(b"x" * 20), size=20)
+    stream = RespawnStream(spawn, _CloseBoom(b"x" * 20), size=20, what="unrar output")
     assert stream.read(10) == b"x" * 10
     assert stream.tell() == 10
     with pytest.raises(OSError, match="close failed"):
@@ -481,7 +482,7 @@ def test_unrar_respawn_seek_end_does_not_drain_or_respawn() -> None:
         spawns += 1
         return io.BytesIO(payload)
 
-    stream = rar_reader._RespawnStream(spawn, spawn(), size=len(payload))
+    stream = RespawnStream(spawn, spawn(), size=len(payload), what="unrar output")
     assert spawns == 1
     assert stream.seek(0, io.SEEK_END) == len(payload)
     assert spawns == 1
@@ -542,7 +543,10 @@ def test_seekable_unrar_emits_stream_rewind() -> None:
 def test_rewind_warning_min_redecode_bytes_is_a_cost_floor() -> None:
     """A carrier-declared floor must fire even when discarded member progress is tiny."""
     from archivey.internal.diagnostics_collector import DiagnosticCollector
-    from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
+    from archivey.internal.streams.archive_stream import (
+        ArchiveStreamImpl,
+        RewindWarning,
+    )
 
     collector = DiagnosticCollector()
     payload = b"abcdefghij"
@@ -551,7 +555,7 @@ def test_rewind_warning_min_redecode_bytes_is_a_cost_floor() -> None:
         suggest_install=False,
         min_redecode_bytes=REWIND_REDECODE_WARN_BYTES,
     )
-    stream = ArchiveStream(
+    stream = ArchiveStreamImpl(
         lambda: io.BytesIO(payload),
         translate=lambda _exc: None,
         rewind_warning=warning,
@@ -566,7 +570,7 @@ def test_rewind_warning_min_redecode_bytes_is_a_cost_floor() -> None:
     finally:
         stream.close()
 
-    quiet = ArchiveStream(
+    quiet = ArchiveStreamImpl(
         lambda: io.BytesIO(payload),
         translate=lambda _exc: None,
         rewind_warning=RewindWarning(codec_name="rar", suggest_install=False),
@@ -1170,6 +1174,90 @@ def test_blake2sp_unrar_oracle_crosscheck() -> None:
     assert proc.stdout == native == b"stored payload"
 
 
+@requires_unrar_cli()
+def test_unknown_redirect_in_a_solid_run_is_other_and_carries_no_bytes(
+    tmp_path: Path,
+) -> None:
+    """A redirect type no RAR writes: ``unrar`` lists it as a file, warns, creates
+    nothing and emits nothing for it in ``unrar p``. Counting it as payload shifted
+    the solid demux, and the member after it read short."""
+    fixture = _fixture("redirect_unknown_solid__.rar")
+    expected = {
+        name: subprocess.run(
+            ["unrar", "p", "-inul", str(fixture), name],
+            check=True,
+            capture_output=True,
+        ).stdout
+        for name in ("a.txt", "b.txt")
+    }
+    assert all(len(data) == 300 for data in expected.values())
+    with open_archive(fixture) as archive:
+        by_name = {m.name: m for m in archive.members()}
+        link = by_name["link"]
+        assert link.type is MemberType.OTHER
+        assert link.size is None
+        assert link.link_target is None
+        [diagnostic] = link.diagnostics
+        assert diagnostic.code is DiagnosticCode.MEMBER_TYPE_UNKNOWN
+        assert diagnostic.context.stored_type == "6"
+        assert {n: archive.read(n) for n in expected} == expected
+    with open_archive(fixture) as archive:
+        streamed = {m.name: s.read() for m, s in archive.stream_members() if s}
+        assert streamed == expected
+    with open_archive(fixture) as archive:
+        archive.extract_all(tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt", "b.txt"]
+    assert (tmp_path / "b.txt").read_bytes() == expected["b.txt"]
+
+
+def test_unknown_redirect_under_the_directory_flag_is_still_other() -> None:
+    """``unrar`` 7.00 lists such a member as a directory but creates nothing for it and
+    emits nothing for it, so it stays out of the demux and is not extracted."""
+    with open_archive(_fixture("redirect_unknown_solid__.rar")) as archive:
+        raw = archive.members()[1]._raw
+    assert isinstance(raw, RarMemberInfo)
+    flagged = dataclasses.replace(raw, is_directory=True)
+    assert flagged.has_unknown_redirect()
+    assert not flagged.is_payload_file()
+    assert rar_reader.RarReader._member_type(flagged) is MemberType.OTHER
+
+
+def _with_redirect_type(data: bytes, target: bytes, redirect_type: int) -> bytes:
+    """``data`` with the redirect record naming ``target`` set to ``redirect_type`` (a
+    one-byte vint, like the type it replaces), and its block's header CRC redone."""
+    marker = bytes([6, 0, len(target)]) + target  # type 6, flags 0, the target
+    at = data.index(marker)
+    out = bytearray(data)
+    out[at] = redirect_type
+    pos = 8  # past the RAR5 signature
+    while True:
+        size, body_at = load_vint(out, pos + 4)
+        if body_at <= at < body_at + size:
+            crc = zlib.crc32(out[pos + 4 : body_at + size]) & 0xFFFFFFFF
+            out[pos : pos + 4] = crc.to_bytes(4, "little")
+            return bytes(out)
+        _, q = load_vint(out, body_at)
+        flags, q = load_vint(out, q)
+        if flags & 0x0001:
+            _, q = load_vint(out, q)
+        data_size = load_vint(out, q)[0] if flags & 0x0002 else 0
+        pos = body_at + size + data_size
+
+
+def test_redirect_record_of_type_zero_is_no_redirect() -> None:
+    """Type 0 is ``unrar``'s ``FSREDIR_NONE``: ``unrar`` lists the member as a plain
+    file, with no "Unknown extra field" warning, and extracts it as one."""
+    data = _with_redirect_type(
+        _fixture("redirect_unknown_solid__.rar").read_bytes(), b"a.txt", 0
+    )
+    with open_archive(io.BytesIO(data)) as archive:
+        link = archive.members()[1]
+        assert link.name == "link"
+        assert link.type is MemberType.FILE
+        assert link.link_target is None
+        assert link.diagnostics == ()
+
+
 def test_multi_volume_roundtrip() -> None:
     part1 = _fixture("tinyvol.part1.rar")
     assert (_FIXTURES / "tinyvol.part2.rar").is_file()
@@ -1179,6 +1267,135 @@ def test_multi_volume_roundtrip() -> None:
         data = archive.read("payload.bin")
         assert data == b"ABCDEFGH" * 200
         assert archive.cost.notes == ()
+
+
+def _stdin_payload(stem: str) -> bytes:
+    """The bytes ``scripts/gen_rar_fixtures.py`` piped to ``rar -si`` for ``stem``."""
+    seed, size = {
+        "stdin_vol": (b"stdin-vol", 2000),
+        "stdin_vol_m3": (b"stdin-vol-m3", 4000),
+    }[stem]
+    lines = (
+        hashlib.sha256(seed + i.to_bytes(4, "big")).hexdigest().encode() + b"\n"
+        for i in range(size // 65 + 1)
+    )
+    return b"".join(lines)[:size]
+
+
+@pytest.mark.parametrize(
+    "stem",
+    [
+        "stdin_vol",
+        pytest.param("stdin_vol_m3", marks=requires_unrar_cli()),
+    ],
+)
+def test_volumes_written_from_stdin_take_the_size_from_the_last_part(
+    stem: str, tmp_path: Path
+) -> None:
+    """``rar a -v -si`` marks every part but the last "size unknown" and leaves a
+    placeholder in the size field; the last part has the real size. The placeholder
+    was listed as the size, so reads failed as truncated and extraction as a ratio
+    bomb."""
+    payload = _stdin_payload(stem)
+    with open_archive(_fixture(f"{stem}.part1.rar")) as archive:
+        [member] = archive.members()
+        assert member.size == len(payload)
+        assert archive.read(member) == payload
+    with open_archive(_fixture(f"{stem}.part1.rar")) as archive:
+        assert [s.read() for _, s in archive.stream_members() if s] == [payload]
+    with open_archive(_fixture(f"{stem}.part1.rar")) as archive:
+        archive.extract_all(tmp_path)
+    assert (tmp_path / "stdin.txt").read_bytes() == payload
+
+
+def _flag_size_unknown(data: bytes, *, placeholder: bool = False) -> bytes:
+    """``data`` with the "size unknown" file flag (``0x08``) set on every RAR5 FILE
+    header, and each header CRC redone. ``placeholder`` also writes 127 over the first
+    member's size, a two-byte vint (rar pads it), so the header keeps its length."""
+    out = bytearray(data)
+    pos = 8  # past the RAR5 signature
+    while pos < len(out):
+        size, body_at = load_vint(out, pos + 4)
+        block_type, q = load_vint(out, body_at)
+        flags, q = load_vint(out, q)
+        if flags & 0x0001:  # extra area
+            _, q = load_vint(out, q)
+        data_size = 0
+        if flags & 0x0002:  # data area
+            data_size, q = load_vint(out, q)
+        if block_type == 2:  # FILE; its one-byte file flags are at q
+            out[q] |= 0x08
+            if placeholder:
+                assert out[q + 2] == 0x00  # a padded two-byte size vint
+                out[q + 1 : q + 3] = b"\xff\x00"
+                placeholder = False
+            crc = zlib.crc32(out[pos + 4 : body_at + size]) & 0xFFFFFFFF
+            out[pos : pos + 4] = crc.to_bytes(4, "little")
+        if block_type == 5:  # end of archive
+            break
+        pos = body_at + size + data_size
+    return bytes(out)
+
+
+def test_stored_member_of_unknown_size_takes_its_packed_size() -> None:
+    """With the "size unknown" flag and no later part, a stored member's size is its
+    packed size, which is what ``unrar`` reads; the size field is ignored."""
+    data = _flag_size_unknown(
+        _fixture("basic_nonsolid__.rar").read_bytes(), placeholder=True
+    )
+    with open_archive(io.BytesIO(data)) as archive:
+        member = archive.members()[0]
+        assert member.name == "file1.txt"
+        assert member.size == 13
+        assert archive.read(member) == b"Hello, world!"
+
+
+def test_stored_last_part_of_unknown_size_is_not_sized_alone(tmp_path: Path) -> None:
+    """The flag on every part, the last one included: the member's packed size is the
+    sum of its parts, not the last part's share."""
+    for part in (1, 2, 3):
+        name = f"stdin_vol.part{part}.rar"
+        data = _fixture(name).read_bytes()
+        (tmp_path / name).write_bytes(_flag_size_unknown(data) if part == 3 else data)
+    payload = _stdin_payload("stdin_vol")
+    with open_archive(tmp_path / "stdin_vol.part1.rar") as archive:
+        [member] = archive.members()
+        assert member.size == len(payload)
+        assert archive.read(member) == payload
+
+
+@requires("cryptography")
+def test_encrypted_stored_member_of_unknown_size_keeps_its_declared_size() -> None:
+    """Ciphertext is padded to the AES block, so the packed size is not the member's
+    size; the declared one is kept."""
+    data = _flag_size_unknown(_fixture("encryption_stored_sizes__.rar").read_bytes())
+    with open_archive(io.BytesIO(data), password="password") as archive:
+        [member] = [m for m in archive.members() if m.name == "size_7.bin"]
+        assert member.size == 7
+        assert len(archive.read(member)) == 7
+
+
+def test_stored_member_whose_encryption_is_unknown_keeps_its_declared_size() -> None:
+    """A header walk that stopped with extra area unread may have missed the record
+    that says the member is ciphertext, whose packed size is padded: not settled."""
+    from archivey.internal.backends.rar_parser import _settle_unknown_stored_size
+
+    with open_archive(_fixture("basic_nonsolid__.rar")) as archive:
+        raw = archive.members()[0]._raw
+    assert isinstance(raw, RarMemberInfo) and raw.is_stored
+    unknown = dataclasses.replace(
+        raw,
+        size_unknown=True,
+        file_size=127,
+        header_walk_stop_reason="truncated extra area",
+    )
+    assert unknown.encryption_unknown and not unknown.is_encrypted
+    _settle_unknown_stored_size(unknown)
+    assert unknown.file_size == 127
+    assert unknown.size_unknown
+    settled = dataclasses.replace(unknown, header_walk_stop_reason=None)
+    _settle_unknown_stored_size(settled)
+    assert settled.file_size == settled.compress_size
 
 
 def test_multi_volume_rnn_roundtrip() -> None:
@@ -3149,8 +3366,11 @@ def test_unrar_marks_follow_archiveys_rule(
 def test_missing_unrar_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("PATH", str(tmp_path))
     _clear_unrar_cache(monkeypatch)
-    with pytest.raises(PackageNotInstalledError, match="RARLAB"):
+    with pytest.raises(PackageNotInstalledError, match="RARLAB") as exc_info:
         rar_unrar.find_rarlab_unrar()
+    # The same component format_availability(RAR) names.
+    assert exc_info.value.missing == rar_unrar.rarlab_unrar_missing()
+    assert [m.name for m in exc_info.value.missing] == ["unrar"]
 
 
 def test_missing_unrar_rechecks_which_and_does_not_probe(
@@ -4339,7 +4559,7 @@ def test_unrar_mask_selection_treats_brackets_as_literal() -> None:
     from archivey.internal.backends.rar_unrar import unrar_mask_selects
 
     def selects(name: str, mask: str) -> bool:
-        return unrar_mask_selects("./" + mask, name)
+        return unrar_mask_selects("./" + mask, name, dot_rule=True)
 
     assert selects("a*.txt", "a?.txt")
     assert selects("aX.txt", "a?.txt")
@@ -4370,7 +4590,7 @@ def test_unrar_mask_selection_follows_unrar_path_rules() -> None:
     from archivey.internal.backends.rar_unrar import unrar_mask_selects
 
     def selects(name: str, mask: str) -> bool:
-        return unrar_mask_selects("./" + mask, name)
+        return unrar_mask_selects("./" + mask, name, dot_rule=True)
 
     # A mask selects everything below the path it names.
     assert selects("ab/x.txt", "ab")
@@ -4401,16 +4621,16 @@ def test_unrar_mask_selection_on_windows_takes_either_separator_in_the_name(
 
     monkeypatch.setattr(rar_unrar.sys, "platform", "win32")
     for name in ("subdir/aY.txt", "subdir\\aY.txt"):
-        assert unrar_mask_selects("./subdir/a?.txt", name)
-        assert unrar_mask_selects("./subdir/aY.txt", name)
-        assert unrar_mask_selects("./subdir", name)
-        assert not unrar_mask_selects("./other/a?.txt", name)
+        assert unrar_mask_selects("./subdir/a?.txt", name, dot_rule=True)
+        assert unrar_mask_selects("./subdir/aY.txt", name, dot_rule=True)
+        assert unrar_mask_selects("./subdir", name, dot_rule=True)
+        assert not unrar_mask_selects("./other/a?.txt", name, dot_rule=True)
         keys = unrar_mask_keys("./subdir/aY.txt")
         assert keys is not None
         assert set(keys) & set(unrar_selection_keys(name))
     monkeypatch.setattr(rar_unrar.sys, "platform", "linux")
-    assert unrar_mask_selects("./subdir/a?.txt", "subdir/aY.txt")
-    assert not unrar_mask_selects("./subdir/a?.txt", "subdir\\aY.txt")
+    assert unrar_mask_selects("./subdir/a?.txt", "subdir/aY.txt", dot_rule=True)
+    assert not unrar_mask_selects("./subdir/a?.txt", "subdir\\aY.txt", dot_rule=True)
 
 
 def test_unrar_name_pos_takes_a_drive_only_after_an_ascii_letter(
@@ -4447,16 +4667,16 @@ def test_unrar_mask_selection_windows_fold_does_not_change_wildcard_length(
     from archivey.internal.backends.rar_unrar import unrar_mask_selects
 
     monkeypatch.setattr(rar_unrar.sys, "platform", "win32")
-    assert unrar_mask_selects("./a?b.txt", "aßb.txt")
-    assert unrar_mask_selects("./aßb.txt", "aßb.txt")
-    assert not unrar_mask_selects("./a??b.txt", "aßb.txt")
+    assert unrar_mask_selects("./a?b.txt", "aßb.txt", dot_rule=True)
+    assert unrar_mask_selects("./aßb.txt", "aßb.txt", dot_rule=True)
+    assert not unrar_mask_selects("./a??b.txt", "aßb.txt", dot_rule=True)
     # Literals that differ only in case: the per-character fold, not the
     # length check. Deleting ``.upper()`` leaves the three assertions above
     # green and fails these.
-    assert unrar_mask_selects("./a?b.txt", "AXB.TXT")
-    assert not unrar_mask_selects("./a?c.txt", "AXB.TXT")
+    assert unrar_mask_selects("./a?b.txt", "AXB.TXT", dot_rule=True)
+    assert not unrar_mask_selects("./a?c.txt", "AXB.TXT", dot_rule=True)
     # An exact name folds too: Windows unrar would pipe both.
-    assert unrar_mask_selects("./same.txt", "SAME.TXT")
+    assert unrar_mask_selects("./same.txt", "SAME.TXT", dot_rule=True)
 
 
 def test_unrar_glob_mask_is_linear_on_a_hostile_member_name() -> None:
@@ -4480,7 +4700,7 @@ def test_unrar_glob_mask_is_linear_on_a_hostile_member_name() -> None:
         hostile = "a" + "*a" * stars + "b.txt"
         mask = _unrar_mask_for(hostile)
         started = time.perf_counter()
-        assert not _unrar_match(mask, name)
+        assert not _unrar_match(mask, name, dot_rule=True)
         elapsed = time.perf_counter() - started
         # Microseconds in practice; the old form needed 18 s at stars=8 alone.
         assert elapsed < 1.0, f"{stars} wildcards took {elapsed:.3f}s"
@@ -4492,28 +4712,35 @@ def test_unrar_match_is_a_single_walk() -> None:
     that may stand for nothing at the end of the name."""
     from archivey.internal.backends.rar_unrar import _unrar_match
 
-    assert _unrar_match("", "")
-    assert not _unrar_match("?", "")
-    assert not _unrar_match("", "a")
-    assert _unrar_match("a?c", "a.c")
-    assert _unrar_match("a?c", "a\nc")
-    assert _unrar_match("a?c", "abc")
-    assert not _unrar_match("a?c", "ac")
-    assert not _unrar_match("a?c", "abbc")
-    assert _unrar_match("a[b]c", "a[b]c")
-    assert not _unrar_match("a[b]c", "abc")
-    assert _unrar_match(r"a\bc", r"a\bc")
-    assert not _unrar_match(r"a\bc", "abc")
-    assert _unrar_match("a+c", "a+c")
-    assert not _unrar_match("a+c", "aac")
-    assert _unrar_match("a.", "a")
-    assert _unrar_match("a..", "a")
-    assert not _unrar_match("a", "a.")
-    assert not _unrar_match("a.b", "a")
+    assert _unrar_match("", "", dot_rule=True)
+    assert not _unrar_match("?", "", dot_rule=True)
+    assert not _unrar_match("", "a", dot_rule=True)
+    assert _unrar_match("a?c", "a.c", dot_rule=True)
+    assert _unrar_match("a?c", "a\nc", dot_rule=True)
+    assert _unrar_match("a?c", "abc", dot_rule=True)
+    assert not _unrar_match("a?c", "ac", dot_rule=True)
+    assert not _unrar_match("a?c", "abbc", dot_rule=True)
+    assert _unrar_match("a[b]c", "a[b]c", dot_rule=True)
+    assert not _unrar_match("a[b]c", "abc", dot_rule=True)
+    assert _unrar_match(r"a\bc", r"a\bc", dot_rule=True)
+    assert not _unrar_match(r"a\bc", "abc", dot_rule=True)
+    assert _unrar_match("a+c", "a+c", dot_rule=True)
+    assert not _unrar_match("a+c", "aac", dot_rule=True)
+    assert _unrar_match("a.", "a", dot_rule=True)
+    assert _unrar_match("a..", "a", dot_rule=True)
+    assert not _unrar_match("a", "a.", dot_rule=True)
+    assert not _unrar_match("a.b", "a", dot_rule=True)
+    assert _unrar_match("a.\\bc", "a\\bc", dot_rule=True)
+    # unrar 7.30 beta 2 has no such dot: the mask a. selects a. and nothing else.
+    assert not _unrar_match("a.\\bc", "a\\bc", dot_rule=False)
+    assert not _unrar_match("a.", "a", dot_rule=False)
+    assert not _unrar_match("a..", "a.", dot_rule=False)
+    assert _unrar_match("a.", "a.", dot_rule=False)
+    assert _unrar_match("a?c", "a.c", dot_rule=False)
     # A ``*`` here means the mask was not built by ``_unrar_mask_for`` and the
     # skip is about to be sized against a mask unrar never saw.
     with pytest.raises(AssertionError):
-        _unrar_match("a*c", "abc")
+        _unrar_match("a*c", "abc", dot_rule=True)
 
 
 def test_unrar_mask_narrowing_keeps_the_member() -> None:
@@ -4534,7 +4761,12 @@ def test_unrar_mask_narrowing_keeps_the_member() -> None:
     words = [
         "".join(w) for n in range(5) for w in itertools.product(alphabet, repeat=n)
     ]
-    unreachable = [w for w in words if not _unrar_match(_unrar_mask_for(w), w)]
+    unreachable = [
+        (w, dot_rule)
+        for w in words
+        for dot_rule in (True, False)
+        if not _unrar_match(_unrar_mask_for(w), w, dot_rule=dot_rule)
+    ]
     assert not unreachable, f"mask stopped matching its own member: {unreachable[:5]}"
 
 

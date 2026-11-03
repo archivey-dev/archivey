@@ -67,12 +67,13 @@ def test_accelerator_modes_honored_via_config(
 ) -> None:
     import tarfile
 
-    import archivey.internal.backends.tar_reader as tar_reader_module
+    import archivey.internal.streams.codecs as codecs_module
 
-    # open_codec_stream is stubbed so we can assert the config it received, but the
-    # stub must still yield a real uncompressed tar: tar_reader wraps it in
-    # BufferedReader, and on Python 3.14 (esp. macOS) a bare MagicMock's readinto()
-    # recurses through __index__ until pytest-timeout kills the test.
+    # open_codec_stream is stubbed where the shared outer-codec helper imports it, so we
+    # can assert the config it received, but the stub must still yield a real
+    # uncompressed tar: tar_reader wraps it in BufferedReader, and on Python 3.14 (esp.
+    # macOS) a bare MagicMock's readinto() recurses through __index__ until
+    # pytest-timeout kills the test.
     uncompressed = io.BytesIO()
     with tarfile.open(fileobj=uncompressed, mode="w") as t:
         info = tarfile.TarInfo("a.txt")
@@ -88,7 +89,7 @@ def test_accelerator_modes_honored_via_config(
         captured.append(config)
         return io.BytesIO(tar_bytes)
 
-    monkeypatch.setattr(tar_reader_module, "open_codec_stream", _capture_open)
+    monkeypatch.setattr(codecs_module, "open_codec_stream", _capture_open)
     cfg = ArchiveyConfig(
         use_rapidgzip=AcceleratorMode.ON,
         use_indexed_bzip2=AcceleratorMode.OFF,

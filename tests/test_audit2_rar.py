@@ -37,6 +37,7 @@ from archivey.exceptions import (
     EncryptionError,
     LinkTargetNotFoundError,
     ResourceLimitError,
+    ResourceUnavailableError,
     UnsupportedFeatureError,
 )
 from tests.conftest import has_binary, requires_binary
@@ -528,7 +529,7 @@ def test_externally_killed_decompressor_is_not_reported_as_truncation(
                     pass
     assert not isinstance(info.value, CorruptionError), repr(info.value)
     if signame == "SIGKILL":
-        assert isinstance(info.value, ResourceLimitError), repr(info.value)
+        assert isinstance(info.value, ResourceUnavailableError), repr(info.value)
 
 
 # --- R23: the RAR5 archive comment is read by its unpacked size ----------------

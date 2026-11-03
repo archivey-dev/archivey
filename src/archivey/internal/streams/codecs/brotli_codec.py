@@ -15,7 +15,7 @@ from archivey.internal.detection_workspace import (
     DETECTION_LIMIT,
     PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE,
 )
-from archivey.internal.streams.archive_stream import RewindWarning
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.base import (
     Codec,
@@ -32,9 +32,10 @@ from archivey.internal.streams.codecs.brotli_framing import (
     probe_bytes_at,
     walk_chain,
 )
-from archivey.internal.streams.codecs.isolated import BrotliChildError, natives_for
+from archivey.internal.streams.codecs.isolated import BrotliChildError
 from archivey.types import (
     MissingComponent,
+    OptionalLibrary,
     StreamFormat,
 )
 
@@ -52,20 +53,23 @@ class BrotliCodec(StreamCodec):
     extension_aliases = (".brotli",)
     # Brotli has no signature; the detector recognizes it by decoding a bounded prefix.
     requirement = MissingComponent(
-        "brotli", "pip install archivey[recommended]", ("brotli",)
+        OptionalLibrary.BROTLI, "pip install archivey[recommended]", ("brotli",)
     )
 
+    @override
     def _backend_present(self) -> bool:
         return deps.brotli.available()
 
+    @override
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        natives = natives_for(config.process_isolation)
-        if not natives.package_available(deps.brotli):
-            raise self._missing("Brotli streams")
+        excluded = config.excluded_libraries
+        natives = config.natives
+        if self.excluded_by(excluded) or not natives.package_available(deps.brotli):
+            raise self._missing("Brotli streams", excluded=excluded)
         # Brotli has no random-access index; a backward seek re-decodes from the start (the
-        # outer ArchiveStream warns — see rewind_warning).
+        # outer ArchiveStream warns; the default rewind_warning names this codec).
         return BrotliDecompressorStream(
             source,
             collector=config.collector,
@@ -74,6 +78,7 @@ class BrotliCodec(StreamCodec):
             natives=natives,
         )
 
+    @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
         # brotli raises its own brotli.error for corrupt data; a truncated stream doesn't
         # raise here (the decompressor just never reports finished), so the base
@@ -87,9 +92,7 @@ class BrotliCodec(StreamCodec):
             )
         return None
 
-    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
-        return RewindWarning("brotli")
-
+    @override
     def content_probe(
         self,
         prefix: bytes,

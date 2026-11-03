@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, tzinfo
-from enum import Enum, Flag, StrEnum, auto
+from enum import Enum, Flag, IntEnum, StrEnum, auto
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -20,7 +20,9 @@ from typing import (
 
 from archivey.cost import CostReceipt, StreamCapability
 from archivey.exceptions import ArchiveyError
+from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.enum_args import coerce_enum
+from archivey.internal.overrides import override
 
 if TYPE_CHECKING:
     from archivey.diagnostics import Diagnostic
@@ -76,6 +78,17 @@ class ContainerFormat(StrEnum):
     SEVEN_Z = "7z"
     ISO = "iso"
     """An ISO 9660 disc image."""
+    AR = "ar"
+    """A Unix ar archive: a static library (``.a``, ``.lib``) or the outer layer of a
+    ``.deb`` package. Read in one forward pass, so from a pipe and inside a compression
+    stream too."""
+    CPIO = "cpio"
+    """A CPIO archive in any of its variants (binary, odc, newc, crc): an initramfs or
+    an RPM payload, for example. Read in one forward pass, so from a pipe and inside a
+    compression stream too."""
+    SQUASHFS = "squashfs"
+    """A SquashFS 4.0 filesystem image: a snap package or a live system's root, for
+    example. Needs a source that can seek."""
     DMG = "dmg"
     """An Apple disk image. archivey recognises one so that opening it can refuse it by
     name, but cannot read it."""
@@ -88,6 +101,44 @@ class ContainerFormat(StrEnum):
     """What detection reports when no format matches. Passing a format with this
     container to ``open_archive()`` or ``open_stream()`` raises
     :class:`~archivey.ArchiveyUsageError`."""
+
+
+class PluginContainer(StrEnum):
+    """Base class for a container enum that a format plugin defines.
+
+    A plugin subclasses it with one member per container it adds, and builds its
+    :class:`~archivey.ArchiveFormat` from that member::
+
+        class LhaContainer(PluginContainer):
+            LHA = "lha"
+
+        LHA = ArchiveFormat(LhaContainer.LHA, StreamFormat.UNCOMPRESSED)
+
+    Experimental, with the rest of ``archivey.formats``: any release may change it.
+    Code that matches on ``ArchiveFormat.container`` needs a default case once a plugin
+    is registered.
+    """
+
+
+class PluginStream(StrEnum):
+    """Base class for a stream enum that a codec plugin defines.
+
+    A plugin subclasses it with one member per compression stream format it adds. The
+    value is the format's file extension, as a :class:`~archivey.StreamFormat` value
+    is::
+
+        class LzhamStream(PluginStream):
+            LZHAM = "lzham"
+
+    The member is the codec's ``CodecHandler.stream_format``, and the second half of
+    each :class:`~archivey.ArchiveFormat` read with it: ``ArchiveFormat(RAW_STREAM,
+    LzhamStream.LZHAM)`` for a single ``.lzham`` file, ``ArchiveFormat(TAR, ...)`` for
+    a ``.tar.lzham``.
+
+    Experimental, with the rest of ``archivey.formats``: any release may change it.
+    Code that matches on ``ArchiveFormat.stream`` needs a default case once a codec is
+    registered.
+    """
 
 
 class StreamFormat(StrEnum):
@@ -110,6 +161,10 @@ class StreamFormat(StrEnum):
     """Brotli has no signature, so archivey detects it by the file name."""
     UNIX_COMPRESS = "Z"
     """The Unix ``compress`` format."""
+    LZOP = "lzo"
+    """The ``.lzo`` file format ``lzop`` writes: LZO1X blocks behind a header.
+    archivey decodes LZO1X with ``python-lzo`` when it is installed, else in Python,
+    more than 25 times slower on text."""
 
 
 @dataclass(frozen=True)
@@ -128,12 +183,14 @@ class ArchiveFormat:
     and an unknown spelling raises :class:`~archivey.ArchiveyUsageError` there.
     """
 
-    container: ContainerFormat
-    """The archive format, such as ``ZIP`` or ``TAR``."""
+    container: ContainerFormat | PluginContainer
+    """The archive format, such as ``ZIP`` or ``TAR``, or a member of a
+    :class:`~archivey.PluginContainer` subclass for a format a plugin adds."""
 
-    stream: StreamFormat
+    stream: StreamFormat | PluginStream
     """The compression around the archive, such as ``GZIP`` for a ``.tar.gz``, or
-    ``UNCOMPRESSED``."""
+    ``UNCOMPRESSED``, or a member of a :class:`~archivey.PluginStream` subclass for a
+    compression format a plugin adds."""
 
     def __post_init__(self) -> None:
         # Converted, not only checked: both enums are ``StrEnum``, so a member is a
@@ -143,8 +200,9 @@ class ArchiveFormat:
         # Holding members makes the two agree. A member of another enum is refused
         # as a container, but left as it is as a stream: the codec registry is keyed
         # on these pairs, and a codec registered from outside
-        # (``tests/test_codec_descriptor.py`` does) brings its own stream enum.
-        if not isinstance(self.container, ContainerFormat):
+        # (``tests/test_codec_descriptor.py`` does) brings its own stream enum. A
+        # plugin's container is kept as it is too (``archivey.formats``).
+        if not isinstance(self.container, (ContainerFormat, PluginContainer)):
             object.__setattr__(
                 self,
                 "container",
@@ -181,9 +239,13 @@ class ArchiveFormat:
     ZLIB: ClassVar[ArchiveFormat]
     BROTLI: ClassVar[ArchiveFormat]
     Z: ClassVar[ArchiveFormat]
+    LZOP: ClassVar[ArchiveFormat]
     SEVEN_Z: ClassVar[ArchiveFormat]
     RAR: ClassVar[ArchiveFormat]
     ISO: ClassVar[ArchiveFormat]
+    AR: ClassVar[ArchiveFormat]
+    CPIO: ClassVar[ArchiveFormat]
+    SQUASHFS: ClassVar[ArchiveFormat]
     DMG: ClassVar[ArchiveFormat]
     DIRECTORY: ClassVar[ArchiveFormat]
     UNKNOWN: ClassVar[ArchiveFormat]
@@ -213,16 +275,23 @@ class ArchiveFormat:
 
         Uses the predefined named-instance attribute name (``ZIP``, ``TAR_GZ``, …).
         A pair with no named constant, such as ``tar.lz``, gets
-        ``CONTAINER_STREAM`` from the two enum member names (``"TAR_LZIP"``); its
-        ``repr()`` stays the explicit constructor form. ``_FORMAT_NAMES`` is
+        ``CONTAINER_STREAM`` from the two enum member names (``"TAR_LZIP"``), or the
+        container name alone when the stream is ``UNCOMPRESSED`` (a plugin's
+        ``"CPIO"``); its ``repr()`` stays the explicit constructor form. ``_FORMAT_NAMES`` is
         populated just after the class definition — safe at runtime because this
         property is never called before the module is fully loaded.
         """
         name = _FORMAT_NAMES.get(self)
         if name is not None:
             return name
+        if self.stream == StreamFormat.UNCOMPRESSED:
+            return self.container.name
+        if self.container is ContainerFormat.RAW_STREAM:
+            # A plugin codec's single file, named by its stream as ``GZ`` is.
+            return self.stream.name
         return f"{self.container.name}_{self.stream.name}"
 
+    @override
     def __repr__(self) -> str:
         name = _FORMAT_NAMES.get(self)
         if name is not None:
@@ -250,11 +319,17 @@ ArchiveFormat.LZMA_ALONE = ArchiveFormat(
 ArchiveFormat.ZLIB = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.ZLIB)
 ArchiveFormat.BROTLI = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BROTLI)
 ArchiveFormat.Z = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.UNIX_COMPRESS)
+ArchiveFormat.LZOP = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZOP)
 ArchiveFormat.SEVEN_Z = ArchiveFormat(
     ContainerFormat.SEVEN_Z, StreamFormat.UNCOMPRESSED
 )
 ArchiveFormat.RAR = ArchiveFormat(ContainerFormat.RAR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.ISO = ArchiveFormat(ContainerFormat.ISO, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.AR = ArchiveFormat(ContainerFormat.AR, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.CPIO = ArchiveFormat(ContainerFormat.CPIO, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.SQUASHFS = ArchiveFormat(
+    ContainerFormat.SQUASHFS, StreamFormat.UNCOMPRESSED
+)
 ArchiveFormat.DMG = ArchiveFormat(ContainerFormat.DMG, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DIRECTORY = ArchiveFormat(
     ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED
@@ -272,6 +347,52 @@ _FORMAT_NAMES: dict[ArchiveFormat, str] = {
 }
 
 
+class OptionalLibrary(StrEnum):
+    """An optional package archivey can decode with, by its import name.
+
+    :attr:`MissingComponent.name` holds one of these when the missing component is
+    one of archivey's own packages. A program (``unrar``) or a plugin's own module is
+    not a member.
+    """
+
+    PYPPMD = "pyppmd"
+    """PPMd members in 7z and ZIP."""
+    INFLATE64 = "inflate64"
+    """Deflate64 members in ZIP and 7z."""
+    BROTLI = "brotli"
+    """Brotli streams and 7z members."""
+    LZ4 = "lz4"
+    """LZ4 streams and 7z members."""
+    BACKPORTS_ZSTD = "backports.zstd"
+    """Zstandard before Python 3.14."""
+    COMPRESSION_ZSTD = "compression.zstd"
+    """Zstandard from Python 3.14, part of the standard library when the build has it."""
+    RAPIDGZIP = "rapidgzip"
+    """The gzip, zlib, Deflate and bzip2 accelerator."""
+    PYCDLIB = "pycdlib"
+    """ISO 9660 images."""
+    CRYPTOGRAPHY = "cryptography"
+    """AES decryption in ZIP, 7z and RAR."""
+    LZO = "lzo"
+    """``python-lzo``: LZO1X in ``.lzo`` files and SquashFS images. archivey decodes
+    LZO1X in Python without it, more slowly."""
+
+
+OptionalLibraryStr = Literal[
+    "pyppmd",
+    "inflate64",
+    "brotli",
+    "lz4",
+    "backports.zstd",
+    "compression.zstd",
+    "rapidgzip",
+    "pycdlib",
+    "cryptography",
+    "lzo",
+]
+"""The values of :class:`OptionalLibrary`, for an argument that takes either spelling."""
+
+
 @dataclass(frozen=True)
 class MissingComponent:
     """A package, extra, or external tool required for a format (or a codec inside it).
@@ -283,7 +404,9 @@ class MissingComponent:
     """
 
     name: str
-    """The package or program, such as ``"pycdlib"``, ``"brotli"`` or ``"unrar"``."""
+    """The package or program, such as ``"pycdlib"``, ``"brotli"`` or ``"unrar"``. For
+    one of archivey's own packages it is the :class:`OptionalLibrary` member, which is
+    a ``str``."""
 
     install_hint: str
     """For a package, the command that installs it, such as
@@ -321,11 +444,32 @@ class MissingComponent:
         For package entries only: a program entry's ``install_hint`` is already a
         complete message.
         """
+        # ``str()`` first: the repr of an OptionalLibrary member is the enum's.
+        name = str(self.name)
         if self.reason:
-            text = f"The {self.name!r} package is required for {purpose}, but {self.reason}."
+            text = f"The {name!r} package is required for {purpose}, but {self.reason}."
         else:
-            text = f"The {self.name!r} package is required for {purpose} ({self.install_hint})."
+            text = (
+                f"The {name!r} package is required for {purpose} ({self.install_hint})."
+            )
         return f"{text} {note}" if note else text
+
+
+def _bind_exception_hint() -> None:
+    """Bind ``MissingComponent`` where the exceptions are defined.
+
+    ``PackageNotInstalledError.missing`` is annotated with it, but that module cannot
+    import this one (this module imports the exceptions), so it names it only under
+    ``TYPE_CHECKING``. Binding it here lets ``typing.get_type_hints`` resolve the
+    error's hints.
+    """
+    from archivey import exceptions
+
+    exceptions.MissingComponent = MissingComponent
+
+
+_bind_exception_hint()
+del _bind_exception_hint
 
 
 class FormatSupport(Enum):
@@ -429,6 +573,43 @@ class HashAlgorithm(StrEnum):
     """BLAKE2sp, 32 bytes. Only RAR5 stores it."""
 
 
+class Verification(IntEnum):
+    """How much of a member stream's data has been checked, from least to most.
+
+    ``verified`` is the level reached so far on a member or its stream, and
+    ``verifiable`` the most a read from the start to the end can reach. Above
+    ``NONE``, ``verified == verifiable`` means every check the member carries has
+    passed. At ``NONE`` nothing was proved, not even that the data is complete; after
+    ``reader.verify_all()``, the members that failed are the ones it returns,
+    whatever their levels. The levels are ordered, so
+    ``member.verified >= Verification.LENGTH`` reads as "at least the length was
+    checked".
+
+    Experimental: any release, a patch included, may change or remove the levels, their
+    names or what they mean.
+    """
+
+    NONE = 0
+    """Nothing is proved: the member is encrypted and its password is not confirmed,
+    not yet or only by a check that a wrong password can pass by chance, such as the
+    one-byte check of old ZIP encryption."""
+    UNLOCKED = 1
+    """Nothing stands between the reader and the member's real bytes: the member is
+    not encrypted, or its password passed a check a wrong password cannot pass by
+    chance."""
+    LENGTH = 2
+    """As ``UNLOCKED``, and a read reached the end with the length and every
+    end-of-data check passing: all the data is there, though its bytes are not
+    proved."""
+    CHECKSUM = 3
+    """As ``LENGTH``, and every byte of the member passed a checksum stored with the
+    data, at whatever layer it sits: the member's CRC-32 or BLAKE2sp, the WinZip AES
+    authentication code, the checksum of a gzip, bzip2, lzip or zlib stream, or the
+    checks of an xz, zstd or LZ4 file whose every stream or frame carries one, read
+    from its start. A checksum over several members, such as a ``.tar.gz`` trailer or
+    a 7z folder CRC, raises them all once it passes, read or not."""
+
+
 class CompressionAlgorithm(Enum):
     """A compression method or filter in a member's :class:`CompressionMethod` chain.
 
@@ -446,6 +627,9 @@ class CompressionAlgorithm(Enum):
     LZ4 = "lz4"
     BROTLI = "brotli"
     PPMD = "ppmd"
+    XZ = "xz"
+    """A complete ``.xz`` stream, with its own header and checks, as a ZIP member with
+    method 95 stores it."""
     BCJ = "bcj"
     """A filter that makes x86 executable code compress better. It does not compress
     by itself."""
@@ -454,6 +638,14 @@ class CompressionAlgorithm(Enum):
     DELTA = "delta"
     """A filter that stores the difference between bytes a fixed distance apart. It
     does not compress by itself."""
+    SHRINK = "shrink"
+    """ZIP method 1, an LZW variant from PKZIP 1.x. No current tool writes it."""
+    IMPLODE = "implode"
+    """ZIP method 6, LZ77 with Shannon-Fano codes, from PKZIP 1.x. No current tool
+    writes it."""
+    LZO = "lzo"
+    """Raw LZO1X with no header, as SquashFS stores a block. Not the ``.lzo`` file
+    format, which is ``StreamFormat.LZOP``."""
     RAR = "rar"
     """RAR's own compression, any version. Not the same as ``ContainerFormat.RAR``,
     which is the archive format."""
@@ -596,30 +788,39 @@ class _ReadOnlyDict(dict[str, str]):
     def _refuse(self, *args: object, **kwargs: object) -> NoReturn:
         raise TypeError("extra['tar.pax_headers'] is read-only; copy it with dict()")
 
+    @override
     def __setitem__(self, key: str, value: str, /) -> NoReturn:
         self._refuse()
 
+    @override
     def __delitem__(self, key: str, /) -> NoReturn:
         self._refuse()
 
+    @override
     def __ior__(self, value: object, /) -> NoReturn:
         self._refuse()
 
+    @override
     def clear(self) -> NoReturn:
         self._refuse()
 
+    @override
     def pop(self, key: object, /, *default: object) -> NoReturn:
         self._refuse()
 
+    @override
     def popitem(self) -> NoReturn:
         self._refuse()
 
+    @override
     def setdefault(self, key: str, default: str = "", /) -> NoReturn:
         self._refuse()
 
+    @override
     def update(self, *args: object, **kwargs: object) -> NoReturn:
         self._refuse()
 
+    @override
     def __reduce__(self) -> tuple[type[dict[str, str]], tuple[dict[str, str]]]:
         return (dict, (dict(self),))
 
@@ -707,6 +908,8 @@ class MemberExtra(dict[str, object]):
       size for a file of several members (it covers only the last; a bgzip file
       ends with an empty member and reads 0) or with bytes after the last one.
       ``size`` stays ``None`` until a full read fills it in.
+    * ``lzop.original_filename`` (``str``) — the name the lzop header stores, as
+      ``gzip.original_filename`` is for gzip.
     * ``iso.version`` (``int``) — plain ISO 9660 only: the ``;N`` file version
       stripped from the name. Versions of one name share it; the highest is
       listed last and is the current one.
@@ -767,9 +970,12 @@ class MemberExtra(dict[str, object]):
     @overload
     def __getitem__(self, key: Literal["gzip.isize"], /) -> int: ...
     @overload
+    def __getitem__(self, key: Literal["lzop.original_filename"], /) -> str: ...
+    @overload
     def __getitem__(self, key: Literal["iso.version"], /) -> int: ...
     @overload
     def __getitem__(self, key: str, /) -> object: ...
+    @override
     def __getitem__(self, key: str, /) -> object:
         return super().__getitem__(key)
 
@@ -786,6 +992,11 @@ class ArchiveInfoExtra(dict[str, object]):
     * ``zip.volume_count`` (``int``)
     * ``rar.volume_count`` (``int``)
     * ``7z.volume_count`` (``int``)
+    * ``ar.symbol_table`` (``bool``)
+    * ``ar.dialect`` (``str``)
+    * ``cpio.variant`` (``str``)
+    * ``squashfs.compressor`` (``str``)
+    * ``squashfs.block_size`` (``int``)
     """
 
     __slots__ = ()
@@ -799,9 +1010,32 @@ class ArchiveInfoExtra(dict[str, object]):
     @overload
     def __getitem__(self, key: Literal["7z.volume_count"], /) -> int: ...
     @overload
+    def __getitem__(self, key: Literal["ar.symbol_table"], /) -> bool: ...
+    @overload
+    def __getitem__(self, key: Literal["ar.dialect"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["cpio.variant"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["squashfs.compressor"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["squashfs.block_size"], /) -> int: ...
+    @overload
     def __getitem__(self, key: str, /) -> object: ...
+    @override
     def __getitem__(self, key: str, /) -> object:
         return super().__getitem__(key)
+
+
+def _as_utc(dt: datetime | None, tz_for_naive: tzinfo | None) -> datetime | None:
+    """``dt`` in UTC; a naive ``dt`` first gets ``tz_for_naive``, else the local zone."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        if tz_for_naive is not None:
+            dt = dt.replace(tzinfo=tz_for_naive)
+        else:
+            dt = dt.astimezone()  # naive -> assume local timezone
+    return dt.astimezone(UTC)
 
 
 @dataclass(slots=True)
@@ -842,6 +1076,9 @@ class ArchiveMember:
       source has no file name); ``raw_name`` holds the original file name from the
       gzip header (``FNAME``), and ``extra["gzip.original_filename"]`` holds those
       bytes decoded as Latin-1.
+    - A ``.lzo`` file's member is named after the archive source in the same way;
+      ``raw_name`` holds the name the lzop header stores, and
+      ``extra["lzop.original_filename"]`` holds those bytes decoded.
     - A 7z member stored with no name is named after the archive source, and
       ``raw_name`` is ``b""``.
     - A RAR5 file-version-history member gets a ``;n`` suffix in ``name`` (as
@@ -874,7 +1111,8 @@ class ArchiveMember:
     on Unix (a RAR or 7z made there, a ZIP from any host but FAT, OS/2, NTFS or
     VFAT, an unknown host too) and the Rock Ridge and PAX change times. A TAR gets
     ``created`` only from libarchive's PAX ``LIBARCHIVE.creationtime``. Directory
-    listing uses ``st_birthtime`` only.
+    listing uses ``st_birthtime`` only. Extraction restores it on Windows and macOS;
+    Linux has no way to set a birth time.
     """
 
     ctime: datetime | None = None
@@ -1008,19 +1246,19 @@ class ArchiveMember:
     walk ends). Cleared once the listing's links are resolved, when the walk stops
     keeping members, when the reader closes, and on a :meth:`replace` copy; not when
     the walk ends, since a peek ends it before any link is resolved. Read it through
-    the public :attr:`member_state_final`. Not part of the public contract."""
+    the public :attr:`~archivey.ArchiveMember.member_state_final`. Not part of the public contract."""
     _link_target_unread: bool = field(default=False, repr=False, compare=False)
     """Set while this symlink's target is stored as member data nobody has read yet.
 
     Reading it can set ``link_target`` and, for a Windows reparse point whose data is
     not a link buffer, change ``type``. Cleared once the backend has looked, found or
-    not. Read it through :attr:`member_state_final`. Not part of the public contract."""
+    not. Read it through :attr:`~archivey.ArchiveMember.member_state_final`. Not part of the public contract."""
     _size_unread: bool = field(default=False, repr=False, compare=False)
     """Set while ``size`` is ``None`` and a full read of the member would fill it in.
 
     Cleared once a read fills the size, when a ``streaming=True`` pass ends or fails
     (no read can reach the member again), and when the reader closes. Read it through
-    :attr:`member_state_final`. Not part of the public contract."""
+    :attr:`~archivey.ArchiveMember.member_state_final`. Not part of the public contract."""
     _link_target_absent: bool = field(default=False, repr=False, compare=False)
     """Set when the archive itself records no target for this link.
 
@@ -1039,6 +1277,24 @@ class ArchiveMember:
     target again and raises it. This only stops a second report, when a ``stream_members()`` pass
     read the target as it reached the link and its listing then resolves links. Not
     part of the public contract."""
+    _verified: Verification = field(
+        default=Verification.NONE, repr=False, compare=False
+    )
+    """The highest level a read has proved for this member's data, raised in place
+    under the level lock (``raise_member_level``). Read it through ``verified``.
+    Not part of the public contract."""
+    _verifiable: Verification | None = field(default=None, repr=False, compare=False)
+    """The most a read can prove, settled when a stream of this member first opens
+    its data; ``None`` until then. Read it through ``verifiable``. Not part of
+    the public contract."""
+    _ceiling_provisional: bool | None = field(default=None, repr=False, compare=False)
+    """Whether ``verifiable`` waits on a read from the start, for a codec whose check
+    is optional per frame (zstd, LZ4, xz). ``None`` before a stream of the member has
+    opened its data. ``True`` while every frame a read has seen carries a check and no
+    read from the start has ended: such a read may raise ``verifiable`` to
+    ``CHECKSUM``, so ``verify()`` and ``verify_all()`` read the member again.
+    ``False`` for good once a read from the start has ended. Not part of the public
+    contract."""
 
     # Mutable members are intentionally unhashable. ``@dataclass`` (``eq=True``, not
     # frozen) sets ``__hash__ = None``, which is what makes ``isinstance(m, Hashable)``
@@ -1068,15 +1324,28 @@ class ArchiveMember:
         local timezone when not given. Whether the stored value was wall-clock remains
         visible on the field itself: ``member.modified.tzinfo is None``.
         """
-        dt = self.modified
-        if dt is None:
-            return None
-        if dt.tzinfo is None:
-            if tz_for_naive is not None:
-                dt = dt.replace(tzinfo=tz_for_naive)
-            else:
-                dt = dt.astimezone()  # naive -> assume local timezone
-        return dt.astimezone(UTC)
+        return _as_utc(self.modified, tz_for_naive)
+
+    def accessed_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None:
+        """:attr:`accessed` as a timezone-aware UTC ``datetime``, or ``None``.
+
+        Converted as :meth:`modified_utc` converts ``modified``.
+        """
+        return _as_utc(self.accessed, tz_for_naive)
+
+    def created_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None:
+        """:attr:`created` as a timezone-aware UTC ``datetime``, or ``None``.
+
+        Converted as :meth:`modified_utc` converts ``modified``.
+        """
+        return _as_utc(self.created, tz_for_naive)
+
+    def ctime_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None:
+        """:attr:`ctime` as a timezone-aware UTC ``datetime``, or ``None``.
+
+        Converted as :meth:`modified_utc` converts ``modified``.
+        """
+        return _as_utc(self.ctime, tz_for_naive)
 
     @property
     def is_file(self) -> bool:
@@ -1132,6 +1401,51 @@ class ArchiveMember:
         what the archive said about it.
         """
         return bool(self.extra.get(EXTRA_IS_REPARSE_POINT))
+
+    @property
+    def verified(self) -> Verification:
+        """How much of this member's data a read has checked so far, as a ``Verification``.
+
+        ``UNLOCKED`` from the listing when the member is not encrypted, ``NONE`` while
+        an encrypted member's password is not confirmed. Any read that proves more
+        raises it in place: a stream of this member read to its end,
+        :meth:`~archivey.ForwardArchiveReader.verify_all`, or a read of a whole 7z
+        folder whose checksum covers this member. A stream opened from a
+        ``replace()`` copy raises the reader's own member, not the copy. It never goes
+        down. Not part of equality, and not covered by :attr:`~archivey.ArchiveMember.member_state_final`: it
+        can still rise after that is ``True``.
+
+        Experimental: any release, a patch included, may change or remove this property,
+        its levels or what they mean.
+        """
+        if self._verified is Verification.NONE and not self.is_encrypted:
+            return Verification.UNLOCKED
+        return self._verified
+
+    @property
+    def verifiable(self) -> Verification:
+        """The most :attr:`~archivey.ArchiveMember.verified` can reach by reading this member's data to the end.
+
+        ``CHECKSUM`` when the member carries a checksum archivey can compute,
+        ``LENGTH`` when it carries none, and ``NONE`` for an encrypted member whose
+        password nothing can prove. A member with no data of its own (a link, a special
+        entry, a directory that declares no data) has nothing to read, so it is
+        ``verified`` already. Before a stream of the member has opened its data
+        it is the listing's estimate, and it may settle lower once, at that first open
+        (a weak password check is only found then). After that it never falls. It
+        rises when another member's checksum confirms the password.
+
+        Experimental: any release, a patch included, may change or remove this property,
+        its levels or what they mean.
+        """
+        settled = self._verifiable
+        if settled is None:
+            if not (
+                self.is_file or (self.type is MemberType.DIRECTORY and bool(self.size))
+            ):
+                return self.verified
+            settled = Verification.CHECKSUM if self.hashes else Verification.LENGTH
+        return max(settled, self.verified)
 
     @property
     def member_state_final(self) -> bool:
@@ -1204,9 +1518,10 @@ class ArchiveMember:
         """Return a copy with the given fields changed; never mutates self.
 
         ``object`` is not a check: neither the keyword names nor the value types are
-        verified statically, so a misspelled field or a wrongly typed value is still
-        a ``TypeError`` from ``dataclasses.replace`` at runtime. Typing the names
-        would need a per-field ``TypedDict``, which is deliberately deferred.
+        verified statically. A misspelled field is still a ``TypeError`` from
+        ``dataclasses.replace`` at runtime; a wrongly typed value is accepted, and
+        shows up only where it is used. Typing the names would need a per-field
+        ``TypedDict``, which is deliberately deferred.
 
         No listing holds the copy, so nothing stamps ``is_current`` on it or resolves
         its links to members; its ``member_state_final`` waits only on an unread link
@@ -1215,7 +1530,9 @@ class ArchiveMember:
         a copy, so a copy whose target is never read keeps reading ``False``. A read
         fills a late ``size`` into the reader's own member, never into a copy.
         """
-        copy = replace(self, **kwargs)
+        # Extraction copies each member several times; ``copy_with`` is
+        # ``dataclasses.replace``, a few times faster.
+        copy = copy_with(self, **kwargs)
         copy._listing_pending = False
         copy._size_unread = False
         return copy
@@ -1310,16 +1627,20 @@ class ExtractionPolicy(Enum):
     STRICT = "strict"
     """The default, for archives from anywhere. A name is rewritten to a spelling every
     supported OS stores the same way, or refused when that is not possible: absolute
-    names, Windows reserved names such as ``CON``, names with ``:``, and names with
-    characters that reorder how they display are refused. Files keep their permissions
+    names, Windows reserved names such as ``CON``, names with ``:``, names with
+    characters that reorder how they display, and names another OS or reader takes
+    differently (a ``\\``, a control character, bytes that are not UTF-8) are refused.
+    Files keep their permissions
     without the setuid, setgid and sticky bits and without write access for group and
     others, and a file its owner cannot execute is executable by nobody. Directories
     are ``rwxr-xr-x``, and owners are not applied."""
     STANDARD = "standard"
     """For archives you mostly trust, such as your own. As ``STRICT``, but trailing dots
     and spaces are kept (a folder named only dots or spaces, such as ``...``, is still
-    refused), an absolute name is extracted inside the destination
-    (``/etc/x`` as ``etc/x``, as tar and unzip do), and permissions are kept as stored
+    refused), a ``\\``, a control character or bytes that are not UTF-8 are written in
+    a portable spelling (``a\\b`` as ``a/b``, ``caf\\xe9`` as ``caf%E9``), an absolute
+    name is extracted inside the destination (``/etc/x`` as ``etc/x``, as tar and unzip
+    do), and permissions are kept as stored
     without the setuid, setgid and sticky bits."""
     TRUSTED = "trusted"
     """For archives you trust, to reproduce them faithfully. Names are written as
@@ -1483,10 +1804,11 @@ class NameRewrite(StrEnum):
 
     PORTABLE_NAME = "portable_name"
     """The name was respelled so that every supported OS stores it the same way: a
-    ``\\`` written as ``/``, a byte that is not UTF-8 or a character Windows refuses
-    (``<>"|?*`` and 0x01-0x1F) written as ``%XX``, and, under ``STRICT`` only, a
-    trailing dot or space removed from each segment. ``TRUSTED`` never rewrites a
-    name."""
+    character Windows refuses (``<>"|?*``) written as ``%XX``; under ``STANDARD`` a
+    ``\\`` written as ``/`` and a byte that is not UTF-8 or a control character
+    0x01-0x1F written as ``%XX`` (``STRICT`` refuses those names); and, under ``STRICT``
+    only, a trailing dot or space removed from each segment. ``TRUSTED`` never rewrites
+    a name."""
 
 
 @dataclass

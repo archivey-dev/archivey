@@ -1,4 +1,5 @@
-"""Wall time of archivey against third-party readers: py7zr, rarfile, libarchive-c.
+"""Wall time of archivey against other readers: py7zr, rarfile, libarchive-c, and on
+many small members the standard library's zipfile and tarfile.
 
 Run::
 
@@ -10,6 +11,11 @@ their ratios do not fit its ceiling (libarchive lists a solid 7z without decodin
 rarfile starts one ``unrar`` process per member) and libarchive-c needs the system
 ``libarchive`` library, which a runner may not have. A missing peer is reported as
 skipped.
+
+Two corpora. The harness corpus (64 members of 256 KiB, and the many-member listing
+archives) is mostly codec and listing work. The small-member corpus (4 000 files of
+20-600 random bytes in a three-level tree, as ZIP, TAR, tar.gz and 7z) is mostly the
+cost each member pays, which the harness corpus barely shows.
 
 Each row times archivey and one peer on the same file, alternating the order, and
 reports the median of each side (``--rounds``, default 9 timed calls per side).
@@ -23,10 +29,13 @@ import argparse
 import contextlib
 import importlib
 import logging
+import random
 import shutil
 import statistics
+import tarfile
 import tempfile
 import time
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -63,6 +72,52 @@ def _ay_extract(path: Path, dest: Path) -> None:
     # extraction limits are off here: ratio, total bytes and entry count.
     with open_archive(path) as reader:
         reader.extract_all(dest, limits=ExtractionLimits.UNLIMITED)
+
+
+# --- zipfile and tarfile (small-member corpus only; the harness compares the rest) ---
+
+
+def _zipfile_list(path: Path) -> None:
+    with zipfile.ZipFile(path) as archive:
+        archive.infolist()
+
+
+def _zipfile_read_all(path: Path) -> int:
+    total = 0
+    with zipfile.ZipFile(path) as archive:
+        for info in archive.infolist():
+            if not info.is_dir():
+                total += len(archive.read(info))
+    return total
+
+
+def _zipfile_extract(path: Path, dest: Path) -> None:
+    # Writes the bytes only: zipfile restores neither mode nor mtime, which archivey
+    # and tarfile set on every member.
+    with zipfile.ZipFile(path) as archive:
+        archive.extractall(dest)
+
+
+def _tarfile_list(path: Path) -> None:
+    with tarfile.open(path) as archive:
+        archive.getmembers()
+
+
+def _tarfile_read_all(path: Path) -> int:
+    # One forward pass, as archivey's stream_members() reads it.
+    total = 0
+    with tarfile.open(path, "r|*") as archive:
+        for info in archive:
+            stream = archive.extractfile(info)
+            if stream is not None:
+                total += len(stream.read())
+    return total
+
+
+def _tarfile_extract(path: Path, dest: Path) -> None:
+    # Sets mode and mtime on every member (any filter does), as archivey does.
+    with tarfile.open(path) as archive:
+        archive.extractall(dest, filter="data")
 
 
 # --- py7zr (listing op shared with the harness) ---
@@ -141,6 +196,8 @@ def _libarchive_extract(path: Path, dest: Path) -> None:
 
 def _peer_available(name: str) -> str | None:
     """None when ``name`` can run here, else the reason it cannot."""
+    if name in ("zipfile", "tarfile"):
+        return None
     if name == "py7zr":
         return None if _py7zr_available() else "py7zr not importable"
     if name == "rarfile":
@@ -158,6 +215,16 @@ def _peer_available(name: str) -> str | None:
 
 
 PEER_OPS: dict[str, dict[str, Callable[..., object]]] = {
+    "zipfile": {
+        "list": _zipfile_list,
+        "read_all": _zipfile_read_all,
+        "extract": _zipfile_extract,
+    },
+    "tarfile": {
+        "list": _tarfile_list,
+        "read_all": _tarfile_read_all,
+        "extract": _tarfile_extract,
+    },
     "py7zr": {
         "list": _py7zr_open_list,
         "read_all": _py7zr_read_all,
@@ -206,9 +273,62 @@ def _median_pair(
     return statistics.median(times[0]), statistics.median(times[1])
 
 
-def _cases(fx: FixtureSet) -> list[tuple[str, Path | None, list[str], list[str]]]:
-    """(label, path, operations, peers). A ``None`` path is reported as skipped."""
+def _small_member_archives(root: Path, count: int) -> dict[str, Path | None]:
+    """ZIP (DEFLATE and stored), TAR, tar.gz and 7z of ``count`` files of 20-600
+    random bytes, in 40 directories of 7 subdirectories each (fewer at ci scale).
+    Built once per ``root``. The 7z entry is ``None`` when py7zr, its writer, is
+    missing."""
+    base = root / f"small-{count}"
+    tree = base / "tree"
+    out: dict[str, Path | None] = {
+        "zip": base / "small.zip",
+        "zip-stored": base / "small-stored.zip",
+        "tar": base / "small.tar",
+        "tar.gz": base / "small.tar.gz",
+        "7z": base / "small.7z",
+    }
+    if not tree.exists():
+        rng = random.Random(1)
+        # Staged and renamed: a short tree from an interrupted run would shrink the
+        # corpus silently. A cut-off archive below fails loudly on its next open
+        # instead, so those are written in place, as fixtures.py writes its own.
+        staging = base / "tree.part"
+        shutil.rmtree(staging, ignore_errors=True)
+        for i in range(count):
+            folder = staging / f"d{i % 40}" / f"s{i % 7}"
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / f"f{i}.txt").write_bytes(rng.randbytes(rng.randint(20, 600)))
+        staging.rename(tree)
+    for key, method in (
+        ("zip", zipfile.ZIP_DEFLATED),
+        ("zip-stored", zipfile.ZIP_STORED),
+    ):
+        if not (path := out[key]).exists():
+            with zipfile.ZipFile(path, "w", method) as archive:
+                for entry in sorted(tree.rglob("*")):
+                    archive.write(entry, entry.relative_to(base).as_posix())
+    for key, mode in (("tar", "w"), ("tar.gz", "w:gz")):
+        if not (path := out[key]).exists():
+            with tarfile.open(path, mode) as archive:
+                archive.add(tree, arcname="tree")
+    if not (path := out["7z"]).exists():
+        if not _py7zr_available():
+            out["7z"] = None
+        else:
+            import py7zr
+
+            with py7zr.SevenZipFile(path, "w") as archive:
+                archive.writeall(tree, arcname="tree")
+    return out
+
+
+def _cases(
+    fx: FixtureSet, small: dict[str, Path | None]
+) -> list[tuple[str, Path | None, list[str], list[str]]]:
+    """(label, path, operations, peers). A ``None`` path is reported as skipped.
+    ``small`` is ``_small_member_archives``' result for ``fx``."""
     full = ["list", "read_all", "extract"]
+    tiny = f"{fx.scale.small_members:,} small".replace(",", " ")
     many = f"{fx.scale.list_members:,} members".replace(",", " ")
     nonsolid = f"{fx.scale.nonsolid_list_members:,} non-solid".replace(",", " ")
     seven, rar = ["py7zr", "libarchive-c"], ["rarfile", "libarchive-c"]
@@ -221,6 +341,11 @@ def _cases(fx: FixtureSet) -> list[tuple[str, Path | None, list[str], list[str]]
         ("RAR solid", fx.solid_rar, full, rar),
         (f"RAR {many}", fx.many_rar, ["list"], rar),
         (f"RAR {nonsolid}", fx.nonsolid_rar, ["list"], rar),
+        (f"ZIP {tiny}", small["zip"], full, ["zipfile", "libarchive-c"]),
+        (f"ZIP stored {tiny}", small["zip-stored"], full, ["zipfile"]),
+        (f"TAR {tiny}", small["tar"], full, ["tarfile", "libarchive-c"]),
+        (f"tar.gz {tiny}", small["tar.gz"], full, ["tarfile", "libarchive-c"]),
+        (f"7z {tiny}", small["7z"], full, seven),
     ]
 
 
@@ -230,11 +355,12 @@ def run(scale: str, rounds: int) -> None:
     Ratio is archivey / peer.
     """
     fx = materialize_fixtures(scale=scale)
+    small = _small_member_archives(fx.root, fx.scale.small_members)
     work = Path(tempfile.mkdtemp(prefix="archivey-peers-"))
     print("| Archive | Operation | Peer | archivey | peer | ratio |")
     print("| --- | --- | --- | ---: | ---: | ---: |", flush=True)
     try:
-        for label, path, ops, peers in _cases(fx):
+        for label, path, ops, peers in _cases(fx, small):
             for peer in peers:
                 for op in ops:
                     why = _peer_available(peer)

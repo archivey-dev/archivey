@@ -48,22 +48,26 @@ stops the extraction with an exception. Without it, that member is skipped and t
 as `ExtractionStatus.BLOCKED`. [Extracting](extracting.md#options) explains both options.
 
 By default, an extraction raises `ResourceLimitError` once it has written 2 GiB or 262,144 entries,
-or when data expands more than 1000 times. A sparse TAR member, such as a disk image, can expand
-that much on its own. Listing an archive also raises `ResourceLimitError` past 262,144 members, or
-past 64 MiB of text kept for names, comments and link targets. A larger dataset from a source you
-trust needs higher limits:
+or when data expands more than 800 times. A sparse TAR member, such as a disk image, can expand
+that much on its own, and so can a large zero-filled file in any format. Reading a member raises it
+past 800 times too, and listing an archive raises it past 262,144 members, past 64 MiB of text kept
+for names, comments and link targets, or when a compressed tar expands more than 800 times. A larger dataset from a source you trust needs higher limits:
 
 ```python
 import archivey
 
-config = archivey.ArchiveyConfig(listing_limits=archivey.ListingLimits.UNLIMITED)
+config = archivey.ArchiveyConfig(
+    listing_limits=archivey.ListingLimits.UNLIMITED,
+    decoder_limits=archivey.DecoderLimits(max_ratio=None),
+)
 
 with archivey.open_archive("dataset.tar.gz", config=config) as archive:
     archive.extract_all("data/", limits=archivey.ExtractionLimits.UNLIMITED)
 ```
 
-`ExtractionLimits.UNLIMITED` turns off all three extraction limits, the expansion check included,
-and `ListingLimits.UNLIMITED` turns off both listing limits. Listing still costs about 1.5 KiB of
+`ExtractionLimits.UNLIMITED` turns off the extraction limits, `DecoderLimits(max_ratio=None)` the
+expansion check for reads, listing and extraction, and `ListingLimits.UNLIMITED` both listing
+limits. Listing still costs about 1.5 KiB of
 memory per member. To keep some protection, raise single fields instead, such as
 `ListingLimits(max_members=5_000_000, max_metadata_bytes=2**30)`.
 [Hardening](security.md#hardening) lists each limit with its default and what it costs.
@@ -228,7 +232,7 @@ Each setting in `CONFIG` does one job:
   may use on your server.
 - `ProcessIsolation.NATIVE_DECODERS` runs every native decoder, such as zlib, bz2 and lzma, in a
   child process, so a crash in one raises `CorruptionError` for that member instead of ending your
-  server. AES decryption and checksums still run in your process. A large stream reads about
+  server. AES decryption and checksums still run in your process. Reading a large stream is about
   1.05 to 6 times slower depending on the compression, and each member with its own decoder adds
   about 1 ms (2 ms for PPMd), which is most of the cost for an archive of many small members
   ([Decoders in a child process](security.md#decoders-in-a-child-process)).
@@ -237,9 +241,11 @@ Each setting in `CONFIG` does one job:
   without its end marker
   ([Raising or quieting a diagnostic](errors-and-diagnostics.md#raising-or-quieting-a-diagnostic)).
 
-`ExtractionLimits` covers only what `extract_all` writes, so a loop that reads member data keeps
-its own count. [Where the guarantees stop](security.md#where-the-guarantees-stop) says which limits
-apply to a read, and [Hardening](security.md#hardening) lists every limit.
+`max_extracted_bytes` and `max_entries` cover only what `extract_all` writes, so a loop that reads
+member data keeps its own count of bytes. `max_ratio` holds the reads too, so a member that expands
+past it raises `ResourceLimitError` from the read.
+[Where the guarantees stop](security.md#where-the-guarantees-stop) says which limits apply to a
+read, and [Hardening](security.md#hardening) lists every limit.
 
 ### Refuse an upload with a reason
 
@@ -285,6 +291,8 @@ def check_upload(path):
         return "encrypted archives are not accepted"
     except archivey.CorruptionError:
         return "the archive is damaged"
+    except archivey.ResourceUnavailableError:
+        return "the server is short of memory; try again later"
     except archivey.ResourceLimitError:
         return "the archive is too large"
     except archivey.DiagnosticRaisedError as e:
@@ -311,8 +319,10 @@ What each exception means for an upload:
 - **`EncryptionError`**: a member needs a password. 7z archives and old ZIP encryption can't tell
   damage from a wrong password, so damage in an encrypted member raises this too.
 - **`CorruptionError`**, with its subclass `TruncatedError`: the data is damaged or ends early.
-- **`ResourceLimitError`**: the archive went over a limit. It's also raised when a decoder's child
-  process is killed from outside, most often by the out-of-memory killer.
+- **`ResourceLimitError`**: the archive went over a limit. Its subclass `ResourceUnavailableError`
+  means the machine ran short instead: a decoder's child process was killed from outside, most
+  often by the out-of-memory killer, or no child process could start. Retrying with more memory
+  may work; raising a limit won't.
 - **`DiagnosticRaisedError`**: `DiagnosticPolicy.STRICT` raised a diagnostic. `e.diagnostic.code`
   says which one.
 - **`UnsupportedFeatureError`**: the format is recognized, but the archive uses something archivey
@@ -473,9 +483,9 @@ print(contains_archive("upload.zip"))
 ```
 
 The member is copied to a temporary file because its first bytes aren't always enough. An ISO keeps
-its signature 32 KiB into the file, and a self-extracting archive starts with a program, so the
-archive may start far into the member. A check of the first few KiB alone is only a fast first
-filter, and a member it lets through still needs the full check.
+its signature 32 KiB into the file, and a ZIP, 7z or RAR can sit behind a program or any other
+leading bytes, so the archive may start far into the member. A check of the first few KiB alone
+is only a fast first filter, and a member it lets through still needs the full check.
 
 zlib, Brotli and `.lzma` data start with nothing that identifies them, and the copy has no file name
 to go by. Without `always_probe_content=True`, `detect_format` misses them, though `open_archive`
@@ -483,8 +493,10 @@ reads the same bytes saved under a name ending in `.zz`, `.br` or `.lzma`. With 
 file that only happens to decode as one of them also counts as an archive, which errs on the side
 of refusing.
 
-Even so, the check finds only what archivey recognizes. Other tools can find more: `unzip` and
-7-Zip also find a ZIP behind arbitrary leading bytes, which archivey doesn't.
+Even so, the check finds only what archivey recognizes. A ZIP, 7z or RAR behind leading bytes is
+found only within the first 2 MiB (from a pipe read directly, only within the bytes detection has
+already read; this recipe copies the member to a file first); `unzip` finds a ZIP from its end,
+however far in it starts.
 
 A compressed file such as `notes.txt.gz` or `data.zz` counts as an archive here, since it can expand
 as much as one. So do Office documents, JAR files and wheels, which are ZIP archives.

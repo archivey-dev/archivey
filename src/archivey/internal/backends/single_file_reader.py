@@ -48,16 +48,17 @@ from archivey.internal.naming import (
     infer_member_name_from_archive,
 )
 from archivey.internal.open_site import OpenSite
+from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import MemberStreamParts
 from archivey.internal.streams.codecs import (
-    SINGLE_FILE_CODECS,
     Codec,
     MetadataContext,
     open_codec_stream,
     resolve_codec,
+    single_file_codecs,
     stream_codec_for_format,
 )
 from archivey.internal.streams.codecs.lzip_decoder import peek_index_summary
@@ -81,12 +82,15 @@ from archivey.types import (
 
 _T = TypeVar("_T")
 
-# Lowercased standalone-compression extensions, for the "strip vs append .uncompressed" rule
-# in member-name inference. Sourced from the codec objects. (The combined `tar.gz`/`.tgz`
-# names are a format-detection concern, not single-file naming.)
-_COMPRESSION_EXTS: frozenset[str] = frozenset(
-    ext.lower() for c in SINGLE_FILE_CODECS for ext in c.extensions
-)
+
+def _compression_exts() -> frozenset[str]:
+    """Lowercased standalone-compression extensions, for the "strip vs append
+    .uncompressed" rule in member-name inference. Read from the codecs registered now.
+    (The combined ``tar.gz``/``.tgz`` names are a format-detection concern, not
+    single-file naming.)"""
+    return frozenset(ext.lower() for c in single_file_codecs() for ext in c.extensions)
+
+
 _TAR_SHORT_TO_TAR: dict[str, str] = dict.fromkeys(COMPRESSED_TAR_SHORT_SUFFIXES, ".tar")
 
 
@@ -104,6 +108,7 @@ class _IndexReportRecorder(DiagnosticCollector):
         super().__init__()
         self.reports: list[IndexReport] = []
 
+    @override
     def emit(
         self,
         *,
@@ -142,7 +147,7 @@ def _infer_member_name(archive_name: str | None) -> str:
     """Infer the single member's name from the source filename (see the spec)."""
     return infer_member_name_from_archive(
         archive_name,
-        strip_suffixes=_COMPRESSION_EXTS,
+        strip_suffixes=_compression_exts(),
         replace_suffixes=_TAR_SHORT_TO_TAR,
     )
 
@@ -192,12 +197,13 @@ class SingleFileReader(BaseArchiveReader):
         self._codec = self._stream_codec.codec
         self._seekable = source.seekable()
 
-        # A non-seekable source cannot be randomly accessed, so engaging a random-access
-        # accelerator (rapidgzip) is pointless — and would in fact fail at *open*: rapidgzip
-        # needs either a seekable stream or a real OS fileno, and a non-seekable source
-        # offers neither (so it raises StreamNotSeekableError).
-        # Keep the codec sequential for such a source regardless of the archive's streaming flag.
-        # Declared seek demand (MemberStreams.SEEKABLE) also gates accelerator AUTO resolution.
+        # A non-seekable source cannot be randomly accessed, and an accelerator
+        # (rapidgzip) would fail at *open* on it: rapidgzip needs either a seekable
+        # stream or a real OS fileno, and a non-seekable source offers neither (so it
+        # raises StreamNotSeekableError). Keep the codec sequential for such a source
+        # regardless of the archive's streaming flag. Declared seek demand
+        # (MemberStreams.SEEKABLE) also gates accelerator AUTO resolution, which for the
+        # DEFLATE family also takes a large sequential read from a seekable source.
         seek_declared = MemberStreams.SEEKABLE in member_streams
         # The codec stream is the whole file, so bytes after its end are reported.
         self._codec_config = replace(
@@ -245,7 +251,7 @@ class SingleFileReader(BaseArchiveReader):
         #   opens never clobber the single shared handle position.
         # - Non-seekable: one forward pass; a second open fails loudly once consumed.
         self._shared: SharedSource | None = None
-        self._pending_stream: ArchiveStream | None = None
+        self._pending_parts: MemberStreamParts | None = None
         if self._seekable and (source.path is None or self._measure):
             # A stream source always shares its one handle, handing out views. A path
             # source normally hands the path to the codec (independent FDs) and shares
@@ -253,8 +259,9 @@ class SingleFileReader(BaseArchiveReader):
             self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
         if not self._seekable:
             # Non-seekable: validation waits for the first read (see _validate_at_open).
-            self._pending_stream = self._open_codec_stream()
+            self._pending_parts = self._open_codec_parts()
 
+    @override
     def _validate_at_open(self) -> None:
         """Decode one byte, so a source that is not the claimed codec fails at open.
 
@@ -277,8 +284,8 @@ class SingleFileReader(BaseArchiveReader):
         """
         if not self._seekable:
             return
-        with self._open_codec_stream(
-            attribute_member=False, accelerated=False
+        with self._member_stream(
+            self._open_codec_parts(attribute_member=False, accelerated=False)
         ) as probe:
             probe.read(1)
 
@@ -296,7 +303,7 @@ class SingleFileReader(BaseArchiveReader):
         # source-reading hooks the extractor may need (the base method is a no-op).
         self._stream_codec.extract_metadata(self._metadata_context(), member)
         # A size the format does not record comes from the first clean full read
-        # (``_open_codec_stream``); ``member_state_final`` waits for it.
+        # (``_open_codec_parts``); ``member_state_final`` waits for it.
         member._size_unread = member.size is None
         return member
 
@@ -532,13 +539,14 @@ class SingleFileReader(BaseArchiveReader):
 
     # --- reader hooks --------------------------------------------------------------------
 
+    @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield self._member
 
-    def _open_codec_stream(
+    def _open_codec_parts(
         self, *, attribute_member: bool = True, accelerated: bool = True
-    ) -> ArchiveStream:
-        """Open a fresh decompression stream over the source.
+    ) -> MemberStreamParts:
+        """Open a fresh decompression stream over the source, as the member's parts.
 
         ``attribute_member=False`` leaves ``member_name`` off errors the stream raises, for
         the open-time probe that no caller asked for. ``accelerated=False`` decodes with
@@ -590,13 +598,13 @@ class SingleFileReader(BaseArchiveReader):
             stamp=stamp,
             collector=self._diagnostics_collector,
         )
-        # Wrap so the handle carries the reader's diagnostic collector/operation id.
-        # (open_codec_stream already returns an ArchiveStream; nesting is fine.) A
+        # The parts carry the reader's diagnostic collector/operation id. The handle
+        # that serves them collapses the codec's own ArchiveStream into itself. A
         # member with no recorded size takes the length of the first read from the
         # start to the end that skips no byte; the open-time probe is no such read.
         member = self._member
         fill = attribute_member and member.size is None
-        return self._wrap_member_stream(
+        return self._member_parts(
             raw,
             member_name,
             size=member.size,
@@ -604,17 +612,18 @@ class SingleFileReader(BaseArchiveReader):
             fill_size=fill,
         )
 
-    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+    @override
+    def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         if self._seekable:
             # Reentrant: every open builds a fresh codec (path → independent FD; stream →
             # SharedSource view). No per-open scratch on self.
-            return self._open_codec_stream()
+            return self._open_codec_parts()
 
         # Non-seekable: serve the one-shot stream opened at init; a second open fails loudly.
-        if self._pending_stream is not None:
-            stream = self._pending_stream
-            self._pending_stream = None
-            return stream
+        if self._pending_parts is not None:
+            parts = self._pending_parts
+            self._pending_parts = None
+            return parts
         err = StreamNotSeekableError(
             "Cannot open this member again: the source is non-seekable and its "
             "single decompression pass has already been consumed. Buffer the "
@@ -623,6 +632,7 @@ class SingleFileReader(BaseArchiveReader):
         self._stamp_error_context(err, member.name)
         raise err
 
+    @override
     def _get_archive_info(self) -> ArchiveInfo:
         cost = CostReceipt(
             listing_cost=ListingCost.INDEXED,  # exactly one member, always
@@ -645,6 +655,7 @@ class SingleFileReader(BaseArchiveReader):
             cost=cost,
         )
 
+    @override
     def _close_archive(self) -> None:
         # Close an unserved non-seekable pending stream. The SharedSource is deliberately
         # NOT closed: it owns nothing (only stream sources are wrapped, and the caller
@@ -655,30 +666,28 @@ class SingleFileReader(BaseArchiveReader):
         # on read, close, and the GC-time guard alike; see dev-docs/known-issues.md). Reads
         # after the *caller* closes their source surface as a typed error via the
         # ArchiveStream closed-handle mapping (stdlib codec paths).
-        if self._pending_stream is not None:
-            self._pending_stream.close()
-            self._pending_stream = None
+        if self._pending_parts is not None:
+            self._pending_parts.inner.close()
+            self._pending_parts = None
 
 
 class SingleFileBackend(ReadBackend):
     """One backend serving every standalone single-file compressor.
 
-    Only the format list is declared here, derived from the codec objects. The detection
-    tables (magic, extensions, content probes) are not duplicated onto this backend — the
-    detector reads them straight from ``STREAM_CODECS`` via the registry — so adding a
-    standalone codec is a single ``StreamCodec`` subclass (see ``compressed-streams`` /
-    ``format-detection``).
+    It declares no format list: the registry makes ``(RAW_STREAM, <stream>)`` for
+    each single-file codec when asked (``RAW_STREAMS``), and the detector reads the
+    magic, extensions and content probes from the codecs too, so adding a standalone
+    codec is a single ``StreamCodec`` subclass, or a ``register_codec()`` call (see
+    ``compressed-streams`` / ``format-detection``).
     """
 
-    FORMATS: tuple[ArchiveFormat, ...] = tuple(
-        c.single_file_format
-        for c in SINGLE_FILE_CODECS
-        if c.single_file_format is not None
-    )
+    FORMATS: tuple[ArchiveFormat, ...] = ()
+    RAW_STREAMS = True
     # A compressed stream decodes front-to-back, so streaming=True works on a
     # non-seekable source. Random access always needs a seekable source.
     SUPPORTS_STREAMING_NON_SEEKABLE = True
 
+    @override
     def open_read(
         self,
         source: ArchiveSource,
