@@ -144,6 +144,18 @@ def test_the_built_class_goes_with_the_subclass() -> None:
             Local(iter(()))  # type: ignore[arg-type]
         return weakref.ref(Local)
 
+    def make_plain() -> weakref.ref[type]:
+        class Plain:
+            pass
+
+        return weakref.ref(Plain)
+
     refs = [make() for _ in range(3)]
+    control = make_plain()
     gc.collect()
+    if control() is not None:
+        # A free-threaded build defers freeing a class while another thread runs
+        # (pytest-timeout's thread here), so no class is collected at this point and
+        # the check below could not tell a leak from that delay.
+        pytest.skip("this interpreter does not free a plain local class here either")
     assert all(ref() is None for ref in refs)
