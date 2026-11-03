@@ -30,7 +30,7 @@ import stat
 import threading
 import zlib
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import AbstractContextManager, ExitStack
+from contextlib import AbstractContextManager, ExitStack, suppress
 from dataclasses import dataclass
 from typing import BinaryIO
 
@@ -131,7 +131,7 @@ from archivey.internal.streams.archive_stream import (
     MemberStreamParts,
 )
 from archivey.internal.streams.crypto import _AesCbcTruncatedError
-from archivey.internal.streams.resume import ask_resume_offset
+from archivey.internal.streams.resume import ask_resume_offset, ask_seek_resume_offset
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     ReadableStream,
@@ -139,6 +139,7 @@ from archivey.internal.streams.streamtools import (
     SharedSource,
     SlicingStream,
     SolidBlockReader,
+    check_seek_args,
     is_seekable,
     skip_forward,
 )
@@ -487,6 +488,10 @@ def _member_crc(member: ArchiveMember) -> int | None:
     return int.from_bytes(raw, "big") & 0xFFFFFFFF
 
 
+# Read size for the gap a deferred folder seek hashes (``_FolderChecks._settle_gap``).
+_FOLDER_GAP_CHUNK = 1 << 20
+
+
 class _FolderChecks(DelegatingStream):
     """Hash a 7z folder's decode from its first byte, for the checks no member owns.
 
@@ -510,10 +515,16 @@ class _FolderChecks(DelegatingStream):
       not decrypt to bytes that match a CRC, so the folder's password is confirmed.
       Only a folder whose password was accepted without such a proof passes any.
 
-    The hash runs only over a decode from offset 0 with no gap: a seek anywhere but to
-    the position already hashed stops it, and a seek to 0 starts it again. A match
-    found twice runs its callback twice, which the callbacks allow. Changes no byte,
-    so the verification level looks through it.
+    The hash runs only over a decode from offset 0 with no gap. A forward seek from the
+    position already hashed keeps it when the inner would decode the skipped bytes
+    anyway (its resume point for the target is at or before that position, the rule
+    ``MemberVerifier.seek`` follows, DR-4a): the seek only records the target, and the
+    next read reads the gap through the hash first (``_settle_gap``). This is how a
+    ``seekable_members=True`` read of a compressed folder's last member, which seeks
+    its decoder to the member's start, still checks the folder CRC. Any other seek
+    (one the inner can jump, as in a stored folder, or one back) stops the hash, and a
+    seek to 0 starts it again. A match found twice runs its callback twice, which the
+    callbacks allow. Changes no byte, so the verification level looks through it.
     """
 
     forwards_verification = True
@@ -543,6 +554,9 @@ class _FolderChecks(DelegatingStream):
         # decode from 0 that matches clears it.
         self.failure: SpanningCheckError | None = None
         self._on_key_proved = on_key_proved
+        # A forward seek whose gap the next read hashes first: its target. The inner
+        # stays at ``_pos`` until then. ``None`` when no gap is due.
+        self._gap_target: int | None = None
         self._restart()
 
     def _restart(self) -> None:
@@ -557,10 +571,39 @@ class _FolderChecks(DelegatingStream):
 
     @override
     def read(self, n: int = -1, /) -> bytes:
+        if self._gap_target is not None and n != 0:
+            self._settle_gap()
         data = read_blocking(self._inner, n)
         if data and self._pos is not None:
             self._hash(data)
         return data
+
+    def _settle_gap(self) -> None:
+        """Read and hash from ``_pos`` up to the deferred seek's target.
+
+        The inner would decode these bytes anyway to reach the target, so this costs
+        only the hash. A decode error in the gap raises from this read, as the inner's
+        own lazy seek would raise it; the inner is then sent to the target, a seek that
+        decodes nothing, so a caller that reads on gets what the plain seek would give.
+        A gap cut short by the decode's end leaves the inner there, as the plain seek
+        would.
+        """
+        target = self._gap_target
+        assert target is not None and self._pos is not None
+        self._gap_target = None
+        try:
+            while self._pos < target:
+                piece = read_blocking(
+                    self._inner, min(_FOLDER_GAP_CHUNK, target - self._pos)
+                )
+                if not piece:
+                    return
+                self._hash(piece)
+        except BaseException:
+            self._pos = None
+            with suppress(Exception):
+                self._inner.seek(target)
+            raise
 
     def _hash(self, data: bytes) -> None:
         start = self._pos
@@ -607,12 +650,52 @@ class _FolderChecks(DelegatingStream):
 
     @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        offset, whence = check_seek_args(offset, whence)
+        due = self._gap_target
+        here = due if due is not None else self._pos
+        target: int | None = None
+        planned: Exception | None = None
+        if whence == io.SEEK_SET:
+            target = offset
+        elif whence == io.SEEK_CUR and here is not None:
+            target = max(0, here + offset)
+        if (
+            target is not None
+            and self._pos is not None
+            and self._pos < target < self._size
+            and self._checks_pending()
+        ):
+            # A report the planning escalated (an index build) is this seek's: it
+            # raises once the seek has moved, as the inner's own seek raises it.
+            resume, planned = ask_seek_resume_offset(self._inner, target)
+            if resume is not None and resume <= self._pos:
+                self._gap_target = target
+                if planned is not None:
+                    raise planned
+                return target
+        if due is not None:
+            # The inner is still at ``_pos``, not at the deferred target: a relative
+            # seek must count from the target.
+            self._gap_target = None
+            if whence == io.SEEK_CUR:
+                offset, whence = max(0, due + offset), io.SEEK_SET
         pos = self._inner.seek(offset, whence)
         if pos == 0:
             self._restart()
         elif pos != self._pos:
             self._pos = None
+        if planned is not None:
+            raise planned
         return pos
+
+    @override
+    def tell(self, /) -> int:
+        target = self._gap_target
+        return self._inner.tell() if target is None else target
+
+    def _checks_pending(self) -> bool:
+        """Whether a hash over the rest of the folder could still prove anything."""
+        return self._folder_crc is not None or self._next_anchor < len(self._anchors)
 
     def nearest_resume_offset(self, target: int) -> int | None:
         # A pass-through over the decoded folder: the inner's offset space is ours.
