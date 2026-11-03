@@ -76,8 +76,9 @@ limits apply, or, for LZ4, through `lz4.block` capped at the block's size. LZO b
 are raw LZO1X (`CompressionAlgorithm.LZO`), decoded by the codec a `.lzo` file uses:
 liblzo2 through `python-lzo` when it is installed, in a child process under
 `NATIVE_DECODERS`, and otherwise archivey's port of the kernel's
-`lzo1x_decompress_safe`. LZO1X stores no decoded length, so the block size is passed as
-the most it may decode to (§6).
+`lzo1x_decompress_safe`. The port takes the end marker as liblzo2 does, whatever its
+length field, so the two decoders agree (the kernel refuses a length other than 3). LZO1X
+stores no decoded length, so the block size is passed as the most it may decode to (§6).
 
 `FormatPolicy(exclude_libraries={OptionalLibrary.LZ4})` makes an LZ4 image read as if
 `lz4` were missing. Under PyPy the reader does not use `lz4`, as the rest of archivey
@@ -186,5 +187,6 @@ fuzzes the image walk and block reads.
 - The SquashFS 4.0 layout: the Linux kernel's
   [`squashfs.rst`](https://docs.kernel.org/filesystems/squashfs.html) and `fs/squashfs/`,
   and squashfs-tools.
-- The kernel's `lib/lzo/lzo1x_decompress_safe.c`, which archivey's LZO decoder follows.
+- The kernel's `lib/lzo/lzo1x_decompress_safe.c`, which archivey's LZO decoder follows,
+  and liblzo2 2.10's `lzo1x_decompress_safe`, whose end-marker rule it takes.
 - `openspec/changes/plugin-api/tasks.md` §3b, the reader's history as a plugin.

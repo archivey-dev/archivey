@@ -79,6 +79,11 @@ class DecoderChildStartError(RuntimeError):
     """
 
 
+class DecoderChildImportError(DecoderChildStartError):
+    """The child started but could not import the codec's library: a package that is
+    found but does not import (a broken wheel, a missing shared library)."""
+
+
 class DecoderChildReportedError(RuntimeError):
     """The child reported an exception of a type the parent does not rebuild.
 
@@ -413,9 +418,16 @@ class DecoderChild:
         tag, state, output = self._exchange(OPEN, 0, (self._open_message,))
         if tag != OK:
             exc = rebuild_error(output, self._known)
-            if isinstance(exc, ImportError):
-                raise start_error(f"cannot import the {self._codec} library: {exc}")
-            raise start_error(str(exc))
+            if isinstance(exc, KeyError):
+                # No loader for this codec name: a bug in this process.
+                raise start_error(str(exc))
+            # Before its first reply the child runs only the library's import, so
+            # any other error there is the import failing, whatever its type, as
+            # ``deps.LazyOptional.load`` counts any exception here.
+            raise DecoderChildImportError(
+                "cannot start the decoder process: cannot import the "
+                f"{self._codec} library: {exc}"
+            )
         self._building = True
         tag, state, output = self._receive_raw()
         if tag != OK:

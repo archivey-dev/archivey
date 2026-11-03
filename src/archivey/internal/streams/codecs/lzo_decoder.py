@@ -9,7 +9,9 @@ without the LZO-RLE extension, which neither lzop nor SquashFS writes.
 
 Every read is checked: a run of literals or a match that would pass the end of the
 input, write past the limit or copy from before the start of the output raises
-:class:`LzoError`, and so does input left after the end marker.
+:class:`LzoError`, and so does input left after the end marker. The end marker is the
+one place it follows liblzo2 rather than the kernel: any match of distance 0 ends the
+block, whatever its length, so the two decoders agree on every block.
 
 The lzop format (``lzop`` 1.04, ``header.c`` and ``lzop.c``): a 9-byte magic, a header
 with the method, flags, mode, mtime and stored name, closed by a checksum, then blocks.
@@ -25,8 +27,13 @@ import zlib
 from collections.abc import Callable
 from typing import BinaryIO
 
-from archivey.exceptions import CorruptionError, UnsupportedFeatureError
+from archivey.exceptions import (
+    CorruptionError,
+    ResourceUnavailableError,
+    UnsupportedFeatureError,
+)
 from archivey.internal.streams.codecs import deps
+from archivey.internal.streams.codecs.decoder_child import DecoderChildImportError
 from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
@@ -48,13 +55,28 @@ def _python_lzo(
     ``None`` when it is absent or ``excluded``."""
     if OptionalLibrary.LZO in excluded or not natives.package_available(deps.lzo):
         return None
+    if natives.isolated and deps.lzo.child_import_failed:
+        return None
     errors = natives.lzo_errors()
 
     def decompress(data: bytes, limit: int) -> bytes:
+        if natives.isolated and deps.lzo.child_import_failed:
+            # A child could not import it for an earlier block.
+            return lzo1x_decompress_python(data, limit)
         try:
             return natives.lzo_decompress(data, limit)
         except errors as exc:
             raise LzoError(str(exc)) from None
+        except ResourceUnavailableError as exc:
+            # Isolated, the package is only looked up here, not imported, so one
+            # that is found but does not import fails in the child. Fall back as
+            # ``deps.lzo.load()`` does in this process: the Python decoder needs no
+            # child (DR-11). Any other reason no child starts still raises. Only
+            # isolated decoders take note: this process may import it all the same.
+            if not isinstance(exc.__cause__, DecoderChildImportError):
+                raise
+            deps.lzo.failed_in_child(exc.__cause__)
+            return lzo1x_decompress_python(data, limit)
 
     return decompress
 
@@ -157,9 +179,10 @@ def lzo1x_decompress_python(data: bytes, limit: int) -> bytes:
             else:
                 distance = ((t & 8) << 11) + (field >> 2)
                 if distance == 0:
-                    # The end marker: 17, 0, 0, which only a 3 in ``length`` spells.
-                    if length != 3:
-                        raise LzoError("a damaged end marker")
+                    # The end marker. Writers put 17, 0, 0, a length of 3; liblzo2
+                    # (``lzo1x_decompress_safe``), which lzop and squashfs-tools decode
+                    # with, takes any length and ignores the low 2 bits, and so does
+                    # this. The kernel's decoder refuses a length other than 3.
                     if ip != end:
                         raise LzoError(f"{end - ip} bytes follow the end marker")
                     return bytes(out)

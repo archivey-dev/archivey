@@ -3,6 +3,7 @@ ones, among them the metadata blocks of the SquashFS test images."""
 
 from __future__ import annotations
 
+import importlib.util
 import random
 import struct
 import tracemalloc
@@ -45,12 +46,30 @@ def test_an_overlapping_match_repeats_its_bytes() -> None:
         (b"\x17hello\n", "ends inside"),
         (b"\x17hello\n" + _END + b"x", "1 bytes follow"),
         (b"\x14abc" + bytes([33]) + (100 << 2).to_bytes(2, "little"), "before the"),
-        (b"\x15abcd\x12\x00\x00", "damaged end marker"),
     ],
 )
 def test_damage_raises(stream: bytes, match: str) -> None:
     with pytest.raises(LzoError, match=match):
         decompress_python(stream, 1 << 16)
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [b"\x12\x00\x00", b"\x17\x00\x00", b"\x12\x03\x00", b"\x10\x00\x05\x00\x00"],
+)
+def test_an_end_marker_of_any_length_ends_the_block(marker: bytes) -> None:
+    """Writers end a block with 17, 0, 0. liblzo2, which lzop and squashfs-tools
+    decode with, ends it at any match of distance 0, whatever its length and low
+    bits; the Python decoder refused all but 17, 0, 0, so the verdict depended on
+    whether python-lzo was installed."""
+    stream = b"\x17hello\n" + marker
+    assert decompress_python(stream, 6) == b"hello\n"
+    with pytest.raises(LzoError, match="1 bytes follow"):
+        decompress_python(stream + b"x", 6)
+    if importlib.util.find_spec("lzo") is not None:
+        import lzo
+
+        assert lzo.decompress(stream, False, 6) == b"hello\n"
 
 
 def test_the_limit_is_kept() -> None:
