@@ -1310,9 +1310,9 @@ class SequentialReaderAdapter(_PluginAdapter):
         That checksum covers every decoded byte, so a member whose data is a slice of
         those bytes is checked, read or not. Data a reader decodes itself
         (``MemberSpan.data``) or a layer it starts with ``ForwardStream.decompress``
-        is decoded again from those bytes, so it is left to its own reads. A walk that
-        a member read interrupted (a seek of the codec) proves nothing here, so its
-        members keep what their reads proved.
+        is decoded again from those bytes, so it is left to its own reads. A codec
+        with no check, a seek that broke the decode (a jump, not a decode-through),
+        or a walk cut short raises nothing.
         """
         codec = self._codec_stream
         if codec is None:
