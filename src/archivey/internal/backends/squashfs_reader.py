@@ -23,7 +23,7 @@ from __future__ import annotations
 import io
 import struct
 from collections import OrderedDict
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from datetime import UTC, datetime
 from typing import Any, BinaryIO, NamedTuple, cast
 
@@ -114,10 +114,13 @@ _DIR_COUNT = 256
 # open reader holds (64 x 8 KiB, plus 4 fragments of at most the 1 MiB block size,
 # about 4.5 MiB) whatever the image declares, and a miss only decodes the block again.
 # 64 covers the directory blocks a listing walks back and forth over in images of tens
-# of thousands of files and the inodes a listing reads twice (``iter_members``).
-# Writers fill one or
-# two fragments at a time in name order, so a few cover a walk in listing order; where
-# they would not, ``iter_members`` puts the files with a tail in fragment order.
+# of thousands of files. It does not carry the inode table from the listing's first
+# pass to its second (``iter_members``): the second decodes each inode block it reaches
+# again, and the cache only absorbs the back and forth within a short stretch of member
+# order. Where member order would decode an inode block twice, the listing keeps the
+# inodes instead. Writers fill one or two fragments at a time in name order, so a few
+# cover a walk in listing order; where they would not, ``iter_members`` puts the files
+# with a tail in fragment order.
 _METADATA_CACHE = 64
 _FRAGMENT_CACHE = 4
 
@@ -229,29 +232,36 @@ class _Entry(NamedTuple):
 
 class _FileScan(NamedTuple):
     """What the first pass keeps of the inodes that are not directories: no inode, only
-    what ordering needs. The second pass reads each inode again by its ref."""
+    what ordering needs. The second pass reads each inode again by its ref, or takes it
+    from what :meth:`SquashfsReader._kept_inodes` keeps."""
 
     # A file with a tail, by inode: fragment index << 32 | offset in the fragment.
     tails: dict[tuple[int, int], int]
     sparse: set[tuple[int, int]]  # files with holes
-    errors: dict[tuple[int, int], ArchiveyError]  # damaged inodes, raised in order
+    # Files whose block list could not be scanned, raised when their member comes. An
+    # inode that does not read is not kept: the second pass reads it again and raises.
+    errors: dict[tuple[int, int], ArchiveyError]
+    # The metadata block (from the table's start) where an inode's read ended, for the
+    # inodes that run past the block they start in.
+    ends: dict[tuple[int, int], int]
     clean: bool  # every inode read, and of the type its entry gives
 
 
-def _decodes_twice(starts: Iterable[int]) -> bool:
-    """Whether the reader's fragment cache, asked for the blocks at these starts in
-    order, would decode one of them a second time."""
+def _decodes_twice(keys: Iterable[int], capacity: int) -> bool:
+    """Whether a reader cache of ``capacity`` blocks, asked for the blocks with these
+    keys in order, would decode one of them a second time. It replays the policy of
+    ``fragment_tail``'s and ``_metadata_block``'s caches: least recently used first."""
     cache: OrderedDict[int, None] = OrderedDict()
     decoded: set[int] = set()
-    for start in starts:
-        if start in cache:
-            cache.move_to_end(start)
+    for key in keys:
+        if key in cache:
+            cache.move_to_end(key)
             continue
-        if start in decoded:
+        if key in decoded:
             return True
-        decoded.add(start)
-        cache[start] = None
-        if len(cache) > _FRAGMENT_CACHE:
+        decoded.add(key)
+        cache[key] = None
+        if len(cache) > capacity:
             cache.popitem(last=False)
     return False
 
@@ -283,6 +293,8 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         self._ids = self._ids_table()
         # Block-list bytes scanned by the listing so far (``_has_holes``).
         self._block_list_bytes = 0
+        # The inode-table block where the last ``_inode`` read ended.
+        self._inode_end = 0
         self._inode_capacity: int | None = None
 
     # ── Decoding ─────────────────────────────────────────────────────────────────────
@@ -367,6 +379,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
 
     def _metadata_block(self, pos: int) -> tuple[bytes, int]:
         """The decoded metadata block at absolute ``pos``, and where the next starts."""
+        # ``_decodes_twice`` replays this cache's policy; change both together.
         cached = self._metadata.get(pos)
         if cached is not None:
             self._metadata.move_to_end(pos)
@@ -532,6 +545,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
             if length > _SYMLINK_MAX:
                 raise CorruptionError(f"a symlink target of {length} bytes")
             body = cursor.read(length)
+        self._inode_end = cursor.last
         return _Inode(
             basic,
             mode & 0o7777,
@@ -620,12 +634,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         """Every member, in listing order, or in fragment order where that would thrash.
 
         Listing order is the directory walk's: depth first, each directory's entries in
-        the order stored, which every SquashFS writer sorts by name. It takes two
-        passes. The first walks the whole tree, then reads the non-directory inodes in
-        their table order (each inode-table block decodes once) and keeps of each only
-        what the order needs (:class:`_FileScan`). The second reads each member's
-        inode again by its reference as it makes the member: holding every inode
-        until the order is known cost half as much memory again as the listing.
+        the order stored, which every SquashFS writer sorts by name.
 
         A file whose tail is in a fragment block reads that block whole, and the reader
         keeps the last ``_FRAGMENT_CACHE`` of them. When reading the files in listing
@@ -646,6 +655,17 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         listing order, so a directory still comes before its contents; then the files
         with a tail; then the hard links, in listing order, so each comes after the
         member it names.
+
+        It takes two passes. The first walks the whole tree, then reads the
+        non-directory inodes in their table order (each inode-table block decodes once)
+        and keeps of each only what the order needs (:class:`_FileScan`). The second
+        reads each member's inode again by its reference as it makes the member: holding
+        every inode cost half as much memory again as the listing. A hard link reads
+        nothing: the member it names keeps its inode, without the body, next to its
+        name. When the members' order would decode an inode-table block twice, as it
+        does when the table strides against that order (the metadata cache replayed
+        over where each inode starts and ends), the listing reads the table once more in
+        table order and keeps every inode for the second pass instead.
         """
         self._block_list_bytes = 0
         entries: list[_Entry] = []
@@ -659,14 +679,19 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         first = _firsts(entries)
         # The members a hard link names: only their names are kept past their record.
         targets = {f for i, f in enumerate(first) if f not in (-1, i)}
-        order: Iterable[int] = range(len(entries))
+        order: Sequence[int] = range(len(entries))
         if complete and failure is None:
             order = self._in_fragment_order(entries, files, first) or order
+        inodes = None
+        if self._reads_an_inode_block_twice(entries, order, files, first):
+            inodes = self._kept_inodes(entries, files)
         # A damaged image keeps listing order: it yields the members before the damage,
         # then raises, as a walk that reads each inode as it goes would.
-        names: dict[int, tuple[bytes, str]] = {}
+        names: dict[int, tuple[bytes, str, _Inode | None]] = {}
         for index in order:
-            yield self._record(entries, index, files, first[index], names, targets)
+            yield self._record(
+                entries, index, files, first[index], names, targets, inodes
+            )
         if failure is not None:
             raise failure
 
@@ -710,10 +735,11 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
     def _file_inodes(self, entries: list[_Entry]) -> _FileScan:
         """Pass one over the inodes that are not directories, in table order so each
         inode-table block decodes once: keep only what ordering needs (:class:`_FileScan`).
-        A damaged inode is kept as its error, raised when its member comes."""
+        """
         tails: dict[tuple[int, int], int] = {}
         sparse: set[tuple[int, int]] = set()
         errors: dict[tuple[int, int], ArchiveyError] = {}
+        ends: dict[tuple[int, int], int] = {}
         clean = True
         previous: tuple[int, int] | None = None
         inode_type = 0
@@ -722,24 +748,68 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
                 previous = ref
                 try:
                     inode = self._inode(*ref)
-                    inode_type = inode.type
-                    location = inode.body
-                    if isinstance(location, FileLocation):
+                except ArchiveyError:
+                    clean = False
+                    continue
+                inode_type = inode.type
+                if self._inode_end != ref[0]:
+                    ends[ref] = self._inode_end
+                location = inode.body
+                if isinstance(location, FileLocation):
+                    try:
                         if self._has_holes(location):
                             sparse.add(ref)
-                        if (
-                            location.fragment != _NO_FRAGMENT
-                            and location.size % self._sb.block_size
-                        ):
-                            tails[ref] = (
-                                location.fragment << 32 | location.fragment_offset
-                            )
-                except ArchiveyError as exc:
-                    errors[ref] = exc
-                    clean = False
+                    except ArchiveyError as exc:
+                        errors[ref] = exc
+                        clean = False
+                    if (
+                        location.fragment != _NO_FRAGMENT
+                        and location.size % self._sb.block_size
+                    ):
+                        tails[ref] = location.fragment << 32 | location.fragment_offset
             if inode_type != kind:
                 clean = False
-        return _FileScan(tails, sparse, errors, clean)
+        return _FileScan(tails, sparse, errors, ends, clean)
+
+    def _reads_an_inode_block_twice(
+        self,
+        entries: list[_Entry],
+        order: Iterable[int],
+        files: _FileScan,
+        first: list[int],
+    ) -> bool:
+        """Whether the second pass, reading the inodes again in ``order``, would decode
+        an inode-table block twice: the metadata cache replayed over the block where
+        each inode it reads starts, and where it ends if that is another block. The
+        blocks in between hold only that inode's bytes in an image whose inodes do not
+        overlap, so the order cannot make them decode more often."""
+
+        def blocks() -> Iterator[int]:
+            for index in order:
+                entry = entries[index]
+                if first[index] != index or entry.ref in files.errors:
+                    continue  # a directory or a hard link, or raised without a read
+                yield entry.ref[0]
+                end = files.ends.get(entry.ref)
+                if end is not None:
+                    yield end
+
+        return _decodes_twice(blocks(), _METADATA_CACHE)
+
+    def _kept_inodes(
+        self, entries: list[_Entry], files: _FileScan
+    ) -> dict[tuple[int, int], _Inode]:
+        """The inodes that are not directories, read again in table order and kept for
+        the second pass, when reading them in member order would thrash the metadata
+        cache. One that does not read is left out: its member reads it and raises."""
+        inodes: dict[tuple[int, int], _Inode] = {}
+        for ref in sorted({e.ref for e in entries if e.kind != _DIR}):
+            if ref not in files.errors:
+                try:
+                    inodes[ref] = self._inode(*ref)
+                except ArchiveyError:
+                    pass
+        return inodes
 
     def _in_fragment_order(
         self,
@@ -770,7 +840,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         except ArchiveyError:
             return None
         tails = [(starts[fragment], offset, index) for fragment, offset, index in tails]
-        if not _decodes_twice(start for start, _, _ in tails):
+        if not _decodes_twice((start for start, _, _ in tails), _FRAGMENT_CACHE):
             return None
         tailed = {index for _, _, index in tails}
         links = [i for i in range(len(entries)) if first[i] not in (-1, i)]
@@ -801,23 +871,32 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         index: int,
         files: _FileScan,
         first: int,
-        names: dict[int, tuple[bytes, str]],
+        names: dict[int, tuple[bytes, str, _Inode | None]],
         targets: set[int],
+        inodes: dict[tuple[int, int], _Inode] | None,
     ) -> MemberRecord[FileLocation | None]:
         """The member for ``entries[index]``. ``names`` holds the raw and decoded name
         of each member already made that a later one needs: its directory, or the
-        member a hard link names, which always come first."""
+        member a hard link names, which always come first. For the latter it also holds
+        its inode without the body, which is all a hard link's member takes from it.
+        ``inodes``, when the listing kept them, holds the other inodes."""
         entry = entries[index]
         prefix = names[entry.parent][0] + b"/" if entry.parent >= 0 else b""
         raw_name = prefix + entry.name
         sparse = False
         if entry.inode is not None:
             inode = entry.inode
+        elif first != index:
+            linked = names[first][2]
+            assert linked is not None, "a hard link's target is made first"
+            inode = linked
+            self._check_type(entries, entry, inode)
         else:
             error = files.errors.get(entry.ref)
             if error is not None:
                 raise error
-            inode = self._inode(*entry.ref)
+            kept = inodes.pop(entry.ref, None) if inodes is not None else None
+            inode = kept or self._inode(*entry.ref)
             sparse = entry.ref in files.sparse
             self._check_type(entries, entry, inode)
         path = self._context.decode_name(raw_name)
@@ -833,13 +912,13 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         location: FileLocation | None = None
         if entry.kind == _DIR:
             member.type = MemberType.DIRECTORY
-            names[index] = (raw_name, path)
+            names[index] = (raw_name, path, None)
         elif first != index:
             member.type = MemberType.HARDLINK
             member.link_target = names[first][1]
         else:
             if index in targets:
-                names[index] = (raw_name, path)
+                names[index] = (raw_name, path, inode._replace(body=None))
             if entry.kind == _FILE:
                 assert isinstance(inode.body, FileLocation)
                 location = inode.body
@@ -908,6 +987,8 @@ class _MetadataCursor:
         self._pos = table + block
         self.offset = offset
         self.consumed = 0
+        # The last block read from, as an offset from the start of the table.
+        self.last = block
 
     @property
     def block(self) -> int:
@@ -918,6 +999,7 @@ class _MetadataCursor:
         parts = []
         while n:
             data, next_pos = self._reader._metadata_block(self._pos)
+            self.last = self._pos - self._table
             if self.offset > len(data):
                 raise CorruptionError(
                     f"offset {self.offset} is past a {len(data)}-byte metadata block"

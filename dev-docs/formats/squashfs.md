@@ -82,9 +82,15 @@ The listing makes two passes. The first walks the directories, keeping each entr
 name, parent and inode reference, then reads every other inode once, in its order in
 the inode table, and with it the file's block list for `is_sparse`; of each it keeps
 only what the order needs (a tailed file's fragment and offset, whether it has holes,
-an error to raise in turn). The second reads each member's inode again by its reference,
-through the metadata cache, as it makes the member. Holding every inode instead cost
-half as much memory again as the listing itself on a 100 000-file image.
+an error from the block list to raise in turn, and the block where the inode ends when
+it runs past the one it starts in). The second reads each member's inode again by its
+reference, through the metadata cache, as it makes the member. A hard link does not
+read it again: the member it names keeps its inode, without the symlink target or the
+file's location, next to its name. Holding every inode cost half as much memory again
+as the listing itself on a 100 000-file image, so the listing does that only when the
+second pass would thrash the 64-block metadata cache: it replays the cache over the
+blocks the second pass would read, in the final member order, and when a block would
+decode twice it reads the table once more in table order and keeps every inode.
 
 A block stored with size 0 is a hole and reads as zeros. `is_sparse` is true for a file
 whose block list holds one, read from the list at listing time: `mksquashfs` writes most
@@ -160,12 +166,20 @@ offsets the image declares:
   member for fragments or file inodes: files with a tail come in fragment order when
   listing order would thrash the fragment cache (§2.2), which took a 229 KB xz image of
   50 000 one-byte files cycling five 1 MiB fragments from 62 s to 4 s (4.1 s for the
-  same files in one fragment). File inodes are read twice, once in table order to
-  decide the order and once in member order to make the members, so an inode table
-  ordered against the listing, or one inode per metadata block, decodes each block at
-  most twice: 300 files each in its own block, stored in reverse, decode 537 metadata
-  blocks in all. The second read is the cost of a walk that reads each inode as it
-  goes: one 8 KiB block per member at worst.
+  same files in one fragment). File inodes are read once in table order to decide the
+  order, then once more in member order to make the members, unless the replayed
+  metadata cache says that order would decode an inode block twice (§2.2); then the
+  table is read a second time in table order and the inodes are kept. So each
+  inode-table block decodes at most about twice, whatever the order: 20 480 empty files
+  whose inodes cycle over 80 gzip inode blocks list in 0.37 s with 227 metadata decodes
+  (2.2 s and 20 627 decodes if each inode were read in member order), and 300 files
+  each in its own block, stored in reverse, decode 539 metadata blocks in all. A hard
+  link does not read its inode again, so the entries that name one inode cost one read
+  of it per pass, not one per entry: 100 entries naming a symlink whose 65 535-byte
+  target is stored in 1-byte metadata blocks list in 0.4 s (20 s with a read per
+  entry). The replay counts the block where each inode starts and the one where it
+  ends; the blocks in between hold only that inode's bytes in an image whose inodes do
+  not overlap, so the order does not change how often they decode.
 - Directory inodes and listings are still read as the walk reaches them, since each is
   needed to find the next. Directories whose inodes or listings stride across more than
   64 metadata blocks decode an 8 KiB block for each: 20 480 empty directories strided
@@ -214,14 +228,19 @@ offsets the image declares:
   can name one block. Rejected: charging decoded block bytes to a per-reader budget
   (refuses an image instead of reading it), a larger cache (a crafted image cycles
   through one more block), and only recording the case in the threat model. File inodes
-  are read in table order for the same reason; the order of reads is internal.
+  are read in table order for the same reason, and kept when the member order would
+  thrash the metadata cache (next decision); the order of reads is internal.
 
 - **Two passes over the inodes, keeping little between them.** The maintainer's call
   (2026-11-03). The first pass keeps, per file, only what the order needs; the second
-  reads each inode again by reference. On a 100 200-file gzip image it lists in 2.0 s
-  against 1.75 s for holding every inode, and holds about 33 MB less at its peak.
-  Rejected: holding every inode until the order is known (the peak grew by half again
-  on that image).
+  reads each inode again by reference, except a hard link's, which the member it names
+  keeps. On a 100 200-file gzip image it lists in 2.2 s against 1.8 s for holding every
+  inode, with a tracemalloc peak of 128 MB against 160 MB. When the final member order
+  would decode an inode block twice, the listing keeps every inode instead, the same
+  rule as for fragments. Rejected: holding every inode on every image (the peak grows
+  by half again), and reading again in any order (an inode table that strides against
+  the member order decodes an 8 KiB block per member: 2.2 s against 0.37 s for 20 480
+  files over 80 blocks).
 
 ## 7. Open questions
 
