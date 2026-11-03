@@ -373,6 +373,34 @@ def test_a_probe_that_raises_is_no_match(caplog: pytest.LogCaptureFixture) -> No
     assert levels == [logging.WARNING, logging.DEBUG]
 
 
+class _BuggyDecompressor(ToyDecompressor):
+    def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        raise IndexError("plugin bug")
+
+
+class _BuggyHandler(ToyHandler):
+    def decompressor(self, call: CodecCall) -> ToyDecompressor:
+        return _BuggyDecompressor()
+
+
+def test_a_decoder_that_raises_during_detection_is_no_inner_container(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Detection decodes the start of a stream its magic matched to look for a
+    tarball inside. A plugin decoder that raises there is no inner container, as a
+    plugin probe that raises is no match. Opening the stream still raises the
+    plugin's exception: archivey does not translate an exception it does not know."""
+    data = toy_compress(_TEXT)
+    with registration_scope():
+        register_codec(_BuggyHandler)
+        with caplog.at_level(logging.DEBUG, logger="archivey.detection"):
+            assert detect_format(io.BytesIO(data)).format == TOY
+        # The open decodes the start of the stream (DR-15b), and is not a probe.
+        with pytest.raises(IndexError, match="plugin bug"):
+            open_archive(io.BytesIO(data))
+    assert any("plugin codec" in r.getMessage() for r in caplog.records)
+
+
 def test_a_cut_stream_is_truncated(toy: ArchiveFormat) -> None:
     data = toy_compress(_TEXT)[:-3]
     with open_stream(io.BytesIO(data)) as stream, pytest.raises(TruncatedError):

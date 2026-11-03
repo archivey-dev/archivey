@@ -80,6 +80,7 @@ evidence archivey has, and one asked to judge arbitrary bytes will sometimes say
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from contextlib import closing
 from dataclasses import replace
@@ -612,6 +613,22 @@ def _probe_inner_container(
         # Not decodable as this codec, or truncated before a full block: no inner
         # container.
         pass
+    except Exception:
+        # A plugin decoder that raises what its translate_exception does not map is no
+        # inner container, as a plugin probe that raises is no match
+        # (``format_adapter.prefix_probe``): one plugin must not change how input
+        # fails to be detected. A built-in codec's unknown error is archivey's bug
+        # and propagates. A read of the stream still raises it.
+        if not isinstance(stream_format, PluginStream):
+            raise
+        logger.log(
+            logging.DEBUG if stream_format in _WARNED_CODECS else logging.WARNING,
+            "plugin codec %s raised while detection decoded its start; taken as no "
+            "inner container",
+            stream_format.name,
+            exc_info=True,
+        )
+        _WARNED_CODECS.add(stream_format)
     found = (
         next(
             (
@@ -653,6 +670,11 @@ def _probe_inner_container(
         elif found is None and source.hit_limit:
             workspace.record_skip("inner_tar", TierSkipReason.BUDGET_EXHAUSTED)
     return found
+
+
+# The plugin codecs whose decoder raised in :func:`_probe_inner_container`: WARNING the
+# first time, so the plugin's author sees the bug; DEBUG after that.
+_WARNED_CODECS: set[PluginStream] = set()
 
 
 def _record_tier_limit(

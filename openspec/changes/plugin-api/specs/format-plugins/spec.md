@@ -38,6 +38,10 @@ A plugin magic or probe match SHALL count only when no built-in format matched a
 same or a higher confidence. A plugin probe SHALL receive only the prefix detection
 already read. A probe that raises SHALL count as no match, so one plugin cannot change
 how unrelated input fails to be detected; `MemoryError` and `OSError` still propagate.
+In the same way, a plugin codec's decoder that raises an exception its
+`translate_exception` does not map, while detection decodes the start of the stream to
+look for a container inside it, SHALL count as no container there; the open still
+raises it.
 
 #### Scenario: plugin magic does not change built-in detection
 
