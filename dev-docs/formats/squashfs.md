@@ -61,6 +61,24 @@ Members are files, directories, symlinks, hard links (a second name for an inode
 `extra["special_file_type"]`, as in every format). Owner ids come from the id table;
 permissions and modification times from the inode.
 
+**Member order.** Members come in listing order: the directory walk's, depth first,
+each directory's entries as stored, which every writer sorts by name. The one exception
+is fragments. A file's tail is read from its fragment block, which is decoded whole, and
+the reader keeps four. When reading the files in listing order would decode a fragment
+block a second time, the files with a tail come sorted by where their block starts and
+by offset, so each block decodes once. The check replays the four-block cache over the
+blocks' starts (from the fragment table), with nothing decoded. Then the order is:
+directories, files with no tail and other members, in listing order (so a directory
+still comes before its contents); the files with a tail; the hard links, in listing
+order (each after the member it names). mksquashfs, gensquashfs and tar2sqfs fill one
+fragment at a time in name order, and mksquashfs `-tailends` and sqfstar two (small files
+and tail ends), so their images keep listing order. An image built from a tar whose
+order is not the names' (sqfstar, tar2sqfs) can need more and is sorted, as is a crafted
+one, which in listing order would cost a whole block decode per small file (§4).
+
+The listing walks the directories first, then reads every other inode once, in its
+order in the inode table, and with it the file's block list for `is_sparse`.
+
 A block stored with size 0 is a hole and reads as zeros. `is_sparse` is true for a file
 whose block list holds one, read from the list at listing time: `mksquashfs` writes most
 sparse files under a basic inode, which has no "bytes saved" field to go by.
@@ -128,7 +146,18 @@ offsets the image declares:
   block size, or copy from before the start of the output.
 - Decoded blocks are kept in two bounded caches, 64 metadata blocks and four fragment
   blocks (about 4.5 MiB at the largest block size). They are caches, not limits: a block
-  that is not kept is decoded again.
+  that is not kept is decoded again. A crafted layout cannot make that happen once per
+  member for fragments or file inodes: files with a tail come in fragment order when
+  listing order would thrash the fragment cache (§2.2), which took a 229 KB xz image of
+  50 000 one-byte files cycling five 1 MiB fragments from 62 s to 4 s (4.1 s for the
+  same files in one fragment), and file inodes are read in table order, which took a
+  listing of 20 480 entries strided across 80 inode-table blocks from 1.9 s to 0.3 s.
+- Directory inodes and listings are still read as the walk reaches them, since each is
+  needed to find the next. Directories whose inodes or listings stride across more than
+  64 metadata blocks decode an 8 KiB block for each: 20 480 empty directories strided
+  across 80 inode-table blocks list in 1.9 s, against 0.3 s in order. That is a bounded
+  cost per member (about one metadata block per directory, for an inode and a few
+  entries of the image), not the 1 MiB per member the fragment layout cost.
 
 ## 5. Sharp edges
 
@@ -162,6 +191,17 @@ offsets the image declares:
   listing decodes anyway. Rejected: leaving it false, which would make it mean
   something else for SquashFS than for TAR.
 
+- **Fragment order over listing order, only when listing order would thrash.** The
+  maintainer's call (2026-11-03), for a crafted layout that decoded a fragment block per
+  small file. Listing order is kept whenever the four-block cache covers it, which is
+  every image mksquashfs, gensquashfs or tar2sqfs writes from a directory; files with a
+  tail are sorted only when the replayed cache would decode a block twice. The replay
+  and the sort use the block's start, not the fragment-table entry, since two entries
+  can name one block. Rejected: charging decoded block bytes to a per-reader budget
+  (refuses an image instead of reading it), a larger cache (a crafted image cycles
+  through one more block), and only recording the case in the threat model. File inodes
+  are read in table order for the same reason; the order of reads is internal.
+
 ## 7. Open questions
 
 None are open.
@@ -173,7 +213,9 @@ None are open.
 ```
 
 The fixtures in `tests/fixtures/squashfs/` were written by `mksquashfs` 4.6.1, one per
-compressor and a few layouts (no fragments, tail ends, uncompressed);
+compressor and a few layouts (no fragments, tail ends, uncompressed), plus
+`tar-order.sqfs` from `sqfstar` (fragments filled in tar order, which the listing
+sorts) and `tail-ends-two-streams.sqfs` (two fragments in progress, which it does not);
 `tests/fixtures/squashfs/make-images.sh` writes them again. Damaged images are built in
 the tests. The tests also pin the internal names the reader imports. The Atheris target `squashfs`
 fuzzes the image walk and block reads.

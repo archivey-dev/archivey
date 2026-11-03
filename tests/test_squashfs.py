@@ -9,12 +9,14 @@ import importlib.util
 import io
 import random
 import struct
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 import archivey
 from archivey import (
+    ArchiveMember,
     ArchiveyConfig,
     CorruptionError,
     FormatPolicy,
@@ -177,6 +179,126 @@ def test_streams_members_in_one_pass() -> None:
             if stream is not None
         }
     assert read == CONTENT
+
+
+# ── Member order and block reuse ────────────────────────────────────────────────────
+
+
+def _decoded_blocks(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """The start of every block the readers opened from now on decode, in order."""
+    starts: list[int] = []
+    block_decoder = SquashfsReader._block_decoder
+
+    def recording(self: SquashfsReader, compressor: str) -> Callable[..., bytes]:
+        decode = block_decoder(self, compressor)
+
+        def decode_and_record(start: int, length: int, limit: int) -> bytes:
+            starts.append(start)
+            return decode(start, length, limit)
+
+        return decode_and_record
+
+    monkeypatch.setattr(SquashfsReader, "_block_decoder", recording)
+    return starts
+
+
+def _read_all(
+    path: Path, streaming: bool = False
+) -> list[tuple[ArchiveMember, bytes | None]]:
+    with open_archive(path, streaming=streaming) as archive:
+        return [(m, s.read() if s else None) for m, s in archive.stream_members()]
+
+
+# tar-order.sqfs: sqfstar fills fragments in the order the tar holds the files,
+# f0 f5 | f1 f6 | f2 f7 | f3 f8 | f4 f9 | d/f10, two to a 4 KiB block.
+_TAR_ORDER = {
+    **{f"f{i}": random.Random(i).randbytes(100) * 15 for i in range(10)},
+    "d/f10": random.Random(10).randbytes(100) * 15,
+    "big": random.Random(11).randbytes(64) * 64,  # one whole block, no tail
+}
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_fragments_filled_out_of_listing_order_are_each_decoded_once(
+    monkeypatch: pytest.MonkeyPatch, streaming: bool
+) -> None:
+    """In name order the files cycle through five fragment blocks, one more than the
+    reader keeps, so each small file would decode a whole block. The files with a tail
+    come in fragment order instead, after the directory and the members with no tail,
+    and before the hard link."""
+    decoded = _decoded_blocks(monkeypatch)
+    read = _read_all(DATA / "tar-order.sqfs", streaming)
+    assert [m.name for m, _ in read] == [
+        "big", "d/", "link",
+        "f0", "f5", "f1", "f6", "f2", "f7", "f3", "f8", "f4", "f9", "d/f10",
+        "hard",
+    ]  # fmt: skip
+    assert {m.name: data for m, data in read if data is not None} == _TAR_ORDER
+    assert {m.name: m.link_target for m, _ in read if m.link_target} == {
+        "link": "f0",
+        "hard": "f3",
+    }
+    assert sorted(decoded) == sorted(set(decoded))
+
+
+def test_fragment_entries_naming_one_block_decode_it_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two fragment-table entries may point at the same block. Here entry 5 (d/f10's)
+    points at entry 0's: sorted by entry, the block would be read for f0 and f5, then
+    four others, then d/f10 again, past what the reader keeps. Sorted by where the
+    block is, it decodes once."""
+    fragment = SquashfsReader._fragment
+    monkeypatch.setattr(
+        SquashfsReader, "_fragment", lambda self, i: fragment(self, 0 if i == 5 else i)
+    )
+    decoded = _decoded_blocks(monkeypatch)
+    read = _read_all(DATA / "tar-order.sqfs")
+    # d/f10 is at offset 0 of that block too, and listed before f0.
+    assert [m.name for m, _ in read][3:6] == ["d/f10", "f0", "f5"]
+    assert sorted(decoded) == sorted(set(decoded))
+
+
+def test_fragments_filled_out_of_listing_order_extract(tmp_path: Path) -> None:
+    with open_archive(DATA / "tar-order.sqfs") as archive:
+        archive.extract_all(tmp_path)
+    for name, data in _TAR_ORDER.items():
+        assert (tmp_path / name).read_bytes() == data
+    assert (tmp_path / "hard").stat().st_ino == (tmp_path / "f3").stat().st_ino
+    assert (tmp_path / "link").readlink() == Path("f0")
+
+
+@pytest.mark.parametrize("image", ["gzip", "tail-ends", "tail-ends-two-streams"])
+def test_fragments_filled_in_name_order_keep_listing_order(
+    monkeypatch: pytest.MonkeyPatch, image: str
+) -> None:
+    """mksquashfs fills one fragment at a time in name order, or two with
+    ``-tailends`` (small files and tail ends): the kept blocks cover the listing, and
+    the members stay in it, depth first and by name."""
+    decoded = _decoded_blocks(monkeypatch)
+    names = [m.name for m, _ in _read_all(DATA / f"{image}.sqfs")]
+    assert names == sorted(names, key=lambda name: name.rstrip("/").split("/"))
+    assert sorted(decoded) == sorted(set(decoded))
+
+
+def test_reads_each_inode_once_in_table_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The listing reads the inodes of everything but directories once each, sorted by
+    where they are in the inode table, whatever order the entries name them in: an
+    image whose entries stride across more inode-table blocks than the reader keeps
+    still decodes each block once. dir/hard.txt names a.txt's inode a second time."""
+    read: list[tuple[int, int]] = []
+    inode = SquashfsReader._inode
+
+    def recording(self: SquashfsReader, block: int, offset: int) -> object:
+        found = inode(self, block, offset)
+        if found.type != squashfs_reader._DIR:
+            read.append((block, offset))
+        return found
+
+    monkeypatch.setattr(SquashfsReader, "_inode", recording)
+    with open_archive(DATA / "gzip.sqfs") as archive:
+        assert len(archive.members()) == len(TYPES)
+    assert read == sorted(set(read))
 
 
 # ── Damaged images ─────────────────────────────────────────────────────────────────

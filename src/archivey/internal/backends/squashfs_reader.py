@@ -23,11 +23,12 @@ from __future__ import annotations
 import io
 import struct
 from collections import OrderedDict
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from datetime import UTC, datetime
 from typing import Any, BinaryIO, NamedTuple, cast
 
 from archivey.exceptions import (
+    ArchiveyError,
     CorruptionError,
     PackageNotInstalledError,
     TruncatedError,
@@ -110,9 +111,10 @@ _DIR_COUNT = 256
 # every small file in one fragment shares it. Caches, not limits: they bound what an
 # open reader holds (64 x 8 KiB, plus 4 fragments of at most the 1 MiB block size,
 # about 4.5 MiB) whatever the image declares, and a miss only decodes the block again.
-# 64 covers the inode and directory blocks a listing walks back and forth over in
-# images of tens of thousands of files; mksquashfs packs the small files of one
-# directory into consecutive fragments, so a few cover a walk in archive order.
+# 64 covers the directory blocks a listing walks back and forth over in images of tens
+# of thousands of files; the other inodes are read in table order. Writers fill one or
+# two fragments at a time in name order, so a few cover a walk in listing order; where
+# they would not, ``iter_members`` puts the files with a tail in fragment order.
 _METADATA_CACHE = 64
 _FRAGMENT_CACHE = 4
 
@@ -210,6 +212,34 @@ class _Inode(NamedTuple):
 def _listing(inode: _Inode) -> tuple[int, int, int]:
     assert isinstance(inode.body, tuple), "a directory inode's body is its listing"
     return inode.body
+
+
+class _Entry(NamedTuple):
+    """A directory entry the walk found, before its member is made."""
+
+    parent: int  # index of its directory's entry, -1 for the root
+    name: bytes
+    ref: tuple[int, int]  # its inode: (metadata block, offset)
+    kind: int  # the basic type the entry gives
+    inode: _Inode | None  # read during the walk for a directory, else None
+
+
+def _decodes_twice(starts: Iterable[int]) -> bool:
+    """Whether the reader's fragment cache, asked for the blocks at these starts in
+    order, would decode one of them a second time."""
+    cache: OrderedDict[int, None] = OrderedDict()
+    decoded: set[int] = set()
+    for start in starts:
+        if start in cache:
+            cache.move_to_end(start)
+            continue
+        if start in decoded:
+            return True
+        decoded.add(start)
+        cache[start] = None
+        if len(cache) > _FRAGMENT_CACHE:
+            cache.popitem(last=False)
+    return False
 
 
 class SquashfsReader(IndexedReader[FileLocation | None]):
@@ -549,7 +579,61 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
 
     @override
     def iter_members(self) -> Iterator[MemberRecord[FileLocation | None]]:
+        """Every member, in listing order, or in fragment order where that would thrash.
+
+        Listing order is the directory walk's: depth first, each directory's entries in
+        the order stored, which every SquashFS writer sorts by name. The walk reads the
+        whole tree first, then the non-directory inodes in their table order, so a
+        listing whose entries stride across the inode table decodes each of its
+        metadata blocks once rather than once per member.
+
+        A file whose tail is in a fragment block reads that block whole, and the reader
+        keeps the last ``_FRAGMENT_CACHE`` of them. When reading the files in listing
+        order would decode a fragment block a second time (the cache replayed over
+        where their blocks start, read from the fragment table, which needs no block
+        decoded), the files with a tail come sorted by block and offset instead, so
+        each block decodes once. Writers that
+        fill fragments in name order never reach this: mksquashfs, gensquashfs and
+        tar2sqfs keep one fragment in progress, mksquashfs ``-tailends`` and sqfstar
+        two. An image built from a tar in another order can, and so can a crafted one,
+        which in listing order would decode a whole fragment block for each small file.
+        Then the members come as: directories, other members and files with no tail in
+        listing order, so a directory still comes before its contents; then the files
+        with a tail; then the hard links, in listing order, so each comes after the
+        member it names.
+        """
         self._block_list_bytes = 0
+        entries: list[_Entry] = []
+        limit = self._context.config.listing_limits.max_members
+        failure: ArchiveyError | None = None
+        try:
+            complete = self._walk(entries, limit)
+        except ArchiveyError as exc:
+            failure, complete = exc, False
+        files = self._file_inodes(entries)
+        # For each entry, the first entry listed with its inode: itself, or for a hard
+        # link the member it names. -1 for a directory.
+        first: list[int] = []
+        firsts: dict[tuple[int, int], int] = {}
+        for index, entry in enumerate(entries):
+            first.append(
+                -1 if entry.kind == _DIR else firsts.setdefault(entry.ref, index)
+            )
+        order: Iterable[int] = range(len(entries))
+        if complete and failure is None:
+            order = self._in_fragment_order(entries, files, first) or order
+        # A damaged image keeps listing order: it yields the members before the damage,
+        # then raises, as a walk that reads each inode as it goes would.
+        names: dict[int, tuple[bytes, str]] = {}
+        for index in order:
+            yield self._record(entries, index, files, first[index], names)
+        if failure is not None:
+            raise failure
+
+    def _walk(self, entries: list[_Entry], limit: int | None) -> bool:
+        """Append every entry of the tree to ``entries``, in listing order, reading only
+        the directories' inodes. ``False`` when it stopped past ``limit`` entries, where
+        archivey refuses the listing anyway."""
         root = self._sb.root_inode
         root_ref = (root >> 16, root & 0xFFFF)
         if root_ref[1] >= _METADATA_SIZE:
@@ -558,60 +642,162 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         if inode.type != _DIR:
             raise CorruptionError("the SquashFS root is not a directory")
         seen_dirs = {root_ref}
-        # The first name of each inode listed, for a later name that shares it.
-        first_name: dict[tuple[int, int], str] = {}
-        stack = [(b"", self._entries(_listing(inode)))]
+        stack = [(-1, self._entries(_listing(inode)))]
         while stack:
-            prefix, entries = stack[-1]
-            entry = next(entries, None)
-            if entry is None:
+            parent, listing = stack[-1]
+            item = next(listing, None)
+            if item is None:
                 stack.pop()
                 continue
-            name, inode_block, inode_offset, kind = entry
-            raw_name = prefix + name
-            ref = (inode_block, inode_offset)
-            inode = self._inode(*ref)
-            if inode.type != kind:
-                raise CorruptionError(
-                    f"{_shown(raw_name)} is listed as type {kind}, its inode is {inode.type}"
-                )
-            path = self._context.decode_name(raw_name)
-            member = ArchiveMember(
-                type=MemberType.FILE,
-                name=path,
-                raw_name=raw_name,
-                modified=datetime.fromtimestamp(inode.mtime, UTC),
-                mode=inode.mode,
-                uid=inode.uid,
-                gid=inode.gid,
-            )
-            location: FileLocation | None = None
+            if limit is not None and len(entries) > limit:
+                return False
+            name, inode_block, inode_offset, kind = item
+            entry = _Entry(parent, name, (inode_block, inode_offset), kind, None)
             if kind == _DIR:
-                if ref in seen_dirs:
+                inode = self._inode(*entry.ref)
+                self._check_type(entries, entry, inode)
+                if entry.ref in seen_dirs:
                     raise CorruptionError(
-                        f"directory {_shown(raw_name)} is listed twice"
+                        f"directory {_shown(self._raw_name(entries, entry))} is "
+                        "listed twice"
                     )
-                seen_dirs.add(ref)
-                member.type = MemberType.DIRECTORY
-                stack.append((raw_name + b"/", self._entries(_listing(inode))))
-            elif ref in first_name:
-                member.type = MemberType.HARDLINK
-                member.link_target = first_name[ref]
+                seen_dirs.add(entry.ref)
+                entry = entry._replace(inode=inode)
+                stack.append((len(entries), self._entries(_listing(inode))))
+            entries.append(entry)
+        return True
+
+    def _file_inodes(
+        self, entries: list[_Entry]
+    ) -> dict[tuple[int, int], tuple[_Inode, bool] | ArchiveyError]:
+        """The inode of every entry that is not a directory, and for a file whether it
+        has holes, read in table order: each inode-table block decodes once. A damaged
+        inode is kept as its error, raised when its member comes."""
+        files: dict[tuple[int, int], tuple[_Inode, bool] | ArchiveyError] = {}
+        for ref in sorted({entry.ref for entry in entries if entry.kind != _DIR}):
+            try:
+                inode = self._inode(*ref)
+                sparse = isinstance(inode.body, FileLocation) and self._has_holes(
+                    inode.body
+                )
+                files[ref] = (inode, sparse)
+            except ArchiveyError as exc:
+                files[ref] = exc
+        return files
+
+    def _in_fragment_order(
+        self,
+        entries: list[_Entry],
+        files: dict[tuple[int, int], tuple[_Inode, bool] | ArchiveyError],
+        first: list[int],
+    ) -> list[int] | None:
+        """The members' order when listing order would decode a fragment block twice
+        (:meth:`iter_members`), else ``None``. Only for an image whose every member
+        reads without error."""
+        tails: list[tuple[int, int, int]] = []
+        for index, entry in enumerate(entries):
+            if entry.kind == _DIR:
+                continue
+            found = files[entry.ref]
+            if isinstance(found, ArchiveyError) or found[0].type != entry.kind:
+                return None
+            location = found[0].body
+            if (
+                first[index] == index
+                and isinstance(location, FileLocation)
+                and location.fragment != _NO_FRAGMENT
+                and location.size % self._sb.block_size
+            ):
+                tails.append((location.fragment, location.fragment_offset, index))
+        # By the block's start, as the cache keys it: two table entries can name one
+        # block. Looked up in table order; a bad entry is reported by the member's read.
+        starts: dict[int, int] = {}
+        try:
+            for fragment in sorted({fragment for fragment, _, _ in tails}):
+                starts[fragment] = self._fragment(fragment)[0]
+        except ArchiveyError:
+            return None
+        tails = [(starts[fragment], offset, index) for fragment, offset, index in tails]
+        if not _decodes_twice(start for start, _, _ in tails):
+            return None
+        tailed = {index for _, _, index in tails}
+        links = [i for i in range(len(entries)) if first[i] not in (-1, i)]
+        rest = [
+            i for i in range(len(entries)) if i not in tailed and first[i] in (-1, i)
+        ]
+        return rest + [index for _, _, index in sorted(tails)] + links
+
+    def _raw_name(self, entries: list[_Entry], entry: _Entry) -> bytes:
+        """An entry's path, from its directories' names (for a message)."""
+        parts = [entry.name]
+        parent = entry.parent
+        while parent >= 0:
+            parts.append(entries[parent].name)
+            parent = entries[parent].parent
+        return b"/".join(reversed(parts))
+
+    def _check_type(self, entries: list[_Entry], entry: _Entry, inode: _Inode) -> None:
+        if inode.type != entry.kind:
+            raise CorruptionError(
+                f"{_shown(self._raw_name(entries, entry))} is listed as type "
+                f"{entry.kind}, its inode is {inode.type}"
+            )
+
+    def _record(
+        self,
+        entries: list[_Entry],
+        index: int,
+        files: dict[tuple[int, int], tuple[_Inode, bool] | ArchiveyError],
+        first: int,
+        names: dict[int, tuple[bytes, str]],
+    ) -> MemberRecord[FileLocation | None]:
+        """The member for ``entries[index]``. ``names`` holds the raw and decoded name
+        of each member already made that a later one needs: its directory, or the
+        member a hard link names, which always come first."""
+        entry = entries[index]
+        prefix = names[entry.parent][0] + b"/" if entry.parent >= 0 else b""
+        raw_name = prefix + entry.name
+        sparse = False
+        if entry.inode is not None:
+            inode = entry.inode
+        else:
+            found = files[entry.ref]
+            if isinstance(found, ArchiveyError):
+                raise found
+            inode, sparse = found
+            self._check_type(entries, entry, inode)
+        path = self._context.decode_name(raw_name)
+        member = ArchiveMember(
+            type=MemberType.FILE,
+            name=path,
+            raw_name=raw_name,
+            modified=datetime.fromtimestamp(inode.mtime, UTC),
+            mode=inode.mode,
+            uid=inode.uid,
+            gid=inode.gid,
+        )
+        location: FileLocation | None = None
+        if entry.kind == _DIR:
+            member.type = MemberType.DIRECTORY
+            names[index] = (raw_name, path)
+        elif first != index:
+            member.type = MemberType.HARDLINK
+            member.link_target = names[first][1]
+        else:
+            names[index] = (raw_name, path)
+            if entry.kind == _FILE:
+                assert isinstance(inode.body, FileLocation)
+                location = inode.body
+                member.size = location.size
+                member.is_sparse = sparse
+            elif entry.kind == _SYMLINK:
+                assert isinstance(inode.body, bytes)
+                member.type = MemberType.SYMLINK
+                member.link_target = self._context.decode_name(inode.body)
             else:
-                first_name[ref] = path
-                if kind == _FILE:
-                    assert isinstance(inode.body, FileLocation)
-                    location = inode.body
-                    member.size = location.size
-                    member.is_sparse = self._has_holes(location)
-                elif kind == _SYMLINK:
-                    assert isinstance(inode.body, bytes)
-                    member.type = MemberType.SYMLINK
-                    member.link_target = self._context.decode_name(inode.body)
-                else:
-                    member.type = MemberType.OTHER
-                    member.extra["special_file_type"] = _SPECIAL[kind]
-            yield MemberRecord(member, location)
+                member.type = MemberType.OTHER
+                member.extra["special_file_type"] = _SPECIAL[entry.kind]
+        return MemberRecord(member, location)
 
     @override
     def open_member(
