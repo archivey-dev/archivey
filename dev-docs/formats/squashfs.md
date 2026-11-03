@@ -78,8 +78,13 @@ sorted, as is a crafted image, which in listing order would cost a whole block d
 per small file (§4). An image that lists one name twice in a directory keeps listing
 order whatever its fragments, since that order says which entry is current.
 
-The listing walks the directories first, then reads every other inode once, in its
-order in the inode table, and with it the file's block list for `is_sparse`.
+The listing makes two passes. The first walks the directories, keeping each entry's
+name, parent and inode reference, then reads every other inode once, in its order in
+the inode table, and with it the file's block list for `is_sparse`; of each it keeps
+only what the order needs (a tailed file's fragment and offset, whether it has holes,
+an error to raise in turn). The second reads each member's inode again by its reference,
+through the metadata cache, as it makes the member. Holding every inode instead cost
+half as much memory again as the listing itself on a 100 000-file image.
 
 A block stored with size 0 is a hole and reads as zeros. `is_sparse` is true for a file
 whose block list holds one, read from the list at listing time: `mksquashfs` writes most
@@ -152,8 +157,12 @@ offsets the image declares:
   member for fragments or file inodes: files with a tail come in fragment order when
   listing order would thrash the fragment cache (§2.2), which took a 229 KB xz image of
   50 000 one-byte files cycling five 1 MiB fragments from 62 s to 4 s (4.1 s for the
-  same files in one fragment), and file inodes are read in table order, which took a
-  listing of 20 480 entries strided across 80 inode-table blocks from 1.9 s to 0.3 s.
+  same files in one fragment). File inodes are read twice, once in table order to
+  decide the order and once in member order to make the members, so an inode table
+  ordered against the listing, or one inode per metadata block, decodes each block at
+  most twice: 300 files each in its own block, stored in reverse, decode 537 metadata
+  blocks in all. The second read is the cost of a walk that reads each inode as it
+  goes: one 8 KiB block per member at worst.
 - Directory inodes and listings are still read as the walk reaches them, since each is
   needed to find the next. Directories whose inodes or listings stride across more than
   64 metadata blocks decode an 8 KiB block for each: 20 480 empty directories strided
@@ -203,6 +212,13 @@ offsets the image declares:
   (refuses an image instead of reading it), a larger cache (a crafted image cycles
   through one more block), and only recording the case in the threat model. File inodes
   are read in table order for the same reason; the order of reads is internal.
+
+- **Two passes over the inodes, keeping little between them.** The maintainer's call
+  (2026-11-03). The first pass keeps, per file, only what the order needs; the second
+  reads each inode again by reference. On a 100 200-file gzip image it lists in 2.0 s
+  against 1.75 s for holding every inode, and holds about 33 MB less at its peak.
+  Rejected: holding every inode until the order is known (the peak grew by half again
+  on that image).
 
 ## 7. Open questions
 

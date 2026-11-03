@@ -299,13 +299,14 @@ def test_fragments_filled_in_name_order_keep_listing_order(
     assert sorted(decoded) == sorted(set(decoded))
 
 
-def test_reads_each_inode_once_in_table_order(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The listing reads the inodes of everything but directories once each, sorted by
-    where they are in the inode table, whatever order the entries name them in: an
-    image whose entries stride across more inode-table blocks than the reader keeps
-    still decodes each block once. Each listing is read backwards here, so the entries
-    name the inodes against table order; dir/hard.txt names a.txt's inode a second
-    time."""
+def test_first_pass_reads_each_inode_once_in_table_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The first pass reads the inodes of everything but directories once each, sorted
+    by where they are in the inode table, whatever order the entries name them in; the
+    second reads each again, by its entry, as it makes the member. Each listing is
+    read backwards here, so the entries name the inodes against table order;
+    dir/hard.txt names a.txt's inode a second time."""
     read: list[tuple[int, int]] = []
     inode = SquashfsReader._inode
     entries = SquashfsReader._entries
@@ -323,8 +324,79 @@ def test_reads_each_inode_once_in_table_order(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr(SquashfsReader, "_inode", recording)
     with open_archive(DATA / "gzip.sqfs") as archive:
-        assert len(archive.members()) == len(TYPES)
-    assert read == sorted(set(read))
+        members = archive.members()
+    assert len(members) == len(TYPES)
+    unique = sorted(set(read))
+    assert read[: len(unique)] == unique
+    assert len(read) == len(unique) + sum(not m.is_dir for m in members)
+
+
+def _one_inode_per_block(names: list[bytes]) -> bytes:
+    """An uncompressed image of empty files under the root, each file's inode in a
+    metadata block of its own and the table in reverse listing order, so every inode
+    the listing reads in its own order misses the metadata cache."""
+    block_size, mtime = 4096, 0
+
+    def metadata(data: bytes) -> bytes:
+        return struct.pack("<H", len(data) | 0x8000) + data
+
+    def header(kind: int, number: int) -> bytes:
+        return struct.pack("<HHHHII", kind, 0o644, 0, 0, mtime, number)
+
+    inodes, refs = b"", {}
+    for number, name in reversed(list(enumerate(names, 2))):
+        refs[name] = (len(inodes), number)
+        file = header(2, number) + struct.pack("<IIII", 0, 0xFFFFFFFF, 0, 0)
+        inodes += metadata(file)
+    listing = b"".join(
+        struct.pack("<III", 0, refs[name][0], refs[name][1])
+        + struct.pack("<HhHH", 0, 0, 2, len(name) - 1)
+        + name
+        for name in names
+    )
+    assert len(listing) <= 8192 - 3
+    root_ref = len(inodes)
+    root = header(1, 1) + struct.pack(
+        "<IIHHI", 0, 2, len(listing) + 3, 0, len(names) + 2
+    )
+    inodes += metadata(root)
+    inode_table = 96
+    directory_table = inode_table + len(inodes)
+    ids = metadata(struct.pack("<I", 0))
+    id_block = directory_table + len(metadata(listing))
+    id_table = id_block + len(ids)
+    body = inodes + metadata(listing) + ids + struct.pack("<Q", id_block)
+    end = 96 + len(body)
+    superblock = struct.pack(
+        "<IIIIIHHHHHHQQQQQQQQ",
+        0x73717368, len(names) + 1, mtime, block_size, 0, 1, 12, 0, 1, 4, 0,
+        root_ref << 16, end, id_table, 0xFFFFFFFFFFFFFFFF,
+        inode_table, directory_table, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF,
+    )  # fmt: skip
+    return superblock + body
+
+
+def test_inodes_each_in_a_block_decode_linearly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crafted image can put each inode in a metadata block of its own and order the
+    table against the listing, so the cache rarely hits on an inode. The first pass
+    reads the table in order and the second in listing order, so each inode's block
+    decodes at most twice."""
+    names = [f"f{i:03}".encode() for i in range(300)]
+    path = _image(tmp_path, _one_inode_per_block(names))
+    decoded: list[int] = []
+    block = SquashfsReader._metadata_block
+
+    def recording(self: SquashfsReader, pos: int) -> tuple[bytes, int]:
+        if pos not in self._metadata:
+            decoded.append(pos)
+        return block(self, pos)
+
+    monkeypatch.setattr(SquashfsReader, "_metadata_block", recording)
+    with open_archive(path) as archive:
+        assert [m.name for m in archive.members()] == [n.decode() for n in names]
+    assert len(decoded) <= 2 * len(names) + 4
 
 
 # ── Damaged images ─────────────────────────────────────────────────────────────────
