@@ -757,13 +757,14 @@ field archivey.diagnostics.FormatConflictContext.kind: Literal['format_conflict'
 field archivey.diagnostics.FormatConflictContext.source_name: str | None = None
 method archivey.diagnostics.FormatConflictContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.HeaderAmbiguityContext(_JsonSafeContext)
-init archivey.diagnostics.HeaderAmbiguityContext(kind: Literal['header_ambiguity'] = 'header_ambiguity', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, ambiguity: Literal['both_families', 'repeated', 'global_member_field', 'nul_in_value', 'global_replaced', 'mixed_chain', 'global_in_chain', 'empty_value', 'leading_zero', 'field_tail', 'size_on_no_data', 'signed_checksum', 'magic_version', 'newline_in_value'] = 'repeated', field: str = '') -> None
+init archivey.diagnostics.HeaderAmbiguityContext(kind: Literal['header_ambiguity'] = 'header_ambiguity', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, ambiguity: Literal['both_families', 'repeated', 'global_member_field', 'nul_in_value', 'global_replaced', 'mixed_chain', 'global_in_chain', 'empty_value', 'leading_zero', 'field_tail', 'size_on_no_data', 'signed_checksum', 'magic_version', 'newline_in_value'] = 'repeated', field: str = '', more_fields: int = 0) -> None
 field archivey.diagnostics.HeaderAmbiguityContext.ambiguity: Literal['both_families', 'repeated', 'global_member_field', 'nul_in_value', 'global_replaced', 'mixed_chain', 'global_in_chain', 'empty_value', 'leading_zero', 'field_tail', 'size_on_no_data', 'signed_checksum', 'magic_version', 'newline_in_value'] = 'repeated'
 field archivey.diagnostics.HeaderAmbiguityContext.archive_name: str | None = None
 field archivey.diagnostics.HeaderAmbiguityContext.field: str = ''
 field archivey.diagnostics.HeaderAmbiguityContext.kind: Literal['header_ambiguity'] = 'header_ambiguity'
 field archivey.diagnostics.HeaderAmbiguityContext.member_id: int | None = None
 field archivey.diagnostics.HeaderAmbiguityContext.member_name: str = ''
+field archivey.diagnostics.HeaderAmbiguityContext.more_fields: int = 0
 method archivey.diagnostics.HeaderAmbiguityContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.LinkDataContext(_JsonSafeContext)
 init archivey.diagnostics.LinkDataContext(kind: Literal['link_data'] = 'link_data', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, size: int = 0) -> None
@@ -1065,6 +1066,7 @@ property archivey.formats.ReaderContext.config: ArchiveyConfig
 method archivey.formats.ReaderContext.decode_name(self, raw: bytes) -> str
 method archivey.formats.ReaderContext.decompress(self, data: BinaryIO, method: CompressionAlgorithm | StreamFormat | PluginStream, *, size: int | None = None, properties: bytes | None = None) -> BinaryIO
 property archivey.formats.ReaderContext.encoding: str | None
+method archivey.formats.ReaderContext.hold(self, member: ArchiveMember, *, stored_name: str | None = None, reason: str | None = None) -> None
 method archivey.formats.ReaderContext.link_target_unavailable(self, member: ArchiveMember, *, reason: str, message: str, target_in_archive: bool) -> None
 method archivey.formats.ReaderContext.normalize_name(self, name: str, member_type: MemberType) -> str
 method archivey.formats.ReaderContext.report(self, code: DiagnosticCode, message: str, details: DiagnosticContext, *, member: ArchiveMember | None = None) -> None

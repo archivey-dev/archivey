@@ -1098,6 +1098,11 @@ misread the archive.
 - **Listing:** from the image's inode and directory tables.
 - **Reading members:** direct. Small files share a fragment block, which is decoded once for
   all of them.
+- **Member order:** depth first, each directory's entries by name, as the image stores them.
+  An image whose small files share fragment blocks in another order (one built from a tar
+  that is not in name order, for example) lists the files kept in fragments in fragment
+  order instead, after the directories and the other members and before the hard links, so
+  each block is decoded once.
 - **From a pipe:** no; the tables come after the file data, so the image needs a source
   that can seek.
 - `ArchiveInfo.format_version` is `"4.0"`. `ArchiveInfo.extra["squashfs.compressor"]` names
@@ -1106,8 +1111,8 @@ misread the archive.
   (`OTHER`) read. `member.is_sparse` is true for a file stored with holes. Extended
   attributes are not read.
 - Big-endian images (SquashFS 3 and older) raise `UnsupportedFeatureError`.
-- SquashFS stores no checksums, so a damaged block is found only when it does not decode to
-  its length.
+- SquashFS stores no checksums of its own. A damaged block is found when it does not decode
+  to its length, or when its compressor's own check fails (zlib's Adler-32, the xz CRC).
 
 ## CPIO
 

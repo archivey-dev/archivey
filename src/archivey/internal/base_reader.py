@@ -30,6 +30,7 @@ from typing import (
     NamedTuple,
     NoReturn,
     Self,
+    TypeVar,
     cast,
 )
 
@@ -141,6 +142,7 @@ from archivey.internal.streams.counting import (
     OutputCountingStream,
     SeekCountingStream,
 )
+from archivey.internal.streams.decompressor_stream import _StreamChecksumError
 from archivey.internal.streams.streamtools import (
     OneReadEachStream,
     ReadableStream,
@@ -148,7 +150,10 @@ from archivey.internal.streams.streamtools import (
     read_exact,
     source_byte_size,
 )
-from archivey.internal.streams.verification import raise_member_level
+from archivey.internal.streams.verification import (
+    SpanningCheckError,
+    raise_member_level,
+)
 from archivey.internal.streams.verify import CustomDigests
 from archivey.internal.timestamps import TimestampIssue
 from archivey.internal.walk_handoff import WalkHandoffStream
@@ -236,6 +241,13 @@ _UnconfirmedEvidence = Literal["extension", "content_probe"]
 # guards cost nothing per member, few enough that a pass on another thread is not kept
 # waiting for a whole listing.
 _DRAIN_BATCH = 256
+
+
+# The read size verify_all() uses to read a member again for a spanning check.
+_VERIFY_ALL_CHUNK = 1 << 20
+
+_ArgT = TypeVar("_ArgT")
+_RetT = TypeVar("_RetT")
 
 
 class _UnconfirmedWording(NamedTuple):
@@ -697,6 +709,10 @@ class BaseArchiveReader(ArchiveReader):
         # What open() and stream_members() streams have decoded, for the archive-wide
         # ratio they are held to (``_hold_to_ratio``).
         self._read_ratio_tally = _new_read_ratio_tally()
+        # The ratio fields an ``extract_all`` call applies, set on its thread for the
+        # length of the call: a compressed container's decode guard, built at open,
+        # holds that call's decodes to them (``_run_ratio_limits``).
+        self._extraction_ratio = threading.local()
         # Opt-in benchmark counters (see archivey.internal.measurement). When measurement
         # is off these stay None and wrap helpers are identity — zero hot-path overhead.
         self._measure = measurement_enabled()
@@ -735,6 +751,15 @@ class BaseArchiveReader(ArchiveReader):
         # the index's order, with why: the walk's error is the first of them, and
         # extraction gives each its result.
         self._failed_at_end: list[tuple[ArchiveMember, CorruptionError]] = []
+        # ``verify_all()``: the ids of the members its last call read into a failed
+        # check that spans members (``SpanningCheckError``), and of those it covers.
+        # They may sit at their ceiling, so the next call reads them again by this.
+        self._spanning_retry: set[int] = set()
+        # Failed spanning checks no read raised, because a member's own error took
+        # priority (``_note_unraised_spanning``); ``verify_all()`` takes them. One per
+        # check, keyed by the backend's name for it, so repeated reads of the same
+        # damaged member keep one error, not one per read.
+        self._unraised_spanning: dict[object, SpanningCheckError] = {}
         # Name to the member listed under it, or to a list of them in listing order
         # once a second member has that name: a list here always holds two or more. A
         # list per name would be one more object per member for the collector to walk.
@@ -1151,6 +1176,29 @@ class BaseArchiveReader(ArchiveReader):
 
         config = self._config
         return ratio_limits(config.decoder_limits, config.extraction_limits)
+
+    def _run_ratio_limits(self) -> DecoderLimits | None:
+        """The ratio fields of the ``extract_all`` call running on this thread, or
+        ``None`` outside one."""
+        return getattr(self._extraction_ratio, "limits", None)
+
+    def _outside_extraction_ratio(
+        self, callback: Callable[[_ArgT], _RetT]
+    ) -> Callable[[_ArgT], _RetT]:
+        """``callback``, run with no ``extract_all`` ratio in force on its thread
+        (``_run_ratio_limits``): a caller's ``filter``, selector or ``on_progress``
+        that reads the reader is held to the reader's limits, not the call's."""
+        run_ratio = self._extraction_ratio
+
+        def call(arg: _ArgT, /) -> _RetT:
+            outer = getattr(run_ratio, "limits", None)
+            run_ratio.limits = None
+            try:
+                return callback(arg)
+            finally:
+                run_ratio.limits = outer
+
+        return call
 
     def _hold_to_ratio(self, stream: ArchiveStreamImpl, member: ArchiveMember) -> None:
         """Hold a member stream ``open()`` or ``stream_members()`` gives the caller to
@@ -3590,7 +3638,8 @@ class BaseArchiveReader(ArchiveReader):
         read straight from a pipe (a plain TAR, a ZIP, a sequential format such as CPIO
         or ar) has no such counter: the bytes its source has taken from the pipe stand in
         (:attr:`ArchiveSource.bytes_pulled`), so its reads and its extraction are held
-        to the ratio as well.
+        to the ratio as well. Read from a seekable stream of unknown size, the furthest
+        offset the source has reached stands in (:attr:`ArchiveSource.bytes_reached`).
         """
         self._state.require_open("compressed_bytes_consumed")
         consumed = self._live_consumed()
@@ -3601,22 +3650,25 @@ class BaseArchiveReader(ArchiveReader):
         (:meth:`_trusted_source_size`) applies or nothing can be counted.
 
         The codec input counter when a backend installed one
-        (:meth:`_wrap_compressed_input`); otherwise, for a source with no trusted size
-        that cannot seek (a pipe), the bytes the source has taken from it. Both count
-        the same forward-only bytes, so a guard built before a backend installs its
-        counter loses nothing by keeping the source's count.
+        (:meth:`_wrap_compressed_input`); otherwise, for a source with no trusted size,
+        the bytes the source has taken from a pipe, or the furthest offset it has
+        reached when it can seek. The pipe's count and the codec's count the same
+        forward-only bytes, so a guard built before a backend installs its counter loses
+        nothing by keeping the source's count. The furthest offset counts a byte read
+        again once, so it never passes the archive's size.
         """
         counter = self._compressed_input_counter
         if counter is not None:
             return lambda: counter.bytes_read
         source = self._source
-        if (
-            source is None
-            or source.seekable()
-            or self._trusted_source_size() is not None
-            # A directory source cannot seek either, but it has no stream to count.
-            or source.bytes_pulled is None
-        ):
+        if source is None or self._trusted_source_size() is not None:
+            return None
+        if source.seekable():
+            # A directory source has no stream to count.
+            if source.bytes_reached is None:
+                return None
+            return lambda: source.bytes_reached or 0
+        if source.bytes_pulled is None:
             return None
         return lambda: source.bytes_pulled or 0
 
@@ -3691,7 +3743,10 @@ class BaseArchiveReader(ArchiveReader):
 
         Listing such an archive decodes all of it, so the decoded stream is held to
         ``decoder_limits.max_ratio`` of the archive's size (:class:`DecodeRatioGuard`)
-        in every use, not only in ``extract_all``.
+        in every use, not only in ``extract_all``. An ``extract_all`` call on this
+        thread holds its own decodes to the ratio fields it applies instead, for the
+        length of the call (``_run_ratio_limits``); a read after it is judged again
+        under the reader's limits.
         """
         # Imported here: the codec layer imports reader-side modules at load.
         from archivey.internal.bomb_tracker import DecodeRatioGuard
@@ -3735,6 +3790,7 @@ class BaseArchiveReader(ArchiveReader):
             limits=limits,
             static_size=self._trusted_source_size(),
             consumed=self._live_consumed(),
+            run_limits=self._run_ratio_limits,
         )
 
     @override
@@ -4212,12 +4268,27 @@ class BaseArchiveReader(ArchiveReader):
     @override
     def verify_all(self) -> tuple[tuple[ArchiveMember, ArchiveyError], ...]:
         failures: list[tuple[ArchiveMember, ArchiveyError]] = []
+        spanning: list[SpanningCheckError] = []
+        retry_next: set[int] = set()
+        self._unraised_spanning.clear()
 
         # A member at its ceiling has nothing left to prove; one whose ceiling is NONE
         # (a key nothing can prove) is read again, so its length checks run each time.
+        # So is one whose per-frame checks wait on a read from the start
+        # (``ArchiveMember._ceiling_provisional``), as it may still reach CHECKSUM.
+        # So is one the last call found in a failed spanning check, at its ceiling or
+        # not: the check is read again, to fail it again or (a password supplied
+        # since) to pass.
+        retry = self._spanning_retry
+
         def selector(m: ArchiveMember) -> bool:
             ceiling = m.verifiable
-            return ceiling is Verification.NONE or m.verified < ceiling
+            return (
+                ceiling is Verification.NONE
+                or m.verified < ceiling
+                or m._ceiling_provisional is True
+                or id(m) in retry
+            )
 
         with self.stream_members(selector) as members:
             it = iter(members)
@@ -4228,6 +4299,22 @@ class BaseArchiveReader(ArchiveReader):
                     break
                 except DiagnosticRaisedError:
                     raise
+                except _StreamChecksumError as e:
+                    # A codec checksum over the archive stream failed (a .tar.gz
+                    # trailer). It may cover only some of the files (a concatenated
+                    # .tar.gz, a multi-frame .tar.zst), and nothing says which, so
+                    # every listed file is a failure, read in this pass or not: a
+                    # false failure beats a false pass (DR-1). members_report().error
+                    # holds it too.
+                    # In listing order; a member that already failed keeps its error.
+                    earlier = {id(m): (m, err) for m, err in failures}
+                    failures = [
+                        earlier.pop(id(m), (m, e))
+                        for m in self._listed
+                        if m.is_file or id(m) in earlier
+                    ]
+                    failures.extend(earlier.values())
+                    break
                 except CorruptionError:
                     # Damage that stops the listing: members_report().error holds it.
                     break
@@ -4236,12 +4323,63 @@ class BaseArchiveReader(ArchiveReader):
                     raise_member_level(m, m.verified, m.verified)
                     continue
                 try:
-                    stream.verify()
+                    if id(m) in retry:
+                        # verify() reads nothing for a member at its ceiling; the
+                        # spanning check needs its bytes and its end read again.
+                        while stream.read(_VERIFY_ALL_CHUNK):
+                            pass
+                    else:
+                        stream.verify()
                 except DiagnosticRaisedError:
                     raise
                 except ArchiveyError as e:
                     failures.append((m, e))
+                    if isinstance(e, SpanningCheckError):
+                        spanning.append(e)
+                        retry_next.add(id(m))
+                        retry_next.update(id(c) for c in e.covers)
+        for error in self._unraised_spanning.values():
+            spanning.append(error)
+            retry_next.update(id(c) for c in error.covers)
+        self._unraised_spanning.clear()
+        self._spanning_retry = retry_next
+        if spanning:
+            failures = self._with_spanning_failures(failures, spanning)
         return tuple(failures)
+
+    def _note_unraised_spanning(self, key: object, error: SpanningCheckError) -> None:
+        """Keep a failed spanning check that no read raises, for ``verify_all()``.
+
+        A backend calls this when the read that reached the check raised the reading
+        member's own, more precise error instead. ``key`` names the check (a 7z
+        folder index): a later failure of the same check replaces the earlier one, so
+        what is held stays bounded by the number of checks, however often it is read.
+        """
+        self._unraised_spanning[key] = error
+
+    def _with_spanning_failures(
+        self,
+        failures: list[tuple[ArchiveMember, ArchiveyError]],
+        spanning: list[SpanningCheckError],
+    ) -> list[tuple[ArchiveMember, ArchiveyError]]:
+        """``failures`` plus every member a failed spanning check covers, in listing
+        order. A member that failed on its own keeps its own error. A member whose
+        read only carried the error of a check that does not cover it, and whose own
+        check passed (it is at its ceiling), is not a failure."""
+        found = {
+            id(m): (m, e)
+            for m, e in failures
+            if not (
+                isinstance(e, SpanningCheckError)
+                and all(c is not m for c in e.covers)
+                and m.verified >= m.verifiable
+            )
+        }
+        for error in spanning:
+            for member in error.covers:
+                found.setdefault(id(member), (member, error))
+        order = {id(m): i for i, m in enumerate(self._listed)}
+        return sorted(found.values(), key=lambda pair: order.get(id(pair[0]), -1))
 
     def _stream_members(
         self,
@@ -4455,6 +4593,7 @@ class BaseArchiveReader(ArchiveReader):
         # Imported here (not at module top) to keep the import graph tidy: extraction.py
         # type-checks against BaseArchiveReader.
         from archivey.internal.extraction import ExtractionCoordinator
+        from archivey.internal.selection import CollectionSelector
 
         # The reader's open config applies to the whole reader lifetime; only the
         # extraction limits have a per-call override (see archive-reading).
@@ -4462,14 +4601,23 @@ class BaseArchiveReader(ArchiveReader):
             limits if limits is not None else self._config.extraction_limits
         )
         collector = self._diagnostics_collector
+        # The caller's code the call runs is not one of its decodes: a read it makes is
+        # held to the reader's limits, as on a ZIP.
+        outside = self._outside_extraction_ratio
         coordinator = ExtractionCoordinator(
             policy=policy,
             overwrite=overwrite,
             on_error=on_error,
             abort_on=abort_on,
-            on_progress=on_progress,
-            selector=selector,
-            filter=filter,
+            on_progress=None if on_progress is None else outside(on_progress),
+            # A members= collection is archivey's own code, and the coordinator asks
+            # it for more than a verdict: only the caller's predicate is wrapped.
+            selector=(
+                selector
+                if selector is None or isinstance(selector, CollectionSelector)
+                else outside(selector)
+            ),
+            filter=None if filter is None else outside(filter),
             limits=effective_limits,
             # The reader's ratio, a deprecated field of its config's extraction limits
             # included, under the call's: a per-call ``limits=`` that sets no ratio
@@ -4483,8 +4631,15 @@ class BaseArchiveReader(ArchiveReader):
             # The report covers only the emits this call makes, on its own thread:
             # open-phase diagnostics stay on reader.diagnostics, and on a CONCURRENT
             # reader other threads emit into the same collector meanwhile.
-            with self._internal_member_opens(), collector.scoped() as scope:
-                results = coordinator.run(self, dest_path)
+            run_ratio = self._extraction_ratio
+            outer = getattr(run_ratio, "limits", None)
+            # The call's limits govern its decodes, the container's decode included.
+            run_ratio.limits = coordinator.ratio
+            try:
+                with self._internal_member_opens(), collector.scoped() as scope:
+                    results = coordinator.run(self, dest_path)
+            finally:
+                run_ratio.limits = outer
         finally:
             self._state.release_pass(token)
         return ExtractionReport(

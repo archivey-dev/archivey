@@ -351,6 +351,10 @@ class ArchiveSource(ReadOnlyIOStream):
         # clamp needs it, and it is only ever moved through this object. A caller's
         # seekable stream starts wherever the caller left it.
         self._pos = position
+        # The furthest position a seekable source left before its last seek
+        # (``bytes_reached``). Reads only move forward, so that and ``_pos`` hold the
+        # furthest position reached, and a read does not pay to keep it.
+        self._reached = position
         # Only a non-seekable source replays a prefix; a seekable one is rewound instead.
         self._replay = None if seekable else bytearray()
         # Set for a non-seekable raw source, whose full-count reads all go through it.
@@ -576,6 +580,20 @@ class ArchiveSource(ReadOnlyIOStream):
         if replay is None or self._is_directory:
             return None
         return self._pos + len(replay)
+
+    @property
+    def bytes_reached(self) -> int | None:
+        """The furthest offset a seekable source has been read or moved to, or
+        ``None`` for a non-seekable source and for a directory.
+
+        The live ratio denominator of an archive read from a seekable stream whose
+        size archivey does not know (``BaseArchiveReader.compressed_bytes_consumed``),
+        as :attr:`bytes_pulled` is for a pipe. It never passes the bytes the archive
+        has, since a read stops at the end; reading again what was read adds nothing.
+        """
+        if self._replay is not None or self._is_directory:
+            return None
+        return max(self._reached, self._pos)
 
     @property
     def seek_is_expensive(self) -> bool:
@@ -865,6 +883,7 @@ class ArchiveSource(ReadOnlyIOStream):
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if not self._seekable:
             raise io.UnsupportedOperation("seek")
+        self._reached = max(self._reached, self._pos)
         self._pos = self._stream().seek(offset, whence)
         return self._pos
 
@@ -929,6 +948,7 @@ class ArchiveSource(ReadOnlyIOStream):
             self._size = max(self._size - start, 0)
         if self._length is not None:
             self._length = max(self._length - start, 0)
+        self._reached = max(self._reached - start, 0)
         self._pos = 0
 
     def on_close(self, callback: Callable[[], None]) -> None:

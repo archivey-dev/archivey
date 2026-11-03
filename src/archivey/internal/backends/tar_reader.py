@@ -220,6 +220,9 @@ _FILE_TYPES = frozenset((b"0", b"\x00", b"7", b"S"))
 # further past what the listing needs, so listing costs and source reads would differ
 # by Python version.
 _WALK_BUFFER = 8 * 1024
+# How many of the other fields one MEMBER_HEADER_AMBIGUOUS report names; it counts
+# the rest. A PAX header can hold a shape for thousands of keys.
+_AMBIGUOUS_FIELDS_NAMED = 3
 
 # GNU tar's incremental dumps store a directory as a ``D`` (dumpdir) entry, whose data
 # lists the directory's contents at dump time. GNU tar extracts it as a directory; the
@@ -1494,8 +1497,13 @@ class TarReader(BaseArchiveReader):
             self._emit_directory_data_ignored(member, index)
         if entry.link_data is not None:
             self._emit_link_data_ignored(member, index, entry)
+        # One report per shape, however many fields it holds for: a PAX header of
+        # many keys each with a newline would otherwise make one report per key.
+        by_shape: dict[Ambiguity, list[bytes]] = {}
         for ambiguity, key in entry.ambiguities:
-            self._emit_header_ambiguous(member, index, ambiguity, key)
+            by_shape.setdefault(ambiguity, []).append(key)
+        for ambiguity, keys in by_shape.items():
+            self._emit_header_ambiguous(member, index, ambiguity, keys)
         if entry.typeflag not in _KNOWN_TYPES:
             self._emit_member_type_unknown(member, index, entry.typeflag)
         if entry.old_style_directory:
@@ -1561,13 +1569,22 @@ class TarReader(BaseArchiveReader):
         )
 
     def _emit_header_ambiguous(
-        self, member: ArchiveMember, member_id: int, ambiguity: Ambiguity, key: bytes
+        self,
+        member: ArchiveMember,
+        member_id: int,
+        ambiguity: Ambiguity,
+        keys: list[bytes],
     ) -> None:
         """Report ``MEMBER_HEADER_AMBIGUOUS`` for a header shape no known writer
         produces (:class:`Ambiguity`). The walk read it as GNU tar 1.35 does; the
         report says so, because ``tarfile`` and other tools read it otherwise and list
         another name or size. In ``ARCHIVE_INTEGRITY_CODES``: ``STRICT`` refuses it.
+
+        One report for every field of ``keys`` the shape holds for: the first one is
+        described, and the message names a few of the others
+        (``_AMBIGUOUS_FIELDS_NAMED``) and counts the rest.
         """
+        key, others = keys[0], keys[1:]
         field = key.decode("ascii", "backslashreplace")
         if ambiguity is Ambiguity.BOTH_FAMILIES:
             gnu = "long name" if key == b"path" else "long link name"
@@ -1653,12 +1670,34 @@ class TarReader(BaseArchiveReader):
             )
         else:
             assert_never(ambiguity)
+        also = ""
+        if others:
+            names = [
+                quoted(k.decode("ascii", "backslashreplace"))
+                for k in others[:_AMBIGUOUS_FIELDS_NAMED]
+            ]
+            rest = len(others) - len(names)
+            if rest > 0:
+                names.append(f"{rest} more")
+            listed = (
+                names[0]
+                if len(names) == 1
+                else ", ".join(names[:-1])
+                + ("," if len(names) > 2 else "")
+                + f" and {names[-1]}"
+            )
+            # Names the other fields only: under one shape a field can be read
+            # otherwise than the first (a NUL in a keyword or in a value, a long
+            # name or a long link name).
+            fields = "field" if len(others) == 1 else "fields"
+            also = f" Also on {len(others)} more {fields}: {listed}."
         self._diagnostics_collector.emit(
             code=DiagnosticCode.MEMBER_HEADER_AMBIGUOUS,
             message=(
                 f"TAR headers of {quoted(member.name)} have {what}, as GNU tar reads "
-                "them. No known writer produces this, and other readers may read "
-                "the headers differently: list another name or size, or refuse them."
+                f"them.{also} No known writer produces this, and other readers may "
+                "read the headers differently: list another name or size, or refuse "
+                "them."
             ),
             context=HeaderAmbiguityContext(
                 archive_name=self._archive_name,
@@ -1666,6 +1705,7 @@ class TarReader(BaseArchiveReader):
                 member_id=member_id,
                 ambiguity=ambiguity.value,
                 field=field,
+                more_fields=len(others),
             ),
             member=member,
             attach_to_member=True,

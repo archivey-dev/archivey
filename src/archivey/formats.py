@@ -406,6 +406,11 @@ class ForwardStream:
         with ``ReaderArchiveInfo(is_solid=True)``, and the cost receipt (solid access,
         listing that needs decompression) is right from the open.
 
+        The caller's ``FormatPolicy`` holds here as for a member: under
+        ``plugins=False`` a ``PluginStream`` raises ``UnsupportedFeatureError``, and a
+        package ``exclude_libraries`` turns off reads as missing. ``only`` and
+        ``exclude`` do not apply, since they check only the file the call opens.
+
         Raises ``ValueError`` for a format that is not a compression stream
         (``UNCOMPRESSED``), and ``ArchiveyUsageError`` when this stream has already
         handed off, or was not built by archivey.
@@ -449,6 +454,7 @@ class ReaderContext:
             [DiagnosticCode, str, DiagnosticContext, ArchiveMember | None], None
         ],
         link_target_unavailable: Callable[[ArchiveMember, str, str, bool], None],
+        hold: Callable[[ArchiveMember, str | None, str | None], None],
     ) -> None:
         self._encoding = encoding
         self._archive_name = archive_name
@@ -456,6 +462,7 @@ class ReaderContext:
         self._decompress = decompress
         self._report = report
         self._link_target_unavailable = link_target_unavailable
+        self._hold = hold
 
     @property
     def encoding(self) -> str | None:
@@ -512,6 +519,36 @@ class ReaderContext:
         fails such a member instead of skipping it as a link with no target.
         """
         self._link_target_unavailable(member, reason, message, target_in_archive)
+
+    def hold(
+        self,
+        member: ArchiveMember,
+        *,
+        stored_name: str | None = None,
+        reason: str | None = None,
+    ) -> None:
+        """Count a member the reader holds back to yield later, as if it were listed.
+
+        A reader that must see more of the archive before it can yield a member
+        (a CPIO hard link whose data comes with a later link) keeps it in memory
+        meanwhile, where the listing's limits do not see it. ``hold()`` counts it
+        now, against the same ``max_members`` and ``max_metadata_bytes`` as the
+        members already listed, and raises ``ResourceLimitError`` when it would cross
+        either. ``stored_name`` is the name the member will be yielded with as
+        ``stored_name``, weighed too when it differs from ``member.name``.
+        ``reason`` names what the held members are, for that error ("CPIO hard links
+        waiting for their data").
+
+        Call it from ``walk()`` or ``iter_members()``, as the members are listed.
+        The charge is on that member object: yielding the same object takes it off
+        before archivey counts it as listed, so it is counted once. Yield a copy
+        instead and both count until the walk ends. A member never yielded stays
+        counted until the walk ends. In a walk archivey starts over to reach a member's data again,
+        every member was counted when listed, and ``hold()`` does nothing. A call
+        from anywhere else (at open, in ``open_member``), or for a member held
+        already, raises ``ArchiveyUsageError``.
+        """
+        self._hold(member, stored_name, reason)
 
     def normalize_name(self, name: str, member_type: MemberType) -> str:
         """The name archivey gives a member: ``./a//b`` becomes ``a/b``, and a
@@ -571,6 +608,13 @@ class ReaderContext:
         :class:`~archivey.PluginStream` member. Any other method raises
         ``UnsupportedFeatureError``, and one whose optional package is missing raises
         ``PackageNotInstalledError``.
+
+        The caller's ``FormatPolicy`` holds for each member: under ``plugins=False`` a
+        ``PluginStream`` raises ``UnsupportedFeatureError`` before the codec runs, and
+        a package ``exclude_libraries`` turns off raises ``PackageNotInstalledError``.
+        ``only`` and ``exclude`` do not apply: they check only the file the call opens,
+        so a member stored with ``StreamFormat.XZ`` decodes under
+        ``exclude={StreamFormat.XZ}``.
 
         Where the compressed data ends depends on the method. ``ZSTD`` and ``LZ4`` data
         is one or more frames, decoded together, and ``XZ`` data is one or more xz
@@ -795,6 +839,10 @@ class Decompressor(Protocol):
     ``decompress(b"", max_length)``, called again until :attr:`eof` is set. When a
     call returns nothing, or :attr:`needs_input` turns true, before :attr:`eof` is
     set, or there is no ``end_input()``, the stream is truncated.
+
+    An ``EOFError`` raised from :meth:`decompress` or ``end_input()`` means the input
+    ended inside the stream: unless :meth:`CodecHandler.translate_exception` maps it,
+    archivey reports it as ``TruncatedError``.
     """
 
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
@@ -902,7 +950,9 @@ class CodecHandler(ABC):
 
     def translate_exception(self, exc: Exception) -> ArchiveyError | None:
         """Map an exception the decoder raises to an archivey exception, usually
-        ``CorruptionError``. Return ``None`` to let ``exc`` propagate as it is."""
+        ``CorruptionError``. Return ``None`` to let ``exc`` propagate as it is, with one
+        exception: an ``EOFError`` left untranslated becomes ``TruncatedError``, as it
+        does for the built-in codecs."""
         return None
 
 

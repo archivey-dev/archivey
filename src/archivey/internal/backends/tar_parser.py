@@ -626,7 +626,8 @@ class Ambiguity(Enum):
     GLOBAL_MEMBER_FIELD = "global_member_field"
     # A PAX string value holding a NUL byte: GNU tar cuts it there, tarfile does not.
     NUL_IN_VALUE = "nul_in_value"
-    # A global header that drops a key an earlier global header set (one per key):
+    # A global header that drops a key an earlier global header set (one entry per
+    # key; the reader folds them into one report):
     # GNU tar replaces the global records, tarfile and POSIX merge them.
     GLOBAL_REPLACED = "global_replaced"
     # GNU long headers (L or K) and an x header in one member's chain, in either

@@ -53,7 +53,6 @@ from archivey.diagnostics import (
 )
 from archivey.exceptions import (
     CorruptionError,
-    ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -183,6 +182,10 @@ class _LinkGroup:
     held: list[tuple[ArchiveMember, str]] = field(default_factory=list)
 
 
+# What the held links are, in a limit error (ReaderContext.hold).
+_HELD = "CPIO hard links waiting for their data"
+
+
 def _pad(n: int, align: int) -> int:
     return -n % align
 
@@ -222,8 +225,6 @@ class CpioReader(SequentialReader):
     @override
     def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
         groups: dict[tuple[tuple[int, int], int], _LinkGroup] = {}
-        held = 0
-        limit = self._context.config.listing_limits.max_members
         while True:
             header = self._read_header(stream)
             raw = stream.read_exact(header.name_size)
@@ -249,14 +250,10 @@ class CpioReader(SequentialReader):
                     member.link_target = group.name
                     member.size = None
                 elif size == 0 and self._defers_link_data():
-                    # newc keeps the data with the last link: hold this one back.
-                    if limit is not None and held >= limit:
-                        raise ResourceLimitError(
-                            f"CPIO archive holds more than {limit} hard links waiting "
-                            "for their data, over max_members"
-                        )
+                    # newc keeps the data with the last link: hold this one back,
+                    # counted toward the listing's limits while it waits.
+                    self._context.hold(member, stored_name=stored, reason=_HELD)
                     group.held.append((member, stored))
-                    held += 1
                     stream.skip(size + self._data_pad(header))
                     continue
                 else:
@@ -270,7 +267,6 @@ class CpioReader(SequentialReader):
                     link.link_target = member.name
                     link.size = None
                     yield MemberSpan(link, 0, stored_name=link_stored)
-                held -= len(group.held)
                 group.held.clear()
 
     def _flush(

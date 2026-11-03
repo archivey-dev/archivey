@@ -16,11 +16,12 @@ import lzma
 import os
 import random
 import struct
+import tempfile
 import threading
 import zlib
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import BinaryIO, ClassVar
+from typing import BinaryIO, ClassVar, cast
 
 import pytest
 
@@ -29,9 +30,11 @@ from archivey import (
     ArchiveFormat,
     ArchiveMember,
     ArchiveReader,
+    ArchiveyConfig,
     ArchiveyError,
     ArchiveyUsageError,
     CorruptionError,
+    DecoderLimits,
     ExtractionLimits,
     MemberType,
     PluginContainer,
@@ -57,9 +60,10 @@ from archivey.formats import (
     register_format,
 )
 from archivey.internal.format_adapter import registration_scope
+from archivey.internal.listing_limits import member_metadata_bytes
 from archivey.internal.measurement import enable_measurement
 from archivey.internal.streams.streamtools import ReadAheadStream
-from tests.streams_util import CountingBytesIO, NonSeekableBytesIO
+from tests.streams_util import CountingBytesIO, NonSeekableBytesIO, ShortReadBytesIO
 
 _MAGIC = b"TS"
 _HEADER = struct.Struct("<2scHII")  # magic, type, name length, data length, CRC-32
@@ -77,6 +81,9 @@ class ToysContainer(PluginContainer):
     DECODED = "toys-decoded"
     SIZED_EMPTY_DIRECTORY = "toys-sized-empty-directory"
     PROBED = "toys-probed"
+    HOLDING = "toys-holding"
+    HOLDING_DECODED = "toys-holding-decoded"
+    YIELDS_NONE = "toys-yields-none"
 
 
 TOYS = ArchiveFormat(ToysContainer.TOYS, StreamFormat.UNCOMPRESSED)
@@ -429,14 +436,16 @@ def test_concurrent_reads(toys: ArchiveFormat, tmp_path: Path) -> None:
     assert results == {"b.bin": _DATA["b.bin"], "docs/a.txt": b"alpha\n"}
 
 
-def _variant(reader: type[ToysReader], container: ToysContainer) -> ArchiveFormat:
+def _variant(
+    reader: Callable[[ReaderContext], SequentialReader], container: ToysContainer
+) -> ArchiveFormat:
     """Register a TOYS reader that changes what it yields, as its own format."""
     fmt = ArchiveFormat(container, StreamFormat.UNCOMPRESSED)
 
     class Variant(SequentialFormatHandler):
         format = fmt
 
-        def open_sequential(self, context: ReaderContext) -> ToysReader:
+        def open_sequential(self, context: ReaderContext) -> SequentialReader:
             return reader(context)
 
     register_format(Variant)
@@ -461,6 +470,37 @@ def test_a_size_other_than_the_data_length_is_a_plugin_bug(
         pytest.raises(ValueError, match="data_length"),
     ):
         reader.members()
+
+
+@pytest.mark.parametrize("before", [0, 2])
+@pytest.mark.parametrize("access", ["members", "stream_members"])
+def test_a_none_yielded_by_the_walk_is_a_plugin_bug(
+    toys: ArchiveFormat, tmp_path: Path, before: int, access: str
+) -> None:
+    """A ``None`` the walk yields is not its end: the listing does not stop there
+    with no error."""
+
+    class YieldsNone(ToysReader):
+        def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+            spans = super().walk(stream)
+            for _ in range(before):
+                yield next(spans)
+            yield None  # type: ignore[misc]
+            yield from spans
+
+    fmt = _variant(YieldsNone, ToysContainer.YIELDS_NONE)
+    path = _write(tmp_path, build_toys(_ENTRIES))
+    # The first step of the walk is taken at open (before=0 fails there).
+    with (
+        pytest.raises(TypeError, match="yielded NoneType, not a MemberSpan"),
+        open_archive(path, format=fmt, streaming=access != "members") as reader,
+    ):
+        if access == "members":
+            reader.members()
+        else:
+            for _member, stream in reader.stream_members():
+                if stream is not None:
+                    stream.read()
 
 
 def test_a_size_given_to_an_empty_file_is_a_plugin_bug(
@@ -580,6 +620,111 @@ def test_a_listing_stopped_by_a_limit_walks_again(
                 reader.members()
             messages.append(str(raised.value))
     assert messages[0] == messages[1]
+
+
+class _HoldingReader(ToysReader):
+    """Holds back every member with no data until the end header, as a reader that
+    must see later headers to finish a member does, and lists it by its normalized
+    name."""
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        held: list[MemberSpan] = []
+        for span in super().walk(stream):
+            if span.data_length:
+                yield span
+                continue
+            member = span.member
+            stored = member.name
+            member.name = self._context.normalize_name(stored, member.type)
+            self._context.hold(member, stored_name=stored, reason="toys held back")
+            held.append(MemberSpan(member, 0, stored_name=stored))
+        yield from held
+
+
+_HOLDING_ENTRIES: list[tuple[str, MemberType, bytes]] = [
+    ("a//b", MemberType.FILE, b""),
+    ("c.txt", MemberType.FILE, b"see\n"),
+    ("d", MemberType.DIRECTORY, b""),
+    ("e.txt", MemberType.FILE, b"e\n"),
+]
+
+
+def _holding_listing(
+    fmt: ArchiveFormat, path: Path, **limits: int
+) -> list[ArchiveMember]:
+    config = archivey.ArchiveyConfig(listing_limits=archivey.ListingLimits(**limits))
+    with open_archive(path, format=fmt, config=config) as reader:
+        return reader.members()
+
+
+def test_a_held_member_is_counted_once(toys: ArchiveFormat, tmp_path: Path) -> None:
+    """A member held and then yielded is counted as one member: limits equal to the
+    peak the listing reaches are not crossed. The peak is the listed weight plus
+    the stored names ``a//b`` and ``d``, which weigh only while their members are
+    held; were a held member still charged once listed, it would be higher."""
+    fmt = _variant(_HoldingReader, ToysContainer.HOLDING)
+    path = _write(tmp_path, build_toys(_HOLDING_ENTRIES))
+    members = _holding_listing(fmt, path)
+    assert [m.name for m in members] == ["c.txt", "e.txt", "a/b", "d/"]
+    peak = sum(member_metadata_bytes(m) for m in members) + len("a//b") + len("d")
+    assert len(_holding_listing(fmt, path, max_members=4, max_metadata_bytes=peak))
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+        _holding_listing(fmt, path, max_metadata_bytes=peak - 1)
+    with pytest.raises(ResourceLimitError, match=r"max_members=3 \(registered 4"):
+        _holding_listing(fmt, path, max_members=3)
+
+
+def test_held_members_count_with_listed_ones(
+    toys: ArchiveFormat, tmp_path: Path
+) -> None:
+    """One listed member and two held are three, over max_members=2, though neither
+    alone is. The archive has no end header, so only a check made while the members
+    are held raises ResourceLimitError rather than TruncatedError."""
+    fmt = _variant(_HoldingReader, ToysContainer.HOLDING)
+    path = _write(tmp_path, build_toys(_HOLDING_ENTRIES[:3], end=False))
+    with pytest.raises(
+        ResourceLimitError,
+        match=r"max_members=2 \(counted 3 members, 2 of them toys held back\)",
+    ):
+        _holding_listing(fmt, path, max_members=2)
+    with pytest.raises(TruncatedError):
+        _holding_listing(fmt, path, max_members=3)
+
+
+def test_a_held_member_weighs_its_stored_name(
+    toys: ArchiveFormat, tmp_path: Path
+) -> None:
+    """While held, a member also weighs the name it will be yielded with when that
+    differs from its normalized name: ``a/b`` (3), ``a//b`` (4) and its raw bytes (4)."""
+    fmt = _variant(_HoldingReader, ToysContainer.HOLDING)
+    path = _write(tmp_path, build_toys(_HOLDING_ENTRIES[:1], end=False))
+    with pytest.raises(
+        ResourceLimitError,
+        match=r"max_metadata_bytes=10 \(retained 11 bytes, 11 of them for 1 toys",
+    ):
+        _holding_listing(fmt, path, max_metadata_bytes=10)
+    with pytest.raises(TruncatedError):
+        _holding_listing(fmt, path, max_metadata_bytes=11)
+
+
+class _HoldingTwiceReader(ToysReader):
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        for span in super().walk(stream):
+            self._context.hold(span.member)
+            self._context.hold(span.member)
+            yield span
+
+
+def test_holding_a_member_twice_is_a_plugin_bug(
+    toys: ArchiveFormat, tmp_path: Path
+) -> None:
+    fmt = _variant(_HoldingTwiceReader, ToysContainer.HOLDING)
+    path = _write(tmp_path, build_toys(_ENTRIES))
+    with (
+        pytest.raises(ArchiveyUsageError, match="held already"),
+        open_archive(path, format=fmt) as reader,
+    ):
+        reader.members()
 
 
 class _Sum16:
@@ -1239,6 +1384,102 @@ def test_decompress_part_way_ratio_guard(
         )
 
 
+# Small floors, so a few MiB of zeros break the default ratio of 800:1 on a file
+# (static) and on a pipe (live) alike.
+_RATIO_CONFIG = ArchiveyConfig(
+    decoder_limits=DecoderLimits(
+        ratio_activation_threshold=1 << 20, live_ratio_activation_threshold=1 << 20
+    )
+)
+_BOMB_SIZE = 16 << 20
+
+
+def _ratio_source(data: bytes, tmp_path: Path, mode: str) -> Path | BinaryIO:
+    if mode == "pipe":
+        return NonSeekableBytesIO(data)
+    if mode == "unknown-size":
+        # Seekable, of a type whose size archivey does not know: the live ratio.
+        return ShortReadBytesIO(data, max_chunk=1 << 20)
+    if mode == "spooled":
+        # Also of unknown size while it holds a BytesIO.
+        spooled = tempfile.SpooledTemporaryFile(max_size=len(data) + 1)  # noqa: SIM115
+        spooled.write(data)
+        spooled.seek(0)
+        return cast(BinaryIO, spooled)
+    return _write(tmp_path, data)
+
+
+# The modes that open the archive for random access, not as a pass.
+_RANDOM_ACCESS = ("file", "unknown-size", "spooled")
+
+
+def _list_all(reader: ArchiveReader, mode: str) -> None:
+    """Walk every member and read no member data, as listing does."""
+    if mode in _RANDOM_ACCESS:
+        reader.members()
+    else:
+        for _member, _stream in reader.stream_members():
+            pass
+
+
+@pytest.mark.parametrize("mode", ["file", "unknown-size", "stream-file", "pipe"])
+def test_decompress_part_way_listing_is_held_to_the_ratio(
+    rpmish: ArchiveFormat, tmp_path: Path, mode: str
+) -> None:
+    """Listing decodes the payload a walk opens part-way, so the payload is held to
+    the decompression ratio while listing, as a whole-file compression stream is."""
+    name = StreamFormat.BZIP2.value.encode()
+    data = (
+        build_toys(_ENTRIES[:2], end=False)
+        + _HEADER.pack(_MAGIC, b"Z", len(name), 0, 0)
+        + name
+        + bz2.compress(build_toys([("bomb", MemberType.FILE, bytes(_BOMB_SIZE))]))
+    )
+    with (
+        open_archive(
+            _ratio_source(data, tmp_path, mode),
+            streaming=mode not in _RANDOM_ACCESS,
+            format=rpmish,
+            config=_RATIO_CONFIG,
+        ) as reader,
+        pytest.raises(ResourceLimitError, match="ratio"),
+    ):
+        _list_all(reader, mode)
+
+
+def test_decompress_part_way_layers_share_one_ratio_count(
+    rpmish: ArchiveFormat, tmp_path: Path
+) -> None:
+    """The layers of one walk count toward one total: a payload nested in another
+    adds its output to its parent's, so nesting does not multiply the bound."""
+    xz = StreamFormat.XZ.value.encode()
+    gz = StreamFormat.GZIP.value.encode()
+    half = 3 << 20
+    inner = build_toys([("b", MemberType.FILE, bytes(half))])
+    middle = (
+        build_toys([("a", MemberType.FILE, bytes(half))], end=False)
+        + _HEADER.pack(_MAGIC, b"Z", len(xz), 0, 0)
+        + xz
+        + lzma.compress(inner)
+    )
+    data = (
+        _HEADER.pack(_MAGIC, b"Z", len(gz), 0, 0)
+        + gz
+        + gzip.compress(middle, mtime=0, compresslevel=9)
+    )
+    # Each layer alone stays under the limit; the two together do not.
+    max_ratio = (len(middle) + 1000) / len(data)
+    assert len(middle) + len(inner) > max_ratio * len(data)
+    config = ArchiveyConfig(
+        decoder_limits=DecoderLimits(max_ratio=max_ratio, ratio_activation_threshold=0)
+    )
+    with (
+        open_archive(_write(tmp_path, data), format=rpmish, config=config) as reader,
+        pytest.raises(ResourceLimitError, match="ratio"),
+    ):
+        reader.members()
+
+
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
 def test_decompress_part_way_streaming(
     rpmish: ArchiveFormat, tmp_path: Path, pipe: bool
@@ -1494,7 +1735,7 @@ def decoded() -> Iterator[tuple[ArchiveFormat, type[_DecodedReader]]]:
         walks = 0
 
     with registration_scope():
-        yield _variant(Reader, ToysContainer.DECODED), Reader  # type: ignore[arg-type]
+        yield _variant(Reader, ToysContainer.DECODED), Reader
 
 
 _DecodedFixture = tuple[ArchiveFormat, type[_DecodedReader]]
@@ -1556,6 +1797,86 @@ def test_decoded_in_order_opens_walk_once(
                 # Read part-way: the walk drains the rest when it moves on.
                 assert stream.read(3) == _DECODED_DATA[name][:3]
         assert reader_type.walks == 2
+
+
+class _HoldingDecodedReader(_DecodedReader):
+    """Holds each directory back until the member after it is yielded."""
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        held: ArchiveMember | None = None
+        for span in super().walk(stream):
+            if span.member.type is MemberType.DIRECTORY:
+                held = span.member
+                self._context.hold(held)
+                continue
+            yield span
+            if held is not None:
+                yield MemberSpan(held, 0)
+                held = None
+
+
+def test_a_walk_started_over_for_data_does_not_count_held_members(
+    tmp_path: Path,
+) -> None:
+    """The walk a read starts over holds members again; they were counted when
+    listed, so a limit the listing met exactly is not crossed by the read."""
+    with registration_scope():
+        fmt = _variant(_HoldingDecodedReader, ToysContainer.HOLDING_DECODED)
+        path = _write(tmp_path, build_decoded(_DECODED_ENTRIES))
+        limits = archivey.ListingLimits(max_members=len(_DECODED_ENTRIES))
+        config = archivey.ArchiveyConfig(listing_limits=limits)
+        with open_archive(path, format=fmt, config=config) as reader:
+            assert reader.members()[:2] == [
+                reader.get("docs/a.txt"),
+                reader.get("docs/"),
+            ]
+            assert reader.read("c.bin") == _DECODED_DATA["c.bin"]
+            assert reader.read("docs/a.txt") == b"alpha\n"
+
+
+class _RewalkReader(_DecodedReader):
+    """Walks as ``_DecodedReader`` the first time; on a later walk, ``broken``
+    yields ``None`` in place of the second member, or ends the walk there."""
+
+    broken = "none"
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        spans = super().walk(stream)
+        yield next(spans)  # Counts this walk.
+        if type(self).walks == 1:
+            yield from spans
+        elif self.broken == "none":
+            yield None  # type: ignore[misc]
+            yield from spans
+
+
+@pytest.mark.parametrize(
+    ("broken", "error", "message"),
+    [
+        ("none", TypeError, "yielded NoneType, not a MemberSpan"),
+        ("ended", CorruptionError, "walking the archive again ended before"),
+    ],
+)
+def test_a_walk_run_again_that_breaks_before_its_member(
+    tmp_path: Path, broken: str, error: type[Exception], message: str
+) -> None:
+    """A ``None`` the walk yields on a later walk is a plugin bug, not the walk's
+    end; a later walk that ends before the member it was run for is corruption."""
+
+    class Reader(_RewalkReader):
+        walks = 0
+
+    Reader.broken = broken
+    path = _write(tmp_path, build_decoded(_DECODED_ENTRIES))
+    with registration_scope():
+        fmt = _variant(Reader, ToysContainer.DECODED)
+        with open_archive(path, format=fmt) as reader:
+            reader.members()
+            with pytest.raises(error, match=message) as raised:
+                reader.read("c.bin")
+    assert Reader.walks == 2
+    if error is TypeError:
+        assert not isinstance(raised.value, CorruptionError)
 
 
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
@@ -1894,3 +2215,91 @@ def test_decoded_seek_back_reports_the_walk_it_costs(
         assert stream.read() == b"s" * 1000
         counts = reader.diagnostics.counts
     assert counts[DiagnosticCode.STREAM_REWIND_REDECOMPRESSES] == 1
+
+
+@pytest.mark.parametrize(
+    "mode", ["file", "unknown-size", "spooled", "stream-file", "pipe"]
+)
+@pytest.mark.parametrize("sized", [True, False], ids=["sized", "unsized"])
+def test_decoded_data_drained_by_listing_is_held_to_the_ratio(
+    decoded: _DecodedFixture, tmp_path: Path, mode: str, sized: bool
+) -> None:
+    """Listing drains each member's decoded data, so the drain is held to the
+    decompression ratio, as a read of the same member is."""
+    fmt, _ = decoded
+    entries = [
+        ("bomb", MemberType.FILE, bytes(_BOMB_SIZE)),
+        ("x", MemberType.FILE, b"x"),
+    ]
+    data = build_decoded(entries, sizes=None if sized else {0: -1})
+    with (
+        open_archive(
+            _ratio_source(data, tmp_path, mode),
+            streaming=mode not in _RANDOM_ACCESS,
+            format=fmt,
+            config=_RATIO_CONFIG,
+        ) as reader,
+        pytest.raises(ResourceLimitError, match="ratio"),
+    ):
+        _list_all(reader, mode)
+
+
+@pytest.mark.parametrize("mode", ["file", "unknown-size", "spooled"])
+def test_decoded_data_read_is_held_to_the_ratio(
+    decoded: _DecodedFixture, tmp_path: Path, mode: str
+) -> None:
+    """A read of a member's decoded data is held to the ratio from a source of any
+    size: a seekable stream of unknown size has the live denominator."""
+    fmt, _ = decoded
+    data = build_decoded([("bomb", MemberType.FILE, bytes(_BOMB_SIZE))])
+    with (
+        open_archive(
+            _ratio_source(data, tmp_path, mode), format=fmt, config=_RATIO_CONFIG
+        ) as reader,
+        pytest.raises(ResourceLimitError, match="ratio"),
+    ):
+        reader.read("bomb")
+
+
+def _just_above(size: int, data: bytes) -> ArchiveyConfig:
+    """Limits that let ``size`` decoded bytes of ``data`` pass, and not much more."""
+    return ArchiveyConfig(
+        decoder_limits=DecoderLimits(
+            max_ratio=(size + (256 << 10)) / len(data), ratio_activation_threshold=0
+        )
+    )
+
+
+def test_decoded_data_of_all_members_shares_one_total(
+    decoded: _DecodedFixture, tmp_path: Path
+) -> None:
+    """Each member's drain is under the limit (one such member lists:
+    ``test_decoded_data_listed_again_counts_once``); the two together are not."""
+    fmt, _ = decoded
+    size = 3 << 20
+    entries = [(f"m{i}", MemberType.FILE, bytes(size)) for i in range(2)]
+    data = build_decoded(entries)
+    with (
+        open_archive(
+            _write(tmp_path, data), format=fmt, config=_just_above(size, data)
+        ) as reader,
+        pytest.raises(ResourceLimitError, match="ratio") as raised,
+    ):
+        reader.members()
+    # Refused in the second member's drain, counting the first member's bytes.
+    decoded_bytes = int(str(raised.value).split("(")[1].split(" bytes")[0])
+    assert size < decoded_bytes < 2 * size
+
+
+def test_decoded_data_listed_again_counts_once(
+    decoded: _DecodedFixture, tmp_path: Path
+) -> None:
+    fmt, _ = decoded
+    size = 2 << 20
+    data = build_decoded([("m", MemberType.FILE, bytes(size))])
+    with open_archive(
+        _write(tmp_path, data), format=fmt, config=_just_above(size, data)
+    ) as reader:
+        for _ in range(3):
+            assert [m.name for m in reader.members()] == ["m"]
+        assert reader.read("m") == bytes(size)

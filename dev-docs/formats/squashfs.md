@@ -18,7 +18,7 @@ registered as a built-in the way ISO, CPIO and ar are.
 | Core dependencies | None for gzip, xz, LZMA and LZO images. Zstandard images need what a `.zst` file needs; LZ4 images need `lz4` (`[recommended]`). LZO is decoded as a `.lzo` file is: liblzo2 through `python-lzo` in a child process when it is installed, otherwise Python |
 | Encryption | None |
 | Name encoding | Bytes. UTF-8 first, then `encoding=`, then escaped, as in every format |
-| Checksums | None. A damaged block is found only when it does not decode to its length |
+| Checksums | None of its own. A damaged block is found when it does not decode to its length, when its codec's own check fails (zlib's Adler-32, the xz CRC), or when its stored size stops before its stream ends |
 | Refuses | Big-endian images (SquashFS 3 and older, magic `sqsh`), with `UnsupportedFeatureError`; a pipe, with `StreamNotSeekableError` |
 | Spec | `openspec/specs/format-squashfs/spec.md` |
 
@@ -61,6 +61,40 @@ Members are files, directories, symlinks, hard links (a second name for an inode
 `extra["special_file_type"]`, as in every format). Owner ids come from the id table;
 permissions and modification times from the inode.
 
+**Member order.** Members come in listing order: the directory walk's, depth first,
+each directory's entries as stored, which every writer sorts by name. The one exception
+is fragments. A file's tail is read from its fragment block, which is decoded whole, and
+the reader keeps four. When reading the files in listing order would decode a fragment
+block a second time, the files with a tail come sorted by where their block starts and
+by offset, so each block decodes once. The check replays the four-block cache over the
+blocks' starts (from the fragment table), with nothing decoded. Then the order is:
+directories, files with no tail and other members, in listing order (so a directory
+still comes before its contents); the files with a tail; the hard links, in listing
+order (each after the member it names). mksquashfs and gensquashfs fill one fragment at
+a time in name order, and mksquashfs `-tailends` two (small files and tail ends), so
+their images keep listing order. sqfstar and tar2sqfs fill fragments in the tar's order:
+the same when the tar is in name order, and when it is not they can need more and are
+sorted, as is a crafted image, which in listing order would cost a whole block decode
+per small file (§4). An image that lists one name twice in a directory keeps listing
+order whatever its fragments, since that order says which entry is current.
+
+The listing makes two passes. The first walks the directories, keeping each entry's
+name, parent and inode reference, then reads every other inode once, in its order in
+the inode table, and with it the file's block list for `is_sparse`; of each it keeps
+only what the order needs (a tailed file's fragment and offset, whether it has holes,
+an error from the block list to raise in turn, and the block where the inode ends when
+it runs past the one it starts in). The second reads each member's inode again by its
+reference, through the metadata cache, as it makes the member. A hard link does not
+read it again: the member it names keeps its inode, without the symlink target or the
+file's location, next to its name. Nor does an inode whose first read went on through
+more than 64 metadata blocks (only a symlink's target can): the first pass keeps it
+whole until its member, which holds the target anyway, is made. Holding every inode
+cost half as much memory again as the listing itself on a 100 000-file image, so the
+listing does that only when the second pass would thrash the 64-block metadata cache:
+it replays the cache over the blocks the second pass would read, in the final member
+order, and when a block would decode twice it reads the table once more in table order
+and keeps every inode.
+
 A block stored with size 0 is a hole and reads as zeros. `is_sparse` is true for a file
 whose block list holds one, read from the list at listing time: `mksquashfs` writes most
 sparse files under a basic inode, which has no "bytes saved" field to go by.
@@ -76,8 +110,9 @@ limits apply, or, for LZ4, through `lz4.block` capped at the block's size. LZO b
 are raw LZO1X (`CompressionAlgorithm.LZO`), decoded by the codec a `.lzo` file uses:
 liblzo2 through `python-lzo` when it is installed, in a child process under
 `NATIVE_DECODERS`, and otherwise archivey's port of the kernel's
-`lzo1x_decompress_safe`. LZO1X stores no decoded length, so the block size is passed as
-the most it may decode to (§6).
+`lzo1x_decompress_safe`. The port takes the end marker as liblzo2 does, whatever its
+length field, so the two decoders agree (the kernel refuses a length other than 3). LZO1X
+stores no decoded length, so the block size is passed as the most it may decode to (§6).
 
 `FormatPolicy(exclude_libraries={OptionalLibrary.LZ4})` makes an LZ4 image read as if
 `lz4` were missing. Under PyPy the reader does not use `lz4`, as the rest of archivey
@@ -113,8 +148,11 @@ offsets the image declares:
 - Every size is checked against what the format allows before it is used: a superblock
   that declares more bytes than the source holds, a metadata block longer than 8 KiB, a
   data block longer than the block size or shorter than the file needs, a fragment past
-  the fragment table, and a symlink target longer than the kernel allows (65535 bytes)
-  are `CorruptionError`. A cut image names the structure the cut falls in.
+  the fragment table, a symlink target longer than the kernel allows (65535 bytes), and
+  an entry name longer than the kernel and unsquashfs allow (256 bytes) are
+  `CorruptionError`. A compressed block is decoded to its stream's end, so a stored size
+  that cuts the stream, even only its check value, is `CorruptionError`: the image holds
+  the whole stored block, so the image is not cut. A cut image names the structure the cut falls in.
 - A name with a `/`, and an entry whose inode has another type, are `CorruptionError`.
 - The directory walk is a loop, not a recursion, and refuses a directory reached twice,
   so a directory listed inside itself does not walk forever.
@@ -128,7 +166,36 @@ offsets the image declares:
   block size, or copy from before the start of the output.
 - Decoded blocks are kept in two bounded caches, 64 metadata blocks and four fragment
   blocks (about 4.5 MiB at the largest block size). They are caches, not limits: a block
-  that is not kept is decoded again.
+  that is not kept is decoded again. A crafted layout cannot make that happen once per
+  member for fragments or file inodes: files with a tail come in fragment order when
+  listing order would thrash the fragment cache (§2.2), which took a 229 KB xz image of
+  50 000 one-byte files cycling five 1 MiB fragments from 62 s to 4 s (4.1 s for the
+  same files in one fragment). File inodes are read once in table order to decide the
+  order, then once more in member order to make the members, unless the replayed
+  metadata cache says that order would decode an inode block twice (§2.2); then the
+  table is read a second time in table order and the inodes are kept. In an image
+  whose inodes do not overlap, each inode-table block then decodes at most about
+  twice: 20 480 empty files whose inodes cycle over 80 gzip inode blocks list in
+  0.37 s with 227 metadata decodes (2.2 s and 20 627 decodes if each inode were read
+  in member order), and 300 files each in its own block, stored in reverse, decode 539
+  metadata blocks in all. A hard link does not read its inode again, so the entries
+  that name one inode cost one read of it per pass, not one per entry: 100 entries
+  naming a symlink whose 65 535-byte target is stored in 1-byte metadata blocks list in
+  0.4 s (20 s with a read per entry).
+- Residual, as on main: one inode's read can run through up to 65 535 metadata blocks
+  (a symlink target in 1-byte blocks), and distinct inodes can overlap, so entries
+  whose inodes overlap each pay that read: 20 such entries decode 1.3 M blocks in
+  4.2 s, the same as main. The listing keeps an inode whose read ran through more than
+  64 blocks from the first pass, so the second pass does not double that cost. The
+  replay counts only the block where each inode starts and the one where it ends, so
+  overlapping inodes shorter than that can still add up to 64 decodes per member in
+  the second pass.
+- Directory inodes and listings are still read as the walk reaches them, since each is
+  needed to find the next. Directories whose inodes or listings stride across more than
+  64 metadata blocks decode an 8 KiB block for each: 20 480 empty directories strided
+  across 80 inode-table blocks list in 1.9 s, against 0.3 s in order. That is a bounded
+  cost per member (about one metadata block per directory, for an inode and a few
+  entries of the image), not the 1 MiB per member the fragment layout cost.
 
 ## 5. Sharp edges
 
@@ -162,6 +229,29 @@ offsets the image declares:
   listing decodes anyway. Rejected: leaving it false, which would make it mean
   something else for SquashFS than for TAR.
 
+- **Fragment order over listing order, only when listing order would thrash.** The
+  maintainer's call (2026-11-03), for a crafted layout that decoded a fragment block per
+  small file. Listing order is kept whenever the four-block cache covers it, which is
+  every image mksquashfs or gensquashfs writes from a directory; files with a
+  tail are sorted only when the replayed cache would decode a block twice. The replay
+  and the sort use the block's start, not the fragment-table entry, since two entries
+  can name one block. Rejected: charging decoded block bytes to a per-reader budget
+  (refuses an image instead of reading it), a larger cache (a crafted image cycles
+  through one more block), and only recording the case in the threat model. File inodes
+  are read in table order for the same reason, and kept when the member order would
+  thrash the metadata cache (next decision); the order of reads is internal.
+
+- **Two passes over the inodes, keeping little between them.** The maintainer's call
+  (2026-11-03). The first pass keeps, per file, only what the order needs; the second
+  reads each inode again by reference, except a hard link's, which the member it names
+  keeps. On a 100 200-file gzip image it lists in 2.2 s against 1.8 s for holding every
+  inode, with a tracemalloc peak of 128 MB against 160 MB. When the final member order
+  would decode an inode block twice, the listing keeps every inode instead, the same
+  rule as for fragments. Rejected: holding every inode on every image (the peak grows
+  by half again), and reading again in any order (an inode table that strides against
+  the member order decodes an 8 KiB block per member: 2.2 s against 0.37 s for 20 480
+  files over 80 blocks).
+
 ## 7. Open questions
 
 None are open.
@@ -173,7 +263,9 @@ None are open.
 ```
 
 The fixtures in `tests/fixtures/squashfs/` were written by `mksquashfs` 4.6.1, one per
-compressor and a few layouts (no fragments, tail ends, uncompressed);
+compressor and a few layouts (no fragments, tail ends, uncompressed), plus
+`tar-order.sqfs` from `sqfstar` (fragments filled in tar order, which the listing
+sorts) and `tail-ends-two-streams.sqfs` (two fragments in progress, which it does not);
 `tests/fixtures/squashfs/make-images.sh` writes them again. Damaged images are built in
 the tests. The tests also pin the internal names the reader imports. The Atheris target `squashfs`
 fuzzes the image walk and block reads.
@@ -183,5 +275,6 @@ fuzzes the image walk and block reads.
 - The SquashFS 4.0 layout: the Linux kernel's
   [`squashfs.rst`](https://docs.kernel.org/filesystems/squashfs.html) and `fs/squashfs/`,
   and squashfs-tools.
-- The kernel's `lib/lzo/lzo1x_decompress_safe.c`, which archivey's LZO decoder follows.
+- The kernel's `lib/lzo/lzo1x_decompress_safe.c`, which archivey's LZO decoder follows,
+  and liblzo2 2.10's `lzo1x_decompress_safe`, whose end-marker rule it takes.
 - `openspec/changes/plugin-api/tasks.md` §3b, the reader's history as a plugin.

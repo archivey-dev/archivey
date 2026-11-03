@@ -54,8 +54,10 @@ Members that share a device and inode number SHALL list as one `FILE` and `HARDL
 members to it, each naming an earlier member. binary and odc store the data with every
 link: the first is the file and the later copies are skipped. newc and crc store it with
 the last link only: the reader SHALL hold the empty links back until the link with the
-data arrives, yield it as the `FILE` and then the held links. More held links than
-`ListingLimits.max_members` SHALL raise `ResourceLimitError`.
+data arrives, yield it as the `FILE` and then the held links. Each held link SHALL count
+toward `ListingLimits.max_members` and `ListingLimits.max_metadata_bytes` together with
+the members already listed, and once in all after it is yielded: a held link that takes
+either over SHALL raise `ResourceLimitError`.
 
 #### Scenario: CPIO hard links
 
@@ -64,6 +66,7 @@ data arrives, yield it as the `FILE` and then the held links. More held links th
 | newc archive written by GNU cpio with a hard-linked pair, data on the second name | The second name is the `FILE`, listed first; the first name is a `HARDLINK` to it |
 | The same pair in odc | The first name is the `FILE`, the second a `HARDLINK` to it |
 | More held links than `max_members` | `ResourceLimitError` |
+| Three members listed, then two held links, under `max_members=4`, cut before the trailer | `ResourceLimitError` at the second held link, not `TruncatedError` |
 
 ### Requirement: Bound a stored name to 64 KiB
 

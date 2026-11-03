@@ -62,6 +62,7 @@ from archivey.formats import (
 )
 from archivey.internal import format_args
 from archivey.internal.format_adapter import registration_scope
+from archivey.internal.listing_limits import member_metadata_bytes
 from archivey.internal.registry import get_registry
 from tests.conftest import requires, requires_zstd
 
@@ -281,6 +282,71 @@ def test_builtin_magic_wins(clean_registry: None) -> None:
     assert detect_format(io.BytesIO(buf.getvalue())).format == ArchiveFormat.ZIP
 
 
+def _hybrid_iso() -> bytes:
+    """A pycdlib image with the MBR boot signature an isohybrid image carries at 510."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(interchange_level=3)
+    iso.add_fp(io.BytesIO(b"alpha"), 5, "/A.TXT;1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    image = bytearray(out.getvalue())
+    image[510:512] = b"\x55\xaa"
+    return bytes(image)
+
+
+def _sfx_zip() -> bytes:
+    from tests.test_sfx import _pe_stub
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a", b"a")
+    return _pe_stub() + buf.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("build", "magic", "expected"),
+    [
+        pytest.param(
+            _hybrid_iso,
+            Magic(510, b"\x55\xaa"),
+            ArchiveFormat.ISO,
+            id="far-magic",
+            marks=requires("pycdlib"),
+        ),
+        pytest.param(_sfx_zip, Magic(0, b"MZ"), ArchiveFormat.ZIP, id="sfx-scan"),
+    ],
+)
+def test_builtin_magic_past_the_start_wins_over_plugin_near_magic(
+    clean_registry: None,
+    build: Callable[[], bytes],
+    magic: Magic,
+    expected: ArchiveFormat,
+) -> None:
+    """A plugin's magic near the start counts only when no built-in signal matched,
+    and that includes the signals detection looks for further in: ISO's ``CD001`` at
+    32 769, and an archive behind an executable stub."""
+    data = build()
+    assert detect_format(io.BytesIO(data)).format == expected
+
+    class Overlap(PluginContainer):
+        OVERLAP = "overlap"
+
+    class OverlapHandler(ToyHandler):
+        format = ArchiveFormat(Overlap.OVERLAP, StreamFormat.UNCOMPRESSED)
+        extensions = ()
+
+    OverlapHandler.magic = (magic,)
+    register_format(OverlapHandler)
+    assert detect_format(io.BytesIO(data)).format == expected
+    # Where no built-in signal matches, the plugin's magic still finds its format.
+    other = bytearray(64 * 1024)
+    other[magic.offset : magic.offset + len(magic.data)] = magic.data
+    assert detect_format(io.BytesIO(bytes(other))).format == OverlapHandler.format
+
+
 @pytest.mark.parametrize(
     ("attrs", "match"),
     [
@@ -291,6 +357,7 @@ def test_builtin_magic_wins(clean_registry: None) -> None:
         ({"magic": (Magic(-1, b"x"),)}, "non-negative offset"),
         ({"magic": (Magic(0, b""),)}, "non-negative offset"),
         ({"probe": 3}, "must be callable"),
+        ({"requires": "zlib"}, "requires must be a tuple of module names"),
         ({"format": "toya"}, "must be an ArchiveFormat"),
         ({"format": ArchiveFormat.ZIP}, "PluginContainer"),
         (
@@ -883,6 +950,76 @@ def test_interface_violations_are_not_reported_as_corruption(
         reader.members()
     with pytest.raises(TypeError, match="not an IndexedReader"):
         open_archive(_write(tmp_path, data, "t.badopen"))
+
+
+class _BareView(_BroadTranslator):
+    def open_member(  # type: ignore[override]
+        self, member: ArchiveMember, locator: tuple[int, int]
+    ) -> object:
+        return self._source.view(*locator)
+
+
+class _UnhashedDigest(_BroadTranslator):
+    def open_member(
+        self, member: ArchiveMember, locator: tuple[int, int]
+    ) -> MemberData:
+        data = super().open_member(member, locator)
+        return data._replace(digests=(MemberDigest("weird", b"\0"),))
+
+
+@pytest.mark.parametrize(
+    ("reader", "error", "match"),
+    [
+        (_BareView, TypeError, "not MemberData"),
+        (_UnhashedDigest, ValueError, "named 'weird'"),
+    ],
+    ids=["not-member-data", "digest-without-hasher"],
+)
+@pytest.mark.parametrize("access", ["read", "stream_members", "extract_all"])
+def test_a_bad_open_member_is_not_reported_as_corruption_on_any_path(
+    clean_registry: None,
+    tmp_path: Path,
+    reader: type[ToyReader],
+    error: type[Exception],
+    match: str,
+    access: str,
+) -> None:
+    """An ``open_member`` result that breaks the interface is a plugin bug on every
+    access path, also the ones that read inside the member-stream boundary, where the
+    plugin's broad ``translate_exception`` would report it as corruption."""
+    plugin = _plugin_with("broken", reader=reader)
+    data = build_toya(_ENTRIES)
+    with (
+        open_archive(io.BytesIO(data), format=plugin.format) as archive,
+        pytest.raises(error, match=match) as exc_info,
+    ):
+        if access == "read":
+            archive.read("docs/a.txt")
+        elif access == "stream_members":
+            for _, stream in archive.stream_members():
+                if stream is not None:
+                    stream.read()
+        else:
+            archive.extract_all(tmp_path / "out")
+    assert not isinstance(exc_info.value, CorruptionError)
+
+
+def test_a_none_yielded_part_way_is_not_the_end_of_the_listing(
+    clean_registry: None,
+) -> None:
+    class YieldsNone(ToyReader):
+        def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+            records = super().iter_members()
+            yield next(records)
+            yield None  # type: ignore[misc]
+            yield from records
+
+    plugin = _plugin_with("yieldsnone", reader=YieldsNone)
+    with (
+        open_archive(io.BytesIO(build_toya(_ENTRIES)), format=plugin.format) as reader,
+        pytest.raises(TypeError, match="yielded NoneType, not a MemberRecord"),
+    ):
+        reader.members()
 
 
 # ── ReaderContext.decompress ────────────────────────────────────────────────────────
@@ -2061,3 +2198,79 @@ def test_read_struct_unpacks_and_raises_truncated(
     with pytest.raises(TruncatedError, match="archive ends 4 bytes into the 8"):
         open_archive(_write(tmp_path, build_toya(_ENTRIES)))
     assert seen == [(len(_ENTRIES),), (_MAGIC,)]
+
+
+class _HoldingToyReader(ToyReader):
+    """Holds each directory until the end of the index, as an indexed reader that
+    must see later records to finish a member does."""
+
+    def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+        held: list[MemberRecord[tuple[int, int]]] = []
+        for record in super().iter_members():
+            if record.member.type is MemberType.DIRECTORY:
+                self._context.hold(record.member, reason="toy directories")
+                held.append(record)
+                continue
+            yield record
+        yield from held
+
+
+class _HoldingToyHandler(ToyHandler):
+    def open(self, source: ReaderSource, context: ReaderContext) -> ToyReader:
+        return _HoldingToyReader(source, context)
+
+
+_HOLDING_ENTRIES: list[tuple[str | bytes, MemberType, bytes]] = [
+    ("d1", MemberType.DIRECTORY, b""),
+    ("d2", MemberType.DIRECTORY, b""),
+    ("f.txt", MemberType.FILE, b"f\n"),
+]
+
+
+def _toya_listing(path: Path, **limits: int) -> list[ArchiveMember]:
+    config = archivey.ArchiveyConfig(listing_limits=archivey.ListingLimits(**limits))
+    with open_archive(path, config=config) as reader:
+        return reader.members()
+
+
+def test_an_indexed_reader_holds_members_counted_once(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """Members an indexed reader holds count with the listed ones while held, and
+    once when yielded: limits equal to the listing's totals are not crossed."""
+    register_format(_HoldingToyHandler)
+    path = _write(tmp_path, build_toya(_HOLDING_ENTRIES))
+    members = _toya_listing(path)
+    assert [m.name for m in members] == ["f.txt", "d1/", "d2/"]
+    # The members and the archive comment, "toy".
+    weight = sum(member_metadata_bytes(m) for m in members) + len("toy")
+    assert len(_toya_listing(path, max_members=3, max_metadata_bytes=weight)) == 3
+    with pytest.raises(archivey.ResourceLimitError, match="max_metadata_bytes"):
+        _toya_listing(path, max_metadata_bytes=weight - 1)
+    with pytest.raises(
+        archivey.ResourceLimitError,
+        match=r"max_members=1 \(counted 2 members, 2 of them toy directories\)",
+    ):
+        _toya_listing(path, max_members=1)
+
+
+class _HoldingAtOpenReader(ToyReader):
+    def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
+        super().__init__(source, context)
+        context.hold(ArchiveMember(type=MemberType.FILE, name="early"))
+
+
+class _HoldingAtOpenHandler(ToyHandler):
+    def open(self, source: ReaderSource, context: ReaderContext) -> ToyReader:
+        return _HoldingAtOpenReader(source, context)
+
+
+def test_a_hold_outside_the_listing_is_a_plugin_bug(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """hold() counts only while iter_members() lists; at open nothing would count
+    it, so it raises rather than doing nothing."""
+    register_format(_HoldingAtOpenHandler)
+    path = _write(tmp_path, build_toya(_ENTRIES))
+    with pytest.raises(ArchiveyUsageError, match=r"only while walk\(\) or"):
+        open_archive(path)

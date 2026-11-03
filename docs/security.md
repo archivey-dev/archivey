@@ -82,11 +82,13 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   `ExtractionLimits` cover only what `extract_all` writes to disk, but `decoder_limits.max_ratio` holds
   every read too: a member that decodes to more than 800 times its compressed size raises
   `ResourceLimitError` from the read that crosses the limit, and so do the reads of one reader
-  together past 800 times the archive's size. For an archive read from a pipe, whose size isn't
-  known, that second check divides by the bytes read from the pipe so far. A `read()` stops there rather than first holding the
+  together past 800 times the archive's size. When archivey doesn't know the archive's size (a
+  pipe, or a seekable stream that doesn't report one), that second check divides by the bytes
+  read from it so far. A `read()` stops there rather than first holding the
   whole member in memory. A container inside a compression stream (a `.tar.gz`, a format handler's
   `.cpio.xz`) is held to it whenever it's decoded, listing included, since listing one decodes all
-  of it. A RAR archive opened from a
+  of it. So is what a format handler's walk decodes by itself: a compressed payload it opens
+  part-way through the archive, and a member's decoded data. A RAR archive opened from a
   file object rather than a path is copied to a temporary file the first time a member needs
   `unrar` or `unar`. `spool_limits.max_bytes` caps that copy, along with the few other temporary
   files archivey makes for RAR archives, listed in the table below. When the archive records a

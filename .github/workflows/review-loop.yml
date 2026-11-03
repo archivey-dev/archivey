@@ -296,3 +296,27 @@ jobs:
           HEAD_SHA: ${{ steps.gate.outputs.head_sha }}
           PASS: ${{ steps.gate.outputs.opus_pass == 'true' && 'opus' || '' }}
         run: bash scripts/review/review_loop_close.sh
+
+      # The review step's log shows only the start and the totals (`show_full_output`
+      # stays off: it would print every tool result, and a result is where a secret
+      # would show up). The action still writes every message to its execution file, so
+      # this summarizes that instead: turns, batching, subagents, the largest results.
+      # The trace artifact keeps the model's own text and tool inputs, never a result.
+      - name: Summarize the session
+        if: always() && steps.gate.outputs.run == 'true'
+        continue-on-error: true
+        run: >-
+          python3 scripts/review/review_loop_trace.py
+          "$RUNNER_TEMP/claude-execution-output.json"
+          --trace "$RUNNER_TEMP/review-trace.jsonl"
+          >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the session trace
+        if: always() && steps.gate.outputs.run == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-trace-${{ github.event.pull_request.number }}-round-${{ steps.gate.outputs.round }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/review-trace.jsonl
+          if-no-files-found: ignore
+          retention-days: 30

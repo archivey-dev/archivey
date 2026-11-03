@@ -426,6 +426,7 @@ DEEP_PROCESS = (
     "scripts/review/review_loop_close.sh",
     "scripts/review/review_loop_gate.py",
     "scripts/review/review_loop_prompt.py",
+    "scripts/review/review_loop_trace.py",
     "scripts/review/review_prep.py",
     "scripts/review/review_shape.py",
 )

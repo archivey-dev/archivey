@@ -51,6 +51,7 @@ from archivey.internal.streams.streamtools import (
 from archivey.internal.streams.verification import (
     VerificationProofs,
     ask_verification_proofs,
+    note_ceiling_provisional,
     raise_member_level,
 )
 from archivey.internal.streams.verify import (
@@ -332,6 +333,10 @@ class ArchiveStreamImpl(ArchiveStream):
     _verdict_rewound = False
     _uninterrupted = True
     _ended_from_start = False
+    # Set when a call raises through ``_fail``, cleared by a seek the inner takes: a
+    # seek in place after a failure still goes to the inner, which may restart a
+    # spent decoder (``_seek``).
+    _failed_since_seek = False
     # Set by ``verify()`` once it has read a forward-only stream to its end.
     _consumed_by_verify = False
     # ``close()`` reads these three as well: ``IOBase.__del__`` closes an instance whose
@@ -771,6 +776,7 @@ class ArchiveStreamImpl(ArchiveStream):
         verifier), so the stream raises the verdict it raised first again. A stream built
         with ``repeat_verdict=False`` remembers nothing and raises each error as it comes.
         """
+        self._failed_since_seek = True
         try:
             try:
                 self._raise_translated(e)
@@ -991,6 +997,23 @@ class ArchiveStreamImpl(ArchiveStream):
         verifier = self._verifier
         try:
             before = inner.tell()
+            # A seek to where the caller stands changes nothing, so it leaves every
+            # flag as it is: the run from the start goes on (``_uninterrupted``). The
+            # inner is not asked, so it takes no shortcut past a trailer. Passed on
+            # still: a ``SEEK_END``, whose target only the inner knows; any seek after
+            # a call raised (``_failed_since_seek``), since the inner restarts a spent
+            # decoder on a seek, in place too, so the next read decodes again; and any
+            # seek once a verdict is kept, which marks it rewound. The caller's
+            # position is the verifier's while it holds a deferred seek
+            # (``MemberVerifier.tell``).
+            if (
+                whence != io.SEEK_END
+                and self._verdict is None
+                and not self._failed_since_seek
+            ):
+                here = before if verifier is None else verifier.tell(inner)
+                if offset == (here if whence == io.SEEK_SET else 0):
+                    return here
             if verifier is not None:
                 # The verifier may defer a forward seek to the next read, which then
                 # hashes the skipped bytes (``MemberVerifier.seek``).
@@ -1000,10 +1023,14 @@ class ArchiveStreamImpl(ArchiveStream):
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             self._note_raised_seek(inner, before)
             self._fail_unless_closed(e)
+        self._failed_since_seek = False
         if self._verdict is not None:
             self._verdict_rewound = True
-        if result != before:
-            self._uninterrupted = result == 0
+        # Any other seek but one to 0 ends the run from the start, even a ``SEEK_END``
+        # that did not move: the inner may have taken it as a shortcut past bytes or a
+        # trailer its decoder never read (a size from an index ends the stream without
+        # decoding).
+        self._uninterrupted = result == 0
         if not self._rewind_quiet:
             self._maybe_warn_rewind(before, result)
         return result
@@ -1016,11 +1043,10 @@ class ArchiveStreamImpl(ArchiveStream):
         here is dropped.
         """
         after = note_raised_seek(self._verifier, inner)
-        # Both ``None`` is equal and keeps the flag: ``before`` is ``None`` only when
-        # the ``tell()`` ahead of the seek raised, so the seek never ran.
-        if after != before:
-            # Where the inner was left is unknown, or somewhere the decode may have
-            # jumped to.
+        # ``before`` is ``None`` only when the ``tell()`` ahead of the seek raised, so
+        # the seek never ran and the flag stands. Otherwise the rule of ``_seek``
+        # applies, moved or not: the inner may have taken a shortcut before raising.
+        if before is not None:
             self._uninterrupted = after == 0
         if after is None or self._rewind_quiet:
             return
@@ -1101,6 +1127,37 @@ class ArchiveStreamImpl(ArchiveStream):
         if self._inner is None:
             return
         raise_member_level(member, self._level_now(), self._ceiling_now())
+        if self._ended_from_start:
+            note_ceiling_provisional(member, False)
+        elif self._ceiling_may_rise():
+            note_ceiling_provisional(member, True)
+
+    def _ceiling_may_rise(self) -> bool:
+        """Whether a read from the start may raise the ceiling to ``CHECKSUM``.
+
+        So when every frame this stream has decoded carries a check (``frames_checked``)
+        and no read from the start has ended yet: a read that jumped past frames
+        settles nothing (:meth:`_verification_proofs`). On a member stream the
+        member's ``_ceiling_provisional`` answers first: ``False`` means a read from
+        the start has settled the ceiling for good, so it cannot rise; ``True`` means
+        an earlier stream left it waiting on such a read; ``None`` (no stream has
+        said yet) falls back to this stream's own frames, as a stream with no member
+        does.
+        """
+        if self._ended_from_start or self._ceiling_now() is Verification.CHECKSUM:
+            return False
+        member = self._level_member
+        if member is not None and member._ceiling_provisional is not None:
+            return member._ceiling_provisional
+        return ask_verification_proofs(self._inner).frames_checked
+
+    @override
+    def _verify_done(self, level: Verification) -> bool:
+        # A ceiling that may still rise is not reached: read again from the start
+        # (``verify()`` seeks to 0 when the read on from here does not settle it).
+        if level > self.verifiable and self._ceiling_may_rise():
+            return False
+        return super()._verify_done(level)
 
     def _level_now(self) -> Verification:
         """The level the layers' proofs add up to."""
@@ -1187,10 +1244,11 @@ class ArchiveStreamImpl(ArchiveStream):
         land far past the nearest one. A codec with an accelerator adds a sentence
         about it after that.
         """
+        # A decoder seek decodes at the next read, so the cost is the read's: a seek
+        # undone before any read costs nothing.
         cost = (
-            f"Backward seek in a {warning.codec_name} stream discards {distance} "
-            f"decompressed bytes; returning to the previous position re-decompresses "
-            f"them"
+            f"Backward seek in a {warning.codec_name} stream: reading from the target "
+            f"back to the previous position re-decompresses {distance} bytes"
         )
         if resume == 0:
             where = (

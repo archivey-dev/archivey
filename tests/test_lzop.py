@@ -5,9 +5,11 @@ Python."""
 from __future__ import annotations
 
 import datetime
+import importlib.util
 import io
 import random
 import struct
+import sys
 import zlib
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,7 @@ from archivey import (
     DecoderLimits,
     DiagnosticCode,
     FormatPolicy,
+    OptionalLibrary,
     ProcessIsolation,
     ResourceLimitError,
     StreamFormat,
@@ -34,8 +37,9 @@ from archivey import (
 )
 from archivey.formats import register_format
 from archivey.internal.format_adapter import registration_scope
-from archivey.internal.streams.codecs import lzo_decoder
+from archivey.internal.streams.codecs import deps, lzo_decoder
 from archivey.internal.streams.codecs.decoder_child import POOL
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, ISOLATED
 from tests.lzop_build import make_lzop
 from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO
@@ -160,6 +164,72 @@ def test_a_damaged_block_in_a_child_is_corruption() -> None:
         pytest.raises(CorruptionError),
     ):
         stream.read()
+
+
+_NO_PYTHON_LZO = pytest.mark.skipif(
+    importlib.util.find_spec("lzo") is not None,
+    reason="a child must not find a real python-lzo",
+)
+_BLOCK = b"\x17hello\n\x11\x00\x00"
+
+
+@_NO_PYTHON_LZO
+def test_a_python_lzo_that_does_not_import_falls_back_under_native_decoders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In this process a found package that fails to import is treated as absent.
+    Under NATIVE_DECODERS it is only looked up, so the child's import failed and the
+    read raised ResourceUnavailableError instead of using the Python decoder."""
+    broken = deps.LazyOptional(OptionalLibrary.LZO, present=True)
+    monkeypatch.setattr(deps, "lzo", broken)
+    config = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
+    with open_stream(_DATA / "text.txt.lzo", config=config) as stream:
+        assert stream.read() == _TEXT
+    assert broken.child_import_failed
+
+
+@_NO_PYTHON_LZO
+def test_a_child_import_failure_leaves_this_process_its_python_lzo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A child is a fresh interpreter: it does not see what this process added to
+    ``sys.path``. Its failure turned python-lzo off for in-process reads too."""
+    (tmp_path / "lzo.py").write_text(
+        "class error(Exception):\n    pass\n\n"
+        "def decompress(data, header, limit):\n    return b'FAKE-LIBLZO'\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, "lzo", raising=False)
+    monkeypatch.setattr(deps, "lzo", deps.LazyOptional(OptionalLibrary.LZO))
+    isolated = lzo_decoder.lzo1x_decompressor(natives=ISOLATED)
+    assert isolated(_BLOCK, 6) == b"hello\n"
+    assert lzo_decoder.lzo1x_decompressor(natives=IN_PROCESS)(_BLOCK, 6) == (
+        b"FAKE-LIBLZO"
+    )
+    sys.modules.pop("lzo", None)
+
+
+@_NO_PYTHON_LZO
+def test_a_child_import_that_raises_os_error_falls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A broken shared library can raise something other than ImportError. In this
+    process any exception from the import counts as absent; in a child only an
+    ImportError did, and the read raised ResourceUnavailableError."""
+    (tmp_path / "lzo.py").write_text(
+        "raise OSError('liblzo2.so.2: cannot open shared object file')\n"
+    )
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    monkeypatch.setattr(
+        deps, "lzo", deps.LazyOptional(OptionalLibrary.LZO, present=True)
+    )
+    POOL.close_idle()  # children inherit the environment when they start
+    try:
+        isolated = lzo_decoder.lzo1x_decompressor(natives=ISOLATED)
+        assert isolated(_BLOCK, 6) == b"hello\n"
+    finally:
+        monkeypatch.undo()
+        POOL.close_idle()
 
 
 def _expanding_lzop(size: int) -> bytes:

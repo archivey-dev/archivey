@@ -79,7 +79,11 @@ from archivey.internal.registry import (
     list_supported_formats,
 )
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.codecs import codec_for_stream_format, open_codec_stream
+from archivey.internal.streams.codecs import (
+    codec_for_stream_format,
+    open_codec_stream,
+    single_file_codec,
+)
 from archivey.internal.streams.streamtools import (
     OneReadEachStream,
     is_stream,
@@ -1068,6 +1072,14 @@ def _open_stream_from_source(
         effective_config, opened_format, source_name(codec_input)
     )
 
+    if single_file_codec(stream_format) is None:
+        # Only a PluginStream member can get here: every StreamFormat but UNCOMPRESSED
+        # has a built-in codec. Refused as open_archive refuses it.
+        raise UnsupportedFeatureError(
+            f"No codec registered for {stream_format!r}: call "
+            "archivey.formats.register_codec() with its CodecHandler first.",
+            source_format=opened_format,
+        )
     codec = codec_for_stream_format(stream_format)
     # The codec stream is the whole source, so bytes after its end are reported.
     stream_config = replace(

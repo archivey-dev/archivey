@@ -27,6 +27,7 @@ from archivey import (
     FormatDetectionError,
     FormatPolicy,
     MemberType,
+    OptionalLibrary,
     PackageNotInstalledError,
     StreamFormat,
     StreamNotSeekableError,
@@ -46,10 +47,21 @@ from archivey.formats import (
     ReaderSource,
     SequentialFormatHandler,
     SequentialReader,
+    register_codec,
+    register_format,
 )
 from archivey.internal.detection import probe_config
 from archivey.internal.format_adapter import REPLACEABLE_CONTAINERS, registration_scope
+from tests.test_codec_api import TAR_TOY, TOY, ToyHandler, ToyStream, toy_compress
 from tests.test_format_api import _ENTRIES, _MAGIC, _plugin_with, build_toya
+from tests.test_format_api_sequential import (
+    _ENTRIES as _TOYS_ENTRIES,
+    _MAGIC as _TOYS_MAGIC,
+    ToysContainer,
+    ToysHandler,
+    ToysReader,
+    build_toys,
+)
 from tests.test_iso_raw_sectors import _image as _raw_sector_image
 from tests.test_sfx import _pe_stub
 
@@ -74,13 +86,17 @@ def _zip_bytes() -> bytes:
     return buf.getvalue()
 
 
-def _tar_gz_bytes() -> bytes:
+def _tar_bytes() -> bytes:
     raw = io.BytesIO()
     with tarfile.open(fileobj=raw, mode="w") as tf:
         info = tarfile.TarInfo("a.txt")
         info.size = 5
         tf.addfile(info, io.BytesIO(b"alpha"))
-    return gzip.compress(raw.getvalue())
+    return raw.getvalue()
+
+
+def _tar_gz_bytes() -> bytes:
+    return gzip.compress(_tar_bytes())
 
 
 # --- construction ---------------------------------------------------------------
@@ -328,6 +344,122 @@ def test_an_off_plugin_does_not_shadow_an_allowed_one(clean_registry: None) -> N
     assert ("near_magic", TierSkipReason.NOT_ENABLED_BY_POLICY) in skipped
     with open_archive(io.BytesIO(data), config=config) as reader:
         assert reader.format == second.format
+
+
+def _probe_only_sequential(
+    calls: list[bytes], requires: tuple[str, ...] = ()
+) -> ArchiveFormat:
+    """A sequential TOYS variant with no magic, found by a probe that records its
+    calls."""
+    fmt = ArchiveFormat(ToysContainer.PROBED, S.UNCOMPRESSED)
+
+    def probe(prefix: bytes) -> bool:
+        calls.append(prefix)
+        return prefix.startswith(_TOYS_MAGIC)
+
+    class Probed(SequentialFormatHandler):
+        format = fmt
+        extensions = (".ptoys",)
+
+        def open_sequential(self, context: ReaderContext) -> ToysReader:
+            return ToysReader(context)
+
+    Probed.probe = staticmethod(probe)  # type: ignore[assignment]
+    Probed.requires = requires
+    register_format(Probed)
+    return fmt
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{"plugins": False}, {"only": {C.TAR, S.GZIP}}], ids=["off", "only"]
+)
+def test_an_off_plugin_is_not_found_inside_a_compression_stream(
+    clean_registry: None, kwargs: dict[str, object]
+) -> None:
+    """The decoded start of a ``.gz`` is matched against the plugins the policy
+    allows, as an uncompressed source is: an off plugin's magic does not turn a plain
+    gzip file into a format the open then refuses."""
+    register_format(ToysHandler)
+    data = gzip.compress(build_toys(_TOYS_ENTRIES))
+    toys_gz = ArchiveFormat(ToysContainer.TOYS, S.GZIP)
+    assert detect_format(io.BytesIO(data)).format == toys_gz
+    config = _config(**kwargs)
+    info = detect_format(io.BytesIO(data), config=config)
+    assert info.format == ArchiveFormat.GZ
+    skipped = {(s.tier, s.reason) for s in info.unavailable_tiers}
+    assert ("inner_tar", TierSkipReason.NOT_ENABLED_BY_POLICY) in skipped
+    if "only" not in kwargs:
+        with open_archive(io.BytesIO(data), config=config) as reader:
+            assert reader.format == ArchiveFormat.GZ
+    # A tarball inside the gzip is still found: TAR is built in.
+    assert detect_format(io.BytesIO(_tar_gz_bytes()), config=config).format == (
+        ArchiveFormat.TAR_GZ
+    )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"plugins": False}, {"only": {C.TAR, S.GZIP}}, {"exclude_libraries": "lib"}],
+    ids=["off", "only", "excluded-package"],
+)
+def test_an_off_plugin_runs_no_probe_inside_a_compression_stream(
+    clean_registry: None, kwargs: dict[str, object]
+) -> None:
+    calls: list[bytes] = []
+    library = OptionalLibrary.PYPPMD
+    # Only the excluded-package case needs a requirement; the others run on every
+    # config.
+    excluding = kwargs.get("exclude_libraries") == "lib"
+    fmt = _probe_only_sequential(calls, requires=(library.value,) if excluding else ())
+    if excluding:
+        kwargs = {"exclude_libraries": {library}}
+    data = gzip.compress(build_toys(_TOYS_ENTRIES))
+    probing = ArchiveyConfig(always_probe_content=True)
+    if detect_format(io.BytesIO(data), config=probing).format.container is C.RAW_STREAM:
+        pytest.skip(f"{library.value}, which the plugin requires, is not installed")
+    assert calls
+    calls.clear()
+    config = ArchiveyConfig(
+        always_probe_content=True,
+        formats=FormatPolicy(**kwargs),  # type: ignore[arg-type]
+    )
+    assert detect_format(io.BytesIO(data), config=config).format == ArchiveFormat.GZ
+    assert not calls
+    assert fmt.container is ToysContainer.PROBED
+
+
+def test_a_plugin_codec_allowed_only_under_a_container_is_still_detected(
+    clean_registry: None,
+) -> None:
+    """A codec's magic is also how a tarball inside it is found, so a policy that
+    allows ``(TAR, codec)`` but not the bare stream keeps the magic, as it keeps
+    gzip's under ``only={TAR, GZIP}``. The bare stream is refused at open."""
+    register_codec(ToyHandler)
+    data = toy_compress(_tar_bytes())
+    config = _config(only={C.TAR, ToyStream.TOY})
+    assert detect_format(io.BytesIO(data), config=config).format == TAR_TOY
+    with open_archive(io.BytesIO(data), config=config) as reader:
+        assert reader.format == TAR_TOY
+        assert reader.read("a.txt") == b"alpha"
+    raw = toy_compress(b"not a tarball" * 50)
+    assert detect_format(io.BytesIO(raw), config=config).format == TOY
+    with pytest.raises(UnsupportedFeatureError, match="only= does not list"):
+        open_archive(io.BytesIO(raw), config=config)
+    # With plugins off, the codec is still out of detection altogether.
+    with pytest.raises(FormatDetectionError, match="ArchiveyConfig.formats"):
+        detect_format(io.BytesIO(data), config=_config(plugins=False))
+
+
+def test_the_policy_error_names_each_off_plugin_once(clean_registry: None) -> None:
+    register_format(ToysHandler)
+    _probe_only_sequential([])
+    register_codec(ToyHandler)
+    data = b"hello world, nothing archive-like here\n" * 20
+    with pytest.raises(FormatDetectionError) as exc_info:
+        detect_format(io.BytesIO(data), config=_config(plugins=False))
+    message = str(exc_info.value)
+    assert "turns off the plugin formats PROBED, TOY, TOYS, so " in message
+    assert "GZIP" not in message
 
 
 def test_an_off_plugins_extension_is_not_a_guess(

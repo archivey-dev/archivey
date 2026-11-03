@@ -23,7 +23,7 @@ import threading
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import replace
-from typing import Any, BinaryIO, ClassVar, NoReturn, cast
+from typing import Any, BinaryIO, ClassVar, NoReturn, TypeVar, cast
 
 from archivey.config import ArchiveyConfig, ProcessIsolation
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -50,6 +50,7 @@ from archivey.formats import (
     IndexedReader,
     MemberData,
     MemberDigest,
+    MemberRecord,
     MemberSpan,
     ReaderArchiveInfo,
     ReaderContext,
@@ -64,6 +65,7 @@ from archivey.internal.base_reader import (
     ReadBackend,
     reject_start_offset,
 )
+from archivey.internal.bomb_tracker import DecodeRatioGuard, ReadRatioTally
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.detection import INNER_CONTAINER_PROBE_BYTES
@@ -110,6 +112,10 @@ from archivey.internal.streams.streamtools import (
     source_byte_size,
 )
 from archivey.internal.streams.streamtools.binaryio import read_blocking
+from archivey.internal.streams.verification import (
+    ask_verification_proofs,
+    raise_member_level,
+)
 from archivey.internal.streams.verify import CustomDigests, hasher_factory
 from archivey.internal.walk_handoff import MemberDataView
 from archivey.terminal import quoted
@@ -127,6 +133,7 @@ from archivey.types import (
     PluginContainer,
     PluginStream,
     StreamFormat,
+    Verification,
 )
 
 
@@ -159,6 +166,11 @@ def _reads_full(stream: object) -> bool:
     wrapper's cost when it does not is one call per read and no copy.
     """
     return _type_reads_full(type(stream))
+
+
+# The walk steps ``ReaderContext.hold()`` tells apart (``_PluginAdapter._walk_step``).
+_LISTING = "listing"
+_REWALK = "rewalk"
 
 
 class _PluginAdapter(BaseArchiveReader):
@@ -223,6 +235,10 @@ class _PluginAdapter(BaseArchiveReader):
         # The walk position of the member being listed: the id registration will
         # stamp on it, for a report made before it is yielded.
         self._walk_index = 0
+        # Which walk is taking a step, for ``ReaderContext.hold()`` (``_hold``):
+        # ``_LISTING`` charges the listing, ``_REWALK`` (a walk started over to reach
+        # member data) charges nothing, and ``None`` (no step) is a plugin bug.
+        self._walk_step: str | None = None
         context = ReaderContext(
             encoding=encoding,
             archive_name=archive_name,
@@ -230,6 +246,7 @@ class _PluginAdapter(BaseArchiveReader):
             decompress=self._decompress,
             report=self._report,
             link_target_unavailable=self._link_target_unavailable,
+            hold=self._hold,
         )
         self._reader = self._open_reader(context)
         self._reader_open = True
@@ -239,13 +256,23 @@ class _PluginAdapter(BaseArchiveReader):
         raise NotImplementedError
 
     def _wrong_reader(self, reader: object, method: str, noun: str) -> NoReturn:
-        # Each check that the plugin kept to the interface sits outside the error
-        # boundary, so a plugin's broad ``translate_exception`` cannot report a plugin
-        # bug as a fault in the archive.
-        raise TypeError(
-            f"{type(self._plugin).__name__}.{method}() returned "
-            f"{type(reader).__name__}, not {noun}"
+        # Every interface check raises through ``_plugin_bug()``, wherever it runs.
+        raise _plugin_bug(
+            TypeError(
+                f"{type(self._plugin).__name__}.{method}() returned "
+                f"{type(reader).__name__}, not {noun}"
+            )
         )
+
+    def _refuse_codec_off_by_policy(self, method: object) -> None:
+        """Refuse a codec ``config.formats`` turns off, before its code runs."""
+        if not isinstance(method, (StreamFormat, PluginStream)):
+            return
+        refusal = self._config.formats._codec_refusal(method)
+        if refusal is not None:
+            raise UnsupportedFeatureError(
+                refusal, source_format=self._format, archive_name=self._archive_name
+            )
 
     def _decompress(
         self,
@@ -255,6 +282,7 @@ class _PluginAdapter(BaseArchiveReader):
         properties: bytes | None,
     ) -> BinaryIO:
         """``ReaderContext.decompress``: ``data`` through archivey's codec layer."""
+        self._refuse_codec_off_by_policy(method)
         is_stream = isinstance(method, (StreamFormat, PluginStream))
         codec: CodecId | None
         if is_stream:
@@ -365,6 +393,56 @@ class _PluginAdapter(BaseArchiveReader):
             attach_to_member=member is not None,
         )
 
+    @override
+    def _iter_members(self) -> Iterator[ArchiveMember]:
+        try:
+            yield from self._walk_members()
+        finally:
+            # Members held and never yielded stop counting with the walk that held
+            # them, however it ends: at its end, on damage, or closed part-way.
+            self._listing_tracker.release_held()
+
+    def _walk_members(self) -> Iterator[ArchiveMember]:
+        """The listing walk of the reader's shape (``_iter_members``)."""
+        raise NotImplementedError
+
+    def _walk_next(self, steps: Iterator[object], step: str = _LISTING) -> object:
+        """The next step of a walk, or ``_END`` once it ends: the listing's, during
+        which a ``hold()`` is charged, or with ``step=_REWALK`` a data walk's, during
+        which it is not."""
+        self._walk_step = step
+        try:
+            return next(steps, _END)
+        finally:
+            self._walk_step = None
+
+    def _hold(
+        self, member: ArchiveMember, stored_name: str | None, reason: str | None
+    ) -> None:
+        """``ReaderContext.hold()``: charge a held member to the listing's limits.
+        A walk started over to reach member data was listed already: no charge."""
+        step = self._walk_step
+        if step is None:
+            raise ArchiveyUsageError(
+                "ReaderContext.hold() counts a member only while walk() or "
+                "iter_members() is listing it"
+            )
+        if step == _REWALK:
+            return
+        if not isinstance(member, ArchiveMember):
+            raise TypeError(
+                f"ReaderContext.hold() takes an ArchiveMember, not "
+                f"{type(member).__name__}"
+            )
+        try:
+            self._listing_tracker.hold_member(
+                member, stored_name, reason or "members held back by the reader"
+            )
+        except ValueError:
+            raise ArchiveyUsageError(
+                f"ReaderContext.hold(): {quoted(member.name)} is held already"
+            ) from None
+
     def _link_target_unavailable(
         self,
         member: ArchiveMember,
@@ -385,8 +463,8 @@ class _PluginAdapter(BaseArchiveReader):
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         # A plugin that broke the interface is a plugin bug, not a fault in the
         # archive: not offered to the plugin's translator, which may map every
-        # ValueError to corruption. These are raised from inside the walk, so the
-        # boundary cannot sit outside them as it does for _wrong_reader's checks.
+        # ValueError to corruption. Every interface check raises through
+        # ``_plugin_bug()``, wherever it runs.
         if isinstance(exc, ArchiveyUsageError) or getattr(exc, _PLUGIN_BUG, False):
             return None
         translated = (
@@ -457,9 +535,11 @@ class _PluginAdapter(BaseArchiveReader):
     def _refuse_digest(
         self, digest: MemberDigest, method: str, reason: str
     ) -> NoReturn:
-        raise ValueError(
-            f"{type(self._reader).__name__}.{method}() returned a digest "
-            f"named {digest.name!r}, {reason}"
+        raise _plugin_bug(
+            ValueError(
+                f"{type(self._reader).__name__}.{method}() returned a digest "
+                f"named {digest.name!r}, {reason}"
+            )
         )
 
     @override
@@ -553,26 +633,44 @@ class IndexedReaderAdapter(_PluginAdapter):
         )
 
     @override
-    def _iter_members(self) -> Iterator[ArchiveMember]:
+    def _walk_members(self) -> Iterator[ArchiveMember]:
         # One boundary and one guard for the whole walk: both are reusable, and
         # building them per member is a measurable part of listing a large archive.
         boundary = self._translated_errors()
         guard = self._handle_guard()
+        tracker = self._listing_tracker
+        tracker.release_held()
         with boundary, guard:
-            records = iter(self._indexed.iter_members())
+            # A plain function (not a generator) lists, and may hold, in this call.
+            self._walk_step = _LISTING
+            try:
+                records = iter(self._indexed.iter_members())
+            finally:
+                self._walk_step = None
         index = 0
         while True:
             self._walk_index = index
             with boundary, guard:
-                record = next(records, None)
-            if record is None:
+                record = self._walk_next(records)
+            if record is _END:
                 return
+            if not isinstance(record, MemberRecord):
+                raise _plugin_bug(
+                    TypeError(
+                        f"{type(self._reader).__name__}.iter_members() yielded "
+                        f"{type(record).__name__}, not a MemberRecord"
+                    )
+                )
             member = record.member
             if not isinstance(member, ArchiveMember):
-                raise TypeError(
-                    f"{type(self._reader).__name__}.iter_members() yielded "
-                    f"{type(member).__name__}, not an ArchiveMember"
+                raise _plugin_bug(
+                    TypeError(
+                        f"{type(self._reader).__name__}.iter_members() yielded "
+                        f"{type(member).__name__}, not an ArchiveMember"
+                    )
                 )
+            # A held member is counted as listed from here on, not twice.
+            tracker.release_member(member)
             # A reader that reports while listing normalizes the name itself, and
             # hands over the one it started from.
             presented = (
@@ -592,9 +690,11 @@ class IndexedReaderAdapter(_PluginAdapter):
         with self._translated_errors(member.name), self._handle_guard():
             data = self._indexed.open_member(member, member._raw)
         if not isinstance(data, MemberData):
-            raise TypeError(
-                f"{type(self._reader).__name__}.open_member() returned "
-                f"{type(data).__name__}, not MemberData"
+            raise _plugin_bug(
+                TypeError(
+                    f"{type(self._reader).__name__}.open_member() returned "
+                    f"{type(data).__name__}, not MemberData"
+                )
             )
         stream = cast(BinaryIO, data.stream)
         if not data.bounded and _bounded(stream, member.size):
@@ -1020,6 +1120,14 @@ class SequentialReaderAdapter(_PluginAdapter):
         self._layer_sources: dict[
             tuple[int, int, StreamFormat | PluginStream], SharedSource
         ] = {}
+        # What the walk decodes on the reader's behalf, held to
+        # ``decoder_limits.max_ratio`` while listing too (``_ratio_guarded``): the
+        # layers' decoded bytes, each layer by its number, and the members' decoded
+        # data (``MemberSpan.data``), each by its place in the walk. A walk started
+        # over decodes the same bytes again and adds nothing.
+        self._layer_ratio_tally = ReadRatioTally()
+        self._layer_count = 0
+        self._decoded_ratio_tally = ReadRatioTally()
         # A compressed pair (``.cpio.gz``): the codec stream the walk and the member
         # data read, as TAR's (``_open_outer_codec_stream``). The walk sees decoded
         # bytes only.
@@ -1041,8 +1149,8 @@ class SequentialReaderAdapter(_PluginAdapter):
             # the format's archives fails to open (DR-15b), as a TAR does.
             walk = self._new_walk()
             with self._translated_errors(), self._handle_guard():
-                first = next(walk, None)
-            self._open_walk: tuple[Iterator[MemberSpan], MemberSpan | None] | None = (
+                first = self._walk_next(walk)
+            self._open_walk: tuple[Iterator[MemberSpan], object] | None = (
                 walk,
                 first,
             )
@@ -1126,7 +1234,12 @@ class SequentialReaderAdapter(_PluginAdapter):
             )
         forward = walk.layer.forward
         with self._translated_errors(), self._handle_guard():
-            return iter(self._sequential.walk(forward))
+            # A walk() that is not a generator steps, and may hold, in this call.
+            self._walk_step = _LISTING if walk is self._listing_walk else _REWALK
+            try:
+                return iter(self._sequential.walk(forward))
+            finally:
+                self._walk_step = None
 
     def _random_access_layer(
         self, walk: _Walk, shared: SharedSource, *, compressed: bool
@@ -1150,8 +1263,17 @@ class SequentialReaderAdapter(_PluginAdapter):
         def skip(offset: int, n: int) -> None:
             end = offset + n
             if seekable and n > _SKIP_BY_READING and (size is None or end <= size):
-                stream.seek(end)
-                return
+                if size is not None:
+                    stream.seek(end)
+                    return
+                # A size not known: a seek past the end would not fail, and the next
+                # header would read as the end of the archive. Read the last byte
+                # skipped; when it is not there, read through from ``offset`` to
+                # raise at the cut.
+                stream.seek(end - 1)
+                if read_blocking(stream, 1):
+                    return
+                stream.seek(offset)
             left = n
             while left:
                 chunk = read_blocking(stream, min(left, _SKIP_BY_READING))
@@ -1182,15 +1304,18 @@ class SequentialReaderAdapter(_PluginAdapter):
         stream_codec = single_file_codec(stream_format)
         codec = stream_codec.codec if stream_codec is not None else None
         if codec is None:
-            error = ValueError(
-                f"ForwardStream.decompress() takes a compression stream format, got "
-                f"{stream_format!r}"
+            raise _plugin_bug(
+                ValueError(
+                    f"ForwardStream.decompress() takes a compression stream format, "
+                    f"got {stream_format!r}"
+                )
             )
-            setattr(error, _PLUGIN_BUG, True)
-            raise error
-        # The member decoder's config (same limits, same ratio guard), except that the
-        # stream runs to the end of the archive, as a .gz file's does: bytes after its
-        # end are reported, as bytes after an archive's end are, not refused.
+        self._refuse_codec_off_by_policy(stream_format)
+        # The member decoder's config (same limits), except that the stream runs to
+        # the end of the archive, as a .gz file's does: bytes after its end are
+        # reported, as bytes after an archive's end are, not refused. The decoded
+        # bytes are held to the ratio below (``_ratio_guarded``), since listing
+        # decodes all of them.
         config = replace(
             self._decoder_config,
             refuse_input_after_end=False,
@@ -1210,6 +1335,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                 collector=self._diagnostics_collector,
             )
             self._layer_streams.append(decoded)
+            decoded = self._guarded_layer(decoded)
             assert self._source is not None
             buffered = ReadAheadStream(
                 decoded, _WALK_BUFFER, fill_arrived=not self._source.seekable()
@@ -1235,27 +1361,59 @@ class SequentialReaderAdapter(_PluginAdapter):
                     repeat_verdict=False,
                 )
                 self._layer_streams.append(decoded)
-                shared = self._layer_sources[key] = SharedSource(decoded)
+                shared = self._layer_sources[key] = SharedSource(
+                    self._guarded_layer(decoded)
+                )
             layer = self._random_access_layer(walk, shared, compressed=True)
         walk.layer = layer
         return layer.forward
 
+    def _guarded_layer(self, decoded: BinaryIO) -> BinaryIO:
+        """A ``decompress()`` layer's decoded stream, held to the ratio with the
+        walk's other layers (a layer opened inside another adds to its count)."""
+        self._layer_count += 1
+        return self._ratio_guarded(decoded, self._layer_ratio_tally, self._layer_count)
+
+    def _ratio_guarded(
+        self, stream: BinaryIO, tally: ReadRatioTally, key: int
+    ) -> BinaryIO:
+        """``stream``, bytes the walk decodes, held to ``decoder_limits.max_ratio`` of
+        the archive's size in every use, listing included, as
+        ``_open_outer_codec_stream`` holds an outer compression stream (an
+        ``extract_all`` call's ratio governing its own decodes). Its bytes count
+        toward ``tally`` as ``key``'s."""
+        limits = self._ratio_limits()
+        if limits.max_ratio is None:
+            return stream
+        return DecodeRatioGuard(
+            stream,
+            limits=limits,
+            static_size=self._trusted_source_size(),
+            consumed=self._live_consumed(),
+            tally=tally,
+            key=key,
+            run_limits=self._run_ratio_limits,
+        )
+
     @override
-    def _iter_members(self) -> Iterator[ArchiveMember]:
+    def _walk_members(self) -> Iterator[ArchiveMember]:
         boundary = self._translated_errors()
         guard = self._handle_guard()
+        tracker = self._listing_tracker
         if self._open_walk is not None:
             walk, span = self._open_walk
             self._open_walk = None
         else:
+            # The holds of a walk abandoned part-way go with it.
+            tracker.release_held()
             walk = self._new_walk()
             self._walk_index = 0
             with boundary, guard:
-                span = next(walk, None)
+                span = self._walk_next(walk)
         index = 0
         # Decoded bytes of the members walked so far (``_Decoded.prefix``).
         prefix = 0
-        while span is not None:
+        while span is not _END:
             self._walk_index = index
             # The layer the walk read this span's header from: a decompress() in the
             # step that yielded it moved the walk onto a new one.
@@ -1286,7 +1444,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                     decoded.finish()
                 prefix += decoded.consumed
                 with boundary, guard:
-                    span = next(walk, None)
+                    span = self._walk_next(walk)
                 continue
             with boundary, guard:
                 left = record.offset + record.length - forward.offset
@@ -1295,7 +1453,37 @@ class SequentialReaderAdapter(_PluginAdapter):
                 assert left >= 0, (record.offset, record.length, forward.offset)
                 if left:
                     forward.skip(left)
-                span = next(walk, None)
+                span = self._walk_next(walk)
+        self._raise_members_the_codec_checked()
+
+    def _raise_members_the_codec_checked(self) -> None:
+        """Raise every listed file to ``CHECKSUM`` once the walk ends at the end of an
+        outer codec whose whole-stream checksum matched (a ``.cpio.gz`` trailer).
+
+        That checksum covers every decoded byte, so a member whose data is a slice of
+        those bytes is checked, read or not. Data a reader decodes itself
+        (``MemberSpan.data``) or a layer it starts with ``ForwardStream.decompress``
+        is decoded again from those bytes, so it is left to its own reads. A codec
+        with no check, a seek that broke the decode (a jump, not a decode-through),
+        or a walk cut short raises nothing.
+        """
+        codec = self._codec_stream
+        if codec is None:
+            return
+        proofs = ask_verification_proofs(codec)
+        if not (proofs.ended and proofs.content):
+            return
+        outer = self._owned_stream if self._streaming else self._shared
+        for member in self._listed:
+            record = member._raw
+            if (
+                member.is_file
+                and isinstance(record, _Span)
+                and record.decoded is None
+                and (record.layer.stream if self._streaming else record.layer.shared)
+                is outer
+            ):
+                raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
 
     def _take_span(self, span: object, layer: _Layer, index: int) -> ArchiveMember:
         """The member a span describes, checked, named and placed."""
@@ -1314,30 +1502,42 @@ class SequentialReaderAdapter(_PluginAdapter):
     ) -> ArchiveMember:
         name = type(self._reader).__name__
         if not isinstance(span, MemberSpan):
-            raise TypeError(
-                f"{name}.walk() yielded {type(span).__name__}, not a MemberSpan"
+            raise _plugin_bug(
+                TypeError(
+                    f"{name}.walk() yielded {type(span).__name__}, not a MemberSpan"
+                )
             )
         member = span.member
         if not isinstance(member, ArchiveMember):
-            raise TypeError(
-                f"{name}.walk() yielded {type(member).__name__}, not an ArchiveMember"
+            raise _plugin_bug(
+                TypeError(
+                    f"{name}.walk() yielded {type(member).__name__}, not an ArchiveMember"
+                )
             )
+        # A held member is counted as listed from here on, not twice.
+        self._listing_tracker.release_member(member)
         length = span.data_length
         if not isinstance(length, int) or length < 0:
-            raise ValueError(
-                f"{name}.walk() yielded {member.name!r} with data_length {length!r}, "
-                "not a whole number of bytes"
+            raise _plugin_bug(
+                ValueError(
+                    f"{name}.walk() yielded {member.name!r} with data_length {length!r}, "
+                    "not a whole number of bytes"
+                )
             )
         data = span.data
         if data is not None and length:
-            raise ValueError(
-                f"{name}.walk() yielded {member.name!r} with both data and "
-                f"data_length {length}: decoded data has no stored bytes to skip"
+            raise _plugin_bug(
+                ValueError(
+                    f"{name}.walk() yielded {member.name!r} with both data and "
+                    f"data_length {length}: decoded data has no stored bytes to skip"
+                )
             )
         if data is None and span.checked:
-            raise ValueError(
-                f"{name}.walk() yielded {member.name!r} with checked=True and no "
-                "data: stored bytes are checked against the span's digests"
+            raise _plugin_bug(
+                ValueError(
+                    f"{name}.walk() yielded {member.name!r} with checked=True and no "
+                    "data: stored bytes are checked against the span's digests"
+                )
             )
         # A directory's data is its declared size too: it stays a DIRECTORY, a read
         # delivers the bytes and the listing reports them (_report_listed). Decoded
@@ -1351,9 +1551,11 @@ class SequentialReaderAdapter(_PluginAdapter):
             if member.size is None:
                 member.size = length
             elif member.size != length:
-                raise ValueError(
-                    f"{name}.walk() yielded {member.name!r} with size {member.size} "
-                    f"and data_length {length}: a member's data is stored as it is"
+                raise _plugin_bug(
+                    ValueError(
+                        f"{name}.walk() yielded {member.name!r} with size {member.size} "
+                        f"and data_length {length}: a member's data is stored as it is"
+                    )
                 )
         presented, member.name = _span_names(span)
         expected: dict[HashAlgorithm, bytes] | None = None
@@ -1362,7 +1564,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             expected, custom = self._member_digests(member, span.digests, "walk")
         decoded: _Decoded | None = None
         if data is not None:
-            stream = self._decoded_stream(data)
+            stream = self._decoded_stream(data, index)
             decoded = _Decoded(stream, span.checked, index, member.size, member.name)
         forward = layer.forward
         record = _Span(layer, forward.offset, length, expected, custom or None, decoded)
@@ -1576,20 +1778,24 @@ class SequentialReaderAdapter(_PluginAdapter):
         index = data_walk.next_index
         while True:
             with boundary, guard:
-                span = next(data_walk.spans, None)
-            if not isinstance(span, MemberSpan):
-                if span is not None:
-                    raise TypeError(
-                        f"{type(self._reader).__name__}.walk() yielded "
-                        f"{type(span).__name__}, not a MemberSpan"
-                    )
+                span = self._walk_next(data_walk.spans, _REWALK)
+            if span is _END:
                 raise CorruptionError(
                     f"walking the archive again ended before {quoted(decoded.name)}"
                 )
+            if not isinstance(span, MemberSpan):
+                raise _plugin_bug(
+                    TypeError(
+                        f"{type(self._reader).__name__}.walk() yielded "
+                        f"{type(span).__name__}, not a MemberSpan"
+                    )
+                )
             if not isinstance(span.member, ArchiveMember):
-                raise TypeError(
-                    f"{type(self._reader).__name__}.walk() yielded "
-                    f"{type(span.member).__name__}, not an ArchiveMember"
+                raise _plugin_bug(
+                    TypeError(
+                        f"{type(self._reader).__name__}.walk() yielded "
+                        f"{type(span.member).__name__}, not an ArchiveMember"
+                    )
                 )
             data = span.data
             if index == decoded.index:
@@ -1606,7 +1812,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                             data.close()
                     raise
                 return _Decoded(
-                    self._decoded_stream(data),
+                    self._decoded_stream(data, index),
                     span.checked,
                     index,
                     decoded.size,
@@ -1617,7 +1823,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             with self._translated_errors(name), guard:
                 if data is not None:
                     _Decoded(
-                        self._decoded_stream(data),
+                        self._decoded_stream(data, index),
                         span.checked,
                         index,
                         span.member.size,
@@ -1629,21 +1835,28 @@ class SequentialReaderAdapter(_PluginAdapter):
                     layer.forward.skip(span.data_length)
             index += 1
 
-    def _decoded_stream(self, data: BinaryIO | io.RawIOBase) -> BinaryIO:
-        """A reader's decoded data as archivey reads it: full-count, and counted as
+    def _decoded_stream(self, data: BinaryIO | io.RawIOBase, index: int) -> BinaryIO:
+        """A reader's decoded data as archivey reads it: full-count, counted as
         decompressed output, the drain's bytes too (``_decoded_parts`` does not count
-        them again)."""
-        return self._track_decompressed(_full_count(data))
+        them again), and held to the ratio, the drain too, as the data of the member
+        at ``index`` of the walk."""
+        return self._ratio_guarded(
+            self._track_decompressed(_full_count(data)),
+            self._decoded_ratio_tally,
+            index,
+        )
 
     def _check_rewalked(self, span: MemberSpan, decoded: _Decoded) -> None:
         """Refuse a walk started over that does not yield, at the member's place, the
         member the listing walk did: ``walk()`` must repeat itself."""
         found = _span_names(span)[1]
         if found != decoded.name:
-            raise ValueError(
-                f"{type(self._reader).__name__}.walk() yielded {found!r} as member "
-                f"{decoded.index} when walked again, not {decoded.name!r}: a walk must "
-                "yield the same members in the same order each time"
+            raise _plugin_bug(
+                ValueError(
+                    f"{type(self._reader).__name__}.walk() yielded {found!r} as member "
+                    f"{decoded.index} when walked again, not {decoded.name!r}: a walk must "
+                    "yield the same members in the same order each time"
+                )
             )
 
     def _plugin_locked(self, stream: BinaryIO) -> BinaryIO:
@@ -1830,6 +2043,25 @@ class SequentialReaderAdapter(_PluginAdapter):
 # ``translate_exception`` is not offered it (``_PluginAdapter._translate_exception``).
 _PLUGIN_BUG = "_archivey_plugin_bug"
 
+# What ``next()`` returns at the end of a plugin's iterator, where ``None`` would hide a
+# ``None`` the plugin yields: that one reaches the type checks and is reported.
+_END = object()
+
+_ErrorT = TypeVar("_ErrorT", bound=Exception)
+
+
+def _plugin_bug(error: _ErrorT) -> _ErrorT:
+    """``error``, marked as a plugin breaking the interface (:data:`_PLUGIN_BUG`).
+
+    Every interface check raises through this, so a check that runs inside an error
+    boundary is not reported as a fault in the archive by a plugin's broad
+    ``translate_exception``, and one that runs outside a boundary today stays right if
+    a later change moves it inside one.
+    """
+    setattr(error, _PLUGIN_BUG, True)
+    return error
+
+
 # The ``MemberDigest`` names archivey computes itself, with its own hasher.
 _ALGORITHMS = {str(algorithm): algorithm for algorithm in HashAlgorithm}
 
@@ -2014,7 +2246,15 @@ def _check_plugin(plugin: type[FormatHandler]) -> ArchiveFormat:
             )
     if plugin.probe is not None and not callable(plugin.probe):
         raise ArchiveyUsageError(f"{plugin.__name__}.probe must be callable or None")
+    check_requires(plugin.__name__, plugin.requires)
     return fmt
+
+
+def check_requires(name: str, requires: object) -> None:
+    """Refuse a handler's ``requires`` given as one string, which would be read as one
+    module per character. Shared by ``register_format`` and ``register_codec``."""
+    if isinstance(requires, str):
+        raise ArchiveyUsageError(f"{name}.requires must be a tuple of module names")
 
 
 def compressed_formats(fmt: ArchiveFormat) -> tuple[ArchiveFormat, ...]:

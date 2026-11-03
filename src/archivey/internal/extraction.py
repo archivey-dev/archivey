@@ -858,6 +858,11 @@ class ExtractionCoordinator:
         if self._dry is not None:
             self._dry.rebase_os_error(exc)
 
+    @property
+    def ratio(self) -> DecoderLimits:
+        """The ratio fields this extraction applies."""
+        return self._ratio
+
     def _rebase_resolved_os_error(self, exc: OSError) -> None:
         """``_rebase_os_error`` for an error that names a path built from
         ``dest_root``, the resolved dest: a real run names it so, and a dry run shows

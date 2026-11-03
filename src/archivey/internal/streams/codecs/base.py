@@ -361,9 +361,9 @@ class StreamCodec:
     detection data as class attributes (``stream_format`` / ``magic``) plus an
     optional-dependency ``requirement``. The standalone single-file ``ArchiveFormat`` and its
     file extension are *derived* from ``stream_format`` (see the properties below). Instances
-    are collected in :data:`STREAM_CODECS`, which the detector, the single-file reader, and
-    the registry read directly — so a new standalone codec is a single subclass, with no edits
-    to those consumers (see ``compressed-streams``). Container-only / filter-only codecs
+    are collected in the codec registry (``registry.stream_codecs()``), which the detector
+    and the single-file reader read — so a new standalone codec is a single subclass, with
+    no edits to those consumers (see ``compressed-streams``). Container-only / filter-only codecs
     override just :meth:`decompressor`, or ``open`` + ``translate``.
 
     A codec whose library decodes one stream at a time, with the interface of
