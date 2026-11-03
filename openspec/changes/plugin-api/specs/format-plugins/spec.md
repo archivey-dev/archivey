@@ -155,4 +155,5 @@ codec off, and `FormatInfo.from_plugin` SHALL be true for a format that uses it.
 | `ReaderContext.decompress(data, ToyStream.TOY, size=n, properties=p)` | the decoder's `CodecCall` has `size=n`, `properties=p` and the caller's limits |
 | The inner-TAR probe decodes the codec | `CodecCall.probe_bound` set; `None` on a read |
 | A module in `requires` missing | `FormatSupport.NONE` with the handler's install hint |
+| `open_stream(format=ToyStream.TOY)` before `register_codec()` | `UnsupportedFeatureError` naming `register_codec`, as `open_archive` refuses an unregistered format |
 | `stream_format = StreamFormat.GZIP`, or a value a built-in uses | `ArchiveyUsageError` at registration |

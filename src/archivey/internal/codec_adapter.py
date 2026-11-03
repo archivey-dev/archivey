@@ -19,7 +19,7 @@ from archivey.internal.excluded_libraries import (
     as_excluded,
     is_excluded_module,
 )
-from archivey.internal.format_adapter import prefix_probe
+from archivey.internal.format_adapter import check_requires, prefix_probe
 from archivey.internal.format_args import (
     PAIR_SPELLED_CONTAINERS,
     add_plugin_spellings,
@@ -219,8 +219,7 @@ def _check_handler(handler: type[CodecHandler]) -> PluginStream:
             )
     if handler.probe is not None and not callable(handler.probe):
         raise ArchiveyUsageError(f"{name}.probe must be callable or None")
-    if isinstance(handler.requires, str):
-        raise ArchiveyUsageError(f"{name}.requires must be a tuple of module names")
+    check_requires(name, handler.requires)
     return stream
 
 

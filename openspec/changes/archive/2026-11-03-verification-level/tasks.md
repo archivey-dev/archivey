@@ -64,5 +64,5 @@
 
 ## 6. Archive
 
-- [ ] 6.1 `openspec archive verification-level` once review settles the names and the
+- [x] 6.1 `openspec archive verification-level` once review settles the names and the
       per-format table, in the PR that merges it.

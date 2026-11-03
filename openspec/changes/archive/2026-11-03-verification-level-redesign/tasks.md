@@ -24,7 +24,7 @@
       mirror the reader's member, opened or not.
 - [x] 3.3 Spanning checks (7z folder CRC, the codec trailer of a compressed TAR, CPIO
       or ar) raise the members they cover when they pass.
-- [ ] 3.3b The streaming ZIP listing pass raises each member whose data it decoded and
+- [x] 3.3b The streaming ZIP listing pass raises each member whose data it decoded and
       checked (design Decision 4: "a listing pass that decodes data reports to every
       member it passed").
 - [x] 3.4 `reader.verify_all()`. The CLI `test` verb may use it internally; its output
@@ -32,15 +32,15 @@
 
 ## 4. Docs and tests
 
-- [ ] 4.1 `Verification.CHECKSUM` docstring and `docs/errors-and-diagnostics.md`: the
+- [x] 4.1 `Verification.CHECKSUM` docstring and `docs/errors-and-diagnostics.md`: the
       every-byte definition; lead with `verified == verifiable`; the "check everything"
       recipe (`verify_all()`, `members_report()`, `reader.diagnostics`).
-- [ ] 4.2 Scenario tests from the spec deltas (`compressed-streams`,
+- [x] 4.2 Scenario tests from the spec deltas (`compressed-streams`,
       `archive-data-model`, `archive-reading`).
 
 ## 5. Contract tests
 
-- [ ] 5.1 One test per item of design Decision 6 (the contract), across ZIP, 7z (solid,
+- [x] 5.1 One test per item of design Decision 6 (the contract), across ZIP, 7z (solid,
       AES), RAR, TAR, `.tar.gz` and a single `.xz`, random-access and streaming-only,
       including two threads raising one 7z folder's members.
-- [ ] 5.2 `openspec archive verification-level-redesign` (after `verification-level`).
+- [x] 5.2 `openspec archive verification-level-redesign` (after `verification-level`).
