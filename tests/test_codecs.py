@@ -745,6 +745,23 @@ def test_a_rewind_after_a_failed_read_all_recovers_the_prefix(codec: Codec) -> N
         assert stream.read(1000) == _TRUNCATION_PAYLOAD[:1000]
 
 
+@pytest.mark.parametrize("codec", _TRUNCATED_CODECS)
+def test_a_seek_in_place_after_a_failed_read_restarts_the_decoder(
+    codec: Codec,
+) -> None:
+    """With no verdict kept, a seek to where the stream stands after a failed read
+    still reaches the decoder, which restarts: the next read returns data again."""
+    source = io.BytesIO(_truncated(codec, "tail"))
+    with open_codec_stream(
+        codec, source, config=_STDLIB_SEEKABLE, repeat_verdict=False
+    ) as stream:
+        assert stream.read(1000) == _TRUNCATION_PAYLOAD[:1000]
+        with pytest.raises(TruncatedError):
+            stream.read()
+        assert stream.seek(stream.tell()) == 1000
+        assert stream.read(500) == _TRUNCATION_PAYLOAD[1000:1500]
+
+
 @pytest.mark.parametrize("chunked", [False, True], ids=["read-all", "read-n"])
 @pytest.mark.parametrize("codec", _TRUNCATED_CODECS)
 def test_a_read_after_the_truncation_error_raises_again(
