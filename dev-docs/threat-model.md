@@ -363,7 +363,8 @@ data its pass keeps for link targets beside it.
 **Mechanism.**
 - `ListingLimits` (`max_members` 262,144, `max_metadata_bytes` 64 MiB) is enforced by
   `internal/listing_limits.py` `ListingLimitTracker` as members are registered into the
-  reader's member walk, by every call that lists: `members()`, `members_report()`,
+  reader's member walk (and as a plugin reader holds one back to yield later, through
+  `ReaderContext.hold()`: CPIO's newc hard links waiting for their data), by every call that lists: `members()`, `members_report()`,
   `stream_members()`, `for member in reader` and `extract_all()`, in both access modes.
   Crossing a cap raises `ResourceLimitError` at the member that crosses it, before it
   is listed; a TAR walk parses no header after it. `None` (`ListingLimits.UNLIMITED`)

@@ -116,11 +116,17 @@ class ListingLimitTracker:
         self.member_count = 0
         self.metadata_bytes = 0
         self._archive_comment_counted = False
+        # Members a reader holds back before yielding them (``hold_member``): what
+        # each was charged, by identity, until ``release_member`` takes it off.
+        self._held: dict[int, tuple[ArchiveMember, int]] = {}
+        self._held_bytes = 0
 
     def reset(self) -> None:
         self.member_count = 0
         self.metadata_bytes = 0
         self._archive_comment_counted = False
+        self._held = {}
+        self._held_bytes = 0
 
     def account_archive_comment(
         self, comment: str | None, *, enforce: bool = True
@@ -149,6 +155,64 @@ class ListingLimitTracker:
         # Raises before storing, so a refused member changes neither total.
         self.metadata_bytes = next_bytes
         self.member_count = next_count
+
+    def hold_member(
+        self, member: ArchiveMember, stored_name: str | None, reason: str
+    ) -> None:
+        """Charge a member a reader holds back before yielding it, as one member and
+        its metadata, with ``stored_name`` weighed too when it differs from the name.
+
+        ``reason`` says what the held members wait for, for the refusal. The charge
+        stays until :meth:`release_member`, called when the member is yielded and
+        counted by :meth:`account_member`, so a held member is counted once.
+        """
+        key = id(member)
+        if key in self._held:
+            raise ValueError(f"member {member.name!r} is already held")
+        nbytes = member_metadata_bytes(member)
+        if stored_name is not None and stored_name != member.name:
+            nbytes += _str_retained_bytes(stored_name)
+        held = len(self._held) + 1
+        held_bytes = self._held_bytes + nbytes
+        next_count = self.member_count + 1
+        next_bytes = self.metadata_bytes + nbytes
+        limits = self._limits
+        max_members = limits.max_members
+        if max_members is not None and next_count > max_members:
+            raise ResourceLimitError(
+                f"Listing limit reached: max_members={max_members} (counted "
+                f"{next_count} members, {held} of them {reason})"
+            )
+        max_meta = limits.max_metadata_bytes
+        if max_meta is not None and next_bytes > max_meta:
+            raise metadata_limit_error(
+                max_meta,
+                f"retained {next_bytes} bytes, {held_bytes} of them for {held} "
+                f"{reason}",
+            )
+        self._held[key] = (member, nbytes)
+        self._held_bytes = held_bytes
+        self.member_count = next_count
+        self.metadata_bytes = next_bytes
+
+    def release_member(self, member: ArchiveMember) -> None:
+        """Take off what :meth:`hold_member` charged for ``member``, if it is held."""
+        if not self._held:
+            return
+        entry = self._held.pop(id(member), None)
+        if entry is not None:
+            self._uncharge(entry[1])
+
+    def release_held(self) -> None:
+        """Take off every charge still held: the walk that held them has ended."""
+        held, self._held = self._held, {}
+        for _, nbytes in held.values():
+            self._uncharge(nbytes)
+
+    def _uncharge(self, nbytes: int) -> None:
+        self._held_bytes -= nbytes
+        self.member_count -= 1
+        self.metadata_bytes -= nbytes
 
     def account_link_target(self, target: str, *, enforce: bool = True) -> None:
         """Add a link target that was resolved after its member was registered.

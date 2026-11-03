@@ -55,7 +55,9 @@ raises it.
 
 The adapter SHALL verify every plugin member stream against the listed size and the
 digests the plugin returns, and SHALL apply the built-in name normalization, name checks,
-listing limits and extraction limits to plugin members.
+listing limits and extraction limits to plugin members. A member a plugin keeps back
+to yield later and passes to `ReaderContext.hold()` SHALL count toward the listing limits
+with the members already listed while it is held, and once in all after it is yielded.
 
 #### Scenario: plugin data checks
 
@@ -64,6 +66,7 @@ listing limits and extraction limits to plugin members.
 | Plugin stream shorter than the listed size, read to the end | `TruncatedError` |
 | Plugin returns a CRC-32 that does not match | `CorruptionError` |
 | Plugin lists a member named `../x`; `extract_all` | Refused as for a built-in format |
+| Three members listed, then two held with `hold()`, under `max_members=4` | `ResourceLimitError` at the second `hold()` |
 
 ### Requirement: Sequential plugins read forward-only sources
 

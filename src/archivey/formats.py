@@ -454,6 +454,7 @@ class ReaderContext:
             [DiagnosticCode, str, DiagnosticContext, ArchiveMember | None], None
         ],
         link_target_unavailable: Callable[[ArchiveMember, str, str, bool], None],
+        hold: Callable[[ArchiveMember, str | None, str | None], None],
     ) -> None:
         self._encoding = encoding
         self._archive_name = archive_name
@@ -461,6 +462,7 @@ class ReaderContext:
         self._decompress = decompress
         self._report = report
         self._link_target_unavailable = link_target_unavailable
+        self._hold = hold
 
     @property
     def encoding(self) -> str | None:
@@ -517,6 +519,36 @@ class ReaderContext:
         fails such a member instead of skipping it as a link with no target.
         """
         self._link_target_unavailable(member, reason, message, target_in_archive)
+
+    def hold(
+        self,
+        member: ArchiveMember,
+        *,
+        stored_name: str | None = None,
+        reason: str | None = None,
+    ) -> None:
+        """Count a member the reader holds back to yield later, as if it were listed.
+
+        A reader that must see more of the archive before it can yield a member
+        (a CPIO hard link whose data comes with a later link) keeps it in memory
+        meanwhile, where the listing's limits do not see it. ``hold()`` counts it
+        now, against the same ``max_members`` and ``max_metadata_bytes`` as the
+        members already listed, and raises ``ResourceLimitError`` when it would cross
+        either. ``stored_name`` is the name the member will be yielded with as
+        ``stored_name``, weighed too when it differs from ``member.name``.
+        ``reason`` names what the held members are, for that error ("CPIO hard links
+        waiting for their data").
+
+        Call it from ``walk()`` or ``iter_members()``, as the members are listed.
+        The charge is on that member object: yielding the same object takes it off
+        before archivey counts it as listed, so it is counted once. Yield a copy
+        instead and both count until the walk ends. A member never yielded stays
+        counted until the walk ends. In a walk archivey starts over to reach a member's data again,
+        every member was counted when listed, and ``hold()`` does nothing. A call
+        from anywhere else (at open, in ``open_member``), or for a member held
+        already, raises ``ArchiveyUsageError``.
+        """
+        self._hold(member, stored_name, reason)
 
     def normalize_name(self, name: str, member_type: MemberType) -> str:
         """The name archivey gives a member: ``./a//b`` becomes ``a/b``, and a

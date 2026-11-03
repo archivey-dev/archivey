@@ -89,9 +89,10 @@ archivey's hard links name an earlier member only, so:
   their copy of the data is skipped.
 - newc and crc: the reader holds the empty links back until the link with the data
   arrives, yields that one as the `FILE`, then the held ones as `HARDLINK` members to it.
-  A group whose data never arrives (an empty file) is yielded at the trailer. More held
-  links than `ListingLimits.max_members`, or held names that weigh more than
-  `ListingLimits.max_metadata_bytes`, raises `ResourceLimitError`.
+  A group whose data never arrives (an empty file) is yielded at the trailer. Each held
+  link counts toward `ListingLimits.max_members` and `ListingLimits.max_metadata_bytes`
+  together with the members already listed, so a held link that takes either over
+  raises `ResourceLimitError`.
 
 ### 2.3 Member data
 
@@ -132,10 +133,11 @@ header can ask for:
 - A stored name is read into memory before the member, so it is bounded: over 64 KiB, or
   without its NUL, is `CorruptionError` before it is read. newc's 32-bit name size would
   otherwise let one header ask for 4 GiB.
-- Held newc and crc links are bounded by `ListingLimits.max_members` and their names by
-  `ListingLimits.max_metadata_bytes`, both checked by the reader itself, because the
-  listing counts yielded members only and a held link is not yet one. Each name can be
-  64 KiB, so the count alone would let a small compressed archive hold gigabytes.
+- Held newc and crc links are charged to the listing's own `ListingLimits.max_members`
+  and `ListingLimits.max_metadata_bytes` as they are held, through
+  `ReaderContext.hold()`, on top of the members already listed; each is counted once
+  when it is yielded. Each name can be 64 KiB, so a count alone would let a small
+  compressed archive hold gigabytes.
 - The check for bytes after the trailer reads at most 1 MiB.
 
 ## 5. Sharp edges
