@@ -403,8 +403,10 @@ class _RatioGuard(DelegatingStream):
     def _check(self, position: int) -> None:
         if position <= self._decoded or self._max_ratio is None:
             return
-        self._decoded = position
+        # Recorded once judged: an offset refused stays unjudged, so a later read that
+        # reaches it again (a new member stream over the shared decode) raises too.
         self._judge(position)
+        self._decoded = position
 
     def _raise_held(self) -> None:
         if self._held is not None:
@@ -500,8 +502,10 @@ class DecodeRatioGuard(_RatioGuard):
 
     Listing such an archive decodes all of it, member data included, before
     extraction counts a byte, so a few hundred bytes of bzip2 could keep ``members()``
-    decoding for minutes. Extraction would refuse the same archive at the same ratio;
-    this refuses it while listing, reading or extracting alike.
+    decoding for minutes. This refuses it while listing, reading or extracting, at
+    the reader's ratio, except that an ``extract_all`` call holds its own decodes to
+    the ratio fields it applies (``run_limits``) for the length of the call, on its
+    thread. A read after the call is judged again under the reader's limits.
     """
 
     def __init__(

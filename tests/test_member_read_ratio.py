@@ -67,6 +67,26 @@ def test_open_refuses_a_member_past_the_ratio(tmp_path: Path) -> None:
     assert err.value.member_name == "zeros"
 
 
+def test_a_member_read_again_after_a_refusal_is_refused_again(tmp_path: Path) -> None:
+    # The refused offset is not recorded as judged: reading back up to it does not
+    # return the refused step.
+    path = tmp_path / "bomb.zip"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("zeros", bytes(24 * _MIB))
+    with open_archive(path, seekable_members=True) as reader:
+        (info,) = reader.members()
+        allowed = 800 * (info.compressed_size or 0)
+        with reader.open("zeros") as stream:
+            with pytest.raises(ResourceLimitError):
+                _drain(stream)
+            stream.seek(0)
+            got = 0
+            with pytest.raises(ResourceLimitError):
+                while chunk := stream.read(_MIB):
+                    got += len(chunk)
+            assert got <= allowed
+
+
 def test_read_refuses_a_bare_compressed_file_past_the_ratio(tmp_path: Path) -> None:
     path = tmp_path / "zeros.bz2"
     path.write_bytes(bz2.compress(bytes(24 * _MIB), 9))
@@ -529,6 +549,16 @@ def test_a_deprecated_call_ratio_governs_a_compressed_tars_extraction_only(
         # whole stream past the limit already.
         with pytest.raises(ResourceLimitError, match="max_ratio=800:1"):
             reader.read("zeros")
+        # A second read of the member reaches the refused offset again, and is
+        # refused before it returns a byte past the ratio.
+        got = 0
+        with (
+            pytest.raises(ResourceLimitError, match="max_ratio=800:1"),
+            reader.open("zeros") as stream,
+        ):
+            while chunk := stream.read(_MIB):
+                got += len(chunk)
+        assert got <= 800 * path.stat().st_size
     assert (tmp_path / "out" / "zeros").stat().st_size == 24 * _MIB
 
 
@@ -573,3 +603,21 @@ def test_a_callers_read_inside_an_unlimited_extraction_keeps_the_readers_ratio(
                 **{hook: read_it},
             )
         assert refused == [True], path.name
+
+
+def test_a_members_list_still_reports_an_unmatched_entry_under_unlimited(
+    tmp_path: Path,
+) -> None:
+    # The caller's predicate runs outside the call's ratio; a members= list is
+    # archivey's own selector and keeps what it reports.
+    from archivey import DiagnosticCode
+
+    path = _tar_gz_of_zeros(tmp_path / "bomb.tar.gz", 1024)
+    with open_archive(path) as reader:
+        report = reader.extract_all(
+            tmp_path / "out",
+            members=["zeros", "missing"],
+            limits=ExtractionLimits.UNLIMITED,
+        )
+    assert report.diagnostics.counts[DiagnosticCode.MEMBER_SELECTOR_UNMATCHED] == 1
+    assert (tmp_path / "out" / "zeros").stat().st_size == 1024

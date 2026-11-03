@@ -1672,15 +1672,25 @@ class TarReader(BaseArchiveReader):
             assert_never(ambiguity)
         also = ""
         if others:
-            named = ", ".join(
+            names = [
                 quoted(k.decode("ascii", "backslashreplace"))
                 for k in others[:_AMBIGUOUS_FIELDS_NAMED]
+            ]
+            rest = len(others) - len(names)
+            if rest > 0:
+                names.append(f"{rest} more")
+            listed = (
+                names[0]
+                if len(names) == 1
+                else ", ".join(names[:-1])
+                + ("," if len(names) > 2 else "")
+                + f" and {names[-1]}"
             )
-            rest = len(others) - _AMBIGUOUS_FIELDS_NAMED
-            # Only the shape is shared: a NUL or newline in a keyword is read
-            # otherwise than one in a value.
-            also = f" Other fields with this shape: {named}"
-            also += f", and {rest} more." if rest > 0 else "."
+            # Names the other fields only: under one shape a field can be read
+            # otherwise than the first (a NUL in a keyword or in a value, a long
+            # name or a long link name).
+            fields = "field" if len(others) == 1 else "fields"
+            also = f" Also on {len(others)} more {fields}: {listed}."
         self._diagnostics_collector.emit(
             code=DiagnosticCode.MEMBER_HEADER_AMBIGUOUS,
             message=(

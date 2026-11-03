@@ -3723,7 +3723,10 @@ class BaseArchiveReader(ArchiveReader):
 
         Listing such an archive decodes all of it, so the decoded stream is held to
         ``decoder_limits.max_ratio`` of the archive's size (:class:`DecodeRatioGuard`)
-        in every use, not only in ``extract_all``.
+        in every use, not only in ``extract_all``. An ``extract_all`` call on this
+        thread holds its own decodes to the ratio fields it applies instead, for the
+        length of the call (``_run_ratio_limits``); a read after it is judged again
+        under the reader's limits.
         """
         # Imported here: the codec layer imports reader-side modules at load.
         from archivey.internal.bomb_tracker import DecodeRatioGuard
@@ -4488,6 +4491,7 @@ class BaseArchiveReader(ArchiveReader):
         # Imported here (not at module top) to keep the import graph tidy: extraction.py
         # type-checks against BaseArchiveReader.
         from archivey.internal.extraction import ExtractionCoordinator
+        from archivey.internal.selection import CollectionSelector
 
         # The reader's open config applies to the whole reader lifetime; only the
         # extraction limits have a per-call override (see archive-reading).
@@ -4504,7 +4508,13 @@ class BaseArchiveReader(ArchiveReader):
             on_error=on_error,
             abort_on=abort_on,
             on_progress=None if on_progress is None else outside(on_progress),
-            selector=None if selector is None else outside(selector),
+            # A members= collection is archivey's own code, and the coordinator asks
+            # it for more than a verdict: only the caller's predicate is wrapped.
+            selector=(
+                selector
+                if selector is None or isinstance(selector, CollectionSelector)
+                else outside(selector)
+            ),
             filter=None if filter is None else outside(filter),
             limits=effective_limits,
             # The reader's ratio, a deprecated field of its config's extraction limits
