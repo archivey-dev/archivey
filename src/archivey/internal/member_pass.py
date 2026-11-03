@@ -19,9 +19,11 @@ _T = TypeVar("_T")
 
 
 class MemberPassImpl(MemberPass[_T]):
-    """The pass over ``items``, a generator the reader runs."""
+    """The pass over ``items``, a generator the reader runs.
 
-    __slots__ = ("_pass",)
+    No ``__slots__``: a deprecated 0.2 subclass of :class:`MemberPass` that declares
+    its own slots is built on top of this class, and two bases that both add slots
+    cannot be combined."""
 
     def __init__(self, items: Generator[_T, None, None]) -> None:
         self._pass = items

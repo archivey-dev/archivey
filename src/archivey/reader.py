@@ -53,6 +53,50 @@ MemberSelector = MemberSelectorArg
 
 _T_co = TypeVar("_T_co", covariant=True)
 
+
+def _with_implementation(cls: type, implementation: type) -> type:
+    """``cls`` on top of archivey's own implementation, as a 0.2 subclass of the then
+    concrete class was: what ``cls`` defines wins, and the rest is archivey's. Kept
+    on ``cls`` itself, so it goes when ``cls`` goes."""
+    built = cls.__dict__.get("_archivey_with_implementation")
+    if built is None:
+        built = type(cls)(
+            cls.__name__,
+            (cls, implementation),
+            {"__module__": cls.__module__, "__qualname__": cls.__qualname__},
+        )
+        type.__setattr__(cls, "_archivey_with_implementation", built)
+    return built
+
+
+def _class_to_build(cls: type, base: type, implementation: type, get: str) -> type:
+    """The class to build for ``cls``, which is ``base`` itself or a subclass with an
+    abstract method left: archivey's own implementation, after a deprecation
+    warning. Until 0.4.0 both still work, as in 0.2 (DR-12a)."""
+    if cls is base:
+        message = (
+            f"constructing {base.__name__} directly is deprecated and stops working "
+            f"in archivey 0.4.0; get one from {get}"
+        )
+        built = implementation
+    elif issubclass(cls, implementation):
+        # An abstract subclass of archivey's own class is not a 0.2 subclass: it
+        # gets the usual error for an abstract class, or none, as it would without
+        # this.
+        return cls
+    else:
+        missing = ", ".join(sorted(cls.__dict__.get("__abstractmethods__", ())))
+        message = (
+            f"{cls.__qualname__} subclasses {base.__name__} without implementing "
+            f"{missing}; this is deprecated and stops working in archivey 0.4.0. "
+            f"Implement them, or wrap the {base.__name__} archivey gives you "
+            "instead of subclassing it"
+        )
+        built = _with_implementation(cls, implementation)
+    warnings.warn(message, DeprecationWarning, stacklevel=3)
+    return built
+
+
 # How much ``ArchiveStream.verify()`` asks for per read: large enough that the call
 # overhead is small, small enough that the discarded chunk costs little memory.
 _VERIFY_CHUNK = 1024 * 1024
@@ -66,22 +110,25 @@ class ArchiveStream(ReadOnlyIOStream):
     :meth:`~archivey.ArchiveReader.open`, :meth:`~archivey.ForwardArchiveReader.stream_members`
     and :func:`~archivey.open_stream` return one; there is no need to build one yourself.
     It is an ``io.RawIOBase``, and ``seekable()`` says whether it can seek.
+
+    Building one directly, or through a subclass that leaves an abstract method
+    unimplemented (as a subclass written for archivey 0.2 does), is deprecated: it
+    builds archivey's own stream, with a ``DeprecationWarning``, until 0.4.0.
     """
 
     def __new__(cls, *args: Any, **kwargs: Any) -> Self:
-        if cls is ArchiveStream:
-            # Deprecated direct construction: build archivey's own stream, which then
-            # runs its ``__init__`` with these arguments.
-            warnings.warn(
-                "constructing ArchiveStream directly is deprecated and stops working in "
-                "archivey 0.4.0; get one from ArchiveReader.open(), stream_members() or "
-                "open_stream()",
-                DeprecationWarning,
-                stacklevel=2,
-            )
+        if cls is ArchiveStream or getattr(cls, "__abstractmethods__", None):
+            # Deprecated: build archivey's own stream (under the subclass, for a
+            # subclass), which then runs its ``__init__`` with these arguments.
             from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
-            return super().__new__(cast("type[Self]", ArchiveStreamImpl))
+            built = _class_to_build(
+                cls,
+                ArchiveStream,
+                ArchiveStreamImpl,
+                "ArchiveReader.open(), stream_members() or open_stream()",
+            )
+            return super().__new__(cast("type[Self]", built))
         return super().__new__(cls)
 
     @property
@@ -373,24 +420,27 @@ class MemberPass(Iterator[_T_co]):
             for member, stream in members:
                 if member.is_file and stream is not None:
                     process(member, stream.read())
+
+    Building one directly, or through a subclass that leaves an abstract method
+    unimplemented (as a subclass written for archivey 0.2 does), is deprecated: it
+    builds archivey's own pass, with a ``DeprecationWarning``, until 0.4.0.
     """
 
     __slots__ = ()
 
     def __new__(cls, *args: Any, **kwargs: Any) -> Self:
-        if cls is MemberPass:
-            # Deprecated direct construction: build archivey's own pass, which then
-            # runs its ``__init__`` with these arguments.
-            warnings.warn(
-                "constructing MemberPass directly is deprecated and stops working in "
-                "archivey 0.4.0; get one from stream_members() or by iterating the "
-                "reader",
-                DeprecationWarning,
-                stacklevel=2,
-            )
+        if cls is MemberPass or getattr(cls, "__abstractmethods__", None):
+            # Deprecated: build archivey's own pass (under the subclass, for a
+            # subclass), which then runs its ``__init__`` with these arguments.
             from archivey.internal.member_pass import MemberPassImpl
 
-            return super().__new__(cast("type[Self]", MemberPassImpl))
+            built = _class_to_build(
+                cls,
+                MemberPass,
+                MemberPassImpl,
+                "stream_members() or by iterating the reader",
+            )
+            return super().__new__(cast("type[Self]", built))
         return super().__new__(cls)
 
     @override

@@ -194,7 +194,9 @@ The rest depend on the policy:
 - **`what?.txt`, with a character Windows doesn't allow:** `"strict"` and `"standard"` write it as
   `what%3F.txt`. `"trusted"` writes it as is.
 - **`back\slash` in a TAR:** `"strict"` refuses it. `"standard"` writes it as `slash` in a folder
-  `back`. `"trusted"` writes it as is.
+  `back`. `"trusted"` writes it as is. Some names hold a backslash on purpose: systemd unit files
+  such as `mnt-my\x2ddata.mount`, in a backup of `/etc/systemd/system`. On Linux and
+  macOS, only `"trusted"` extracts them under their own names.
 - **`README`, then `readme`; `café` written two ways in Unicode; or `notes`, then `notes.`:** under
   `"strict"` and `"standard"`, the second one counts as a file already there. `"trusted"` writes
   both, if the disk tells them apart.

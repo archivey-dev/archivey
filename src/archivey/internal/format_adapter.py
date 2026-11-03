@@ -1293,8 +1293,9 @@ class SequentialReaderAdapter(_PluginAdapter):
     ) -> BinaryIO:
         """``stream``, bytes the walk decodes, held to ``decoder_limits.max_ratio`` of
         the archive's size in every use, listing included, as
-        ``_open_outer_codec_stream`` holds an outer compression stream. Its bytes
-        count toward ``tally`` as ``key``'s."""
+        ``_open_outer_codec_stream`` holds an outer compression stream (an
+        ``extract_all`` call's ratio governing its own decodes). Its bytes count
+        toward ``tally`` as ``key``'s."""
         limits = self._ratio_limits()
         if limits.max_ratio is None:
             return stream
@@ -1305,6 +1306,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             consumed=self._live_consumed(),
             tally=tally,
             key=key,
+            run_limits=self._run_ratio_limits,
         )
 
     @override

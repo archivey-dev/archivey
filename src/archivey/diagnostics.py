@@ -704,6 +704,10 @@ class HeaderAmbiguityContext(_JsonSafeContext):
     long name and long link headers, ``"x"`` for a repeated ``x`` header and for
     ``"mixed_chain"``, and ``"g"`` for ``"global_in_chain"``. A global
     header's shape is reported on the member after it.
+
+    A shape is reported once per member. When it holds for several fields, ``field``
+    is the first, ``more_fields`` counts the others, and the message names a few of
+    them.
     """
 
     kind: Literal["header_ambiguity"] = "header_ambiguity"
@@ -727,6 +731,7 @@ class HeaderAmbiguityContext(_JsonSafeContext):
         "newline_in_value",
     ] = "repeated"
     field: str = ""
+    more_fields: int = 0
 
 
 @dataclass(frozen=True)

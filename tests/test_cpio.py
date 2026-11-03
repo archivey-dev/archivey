@@ -467,6 +467,24 @@ def test_too_many_held_links(tmp_path: Path) -> None:
         reader.members()
 
 
+def test_held_link_names_count_toward_max_metadata_bytes(tmp_path: Path) -> None:
+    """Held links' names count toward max_metadata_bytes while they are held, so a
+    long run of them is refused as it is read, not once the data link arrives. The
+    archive is cut after the held links, so only a check made while they are held
+    raises ResourceLimitError; a check at release or at the trailer would surface
+    TruncatedError instead."""
+    links = [(b"%02d" % i + b"a" * 1000, _FILE, 7, 30, b"") for i in range(20)]
+    data = _without_trailer(_newc(*links))
+    config = archivey.ArchiveyConfig(
+        listing_limits=archivey.ListingLimits(max_metadata_bytes=10_000)
+    )
+    with (
+        pytest.raises(ResourceLimitError, match="max_metadata_bytes=10000"),
+        open_archive(_archive(tmp_path, data), config=config) as reader,
+    ):
+        reader.members()
+
+
 def test_a_held_link_keeps_its_stored_name(tmp_path: Path) -> None:
     """A held hard link is reported when its name is normalized, as any member is."""
     data = _newc((b"dir//weird", _FILE, 7, 2, b""), (b"plain", _FILE, 7, 2, b"x"))
