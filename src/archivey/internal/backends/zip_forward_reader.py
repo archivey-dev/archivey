@@ -130,6 +130,10 @@ from archivey.internal.streams.streamtools import (
     read_exact,
 )
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
+from archivey.internal.streams.verification import (
+    ask_verification_proofs,
+    raise_member_level,
+)
 from archivey.internal.trailing_scan import first_nonzero_offset
 from archivey.internal.windows_reparse import (
     REPARSE_HEADER_BYTES,
@@ -144,6 +148,7 @@ from archivey.types import (
     ArchiveMember,
     HashAlgorithm,
     MemberType,
+    Verification,
 )
 
 # Read size when the pass reads through data nobody asked for.
@@ -199,6 +204,9 @@ _KEPT_ON_UPDATE = frozenset(
         "_link_target_unread",
         "is_current",
         "link_target_member",
+        # What a read proved stays: a level never falls (verification levels).
+        "_verified",
+        "_verifiable",
     }
 )
 
@@ -439,6 +447,9 @@ class _PassData:
         #: A bit-3 WinZip AES codec member's decrypt stage, which authenticates once
         #: the descriptor says where the data ended (``_finish``).
         self._aes_pass: WinZipAesForwardStream | None = None
+        #: Any WinZip AES decrypt stage this member's read opened (not a confirm's
+        #: trial): ``_finish`` asks it whether its code matched.
+        self._aes_stage: BinaryIO | None = None
         #: Which weaker check the password was taken on, for the report when the
         #: caller's stream closes before the end; ``None`` once a confirm settled it.
         self._check: Literal["weak_open_check", "confirm_budget_exhausted"] | None = (
@@ -780,13 +791,16 @@ class _PassData:
         if aes is not None:
             excluded = self._reader._stream_config.excluded_libraries
             if not deferred:
-                return open_winzip_aes_member(
+                stage = open_winzip_aes_member(
                     raw,
                     aes=aes,
                     password=password,
                     compress_size=header.compressed_size,
                     excluded=excluded,
                 )
+                if not probe:
+                    self._aes_stage = stage
+                return stage
             forward = open_winzip_aes_forward(
                 raw,
                 aes=aes,
@@ -794,8 +808,10 @@ class _PassData:
                 hold_back=None if ends_with_data else _AES_HOLD_BACK,
                 excluded=excluded,
             )
-            if not ends_with_data and not probe:
-                self._aes_pass = forward
+            if not probe:
+                self._aes_stage = forward
+                if not ends_with_data:
+                    self._aes_pass = forward
             return forward
         # Inside the attempt, so a missing password is reported first, as from a
         # file.
@@ -1239,6 +1255,20 @@ class _PassData:
             )
         if error is None:
             self.verified = True
+            # A pass that decoded the data raises its member as a read would (design
+            # Decision 4): to CHECKSUM once the CRC (a sized member's local header's,
+            # or a bit-3 member's descriptor's) or the WinZip AES code covered every
+            # byte, which also proves the key; else LENGTH, never past a ceiling a key
+            # nothing proved holds lower. The AES stage answers only once its code
+            # matched.
+            stage = self._aes_stage
+            mac_matched = stage is not None and ask_verification_proofs(stage).content
+            if mac_matched or self._crc_is_digest(crc, file_size):
+                raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
+            else:
+                raise_member_level(
+                    member, min(Verification.LENGTH, member.verifiable), None
+                )
         elif raise_mismatch:
             raise error
         return error

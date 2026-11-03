@@ -38,12 +38,18 @@ A plugin magic or probe match SHALL count only when no built-in format matched a
 same or a higher confidence. A plugin probe SHALL receive only the prefix detection
 already read. A probe that raises SHALL count as no match, so one plugin cannot change
 how unrelated input fails to be detected; `MemoryError` and `OSError` still propagate.
+In the same way, a plugin codec's decoder that raises an exception its
+`translate_exception` does not map, while detection decodes the start of the stream to
+look for a container inside it, SHALL count as no container there; the open still
+raises it.
 
 #### Scenario: plugin magic does not change built-in detection
 
 | Case | Expected |
 | --- | --- |
 | A plugin declares magic `PK\x03\x04`; a ZIP is detected | `ArchiveFormat.ZIP` |
+| A plugin declares magic `55 AA` at 510; an isohybrid ISO is detected | `ArchiveFormat.ISO` (far magic is a built-in signal) |
+| A plugin declares magic `MZ` at 0; a ZIP behind a PE stub is detected | `ArchiveFormat.ZIP` (the SFX scan is a built-in signal) |
 
 ### Requirement: Plugin member data is checked like built-in member data
 
@@ -153,9 +159,11 @@ codec off, and `FormatInfo.from_plugin` SHALL be true for a format that uses it.
 | --- | --- |
 | `x.toy` with the codec's magic; `open_archive` | `ArchiveFormat(RAW_STREAM, ToyStream.TOY)`, one member, decoded bytes |
 | A TAR inside the codec, no name | `ArchiveFormat(TAR, ToyStream.TOY)` by the inner probe |
+| The same, `FormatPolicy(only={TAR, ToyStream.TOY})` | `ArchiveFormat(TAR, ToyStream.TOY)`: the policy allows a pair with the codec, so its magic stays |
 | A sequential plugin registered after the codec; `x.lha.toy` | `ArchiveFormat(LhaContainer.LHA, ToyStream.TOY)` |
 | The stream cut short | `TruncatedError` |
 | `ReaderContext.decompress(data, ToyStream.TOY, size=n, properties=p)` | the decoder's `CodecCall` has `size=n`, `properties=p` and the caller's limits |
 | The inner-TAR probe decodes the codec | `CodecCall.probe_bound` set; `None` on a read |
 | A module in `requires` missing | `FormatSupport.NONE` with the handler's install hint |
+| `open_stream(format=ToyStream.TOY)` before `register_codec()` | `UnsupportedFeatureError` naming `register_codec`, as `open_archive` refuses an unregistered format |
 | `stream_format = StreamFormat.GZIP`, or a value a built-in uses | `ArchiveyUsageError` at registration |

@@ -17,7 +17,7 @@ merged pull requests and reports what a retrospective would otherwise count by h
 
 It reads GitHub with ``gh api`` (REST only) and prints Markdown, which
 `.github/workflows/review-tally.yml` writes to its job summary each week. The parsing
-is in pure functions, so `tests/test_review_tally.py` runs without GitHub.
+is in pure functions, so `scripts/tests/test_review_tally.py` runs without GitHub.
 
 The counts are as good as the posted shapes they read. A finding is a ``### K<n> ·``
 heading by ``claude[bot]`` (``C<n>`` by ``cursor[bot]``), in an inline comment or a

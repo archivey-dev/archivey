@@ -80,6 +80,7 @@ class ToysContainer(PluginContainer):
     PROBED = "toys-probed"
     HOLDING = "toys-holding"
     HOLDING_DECODED = "toys-holding-decoded"
+    YIELDS_NONE = "toys-yields-none"
 
 
 TOYS = ArchiveFormat(ToysContainer.TOYS, StreamFormat.UNCOMPRESSED)
@@ -466,6 +467,37 @@ def test_a_size_other_than_the_data_length_is_a_plugin_bug(
         pytest.raises(ValueError, match="data_length"),
     ):
         reader.members()
+
+
+@pytest.mark.parametrize("before", [0, 2])
+@pytest.mark.parametrize("access", ["members", "stream_members"])
+def test_a_none_yielded_by_the_walk_is_a_plugin_bug(
+    toys: ArchiveFormat, tmp_path: Path, before: int, access: str
+) -> None:
+    """A ``None`` the walk yields is not its end: the listing does not stop there
+    with no error."""
+
+    class YieldsNone(ToysReader):
+        def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+            spans = super().walk(stream)
+            for _ in range(before):
+                yield next(spans)
+            yield None  # type: ignore[misc]
+            yield from spans
+
+    fmt = _variant(YieldsNone, ToysContainer.YIELDS_NONE)
+    path = _write(tmp_path, build_toys(_ENTRIES))
+    # The first step of the walk is taken at open (before=0 fails there).
+    with (
+        pytest.raises(TypeError, match="yielded NoneType, not a MemberSpan"),
+        open_archive(path, format=fmt, streaming=access != "members") as reader,
+    ):
+        if access == "members":
+            reader.members()
+        else:
+            for _member, stream in reader.stream_members():
+                if stream is not None:
+                    stream.read()
 
 
 def test_a_size_given_to_an_empty_file_is_a_plugin_bug(
@@ -1701,6 +1733,51 @@ def test_a_walk_started_over_for_data_does_not_count_held_members(
             ]
             assert reader.read("c.bin") == _DECODED_DATA["c.bin"]
             assert reader.read("docs/a.txt") == b"alpha\n"
+
+
+class _RewalkReader(_DecodedReader):
+    """Walks as ``_DecodedReader`` the first time; on a later walk, ``broken``
+    yields ``None`` in place of the second member, or ends the walk there."""
+
+    broken = "none"
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        spans = super().walk(stream)
+        yield next(spans)  # Counts this walk.
+        if type(self).walks == 1:
+            yield from spans
+        elif self.broken == "none":
+            yield None  # type: ignore[misc]
+            yield from spans
+
+
+@pytest.mark.parametrize(
+    ("broken", "error", "message"),
+    [
+        ("none", TypeError, "yielded NoneType, not a MemberSpan"),
+        ("ended", CorruptionError, "walking the archive again ended before"),
+    ],
+)
+def test_a_walk_run_again_that_breaks_before_its_member(
+    tmp_path: Path, broken: str, error: type[Exception], message: str
+) -> None:
+    """A ``None`` the walk yields on a later walk is a plugin bug, not the walk's
+    end; a later walk that ends before the member it was run for is corruption."""
+
+    class Reader(_RewalkReader):
+        walks = 0
+
+    Reader.broken = broken
+    path = _write(tmp_path, build_decoded(_DECODED_ENTRIES))
+    with registration_scope():
+        fmt = _variant(Reader, ToysContainer.DECODED)
+        with open_archive(path, format=fmt) as reader:
+            reader.members()
+            with pytest.raises(error, match=message) as raised:
+                reader.read("c.bin")
+    assert Reader.walks == 2
+    if error is TypeError:
+        assert not isinstance(raised.value, CorruptionError)
 
 
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])

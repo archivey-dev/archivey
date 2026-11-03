@@ -27,7 +27,7 @@ vocabulary, the model is being asked a leading question and its agreement proves
 That is a defect in the catalogue, not in the experiment
 ([`brief.md`](brief.md) §The neutrality rule).
 
-Two mechanical guards exist, both in `tests/test_review_problem_catalogue.py`:
+Two mechanical guards exist, both in `scripts/tests/test_review_problem_catalogue.py`:
 
 - `catalogue-neutral.md` is **derived** from `catalogue.md` by
   `scripts/derive_neutral_catalogue.py`, and the test fails if the committed file is
@@ -201,7 +201,7 @@ it catalogues stops being a record of the problems.
 Before spending the run:
 
 - [ ] `python scripts/derive_neutral_catalogue.py --check` exits 0.
-- [ ] `uv run --no-sync pytest tests/test_review_problem_catalogue.py -q` passes.
+- [ ] `uv run --no-sync pytest scripts/tests/test_review_problem_catalogue.py -q` passes.
 - [ ] Sample ten entries at random and read fields 1–3 as a stranger would. Each states
       what the world does, not what a library does. Rewrite any that fail; a bad entry
       costs a whole run.

@@ -10,7 +10,7 @@ category, Problem, Symptom and Evidence survive. Run after editing `catalogue.md
 
     python scripts/derive_neutral_catalogue.py
 
-`tests/test_review_problem_catalogue.py` asserts the committed file matches this
+`scripts/tests/test_review_problem_catalogue.py` asserts the committed file matches this
 script's output, so the two cannot drift.
 """
 
