@@ -299,6 +299,10 @@ onto the person you are asking.
 - Two authoritative sources **conflict** (spec vs docs vs code), which is the standing
   pause-and-ask rule.
 - The fix is **out of proportion** to the PR and you want a scope ruling.
+- The fix makes an operation **significantly more expensive** at run time to cover a
+  corner case: for example, re-decoding a whole member, an extra pass over the archive,
+  or holding much more in memory (maintainer, 2026-11-03). Measure the cost, and ask
+  before you push it.
 
 **Do not escalate** routine implementation choices, anything the specs or the design rules
 already settle, or questions manufactured to look thorough.
