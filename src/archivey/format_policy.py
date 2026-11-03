@@ -305,8 +305,9 @@ class FormatPolicy:
     package is missing: an accelerator under ``AUTO`` falls back to the standard
     library, a member that needs it raises :class:`~archivey.PackageNotInstalledError`
     when opened, and a format that needs it refuses at open. The error's ``missing``
-    names the package with this setting as its ``reason``. :func:`~archivey.format_availability` answers for it when passed
-    the config. Other calls in the process, on any thread, are unaffected.
+    names the package with this setting as its ``reason``.
+    :func:`~archivey.format_availability` answers for it when passed the config. Other
+    calls in the process, on any thread, are unaffected.
 
     archivey uses one zstd module per process, ``compression.zstd`` where it imports
     and ``backports.zstd`` otherwise; excluding that module turns zstd off, and
