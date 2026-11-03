@@ -1591,3 +1591,17 @@ def test_under_pypy_the_boundary_reads_and_never_trusts_a_readinto_count(
     while n := wrapped.readinto(buf):
         out += buf[:n]
     assert bytes(out) == payload
+
+
+def test_bytes_reached_after_a_rebase_counts_reads_from_the_new_start() -> None:
+    """The rebase moves the last seek's target with the position, so a read from the
+    new start that ends at the old offset still counts as reached."""
+    stream = ShortReadBytesIO(b"P" * 10 + b"a" * 30)
+    stream.seek(10)
+    wrapped = ArchiveSource.for_stream(stream)
+    wrapped.rebase_to_current_position()
+    assert wrapped.read(10) == b"a" * 10
+    assert wrapped.bytes_reached == 10
+    # A seek inside the data with no read after it reaches nothing new.
+    wrapped.seek(25)
+    assert wrapped.bytes_reached == 10

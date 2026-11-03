@@ -357,7 +357,8 @@ class ArchiveSource(ReadOnlyIOStream):
         # target is not counted until a read moves past it: a seek may land past the
         # end, and only a read proves the bytes exist.
         self._reached = position
-        # Where the last seek landed; ``_pos`` still equal to it means no read since.
+        # Where the last seek landed; ``_pos`` still equal to it means no read has
+        # returned bytes since.
         self._seek_target = position
         # Only a non-seekable source replays a prefix; a seekable one is rewound instead.
         self._replay = None if seekable else bytearray()
@@ -960,7 +961,8 @@ class ArchiveSource(ReadOnlyIOStream):
             self._length = max(self._length - start, 0)
         self._reached = max(self._reached - start, 0)
         # Reads move ``_pos`` forward from the last seek, so the target is at or before
-        # ``start``: it stays equal to ``_pos`` exactly when no read has run since.
+        # ``start``: it stays equal to ``_pos`` exactly when no read has
+        # returned bytes since.
         self._seek_target -= start
         self._pos = 0
 
