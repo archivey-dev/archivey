@@ -291,6 +291,7 @@ def test_builtin_magic_wins(clean_registry: None) -> None:
         ({"magic": (Magic(-1, b"x"),)}, "non-negative offset"),
         ({"magic": (Magic(0, b""),)}, "non-negative offset"),
         ({"probe": 3}, "must be callable"),
+        ({"requires": "zlib"}, "requires must be a tuple of module names"),
         ({"format": "toya"}, "must be an ArchiveFormat"),
         ({"format": ArchiveFormat.ZIP}, "PluginContainer"),
         (
@@ -883,6 +884,76 @@ def test_interface_violations_are_not_reported_as_corruption(
         reader.members()
     with pytest.raises(TypeError, match="not an IndexedReader"):
         open_archive(_write(tmp_path, data, "t.badopen"))
+
+
+class _BareView(_BroadTranslator):
+    def open_member(  # type: ignore[override]
+        self, member: ArchiveMember, locator: tuple[int, int]
+    ) -> object:
+        return self._source.view(*locator)
+
+
+class _UnhashedDigest(_BroadTranslator):
+    def open_member(
+        self, member: ArchiveMember, locator: tuple[int, int]
+    ) -> MemberData:
+        data = super().open_member(member, locator)
+        return data._replace(digests=(MemberDigest("weird", b"\0"),))
+
+
+@pytest.mark.parametrize(
+    ("reader", "error", "match"),
+    [
+        (_BareView, TypeError, "not MemberData"),
+        (_UnhashedDigest, ValueError, "named 'weird'"),
+    ],
+    ids=["not-member-data", "digest-without-hasher"],
+)
+@pytest.mark.parametrize("access", ["read", "stream_members", "extract_all"])
+def test_a_bad_open_member_is_not_reported_as_corruption_on_any_path(
+    clean_registry: None,
+    tmp_path: Path,
+    reader: type[ToyReader],
+    error: type[Exception],
+    match: str,
+    access: str,
+) -> None:
+    """An ``open_member`` result that breaks the interface is a plugin bug on every
+    access path, also the ones that read inside the member-stream boundary, where the
+    plugin's broad ``translate_exception`` would report it as corruption."""
+    plugin = _plugin_with("broken", reader=reader)
+    data = build_toya(_ENTRIES)
+    with (
+        open_archive(io.BytesIO(data), format=plugin.format) as archive,
+        pytest.raises(error, match=match) as exc_info,
+    ):
+        if access == "read":
+            archive.read("docs/a.txt")
+        elif access == "stream_members":
+            for _, stream in archive.stream_members():
+                if stream is not None:
+                    stream.read()
+        else:
+            archive.extract_all(tmp_path / "out")
+    assert not isinstance(exc_info.value, CorruptionError)
+
+
+def test_a_none_yielded_part_way_is_not_the_end_of_the_listing(
+    clean_registry: None,
+) -> None:
+    class YieldsNone(ToyReader):
+        def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+            records = super().iter_members()
+            yield next(records)
+            yield None  # type: ignore[misc]
+            yield from records
+
+    plugin = _plugin_with("yieldsnone", reader=YieldsNone)
+    with (
+        open_archive(io.BytesIO(build_toya(_ENTRIES)), format=plugin.format) as reader,
+        pytest.raises(TypeError, match="yielded NoneType, not a MemberRecord"),
+    ):
+        reader.members()
 
 
 # ── ReaderContext.decompress ────────────────────────────────────────────────────────

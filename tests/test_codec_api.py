@@ -232,6 +232,20 @@ def test_open_stream_takes_the_codec(toy: ArchiveFormat, fmt: object) -> None:
         assert stream.read() == _TEXT
 
 
+@pytest.mark.parametrize(
+    "fmt", [ToyStream.TOY, TOY, TAR_TOY], ids=["stream", "raw", "tar"]
+)
+def test_open_stream_refuses_a_codec_that_is_not_registered(fmt: object) -> None:
+    """The caller passed the codec before ``register_codec`` ran: refused as
+    ``open_archive`` refuses it, not with a bare ``KeyError``."""
+    data = io.BytesIO(toy_compress(_TEXT))
+    with pytest.raises(UnsupportedFeatureError, match="register_codec"):
+        open_stream(data, format=fmt)  # type: ignore[arg-type]
+    if isinstance(fmt, ArchiveFormat):
+        with pytest.raises(UnsupportedFeatureError, match="No read backend registered"):
+            open_archive(data, format=fmt)
+
+
 def test_a_misspelled_format_lists_the_codec(toy: ArchiveFormat) -> None:
     with pytest.raises(ArchiveyUsageError, match="'toy'"):
         open_stream(io.BytesIO(toy_compress(_TEXT)), format="toi")
