@@ -20,6 +20,7 @@ from archivey import (
     DecoderLimits,
     ExtractionLimits,
     ResourceLimitError,
+    TruncatedError,
     open_archive,
 )
 from archivey.internal.bomb_tracker import (
@@ -286,6 +287,29 @@ def test_a_seekable_source_counts_the_furthest_offset_once(tmp_path: Path) -> No
     # The central directory is at the end, so the whole archive is reached, and
     # reading the members again adds nothing.
     assert consumed == len(data)
+
+
+def _ar_header(name: str, size: int) -> bytes:
+    fields = (name.ljust(16), "0".ljust(12), "0".ljust(6), "0".ljust(6))
+    return ("".join(fields) + "100644".ljust(8) + str(size).ljust(10)).encode() + b"`\n"
+
+
+def test_a_seek_past_the_end_does_not_count_as_reached() -> None:
+    # The second member claims ~10 GB, so the walk seeks far past the end to skip it.
+    # Only bytes a read returned count: the target of that seek is not reached.
+    data = (
+        b"!<arch>\n"
+        + _ar_header("a.txt/", 4)
+        + b"abcd"
+        + _ar_header("b.bin/", 9_999_999_999)
+        + b"x" * 100
+    )
+    with open_archive(_unsized(data)) as reader:
+        with pytest.raises(TruncatedError):
+            reader.members()
+        consumed = reader.compressed_bytes_consumed
+    assert consumed is not None
+    assert consumed <= len(data)
 
 
 def test_a_member_read_again_counts_once(tmp_path: Path) -> None:
