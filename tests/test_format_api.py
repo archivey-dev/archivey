@@ -281,6 +281,71 @@ def test_builtin_magic_wins(clean_registry: None) -> None:
     assert detect_format(io.BytesIO(buf.getvalue())).format == ArchiveFormat.ZIP
 
 
+def _hybrid_iso() -> bytes:
+    """A pycdlib image with the MBR boot signature an isohybrid image carries at 510."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(interchange_level=3)
+    iso.add_fp(io.BytesIO(b"alpha"), 5, "/A.TXT;1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    image = bytearray(out.getvalue())
+    image[510:512] = b"\x55\xaa"
+    return bytes(image)
+
+
+def _sfx_zip() -> bytes:
+    from tests.test_sfx import _pe_stub
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a", b"a")
+    return _pe_stub() + buf.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("build", "magic", "expected"),
+    [
+        pytest.param(
+            _hybrid_iso,
+            Magic(510, b"\x55\xaa"),
+            ArchiveFormat.ISO,
+            id="far-magic",
+            marks=requires("pycdlib"),
+        ),
+        pytest.param(_sfx_zip, Magic(0, b"MZ"), ArchiveFormat.ZIP, id="sfx-scan"),
+    ],
+)
+def test_builtin_magic_past_the_start_wins_over_plugin_near_magic(
+    clean_registry: None,
+    build: Callable[[], bytes],
+    magic: Magic,
+    expected: ArchiveFormat,
+) -> None:
+    """A plugin's magic near the start counts only when no built-in signal matched,
+    and that includes the signals detection looks for further in: ISO's ``CD001`` at
+    32 769, and an archive behind an executable stub."""
+    data = build()
+    assert detect_format(io.BytesIO(data)).format == expected
+
+    class Overlap(PluginContainer):
+        OVERLAP = "overlap"
+
+    class OverlapHandler(ToyHandler):
+        format = ArchiveFormat(Overlap.OVERLAP, StreamFormat.UNCOMPRESSED)
+        extensions = ()
+
+    OverlapHandler.magic = (magic,)
+    register_format(OverlapHandler)
+    assert detect_format(io.BytesIO(data)).format == expected
+    # Where no built-in signal matches, the plugin's magic still finds its format.
+    other = bytearray(64 * 1024)
+    other[magic.offset : magic.offset + len(magic.data)] = magic.data
+    assert detect_format(io.BytesIO(bytes(other))).format == OverlapHandler.format
+
+
 @pytest.mark.parametrize(
     ("attrs", "match"),
     [
@@ -291,6 +356,7 @@ def test_builtin_magic_wins(clean_registry: None) -> None:
         ({"magic": (Magic(-1, b"x"),)}, "non-negative offset"),
         ({"magic": (Magic(0, b""),)}, "non-negative offset"),
         ({"probe": 3}, "must be callable"),
+        ({"requires": "zlib"}, "requires must be a tuple of module names"),
         ({"format": "toya"}, "must be an ArchiveFormat"),
         ({"format": ArchiveFormat.ZIP}, "PluginContainer"),
         (
@@ -883,6 +949,76 @@ def test_interface_violations_are_not_reported_as_corruption(
         reader.members()
     with pytest.raises(TypeError, match="not an IndexedReader"):
         open_archive(_write(tmp_path, data, "t.badopen"))
+
+
+class _BareView(_BroadTranslator):
+    def open_member(  # type: ignore[override]
+        self, member: ArchiveMember, locator: tuple[int, int]
+    ) -> object:
+        return self._source.view(*locator)
+
+
+class _UnhashedDigest(_BroadTranslator):
+    def open_member(
+        self, member: ArchiveMember, locator: tuple[int, int]
+    ) -> MemberData:
+        data = super().open_member(member, locator)
+        return data._replace(digests=(MemberDigest("weird", b"\0"),))
+
+
+@pytest.mark.parametrize(
+    ("reader", "error", "match"),
+    [
+        (_BareView, TypeError, "not MemberData"),
+        (_UnhashedDigest, ValueError, "named 'weird'"),
+    ],
+    ids=["not-member-data", "digest-without-hasher"],
+)
+@pytest.mark.parametrize("access", ["read", "stream_members", "extract_all"])
+def test_a_bad_open_member_is_not_reported_as_corruption_on_any_path(
+    clean_registry: None,
+    tmp_path: Path,
+    reader: type[ToyReader],
+    error: type[Exception],
+    match: str,
+    access: str,
+) -> None:
+    """An ``open_member`` result that breaks the interface is a plugin bug on every
+    access path, also the ones that read inside the member-stream boundary, where the
+    plugin's broad ``translate_exception`` would report it as corruption."""
+    plugin = _plugin_with("broken", reader=reader)
+    data = build_toya(_ENTRIES)
+    with (
+        open_archive(io.BytesIO(data), format=plugin.format) as archive,
+        pytest.raises(error, match=match) as exc_info,
+    ):
+        if access == "read":
+            archive.read("docs/a.txt")
+        elif access == "stream_members":
+            for _, stream in archive.stream_members():
+                if stream is not None:
+                    stream.read()
+        else:
+            archive.extract_all(tmp_path / "out")
+    assert not isinstance(exc_info.value, CorruptionError)
+
+
+def test_a_none_yielded_part_way_is_not_the_end_of_the_listing(
+    clean_registry: None,
+) -> None:
+    class YieldsNone(ToyReader):
+        def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+            records = super().iter_members()
+            yield next(records)
+            yield None  # type: ignore[misc]
+            yield from records
+
+    plugin = _plugin_with("yieldsnone", reader=YieldsNone)
+    with (
+        open_archive(io.BytesIO(build_toya(_ENTRIES)), format=plugin.format) as reader,
+        pytest.raises(TypeError, match="yielded NoneType, not a MemberRecord"),
+    ):
+        reader.members()
 
 
 # ── ReaderContext.decompress ────────────────────────────────────────────────────────

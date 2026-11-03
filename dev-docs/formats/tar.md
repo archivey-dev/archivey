@@ -374,15 +374,17 @@ GNU tar (DR-6, measured 2026-10-30):
 Where a difference above, or a shape like it, comes from no known writer, the member is
 reported with `MEMBER_HEADER_AMBIGUOUS` (`HeaderAmbiguityContext`, in
 `ARCHIVE_INTEGRITY_CODES`; maintainer request 2026-10-30: match GNU tar, and report what
-no real writer writes), once per shape and field. `TarWalker._next_entry` collects them
-as `TarEntry.ambiguities` (`Ambiguity`); a global header's are reported on the member
+no real writer writes), once per shape. `TarWalker._next_entry` collects them as
+`TarEntry.ambiguities` (`Ambiguity`), one entry per shape and field, and the reader folds
+the entries of one shape into one report: `field` is the first, `more_fields` counts the
+others, and the message names at most three of them; a global header's are reported on the member
 after it, and a global header with no member after it frames and names nothing, so it is
 not reported.
 
 The tar-minefield cases cited below are in [`../tar-minefield-results.md`](../tar-minefield-results.md),
 with every case's result under each policy.
 
-- `global_replaced`: a `g` header that drops a key an earlier `g` header set (one report per dropped key, `hdrcharset` aside). GNU tar writes one
+- `global_replaced`: a `g` header that drops a key an earlier `g` header set (one entry per dropped key, folded into one report, `hdrcharset` aside). GNU tar writes one
   `g` header; `tarfile` and POSIX merge them.
 - `repeated`: one field set twice for one member: two `L` or two `K` headers (GNU tar
   keeps the last, `tarfile` the first), a PAX key twice in one `x` or `g` header, or two `x` headers for one member (field `x`: GNU tar drops

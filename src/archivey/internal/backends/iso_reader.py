@@ -893,8 +893,8 @@ def _cut_short(fp: BinaryIO, exc: Exception) -> TruncatedError | None:
     not before where that read started: the descriptor set, or the volume space of the
     primary descriptor, goes on past the file. A read that stopped inside the file
     parsed bytes that are present, and a read from past the volume space followed a
-    wrong pointer; both stay ``CorruptionError``. Called with pycdlib's handle, inside
-    the handle guard.
+    wrong pointer; both stay ``CorruptionError``. Called with pycdlib's handle, from
+    the reader's constructor, which the adapter calls under its handle lock.
     """
     position = fp.tell()
     image_length = fp.seek(0, io.SEEK_END)
@@ -1545,9 +1545,9 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             self._image_length = self._iso_fp.seek(0, 2)
 
             # Auto-select the richest namespace: Rock Ridge > Joliet > plain
-            # ISO 9660. Inside the guard, not after it: these are pycdlib calls
+            # ISO 9660. Inside this ``try``, not after it: these are pycdlib calls
             # on the image just opened, so a failure here is an image failure
-            # and belongs to the same translation and the same release.
+            # and releases pycdlib's state as a failure in ``open_fp`` does.
             if self._iso.has_rock_ridge():
                 self._namespace = "rock_ridge"
                 self._path_kw = "rr_path"
@@ -1562,7 +1562,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             # No reader is returned for anyone to close, and the exception's traceback
             # keeps this frame alive for as long as the caller holds it (inventory/fuzz
             # catch-and-continue loops), so release pycdlib's state now. The source is
-            # ``open_archive``'s to close on this path. The guard covers the whole
+            # ``open_archive``'s to close on this path. This ``try`` covers the whole
             # constructor body so this stays true of every failure point, not only of
             # ``open_fp``.
             self._release_archive_handles()
@@ -1577,7 +1577,8 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         the partitions its MBR or GPT lists (:func:`_image_end`): a hybrid ISO, the
         layout Linux installer images use, appends an EFI partition and a GPT backup
         after the volume space, and those bytes belong to the disk image. 7-Zip warns
-        on them; archivey does not. Called inside the handle guard.
+        on them; archivey does not. Called from the constructor, which the adapter
+        calls under its handle lock.
         """
         end = _image_end(
             self._iso_fp,
@@ -1984,7 +1985,8 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         # from the image, except in two cases. For a repeated identifier
         # (``_entries_sharing_identifier``) or a file whose data ends at the end of
         # the image (``_make_member``), ``_raw_directory`` re-reads the directory's
-        # extent through ``_cdfp`` and takes the handle guard itself. The
+        # extent with ``self._source.read_at``, which takes the ``SharedSource`` lock,
+        # not through pycdlib's handle. The
         # Joliet name fallback reads nothing either: ``has_joliet()`` tests a parsed
         # descriptor, ``get_record(joliet_path="/")`` looks among parsed records, and
         # ``_yield_children`` on the Joliet tree walks them. The comparison after the walk
@@ -1994,9 +1996,10 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         # all built inside ``open_fp``. Following a link target
         # (``_rock_ridge_child``) is the walk's own ``_yield_children`` over Rock Ridge
         # records already parsed, and ``_nm_name`` reads the parsed ``NM`` records
-        # (``dr_entries``/``ce_entries``). Any other image read added to listing needs
-        # the same guard. If a future pycdlib version gains handle access in the walk,
-        # lock the complete call.
+        # (``dr_entries``/``ce_entries``). Any other image read added to listing must
+        # also go through ``self._source`` (``read_at`` or a view), whose reads take
+        # the ``SharedSource`` lock. If a future pycdlib version gains handle access
+        # in the walk, lock the complete call.
         # ``index`` is each member's position in the walk, the id registration
         # stamps, so a diagnostic raised while typing can name it.
         listed_extents: set[int] = set()
@@ -2623,9 +2626,8 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         """Where a file's data is in the image: each extent's byte offset and length.
 
         pycdlib's own inode gives it when it describes the file as written. The layout
-        worked out while listing is used otherwise, never worked out again here:
-        reading the directory needs the handle, which the adapter holds around this
-        call already. Three cases need the layout: a file of 4 GiB or more, whose
+        worked out while listing is used otherwise, never worked out again here, so
+        opening a member reads no directory. Three cases need the layout: a file of 4 GiB or more, whose
         inode covers only its first extent; the El Torito boot catalog, which pycdlib
         keeps in memory and gives no inode at all, though its extent still holds its
         bytes on disc, which is what a mounted image shows; and a file pycdlib
@@ -2635,8 +2637,11 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         sit: ECMA-119 does not require them to be back to back. Extents that overlap
         each other are refused as corrupt, since no writer makes them and they would
         let a small image list a file many times its size. A span past the end of
-        the image is read as far as the image goes, and the adapter's size check
-        makes the short read a ``TruncatedError``.
+        the image is read as far as the image goes, and the spans after it are
+        dropped: the joined stream would otherwise move their bytes down into the
+        gap, to the wrong offsets. The stream then ends where the data stops being
+        in place, and the adapter's size check makes the short read a
+        ``TruncatedError`` from that offset on.
         """
         block_size = self._iso.logical_block_size
         try:
@@ -2670,7 +2675,14 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
                     archive_name=self._archive_name,
                 )
             end = start + length
-        return spans
+        kept: list[tuple[int, int]] = []
+        for start, length in spans:
+            present = max(0, min(length, self._image_length - start))
+            if present:
+                kept.append((start, present))
+            if present < length:
+                break
+        return kept
 
     @override
     def open_member(

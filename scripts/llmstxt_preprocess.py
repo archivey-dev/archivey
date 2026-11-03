@@ -9,7 +9,7 @@ first. A link to an anchor on the same page (`#name`), an absolute link and an
 external URL are left as they are.
 
 Only :func:`markdown_href` holds logic, and it needs nothing outside the standard
-library, so `tests/test_llmstxt_preprocess.py` runs it without the docs group.
+library, so `scripts/tests/test_llmstxt_preprocess.py` runs it without the docs group.
 """
 
 from __future__ import annotations

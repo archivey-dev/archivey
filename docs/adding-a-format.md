@@ -672,7 +672,9 @@ archivey recognises a plugin's format by its `magic`, its `extensions`, and an o
 
 - A **magic** is exact bytes at an offset. It counts only when no built-in format's magic
   matched, so registering a plugin never changes how a file archivey already reads is
-  detected.
+  detected. That includes the signatures archivey looks for further in, such as an ISO
+  image's at 32 KiB. So detection reads about 32 KiB of a file before it decides that the
+  file is in your format, not the 4 KiB a built-in magic near the start needs.
 - An **extension** that a built-in format uses is refused at registration.
 - A **probe** is a function that takes the first bytes of the source and returns `True`
   for your format. It gets only the bytes detection has already read, and runs after
@@ -839,7 +841,11 @@ the data follows the rules of archivey's own codecs:
 decoders. A decoder that checks every byte against a checksum the format requires sets
 `checks_content`, which a stream's verification level reads. The decoder's own errors go
 through `translate_exception`; an `EOFError` that it leaves untranslated becomes
-`TruncatedError`.
+`TruncatedError`. Detection decodes the start of a stream your magic or probe matched,
+to look for a TAR or a sequential format inside it. If your decoder raises an exception
+there that `translate_exception` does not map, detection takes it as "no archive inside"
+and logs it on `archivey.detection`: a warning the first time, as for a probe that
+raises. The open then raises the exception unchanged.
 
 `extension_aliases` adds other file extensions, and `probe` recognises a format that
 has no exact signature, as a format reader's `probe` does. A missing module in
@@ -861,7 +867,9 @@ unbounded memory or crash on a crafted file; [Reading untrusted bytes](#reading-
 lists what a plugin's author can do about that. A program that reads untrusted archives
 can turn plugin formats and plugin codecs off for a call with
 `ArchiveyConfig(formats=FormatPolicy(plugins=False))`; a format turned off is not detected
-either, so its code does not run. A
+either, so its code does not run. A plugin codec is off inside an archive too: a
+`ReaderContext.decompress` or `ForwardStream.decompress` call that asks for it raises
+`UnsupportedFeatureError`. A
 [replacement](#replacing-a-built-in-reader) is not a plugin format, so `plugins=False` does not
 turn it off: a replacement runs only in a call whose config names it in `replace=`.
 

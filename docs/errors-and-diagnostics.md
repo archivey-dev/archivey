@@ -144,8 +144,9 @@ unchecked data, read the whole member into memory or a temporary file first, and
 the read has finished without an error.
 
 A member tells you what has been checked so far. `member.verified` is a `Verification` level,
-and `member.verifiable` is the most a read from the start to the end can reach, so
-`member.verified == member.verifiable` means every check the member carries has passed. A read
+and `member.verifiable` is the most a read from the start to the end can reach. Above `NONE`,
+`member.verified == member.verifiable` means every check the member carries has passed; at `NONE`
+nothing was proved, not even that the data is complete. A read
 that proves more raises them on the member in place. A member stream reports the same two values
 as its member, whether or not it has started reading, and an `open_stream()` stream, which has no
 member, reports its own.
@@ -217,12 +218,12 @@ After seeks, `stream.verified` shows whether the checksum still ran. If it's bel
 `stream.verifiable` once you've read to the end, a seek back to the start and a read to the end
 runs every check.
 
-A compressed TAR, such as a `.tar.gz` or `.tar.bz2`, has one checksum for the whole
-compressed stream, checked at its end. A TAR member you read to its end is at `LENGTH` until
-then. Once something reads the archive to its end and that checksum matches, every file in it
-reaches `CHECKSUM`, whether or not you read it, except a sparse file, whose holes are not stored
-bytes: listing the archive does that, and so does a
-`stream_members()` pass that runs to the end.
+A compressed TAR, CPIO or ar archive, such as a `.tar.gz`, `.cpio.xz` or `.a.bz2`, has one
+checksum for the whole compressed stream, checked at its end. A member you read to its end is at
+`LENGTH` until then. Once something reads the archive to its end and that checksum matches, every
+file in it reaches `CHECKSUM`, whether or not you read it, except a sparse TAR file, whose holes
+are not stored bytes: listing the archive does that, and so does a `stream_members()` pass that
+runs to the end.
 
 To check a member without keeping its bytes, call `stream.verify()`. It runs every check a read
 to the end runs, throws the bytes away, and returns `stream.verified`. What it does to the

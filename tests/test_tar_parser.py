@@ -2410,3 +2410,97 @@ def test_pax_records_list_repeated_keys_once() -> None:
         binary_default=False,
     )
     assert list(records.repeated) == [b"a"]
+
+
+def test_a_shape_held_by_many_keys_is_reported_once() -> None:
+    """A PAX header of many keys, each value with a newline, makes one report on the
+    member, not one per key: the count does not grow with the archive's input."""
+    body = b"".join(_rec(b"k%d" % i, b"a\nb") for i in range(50))
+    data = _pax_body(body) + _file(b"foo") + _END
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        (member,) = ar.members()
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_HEADER_AMBIGUOUS] == 1
+    (found,) = [
+        d
+        for d in member.diagnostics
+        if d.code is DiagnosticCode.MEMBER_HEADER_AMBIGUOUS
+    ]
+    assert isinstance(found.context, HeaderAmbiguityContext)
+    assert found.context.ambiguity == "newline_in_value"
+    assert (found.context.field, found.context.more_fields) == ("k0", 49)
+    assert "Also on 49 more fields: 'k1', 'k2', 'k3', and 46 more." in (found.message)
+
+
+def test_a_shape_in_a_value_and_a_keyword_claims_only_the_shape() -> None:
+    """A NUL cuts a value but not a keyword: the report on both describes the first
+    and lists the other as having the shape, not as read the same way."""
+    body = _rec(b"path", b"a\x00b") + _rec(b"k\x00w", b"v")
+    shapes = _shapes(_pax_body(body) + _file(b"foo"))
+    assert shapes == {"a": [("nul_in_value", "path")]}
+    data = _pax_body(body) + _file(b"foo") + _END
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        (member,) = ar.members()
+    (found,) = [
+        d
+        for d in member.diagnostics
+        if d.code is DiagnosticCode.MEMBER_HEADER_AMBIGUOUS
+    ]
+    assert "the value ends there" in found.message
+    assert "Also on 1 more field: 'k\\x00w'." in found.message
+    assert "same" not in found.message
+
+
+def _ambiguous_message(data: bytes) -> str:
+    with open_archive(io.BytesIO(data + _END), format=ArchiveFormat.TAR) as ar:
+        (member,) = ar.members()
+    (found,) = [
+        d.message
+        for d in member.diagnostics
+        if d.code is DiagnosticCode.MEMBER_HEADER_AMBIGUOUS
+    ]
+    return found
+
+
+def test_a_newline_in_a_keyword_and_in_a_value_are_one_report() -> None:
+    body = _rec(b"a\nb", b"v") + _rec(b"c", b"x\ny")
+    message = _ambiguous_message(_pax_body(body) + _file(b"foo"))
+    assert "keyword a\\nb holds a newline" in message
+    assert "Also on 1 more field: 'c'." in message
+    assert "same" not in message
+
+
+def test_a_long_name_and_a_long_link_both_overridden_are_one_report() -> None:
+    data = (
+        _long(b"L", b"gnu")
+        + _long(b"K", b"gnulink")
+        + _pax({"path": "pax", "linkpath": "target"})
+        + _symlink()
+    )
+    message = _ambiguous_message(data)
+    assert "GNU long name header that a PAX record overrides" in message
+    assert "Also on 1 more field: 'linkpath'." in message
+
+
+@pytest.mark.parametrize(
+    ("count", "listed"),
+    [
+        (2, "Also on 2 more fields: 'k1' and 'k2'."),
+        (3, "Also on 3 more fields: 'k1', 'k2', and 'k3'."),
+        (4, "Also on 4 more fields: 'k1', 'k2', 'k3', and 1 more."),
+    ],
+)
+def test_the_other_fields_are_listed_with_and(count: int, listed: str) -> None:
+    body = b"".join(_rec(b"k%d" % i, b"a\nb") for i in range(count + 1))
+    assert listed in _ambiguous_message(_pax_body(body) + _file(b"foo"))
+
+
+def test_shapes_of_one_member_are_each_reported_once() -> None:
+    body = (
+        _rec(b"a", b"1")
+        + _rec(b"a", b"2")
+        + _rec(b"b", b"1")
+        + _rec(b"b", b"2")
+        + _rec(b"c", b"x\ny")
+    )
+    shapes = _shapes(_pax_body(body) + _file(b"foo"))
+    assert shapes == {"foo": [("repeated", "a"), ("newline_in_value", "c")]}

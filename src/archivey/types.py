@@ -576,10 +576,14 @@ class HashAlgorithm(StrEnum):
 class Verification(IntEnum):
     """How much of a member stream's data has been checked, from least to most.
 
-    ``ArchiveStream.verified`` is the level a stream has reached, and
-    ``ArchiveStream.verifiable`` the most it can reach by a read from the start to
-    the end. The levels are ordered, so ``stream.verified >= Verification.LENGTH``
-    reads as "at least the length was checked".
+    ``verified`` is the level reached so far on a member or its stream, and
+    ``verifiable`` the most a read from the start to the end can reach. Above
+    ``NONE``, ``verified == verifiable`` means every check the member carries has
+    passed. At ``NONE`` nothing was proved, not even that the data is complete; after
+    ``reader.verify_all()``, the members that failed are the ones it returns,
+    whatever their levels. The levels are ordered, so
+    ``member.verified >= Verification.LENGTH`` reads as "at least the length was
+    checked".
 
     Experimental: any release, a patch included, may change or remove the levels, their
     names or what they mean.
@@ -598,10 +602,12 @@ class Verification(IntEnum):
     end-of-data check passing: all the data is there, though its bytes are not
     proved."""
     CHECKSUM = 3
-    """As ``LENGTH``, and every byte was checked against a checksum stored with the
-    data: the member's CRC-32 or BLAKE2sp, the WinZip AES authentication code, the
-    checksum of a gzip, bzip2, lzip or zlib stream, or the checks of an xz, zstd or LZ4
-    file whose every stream or frame carries one, read from its start."""
+    """As ``LENGTH``, and every byte of the member passed a checksum stored with the
+    data, at whatever layer it sits: the member's CRC-32 or BLAKE2sp, the WinZip AES
+    authentication code, the checksum of a gzip, bzip2, lzip or zlib stream, or the
+    checks of an xz, zstd or LZ4 file whose every stream or frame carries one, read
+    from its start. A checksum over several members, such as a ``.tar.gz`` trailer or
+    a 7z folder CRC, raises them all once it passes, read or not."""
 
 
 class CompressionAlgorithm(Enum):

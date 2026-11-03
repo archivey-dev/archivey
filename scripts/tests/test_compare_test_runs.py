@@ -20,7 +20,7 @@ import pytest
 # A dev dependency; the pypy jobs install only the runtime extras and pytest.
 nums_to_numbits = pytest.importorskip("coverage.numbits").nums_to_numbits
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "compare_test_runs.py"
 
 _spec = importlib.util.spec_from_file_location("compare_test_runs", SCRIPT)

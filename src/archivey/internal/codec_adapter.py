@@ -8,6 +8,7 @@ same rules for padding, further streams and trailing data as those codecs have.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -19,7 +20,7 @@ from archivey.internal.excluded_libraries import (
     as_excluded,
     is_excluded_module,
 )
-from archivey.internal.format_adapter import prefix_probe
+from archivey.internal.format_adapter import check_requires, prefix_probe
 from archivey.internal.format_args import (
     PAIR_SPELLED_CONTAINERS,
     add_plugin_spellings,
@@ -56,6 +57,18 @@ class PluginCodec(StreamCodec):
     """
 
     handler: CodecHandler
+
+    # Per registration, as ``format_adapter.prefix_probe``'s flag: nothing outlives it.
+    _detection_error_logged = False
+
+    def detection_error_level(self) -> int:
+        """The level to log the decoder's exception at when detection takes it as no
+        inner container: WARNING the first time for this registration, so the plugin's
+        author sees the bug, and DEBUG after that, so a bad plugin does not flood every
+        detection."""
+        level = logging.DEBUG if self._detection_error_logged else logging.WARNING
+        self._detection_error_logged = True
+        return level
 
     @override
     def requirement_under(
@@ -219,8 +232,7 @@ def _check_handler(handler: type[CodecHandler]) -> PluginStream:
             )
     if handler.probe is not None and not callable(handler.probe):
         raise ArchiveyUsageError(f"{name}.probe must be callable or None")
-    if isinstance(handler.requires, str):
-        raise ArchiveyUsageError(f"{name}.requires must be a tuple of module names")
+    check_requires(name, handler.requires)
     return stream
 
 

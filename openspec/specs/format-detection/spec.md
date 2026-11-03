@@ -97,7 +97,9 @@ The system SHALL execute format detection with this algorithm:
 
 1. Read up to `DETECTION_LIMIT` bytes (default 4096) from the source.
 2. **Near magic** — the magic-byte table at exact offsets within that window. Match →
-   `CERTAIN` / `detected_by="magic"`.
+   `CERTAIN` / `detected_by="magic"`. A plugin format's near magic SHALL be tried only
+   after step 5 matched nothing, and before step 6: it counts only when no built-in
+   signal matched, including the prefixed payload, far magic and trailer magic.
 3. **Prefixed payload** — the tiers owned by *Self-extracting (SFX) archives are detected
    behind an executable stub*.
 4. **Far magic** — signatures whose end offset lies outside the default window, today ISO
@@ -150,7 +152,12 @@ The system SHALL execute format detection with this algorithm:
 A plugin format that `ArchiveyConfig.formats` does not allow SHALL NOT be a candidate
 at any step: its magic SHALL NOT match at steps 2 and 4, its probe SHALL NOT run at step
 6, and its extensions SHALL NOT match at step 7, so that an off plugin neither runs code
-nor claims a file an allowed plugin matches. Each step that leaves one out SHALL be
+nor claims a file an allowed plugin matches. The same holds for the bytes a compression
+stream decodes to (*Compressed streams are probed for an inner TAR*): a plugin pair
+`(container, stream)` the policy does not allow SHALL NOT match there, and the step
+SHALL be recorded as `inner_tar`. A plugin codec's magic and probe SHALL stay a
+candidate while the policy allows the bare stream or any pair with that stream, since
+they also find the containers read inside it. Each step that leaves one out SHALL be
 recorded in `unavailable_tiers` with `NOT_ENABLED_BY_POLICY`. Built-in formats SHALL be
 candidates under every policy.
 
@@ -443,6 +450,13 @@ here still opens through a `.lzma` name.
 - **THEN** the plugin's probe is not called
 - **AND** `unavailable_tiers` records `content_probe` as `NOT_ENABLED_BY_POLICY`
 - **AND** the `FormatDetectionError` message names the format policy
+
+#### Scenario: A plugin that is off is not found inside a compression stream
+
+- **WHEN** a sequential plugin is registered and a caller runs `detect_format` with
+  `FormatPolicy(plugins=False)` on a gzip of an archive in that plugin's format
+- **THEN** detection reports `GZ`, and the plugin's magic and probe are not used
+- **AND** `unavailable_tiers` records `inner_tar` as `NOT_ENABLED_BY_POLICY`
 
 #### Scenario: A plugin that is off does not shadow an allowed one
 

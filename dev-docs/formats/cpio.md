@@ -84,12 +84,14 @@ as in every format; one that stores data reports `MEMBER_SPECIAL_FILE_HAS_DATA`.
 
 archivey's hard links name an earlier member only, so:
 
-- binary and odc: the first name is the `FILE`, the later ones `HARDLINK` members to it,
-  and their copy of the data is skipped.
+- binary and odc: of the files that share a device and inode and have a link count
+  above 1, the first name is the `FILE`, the later ones `HARDLINK` members to it, and
+  their copy of the data is skipped.
 - newc and crc: the reader holds the empty links back until the link with the data
   arrives, yields that one as the `FILE`, then the held ones as `HARDLINK` members to it.
   A group whose data never arrives (an empty file) is yielded at the trailer. More held
-  links than `ListingLimits.max_members` raises `ResourceLimitError`.
+  links than `ListingLimits.max_members`, or held names that weigh more than
+  `ListingLimits.max_metadata_bytes`, raises `ResourceLimitError`.
 
 ### 2.3 Member data
 
@@ -130,9 +132,10 @@ header can ask for:
 - A stored name is read into memory before the member, so it is bounded: over 64 KiB, or
   without its NUL, is `CorruptionError` before it is read. newc's 32-bit name size would
   otherwise let one header ask for 4 GiB.
-- Held newc and crc links are bounded by `ListingLimits.max_members`, checked by the
-  reader itself, because `max_members` counts yielded members and a held link is not yet
-  one.
+- Held newc and crc links are bounded by `ListingLimits.max_members` and their names by
+  `ListingLimits.max_metadata_bytes`, both checked by the reader itself, because the
+  listing counts yielded members only and a held link is not yet one. Each name can be
+  64 KiB, so the count alone would let a small compressed archive hold gigabytes.
 - The check for bytes after the trailer reads at most 1 MiB.
 
 ## 5. Sharp edges
@@ -140,6 +143,7 @@ header can ask for:
 | What you see | Where | More |
 | --- | --- | --- |
 | In a newc or crc archive, a hard-linked file lists under its last name, where libarchive lists the first | **archivey** | Hard links name an earlier member, and the data comes with the last link (§2.2, §6) |
+| In a binary or odc archive, a later file with the same device and inode, both with a link count above 1, lists as a hard link to the first, its own data unread, even when its size differs | **format** | Those variants keep 16 or 18 bits of the inode, so unrelated files can collide; GNU cpio links them the same way (§2.2) |
 | A gzipped binary archive opens as a one-member `.gz` | **format** | Its magic is too weak to trust alone: name it `.cpio.gz`, or pass `format="cpio.gz"` (§2.1) |
 | An initramfs lists only its first archive and reports `ARCHIVE_TRAILING_DATA` | **archivey** | The walk stops at the first trailer (§6) |
 | An afio archive with extra header bytes raises `UnsupportedFeatureError` | **format** | Nothing says where the extra bytes go (§6) |

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "llmstxt_preprocess.py"
 
 _spec = importlib.util.spec_from_file_location("llmstxt_preprocess", SCRIPT)

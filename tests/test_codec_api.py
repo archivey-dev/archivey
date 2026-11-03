@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import io
 import logging
+import lzma
 import tarfile
+import zipfile
 import zlib
 from collections.abc import Iterator
 from pathlib import Path
@@ -16,6 +18,7 @@ import pytest
 
 from archivey import (
     ArchiveFormat,
+    ArchiveMember,
     ArchiveyConfig,
     ArchiveyUsageError,
     ContainerFormat,
@@ -30,6 +33,7 @@ from archivey import (
     ResourceLimitError,
     StreamFormat,
     TruncatedError,
+    UnsupportedFeatureError,
     Verification,
     detect_format,
     format_availability,
@@ -42,10 +46,17 @@ from archivey.exceptions import ArchiveyError
 from archivey.formats import (
     CodecCall,
     CodecHandler,
+    FormatHandler,
+    IndexedReader,
     Magic,
+    MemberData,
+    MemberRecord,
+    ReaderContext,
+    ReaderSource,
     register_codec,
     register_format,
 )
+from archivey.internal.excluded_libraries import EXCLUDED_REASON
 from archivey.internal.format_adapter import registration_scope
 from tests.streams_util import NonSeekableBytesIO
 from tests.test_format_api import _compressed_archive, _compressed_plugin
@@ -221,6 +232,20 @@ def test_open_stream_takes_the_codec(toy: ArchiveFormat, fmt: object) -> None:
         assert stream.read() == _TEXT
 
 
+@pytest.mark.parametrize(
+    "fmt", [ToyStream.TOY, TOY, TAR_TOY], ids=["stream", "raw", "tar"]
+)
+def test_open_stream_refuses_a_codec_that_is_not_registered(fmt: object) -> None:
+    """The caller passed the codec before ``register_codec`` ran: refused as
+    ``open_archive`` refuses it, not with a bare ``KeyError``."""
+    data = io.BytesIO(toy_compress(_TEXT))
+    with pytest.raises(UnsupportedFeatureError, match="register_codec"):
+        open_stream(data, format=fmt)  # type: ignore[arg-type]
+    if isinstance(fmt, ArchiveFormat):
+        with pytest.raises(UnsupportedFeatureError, match="No read backend registered"):
+            open_archive(data, format=fmt)
+
+
 def test_a_misspelled_format_lists_the_codec(toy: ArchiveFormat) -> None:
     with pytest.raises(ArchiveyUsageError, match="'toy'"):
         open_stream(io.BytesIO(toy_compress(_TEXT)), format="toi")
@@ -371,6 +396,39 @@ def test_a_probe_that_raises_is_no_match(caplog: pytest.LogCaptureFixture) -> No
     # Logged as a format plugin's probe is: WARNING once, then DEBUG.
     levels = [r.levelno for r in caplog.records if "plugin probe" in r.getMessage()]
     assert levels == [logging.WARNING, logging.DEBUG]
+
+
+class _BuggyDecompressor(ToyDecompressor):
+    def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        raise IndexError("plugin bug")
+
+
+class _BuggyHandler(ToyHandler):
+    def decompressor(self, call: CodecCall) -> ToyDecompressor:
+        return _BuggyDecompressor()
+
+
+def test_a_decoder_that_raises_during_detection_is_no_inner_container(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Detection decodes the start of a stream its magic matched to look for a
+    tarball inside. A plugin decoder that raises there is no inner container, as a
+    plugin probe that raises is no match. Opening the stream still raises the
+    plugin's exception: archivey does not translate an exception it does not know."""
+    data = toy_compress(_TEXT)
+    for _ in range(2):
+        caplog.clear()
+        with registration_scope():
+            register_codec(_BuggyHandler)
+            with caplog.at_level(logging.DEBUG, logger="archivey.detection"):
+                assert detect_format(io.BytesIO(data)).format == TOY
+                assert detect_format(io.BytesIO(data)).format == TOY
+            # The open decodes the start of the stream (DR-15b), and is not a probe.
+            with pytest.raises(IndexError, match="plugin bug"):
+                open_archive(io.BytesIO(data))
+        # WARNING once per registration, then DEBUG, as for a plugin probe.
+        levels = [r.levelno for r in caplog.records if "plugin codec" in r.getMessage()]
+        assert levels == [logging.WARNING, logging.DEBUG]
 
 
 def test_a_cut_stream_is_truncated(toy: ArchiveFormat) -> None:
@@ -728,6 +786,144 @@ def test_plugins_false_turns_the_codec_off(toy: ArchiveFormat) -> None:
     excluded = ArchiveyConfig(formats=FormatPolicy(exclude={ToyStream.TOY}))
     with pytest.raises(ArchiveyError):
         open_archive(io.BytesIO(toy_compress(b"x")), format=TOY, config=excluded)
+
+
+# --- nested decodes under FormatPolicy ---------------------------------------------------
+#
+# ``plugins`` and ``exclude_libraries`` hold for every decode in the call, a member's
+# data included; ``only`` and ``exclude`` choose the file opened, so they do not.
+
+
+def _decoding_zip(stored: bytes, method: StreamFormat | PluginStream) -> type:
+    """A ZIP replacement whose one member, ``m``, is ``stored`` decoded through
+    ``ReaderContext.decompress`` with ``method``."""
+
+    class Reader(IndexedReader[None]):
+        def __init__(self, context: ReaderContext) -> None:
+            self._context = context
+
+        def iter_members(self) -> Iterator[MemberRecord[None]]:
+            yield MemberRecord(ArchiveMember(type=MemberType.FILE, name="m"), None)
+
+        def open_member(self, member: ArchiveMember, locator: None) -> MemberData:
+            return MemberData(self._context.decompress(io.BytesIO(stored), method))
+
+    class Zip(FormatHandler):
+        format = ArchiveFormat.ZIP
+
+        def open(self, source: ReaderSource, context: ReaderContext) -> Reader:
+            return Reader(context)
+
+    return Zip
+
+
+def _read_nested(
+    stored: bytes, method: StreamFormat | PluginStream, **policy: object
+) -> bytes:
+    raw = io.BytesIO()
+    with zipfile.ZipFile(raw, "w") as zf:
+        zf.writestr("m", b"unused")
+    replace = {ContainerFormat.ZIP: _decoding_zip(stored, method)}
+    config = ArchiveyConfig(formats=FormatPolicy(replace=replace, **policy))  # type: ignore[arg-type]
+    with open_archive(io.BytesIO(raw.getvalue()), config=config) as reader:
+        return reader.read("m")
+
+
+def test_plugins_false_turns_the_codec_off_inside_an_archive(
+    toy: ArchiveFormat,
+) -> None:
+    assert _read_nested(toy_compress(b"hello"), ToyStream.TOY) == b"hello"
+    ToyHandler.calls.clear()
+    with pytest.raises(UnsupportedFeatureError, match="plugins=False") as exc_info:
+        _read_nested(toy_compress(b"hello"), ToyStream.TOY, plugins=False)
+    assert "ToyStream.TOY" in str(exc_info.value)
+    # Refused before the plugin's code runs.
+    assert ToyHandler.calls == []
+
+
+def test_only_and_exclude_do_not_reach_inside_an_archive(toy: ArchiveFormat) -> None:
+    """A stream format in ``only`` or ``exclude`` names a whole compressed file, so a
+    member stored with that codec still decodes."""
+    xz = lzma.compress(b"hello")
+    assert _read_nested(xz, StreamFormat.XZ, exclude={StreamFormat.XZ}) == b"hello"
+    assert _read_nested(xz, StreamFormat.XZ, only={ContainerFormat.ZIP}) == b"hello"
+    toy_data = toy_compress(b"hello")
+    assert _read_nested(toy_data, ToyStream.TOY, exclude={ToyStream.TOY}) == b"hello"
+
+
+class _ToyNeedsBrotli(ToyHandler):
+    requires = ("brotli",)
+
+
+def test_an_excluded_package_turns_the_codec_off_inside_an_archive() -> None:
+    with registration_scope():
+        register_codec(_ToyNeedsBrotli)
+        with pytest.raises(PackageNotInstalledError) as exc_info:
+            _read_nested(
+                toy_compress(b"hello"), ToyStream.TOY, exclude_libraries={"brotli"}
+            )
+    (missing,) = exc_info.value.missing
+    assert missing.reason == EXCLUDED_REASON
+
+
+def test_an_excluded_package_turns_off_the_codec_a_walk_hands_on(
+    tmp_path: Path,
+) -> None:
+    """``ForwardStream.decompress`` decodes under the call's ``exclude_libraries``."""
+
+    class ToyRpmishReader(_RpmishReader):
+        stream_formats = ToyStream
+
+    with registration_scope():
+        register_codec(_ToyNeedsBrotli)
+        rpmish = _variant(ToyRpmishReader, ToysContainer.RPMISH)
+        path = tmp_path / "a.toys"
+        path.write_bytes(build_rpmish(ToyStream.TOY, toy_compress))
+        config = ArchiveyConfig(formats=FormatPolicy(exclude_libraries={"brotli"}))
+        with (
+            open_archive(path, format=rpmish, config=config) as reader,
+            pytest.raises(PackageNotInstalledError) as exc_info,
+        ):
+            reader.members()
+    (missing,) = exc_info.value.missing
+    assert missing.reason == EXCLUDED_REASON
+
+
+def test_a_walk_asks_the_policy_before_it_hands_on_to_a_codec(
+    toy: ArchiveFormat, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``ForwardStream.decompress`` refuses a codec the policy turns off. Only a plugin
+    format walks, so ``plugins=False`` cannot reach it through the public API today; the
+    policy's answer is patched in to keep the guard honest if that changes."""
+
+    class ToyRpmishReader(_RpmishReader):
+        stream_formats = ToyStream
+
+    def refuse(self: FormatPolicy, codec: object) -> str | None:
+        return "off by policy" if codec is ToyStream.TOY else None
+
+    with registration_scope():
+        rpmish = _variant(ToyRpmishReader, ToysContainer.RPMISH)
+        path = tmp_path / "a.toys"
+        path.write_bytes(build_rpmish(ToyStream.TOY, toy_compress))
+        monkeypatch.setattr(FormatPolicy, "_codec_refusal", refuse)
+        ToyHandler.calls.clear()
+        with (
+            open_archive(path, format=rpmish) as reader,
+            pytest.raises(UnsupportedFeatureError, match="off by policy"),
+        ):
+            reader.members()
+    assert ToyHandler.calls == []
+
+
+def test_exclude_does_not_reach_the_codec_a_walk_hands_on(tmp_path: Path) -> None:
+    with registration_scope():
+        rpmish = _variant(_RpmishReader, ToysContainer.RPMISH)
+        path = tmp_path / "a.toys"
+        path.write_bytes(build_rpmish(StreamFormat.XZ, lzma.compress))
+        config = ArchiveyConfig(formats=FormatPolicy(exclude={StreamFormat.XZ}))
+        with open_archive(path, format=rpmish, config=config) as reader:
+            assert [m.name for m in reader.members()] == _RPM_NAMES
 
 
 class _Builtin(ToyHandler):

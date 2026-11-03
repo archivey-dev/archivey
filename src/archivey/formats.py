@@ -406,6 +406,11 @@ class ForwardStream:
         with ``ReaderArchiveInfo(is_solid=True)``, and the cost receipt (solid access,
         listing that needs decompression) is right from the open.
 
+        The caller's ``FormatPolicy`` holds here as for a member: under
+        ``plugins=False`` a ``PluginStream`` raises ``UnsupportedFeatureError``, and a
+        package ``exclude_libraries`` turns off reads as missing. ``only`` and
+        ``exclude`` do not apply, since they check only the file the call opens.
+
         Raises ``ValueError`` for a format that is not a compression stream
         (``UNCOMPRESSED``), and ``ArchiveyUsageError`` when this stream has already
         handed off, or was not built by archivey.
@@ -571,6 +576,13 @@ class ReaderContext:
         :class:`~archivey.PluginStream` member. Any other method raises
         ``UnsupportedFeatureError``, and one whose optional package is missing raises
         ``PackageNotInstalledError``.
+
+        The caller's ``FormatPolicy`` holds for each member: under ``plugins=False`` a
+        ``PluginStream`` raises ``UnsupportedFeatureError`` before the codec runs, and
+        a package ``exclude_libraries`` turns off raises ``PackageNotInstalledError``.
+        ``only`` and ``exclude`` do not apply: they check only the file the call opens,
+        so a member stored with ``StreamFormat.XZ`` decodes under
+        ``exclude={StreamFormat.XZ}``.
 
         Where the compressed data ends depends on the method. ``ZSTD`` and ``LZ4`` data
         is one or more frames, decoded together, and ``XZ`` data is one or more xz
