@@ -410,9 +410,10 @@ def test_a_compressed_fragment_block_cut_inside_its_stored_size(
     data[entries : entries + 12] = struct.pack("<QI", start, len(stream) - cut)
     with (
         open_archive(_image(tmp_path, bytes(data))) as archive,
-        pytest.raises(CorruptionError, match=f"the block at {start}: "),
+        pytest.raises(CorruptionError, match=f"the block at {start}: ") as caught,
     ):
         archive.read("a.txt")
+    assert not isinstance(caught.value, TruncatedError)
 
 
 def test_a_name_longer_than_the_kernel_allows(tmp_path: Path) -> None:

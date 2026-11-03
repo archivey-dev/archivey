@@ -18,7 +18,7 @@ registered as a built-in the way ISO, CPIO and ar are.
 | Core dependencies | None for gzip, xz, LZMA and LZO images. Zstandard images need what a `.zst` file needs; LZ4 images need `lz4` (`[recommended]`). LZO is decoded as a `.lzo` file is: liblzo2 through `python-lzo` in a child process when it is installed, otherwise Python |
 | Encryption | None |
 | Name encoding | Bytes. UTF-8 first, then `encoding=`, then escaped, as in every format |
-| Checksums | None of its own. A damaged block is found when it does not decode to its length, when its codec's own check fails (zlib's Adler-32, the xz CRC), or when its stream ends before its stored size says |
+| Checksums | None of its own. A damaged block is found when it does not decode to its length, when its codec's own check fails (zlib's Adler-32, the xz CRC), or when its stored size stops before its stream ends |
 | Refuses | Big-endian images (SquashFS 3 and older, magic `sqsh`), with `UnsupportedFeatureError`; a pipe, with `StreamNotSeekableError` |
 | Spec | `openspec/specs/format-squashfs/spec.md` |
 

@@ -50,10 +50,9 @@ The backend SHALL refuse with `CorruptionError`: a metadata block longer than 8 
 data block longer than the block size or shorter than its file needs, a fragment past
 the fragment table, a name with a `/`, an entry whose inode has another type, a
 directory reached twice, a symlink target longer than 65535 bytes, an entry name longer
-than 256 bytes, a compressed block whose stream ends early or fails its codec's check
-(zlib's Adler-32, the xz CRC), and files whose block lists add up to more than the
-inode table holds. These are structural bounds, not
-policy limits: 8 KiB is the format's metadata block size, the block size is in the
+than 256 bytes, a compressed block whose stored size cuts its stream or that fails its
+codec's check (zlib's Adler-32, the xz CRC), and files whose block lists add up to more
+than the inode table holds. These are structural bounds, not policy limits: 8 KiB is the format's metadata block size, the block size is in the
 superblock, 65535 is the longest target the Linux kernel reads (`squashfs_read_inode`),
 256 is the longest name the kernel and unsquashfs read (`SQUASHFS_NAME_LEN`),
 and in a valid image each file's block list lies in its own bytes of the decoded inode
