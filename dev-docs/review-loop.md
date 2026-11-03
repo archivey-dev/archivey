@@ -129,6 +129,16 @@ verdict or the next step. When the close cannot read the pull request's comments
 says so instead and the marker carries `shape=skipped`, which the tally counts apart
 from the rounds that passed.
 
+The review step runs with `show_full_output` off, so its log shows only the start and
+the totals; full output would print every tool result into a public log, and a result
+is where a secret would show up. After the close, `scripts/review_loop_trace.py` reads
+the action's execution file instead and writes the job summary: the main agent's turns
+(the log's `num_turns` also counts subagents' turns), how many turns batched several
+calls, each subagent with its model and what it did, the largest results the main
+agent read, and any permission denial. It also uploads a `review-trace-*` artifact for
+30 days, one JSON line per turn and per tool call, with the model's own text and tool
+inputs capped and no result text, for finding where a round spends its turns.
+
 ## Counting rounds
 
 Each finished round posts one closing comment from `github-actions[bot]` whose first line
