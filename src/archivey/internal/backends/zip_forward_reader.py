@@ -130,6 +130,7 @@ from archivey.internal.streams.streamtools import (
     read_exact,
 )
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
+from archivey.internal.streams.verification import raise_member_level
 from archivey.internal.trailing_scan import first_nonzero_offset
 from archivey.internal.windows_reparse import (
     REPARSE_HEADER_BYTES,
@@ -144,6 +145,7 @@ from archivey.types import (
     ArchiveMember,
     HashAlgorithm,
     MemberType,
+    Verification,
 )
 
 # Read size when the pass reads through data nobody asked for.
@@ -199,6 +201,9 @@ _KEPT_ON_UPDATE = frozenset(
         "_link_target_unread",
         "is_current",
         "link_target_member",
+        # What a read proved stays: a level never falls (verification levels).
+        "_verified",
+        "_verifiable",
     }
 )
 
@@ -1239,6 +1244,16 @@ class _PassData:
             )
         if error is None:
             self.verified = True
+            # A listing pass that decoded the data raises its member as a read would
+            # (design Decision 4): to CHECKSUM once the descriptor's CRC or the WinZip
+            # AES code covered every byte, which also proves the key; else LENGTH,
+            # never past a ceiling a key nothing proved holds lower.
+            if self._aes_pass is not None or self._crc_is_digest(crc, file_size):
+                raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
+            else:
+                raise_member_level(
+                    member, min(Verification.LENGTH, member.verifiable), None
+                )
         elif raise_mismatch:
             raise error
         return error

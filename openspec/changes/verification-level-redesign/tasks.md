@@ -24,7 +24,7 @@
       mirror the reader's member, opened or not.
 - [x] 3.3 Spanning checks (7z folder CRC, the codec trailer of a compressed TAR, CPIO
       or ar) raise the members they cover when they pass.
-- [ ] 3.3b The streaming ZIP listing pass raises each member whose data it decoded and
+- [x] 3.3b The streaming ZIP listing pass raises each member whose data it decoded and
       checked (design Decision 4: "a listing pass that decodes data reports to every
       member it passed").
 - [x] 3.4 `reader.verify_all()`. The CLI `test` verb may use it internally; its output
