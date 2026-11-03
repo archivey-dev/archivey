@@ -241,6 +241,10 @@ _UnconfirmedEvidence = Literal["extension", "content_probe"]
 _DRAIN_BATCH = 256
 
 
+# The read size verify_all() uses to read a member again for a spanning check.
+_VERIFY_ALL_CHUNK = 1 << 20
+
+
 class _UnconfirmedWording(NamedTuple):
     code: DiagnosticCode
     evidence_text: str  # "identified only by {evidence_text}"
@@ -738,6 +742,10 @@ class BaseArchiveReader(ArchiveReader):
         # the index's order, with why: the walk's error is the first of them, and
         # extraction gives each its result.
         self._failed_at_end: list[tuple[ArchiveMember, CorruptionError]] = []
+        # ``verify_all()``: the ids of the members its last call read into a failed
+        # check that spans members (``SpanningCheckError``), and of those it covers.
+        # They may sit at their ceiling, so the next call reads them again by this.
+        self._spanning_retry: set[int] = set()
         # Name to the member listed under it, or to a list of them in listing order
         # once a second member has that name: a list here always holds two or more. A
         # list per name would be one more object per member for the collector to walk.
@@ -4216,12 +4224,20 @@ class BaseArchiveReader(ArchiveReader):
     def verify_all(self) -> tuple[tuple[ArchiveMember, ArchiveyError], ...]:
         failures: list[tuple[ArchiveMember, ArchiveyError]] = []
         spanning: list[SpanningCheckError] = []
+        retry_next: set[int] = set()
 
         # A member at its ceiling has nothing left to prove; one whose ceiling is NONE
         # (a key nothing can prove) is read again, so its length checks run each time.
+        # So is one the last call found in a failed spanning check, at its ceiling or
+        # not: the check is read again, to fail it again or (a password supplied
+        # since) to pass.
+        retry = self._spanning_retry
+
         def selector(m: ArchiveMember) -> bool:
             ceiling = m.verifiable
-            return ceiling is Verification.NONE or m.verified < ceiling
+            return (
+                ceiling is Verification.NONE or m.verified < ceiling or id(m) in retry
+            )
 
         with self.stream_members(selector) as members:
             it = iter(members)
@@ -4240,13 +4256,22 @@ class BaseArchiveReader(ArchiveReader):
                     raise_member_level(m, m.verified, m.verified)
                     continue
                 try:
-                    stream.verify()
+                    if id(m) in retry:
+                        # verify() reads nothing for a member at its ceiling; the
+                        # spanning check needs its bytes and its end read again.
+                        while stream.read(_VERIFY_ALL_CHUNK):
+                            pass
+                    else:
+                        stream.verify()
                 except DiagnosticRaisedError:
                     raise
                 except ArchiveyError as e:
                     failures.append((m, e))
                     if isinstance(e, SpanningCheckError):
                         spanning.append(e)
+                        retry_next.add(id(m))
+                        retry_next.update(id(c) for c in e.covers)
+        self._spanning_retry = retry_next
         if spanning:
             failures = self._with_spanning_failures(failures, spanning)
         return tuple(failures)
@@ -4257,8 +4282,18 @@ class BaseArchiveReader(ArchiveReader):
         spanning: list[SpanningCheckError],
     ) -> list[tuple[ArchiveMember, ArchiveyError]]:
         """``failures`` plus every member a failed spanning check covers, in listing
-        order. A member that failed on its own keeps its own error."""
-        found = {id(m): (m, e) for m, e in failures}
+        order. A member that failed on its own keeps its own error. A member whose
+        read only carried the error of a check that does not cover it, and whose own
+        check passed (it is at its ceiling), is not a failure."""
+        found = {
+            id(m): (m, e)
+            for m, e in failures
+            if not (
+                isinstance(e, SpanningCheckError)
+                and all(c is not m for c in e.covers)
+                and m.verified >= m.verifiable
+            )
+        }
         for error in spanning:
             for member in error.covers:
                 found.setdefault(id(member), (member, error))

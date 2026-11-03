@@ -198,8 +198,19 @@ def test_a_lone_read_of_the_last_file_reaches_the_folder_end_and_raises() -> Non
             reader.read(members["c"])
 
 
-def test_a_mismatched_folder_crc_spares_a_file_with_its_own_crc() -> None:
-    # b's own CRC matches, so the damage the folder CRC found is not in b.
+@pytest.mark.parametrize(
+    ("own", "failed"),
+    [
+        pytest.param("b", ["a", "c"], id="middle"),
+        # The last file's read reaches the folder's end: its own CRC still runs
+        # first, and the folder's error is not its failure.
+        pytest.param("c", ["a", "b"], id="last"),
+    ],
+)
+def test_a_mismatched_folder_crc_spares_a_file_with_its_own_crc(
+    own: str, failed: list[str]
+) -> None:
+    # The file's own CRC matches, so the damage the folder CRC found is not in it.
     payload = _A + _B + _C
     header = _header(
         folders=[_linear([_coder(_COPY)])],
@@ -207,12 +218,16 @@ def test_a_mismatched_folder_crc_spares_a_file_with_its_own_crc() -> None:
         pack_sizes=[len(payload)],
         names=list(_THREE),
         folder_crcs=[_crc(payload) ^ 1],
-        substreams=_substreams([len(_A), len(_B), len(_C)], [None, _crc(_B), None]),
+        substreams=_substreams(
+            [len(_A), len(_B), len(_C)],
+            [_crc(data) if name == own else None for name, data in _THREE.items()],
+        ),
     )
     with open_archive(io.BytesIO(_archive(payload, header))) as reader:
         members = _by_name(reader.members())
-        assert [m.name for m, _e in reader.verify_all()] == ["a", "c"]
-        assert _levels(members["b"]) == (Verification.CHECKSUM, Verification.CHECKSUM)
+        assert [m.name for m, _e in reader.verify_all()] == failed
+        assert _levels(members[own]) == (Verification.CHECKSUM, Verification.CHECKSUM)
+        assert [m.name for m, _e in reader.verify_all()] == failed
 
 
 def test_a_folder_crc_leaves_files_with_their_own_crc_to_it() -> None:

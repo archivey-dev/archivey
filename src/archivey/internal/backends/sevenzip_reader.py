@@ -32,7 +32,7 @@ import zlib
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass
-from typing import BinaryIO, NoReturn
+from typing import BinaryIO
 
 from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -496,8 +496,13 @@ class _FolderChecks(DelegatingStream):
       end with every byte hashed in order and the digest matches, ``on_folder_match``
       runs. It is how a member with no CRC of its own, in a folder of several,
       reaches ``CHECKSUM`` (``verification-level-redesign``, the spanning checks).
-      When it does not match, ``on_folder_mismatch`` raises from the read that
-      hashed the folder's last byte, as a member's own CRC failure raises.
+      When it does not match, ``on_folder_mismatch`` builds the error and it is
+      kept as ``failure``: the read that hashed the folder's last byte still returns
+      its bytes, and :class:`_FolderEndCheck` raises it from that member's next read,
+      the one at its end, as a member's own CRC failure raises. That member's own
+      verifier probes its end with that same read, before its own CRC verdict, so
+      when the member carries a CRC (``tail``: its start and CRC) the hash here
+      checks it too, and ``on_folder_mismatch`` learns whether it matched.
     - ``anchors``: ``(start, size, crc)`` of the folder's members that carry a CRC, in
       folder order. The first that matches runs ``on_key_proved``: a wrong key does
       not decrypt to bytes that match a CRC, so the folder's password is confirmed.
@@ -521,15 +526,20 @@ class _FolderChecks(DelegatingStream):
         folder_crc: int | None,
         anchors: tuple[tuple[int, int, int], ...],
         on_folder_match: Callable[[], None],
-        on_folder_mismatch: Callable[[int], NoReturn],
+        on_folder_mismatch: Callable[[int, bool], SpanningCheckError],
         on_key_proved: Callable[[], None],
+        tail: tuple[int, int] | None = None,
     ) -> None:
         super().__init__(inner)
         self._size = size
         self._folder_crc = folder_crc
+        self._tail = tail
         self._anchors = anchors
         self._on_folder_match = on_folder_match
         self._on_folder_mismatch = on_folder_mismatch
+        # The error of a whole in-order decode whose CRC did not match; a later
+        # decode from 0 that matches clears it.
+        self.failure: SpanningCheckError | None = None
         self._on_key_proved = on_key_proved
         self._restart()
 
@@ -539,6 +549,7 @@ class _FolderChecks(DelegatingStream):
         # one matched: one proof is enough.
         self._pos: int | None = 0
         self._crc = 0
+        self._tail_crc = 0
         self._next_anchor = 0
         self._anchor_crc = 0
 
@@ -556,12 +567,21 @@ class _FolderChecks(DelegatingStream):
         self._pos = end
         if self._folder_crc is not None and start < self._size:
             self._crc = zlib.crc32(data, self._crc)
+            tail = self._tail
+            if tail is not None and end > tail[0]:
+                lo = max(start, tail[0])
+                self._tail_crc = zlib.crc32(
+                    memoryview(data)[lo - start :], self._tail_crc
+                )
             if end == self._size:
                 if self._crc != self._folder_crc:
-                    # This read's bytes are withheld, as a member verifier withholds
-                    # the chunk whose check fails.
-                    self._on_folder_mismatch(self._crc)
-                self._on_folder_match()
+                    # The last chunk's bytes are returned, not withheld; the folder's
+                    # error follows at the reading member's end (``_FolderEndCheck``).
+                    tail_matched = tail is not None and self._tail_crc == tail[1]
+                    self.failure = self._on_folder_mismatch(self._crc, tail_matched)
+                else:
+                    self.failure = None
+                    self._on_folder_match()
         anchors = self._anchors
         if self._next_anchor >= len(anchors):
             return
@@ -594,6 +614,51 @@ class _FolderChecks(DelegatingStream):
 
     def nearest_resume_offset(self, target: int) -> int | None:
         # A pass-through over the decoded folder: the inner's offset space is ours.
+        return ask_resume_offset(self._inner, target)
+
+
+def _folder_checks_under(stream: object) -> _FolderChecks | None:
+    """The :class:`_FolderChecks` a member's stream reads through, if any.
+
+    Follows the slice (``_stream``) and pass-through layers (``_inner``) down to the
+    folder decode; a handful of layers, so the bound only stops a cycle.
+    """
+    for _ in range(8):
+        if isinstance(stream, _FolderChecks):
+            return stream
+        nxt = getattr(stream, "_stream", None)
+        if nxt is None:
+            nxt = getattr(stream, "_inner", None)
+        if nxt is None:
+            return None
+        stream = nxt
+    return None
+
+
+class _FolderEndCheck(DelegatingStream):
+    """Raise a failed folder CRC from the member's read at its end.
+
+    :class:`_FolderChecks` returns the bytes of the read that reaches the folder's
+    end, so the member's own CRC checks them first; the folder's error is raised here,
+    from the next read, which finds the member's end. Only a read that returns
+    nothing asks, so a member that ends before the folder's end never raises it.
+    """
+
+    # Changes no byte, so the verification level looks through it.
+    forwards_verification = True
+    readinto_passthrough = False
+
+    @override
+    def read(self, n: int = -1, /) -> bytes:
+        data = self._inner.read(n)
+        if not data and n != 0:
+            checks = _folder_checks_under(self._inner)
+            if checks is not None and checks.failure is not None:
+                raise checks.failure
+        return data
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        # A pass-through over the member's bytes: the inner's offset space is ours.
         return ask_resume_offset(self._inner, target)
 
 
@@ -1423,7 +1488,10 @@ class SevenZipReader(BaseArchiveReader):
             folder_crc=folder_crc,
             anchors=anchors,
             on_folder_match=lambda: self._folder_crc_matched(folder_index),
-            on_folder_mismatch=lambda crc: self._folder_crc_failed(folder_index, crc),
+            on_folder_mismatch=lambda crc, tail_matched: self._folder_crc_failed(
+                folder_index, crc, tail_matched=tail_matched
+            ),
+            tail=self._folder_tail(folder_index) if folder_crc is not None else None,
             on_key_proved=lambda: self._folder_key_proved(folder_index),
         )
 
@@ -1476,24 +1544,51 @@ class SevenZipReader(BaseArchiveReader):
             if _member_crc(member) is None:
                 raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
 
-    def _folder_crc_failed(self, folder_index: int, crc: int) -> NoReturn:
-        """The folder's digest did not match a whole in-order decode: raise.
+    def _folder_tail(self, folder_index: int) -> tuple[int, int] | None:
+        """``(start, crc)`` of the folder's last member when it carries a CRC.
+
+        Its read is the one that reaches the folder's end (``_FolderChecks``).
+        """
+        last = self._folder_last_member(folder_index)
+        crc = None if last is None else _member_crc(last)
+        if last is None or crc is None:
+            return None
+        return self._member_prefix(last), crc
+
+    def _folder_last_member(self, folder_index: int) -> ArchiveMember | None:
+        """The member whose bytes end at the folder's end, if one does."""
+        size = folder_unpack_size(self._archive.folders[folder_index])
+        for member in self._folder_members.get(folder_index, ()):
+            length = _member_stream_size(member)
+            if length and self._member_prefix(member) + length == size:
+                return member
+        return None
+
+    def _folder_crc_failed(
+        self, folder_index: int, crc: int, *, tail_matched: bool
+    ) -> SpanningCheckError:
+        """The error for a folder digest that did not match a whole in-order decode.
+
+        ``tail_matched``: the folder's last member carries a CRC, and the same hash
+        found it matching. The error reaches that member's stream at its end, before
+        its own verifier gives its verdict, so it is raised to ``CHECKSUM`` here: the
+        error is not about it, and ``verify_all()`` leaves it out.
 
         The members with no CRC of their own are the ones only this digest proves,
         so the error covers them (``SpanningCheckError.covers``) and ``verify_all()``
         returns each. Their levels stay where their reads left them: below
         ``CHECKSUM``, which they can no longer reach.
         """
-        covers = tuple(
-            member
-            for member in self._folder_members.get(folder_index, ())
-            if _member_crc(member) is None
-        )
+        members = self._folder_members.get(folder_index, ())
+        last = self._folder_last_member(folder_index)
+        if tail_matched and last is not None:
+            raise_member_level(last, Verification.CHECKSUM, Verification.CHECKSUM)
+        covers = tuple(member for member in members if _member_crc(member) is None)
         names = ", ".join(quoted(member.name) for member in covers[:5])
         if len(covers) > 5:
             names += f" and {len(covers) - 5} more"
         expected = self._folder_crc_only[folder_index]
-        raise SpanningCheckError(
+        return SpanningCheckError(
             f"7z folder {folder_index} fails its CRC check: the decoded data gives "
             f"CRC32 {crc:08x}, and the folder records {expected:08x}. The CRC is the "
             f"only check of {names}, so the data of each may be damaged.",
@@ -1663,6 +1758,21 @@ class SevenZipReader(BaseArchiveReader):
             raise wrong_password_error("Wrong password or corrupt 7z folder")
         return verdict
 
+    def _watch_folder_end(self, stream: BinaryIO, member: ArchiveMember) -> BinaryIO:
+        """Wrap the member that ends its folder in :class:`_FolderEndCheck`.
+
+        Only a folder with a folder CRC to check (``_folder_crc_only``), and only its
+        member whose bytes end at the folder's end: no other member's read finds it.
+        """
+        raw = member._raw
+        assert isinstance(raw, _MemberRaw)
+        folder_index = raw.folder_index
+        if folder_index is None or folder_index not in self._folder_crc_only:
+            return stream
+        if self._folder_last_member(folder_index) is not member:
+            return stream
+        return _FolderEndCheck(stream)
+
     def _watch_unverified(self, stream: BinaryIO, member: ArchiveMember) -> BinaryIO:
         """Wrap ``stream`` to report an abandoned read of an unconfirmed folder's member.
 
@@ -1759,7 +1869,10 @@ class SevenZipReader(BaseArchiveReader):
         return self._wrap_member_stream(
             member.name,
             lambda: self._watch_unverified(
-                open_solid().open_member(prefix, size, lazy=True), member
+                self._watch_folder_end(
+                    open_solid().open_member(prefix, size, lazy=True), member
+                ),
+                member,
             ),
             size=member.size,
             track_output=False,
@@ -1829,7 +1942,9 @@ class SevenZipReader(BaseArchiveReader):
             folder_stream.close()
             raise
         try:
-            inner = self._watch_unverified(inner, member)
+            inner = self._watch_unverified(
+                self._watch_folder_end(inner, member), member
+            )
             return self._folder_member_parts(inner, member)
         except BaseException:
             inner.close()

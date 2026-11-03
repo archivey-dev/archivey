@@ -274,6 +274,9 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.backends.sevenzip_reader._FolderChecks": (
         "DelegatingStream.__init__ first; close() reads nothing assigned after it"
     ),
+    "archivey.internal.backends.sevenzip_reader._FolderEndCheck": (
+        "no __init__ of its own; close() is DelegatingStream's"
+    ),
     "archivey.internal.streams.streamtools.sparse.SparseStream": (
         "DelegatingStream.__init__ first; close() reads nothing assigned after it"
     ),
