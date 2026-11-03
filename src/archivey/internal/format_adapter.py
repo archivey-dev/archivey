@@ -23,7 +23,7 @@ import threading
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import replace
-from typing import Any, BinaryIO, ClassVar, NoReturn, cast
+from typing import Any, BinaryIO, ClassVar, NoReturn, TypeVar, cast
 
 from archivey.config import ArchiveyConfig, ProcessIsolation
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -50,6 +50,7 @@ from archivey.formats import (
     IndexedReader,
     MemberData,
     MemberDigest,
+    MemberRecord,
     MemberSpan,
     ReaderArchiveInfo,
     ReaderContext,
@@ -244,12 +245,12 @@ class _PluginAdapter(BaseArchiveReader):
         raise NotImplementedError
 
     def _wrong_reader(self, reader: object, method: str, noun: str) -> NoReturn:
-        # Each check that the plugin kept to the interface sits outside the error
-        # boundary, so a plugin's broad ``translate_exception`` cannot report a plugin
-        # bug as a fault in the archive.
-        raise TypeError(
-            f"{type(self._plugin).__name__}.{method}() returned "
-            f"{type(reader).__name__}, not {noun}"
+        # Every interface check raises through ``_plugin_bug()``, wherever it runs.
+        raise _plugin_bug(
+            TypeError(
+                f"{type(self._plugin).__name__}.{method}() returned "
+                f"{type(reader).__name__}, not {noun}"
+            )
         )
 
     def _decompress(
@@ -390,8 +391,8 @@ class _PluginAdapter(BaseArchiveReader):
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         # A plugin that broke the interface is a plugin bug, not a fault in the
         # archive: not offered to the plugin's translator, which may map every
-        # ValueError to corruption. These are raised from inside the walk, so the
-        # boundary cannot sit outside them as it does for _wrong_reader's checks.
+        # ValueError to corruption. Every interface check raises through
+        # ``_plugin_bug()``, wherever it runs.
         if isinstance(exc, ArchiveyUsageError) or getattr(exc, _PLUGIN_BUG, False):
             return None
         translated = (
@@ -462,9 +463,11 @@ class _PluginAdapter(BaseArchiveReader):
     def _refuse_digest(
         self, digest: MemberDigest, method: str, reason: str
     ) -> NoReturn:
-        raise ValueError(
-            f"{type(self._reader).__name__}.{method}() returned a digest "
-            f"named {digest.name!r}, {reason}"
+        raise _plugin_bug(
+            ValueError(
+                f"{type(self._reader).__name__}.{method}() returned a digest "
+                f"named {digest.name!r}, {reason}"
+            )
         )
 
     @override
@@ -569,14 +572,23 @@ class IndexedReaderAdapter(_PluginAdapter):
         while True:
             self._walk_index = index
             with boundary, guard:
-                record = next(records, None)
-            if record is None:
+                record = next(records, _END)
+            if record is _END:
                 return
+            if not isinstance(record, MemberRecord):
+                raise _plugin_bug(
+                    TypeError(
+                        f"{type(self._reader).__name__}.iter_members() yielded "
+                        f"{type(record).__name__}, not a MemberRecord"
+                    )
+                )
             member = record.member
             if not isinstance(member, ArchiveMember):
-                raise TypeError(
-                    f"{type(self._reader).__name__}.iter_members() yielded "
-                    f"{type(member).__name__}, not an ArchiveMember"
+                raise _plugin_bug(
+                    TypeError(
+                        f"{type(self._reader).__name__}.iter_members() yielded "
+                        f"{type(member).__name__}, not an ArchiveMember"
+                    )
                 )
             # A reader that reports while listing normalizes the name itself, and
             # hands over the one it started from.
@@ -597,9 +609,11 @@ class IndexedReaderAdapter(_PluginAdapter):
         with self._translated_errors(member.name), self._handle_guard():
             data = self._indexed.open_member(member, member._raw)
         if not isinstance(data, MemberData):
-            raise TypeError(
-                f"{type(self._reader).__name__}.open_member() returned "
-                f"{type(data).__name__}, not MemberData"
+            raise _plugin_bug(
+                TypeError(
+                    f"{type(self._reader).__name__}.open_member() returned "
+                    f"{type(data).__name__}, not MemberData"
+                )
             )
         stream = cast(BinaryIO, data.stream)
         if not data.bounded and _bounded(stream, member.size):
@@ -1046,8 +1060,8 @@ class SequentialReaderAdapter(_PluginAdapter):
             # the format's archives fails to open (DR-15b), as a TAR does.
             walk = self._new_walk()
             with self._translated_errors(), self._handle_guard():
-                first = next(walk, None)
-            self._open_walk: tuple[Iterator[MemberSpan], MemberSpan | None] | None = (
+                first = next(walk, _END)
+            self._open_walk: tuple[Iterator[MemberSpan], object] | None = (
                 walk,
                 first,
             )
@@ -1187,12 +1201,12 @@ class SequentialReaderAdapter(_PluginAdapter):
         stream_codec = single_file_codec(stream_format)
         codec = stream_codec.codec if stream_codec is not None else None
         if codec is None:
-            error = ValueError(
-                f"ForwardStream.decompress() takes a compression stream format, got "
-                f"{stream_format!r}"
+            raise _plugin_bug(
+                ValueError(
+                    f"ForwardStream.decompress() takes a compression stream format, "
+                    f"got {stream_format!r}"
+                )
             )
-            setattr(error, _PLUGIN_BUG, True)
-            raise error
         # The member decoder's config (same limits, same ratio guard), except that the
         # stream runs to the end of the archive, as a .gz file's does: bytes after its
         # end are reported, as bytes after an archive's end are, not refused.
@@ -1256,11 +1270,11 @@ class SequentialReaderAdapter(_PluginAdapter):
             walk = self._new_walk()
             self._walk_index = 0
             with boundary, guard:
-                span = next(walk, None)
+                span = next(walk, _END)
         index = 0
         # Decoded bytes of the members walked so far (``_Decoded.prefix``).
         prefix = 0
-        while span is not None:
+        while span is not _END:
             self._walk_index = index
             # The layer the walk read this span's header from: a decompress() in the
             # step that yielded it moved the walk onto a new one.
@@ -1291,7 +1305,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                     decoded.finish()
                 prefix += decoded.consumed
                 with boundary, guard:
-                    span = next(walk, None)
+                    span = next(walk, _END)
                 continue
             with boundary, guard:
                 left = record.offset + record.length - forward.offset
@@ -1300,7 +1314,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                 assert left >= 0, (record.offset, record.length, forward.offset)
                 if left:
                     forward.skip(left)
-                span = next(walk, None)
+                span = next(walk, _END)
         self._raise_members_the_codec_checked()
 
     def _raise_members_the_codec_checked(self) -> None:
@@ -1349,30 +1363,40 @@ class SequentialReaderAdapter(_PluginAdapter):
     ) -> ArchiveMember:
         name = type(self._reader).__name__
         if not isinstance(span, MemberSpan):
-            raise TypeError(
-                f"{name}.walk() yielded {type(span).__name__}, not a MemberSpan"
+            raise _plugin_bug(
+                TypeError(
+                    f"{name}.walk() yielded {type(span).__name__}, not a MemberSpan"
+                )
             )
         member = span.member
         if not isinstance(member, ArchiveMember):
-            raise TypeError(
-                f"{name}.walk() yielded {type(member).__name__}, not an ArchiveMember"
+            raise _plugin_bug(
+                TypeError(
+                    f"{name}.walk() yielded {type(member).__name__}, not an ArchiveMember"
+                )
             )
         length = span.data_length
         if not isinstance(length, int) or length < 0:
-            raise ValueError(
-                f"{name}.walk() yielded {member.name!r} with data_length {length!r}, "
-                "not a whole number of bytes"
+            raise _plugin_bug(
+                ValueError(
+                    f"{name}.walk() yielded {member.name!r} with data_length {length!r}, "
+                    "not a whole number of bytes"
+                )
             )
         data = span.data
         if data is not None and length:
-            raise ValueError(
-                f"{name}.walk() yielded {member.name!r} with both data and "
-                f"data_length {length}: decoded data has no stored bytes to skip"
+            raise _plugin_bug(
+                ValueError(
+                    f"{name}.walk() yielded {member.name!r} with both data and "
+                    f"data_length {length}: decoded data has no stored bytes to skip"
+                )
             )
         if data is None and span.checked:
-            raise ValueError(
-                f"{name}.walk() yielded {member.name!r} with checked=True and no "
-                "data: stored bytes are checked against the span's digests"
+            raise _plugin_bug(
+                ValueError(
+                    f"{name}.walk() yielded {member.name!r} with checked=True and no "
+                    "data: stored bytes are checked against the span's digests"
+                )
             )
         # A directory's data is its declared size too: it stays a DIRECTORY, a read
         # delivers the bytes and the listing reports them (_report_listed). Decoded
@@ -1386,9 +1410,11 @@ class SequentialReaderAdapter(_PluginAdapter):
             if member.size is None:
                 member.size = length
             elif member.size != length:
-                raise ValueError(
-                    f"{name}.walk() yielded {member.name!r} with size {member.size} "
-                    f"and data_length {length}: a member's data is stored as it is"
+                raise _plugin_bug(
+                    ValueError(
+                        f"{name}.walk() yielded {member.name!r} with size {member.size} "
+                        f"and data_length {length}: a member's data is stored as it is"
+                    )
                 )
         presented, member.name = _span_names(span)
         expected: dict[HashAlgorithm, bytes] | None = None
@@ -1611,20 +1637,24 @@ class SequentialReaderAdapter(_PluginAdapter):
         index = data_walk.next_index
         while True:
             with boundary, guard:
-                span = next(data_walk.spans, None)
-            if not isinstance(span, MemberSpan):
-                if span is not None:
-                    raise TypeError(
-                        f"{type(self._reader).__name__}.walk() yielded "
-                        f"{type(span).__name__}, not a MemberSpan"
-                    )
+                span = next(data_walk.spans, _END)
+            if span is _END:
                 raise CorruptionError(
                     f"walking the archive again ended before {quoted(decoded.name)}"
                 )
+            if not isinstance(span, MemberSpan):
+                raise _plugin_bug(
+                    TypeError(
+                        f"{type(self._reader).__name__}.walk() yielded "
+                        f"{type(span).__name__}, not a MemberSpan"
+                    )
+                )
             if not isinstance(span.member, ArchiveMember):
-                raise TypeError(
-                    f"{type(self._reader).__name__}.walk() yielded "
-                    f"{type(span.member).__name__}, not an ArchiveMember"
+                raise _plugin_bug(
+                    TypeError(
+                        f"{type(self._reader).__name__}.walk() yielded "
+                        f"{type(span.member).__name__}, not an ArchiveMember"
+                    )
                 )
             data = span.data
             if index == decoded.index:
@@ -1675,10 +1705,12 @@ class SequentialReaderAdapter(_PluginAdapter):
         member the listing walk did: ``walk()`` must repeat itself."""
         found = _span_names(span)[1]
         if found != decoded.name:
-            raise ValueError(
-                f"{type(self._reader).__name__}.walk() yielded {found!r} as member "
-                f"{decoded.index} when walked again, not {decoded.name!r}: a walk must "
-                "yield the same members in the same order each time"
+            raise _plugin_bug(
+                ValueError(
+                    f"{type(self._reader).__name__}.walk() yielded {found!r} as member "
+                    f"{decoded.index} when walked again, not {decoded.name!r}: a walk must "
+                    "yield the same members in the same order each time"
+                )
             )
 
     def _plugin_locked(self, stream: BinaryIO) -> BinaryIO:
@@ -1865,6 +1897,25 @@ class SequentialReaderAdapter(_PluginAdapter):
 # ``translate_exception`` is not offered it (``_PluginAdapter._translate_exception``).
 _PLUGIN_BUG = "_archivey_plugin_bug"
 
+# What ``next()`` returns at the end of a plugin's iterator, where ``None`` would hide a
+# ``None`` the plugin yields: that one reaches the type checks and is reported.
+_END = object()
+
+_ErrorT = TypeVar("_ErrorT", bound=Exception)
+
+
+def _plugin_bug(error: _ErrorT) -> _ErrorT:
+    """``error``, marked as a plugin breaking the interface (:data:`_PLUGIN_BUG`).
+
+    Every interface check raises through this, so a check that runs inside an error
+    boundary is not reported as a fault in the archive by a plugin's broad
+    ``translate_exception``, and one that runs outside a boundary today stays right if
+    a later change moves it inside one.
+    """
+    setattr(error, _PLUGIN_BUG, True)
+    return error
+
+
 # The ``MemberDigest`` names archivey computes itself, with its own hasher.
 _ALGORITHMS = {str(algorithm): algorithm for algorithm in HashAlgorithm}
 
@@ -2049,7 +2100,15 @@ def _check_plugin(plugin: type[FormatHandler]) -> ArchiveFormat:
             )
     if plugin.probe is not None and not callable(plugin.probe):
         raise ArchiveyUsageError(f"{plugin.__name__}.probe must be callable or None")
+    check_requires(plugin.__name__, plugin.requires)
     return fmt
+
+
+def check_requires(name: str, requires: object) -> None:
+    """Refuse a handler's ``requires`` given as one string, which would be read as one
+    module per character. Shared by ``register_format`` and ``register_codec``."""
+    if isinstance(requires, str):
+        raise ArchiveyUsageError(f"{name}.requires must be a tuple of module names")
 
 
 def compressed_formats(fmt: ArchiveFormat) -> tuple[ArchiveFormat, ...]:

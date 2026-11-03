@@ -187,6 +187,20 @@ def _pad(n: int, align: int) -> int:
     return -n % align
 
 
+def _held_bytes(member: ArchiveMember, stored: str) -> int:
+    """What a held link weighs against ``max_metadata_bytes``: its names, weighed as the
+    listing weighs a name (four bytes per character unless ASCII). The rule is restated
+    here rather than imported from ``archivey.internal.listing_limits`` because the
+    reader uses only public names (``tests/test_cpio.py`` checks)."""
+    texts = (member.name,) if stored == member.name else (member.name, stored)
+    total = 0
+    for text in texts:
+        total += len(text) if text.isascii() else 4 * len(text)
+    if member.raw_name is not None:
+        total += len(member.raw_name)
+    return total
+
+
 def _number(raw: bytes, base: int, what: str, offset: int) -> int:
     try:
         text = raw.decode("ascii")
@@ -223,7 +237,10 @@ class CpioReader(SequentialReader):
     def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
         groups: dict[tuple[tuple[int, int], int], _LinkGroup] = {}
         held = 0
-        limit = self._context.config.listing_limits.max_members
+        held_bytes = 0
+        limits = self._context.config.listing_limits
+        limit = limits.max_members
+        max_bytes = limits.max_metadata_bytes
         while True:
             header = self._read_header(stream)
             raw = stream.read_exact(header.name_size)
@@ -255,8 +272,19 @@ class CpioReader(SequentialReader):
                             f"CPIO archive holds more than {limit} hard links waiting "
                             "for their data, over max_members"
                         )
+                    # The held names count toward max_metadata_bytes too: a held
+                    # link is not yet a listed member, so the listing's own count has
+                    # not seen it, and each can carry a 64 KiB name.
+                    weight = _held_bytes(member, stored)
+                    if max_bytes is not None and held_bytes + weight > max_bytes:
+                        raise ResourceLimitError(
+                            "Listing limit reached: "
+                            f"max_metadata_bytes={max_bytes} (CPIO hard links waiting "
+                            f"for their data hold {held_bytes + weight} bytes of names)"
+                        )
                     group.held.append((member, stored))
                     held += 1
+                    held_bytes += weight
                     stream.skip(size + self._data_pad(header))
                     continue
                 else:
@@ -271,6 +299,7 @@ class CpioReader(SequentialReader):
                     link.size = None
                     yield MemberSpan(link, 0, stored_name=link_stored)
                 held -= len(group.held)
+                held_bytes -= sum(_held_bytes(m, n) for m, n in group.held)
                 group.held.clear()
 
     def _flush(

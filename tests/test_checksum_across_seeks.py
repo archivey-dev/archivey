@@ -18,11 +18,13 @@ from pathlib import Path
 
 import pytest
 
-from archivey import open_archive
+from archivey import open_archive, open_stream
 from archivey.exceptions import CorruptionError
 from archivey.internal.streams.respawn import RespawnStream
 from archivey.internal.streams.verify import VerifyingStream
-from archivey.types import HashAlgorithm
+from archivey.types import HashAlgorithm, Verification
+from tests.conftest import requires_zstd, zstd_backend
+from tests.streams_util import make_lzip_member, seekable_zstd_table
 
 _DATA = bytes(random.Random(7).choice(b"abcdefgh \n") for _ in range(200_000))
 
@@ -165,3 +167,89 @@ def test_unrar_pipe_seek_stays_lazy() -> None:
     with pytest.raises(CorruptionError):
         stream.read()
     stream.close()
+
+
+# The trailer check of a codec whose size an index gives (lzip member trailers, the zstd
+# seek table) runs after the decoder has handed over the last byte. A seek that does not
+# move must not end the stream there: the next read still decodes the trailer.
+_TRAILER_DATA = random.Random(11).randbytes(200_000) + b"\0" * 500_000
+
+
+def _bad_lzip(tmp_path: Path) -> tuple[Path, int]:
+    member = bytearray(make_lzip_member(_TRAILER_DATA))
+    member[-20] ^= 0xFF  # the trailer's CRC-32
+    path = tmp_path / "bad.lz"
+    path.write_bytes(bytes(member))
+    return path, len(_TRAILER_DATA)
+
+
+def _bad_seekable_zstd(tmp_path: Path) -> tuple[Path, int]:
+    # One checksummed frame of 65540 bytes, so its 4-byte checksum comes in a later
+    # compressed read than the last output byte.
+    zstd = zstd_backend()
+    options = {zstd.CompressionParameter.checksum_flag: 1}
+    rng = random.Random(5)
+    n = 65_000
+    for _ in range(50):
+        data = rng.randbytes(n)
+        frame = zstd.compress(data, options=options)
+        if len(frame) == 65_540:
+            break
+        n += 65_540 - len(frame)
+    else:
+        pytest.fail("no frame of the wanted size")
+    bad = bytearray(frame)
+    bad[-1] ^= 0xFF  # the frame checksum
+    path = tmp_path / "bad.zst"
+    path.write_bytes(bytes(bad) + seekable_zstd_table([(len(frame), len(data))]))
+    return path, len(data)
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        pytest.param(_bad_lzip, id="lzip"),
+        pytest.param(_bad_seekable_zstd, id="zstd", marks=requires_zstd()),
+    ],
+)
+@pytest.mark.parametrize(
+    "seek", [(0, io.SEEK_CUR), (0, io.SEEK_END), "size"], ids=["cur", "end", "size"]
+)
+def test_seek_in_place_at_the_end_still_checks_the_trailer(
+    tmp_path: Path, make, seek
+) -> None:
+    path, size = make(tmp_path)
+    with open_stream(path, seekable=True) as stream:
+        assert stream.size == size  # from the index, before any decode
+        assert len(stream.read(size)) == size
+        stream.seek(*((size,) if seek == "size" else seek))
+        with pytest.raises(CorruptionError):
+            stream.read()
+        assert stream.verified is not Verification.CHECKSUM
+
+
+def test_seek_past_the_end_does_not_claim_the_trailer_check(tmp_path: Path) -> None:
+    # A seek past the end skips the trailer, so it can no longer be claimed checked.
+    path, size = _bad_lzip(tmp_path)
+    with open_stream(path, seekable=True) as stream:
+        assert stream.size == size
+        stream.read(size)
+        stream.seek(size + 10)
+        assert stream.read() == b""
+        assert stream.verified is not Verification.CHECKSUM
+
+
+def test_a_seek_that_does_not_move_ends_the_run_from_the_start(tmp_path: Path) -> None:
+    # A codec check counts only over a decode from the start with no seek but to 0
+    # between. A seek that lands where the stream is still counts: the inner may have
+    # taken it as a shortcut past bytes or a trailer it never decoded.
+    path = tmp_path / "good.lz"
+    path.write_bytes(make_lzip_member(_TRAILER_DATA))
+    with open_stream(path, seekable=True) as stream:
+        stream.read(1000)
+        stream.seek(0, io.SEEK_CUR)
+        stream.read()
+        assert stream.verified is not Verification.CHECKSUM
+        stream.seek(0)
+        stream.read()
+        assert stream.verified is Verification.CHECKSUM
