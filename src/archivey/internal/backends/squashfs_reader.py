@@ -671,10 +671,11 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         again as the listing. A hard link reads nothing: the member it names keeps its
         inode, without the body, next to its name. Nor does an inode whose read went on
         through more metadata blocks than the cache keeps (a long symlink target in
-        tiny blocks): the first pass keeps it whole. When the members' order would decode an inode-table block twice, as it
-        does when the table strides against that order (the metadata cache replayed
-        over where each inode starts and ends), the listing reads the table once more in
-        table order and keeps every inode for the second pass instead.
+        tiny blocks): the first pass keeps it whole. When the members' order would
+        decode an inode-table block twice, as it does when the table strides against
+        that order (the metadata cache replayed over where each inode starts and ends),
+        the listing reads the table once more in table order and keeps every inode for
+        the second pass instead.
         """
         self._block_list_bytes = 0
         entries: list[_Entry] = []

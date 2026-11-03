@@ -88,11 +88,12 @@ reference, through the metadata cache, as it makes the member. A hard link does 
 read it again: the member it names keeps its inode, without the symlink target or the
 file's location, next to its name. Nor does an inode whose first read went on through
 more than 64 metadata blocks (only a symlink's target can): the first pass keeps it
-whole until its member, which holds the target anyway, is made. Holding every inode cost half as much memory again
-as the listing itself on a 100 000-file image, so the listing does that only when the
-second pass would thrash the 64-block metadata cache: it replays the cache over the
-blocks the second pass would read, in the final member order, and when a block would
-decode twice it reads the table once more in table order and keeps every inode.
+whole until its member, which holds the target anyway, is made. Holding every inode
+cost half as much memory again as the listing itself on a 100 000-file image, so the
+listing does that only when the second pass would thrash the 64-block metadata cache:
+it replays the cache over the blocks the second pass would read, in the final member
+order, and when a block would decode twice it reads the table once more in table order
+and keeps every inode.
 
 A block stored with size 0 is a hole and reads as zeros. `is_sparse` is true for a file
 whose block list holds one, read from the list at listing time: `mksquashfs` writes most
