@@ -22,7 +22,7 @@
       level lock (compare-and-store only), starting at `UNLOCKED` unencrypted or `NONE`
       encrypted, excluded from equality and from `member_state_final`; member streams
       mirror the reader's member, opened or not.
-- [ ] 3.3 Spanning checks (7z folder CRC, `.tar.gz` trailer, listing passes) raise the
+- [x] 3.3 Spanning checks (7z folder CRC, `.tar.gz` trailer, listing passes) raise the
       members they cover when they pass.
 - [x] 3.4 `reader.verify_all()`. The CLI `test` verb may use it internally; its output
       and exit codes do not change.

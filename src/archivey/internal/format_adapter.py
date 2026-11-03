@@ -110,6 +110,10 @@ from archivey.internal.streams.streamtools import (
     source_byte_size,
 )
 from archivey.internal.streams.streamtools.binaryio import read_blocking
+from archivey.internal.streams.verification import (
+    ask_verification_proofs,
+    raise_member_level,
+)
 from archivey.internal.streams.verify import CustomDigests, hasher_factory
 from archivey.internal.walk_handoff import MemberDataView
 from archivey.terminal import quoted
@@ -127,6 +131,7 @@ from archivey.types import (
     PluginContainer,
     PluginStream,
     StreamFormat,
+    Verification,
 )
 
 
@@ -1296,6 +1301,36 @@ class SequentialReaderAdapter(_PluginAdapter):
                 if left:
                     forward.skip(left)
                 span = next(walk, None)
+        self._raise_members_the_codec_checked()
+
+    def _raise_members_the_codec_checked(self) -> None:
+        """Raise every listed file to ``CHECKSUM`` once the walk ends at the end of an
+        outer codec whose whole-stream checksum matched (a ``.cpio.gz`` trailer).
+
+        That checksum covers every decoded byte, so a member whose data is a slice of
+        those bytes is checked, read or not. Data a reader decodes itself
+        (``MemberSpan.data``) or a layer it starts with ``ForwardStream.decompress``
+        is decoded again from those bytes, so it is left to its own reads. A walk that
+        a member read interrupted (a seek of the codec) proves nothing here, so its
+        members keep what their reads proved.
+        """
+        codec = self._codec_stream
+        if codec is None:
+            return
+        proofs = ask_verification_proofs(codec)
+        if not (proofs.ended and proofs.content):
+            return
+        outer = self._owned_stream if self._streaming else self._shared
+        for member in self._listed:
+            record = member._raw
+            if (
+                member.is_file
+                and isinstance(record, _Span)
+                and record.decoded is None
+                and (record.layer.stream if self._streaming else record.layer.shared)
+                is outer
+            ):
+                raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
 
     def _take_span(self, span: object, layer: _Layer, index: int) -> ArchiveMember:
         """The member a span describes, checked, named and placed."""
