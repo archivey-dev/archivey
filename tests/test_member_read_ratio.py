@@ -28,7 +28,7 @@ from archivey.internal.bomb_tracker import (
     ReadRatioTally,
 )
 from archivey.types import MemberType
-from tests.streams_util import NonSeekableBytesIO, SizedNonSeekable
+from tests.streams_util import NonSeekableBytesIO, ShortReadBytesIO, SizedNonSeekable
 from tests.test_audit_tar_streams import _TRAILER, _gnu_sparse
 
 _MIB = 2**20
@@ -253,6 +253,39 @@ def test_a_seekable_zip_keeps_the_static_ratio(tmp_path: Path) -> None:
     data = _small_bzip2_members(tmp_path)
     with open_archive(io.BytesIO(data)) as reader:
         assert reader.compressed_bytes_consumed is None
+
+
+def _unsized(data: bytes) -> ShortReadBytesIO:
+    """Seekable, of a type whose size archivey does not know."""
+    return ShortReadBytesIO(data, max_chunk=_MIB)
+
+
+def test_a_seekable_zip_of_unknown_size_is_held_to_the_live_ratio(
+    tmp_path: Path,
+) -> None:
+    # No size to divide by: the furthest offset the source has reached stands in, as
+    # the bytes taken from a pipe do.
+    data = _small_bzip2_members(tmp_path)
+    with (
+        open_archive(_unsized(data), config=_LOW_LIVE_FLOOR) as reader,
+        pytest.raises(AlwaysStopResourceLimitError, match="Live decompression ratio"),
+    ):
+        for _member, stream in reader.stream_members():
+            assert stream is not None
+            _drain(stream)
+
+
+def test_a_seekable_source_counts_the_furthest_offset_once(tmp_path: Path) -> None:
+    data = _small_bzip2_members(tmp_path)
+    with open_archive(_unsized(data)) as reader:
+        names = [m.name for m in reader.members()]
+        for name in names * 2:
+            with reader.open(name) as stream:
+                _drain(stream)
+        consumed = reader.compressed_bytes_consumed
+    # The central directory is at the end, so the whole archive is reached, and
+    # reading the members again adds nothing.
+    assert consumed == len(data)
 
 
 def test_a_member_read_again_counts_once(tmp_path: Path) -> None:

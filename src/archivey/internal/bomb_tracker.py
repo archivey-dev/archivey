@@ -506,6 +506,10 @@ class DecodeRatioGuard(_RatioGuard):
     the reader's ratio, except that an ``extract_all`` call holds its own decodes to
     the ratio fields it applies (``run_limits``) for the length of the call, on its
     thread. A read after the call is judged again under the reader's limits.
+
+    With a ``tally``, the guard is one of several whose decoded bytes count toward one
+    total, each under its own ``key`` (as member reads count, :class:`ReadRatioTally`):
+    the rule judges the total, not this stream's bytes alone.
     """
 
     def __init__(
@@ -515,12 +519,16 @@ class DecodeRatioGuard(_RatioGuard):
         limits: DecoderLimits,
         static_size: int | None,
         consumed: Callable[[], int | None] | None,
+        tally: ReadRatioTally | None = None,
+        key: int = 0,
         run_limits: Callable[[], DecoderLimits | None] = lambda: None,
     ) -> None:
         super().__init__(inner, max_ratio=limits.max_ratio)
         self._limits = limits
         self._static_size = static_size
         self._consumed = consumed
+        self._tally = tally
+        self._key = key
         # The limits an ``extract_all`` call running on this thread applies to its own
         # decodes, in place of ``limits`` (``None``: no such call).
         self._run_limits = run_limits
@@ -547,6 +555,8 @@ class DecodeRatioGuard(_RatioGuard):
     @override
     def _judge(self, position: int) -> None:
         limits = self._current_limits()
+        if self._tally is not None:
+            position = self._tally.advance(self._key, position)
         refusal = archive_ratio_refusal(
             position,
             max_ratio=limits.max_ratio,

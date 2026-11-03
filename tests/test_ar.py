@@ -26,6 +26,7 @@ from archivey.formats import SequentialReader
 from archivey.internal.backends import ar_reader
 from archivey.internal.backends.ar_reader import ArReader
 from tests.public_names import assert_only_public_archivey
+from tests.streams_util import ShortReadBytesIO
 
 AR = archivey.ArchiveFormat.AR
 DATA = Path(__file__).parent / "fixtures" / "ar"
@@ -382,6 +383,21 @@ def test_a_cut_archive_keeps_the_members_before_the_cut(
             assert stream is not None
             stream.read()
     assert names == ["a.txt", "odd.bin"]
+
+
+@pytest.mark.parametrize("sized", [True, False], ids=["sized", "unsized"])
+def test_a_cut_inside_a_long_member_raises_while_listing(sized: bool) -> None:
+    """A long skip that seeks checks that its end exists, also on a seekable source
+    whose size is not known: the cut is found while listing, not at the next header,
+    where the end of the source would read as the end of the archive."""
+    data = _ar((b"small/", b"abc"), (b"big/", bytes(200_000)))[:-100_000]
+    # ShortReadBytesIO is a stream type whose size archivey does not know.
+    source = io.BytesIO(data) if sized else ShortReadBytesIO(data, max_chunk=1 << 20)
+    with (
+        open_archive(source) as reader,
+        pytest.raises(TruncatedError, match="ends at offset 100132"),
+    ):
+        reader.members()
 
 
 def test_damaged_headers(tmp_path: Path) -> None:

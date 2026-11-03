@@ -16,11 +16,12 @@ import lzma
 import os
 import random
 import struct
+import tempfile
 import threading
 import zlib
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import BinaryIO, ClassVar
+from typing import BinaryIO, ClassVar, cast
 
 import pytest
 
@@ -29,9 +30,11 @@ from archivey import (
     ArchiveFormat,
     ArchiveMember,
     ArchiveReader,
+    ArchiveyConfig,
     ArchiveyError,
     ArchiveyUsageError,
     CorruptionError,
+    DecoderLimits,
     ExtractionLimits,
     MemberType,
     PluginContainer,
@@ -60,7 +63,7 @@ from archivey.internal.format_adapter import registration_scope
 from archivey.internal.listing_limits import member_metadata_bytes
 from archivey.internal.measurement import enable_measurement
 from archivey.internal.streams.streamtools import ReadAheadStream
-from tests.streams_util import CountingBytesIO, NonSeekableBytesIO
+from tests.streams_util import CountingBytesIO, NonSeekableBytesIO, ShortReadBytesIO
 
 _MAGIC = b"TS"
 _HEADER = struct.Struct("<2scHII")  # magic, type, name length, data length, CRC-32
@@ -1381,6 +1384,102 @@ def test_decompress_part_way_ratio_guard(
         )
 
 
+# Small floors, so a few MiB of zeros break the default ratio of 800:1 on a file
+# (static) and on a pipe (live) alike.
+_RATIO_CONFIG = ArchiveyConfig(
+    decoder_limits=DecoderLimits(
+        ratio_activation_threshold=1 << 20, live_ratio_activation_threshold=1 << 20
+    )
+)
+_BOMB_SIZE = 16 << 20
+
+
+def _ratio_source(data: bytes, tmp_path: Path, mode: str) -> Path | BinaryIO:
+    if mode == "pipe":
+        return NonSeekableBytesIO(data)
+    if mode == "unknown-size":
+        # Seekable, of a type whose size archivey does not know: the live ratio.
+        return ShortReadBytesIO(data, max_chunk=1 << 20)
+    if mode == "spooled":
+        # Also of unknown size while it holds a BytesIO.
+        spooled = tempfile.SpooledTemporaryFile(max_size=len(data) + 1)  # noqa: SIM115
+        spooled.write(data)
+        spooled.seek(0)
+        return cast(BinaryIO, spooled)
+    return _write(tmp_path, data)
+
+
+# The modes that open the archive for random access, not as a pass.
+_RANDOM_ACCESS = ("file", "unknown-size", "spooled")
+
+
+def _list_all(reader: ArchiveReader, mode: str) -> None:
+    """Walk every member and read no member data, as listing does."""
+    if mode in _RANDOM_ACCESS:
+        reader.members()
+    else:
+        for _member, _stream in reader.stream_members():
+            pass
+
+
+@pytest.mark.parametrize("mode", ["file", "unknown-size", "stream-file", "pipe"])
+def test_decompress_part_way_listing_is_held_to_the_ratio(
+    rpmish: ArchiveFormat, tmp_path: Path, mode: str
+) -> None:
+    """Listing decodes the payload a walk opens part-way, so the payload is held to
+    the decompression ratio while listing, as a whole-file compression stream is."""
+    name = StreamFormat.BZIP2.value.encode()
+    data = (
+        build_toys(_ENTRIES[:2], end=False)
+        + _HEADER.pack(_MAGIC, b"Z", len(name), 0, 0)
+        + name
+        + bz2.compress(build_toys([("bomb", MemberType.FILE, bytes(_BOMB_SIZE))]))
+    )
+    with (
+        open_archive(
+            _ratio_source(data, tmp_path, mode),
+            streaming=mode not in _RANDOM_ACCESS,
+            format=rpmish,
+            config=_RATIO_CONFIG,
+        ) as reader,
+        pytest.raises(ResourceLimitError, match="ratio"),
+    ):
+        _list_all(reader, mode)
+
+
+def test_decompress_part_way_layers_share_one_ratio_count(
+    rpmish: ArchiveFormat, tmp_path: Path
+) -> None:
+    """The layers of one walk count toward one total: a payload nested in another
+    adds its output to its parent's, so nesting does not multiply the bound."""
+    xz = StreamFormat.XZ.value.encode()
+    gz = StreamFormat.GZIP.value.encode()
+    half = 3 << 20
+    inner = build_toys([("b", MemberType.FILE, bytes(half))])
+    middle = (
+        build_toys([("a", MemberType.FILE, bytes(half))], end=False)
+        + _HEADER.pack(_MAGIC, b"Z", len(xz), 0, 0)
+        + xz
+        + lzma.compress(inner)
+    )
+    data = (
+        _HEADER.pack(_MAGIC, b"Z", len(gz), 0, 0)
+        + gz
+        + gzip.compress(middle, mtime=0, compresslevel=9)
+    )
+    # Each layer alone stays under the limit; the two together do not.
+    max_ratio = (len(middle) + 1000) / len(data)
+    assert len(middle) + len(inner) > max_ratio * len(data)
+    config = ArchiveyConfig(
+        decoder_limits=DecoderLimits(max_ratio=max_ratio, ratio_activation_threshold=0)
+    )
+    with (
+        open_archive(_write(tmp_path, data), format=rpmish, config=config) as reader,
+        pytest.raises(ResourceLimitError, match="ratio"),
+    ):
+        reader.members()
+
+
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
 def test_decompress_part_way_streaming(
     rpmish: ArchiveFormat, tmp_path: Path, pipe: bool
@@ -2116,3 +2215,91 @@ def test_decoded_seek_back_reports_the_walk_it_costs(
         assert stream.read() == b"s" * 1000
         counts = reader.diagnostics.counts
     assert counts[DiagnosticCode.STREAM_REWIND_REDECOMPRESSES] == 1
+
+
+@pytest.mark.parametrize(
+    "mode", ["file", "unknown-size", "spooled", "stream-file", "pipe"]
+)
+@pytest.mark.parametrize("sized", [True, False], ids=["sized", "unsized"])
+def test_decoded_data_drained_by_listing_is_held_to_the_ratio(
+    decoded: _DecodedFixture, tmp_path: Path, mode: str, sized: bool
+) -> None:
+    """Listing drains each member's decoded data, so the drain is held to the
+    decompression ratio, as a read of the same member is."""
+    fmt, _ = decoded
+    entries = [
+        ("bomb", MemberType.FILE, bytes(_BOMB_SIZE)),
+        ("x", MemberType.FILE, b"x"),
+    ]
+    data = build_decoded(entries, sizes=None if sized else {0: -1})
+    with (
+        open_archive(
+            _ratio_source(data, tmp_path, mode),
+            streaming=mode not in _RANDOM_ACCESS,
+            format=fmt,
+            config=_RATIO_CONFIG,
+        ) as reader,
+        pytest.raises(ResourceLimitError, match="ratio"),
+    ):
+        _list_all(reader, mode)
+
+
+@pytest.mark.parametrize("mode", ["file", "unknown-size", "spooled"])
+def test_decoded_data_read_is_held_to_the_ratio(
+    decoded: _DecodedFixture, tmp_path: Path, mode: str
+) -> None:
+    """A read of a member's decoded data is held to the ratio from a source of any
+    size: a seekable stream of unknown size has the live denominator."""
+    fmt, _ = decoded
+    data = build_decoded([("bomb", MemberType.FILE, bytes(_BOMB_SIZE))])
+    with (
+        open_archive(
+            _ratio_source(data, tmp_path, mode), format=fmt, config=_RATIO_CONFIG
+        ) as reader,
+        pytest.raises(ResourceLimitError, match="ratio"),
+    ):
+        reader.read("bomb")
+
+
+def _just_above(size: int, data: bytes) -> ArchiveyConfig:
+    """Limits that let ``size`` decoded bytes of ``data`` pass, and not much more."""
+    return ArchiveyConfig(
+        decoder_limits=DecoderLimits(
+            max_ratio=(size + (256 << 10)) / len(data), ratio_activation_threshold=0
+        )
+    )
+
+
+def test_decoded_data_of_all_members_shares_one_total(
+    decoded: _DecodedFixture, tmp_path: Path
+) -> None:
+    """Each member's drain is under the limit (one such member lists:
+    ``test_decoded_data_listed_again_counts_once``); the two together are not."""
+    fmt, _ = decoded
+    size = 3 << 20
+    entries = [(f"m{i}", MemberType.FILE, bytes(size)) for i in range(2)]
+    data = build_decoded(entries)
+    with (
+        open_archive(
+            _write(tmp_path, data), format=fmt, config=_just_above(size, data)
+        ) as reader,
+        pytest.raises(ResourceLimitError, match="ratio") as raised,
+    ):
+        reader.members()
+    # Refused in the second member's drain, counting the first member's bytes.
+    decoded_bytes = int(str(raised.value).split("(")[1].split(" bytes")[0])
+    assert size < decoded_bytes < 2 * size
+
+
+def test_decoded_data_listed_again_counts_once(
+    decoded: _DecodedFixture, tmp_path: Path
+) -> None:
+    fmt, _ = decoded
+    size = 2 << 20
+    data = build_decoded([("m", MemberType.FILE, bytes(size))])
+    with open_archive(
+        _write(tmp_path, data), format=fmt, config=_just_above(size, data)
+    ) as reader:
+        for _ in range(3):
+            assert [m.name for m in reader.members()] == ["m"]
+        assert reader.read("m") == bytes(size)

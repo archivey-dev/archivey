@@ -65,6 +65,7 @@ from archivey.internal.base_reader import (
     ReadBackend,
     reject_start_offset,
 )
+from archivey.internal.bomb_tracker import DecodeRatioGuard, ReadRatioTally
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.detection import INNER_CONTAINER_PROBE_BYTES
@@ -1119,6 +1120,14 @@ class SequentialReaderAdapter(_PluginAdapter):
         self._layer_sources: dict[
             tuple[int, int, StreamFormat | PluginStream], SharedSource
         ] = {}
+        # What the walk decodes on the reader's behalf, held to
+        # ``decoder_limits.max_ratio`` while listing too (``_ratio_guarded``): the
+        # layers' decoded bytes, each layer by its number, and the members' decoded
+        # data (``MemberSpan.data``), each by its place in the walk. A walk started
+        # over decodes the same bytes again and adds nothing.
+        self._layer_ratio_tally = ReadRatioTally()
+        self._layer_count = 0
+        self._decoded_ratio_tally = ReadRatioTally()
         # A compressed pair (``.cpio.gz``): the codec stream the walk and the member
         # data read, as TAR's (``_open_outer_codec_stream``). The walk sees decoded
         # bytes only.
@@ -1254,8 +1263,17 @@ class SequentialReaderAdapter(_PluginAdapter):
         def skip(offset: int, n: int) -> None:
             end = offset + n
             if seekable and n > _SKIP_BY_READING and (size is None or end <= size):
-                stream.seek(end)
-                return
+                if size is not None:
+                    stream.seek(end)
+                    return
+                # A size not known: a seek past the end would not fail, and the next
+                # header would read as the end of the archive. Read the last byte
+                # skipped; when it is not there, read through from ``offset`` to
+                # raise at the cut.
+                stream.seek(end - 1)
+                if read_blocking(stream, 1):
+                    return
+                stream.seek(offset)
             left = n
             while left:
                 chunk = read_blocking(stream, min(left, _SKIP_BY_READING))
@@ -1293,9 +1311,11 @@ class SequentialReaderAdapter(_PluginAdapter):
                 )
             )
         self._refuse_codec_off_by_policy(stream_format)
-        # The member decoder's config (same limits, same ratio guard), except that the
-        # stream runs to the end of the archive, as a .gz file's does: bytes after its
-        # end are reported, as bytes after an archive's end are, not refused.
+        # The member decoder's config (same limits), except that the stream runs to
+        # the end of the archive, as a .gz file's does: bytes after its end are
+        # reported, as bytes after an archive's end are, not refused. The decoded
+        # bytes are held to the ratio below (``_ratio_guarded``), since listing
+        # decodes all of them.
         config = replace(
             self._decoder_config,
             refuse_input_after_end=False,
@@ -1315,6 +1335,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                 collector=self._diagnostics_collector,
             )
             self._layer_streams.append(decoded)
+            decoded = self._guarded_layer(decoded)
             assert self._source is not None
             buffered = ReadAheadStream(
                 decoded, _WALK_BUFFER, fill_arrived=not self._source.seekable()
@@ -1340,10 +1361,39 @@ class SequentialReaderAdapter(_PluginAdapter):
                     repeat_verdict=False,
                 )
                 self._layer_streams.append(decoded)
-                shared = self._layer_sources[key] = SharedSource(decoded)
+                shared = self._layer_sources[key] = SharedSource(
+                    self._guarded_layer(decoded)
+                )
             layer = self._random_access_layer(walk, shared, compressed=True)
         walk.layer = layer
         return layer.forward
+
+    def _guarded_layer(self, decoded: BinaryIO) -> BinaryIO:
+        """A ``decompress()`` layer's decoded stream, held to the ratio with the
+        walk's other layers (a layer opened inside another adds to its count)."""
+        self._layer_count += 1
+        return self._ratio_guarded(decoded, self._layer_ratio_tally, self._layer_count)
+
+    def _ratio_guarded(
+        self, stream: BinaryIO, tally: ReadRatioTally, key: int
+    ) -> BinaryIO:
+        """``stream``, bytes the walk decodes, held to ``decoder_limits.max_ratio`` of
+        the archive's size in every use, listing included, as
+        ``_open_outer_codec_stream`` holds an outer compression stream (an
+        ``extract_all`` call's ratio governing its own decodes). Its bytes count
+        toward ``tally`` as ``key``'s."""
+        limits = self._ratio_limits()
+        if limits.max_ratio is None:
+            return stream
+        return DecodeRatioGuard(
+            stream,
+            limits=limits,
+            static_size=self._trusted_source_size(),
+            consumed=self._live_consumed(),
+            tally=tally,
+            key=key,
+            run_limits=self._run_ratio_limits,
+        )
 
     @override
     def _walk_members(self) -> Iterator[ArchiveMember]:
@@ -1514,7 +1564,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             expected, custom = self._member_digests(member, span.digests, "walk")
         decoded: _Decoded | None = None
         if data is not None:
-            stream = self._decoded_stream(data)
+            stream = self._decoded_stream(data, index)
             decoded = _Decoded(stream, span.checked, index, member.size, member.name)
         forward = layer.forward
         record = _Span(layer, forward.offset, length, expected, custom or None, decoded)
@@ -1762,7 +1812,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                             data.close()
                     raise
                 return _Decoded(
-                    self._decoded_stream(data),
+                    self._decoded_stream(data, index),
                     span.checked,
                     index,
                     decoded.size,
@@ -1773,7 +1823,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             with self._translated_errors(name), guard:
                 if data is not None:
                     _Decoded(
-                        self._decoded_stream(data),
+                        self._decoded_stream(data, index),
                         span.checked,
                         index,
                         span.member.size,
@@ -1785,11 +1835,16 @@ class SequentialReaderAdapter(_PluginAdapter):
                     layer.forward.skip(span.data_length)
             index += 1
 
-    def _decoded_stream(self, data: BinaryIO | io.RawIOBase) -> BinaryIO:
-        """A reader's decoded data as archivey reads it: full-count, and counted as
+    def _decoded_stream(self, data: BinaryIO | io.RawIOBase, index: int) -> BinaryIO:
+        """A reader's decoded data as archivey reads it: full-count, counted as
         decompressed output, the drain's bytes too (``_decoded_parts`` does not count
-        them again)."""
-        return self._track_decompressed(_full_count(data))
+        them again), and held to the ratio, the drain too, as the data of the member
+        at ``index`` of the walk."""
+        return self._ratio_guarded(
+            self._track_decompressed(_full_count(data)),
+            self._decoded_ratio_tally,
+            index,
+        )
 
     def _check_rewalked(self, span: MemberSpan, decoded: _Decoded) -> None:
         """Refuse a walk started over that does not yield, at the member's place, the
