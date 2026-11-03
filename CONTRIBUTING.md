@@ -38,12 +38,12 @@ far wider than their file, and its `red-on-base` subcommand checks a "fails on `
 claim (`.claude/skills/address-review-findings/SKILL.md` §5).
 
 `check.sh` mirrors CI's `lint` job and every job in `docs-checks.yml`: ruff,
-**`pyrefly`**, **`ty`**, the OpenSpec checks, the docs-tree and link checks, the strict
-docs build, the check on what that build rendered and the tracker-URL check. The one
-exception is the docs job's pytest step (`tests/test_github_templates.py`), which
-`test.sh` runs. The script itself is the list. It runs every gate even after one fails
-and lists what failed at the end, so a single run tells you everything that is wrong.
-Without `--fix` it writes nothing and answers "will CI pass?".
+**`pyrefly`**, **`ty`**, the tests of the scripts (`scripts/tests/`, a few seconds),
+the OpenSpec checks, the docs-tree and link checks, the strict docs build, the check on
+what that build rendered and the tracker-URL check. The script itself is the list. It
+runs every gate even after one fails and lists what failed at the end, so a single run
+tells you everything that is wrong. Without `--fix` it writes nothing and answers "will
+CI pass?".
 
 `test.sh` passes extra arguments through to pytest (`./scripts/test.sh tests/test_zip.py
 -k roundtrip`), and `--all-configs` runs the full before-pushing gate described below.
@@ -121,24 +121,27 @@ uv sync --no-dev && uv run --no-sync python tests/check_zero_dep_core.py \
 ```
 
 These mirror CI's `[all]`, `[all-lowest]`, and `[core-only]` legs; all three must stay
-green. `-n auto` (pytest-xdist) runs the suite on every core; it is not in `addopts`, so
-a plain `uv run pytest tests/test_zip.py` stays one process.
+green. Legs 1 and 2 pass no path, so they also run `scripts/tests/`, which CI runs once
+in the lint job instead; leg 3 passes `tests/`, as CI's core-only leg does. `-n auto`
+(pytest-xdist) runs the suite on every core; it is not in `addopts`, so a plain `uv run
+pytest tests/test_zip.py` stays one process.
 
 CI also matrixes supported **Python versions** (3.11–3.14 on Linux; 3.11/3.14 on
 macOS/Windows). A pull request push runs a reduced set (Linux 3.11 and 3.14, one
 core-only leg, Windows 3.14, free-threaded 3.13t, the benchmark and plugin jobs); the
 merge queue runs every leg plus PyPy, the distribution unar packages and the short
 Atheris fuzz, and a failure there takes the pull request out of the queue. A queued
-change that touches no library, test, dependency or CI path (`scripts/ci_scope.py`)
-runs only the pull request set plus the free-threaded 3.15t leg there, and skips the
-short fuzz. `ci.yml` does not run again after the merge; a daily run tests `main` with
-every job. To run the
-whole set before queueing, dispatch `ci.yml` on your branch. The note at the top of
-`ci.yml` lists which job runs where. Repo `.python-version` pins the default local env to 3.11, so a matrix
-job must pin its Python on every `uv sync` / `uv run`, or newer-version legs silently
-re-test 3.11. Today the `ci.yml` test matrix sets `UV_PYTHON` and passes `--python`; the
-free-threaded job and the stress workflows pin each call with `--python` or `UV_PYTHON`.
-Keep that when you add a step.
+change that touches no path on `FULL` in `scripts/ci_scope.py` (the library, the library
+tests, the dependencies, the CI, and the scripts CI runs or a library test reads;
+`scripts/tests/` is not on it) runs only the pull request set plus the free-threaded
+3.15t leg there, and skips the short fuzz. `ci.yml` does not run again after the merge;
+a daily run tests `main` with every job. To run the whole set before queueing, dispatch
+`ci.yml` on your branch. The note at the top of `ci.yml` lists which job runs where.
+Repo `.python-version` pins the default local env to 3.11, so a matrix job must pin its
+Python on every `uv sync` / `uv run`, or newer-version legs silently re-test 3.11. Today
+the `ci.yml` test matrix sets `UV_PYTHON` and passes `--python`; the free-threaded job
+and the stress workflows pin each call with `--python` or `UV_PYTHON`. Keep that when
+you add a step.
 
 > **`--resolution lowest-direct` rewrites `uv.lock`**, and every later `uv sync --frozen`
 > / `uv run --no-sync` keeps the downgraded set. `./scripts/test.sh --all-configs`
@@ -152,7 +155,7 @@ jobs: lint, test legs, free-threaded leg, benchmark gate, plugin jobs). The docs
 and the OpenSpec checks live in `docs-checks.yml`, which always runs. The list of
 documentation paths is the `pull_request: paths:` filter in `ci.yml`; if a test starts
 reading a doc file, re-include that file there, as `docs/api.md` is, or a change to it
-will skip the test that reads it. `tests/test_ci_doc_paths.py` checks that the
+will skip the test that reads it. `scripts/tests/test_ci_doc_paths.py` checks that the
 re-includes come after every `!` entry. Branch protection on `main` requires no
 status checks today. If one is added, it must come from a workflow that runs on every
 pull request, because a filtered workflow reports no check at all and the PR would wait
@@ -385,6 +388,15 @@ maintainer.
 
 ## Testing standards
 
+- **Library tests go in `tests/`; tests of the repository's own tooling go in
+  `scripts/tests/`.** A test belongs in `scripts/tests/` when it checks a script, a
+  workflow file or another repository file and never imports `archivey`. The `test`
+  legs run `tests/` on every platform and Python; `scripts/tests/` runs once, in the
+  lint job. A library test that reads a script, such as a fixture generator, stays in
+  `tests/`. `scripts/ci_scope.py` lists that script, and every script CI runs, on
+  `FULL`, so a change to one runs every leg in the merge queue; a change confined to
+  `scripts/tests/` and scripts off `FULL` skips the queue's extra legs. A bare `uv run
+  pytest` runs both folders.
 - **Test behaviour, not internal implementation.** Assert on what a public API returns
   and does, so refactors don't break tests gratuitously. *Narrow exception:* the
   low-level building blocks — stream primitives/helpers, format parsers, the codec
