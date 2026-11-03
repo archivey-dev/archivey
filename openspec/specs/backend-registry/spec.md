@@ -479,15 +479,10 @@ installed*).
 #### Scenario: A plugin codec inside an archive is refused under plugins=False
 
 - **WHEN** a caller opens a ZIP with `FormatPolicy(plugins=False, replace={ContainerFormat.ZIP: P})`
-  and `P` returns a member through `ReaderContext.decompress(data, ToyStream.TOY)`
+  and `P` returns a member through `ReaderContext.decompress` with a registered
+  `PluginStream`
 - **THEN** reading the member raises `UnsupportedFeatureError` that names `plugins=False`
-- **AND** the TOY codec's decoder is not created
-
-#### Scenario: An excluded stream format still decodes inside an archive
-
-- **WHEN** a caller reads an xz-compressed ZIP member with
-  `FormatPolicy(exclude={StreamFormat.XZ})`
-- **THEN** the member decodes
+- **AND** that codec's decoder is not created
 
 ### Requirement: A replacement plugin reads a built-in container
 
