@@ -485,6 +485,11 @@ table to almost nothing: a 315-byte 7z declaring 1 000 000 directory entries cos
 member, the fixed cost of a member object, so names add little and `max_metadata_bytes`
 does not see it). The cost is linear in the count the caller allowed, so lowering
 `max_members` is the mitigation for a caller opening untrusted 7z, RAR or ISO.
+SquashFS reaches the same residual from a small image through directories that share
+one listing: its walk charges each path, and each symlink target it keeps, to
+`max_metadata_bytes` before the members are made, but not the fixed cost per entry, so
+a 9 KB image of one-byte names lists 1.75 M members with `max_members=None`
+([formats/squashfs.md](formats/squashfs.md) §4). `max_members` bounds it too.
 
 The 1 048 576 default stays (davitf, 2026-10-01), for these reasons:
 

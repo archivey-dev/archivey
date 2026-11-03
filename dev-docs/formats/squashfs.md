@@ -100,7 +100,9 @@ What the first pass holds before the members are made is charged to
 length, for the raw name and the name), and the target of each symlink inode kept for
 the second pass (its length). The charge is at most what those members weigh when they
 are made, so it refuses only a listing that would cross the limit anyway, and it
-refuses it before making any member (§4).
+refuses it before making any member (§4). It covers the paths' and targets' bytes only:
+what each entry costs beyond them (about 170 bytes in the walk) is bounded by
+`max_members` alone, as every member's fixed cost is.
 
 A block stored with size 0 is a hole and reads as zeros. `is_sparse` is true for a file
 whose block list holds one, read from the list at listing time: `mksquashfs` writes most
@@ -197,8 +199,8 @@ offsets the image declares:
   replay counts only the block where each inode starts and the one where it ends, so
   overlapping inodes shorter than that can still add up to 64 decodes per member in
   the second pass.
-- What the listing holds before it makes the members is bounded by
-  `max_metadata_bytes`, not by the image's size, which can be far smaller: several
+- The name and target bytes the listing holds before it makes the members are bounded
+  by `max_metadata_bytes`, not by the image's size, which can be far smaller: several
   directory inodes may point at one listing, and overlapping symlink inodes may each
   name a 65 535-byte target made of the inodes after it. The walk charges each path,
   and the first pass each symlink target it keeps, as it holds them (§2.2), whether
@@ -210,6 +212,12 @@ offsets the image declares:
   2 000 250-byte names (140 KB) 3 597 MiB in 46 s before, 94 MiB in 0.6 s after. A
   100 200-file image lists as before (168 MiB, 2.3 s), its charge 200 bytes under its
   members' weight.
+  What each entry costs beyond its bytes is not charged, so short names in a shared
+  listing reach the per-member residual of the threat model (§Listing limits) from a
+  small image: with `max_members=None`, a 9 KB image of 250 directories sharing a
+  listing of 7 000 one-byte names lists 1.75 M members at 1 588 MiB in 93 s under the
+  default `max_metadata_bytes`, and holds 338 MiB when refused at 12 MB. `max_members`
+  bounds it, as for 7z.
 - Directory inodes and listings are still read as the walk reaches them, since each is
   needed to find the next. Directories whose inodes or listings stride across more than
   64 metadata blocks decode an 8 KiB block for each: 20 480 empty directories strided
