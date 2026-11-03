@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "review_prep.py"
 
 _spec = importlib.util.spec_from_file_location("review_prep", SCRIPT)
@@ -203,11 +203,14 @@ def test_width_flags_only_lines_far_past_their_file(monkeypatch) -> None:
     diff = prep.FileDiff("docs/x.md", added=[(1, "a" * limit), (2, "b" * (limit + 1))])
     source = prep.FileDiff("src/archivey/x.py", added=[(7, "# " + "c" * 120)])
     test = prep.FileDiff("tests/test_x.py", added=[(3, "d" * 150)])
+    script_test = prep.FileDiff("scripts/tests/test_x.py", added=[(3, "d" * 150)])
+    script = prep.FileDiff("scripts/x.py", added=[(4, "# " + "f" * 120)])
     url = prep.FileDiff("src/archivey/y.py", added=[(1, "# https://" + "e" * 150)])
-    report = prep.width([diff, source, test, url], "base")
+    report = prep.width([diff, source, test, script_test, script, url], "base")
     assert report == [
         f"docs/x.md:2: {limit + 1} > 88 columns",
         "src/archivey/x.py:7: 122 > 88 columns",
+        "scripts/x.py:4: 122 > 88 columns",
     ]
 
 
@@ -243,6 +246,9 @@ def test_tier_is_light_only_when_every_path_is_prose_or_tests() -> None:
     # A spec is a contract, and a nested `.md` outside the light folders is not prose.
     assert prep.tier(["docs/x.md", "openspec/specs/cli/spec.md"]).name == "standard"
     assert prep.tier(["src/archivey/core.py", "tests/test_x.py"]).name == "standard"
+    # The scripts' own tests are tests too; the script they test is not.
+    assert prep.tier(["scripts/tests/test_review_tally.py"]).name == "light"
+    assert prep.tier(["scripts/review_tally.py"]).name == "standard"
     assert prep.tier([]).name == "standard"
     # Gates and contracts inside the light folders are taken back out.
     for gate in ("tests/conftest.py", "dev-docs/threat-model.md"):

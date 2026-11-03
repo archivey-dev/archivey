@@ -15,7 +15,7 @@ from pathlib import Path
 
 from test_ci_doc_paths import _pull_request_paths
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "ppmd-native-stress.yml"
 
 

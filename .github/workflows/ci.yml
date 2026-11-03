@@ -21,9 +21,9 @@ on:
     # globs with `!`, then the two doc paths that tests read, re-included (later
     # patterns win): docs/api.md (test_public_api) and review/problem-catalogue/
     # (test_review_problem_catalogue). Add a path there when a test starts reading
-    # another doc file. tests/test_ci_doc_paths.py checks that the re-includes come
-    # after every `!` entry, and that atheris-fuzz.yml (called in the merge queue) has
-    # no pull_request trigger of its own.
+    # another doc file. scripts/tests/test_ci_doc_paths.py checks that the re-includes
+    # come after every `!` entry, and that atheris-fuzz.yml (called in the merge queue)
+    # has no pull_request trigger of its own.
     # Two cases skip this workflow although code changed, both from GitHub's filter: a
     # rename is seen under its new name only, so moving code into docs/ alone skips it;
     # and a diff over 3,000 files whose matches fall past the first 3,000 skips it too.
@@ -52,20 +52,21 @@ on:
   workflow_dispatch:
 
 # A pull request push runs a reduced set of jobs; the merge queue, the daily run and a
-# dispatched run get all of them, except that a merge group changing no library, test,
-# dependency or CI path runs only the pull request set plus the free-threaded 3.15t leg
-# (the `scope` job). Every job below runs on pull requests unless it says otherwise. On
-# a pull request: lint, the `test` legs (Linux 3.11 and 3.14 [all], Linux 3.11
-# core-only, Windows 3.14 [all]), free-threaded 3.13t, the structural benchmark and the
-# LZO check against liblzo2. Only past it: the `test-queue` legs (the other Pythons, 3.14
-# core-only, the minimum versions, macOS, Windows 3.11), 3.15t, the distribution unar
-# packages, PyPy and the short Atheris fuzz. A failure there takes the pull request out
-# of the queue. The split exists because the organization's runners are shared (20 jobs
-# at once, 5 of them macOS): full runs on every push kept the queue's runs waiting for a
-# runner until they timed out (2026-10-29). Dispatch this workflow on a branch to run
-# everything before queueing. Pull request runs read the Actions caches saved on main,
-# which only the daily run saves now, so after a `uv.lock` change they may install cold
-# until the next daily run (or a dispatch on main).
+# dispatched run get all of them, except that a merge group changing no library, library
+# test, dependency or CI path runs only the pull request set plus the free-threaded
+# 3.15t leg (the `scope` job). Every job below runs on pull requests unless it says
+# otherwise. On a pull request: lint (with the script tests), the `test` legs (Linux
+# 3.11 and 3.14 [all], Linux 3.11 core-only, Windows 3.14 [all]), free-threaded 3.13t,
+# the structural benchmark and the LZO check against liblzo2. Only past it: the
+# `test-queue` legs (the other Pythons, 3.14 core-only, the minimum versions, macOS,
+# Windows 3.11), 3.15t, the distribution unar packages, PyPy and the short Atheris fuzz.
+# A failure there takes the pull request out of the queue. The split exists because the
+# organization's runners are shared (20 jobs at once, 5 of them macOS): full runs on
+# every push kept the queue's runs waiting for a runner until they timed out
+# (2026-10-29). Dispatch this workflow on a branch to run everything before queueing.
+# Pull request runs read the Actions caches saved on main, which only the daily run
+# saves now, so after a `uv.lock` change they may install cold until the next daily run
+# (or a dispatch on main).
 #
 # Cancel an in-progress run when a newer commit arrives for the same PR/branch, so
 # rapid pushes don't pile up redundant full-matrix runs. Outside pull requests the event
@@ -75,10 +76,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Lint + type-check once (these are environment-independent). No continue-on-error:
-  # a failure here fails CI — the "clean on Pyrefly AND ty" gate is enforced.
+  # Lint + type-check once (these are environment-independent), then the tests of the
+  # scripts (scripts/tests/), which read the repository's own files and never the
+  # library, so one leg is enough. The `test` legs run tests/ only. No
+  # continue-on-error: a failure here fails CI — the "clean on Pyrefly AND ty" gate is
+  # enforced.
   lint:
-    name: Lint & type-check
+    name: Lint, type-check & script tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -103,6 +107,8 @@ jobs:
         run: uv run pyrefly check
       - name: ty
         run: uv run ty check
+      - name: Script tests
+        run: uv run --no-sync pytest scripts/tests -q -n auto --no-cov
 
   test:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
@@ -457,14 +463,14 @@ jobs:
           pytest tests/test_property_safety.py -q -n auto
           ${{ matrix.coverage && '--cov-report=term-missing' || '--no-cov' }}
 
-  # Whether a merge-queue run needs every job. A group that changes none of the paths
-  # in `scripts/ci_scope.py` (the library, the plugin packages, the tests, the
-  # dependencies, this CI and the scripts it runs) runs what a pull request push runs,
-  # on the merged tree, and skips the four queue-only jobs that wait on this one:
-  # `test-queue`, `unar-distro-packages`, `pypy` and `atheris`. The daily run still runs
-  # them all. Only a merge_group runs it; a skipped or failed scope, and a diff the
-  # compare API cut off, mean the full run. The four jobs start after it in every group,
-  # a few seconds plus a runner wait.
+  # Whether a merge-queue run needs every job. A group that changes none of the paths in
+  # `scripts/ci_scope.py` (the library, the plugin packages, the library tests and the
+  # scripts they read, the dependencies, this CI and the scripts it runs) runs what a
+  # pull request push runs, on the merged tree, and skips the four queue-only jobs that
+  # wait on this one: `test-queue`, `unar-distro-packages`, `pypy` and `atheris`. The
+  # daily run still runs them all. Only a merge_group runs it; a skipped or failed
+  # scope, and a diff the compare API cut off, mean the full run. The four jobs start
+  # after it in every group, a few seconds plus a runner wait.
   scope:
     name: Queue scope
     if: github.event_name == 'merge_group'

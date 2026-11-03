@@ -31,7 +31,7 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 CATALOGUE = ROOT / "review" / "problem-catalogue" / "catalogue.md"
 NEUTRAL = ROOT / "review" / "problem-catalogue" / "catalogue-neutral.md"
 DERIVE = ROOT / "scripts" / "derive_neutral_catalogue.py"

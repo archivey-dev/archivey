@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "review_loop_gate.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "review-loop.yml"
 
