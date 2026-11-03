@@ -32,7 +32,7 @@ import zlib
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass
-from typing import BinaryIO
+from typing import BinaryIO, NoReturn
 
 from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -143,7 +143,10 @@ from archivey.internal.streams.streamtools import (
     skip_forward,
 )
 from archivey.internal.streams.streamtools.binaryio import read_blocking
-from archivey.internal.streams.verification import raise_member_level
+from archivey.internal.streams.verification import (
+    SpanningCheckError,
+    raise_member_level,
+)
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
 from archivey.internal.trailing_scan import first_nonzero_offset
 from archivey.internal.unix_mode import (
@@ -152,6 +155,7 @@ from archivey.internal.unix_mode import (
     special_file_type,
 )
 from archivey.internal.windows_reparse import parse_reparse_data
+from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_IS_REPARSE_POINT,
     EXTRA_SPECIAL_FILE_TYPE,
@@ -492,6 +496,8 @@ class _FolderChecks(DelegatingStream):
       end with every byte hashed in order and the digest matches, ``on_folder_match``
       runs. It is how a member with no CRC of its own, in a folder of several,
       reaches ``CHECKSUM`` (``verification-level-redesign``, the spanning checks).
+      When it does not match, ``on_folder_mismatch`` raises from the read that
+      hashed the folder's last byte, as a member's own CRC failure raises.
     - ``anchors``: ``(start, size, crc)`` of the folder's members that carry a CRC, in
       folder order. The first that matches runs ``on_key_proved``: a wrong key does
       not decrypt to bytes that match a CRC, so the folder's password is confirmed.
@@ -515,6 +521,7 @@ class _FolderChecks(DelegatingStream):
         folder_crc: int | None,
         anchors: tuple[tuple[int, int, int], ...],
         on_folder_match: Callable[[], None],
+        on_folder_mismatch: Callable[[int], NoReturn],
         on_key_proved: Callable[[], None],
     ) -> None:
         super().__init__(inner)
@@ -522,6 +529,7 @@ class _FolderChecks(DelegatingStream):
         self._folder_crc = folder_crc
         self._anchors = anchors
         self._on_folder_match = on_folder_match
+        self._on_folder_mismatch = on_folder_mismatch
         self._on_key_proved = on_key_proved
         self._restart()
 
@@ -548,7 +556,11 @@ class _FolderChecks(DelegatingStream):
         self._pos = end
         if self._folder_crc is not None and start < self._size:
             self._crc = zlib.crc32(data, self._crc)
-            if end == self._size and self._crc == self._folder_crc:
+            if end == self._size:
+                if self._crc != self._folder_crc:
+                    # This read's bytes are withheld, as a member verifier withholds
+                    # the chunk whose check fails.
+                    self._on_folder_mismatch(self._crc)
                 self._on_folder_match()
         anchors = self._anchors
         if self._next_anchor >= len(anchors):
@@ -1411,6 +1423,7 @@ class SevenZipReader(BaseArchiveReader):
             folder_crc=folder_crc,
             anchors=anchors,
             on_folder_match=lambda: self._folder_crc_matched(folder_index),
+            on_folder_mismatch=lambda crc: self._folder_crc_failed(folder_index, crc),
             on_key_proved=lambda: self._folder_key_proved(folder_index),
         )
 
@@ -1462,6 +1475,30 @@ class SevenZipReader(BaseArchiveReader):
         for member in self._folder_members.get(folder_index, ()):
             if _member_crc(member) is None:
                 raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
+
+    def _folder_crc_failed(self, folder_index: int, crc: int) -> NoReturn:
+        """The folder's digest did not match a whole in-order decode: raise.
+
+        The members with no CRC of their own are the ones only this digest proves,
+        so the error covers them (``SpanningCheckError.covers``) and ``verify_all()``
+        returns each. Their levels stay where their reads left them: below
+        ``CHECKSUM``, which they can no longer reach.
+        """
+        covers = tuple(
+            member
+            for member in self._folder_members.get(folder_index, ())
+            if _member_crc(member) is None
+        )
+        names = ", ".join(quoted(member.name) for member in covers[:5])
+        if len(covers) > 5:
+            names += f" and {len(covers) - 5} more"
+        expected = self._folder_crc_only[folder_index]
+        raise SpanningCheckError(
+            f"7z folder {folder_index} fails its CRC check: the decoded data gives "
+            f"CRC32 {crc:08x}, and the folder records {expected:08x}. The CRC is the "
+            f"only check of {names}, so the data of each may be damaged.",
+            covers=covers,
+        )
 
     def _password_for_folder(
         self, folder_index: int, member: ArchiveMember | None

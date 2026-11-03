@@ -148,7 +148,10 @@ from archivey.internal.streams.streamtools import (
     read_exact,
     source_byte_size,
 )
-from archivey.internal.streams.verification import raise_member_level
+from archivey.internal.streams.verification import (
+    SpanningCheckError,
+    raise_member_level,
+)
 from archivey.internal.streams.verify import CustomDigests
 from archivey.internal.timestamps import TimestampIssue
 from archivey.internal.walk_handoff import WalkHandoffStream
@@ -4212,6 +4215,7 @@ class BaseArchiveReader(ArchiveReader):
     @override
     def verify_all(self) -> tuple[tuple[ArchiveMember, ArchiveyError], ...]:
         failures: list[tuple[ArchiveMember, ArchiveyError]] = []
+        spanning: list[SpanningCheckError] = []
 
         # A member at its ceiling has nothing left to prove; one whose ceiling is NONE
         # (a key nothing can prove) is read again, so its length checks run each time.
@@ -4241,7 +4245,25 @@ class BaseArchiveReader(ArchiveReader):
                     raise
                 except ArchiveyError as e:
                     failures.append((m, e))
+                    if isinstance(e, SpanningCheckError):
+                        spanning.append(e)
+        if spanning:
+            failures = self._with_spanning_failures(failures, spanning)
         return tuple(failures)
+
+    def _with_spanning_failures(
+        self,
+        failures: list[tuple[ArchiveMember, ArchiveyError]],
+        spanning: list[SpanningCheckError],
+    ) -> list[tuple[ArchiveMember, ArchiveyError]]:
+        """``failures`` plus every member a failed spanning check covers, in listing
+        order. A member that failed on its own keeps its own error."""
+        found = {id(m): (m, e) for m, e in failures}
+        for error in spanning:
+            for member in error.covers:
+                found.setdefault(id(member), (member, error))
+        order = {id(m): i for i, m in enumerate(self._listed)}
+        return sorted(found.values(), key=lambda pair: order.get(id(pair[0]), -1))
 
     def _stream_members(
         self,

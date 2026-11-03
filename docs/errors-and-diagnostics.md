@@ -195,7 +195,10 @@ matches the folder's checksum. A `stream_members()` pass that reaches the end of
 that. `verify_all()` does too while one of the files is still below `LENGTH`. If you opened the
 archive with `seekable_members=True` and read every file of the folder on its own, each one is
 already at its `LENGTH` ceiling, so `verify_all()` reads none of them; a `stream_members()`
-pass still raises them. In an encrypted 7z folder, a file whose checksum matches
+pass still raises them. If the folder's checksum does not match, the read that reaches the end
+of the folder raises `CorruptionError`, even when it reads a file whose own bytes are intact, and
+`verify_all()` returns each file that checksum covers with that error. Those files stay at the
+level their own reads reached. In an encrypted 7z folder, a file whose checksum matches
 also confirms the password for the other files of that folder, though not for other folders,
 which can use another password. A file you read before that confirmation keeps the level it
 had; calling `verify_all()` again reads it once more.

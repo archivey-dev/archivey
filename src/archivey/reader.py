@@ -640,7 +640,9 @@ class ForwardArchiveReader(ABC):
 
         Each member is read as :meth:`ArchiveStream.verify` reads one, with
         ``verifiable`` as the target, and a member that fails does not stop the call:
-        it is returned with its error, and the next member is read. Afterwards every
+        it is returned with its error, and the next member is read. A failed check
+        that covers several members (a 7z folder CRC) returns each member it covers
+        with its error, whichever member's read reached it. Afterwards every
         listed member has ``verified == verifiable`` except the ones returned. A member
         whose password the password input did not supply is returned with its
         ``EncryptionError``. The levels are raised on the members in place, so

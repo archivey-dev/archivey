@@ -22,6 +22,8 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from archivey.exceptions import CorruptionError
+
 if TYPE_CHECKING:
     from archivey.types import ArchiveMember, Verification
 
@@ -118,3 +120,17 @@ def raise_member_level(
             settled = member._verifiable
             if settled is None or verifiable > settled:
                 member._verifiable = verifiable
+
+
+class SpanningCheckError(CorruptionError):
+    """A check over the data of several members failed (a 7z folder CRC).
+
+    Raised by the read that reaches the end of the data the check covers. ``covers``
+    holds the reader's own members whose bytes only that check proves; ``verify_all()``
+    returns each of them as a failure with this error, whichever member's read raised
+    it. Internal: callers see a :class:`CorruptionError`.
+    """
+
+    def __init__(self, message: str, *, covers: tuple[ArchiveMember, ...]) -> None:
+        super().__init__(message)
+        self.covers = covers

@@ -16,6 +16,7 @@ import random
 import pytest
 
 from archivey import Verification, open_archive
+from archivey.exceptions import CorruptionError
 from archivey.types import ArchiveMember
 from tests.conftest import requires
 from tests.test_audit_sevenzip import (
@@ -156,13 +157,62 @@ def test_a_skipped_file_still_counts_toward_the_folder_crc() -> None:
     assert levels == dict.fromkeys("abc", Verification.CHECKSUM)
 
 
-def test_a_folder_crc_that_does_not_match_raises_nothing() -> None:
+def test_a_folder_crc_that_does_not_match_fails_every_file_it_covers() -> None:
     data = _copy_folder(_THREE, folder_crc=_crc(_A + _B + _C) ^ 1)
     with open_archive(io.BytesIO(data)) as reader:
-        members = reader.members()
-        # No new error: the folder CRC only ever raises a level.
-        assert reader.verify_all() == ()
-        assert {m.verified for m in members} == {Verification.LENGTH}
+        members = _by_name(reader.members())
+        failures = reader.verify_all()
+        assert [m.name for m, _e in failures] == ["a", "b", "c"]
+        assert all(isinstance(e, CorruptionError) for _m, e in failures)
+        assert "folder 0" in str(failures[0][1])
+        # Levels never fall: a and b passed their length checks before the folder's
+        # end; c's read raised there, as a file's own CRC failure does.
+        assert {n: _levels(m) for n, m in members.items()} == {
+            "a": (Verification.LENGTH, Verification.LENGTH),
+            "b": (Verification.LENGTH, Verification.LENGTH),
+            "c": (Verification.UNLOCKED, Verification.LENGTH),
+        }
+        # A second call reads c again, which reaches the folder's end again.
+        assert [m.name for m, _e in reader.verify_all()] == ["a", "b", "c"]
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_read_that_reaches_a_mismatched_folder_end_raises(streaming: bool) -> None:
+    data = _copy_folder(_THREE, folder_crc=_crc(_A + _B + _C) ^ 1)
+    with open_archive(io.BytesIO(data), streaming=streaming) as reader:
+        read = {}
+        with pytest.raises(CorruptionError, match="folder 0") as caught:
+            for member, stream in reader.stream_members():
+                assert stream is not None
+                read[member.name] = stream.read()
+        assert read == {"a": _A, "b": _B}
+        assert caught.value.member_name == "c"
+
+
+def test_a_lone_read_of_the_last_file_reaches_the_folder_end_and_raises() -> None:
+    data = _copy_folder(_THREE, folder_crc=_crc(_A + _B + _C) ^ 1)
+    with open_archive(io.BytesIO(data)) as reader:
+        members = _by_name(reader.members())
+        assert reader.read(members["a"]) == _A
+        with pytest.raises(CorruptionError, match="folder 0"):
+            reader.read(members["c"])
+
+
+def test_a_mismatched_folder_crc_spares_a_file_with_its_own_crc() -> None:
+    # b's own CRC matches, so the damage the folder CRC found is not in b.
+    payload = _A + _B + _C
+    header = _header(
+        folders=[_linear([_coder(_COPY)])],
+        coder_unpack_sizes=[[len(payload)]],
+        pack_sizes=[len(payload)],
+        names=list(_THREE),
+        folder_crcs=[_crc(payload) ^ 1],
+        substreams=_substreams([len(_A), len(_B), len(_C)], [None, _crc(_B), None]),
+    )
+    with open_archive(io.BytesIO(_archive(payload, header))) as reader:
+        members = _by_name(reader.members())
+        assert [m.name for m, _e in reader.verify_all()] == ["a", "c"]
+        assert _levels(members["b"]) == (Verification.CHECKSUM, Verification.CHECKSUM)
 
 
 def test_a_folder_crc_leaves_files_with_their_own_crc_to_it() -> None:
