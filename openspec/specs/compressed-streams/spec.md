@@ -904,8 +904,9 @@ The levels mean:
   fails, at any layer: a member digest the verifier computes, the WinZip AES HMAC, a
   codec's whole-stream checksum, or per-frame or per-block checks that cover every frame
   of an `.xz`, `.zst` or `.lz4` file. A codec check counts only over a decode from the
-  start with no seek between, other than seeks to 0. The check's value need not be
-  exposed. A check that spans several members (a `.tar.gz` trailer, a 7z folder CRC
+  start with no seek between, other than seeks to 0 and seeks by `SEEK_SET` or
+  `SEEK_CUR` to the current position, which change nothing. The check's value need not
+  be exposed. A check that spans several members (a `.tar.gz` trailer, a 7z folder CRC
   over several files) SHALL raise the level of every member it covers only once it
   passes, at the end of the folder or stream; a 7z folder CRC over a single file SHALL
   count as that file's digest when it has none of its own. A member stream's

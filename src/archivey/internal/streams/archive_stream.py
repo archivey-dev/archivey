@@ -991,6 +991,16 @@ class ArchiveStreamImpl(ArchiveStream):
         verifier = self._verifier
         try:
             before = inner.tell()
+            # A seek to where the caller stands changes nothing, so it leaves every
+            # flag as it is: the run from the start goes on (``_uninterrupted``). The
+            # inner is not asked, so it takes no shortcut past a trailer. A
+            # ``SEEK_END`` target is not known without asking the inner, so it is
+            # passed on. The caller's position is the verifier's while it holds a
+            # deferred seek (``MemberVerifier.tell``).
+            if whence != io.SEEK_END:
+                here = before if verifier is None else verifier.tell(inner)
+                if offset == (here if whence == io.SEEK_SET else 0):
+                    return here
             if verifier is not None:
                 # The verifier may defer a forward seek to the next read, which then
                 # hashes the skipped bytes (``MemberVerifier.seek``).
@@ -1002,9 +1012,10 @@ class ArchiveStreamImpl(ArchiveStream):
             self._fail_unless_closed(e)
         if self._verdict is not None:
             self._verdict_rewound = True
-        # Any seek but one to 0 ends the run from the start, even one that did not
-        # move: the inner may have taken it as a shortcut past bytes or a trailer its
-        # decoder never read (a size from an index ends the stream without decoding).
+        # Any other seek but one to 0 ends the run from the start, even a ``SEEK_END``
+        # that did not move: the inner may have taken it as a shortcut past bytes or a
+        # trailer its decoder never read (a size from an index ends the stream without
+        # decoding).
         self._uninterrupted = result == 0
         if not self._rewind_quiet:
             self._maybe_warn_rewind(before, result)

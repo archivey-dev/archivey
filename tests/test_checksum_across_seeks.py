@@ -239,16 +239,37 @@ def test_seek_past_the_end_does_not_claim_the_trailer_check(tmp_path: Path) -> N
         assert stream.verified is not Verification.CHECKSUM
 
 
-def test_a_seek_that_does_not_move_ends_the_run_from_the_start(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "seek", [(0, io.SEEK_CUR), (1000, io.SEEK_SET)], ids=["cur", "set"]
+)
+def test_a_seek_to_the_current_position_keeps_the_run_from_the_start(
+    tmp_path: Path, seek: tuple[int, int]
+) -> None:
     # A codec check counts only over a decode from the start with no seek but to 0
-    # between. A seek that lands where the stream is still counts: the inner may have
-    # taken it as a shortcut past bytes or a trailer it never decoded.
+    # between. A seek to where the stream stands moves nothing and asks nothing of the
+    # inner, so the run goes on: the read to the end proves every byte, and verify()
+    # need not decode the member again.
     path = tmp_path / "good.lz"
     path.write_bytes(make_lzip_member(_TRAILER_DATA))
     with open_stream(path, seekable=True) as stream:
-        stream.read(1000)
-        stream.seek(0, io.SEEK_CUR)
-        stream.read()
+        assert len(stream.read(1000)) == 1000
+        assert stream.seek(*seek) == 1000
+        assert stream.tell() == 1000
+        assert len(stream.read()) == len(_TRAILER_DATA) - 1000
+        assert stream.verified is Verification.CHECKSUM
+
+
+def test_a_seek_from_the_end_that_does_not_move_ends_the_run(tmp_path: Path) -> None:
+    # SEEK_END's target is known only once the inner answers it, and the inner may
+    # take it as a shortcut past bytes or a trailer it never decoded: it ends the run.
+    path = tmp_path / "good.lz"
+    path.write_bytes(make_lzip_member(_TRAILER_DATA))
+    size = len(_TRAILER_DATA)
+    with open_stream(path, seekable=True) as stream:
+        assert stream.size == size  # from the index
+        assert len(stream.read(size)) == size
+        assert stream.seek(0, io.SEEK_END) == size
+        assert stream.read() == b""
         assert stream.verified is not Verification.CHECKSUM
         stream.seek(0)
         stream.read()
