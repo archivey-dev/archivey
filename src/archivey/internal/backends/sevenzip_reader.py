@@ -828,8 +828,8 @@ class SevenZipReader(BaseArchiveReader):
         # members, and one with no CRC. A one-file folder's digest is already its
         # member's (the parser hands it over).
         self._folder_crc_only: dict[int, int] = {}
-        # The folders of ``_folder_crc_only`` whose digest matched a whole in-order
-        # decode. ``verify_all()`` reads the members of every other one again
+        # The folders of ``_folder_crc_only`` whose latest whole in-order decode
+        # matched the digest. ``verify_all()`` reads the members of every other one again
         # (``_awaiting_spanning_checks``).
         self._folder_crc_passed: set[int] = set()
         self._key_anchor_cache: dict[int, tuple[tuple[int, int, int], ...]] = {}
@@ -1621,6 +1621,8 @@ class SevenZipReader(BaseArchiveReader):
         returns each. Their levels stay where their reads left them: below
         ``CHECKSUM``, which they can no longer reach.
         """
+        # A folder that matched once can only fail a later decode if the source
+        # changed under the reader; take it out again so ``verify_all()`` reads it.
         self._folder_crc_passed.discard(folder_index)
         members = self._folder_members.get(folder_index, ())
         last = self._folder_last_member(folder_index)
