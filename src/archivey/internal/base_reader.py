@@ -3590,7 +3590,8 @@ class BaseArchiveReader(ArchiveReader):
         read straight from a pipe (a plain TAR, a ZIP, a sequential format such as CPIO
         or ar) has no such counter: the bytes its source has taken from the pipe stand in
         (:attr:`ArchiveSource.bytes_pulled`), so its reads and its extraction are held
-        to the ratio as well.
+        to the ratio as well. Read from a seekable stream of unknown size, the furthest
+        offset the source has reached stands in (:attr:`ArchiveSource.bytes_reached`).
         """
         self._state.require_open("compressed_bytes_consumed")
         consumed = self._live_consumed()
@@ -3601,22 +3602,25 @@ class BaseArchiveReader(ArchiveReader):
         (:meth:`_trusted_source_size`) applies or nothing can be counted.
 
         The codec input counter when a backend installed one
-        (:meth:`_wrap_compressed_input`); otherwise, for a source with no trusted size
-        that cannot seek (a pipe), the bytes the source has taken from it. Both count
-        the same forward-only bytes, so a guard built before a backend installs its
-        counter loses nothing by keeping the source's count.
+        (:meth:`_wrap_compressed_input`); otherwise, for a source with no trusted size,
+        the bytes the source has taken from a pipe, or the furthest offset it has
+        reached when it can seek. The pipe's count and the codec's count the same
+        forward-only bytes, so a guard built before a backend installs its counter loses
+        nothing by keeping the source's count. The furthest offset counts a byte read
+        again once, so it never passes the archive's size.
         """
         counter = self._compressed_input_counter
         if counter is not None:
             return lambda: counter.bytes_read
         source = self._source
-        if (
-            source is None
-            or source.seekable()
-            or self._trusted_source_size() is not None
-            # A directory source cannot seek either, but it has no stream to count.
-            or source.bytes_pulled is None
-        ):
+        if source is None or self._trusted_source_size() is not None:
+            return None
+        if source.seekable():
+            # A directory source has no stream to count.
+            if source.bytes_reached is None:
+                return None
+            return lambda: source.bytes_reached or 0
+        if source.bytes_pulled is None:
             return None
         return lambda: source.bytes_pulled or 0
 
