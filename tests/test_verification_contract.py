@@ -28,10 +28,11 @@ from __future__ import annotations
 
 import io
 import lzma
+import random
 import tarfile
 import threading
 import zipfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -48,7 +49,9 @@ LENGTH = Verification.LENGTH
 
 _FILES = {
     "a.txt": b"alpha " * 3000,
-    "b.bin": bytes(range(256)) * 300,
+    # Incompressible and larger than any read buffer, so every read the reader makes
+    # of the archive reaches the counting source (review round 1, K1).
+    "b.bin": random.Random(5).randbytes(300_000),
     "c.txt": b"gamma\n",
 }
 _RAR = Path(__file__).parent / "fixtures" / "rar"
@@ -82,7 +85,7 @@ def _tar(mode: str) -> bytes:
     return out.getvalue()
 
 
-# (build, the level every member can reach, the password, marks)
+# (build, the level every member can reach, the password)
 _Case = tuple[Callable[[], bytes], Verification, str | None]
 _CASES: dict[str, _Case] = {
     "zip": (_zip, CHECKSUM, None),
@@ -106,9 +109,11 @@ def _open(name: str, *, streaming: bool, source: io.RawIOBase | None = None):
     if source is None:
         source = CountingBytesIO(build())
     return open_archive(
-        io.BufferedReader(source),
+        source,
         streaming=streaming,
         password=password,
+        # Random access: item 10 holds a stream open across verify_all(). Streaming
+        # readers refuse the option.
         concurrent_operations=not streaming,
     )
 
@@ -196,13 +201,17 @@ def test_a_proved_member_is_not_read_again(name: str) -> None:
         assert held.read(3) == _content(name, first)[:3]
         assert reader.verify_all() == ()
         before = source.bytes_read
-        # 10: a second call has nothing left to prove.
+        # 10: a second call has nothing left to prove. (RAR is read through unrar,
+        # which takes the archive once, so this counter cannot see its later reads.)
         assert reader.verify_all() == ()
-        # 4: nor has a stream of a proved member.
+        assert source.bytes_read == before
+        # 4: nor has a stream of a proved member. Opening may position the stream
+        # (a solid 7z decodes up to the member), so only verify() itself is counted.
         for member in files:
             with reader.open(member) as stream:
+                opened = source.bytes_read
                 assert stream.verify() == stream.verifiable
-        assert source.bytes_read == before
+                assert source.bytes_read == opened, member.name
         # 10: the stream the caller held is where it was.
         assert held.tell() == 3
         assert held.read() == _content(name, first)[3:]
@@ -255,13 +264,15 @@ def test_the_check_everything_recipe(name: str, streaming: bool) -> None:
 def test_two_threads_raising_one_folder_never_lower_a_level() -> None:
     # One stored folder with only a folder CRC: a read of "a" proves its length, a
     # read of "c" decodes the folder to its end and raises all three to CHECKSUM.
+    # Fails when raise_member_level stores a level without max(). It cannot catch a
+    # missing level lock: the window it guards is a few bytecodes under the GIL.
     data = _copy_folder(_THREE, folder_crc=_crc(b"".join(_THREE.values())))
     with open_archive(io.BytesIO(data), concurrent_operations=True) as reader:
         members = {m.name: m for m in reader.members()}
         stop = threading.Event()
         falls: list[str] = []
 
-        def watch() -> Iterator[None]:
+        def watch() -> None:
             last = {name: members[name].verified for name in members}
             while not stop.is_set():
                 for name, member in members.items():
@@ -269,9 +280,8 @@ def test_two_threads_raising_one_folder_never_lower_a_level() -> None:
                     if now < last[name] or now > member.verifiable:
                         falls.append(f"{name}: {last[name]!r} -> {now!r}")
                     last[name] = now
-            yield
 
-        watcher = threading.Thread(target=lambda: list(watch()))
+        watcher = threading.Thread(target=watch)
         watcher.start()
         try:
             for _ in range(20):

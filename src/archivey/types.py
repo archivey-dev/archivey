@@ -576,11 +576,14 @@ class HashAlgorithm(StrEnum):
 class Verification(IntEnum):
     """How much of a member stream's data has been checked, from least to most.
 
-    ``verified == verifiable`` on a member or its stream means every check the member
-    carries has passed. ``verified`` is the level reached so far, and ``verifiable``
-    the most a read from the start to the end can reach. The levels are ordered, so
+    ``verified`` is the level reached so far on a member or its stream, and
+    ``verifiable`` the most a read from the start to the end can reach. Above
+    ``NONE``, ``verified == verifiable`` means every check the member carries has
+    passed. At ``NONE`` nothing was proved, not even that the data is complete; after
+    ``reader.verify_all()``, the members that failed are the ones it returns,
+    whatever their levels. The levels are ordered, so
     ``member.verified >= Verification.LENGTH`` reads as "at least the length was
-    checked". To check every member, call ``reader.verify_all()``.
+    checked".
 
     Experimental: any release, a patch included, may change or remove the levels, their
     names or what they mean.
