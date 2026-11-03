@@ -432,14 +432,16 @@ def test_concurrent_reads(toys: ArchiveFormat, tmp_path: Path) -> None:
     assert results == {"b.bin": _DATA["b.bin"], "docs/a.txt": b"alpha\n"}
 
 
-def _variant(reader: type[ToysReader], container: ToysContainer) -> ArchiveFormat:
+def _variant(
+    reader: Callable[[ReaderContext], SequentialReader], container: ToysContainer
+) -> ArchiveFormat:
     """Register a TOYS reader that changes what it yields, as its own format."""
     fmt = ArchiveFormat(container, StreamFormat.UNCOMPRESSED)
 
     class Variant(SequentialFormatHandler):
         format = fmt
 
-        def open_sequential(self, context: ReaderContext) -> ToysReader:
+        def open_sequential(self, context: ReaderContext) -> SequentialReader:
             return reader(context)
 
     register_format(Variant)
@@ -1602,7 +1604,7 @@ def decoded() -> Iterator[tuple[ArchiveFormat, type[_DecodedReader]]]:
         walks = 0
 
     with registration_scope():
-        yield _variant(Reader, ToysContainer.DECODED), Reader  # type: ignore[arg-type]
+        yield _variant(Reader, ToysContainer.DECODED), Reader
 
 
 _DecodedFixture = tuple[ArchiveFormat, type[_DecodedReader]]
@@ -1688,7 +1690,7 @@ def test_a_walk_started_over_for_data_does_not_count_held_members(
     """The walk a read starts over holds members again; they were counted when
     listed, so a limit the listing met exactly is not crossed by the read."""
     with registration_scope():
-        fmt = _variant(_HoldingDecodedReader, ToysContainer.HOLDING_DECODED)  # type: ignore[arg-type]
+        fmt = _variant(_HoldingDecodedReader, ToysContainer.HOLDING_DECODED)
         path = _write(tmp_path, build_decoded(_DECODED_ENTRIES))
         limits = archivey.ListingLimits(max_members=len(_DECODED_ENTRIES))
         config = archivey.ArchiveyConfig(listing_limits=limits)

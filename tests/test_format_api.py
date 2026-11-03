@@ -62,6 +62,7 @@ from archivey.formats import (
 )
 from archivey.internal import format_args
 from archivey.internal.format_adapter import registration_scope
+from archivey.internal.listing_limits import member_metadata_bytes
 from archivey.internal.registry import get_registry
 from tests.conftest import requires, requires_zstd
 
@@ -2061,3 +2062,79 @@ def test_read_struct_unpacks_and_raises_truncated(
     with pytest.raises(TruncatedError, match="archive ends 4 bytes into the 8"):
         open_archive(_write(tmp_path, build_toya(_ENTRIES)))
     assert seen == [(len(_ENTRIES),), (_MAGIC,)]
+
+
+class _HoldingToyReader(ToyReader):
+    """Holds each directory until the end of the index, as an indexed reader that
+    must see later records to finish a member does."""
+
+    def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+        held: list[MemberRecord[tuple[int, int]]] = []
+        for record in super().iter_members():
+            if record.member.type is MemberType.DIRECTORY:
+                self._context.hold(record.member, reason="toy directories")
+                held.append(record)
+                continue
+            yield record
+        yield from held
+
+
+class _HoldingToyHandler(ToyHandler):
+    def open(self, source: ReaderSource, context: ReaderContext) -> ToyReader:
+        return _HoldingToyReader(source, context)
+
+
+_HOLDING_ENTRIES: list[tuple[str | bytes, MemberType, bytes]] = [
+    ("d1", MemberType.DIRECTORY, b""),
+    ("d2", MemberType.DIRECTORY, b""),
+    ("f.txt", MemberType.FILE, b"f\n"),
+]
+
+
+def _toya_listing(path: Path, **limits: int) -> list[ArchiveMember]:
+    config = archivey.ArchiveyConfig(listing_limits=archivey.ListingLimits(**limits))
+    with open_archive(path, config=config) as reader:
+        return reader.members()
+
+
+def test_an_indexed_reader_holds_members_counted_once(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """Members an indexed reader holds count with the listed ones while held, and
+    once when yielded: limits equal to the listing's totals are not crossed."""
+    register_format(_HoldingToyHandler)
+    path = _write(tmp_path, build_toya(_HOLDING_ENTRIES))
+    members = _toya_listing(path)
+    assert [m.name for m in members] == ["f.txt", "d1/", "d2/"]
+    # The members and the archive comment, "toy".
+    weight = sum(member_metadata_bytes(m) for m in members) + len("toy")
+    assert len(_toya_listing(path, max_members=3, max_metadata_bytes=weight)) == 3
+    with pytest.raises(archivey.ResourceLimitError, match="max_metadata_bytes"):
+        _toya_listing(path, max_metadata_bytes=weight - 1)
+    with pytest.raises(
+        archivey.ResourceLimitError,
+        match=r"max_members=1 \(counted 2 members, 2 of them toy directories\)",
+    ):
+        _toya_listing(path, max_members=1)
+
+
+class _HoldingAtOpenReader(ToyReader):
+    def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
+        super().__init__(source, context)
+        context.hold(ArchiveMember(type=MemberType.FILE, name="early"))
+
+
+class _HoldingAtOpenHandler(ToyHandler):
+    def open(self, source: ReaderSource, context: ReaderContext) -> ToyReader:
+        return _HoldingAtOpenReader(source, context)
+
+
+def test_a_hold_outside_the_listing_is_a_plugin_bug(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """hold() counts only while iter_members() lists; at open nothing would count
+    it, so it raises rather than doing nothing."""
+    register_format(_HoldingAtOpenHandler)
+    path = _write(tmp_path, build_toya(_ENTRIES))
+    with pytest.raises(ArchiveyUsageError, match=r"only while walk\(\) or"):
+        open_archive(path)

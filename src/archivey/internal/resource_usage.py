@@ -45,7 +45,9 @@ class ResourceUsage:
 
     The decoder memory and spool numbers are peaks and the key-derivation rounds a
     total. The listing numbers are the tracker's current totals: a failed walk that is
-    retried resets them, so they count the last walk.
+    retried resets them, so they count the last walk. They include the members a
+    plugin reader holds back (``ReaderContext.hold()``) while it holds them, so a walk
+    that stopped with members held counts members it never listed.
     """
 
     decoder_memory: int = 0

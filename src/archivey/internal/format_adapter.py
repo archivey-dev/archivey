@@ -162,6 +162,9 @@ def _reads_full(stream: object) -> bool:
 
 
 _T = TypeVar("_T")
+# The walk steps ``ReaderContext.hold()`` tells apart (``_PluginAdapter._walk_step``).
+_LISTING = "listing"
+_REWALK = "rewalk"
 
 
 class _PluginAdapter(BaseArchiveReader):
@@ -226,9 +229,10 @@ class _PluginAdapter(BaseArchiveReader):
         # The walk position of the member being listed: the id registration will
         # stamp on it, for a report made before it is yielded.
         self._walk_index = 0
-        # Set while the listing walk takes a step: only then does
-        # ``ReaderContext.hold()`` charge the listing (``_hold``).
-        self._listing_step = False
+        # Which walk is taking a step, for ``ReaderContext.hold()`` (``_hold``):
+        # ``_LISTING`` charges the listing, ``_REWALK`` (a walk started over to reach
+        # member data) charges nothing, and ``None`` (no step) is a plugin bug.
+        self._walk_step: str | None = None
         context = ReaderContext(
             encoding=encoding,
             archive_name=archive_name,
@@ -372,20 +376,27 @@ class _PluginAdapter(BaseArchiveReader):
             attach_to_member=member is not None,
         )
 
-    def _listing_next(self, steps: Iterator[_T]) -> _T | None:
-        """The listing walk's next step, during which a ``hold()`` is charged."""
-        self._listing_step = True
+    def _walk_next(self, steps: Iterator[_T], step: str = _LISTING) -> _T | None:
+        """The next step of a walk: the listing's, during which a ``hold()`` is
+        charged, or with ``step=_REWALK`` a data walk's, during which it is not."""
+        self._walk_step = step
         try:
             return next(steps, None)
         finally:
-            self._listing_step = False
+            self._walk_step = None
 
     def _hold(
         self, member: ArchiveMember, stored_name: str | None, reason: str | None
     ) -> None:
         """``ReaderContext.hold()``: charge a held member to the listing's limits.
         A walk started over to reach member data was listed already: no charge."""
-        if not self._listing_step:
+        step = self._walk_step
+        if step is None:
+            raise ArchiveyUsageError(
+                "ReaderContext.hold() counts a member only while walk() or "
+                "iter_members() is listing it"
+            )
+        if step == _REWALK:
             return
         if not isinstance(member, ArchiveMember):
             raise TypeError(
@@ -597,12 +608,17 @@ class IndexedReaderAdapter(_PluginAdapter):
         tracker = self._listing_tracker
         tracker.release_held()
         with boundary, guard:
-            records = iter(self._indexed.iter_members())
+            # A plain function (not a generator) lists, and may hold, in this call.
+            self._walk_step = _LISTING
+            try:
+                records = iter(self._indexed.iter_members())
+            finally:
+                self._walk_step = None
         index = 0
         while True:
             self._walk_index = index
             with boundary, guard:
-                record = self._listing_next(records)
+                record = self._walk_next(records)
             if record is None:
                 tracker.release_held()
                 return
@@ -1082,7 +1098,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             # the format's archives fails to open (DR-15b), as a TAR does.
             walk = self._new_walk()
             with self._translated_errors(), self._handle_guard():
-                first = self._listing_next(walk)
+                first = self._walk_next(walk)
             self._open_walk: tuple[Iterator[MemberSpan], MemberSpan | None] | None = (
                 walk,
                 first,
@@ -1167,7 +1183,12 @@ class SequentialReaderAdapter(_PluginAdapter):
             )
         forward = walk.layer.forward
         with self._translated_errors(), self._handle_guard():
-            return iter(self._sequential.walk(forward))
+            # A walk() that is not a generator steps, and may hold, in this call.
+            self._walk_step = _LISTING if walk is self._listing_walk else _REWALK
+            try:
+                return iter(self._sequential.walk(forward))
+            finally:
+                self._walk_step = None
 
     def _random_access_layer(
         self, walk: _Walk, shared: SharedSource, *, compressed: bool
@@ -1295,7 +1316,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             walk = self._new_walk()
             self._walk_index = 0
             with boundary, guard:
-                span = self._listing_next(walk)
+                span = self._walk_next(walk)
         index = 0
         # Decoded bytes of the members walked so far (``_Decoded.prefix``).
         prefix = 0
@@ -1330,7 +1351,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                     decoded.finish()
                 prefix += decoded.consumed
                 with boundary, guard:
-                    span = self._listing_next(walk)
+                    span = self._walk_next(walk)
                 continue
             with boundary, guard:
                 left = record.offset + record.length - forward.offset
@@ -1339,7 +1360,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                 assert left >= 0, (record.offset, record.length, forward.offset)
                 if left:
                     forward.skip(left)
-                span = self._listing_next(walk)
+                span = self._walk_next(walk)
         # Members held and never yielded stop counting with the walk that held them.
         tracker.release_held()
 
@@ -1624,7 +1645,7 @@ class SequentialReaderAdapter(_PluginAdapter):
         index = data_walk.next_index
         while True:
             with boundary, guard:
-                span = next(data_walk.spans, None)
+                span = self._walk_next(data_walk.spans, _REWALK)
             if not isinstance(span, MemberSpan):
                 if span is not None:
                     raise TypeError(

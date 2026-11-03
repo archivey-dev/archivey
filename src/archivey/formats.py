@@ -534,11 +534,13 @@ class ReaderContext:
         ``reason`` names what the held members are, for that error ("CPIO hard links
         waiting for their data").
 
+        Call it from ``walk()`` or ``iter_members()``, as the members are listed.
         Yielding the member takes the charge off before archivey counts it as
         listed, so it is counted once. A member never yielded stays counted until the
         walk ends. In a walk archivey starts over to reach a member's data again,
-        every member was counted when listed, and ``hold()`` does nothing. Holding
-        the same member twice raises ``ArchiveyUsageError``.
+        every member was counted when listed, and ``hold()`` does nothing. A call
+        from anywhere else (at open, in ``open_member``), or for a member held
+        already, raises ``ArchiveyUsageError``.
         """
         self._hold(member, stored_name, reason)
 

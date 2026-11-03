@@ -659,7 +659,8 @@ limits to the members it is handed in any case.
 
 A reader that keeps members back to yield them later, such as a CPIO hard link held
 until the link that carries its data, passes each one to `ReaderContext.hold()` when it
-keeps it. The member then counts toward `max_members` and `max_metadata_bytes` with the
+keeps it, from `walk()` or `iter_members()`; a call made anywhere else raises
+`ArchiveyUsageError`. The member then counts toward `max_members` and `max_metadata_bytes` with the
 members already listed, and `hold()` raises `ResourceLimitError` when it would cross
 either. Pass the name you will yield it with as `stored_name=`, and what the held
 members are as `reason=`, for the error. Yielding the member takes the hold off before
