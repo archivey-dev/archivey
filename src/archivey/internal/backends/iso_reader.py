@@ -2626,9 +2626,8 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         """Where a file's data is in the image: each extent's byte offset and length.
 
         pycdlib's own inode gives it when it describes the file as written. The layout
-        worked out while listing is used otherwise, never worked out again here:
-        reading the directory needs the handle, which the adapter holds around this
-        call already. Three cases need the layout: a file of 4 GiB or more, whose
+        worked out while listing is used otherwise, never worked out again here, so
+        opening a member reads no directory. Three cases need the layout: a file of 4 GiB or more, whose
         inode covers only its first extent; the El Torito boot catalog, which pycdlib
         keeps in memory and gives no inode at all, though its extent still holds its
         bytes on disc, which is what a mounted image shows; and a file pycdlib
