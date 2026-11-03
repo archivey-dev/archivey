@@ -142,6 +142,7 @@ from archivey.internal.streams.counting import (
     OutputCountingStream,
     SeekCountingStream,
 )
+from archivey.internal.streams.decompressor_stream import _StreamChecksumError
 from archivey.internal.streams.streamtools import (
     OneReadEachStream,
     ReadableStream,
@@ -4251,9 +4252,15 @@ class BaseArchiveReader(ArchiveReader):
 
         # A member at its ceiling has nothing left to prove; one whose ceiling is NONE
         # (a key nothing can prove) is read again, so its length checks run each time.
+        # So is one whose per-frame checks wait on a read from the start
+        # (``ArchiveMember._ceiling_provisional``), as it may still reach CHECKSUM.
         def selector(m: ArchiveMember) -> bool:
             ceiling = m.verifiable
-            return ceiling is Verification.NONE or m.verified < ceiling
+            return (
+                ceiling is Verification.NONE
+                or m.verified < ceiling
+                or m._ceiling_provisional is True
+            )
 
         with self.stream_members(selector) as members:
             it = iter(members)
@@ -4264,6 +4271,22 @@ class BaseArchiveReader(ArchiveReader):
                     break
                 except DiagnosticRaisedError:
                     raise
+                except _StreamChecksumError as e:
+                    # A codec checksum over the archive stream failed (a .tar.gz
+                    # trailer). It may cover only some of the files (a concatenated
+                    # .tar.gz, a multi-frame .tar.zst), and nothing says which, so
+                    # every listed file is a failure, read in this pass or not: a
+                    # false failure beats a false pass (DR-1). members_report().error
+                    # holds it too.
+                    # In listing order; a member that already failed keeps its error.
+                    earlier = {id(m): (m, err) for m, err in failures}
+                    failures = [
+                        earlier.pop(id(m), (m, e))
+                        for m in self._listed
+                        if m.is_file or id(m) in earlier
+                    ]
+                    failures.extend(earlier.values())
+                    break
                 except CorruptionError:
                     # Damage that stops the listing: members_report().error holds it.
                     break
