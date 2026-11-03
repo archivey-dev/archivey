@@ -502,6 +502,10 @@ class DecodeRatioGuard(_RatioGuard):
     extraction counts a byte, so a few hundred bytes of bzip2 could keep ``members()``
     decoding for minutes. Extraction would refuse the same archive at the same ratio;
     this refuses it while listing, reading or extracting alike.
+
+    With a ``tally``, the guard is one of several whose decoded bytes count toward one
+    total, each under its own ``key`` (as member reads count, :class:`ReadRatioTally`):
+    the rule judges the total, not this stream's bytes alone.
     """
 
     def __init__(
@@ -511,11 +515,15 @@ class DecodeRatioGuard(_RatioGuard):
         limits: DecoderLimits,
         static_size: int | None,
         consumed: Callable[[], int | None] | None,
+        tally: ReadRatioTally | None = None,
+        key: int = 0,
     ) -> None:
         super().__init__(inner, max_ratio=limits.max_ratio)
         self._limits = limits
         self._static_size = static_size
         self._consumed = consumed
+        self._tally = tally
+        self._key = key
 
     def nearest_resume_offset(self, target: int) -> int | None:
         return ask_resume_offset(self._inner, target)
@@ -523,6 +531,8 @@ class DecodeRatioGuard(_RatioGuard):
     @override
     def _judge(self, position: int) -> None:
         limits = self._limits
+        if self._tally is not None:
+            position = self._tally.advance(self._key, position)
         refusal = archive_ratio_refusal(
             position,
             max_ratio=limits.max_ratio,

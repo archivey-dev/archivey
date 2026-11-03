@@ -31,6 +31,7 @@ from archivey.formats import SequentialReader
 from archivey.internal.backends import cpio_reader
 from archivey.internal.backends.cpio_reader import MAX_NAME_BYTES, CpioReader
 from tests.public_names import assert_only_public_archivey
+from tests.streams_util import ShortReadBytesIO
 
 CPIO = archivey.ArchiveFormat.CPIO
 DATA = Path(__file__).parent / "fixtures" / "cpio"
@@ -636,3 +637,17 @@ def test_the_reader_uses_only_public_archivey() -> None:
 
 def test_the_reader_is_a_sequential_reader() -> None:
     assert issubclass(CpioReader, SequentialReader)
+
+
+@pytest.mark.parametrize("sized", [True, False], ids=["sized", "unsized"])
+def test_a_cut_inside_a_long_member_raises_while_listing(sized: bool) -> None:
+    """A long skip that seeks checks that its end exists, also on a seekable source
+    whose size is not known (see test_ar's test of the same name)."""
+    data = _newc((b"small", _FILE, 1, 1, b"abc"), (b"big", _FILE, 2, 1, bytes(200_000)))
+    data = data[: data.index(b"big\0") + 100_000]
+    source = io.BytesIO(data) if sized else ShortReadBytesIO(data, max_chunk=1 << 20)
+    with (
+        open_archive(source, format="cpio") as reader,
+        pytest.raises(TruncatedError, match="inside the 200000 bytes"),
+    ):
+        reader.members()

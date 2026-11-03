@@ -29,9 +29,11 @@ from archivey import (
     ArchiveFormat,
     ArchiveMember,
     ArchiveReader,
+    ArchiveyConfig,
     ArchiveyError,
     ArchiveyUsageError,
     CorruptionError,
+    DecoderLimits,
     ExtractionLimits,
     MemberType,
     PluginContainer,
@@ -1239,6 +1241,87 @@ def test_decompress_part_way_ratio_guard(
         )
 
 
+# Small floors, so a few MiB of zeros break the default ratio of 800:1 on a file
+# (static) and on a pipe (live) alike.
+_RATIO_CONFIG = ArchiveyConfig(
+    decoder_limits=DecoderLimits(
+        ratio_activation_threshold=1 << 20, live_ratio_activation_threshold=1 << 20
+    )
+)
+_BOMB_SIZE = 16 << 20
+
+
+def _ratio_source(data: bytes, tmp_path: Path, mode: str) -> Path | BinaryIO:
+    return NonSeekableBytesIO(data) if mode == "pipe" else _write(tmp_path, data)
+
+
+def _list_all(reader: ArchiveReader, mode: str) -> None:
+    """Walk every member and read no member data, as listing does."""
+    if mode == "file":
+        reader.members()
+    else:
+        for _member, _stream in reader.stream_members():
+            pass
+
+
+@pytest.mark.parametrize("mode", ["file", "stream-file", "pipe"])
+def test_decompress_part_way_listing_is_held_to_the_ratio(
+    rpmish: ArchiveFormat, tmp_path: Path, mode: str
+) -> None:
+    """Listing decodes the payload a walk opens part-way, so the payload is held to
+    the decompression ratio while listing, as a whole-file compression stream is."""
+    name = StreamFormat.BZIP2.value.encode()
+    data = (
+        build_toys(_ENTRIES[:2], end=False)
+        + _HEADER.pack(_MAGIC, b"Z", len(name), 0, 0)
+        + name
+        + bz2.compress(build_toys([("bomb", MemberType.FILE, bytes(_BOMB_SIZE))]))
+    )
+    with (
+        open_archive(
+            _ratio_source(data, tmp_path, mode),
+            streaming=mode != "file",
+            format=rpmish,
+            config=_RATIO_CONFIG,
+        ) as reader,
+        pytest.raises(ResourceLimitError, match="ratio"),
+    ):
+        _list_all(reader, mode)
+
+
+def test_decompress_part_way_layers_share_one_ratio_count(
+    rpmish: ArchiveFormat, tmp_path: Path
+) -> None:
+    """The layers of one walk count toward one total: a payload nested in another
+    adds its output to its parent's, so nesting does not multiply the bound."""
+    xz = StreamFormat.XZ.value.encode()
+    gz = StreamFormat.GZIP.value.encode()
+    half = 3 << 20
+    inner = build_toys([("b", MemberType.FILE, bytes(half))])
+    middle = (
+        build_toys([("a", MemberType.FILE, bytes(half))], end=False)
+        + _HEADER.pack(_MAGIC, b"Z", len(xz), 0, 0)
+        + xz
+        + lzma.compress(inner)
+    )
+    data = (
+        _HEADER.pack(_MAGIC, b"Z", len(gz), 0, 0)
+        + gz
+        + gzip.compress(middle, mtime=0, compresslevel=9)
+    )
+    # Each layer alone stays under the limit; the two together do not.
+    max_ratio = (len(middle) + 1000) / len(data)
+    assert len(middle) + len(inner) > max_ratio * len(data)
+    config = ArchiveyConfig(
+        decoder_limits=DecoderLimits(max_ratio=max_ratio, ratio_activation_threshold=0)
+    )
+    with (
+        open_archive(_write(tmp_path, data), format=rpmish, config=config) as reader,
+        pytest.raises(ResourceLimitError, match="ratio"),
+    ):
+        reader.members()
+
+
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
 def test_decompress_part_way_streaming(
     rpmish: ArchiveFormat, tmp_path: Path, pipe: bool
@@ -1894,3 +1977,28 @@ def test_decoded_seek_back_reports_the_walk_it_costs(
         assert stream.read() == b"s" * 1000
         counts = reader.diagnostics.counts
     assert counts[DiagnosticCode.STREAM_REWIND_REDECOMPRESSES] == 1
+
+
+@pytest.mark.parametrize("mode", ["file", "stream-file", "pipe"])
+@pytest.mark.parametrize("sized", [True, False], ids=["sized", "unsized"])
+def test_decoded_data_drained_by_listing_is_held_to_the_ratio(
+    decoded: _DecodedFixture, tmp_path: Path, mode: str, sized: bool
+) -> None:
+    """Listing drains each member's decoded data, so the drain is held to the
+    decompression ratio, as a read of the same member is."""
+    fmt, _ = decoded
+    entries = [
+        ("bomb", MemberType.FILE, bytes(_BOMB_SIZE)),
+        ("x", MemberType.FILE, b"x"),
+    ]
+    data = build_decoded(entries, sizes=None if sized else {0: -1})
+    with (
+        open_archive(
+            _ratio_source(data, tmp_path, mode),
+            streaming=mode != "file",
+            format=fmt,
+            config=_RATIO_CONFIG,
+        ) as reader,
+        pytest.raises(ResourceLimitError, match="ratio"),
+    ):
+        _list_all(reader, mode)
