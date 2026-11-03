@@ -416,7 +416,9 @@ or a decision that turned into a new code path or a redesign, and say so in your
 disposition comment. The workflow lets that label through and trusts your judgement, so
 do not spend a round on fixes the review already described.
 
-**After an approving verdict with CI green**, you may merge a straightforward PR (on
+**After an approving verdict with CI green**, turn on squash auto-merge
+(`enable_pr_auto_merge`, the connector tool, not `gh pr merge` or raw `gh api`) for a
+straightforward PR (on
 standard and deep, after the Opus pass approves; on deep, Cursor too); a tricky one goes
 to the maintainer. Decide with the tier script as the pull request's base branch has it
 (the same ref `risk-label.yml` uses), never the pull request's copy, and never from the
@@ -433,7 +435,8 @@ rm scripts/.review_prep_base.py
 It is tricky when that prints "merge: the maintainer merges this one", when the review's
 maintainer decisions block names a decision, or by `AGENTS.md` §Working with the
 maintainer. Any verdict leaves threads open, a conditional approval most of all: fix the
-conditioned findings, reply on every thread the review opened, and resolve each one, or
-the merge queue will not take the PR (the rule is in the list above). A thread you cannot
-resolve yet, such as an escalated question, keeps the PR out of the queue until it is
-answered, which is the intent.
+conditioned findings, reply on every thread the review opened, and resolve each one you
+fixed, or the merge queue will not take the PR (the rule is in the list above). A thread
+you cannot resolve yet, such as an escalated question or a finding you disproved, did not
+reproduce or will not fix (the maintainer reads and resolves those), keeps the PR out of
+the queue until it is answered, which is the intent: auto-merge stays pending until then.
