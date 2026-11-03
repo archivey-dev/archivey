@@ -663,8 +663,9 @@ keeps it, from `walk()` or `iter_members()`; a call made anywhere else raises
 `ArchiveyUsageError`. The member then counts toward `max_members` and `max_metadata_bytes` with the
 members already listed, and `hold()` raises `ResourceLimitError` when it would cross
 either. Pass the name you will yield it with as `stored_name=`, and what the held
-members are as `reason=`, for the error. Yielding the member takes the hold off before
-archivey lists it, so it is counted once. In a walk archivey starts over to reach a
+members are as `reason=`, for the error. Yielding that same member object takes the
+hold off before archivey lists it, so it is counted once; a copy would count twice
+until the walk ends. In a walk archivey starts over to reach a
 member's data, `hold()` does nothing.
 
 ## Archive details

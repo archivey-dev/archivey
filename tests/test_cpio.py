@@ -528,6 +528,17 @@ def test_held_link_names_count_with_the_members_listed_before_them(
         reader.members()
 
 
+def test_links_still_held_when_the_walk_fails_stop_counting(tmp_path: Path) -> None:
+    """A walk that ends on damage releases the links it still held: the listing's
+    totals are those of the members it listed."""
+    links = [(f"l{i}".encode(), _FILE, 7, 3, b"") for i in range(2)]
+    data = _without_trailer(_newc((b"f", _FILE, 1, 1, b"x"), *links))
+    with open_archive(_archive(tmp_path, data)) as reader:
+        with pytest.raises(TruncatedError):
+            reader.members()
+        assert reader._usage.snapshot().listed_members == 1
+
+
 def test_a_held_link_is_counted_once(tmp_path: Path) -> None:
     """A held link stops counting as held when it is listed: limits equal to what
     the listing holds are not crossed."""

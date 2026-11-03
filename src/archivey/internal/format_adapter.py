@@ -376,6 +376,19 @@ class _PluginAdapter(BaseArchiveReader):
             attach_to_member=member is not None,
         )
 
+    @override
+    def _iter_members(self) -> Iterator[ArchiveMember]:
+        try:
+            yield from self._walk_members()
+        finally:
+            # Members held and never yielded stop counting with the walk that held
+            # them, however it ends: at its end, on damage, or closed part-way.
+            self._listing_tracker.release_held()
+
+    def _walk_members(self) -> Iterator[ArchiveMember]:
+        """The listing walk of the reader's shape (``_iter_members``)."""
+        raise NotImplementedError
+
     def _walk_next(self, steps: Iterator[_T], step: str = _LISTING) -> _T | None:
         """The next step of a walk: the listing's, during which a ``hold()`` is
         charged, or with ``step=_REWALK`` a data walk's, during which it is not."""
@@ -600,7 +613,7 @@ class IndexedReaderAdapter(_PluginAdapter):
         )
 
     @override
-    def _iter_members(self) -> Iterator[ArchiveMember]:
+    def _walk_members(self) -> Iterator[ArchiveMember]:
         # One boundary and one guard for the whole walk: both are reusable, and
         # building them per member is a measurable part of listing a large archive.
         boundary = self._translated_errors()
@@ -620,7 +633,6 @@ class IndexedReaderAdapter(_PluginAdapter):
             with boundary, guard:
                 record = self._walk_next(records)
             if record is None:
-                tracker.release_held()
                 return
             member = record.member
             if not isinstance(member, ArchiveMember):
@@ -1303,7 +1315,7 @@ class SequentialReaderAdapter(_PluginAdapter):
         return layer.forward
 
     @override
-    def _iter_members(self) -> Iterator[ArchiveMember]:
+    def _walk_members(self) -> Iterator[ArchiveMember]:
         boundary = self._translated_errors()
         guard = self._handle_guard()
         tracker = self._listing_tracker
@@ -1361,8 +1373,6 @@ class SequentialReaderAdapter(_PluginAdapter):
                 if left:
                     forward.skip(left)
                 span = self._walk_next(walk)
-        # Members held and never yielded stop counting with the walk that held them.
-        tracker.release_held()
 
     def _take_span(self, span: object, layer: _Layer, index: int) -> ArchiveMember:
         """The member a span describes, checked, named and placed."""
