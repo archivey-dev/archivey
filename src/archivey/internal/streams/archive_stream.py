@@ -993,13 +993,15 @@ class ArchiveStreamImpl(ArchiveStream):
             before = inner.tell()
             # A seek to where the caller stands changes nothing, so it leaves every
             # flag as it is: the run from the start goes on (``_uninterrupted``). The
-            # inner is not asked, so it takes no shortcut past a trailer. A
-            # ``SEEK_END`` target is not known without asking the inner, so it is
-            # passed on. The caller's position is the verifier's while it holds a
-            # deferred seek (``MemberVerifier.tell``).
-            if whence != io.SEEK_END:
+            # inner is not asked, so it takes no shortcut past a trailer. Passed on
+            # still: a ``SEEK_END``, whose target only the inner knows; a seek to 0,
+            # which restarts a decoder that raised (the run goes on after it anyway);
+            # and any seek once a verdict is kept, which marks it rewound. The
+            # caller's position is the verifier's while it holds a deferred seek
+            # (``MemberVerifier.tell``).
+            if whence != io.SEEK_END and self._verdict is None:
                 here = before if verifier is None else verifier.tell(inner)
-                if offset == (here if whence == io.SEEK_SET else 0):
+                if here != 0 and offset == (here if whence == io.SEEK_SET else 0):
                     return here
             if verifier is not None:
                 # The verifier may defer a forward seek to the next read, which then
