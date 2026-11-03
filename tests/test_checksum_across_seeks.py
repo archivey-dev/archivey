@@ -23,7 +23,7 @@ from archivey.exceptions import CorruptionError
 from archivey.internal.streams.respawn import RespawnStream
 from archivey.internal.streams.verify import VerifyingStream
 from archivey.types import HashAlgorithm, Verification
-from tests.conftest import zstd_backend
+from tests.conftest import requires_zstd, zstd_backend
 from tests.streams_util import make_lzip_member, seekable_zstd_table
 
 _DATA = bytes(random.Random(7).choice(b"abcdefgh \n") for _ in range(200_000))
@@ -205,7 +205,13 @@ def _bad_seekable_zstd(tmp_path: Path) -> tuple[Path, int]:
     return path, len(data)
 
 
-@pytest.mark.parametrize("make", [_bad_lzip, _bad_seekable_zstd], ids=["lzip", "zstd"])
+@pytest.mark.parametrize(
+    "make",
+    [
+        pytest.param(_bad_lzip, id="lzip"),
+        pytest.param(_bad_seekable_zstd, id="zstd", marks=requires_zstd()),
+    ],
+)
 @pytest.mark.parametrize(
     "seek", [(0, io.SEEK_CUR), (0, io.SEEK_END), "size"], ids=["cur", "end", "size"]
 )
