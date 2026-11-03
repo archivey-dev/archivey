@@ -78,35 +78,33 @@ sorted, as is a crafted image, which in listing order would cost a whole block d
 per small file (§4). An image that lists one name twice in a directory keeps listing
 order whatever its fragments, since that order says which entry is current.
 
-The listing makes two passes. The first walks the directories, keeping each entry's
-name, parent and inode reference, then reads every other inode once, in its order in
-the inode table, and with it the file's block list for `is_sparse`; of each it keeps
-only what the order needs (a tailed file's fragment and offset, whether it has holes,
-an error from the block list to raise in turn, and the block where the inode ends when
-it runs past the one it starts in). The second reads each member's inode again by its
-reference, through the metadata cache, as it makes the member. A hard link does not
-read it again: the member it names keeps its inode, without the symlink target or the
-file's location, next to its name. Nor does an inode whose first read went on through
-more than 64 metadata blocks (only a symlink's target can): the first pass keeps it
-whole until its member, which holds the target anyway, is made. Holding every inode
-cost half as much memory again as the listing itself on a 100 000-file image, so the
-listing does that only when the second pass would thrash the 64-block metadata cache:
-it replays the cache over the blocks the second pass would read, in the final member
-order, and when a block would decode twice it reads the table once more in table order
-and keeps every inode.
+The listing makes two passes and parses each inode once. The first walks the
+directories, keeping each entry's name, parent and inode reference, then reads every
+other inode once, in its order in the inode table, and with it the file's block list
+for `is_sparse`. Of each inode it keeps a fixed-size record of 58 bytes (a 96-byte
+object in CPython): its type, mode, owner, time, whether the file has holes, and a
+regular file's location (size, first block, block count, where its block list is, and
+its fragment and offset). A symlink's target is kept beside the record, since its
+member holds the target anyway, and an inode that did not read or a block list that
+did not scan is kept as the error to raise in turn. The second makes each member from
+its record, in the order the first chose, and drops the record and the entry's name as
+it goes; a directory's entry stays, for the path in a later member's message. A hard
+link takes what it needs from the member it names, which keeps its type, mode, owner
+and time next to its name. On a 120 000-file mksquashfs image this lists in the time
+of a walk that reads each inode as it goes (2.06 s, against 2.77 s for reading the
+inodes again in the second pass), with a peak RSS of 168 MiB against 170 and 194 MiB.
 
 What the first pass holds before the members are made is charged to
 `max_metadata_bytes` as it is held: each entry's path when the walk finds it (twice its
-length, for the raw name and the name), and the target of each symlink inode kept for
-the second pass (its length). For names that are valid UTF-8 or decoded with a one-byte
+length, for the raw name and the name), and each symlink's target when the first pass
+keeps it (its length). For names that are valid UTF-8 or decoded with a one-byte
 `encoding=`, the charge is at most what those members weigh when they are made, so it
 refuses only a listing that would cross the limit anyway, before making any member
 (§4). A multibyte `encoding=` that decodes to fewer characters than the stored bytes
 (UTF-16) weighs the names at less, so the charge can refuse such a listing up to about
-twice early. A symlink target that is not kept is charged when its member is made, as
-in the other formats, so a listing can also raise there. The charge covers the paths'
-and targets' bytes only: what each entry costs beyond them (about 170 bytes in the
-walk) is bounded by `max_members` alone, as every member's fixed cost is.
+twice early. The charge covers the paths' and targets' bytes only: what each entry
+costs beyond them (about 170 bytes in the walk, and the 96-byte record until its
+member is made) is bounded by `max_members` alone, as every member's fixed cost is.
 
 A block stored with size 0 is a hole and reads as zeros. `is_sparse` is true for a file
 whose block list holds one, read from the list at listing time: `mksquashfs` writes most
@@ -183,26 +181,21 @@ offsets the image declares:
   member for fragments or file inodes: files with a tail come in fragment order when
   listing order would thrash the fragment cache (§2.2), which took a 229 KB xz image of
   50 000 one-byte files cycling five 1 MiB fragments from 62 s to 4 s (4.1 s for the
-  same files in one fragment). File inodes are read once in table order to decide the
-  order, then once more in member order to make the members, unless the replayed
-  metadata cache says that order would decode an inode block twice (§2.2); then the
-  table is read a second time in table order and the inodes are kept. In an image
-  whose inodes do not overlap, each inode-table block then decodes at most about
-  twice: 20 480 empty files whose inodes cycle over 80 gzip inode blocks list in
-  0.37 s with 227 metadata decodes (2.2 s and 20 627 decodes if each inode were read
-  in member order), and 300 files each in its own block, stored in reverse, decode 539
-  metadata blocks in all. A hard link does not read its inode again, so the entries
-  that name one inode cost one read of it per pass, not one per entry: 100 entries
-  naming a symlink whose 65 535-byte target is stored in 1-byte metadata blocks list in
-  0.4 s (20 s with a read per entry).
+  same files in one fragment). Inodes other than directories' are read once, in table
+  order, and the members are made from the records that read keeps (§2.2), so the
+  member order does not reach the metadata cache. In an image whose inodes do not
+  overlap, each inode-table block then decodes about once in the listing: 20 480 empty
+  files whose inodes cycle over 80 gzip inode blocks list in 0.31 s with 147 metadata
+  decodes (1.9 s and 20 547 decodes if each inode were read in member order), and 300
+  files each in its own block, stored in reverse, decode 303 metadata blocks in all. A
+  hard link does not read its inode again, so the entries that name one inode cost one
+  read of it, not one per entry: 100 entries naming a symlink whose 65 535-byte target
+  is stored in 1-byte metadata blocks list in 0.2 s (19 s with a read per entry).
 - Residual, as on main: one inode's read can run through up to 65 535 metadata blocks
   (a symlink target in 1-byte blocks), and distinct inodes can overlap, so entries
   whose inodes overlap each pay that read: 20 such entries decode 1.3 M blocks in
-  4.2 s, the same as main. The listing keeps an inode whose read ran through more than
-  64 blocks from the first pass, so the second pass does not double that cost. The
-  replay counts only the block where each inode starts and the one where it ends, so
-  overlapping inodes shorter than that can still add up to 64 decodes per member in
-  the second pass.
+  4.0 s, the same as main. The listing reads each inode once, so nothing doubles that
+  cost.
 - The name and target bytes the listing holds before it makes the members are bounded
   by `max_metadata_bytes`, not by the image's size, which can be far smaller: several
   directory inodes may point at one listing, and overlapping symlink inodes may each
@@ -211,12 +204,12 @@ offsets the image declares:
   `max_members` is set or not. Within the encoding limits of §2.2 it refuses only a
   listing whose members would cross the limit. Measured peak RSS, refused with
   `ResourceLimitError` at the default limits (`max_members=None` for the shared
-  listing): 60 000 overlapping symlink inodes kept whole (1.69 MB image) 3 841 MiB in
-  23 s before, 114 MiB in 0.5 s after; 20 000 kept for the second pass because the
-  order strides the table (668 KB) 1 313 MiB before, 106 MiB after; 3 000 directories
-  sharing a listing of 2 000 250-byte names (140 KB) 3 597 MiB in 46 s before, 94 MiB
-  in 0.6 s after. A 100 200-file image lists as before (168 MiB, 2.3 s), its charge
-  200 bytes under its members' weight.
+  listing): 60 000 overlapping symlink inodes (1.69 MB image) 3 841 MiB in 23 s before
+  the charge, 109 MiB in 0.5 s after; 20 000 listed in an order that strides the table
+  (668 KB) 1 313 MiB before, 102 MiB in 0.1 s after; 3 000 directories sharing a
+  listing of 2 000 250-byte names (140 KB) 3 597 MiB in 46 s before, 87 MiB in 0.6 s
+  after. A 120 000-file image lists in 2.06 s at 168 MiB, its charge 240 bytes under
+  its members' weight.
   What each entry costs beyond its bytes is not charged, so short names in a shared
   listing reach the per-member residual of the threat model (§Listing limits) from a
   small image: with `max_members=None`, a 9 KB image of 250 directories sharing a
@@ -271,19 +264,22 @@ offsets the image declares:
   can name one block. Rejected: charging decoded block bytes to a per-reader budget
   (refuses an image instead of reading it), a larger cache (a crafted image cycles
   through one more block), and only recording the case in the threat model. File inodes
-  are read in table order for the same reason, and kept when the member order would
-  thrash the metadata cache (next decision); the order of reads is internal.
+  are read once, in table order, for the same reason (next decision); the order of
+  reads is internal.
 
-- **Two passes over the inodes, keeping little between them.** The maintainer's call
-  (2026-11-03). The first pass keeps, per file, only what the order needs; the second
-  reads each inode again by reference, except a hard link's, which the member it names
-  keeps. On a 100 200-file gzip image it lists in 2.2 s against 1.8 s for holding every
-  inode, with a tracemalloc peak of 128 MB against 160 MB. When the final member order
-  would decode an inode block twice, the listing keeps every inode instead, the same
-  rule as for fragments. Rejected: holding every inode on every image (the peak grows
-  by half again), and reading again in any order (an inode table that strides against
-  the member order decodes an 8 KiB block per member: 2.2 s against 0.37 s for 20 480
-  files over 80 blocks).
+- **Two passes, one parse per inode, a compact record between them.** The
+  maintainer's call (2026-11-03), replacing an earlier one that kept only what the
+  order needs and read each inode again in the second pass (2.77 s and 194 MiB on a
+  120 000-file image, against 2.06 s and 170 MiB for a walk that reads each inode as it
+  goes). The first pass keeps a fixed-size packed record per inode (§2.2), and a
+  symlink's target beside it, charged; the second makes the members from the records
+  and parses nothing: 2.06 s and 168 MiB on that image, with half the inode parses
+  and two thirds of the metadata decodes. Since no inode is read in member order, the
+  replay of the metadata cache over the member order, and the table read that kept
+  every inode when it said the order would thrash, are gone. Rejected: holding every
+  inode as parsed (about 450 bytes a file against 96), and reading again in any order
+  (an inode table that strides against the member order decodes an 8 KiB block per
+  member: 1.9 s against 0.31 s for 20 480 files over 80 blocks).
 
 ## 7. Open questions
 
