@@ -1,8 +1,8 @@
 """``reader.verify_all()`` and the member's verification level.
 
 One test (or a few) per item of the contract in the ``verification-level-redesign``
-change (design Decision 6). Items 6 and 7 (codec frame checks, checks that span
-members) land with the codec and 7z work; the tests here cover what holds today.
+change (design Decision 6), on ZIP and TAR. ``test_verification_contract.py`` runs the
+rules that hold for every format across all of them and maps each item to its tests.
 """
 
 from __future__ import annotations
