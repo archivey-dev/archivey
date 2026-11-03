@@ -255,7 +255,9 @@ rulings on the handbook page, and general ones in `dev-docs/design-rules.md`.
   linked, and anything the maintainer settled on the thread. Everything else, a finding
   answered as disproven, not reproduced or won't-fix included, stays open: list it for
   the maintainer, who reads those and resolves them (a false finding can hint at another
-  problem).
+  problem). A fix that makes an operation significantly more expensive to cover a corner
+  case (re-decoding a whole member, an extra pass, much more memory) pauses for the
+  maintainer first (`address-review-findings` §6).
 - The PR body is the record of a piece of work. Do not commit working plans to the repo.
 - Do not edit `CHANGELOG.md` in a PR; the release writes it.
 
