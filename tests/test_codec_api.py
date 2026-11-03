@@ -30,6 +30,7 @@ from archivey import (
     ResourceLimitError,
     StreamFormat,
     TruncatedError,
+    UnsupportedFeatureError,
     Verification,
     detect_format,
     format_availability,
@@ -219,6 +220,20 @@ def test_a_stream_without_its_name_is_found_by_magic(toy: ArchiveFormat) -> None
 def test_open_stream_takes_the_codec(toy: ArchiveFormat, fmt: object) -> None:
     with open_stream(io.BytesIO(toy_compress(_TEXT)), format=fmt) as stream:  # type: ignore[arg-type]
         assert stream.read() == _TEXT
+
+
+@pytest.mark.parametrize(
+    "fmt", [ToyStream.TOY, TOY, TAR_TOY], ids=["stream", "raw", "tar"]
+)
+def test_open_stream_refuses_a_codec_that_is_not_registered(fmt: object) -> None:
+    """The caller passed the codec before ``register_codec`` ran: refused as
+    ``open_archive`` refuses it, not with a bare ``KeyError``."""
+    data = io.BytesIO(toy_compress(_TEXT))
+    with pytest.raises(UnsupportedFeatureError, match="register_codec"):
+        open_stream(data, format=fmt)  # type: ignore[arg-type]
+    if isinstance(fmt, ArchiveFormat):
+        with pytest.raises(UnsupportedFeatureError, match="No read backend registered"):
+            open_archive(data, format=fmt)
 
 
 def test_a_misspelled_format_lists_the_codec(toy: ArchiveFormat) -> None:

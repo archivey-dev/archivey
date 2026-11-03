@@ -77,6 +77,7 @@ class ToysContainer(PluginContainer):
     DECODED = "toys-decoded"
     SIZED_EMPTY_DIRECTORY = "toys-sized-empty-directory"
     PROBED = "toys-probed"
+    YIELDS_NONE = "toys-yields-none"
 
 
 TOYS = ArchiveFormat(ToysContainer.TOYS, StreamFormat.UNCOMPRESSED)
@@ -461,6 +462,37 @@ def test_a_size_other_than_the_data_length_is_a_plugin_bug(
         pytest.raises(ValueError, match="data_length"),
     ):
         reader.members()
+
+
+@pytest.mark.parametrize("before", [0, 2])
+@pytest.mark.parametrize("access", ["members", "stream_members"])
+def test_a_none_yielded_by_the_walk_is_a_plugin_bug(
+    toys: ArchiveFormat, tmp_path: Path, before: int, access: str
+) -> None:
+    """A ``None`` the walk yields is not its end: the listing does not stop there
+    with no error."""
+
+    class YieldsNone(ToysReader):
+        def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+            spans = super().walk(stream)
+            for _ in range(before):
+                yield next(spans)
+            yield None  # type: ignore[misc]
+            yield from spans
+
+    fmt = _variant(YieldsNone, ToysContainer.YIELDS_NONE)
+    path = _write(tmp_path, build_toys(_ENTRIES))
+    # The first step of the walk is taken at open (before=0 fails there).
+    with (
+        pytest.raises(TypeError, match="yielded NoneType, not a MemberSpan"),
+        open_archive(path, format=fmt, streaming=access != "members") as reader,
+    ):
+        if access == "members":
+            reader.members()
+        else:
+            for _member, stream in reader.stream_members():
+                if stream is not None:
+                    stream.read()
 
 
 def test_a_size_given_to_an_empty_file_is_a_plugin_bug(
