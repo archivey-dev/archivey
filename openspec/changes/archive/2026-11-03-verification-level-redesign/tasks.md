@@ -29,15 +29,15 @@
 
 ## 4. Docs and tests
 
-- [ ] 4.1 `Verification.CHECKSUM` docstring and `docs/errors-and-diagnostics.md`: the
+- [x] 4.1 `Verification.CHECKSUM` docstring and `docs/errors-and-diagnostics.md`: the
       every-byte definition; lead with `verified == verifiable`; the "check everything"
       recipe (`verify_all()`, `members_report()`, `reader.diagnostics`).
-- [ ] 4.2 Scenario tests from the spec deltas (`compressed-streams`,
+- [x] 4.2 Scenario tests from the spec deltas (`compressed-streams`,
       `archive-data-model`, `archive-reading`).
 
 ## 5. Contract tests
 
-- [ ] 5.1 One test per item of design Decision 6 (the contract), across ZIP, 7z (solid,
+- [x] 5.1 One test per item of design Decision 6 (the contract), across ZIP, 7z (solid,
       AES), RAR, TAR, `.tar.gz` and a single `.xz`, random-access and streaming-only,
       including two threads raising one 7z folder's members.
-- [ ] 5.2 `openspec archive verification-level-redesign` (after `verification-level`).
+- [x] 5.2 `openspec archive verification-level-redesign` (after `verification-level`).
