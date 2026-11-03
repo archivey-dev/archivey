@@ -657,6 +657,15 @@ tells extraction whether the archive holds a target the reader could not reach.
 index itself can bound that work by `config.listing_limits`. archivey applies those
 limits to the members it is handed in any case.
 
+A reader that keeps members back to yield them later, such as a CPIO hard link held
+until the link that carries its data, passes each one to `ReaderContext.hold()` when it
+keeps it. The member then counts toward `max_members` and `max_metadata_bytes` with the
+members already listed, and `hold()` raises `ResourceLimitError` when it would cross
+either. Pass the name you will yield it with as `stored_name=`, and what the held
+members are as `reason=`, for the error. Yielding the member takes the hold off before
+archivey lists it, so it is counted once. In a walk archivey starts over to reach a
+member's data, `hold()` does nothing.
+
 ## Archive details
 
 `archive_info()` returns a `ReaderArchiveInfo` with what archivey cannot work out itself:

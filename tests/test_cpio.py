@@ -30,6 +30,7 @@ from archivey.diagnostics import DiagnosticCode
 from archivey.formats import SequentialReader
 from archivey.internal.backends import cpio_reader
 from archivey.internal.backends.cpio_reader import MAX_NAME_BYTES, CpioReader
+from archivey.internal.listing_limits import member_metadata_bytes
 from tests.public_names import assert_only_public_archivey
 
 CPIO = archivey.ArchiveFormat.CPIO
@@ -452,8 +453,7 @@ def _newc(*members: tuple[bytes, int, int, int, bytes], nul: bool = True) -> byt
 
 
 def test_too_many_held_links(tmp_path: Path) -> None:
-    """The reader's own bound on links held back for their data: archivey's
-    max_members counts yielded members only, and a held link is not yet one."""
+    """Links held back for their data count toward max_members while they are held."""
     links = [(f"l{i}".encode(), _FILE, 7, 6, b"") for i in range(5)]
     data = _newc(*links, (b"data", _FILE, 7, 6, b"x"))
     config = archivey.ArchiveyConfig(
@@ -461,6 +461,27 @@ def test_too_many_held_links(tmp_path: Path) -> None:
     )
     with (
         pytest.raises(ResourceLimitError, match="waiting for their data"),
+        open_archive(_archive(tmp_path, data), config=config) as reader,
+    ):
+        reader.members()
+
+
+def test_held_links_count_with_the_members_listed_before_them(tmp_path: Path) -> None:
+    """Three listed members and two held links are five, over max_members=4, though
+    neither alone is. The archive is cut after the held links, so only a check made
+    while they are held raises ResourceLimitError, not TruncatedError."""
+    files = [(f"f{i}".encode(), _FILE, 10 + i, 1, b"x") for i in range(3)]
+    links = [(f"l{i}".encode(), _FILE, 7, 3, b"") for i in range(2)]
+    data = _without_trailer(_newc(*files, *links))
+    config = archivey.ArchiveyConfig(
+        listing_limits=archivey.ListingLimits(max_members=4)
+    )
+    with (
+        pytest.raises(
+            ResourceLimitError,
+            match=r"max_members=4 \(counted 5 members, 2 of them CPIO hard links "
+            "waiting for their data",
+        ),
         open_archive(_archive(tmp_path, data), config=config) as reader,
     ):
         reader.members()
@@ -481,6 +502,48 @@ def test_held_link_names_count_toward_max_metadata_bytes(tmp_path: Path) -> None
         pytest.raises(ResourceLimitError, match="max_metadata_bytes=10000"),
         open_archive(_archive(tmp_path, data), config=config) as reader,
     ):
+        reader.members()
+
+
+def test_held_link_names_count_with_the_members_listed_before_them(
+    tmp_path: Path,
+) -> None:
+    """Listed names (8,000 bytes with their raw bytes) and held ones (3,000) are over
+    10,000 together, though neither alone is: refused while the links are held,
+    before the cut."""
+    files = [(b"%d" % i + b"f" * 1999, _FILE, 10 + i, 1, b"x") for i in range(2)]
+    links = [(b"%d" % i + b"l" * 749, _FILE, 7, 3, b"") for i in range(2)]
+    data = _without_trailer(_newc(*files, *links))
+    config = archivey.ArchiveyConfig(
+        listing_limits=archivey.ListingLimits(max_metadata_bytes=10_000)
+    )
+    with (
+        pytest.raises(
+            ResourceLimitError,
+            match=r"max_metadata_bytes=10000 \(retained \d+ bytes, \d+ of them for 2 "
+            "CPIO hard links waiting for their data",
+        ),
+        open_archive(_archive(tmp_path, data), config=config) as reader,
+    ):
+        reader.members()
+
+
+def test_a_held_link_is_counted_once(tmp_path: Path) -> None:
+    """A held link stops counting as held when it is listed: limits equal to what
+    the listing holds are not crossed."""
+    links = [(f"l{i}".encode(), _FILE, 7, 4, b"") for i in range(3)]
+    path = _archive(tmp_path, _newc(*links, (b"data", _FILE, 7, 4, b"x")))
+    with open_archive(path) as reader:
+        members = reader.members()
+    weight = sum(member_metadata_bytes(m) for m in members)
+    assert len(members) == 4
+    exact = archivey.ListingLimits(max_members=4, max_metadata_bytes=weight)
+    config = archivey.ArchiveyConfig(listing_limits=exact)
+    with open_archive(path, config=config) as reader:
+        assert [m.name for m in reader.members()] == ["data", "l0", "l1", "l2"]
+    under = archivey.ListingLimits(max_members=4, max_metadata_bytes=weight - 1)
+    config = archivey.ArchiveyConfig(listing_limits=under)
+    with pytest.raises(ResourceLimitError), open_archive(path, config=config) as reader:
         reader.members()
 
 

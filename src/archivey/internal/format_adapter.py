@@ -23,7 +23,7 @@ import threading
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import replace
-from typing import Any, BinaryIO, ClassVar, NoReturn, cast
+from typing import Any, BinaryIO, ClassVar, NoReturn, TypeVar, cast
 
 from archivey.config import ArchiveyConfig, ProcessIsolation
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -161,6 +161,9 @@ def _reads_full(stream: object) -> bool:
     return _type_reads_full(type(stream))
 
 
+_T = TypeVar("_T")
+
+
 class _PluginAdapter(BaseArchiveReader):
     """What the adapters of both reader shapes share: the context, errors, digests,
     archive info and close."""
@@ -223,6 +226,9 @@ class _PluginAdapter(BaseArchiveReader):
         # The walk position of the member being listed: the id registration will
         # stamp on it, for a report made before it is yielded.
         self._walk_index = 0
+        # Set while the listing walk takes a step: only then does
+        # ``ReaderContext.hold()`` charge the listing (``_hold``).
+        self._listing_step = False
         context = ReaderContext(
             encoding=encoding,
             archive_name=archive_name,
@@ -230,6 +236,7 @@ class _PluginAdapter(BaseArchiveReader):
             decompress=self._decompress,
             report=self._report,
             link_target_unavailable=self._link_target_unavailable,
+            hold=self._hold,
         )
         self._reader = self._open_reader(context)
         self._reader_open = True
@@ -364,6 +371,35 @@ class _PluginAdapter(BaseArchiveReader):
             member=member,
             attach_to_member=member is not None,
         )
+
+    def _listing_next(self, steps: Iterator[_T]) -> _T | None:
+        """The listing walk's next step, during which a ``hold()`` is charged."""
+        self._listing_step = True
+        try:
+            return next(steps, None)
+        finally:
+            self._listing_step = False
+
+    def _hold(
+        self, member: ArchiveMember, stored_name: str | None, reason: str | None
+    ) -> None:
+        """``ReaderContext.hold()``: charge a held member to the listing's limits.
+        A walk started over to reach member data was listed already: no charge."""
+        if not self._listing_step:
+            return
+        if not isinstance(member, ArchiveMember):
+            raise TypeError(
+                f"ReaderContext.hold() takes an ArchiveMember, not "
+                f"{type(member).__name__}"
+            )
+        try:
+            self._listing_tracker.hold_member(
+                member, stored_name, reason or "members held back by the reader"
+            )
+        except ValueError:
+            raise ArchiveyUsageError(
+                f"ReaderContext.hold(): {quoted(member.name)} is held already"
+            ) from None
 
     def _link_target_unavailable(
         self,
@@ -558,14 +594,17 @@ class IndexedReaderAdapter(_PluginAdapter):
         # building them per member is a measurable part of listing a large archive.
         boundary = self._translated_errors()
         guard = self._handle_guard()
+        tracker = self._listing_tracker
+        tracker.release_held()
         with boundary, guard:
             records = iter(self._indexed.iter_members())
         index = 0
         while True:
             self._walk_index = index
             with boundary, guard:
-                record = next(records, None)
+                record = self._listing_next(records)
             if record is None:
+                tracker.release_held()
                 return
             member = record.member
             if not isinstance(member, ArchiveMember):
@@ -573,6 +612,8 @@ class IndexedReaderAdapter(_PluginAdapter):
                     f"{type(self._reader).__name__}.iter_members() yielded "
                     f"{type(member).__name__}, not an ArchiveMember"
                 )
+            # A held member is counted as listed from here on, not twice.
+            tracker.release_member(member)
             # A reader that reports while listing normalizes the name itself, and
             # hands over the one it started from.
             presented = (
@@ -1041,7 +1082,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             # the format's archives fails to open (DR-15b), as a TAR does.
             walk = self._new_walk()
             with self._translated_errors(), self._handle_guard():
-                first = next(walk, None)
+                first = self._listing_next(walk)
             self._open_walk: tuple[Iterator[MemberSpan], MemberSpan | None] | None = (
                 walk,
                 first,
@@ -1244,14 +1285,17 @@ class SequentialReaderAdapter(_PluginAdapter):
     def _iter_members(self) -> Iterator[ArchiveMember]:
         boundary = self._translated_errors()
         guard = self._handle_guard()
+        tracker = self._listing_tracker
         if self._open_walk is not None:
             walk, span = self._open_walk
             self._open_walk = None
         else:
+            # The holds of a walk abandoned part-way go with it.
+            tracker.release_held()
             walk = self._new_walk()
             self._walk_index = 0
             with boundary, guard:
-                span = next(walk, None)
+                span = self._listing_next(walk)
         index = 0
         # Decoded bytes of the members walked so far (``_Decoded.prefix``).
         prefix = 0
@@ -1286,7 +1330,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                     decoded.finish()
                 prefix += decoded.consumed
                 with boundary, guard:
-                    span = next(walk, None)
+                    span = self._listing_next(walk)
                 continue
             with boundary, guard:
                 left = record.offset + record.length - forward.offset
@@ -1295,7 +1339,9 @@ class SequentialReaderAdapter(_PluginAdapter):
                 assert left >= 0, (record.offset, record.length, forward.offset)
                 if left:
                     forward.skip(left)
-                span = next(walk, None)
+                span = self._listing_next(walk)
+        # Members held and never yielded stop counting with the walk that held them.
+        tracker.release_held()
 
     def _take_span(self, span: object, layer: _Layer, index: int) -> ArchiveMember:
         """The member a span describes, checked, named and placed."""
@@ -1322,6 +1368,8 @@ class SequentialReaderAdapter(_PluginAdapter):
             raise TypeError(
                 f"{name}.walk() yielded {type(member).__name__}, not an ArchiveMember"
             )
+        # A held member is counted as listed from here on, not twice.
+        self._listing_tracker.release_member(member)
         length = span.data_length
         if not isinstance(length, int) or length < 0:
             raise ValueError(
