@@ -697,6 +697,10 @@ class BaseArchiveReader(ArchiveReader):
         # What open() and stream_members() streams have decoded, for the archive-wide
         # ratio they are held to (``_hold_to_ratio``).
         self._read_ratio_tally = _new_read_ratio_tally()
+        # The ratio fields an ``extract_all`` call applies, set on its thread for the
+        # length of the call: a compressed container's decode guard, built at open,
+        # holds that call's decodes to them (``_run_ratio_limits``).
+        self._extraction_ratio = threading.local()
         # Opt-in benchmark counters (see archivey.internal.measurement). When measurement
         # is off these stay None and wrap helpers are identity — zero hot-path overhead.
         self._measure = measurement_enabled()
@@ -1151,6 +1155,11 @@ class BaseArchiveReader(ArchiveReader):
 
         config = self._config
         return ratio_limits(config.decoder_limits, config.extraction_limits)
+
+    def _run_ratio_limits(self) -> DecoderLimits | None:
+        """The ratio fields of the ``extract_all`` call running on this thread, or
+        ``None`` outside one."""
+        return getattr(self._extraction_ratio, "limits", None)
 
     def _hold_to_ratio(self, stream: ArchiveStreamImpl, member: ArchiveMember) -> None:
         """Hold a member stream ``open()`` or ``stream_members()`` gives the caller to
@@ -3735,6 +3744,7 @@ class BaseArchiveReader(ArchiveReader):
             limits=limits,
             static_size=self._trusted_source_size(),
             consumed=self._live_consumed(),
+            run_limits=self._run_ratio_limits,
         )
 
     @override
@@ -4483,8 +4493,15 @@ class BaseArchiveReader(ArchiveReader):
             # The report covers only the emits this call makes, on its own thread:
             # open-phase diagnostics stay on reader.diagnostics, and on a CONCURRENT
             # reader other threads emit into the same collector meanwhile.
-            with self._internal_member_opens(), collector.scoped() as scope:
-                results = coordinator.run(self, dest_path)
+            run_ratio = self._extraction_ratio
+            outer = getattr(run_ratio, "limits", None)
+            # The call's limits govern its decodes, the container's decode included.
+            run_ratio.limits = coordinator.ratio
+            try:
+                with self._internal_member_opens(), collector.scoped() as scope:
+                    results = coordinator.run(self, dest_path)
+            finally:
+                run_ratio.limits = outer
         finally:
             self._state.release_pass(token)
         return ExtractionReport(

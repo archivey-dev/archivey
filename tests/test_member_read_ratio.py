@@ -494,3 +494,52 @@ def test_tar_members_count_at_their_size_whether_read_or_not(tmp_path: Path) -> 
         finally:
             for stream in unread:
                 stream.close()
+
+
+def _tar_gz_of_zeros(path: Path, size: int) -> Path:
+    raw = _tar_member("zeros", bytes(size)) + _TRAILER
+    with tarfile.open(fileobj=io.BytesIO(raw)) as tf, tarfile.open(path, "w:gz") as out:
+        for info in tf:
+            out.addfile(info, tf.extractfile(info))
+    return path
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_unlimited_lifts_a_compressed_tars_decode_ratio_for_that_extraction(
+    tmp_path: Path, streaming: bool
+) -> None:
+    # The ratio guard on a .tar.gz's decoded stream is built at open, from the
+    # reader's config. The limits an extract_all call is given still govern the
+    # decodes that call makes, as they do for a ZIP.
+    path = _tar_gz_of_zeros(tmp_path / "bomb.tar.gz", 24 * _MIB)
+    with open_archive(path, streaming=streaming) as reader:
+        reader.extract_all(tmp_path / "out", limits=ExtractionLimits.UNLIMITED)
+    assert (tmp_path / "out" / "zeros").stat().st_size == 24 * _MIB
+
+
+def test_a_deprecated_call_ratio_governs_a_compressed_tars_extraction_only(
+    tmp_path: Path,
+) -> None:
+    path = _tar_gz_of_zeros(tmp_path / "bomb.tar.gz", 24 * _MIB)
+    with pytest.warns(DeprecationWarning):
+        off = ExtractionLimits(max_ratio=1e9)
+    with open_archive(path) as reader:
+        reader.extract_all(tmp_path / "out", limits=off)
+        # The reader's own reads are still held, though the extraction decoded the
+        # whole stream past the limit already.
+        with pytest.raises(ResourceLimitError, match="max_ratio=800:1"):
+            reader.read("zeros")
+    assert (tmp_path / "out" / "zeros").stat().st_size == 24 * _MIB
+
+
+def test_a_call_ratio_tighter_than_the_config_holds_a_compressed_tar(
+    tmp_path: Path,
+) -> None:
+    path = _tar_gz_of_zeros(tmp_path / "zeros.tar.gz", 4 * _MIB)
+    with pytest.warns(DeprecationWarning):
+        tight = ExtractionLimits(max_ratio=10.0, ratio_activation_threshold=1024)
+    with (
+        open_archive(path) as reader,
+        pytest.raises(ResourceLimitError, match="max_ratio=10:1"),
+    ):
+        reader.extract_all(tmp_path / "out", limits=tight)

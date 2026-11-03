@@ -511,18 +511,38 @@ class DecodeRatioGuard(_RatioGuard):
         limits: DecoderLimits,
         static_size: int | None,
         consumed: Callable[[], int | None] | None,
+        run_limits: Callable[[], DecoderLimits | None] = lambda: None,
     ) -> None:
         super().__init__(inner, max_ratio=limits.max_ratio)
         self._limits = limits
         self._static_size = static_size
         self._consumed = consumed
+        # The limits an ``extract_all`` call running on this thread applies to its own
+        # decodes, in place of ``limits`` (``None``: no such call).
+        self._run_limits = run_limits
+        # The limits the furthest offset decoded was judged under.
+        self._judged_under = limits
 
     def nearest_resume_offset(self, target: int) -> int | None:
         return ask_resume_offset(self._inner, target)
 
+    def _current_limits(self) -> DecoderLimits:
+        run = self._run_limits()
+        return self._limits if run is None else run
+
+    @override
+    def _check(self, position: int) -> None:
+        limits = self._current_limits()
+        if limits is not self._judged_under and limits != self._judged_under:
+            # An extraction that lifted the ratio may have decoded past what these
+            # limits allow: what it decoded is judged again, under these.
+            self._judged_under = limits
+            self._decoded = 0
+        super()._check(position)
+
     @override
     def _judge(self, position: int) -> None:
-        limits = self._limits
+        limits = self._current_limits()
         refusal = archive_ratio_refusal(
             position,
             max_ratio=limits.max_ratio,

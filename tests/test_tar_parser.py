@@ -2410,3 +2410,34 @@ def test_pax_records_list_repeated_keys_once() -> None:
         binary_default=False,
     )
     assert list(records.repeated) == [b"a"]
+
+
+def test_a_shape_held_by_many_keys_is_reported_once() -> None:
+    """A PAX header of many keys, each value with a newline, makes one report on the
+    member, not one per key: the count does not grow with the archive's input."""
+    body = b"".join(_rec(b"k%d" % i, b"a\nb") for i in range(50))
+    data = _pax_body(body) + _file(b"foo") + _END
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        (member,) = ar.members()
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_HEADER_AMBIGUOUS] == 1
+    (found,) = [
+        d
+        for d in member.diagnostics
+        if d.code is DiagnosticCode.MEMBER_HEADER_AMBIGUOUS
+    ]
+    assert isinstance(found.context, HeaderAmbiguityContext)
+    assert found.context.ambiguity == "newline_in_value"
+    assert (found.context.field, found.context.more_fields) == ("k0", 49)
+    assert "49 more fields: 'k1', 'k2', 'k3', and 46 others." in found.message
+
+
+def test_shapes_of_one_member_are_each_reported_once() -> None:
+    body = (
+        _rec(b"a", b"1")
+        + _rec(b"a", b"2")
+        + _rec(b"b", b"1")
+        + _rec(b"b", b"2")
+        + _rec(b"c", b"x\ny")
+    )
+    shapes = _shapes(_pax_body(body) + _file(b"foo"))
+    assert shapes == {"foo": [("repeated", "a"), ("newline_in_value", "c")]}
