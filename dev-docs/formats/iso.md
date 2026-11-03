@@ -319,7 +319,10 @@ Three kinds of record need a layout, worked out while listing and used by `_data
   fixture both do), but the ISO 9660 standard does not require it, and the Linux kernel
   reads each section where it is, so a gap between extents is read, not refused.
   Extents that overlap each other are refused with `CorruptionError`: no writer makes
-  them, and they would let a small image list a file many times its size.
+  them, and they would let a small image list a file many times its size. In a cut
+  image, the read stops at the first extent the cut reaches, with `TruncatedError` from
+  that offset on: a later extent that sits earlier on disc and survives is not read in
+  its place.
 
   `pycdlib` builds that chain for a file record whose identifier repeats the record just
   before it on disc, and sets the multi-extent flag on the earlier record in memory while
@@ -590,7 +593,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Device node is `OTHER`; plain versions keep the newest current; a directory keeps a `;N` suffix |
 | `TF` long-form dates; `TF` wins over the record date |
 | Boot catalog reads and extracts, and one declared past the image end reads short |
-| Multi-extent size and data; a gap read around, overlapping extents refused; a repeated identifier without the on-disc flag starts a member of its own, also after a real multi-extent file and when two records share an extent; a repeated superseded version stays not current; a directory and a file with one identifier both list, and so do an associated file and a file in either order; the raw directory walk crosses sector padding |
+| Multi-extent size and data; a gap read around, overlapping extents refused, a cut extent never filled by a later one; a repeated identifier without the on-disc flag starts a member of its own, also after a real multi-extent file and when two records share an extent; a repeated superseded version stays not current; a directory and a file with one identifier both list, and so do an associated file and a file in either order; the raw directory walk crosses sector padding |
 | No interchange-level guess |
 | A loop in `pycdlib`'s own walk refused at open, in all three trees and in UDF |
 | UDF tree counted against `max_members` and `max_metadata_bytes` at open |
