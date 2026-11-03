@@ -9,6 +9,7 @@ import importlib.util
 import io
 import random
 import struct
+import zlib
 from pathlib import Path
 
 import pytest
@@ -365,6 +366,65 @@ def test_a_data_block_shorter_than_the_file_needs(tmp_path: Path) -> None:
         pytest.raises(CorruptionError, match="holds 4000 bytes, not 4096"),
     ):
         archive.read("dir/blocks.bin")
+
+
+def _blocks_bin_start(data: bytes) -> int:
+    """Where ``dir/blocks.bin``'s first data block starts in the uncompressed image."""
+    return data.index(CONTENT["dir/blocks.bin"][:64])
+
+
+@pytest.mark.parametrize("cut", [4, 10])
+def test_a_compressed_data_block_cut_inside_its_stored_size(
+    tmp_path: Path, cut: int
+) -> None:
+    """A zlib block whose stored size stops ``cut`` bytes short of its stream: with 4,
+    only the Adler-32 is missing and the block still decodes to its full length."""
+    data = _uncompressed()
+    start = _blocks_bin_start(data)
+    stream = zlib.compress(bytes(4096))
+    data[start : start + len(stream)] = stream
+    inode = _inode_offset(data, b"blocks.bin")
+    data[inode + 32 : inode + 36] = struct.pack("<I", len(stream) - cut)  # compressed
+    with (
+        open_archive(_image(tmp_path, bytes(data))) as archive,
+        pytest.raises(CorruptionError, match=f"the block at {start}: ") as caught,
+    ):
+        archive.read("dir/blocks.bin")
+    # The image holds the whole stored block: the stored size is wrong, not the image cut.
+    assert not isinstance(caught.value, TruncatedError)
+
+
+@pytest.mark.parametrize("cut", [4, 10])
+def test_a_compressed_fragment_block_cut_inside_its_stored_size(
+    tmp_path: Path, cut: int
+) -> None:
+    """Nothing else checks a fragment block's decoded length, so a cut one gave a
+    silent prefix (or, with only the Adler-32 cut, unchecked bytes)."""
+    data = _uncompressed()
+    start = _blocks_bin_start(data)
+    stream = zlib.compress(b"hello\n" + bytes(100))
+    data[start : start + len(stream)] = stream
+    table = _superblock_field(data, 80, "<Q")  # the fragment table index
+    entries = _superblock_field(data, table, "<Q") + 2  # one uncompressed block
+    assert struct.unpack_from("<QI", data, entries) == (42178, 6 | 1 << 24)
+    data[entries : entries + 12] = struct.pack("<QI", start, len(stream) - cut)
+    with (
+        open_archive(_image(tmp_path, bytes(data))) as archive,
+        pytest.raises(CorruptionError, match=f"the block at {start}: "),
+    ):
+        archive.read("a.txt")
+
+
+def test_a_name_longer_than_the_kernel_allows(tmp_path: Path) -> None:
+    """The kernel and unsquashfs refuse an entry name over 256 bytes."""
+    data = _uncompressed()
+    entry = _entry_offset(data, b"a.txt")
+    data[entry + 6 : entry + 8] = struct.pack("<H", 256)  # 257 bytes
+    with (
+        open_archive(_image(tmp_path, bytes(data))) as archive,
+        pytest.raises(CorruptionError, match="name of 257 bytes"),
+    ):
+        archive.members()
 
 
 def test_a_data_block_longer_than_the_block_size(tmp_path: Path) -> None:

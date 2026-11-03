@@ -49,10 +49,13 @@ other than 4.0 SHALL raise `UnsupportedFeatureError`.
 The backend SHALL refuse with `CorruptionError`: a metadata block longer than 8 KiB, a
 data block longer than the block size or shorter than its file needs, a fragment past
 the fragment table, a name with a `/`, an entry whose inode has another type, a
-directory reached twice, a symlink target longer than 65535 bytes, and files whose
-block lists add up to more than the inode table holds. These are structural bounds, not
+directory reached twice, a symlink target longer than 65535 bytes, an entry name longer
+than 256 bytes, a compressed block whose stream ends early or fails its codec's check
+(zlib's Adler-32, the xz CRC), and files whose block lists add up to more than the
+inode table holds. These are structural bounds, not
 policy limits: 8 KiB is the format's metadata block size, the block size is in the
 superblock, 65535 is the longest target the Linux kernel reads (`squashfs_read_inode`),
+256 is the longest name the kernel and unsquashfs read (`SQUASHFS_NAME_LEN`),
 and in a valid image each file's block list lies in its own bytes of the decoded inode
 table, which is at most 8 KiB per metadata block.
 An image cut short SHALL raise `TruncatedError` naming the structure the cut falls in.
@@ -69,6 +72,8 @@ not kept is decoded again when it is needed.
 | A data block declaring `0xFFFFFF` bytes | `CorruptionError` |
 | A data block that decodes to 4000 bytes where the file needs 4096 | `CorruptionError` |
 | A symlink target of 70000 bytes | `CorruptionError` |
+| A directory entry name of 257 bytes | `CorruptionError` |
+| A zlib data or fragment block whose stored size stops before the stream's Adler-32 | `CorruptionError`, not `TruncatedError` |
 | A directory listed inside itself | `CorruptionError`, "listed twice" |
 | A file whose size needs a block list longer than the inode table | `CorruptionError`, before the list is read |
 | An image cut in half | `TruncatedError` |
