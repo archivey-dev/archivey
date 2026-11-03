@@ -58,3 +58,53 @@ def test_readers_build_streams_and_passes_without_warning(tmp_path) -> None:
         gz.write_bytes(gzip.compress(b"payload"))
         with open_stream(gz) as stream:
             assert stream.read() == b"payload"
+
+
+def test_an_archive_stream_subclass_from_0_2_warns_and_still_reads() -> None:
+    """In 0.2 ``ArchiveStream`` was concrete, so a subclass could add to it alone.
+    Built with no warning, its arguments were dropped and ``read()`` raised
+    ``NotImplementedError``."""
+
+    class Tagged(ArchiveStream):
+        tag = "mine"
+
+    with pytest.warns(DeprecationWarning, match=r"subclassing ArchiveStream.*0\.4\.0"):
+        stream = Tagged(lambda: io.BytesIO(b"payload"), translate=lambda _e: None)
+    assert isinstance(stream, Tagged)
+    assert isinstance(stream, ArchiveStreamImpl)
+    assert stream.tag == "mine"
+    with stream:
+        assert stream.read() == b"payload"
+
+
+def test_a_member_pass_subclass_from_0_2_warns_and_still_iterates() -> None:
+    """Such a subclass raised ``TypeError`` at once: its abstract methods were unset."""
+
+    class Counted(MemberPass[int]):
+        def __next__(self) -> int:
+            return 10 * super().__next__()
+
+    def items():
+        yield 1
+        yield 2
+
+    with pytest.warns(DeprecationWarning, match=r"subclassing MemberPass.*Counted"):
+        members = Counted(items())
+    assert isinstance(members, Counted)
+    assert list(members) == [10, 20]
+    members.close()
+
+
+def test_a_complete_subclass_builds_as_written_without_warning() -> None:
+    class Done(MemberPass[int]):
+        def __next__(self) -> int:
+            raise StopIteration
+
+        def close(self) -> None:
+            pass
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        members = Done()
+    assert type(members) is Done
+    assert list(members) == []
