@@ -124,9 +124,7 @@ Each item gets a test (tasks group 5).
 6. A level is never claimed for a check that did not run. Under-reporting is allowed and
    over-reporting is not.
 7. A check that spans members (7z folder CRC, `.tar.gz` trailer) raises the members it
-   covers when it passes, and not before. When a 7z folder CRC fails, the read that
-   reaches the folder's end raises `CorruptionError` naming the folder, and
-   `verify_all()` returns each member it covers; no level falls.
+   covers when it passes, and not before.
 8. Reading `verified` or `verifiable` never reads, decodes or seeks.
 9. `stream.verify()` on a seekable stream leaves it as it was (position and what a later
    `read()` returns). On a non-seekable stream it reads to the end, later reads raise
