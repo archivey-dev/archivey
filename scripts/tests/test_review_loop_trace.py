@@ -109,10 +109,10 @@ def test_summary_names_batching_subagents_and_denials() -> None:
     assert "3 turns, 4 tool calls (5 turns counting subagents)" in text
     assert "1 sent two or more calls at once (most in one turn: 3)" in text
     assert "largest context: 6002 tokens" in text
-    assert "**Subagents: 1** (Explore 1)" in text
-    assert "Explore, sonnet: Find callers. 2 turns (1 Grep)" in text
-    assert "Bash `gh pr diff 7`: 500 chars" in text
-    assert "Bash `rm -rf build`" in text
+    assert "**Subagents: 1** (`Explore` 1)" in text
+    assert "`Explore`, `sonnet`: `Find callers`. 2 turns (1 `Grep`)" in text
+    assert "`Bash` `gh pr diff 7`: 500 chars" in text
+    assert "`Bash` `rm -rf build`" in text
 
 
 def test_no_result_text_in_summary_or_trace(tmp_path: Path) -> None:
@@ -139,3 +139,47 @@ def test_long_inputs_are_capped() -> None:
     call = trace_mod.Call(1, "main", 1, "Bash", {"command": "z" * 1000})
     capped = trace_mod._capped_input(call)["command"]
     assert len(capped) < 1000 and capped.endswith("[+600]")
+
+
+def test_nested_strings_in_an_input_are_capped_too() -> None:
+    long = "ghs_" + "S" * 5000
+    call = trace_mod.Call(
+        1, "main", 1, "Bash", {"command": "ls", "env": {"T": long}, "args": [long]}
+    )
+    capped = json.dumps(trace_mod._capped_input(call))
+    assert long not in capped and len(capped) < 2000
+
+
+def test_an_input_that_is_not_a_dict_still_summarizes() -> None:
+    odd = [
+        assistant(
+            "m1", {"type": "tool_use", "id": "t1", "name": "Bash", "input": "z" * 900}
+        ),
+        result("t1", "ok"),
+        {
+            "type": "result",
+            "permission_denials": [{"tool_name": "Bash", "tool_input": "rm"}],
+        },
+    ]
+    trace = trace_mod.parse(odd)
+    assert len(json.dumps(trace_mod.trace_records(trace))) < 1500
+    text = trace_mod.summary(trace)
+    assert "`Bash` `rm`" in text
+
+
+def test_tool_inputs_cannot_render_as_markdown_in_the_summary() -> None:
+    image = "![i](https://attacker.example/s)"
+    hostile = [
+        assistant(
+            "m1", tool_use("t1", "Agent", subagent_type="Explore", description=image)
+        ),
+        result("t1", "done"),
+        assistant("m2", tool_use("t2", "Bash", command=f"x` {image}")),
+        result("t2", "y" * 10),
+    ]
+    text = trace_mod.summary(trace_mod.parse(hostile))
+    for line in text.splitlines():
+        if "attacker" in line:
+            # The image sits inside a code span: an odd count of backticks before it.
+            before = line[: line.index("![i]")]
+            assert before.count("`") % 2 == 1, line

@@ -39,6 +39,13 @@ def _cap(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit] + f"… [+{len(text) - limit}]"
 
 
+def _code(text: object, limit: int) -> str:
+    """`text` as one inline code span, so nothing a tool input holds renders as
+    Markdown in the public job summary: backticks inside become `'`, newlines spaces."""
+    flat = " ".join(str(text).replace("`", "'").split())
+    return f"`{_cap(flat, limit)}`" if flat else "`-`"
+
+
 def _result_chars(content: object) -> int:
     if isinstance(content, str):
         return len(content)
@@ -49,8 +56,10 @@ def _result_chars(content: object) -> int:
     return 0
 
 
-def _target(name: str, args: dict) -> str:
+def _target(name: str, args: object) -> str:
     """The one argument that says what a call was about, for a one-line listing."""
+    if not isinstance(args, dict):
+        return " ".join(str(args).split()) if args else name
     for key in ("file_path", "pattern", "command", "url", "description", "path"):
         value = args.get(key)
         if isinstance(value, str) and value:
@@ -64,7 +73,7 @@ class Call:
     agent: str  # "main", or the id of the Agent call that started the subagent
     turn: int
     tool: str
-    input: dict
+    input: object  # a dict from the SDK; anything else is kept, capped
     result_chars: int = 0
     is_error: bool = False
 
@@ -138,7 +147,7 @@ def parse(messages: list[dict]) -> Trace:
                         agent,
                         turn.index,
                         part.get("name", "?"),
-                        part.get("input") or {},
+                        part.get("input", {}),
                     )
                     turn.calls.append(call)
                     calls[part.get("id", f"anon-{seq}")] = call
@@ -153,12 +162,20 @@ def parse(messages: list[dict]) -> Trace:
     return Trace(turns, calls, result)
 
 
-def _capped_input(call: Call) -> dict:
+def _cap_strings(value: object, limit: int) -> object:
+    """Every string in `value`, at any depth, cut to `limit`."""
+    if isinstance(value, str):
+        return _cap(value, limit)
+    if isinstance(value, dict):
+        return {key: _cap_strings(item, limit) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_cap_strings(item, limit) for item in value]
+    return value
+
+
+def _capped_input(call: Call) -> object:
     limit = PROMPT_CAP if call.tool in SUBAGENT_TOOLS else INPUT_CAP
-    return {
-        key: _cap(value, limit) if isinstance(value, str) else value
-        for key, value in call.input.items()
-    }
+    return _cap_strings(call.input, limit)
 
 
 def trace_records(trace: Trace) -> list[dict]:
@@ -224,13 +241,14 @@ def summary(trace: Trace) -> str:
         )
     tools = Counter(c.tool for c in main_calls)
     if tools:
-        listed = ", ".join(f"{name} {n}" for name, n in tools.most_common())
+        listed = ", ".join(f"{_code(name, 40)} {n}" for name, n in tools.most_common())
         lines.append(f"- Main agent's tool calls: {listed}")
     for model, usage in sorted((result.get("modelUsage") or {}).items()):
         cost = usage.get("costUSD")
         if cost is not None:
             lines.append(
-                f"- {model}: ${cost:.2f}, {usage.get('outputTokens', 0)} output tokens"
+                f"- {_code(model, 60)}: ${cost:.2f}, "
+                f"{usage.get('outputTokens', 0)} output tokens"
             )
 
     spawns = [
@@ -239,7 +257,9 @@ def summary(trace: Trace) -> str:
         if call.agent == "main" and call.tool in SUBAGENT_TOOLS
     ]
     stats = result.get("subagent_stats") or {}
-    by_type = ", ".join(f"{k} {n}" for k, n in (stats.get("by_type") or {}).items())
+    by_type = ", ".join(
+        f"{_code(k, 40)} {n}" for k, n in (stats.get("by_type") or {}).items()
+    )
     lines += [
         "",
         f"**Subagents: {len(spawns)}**" + (f" ({by_type})" if by_type else ""),
@@ -247,14 +267,16 @@ def summary(trace: Trace) -> str:
     for tool_id, call in spawns:
         sub = trace.agent_turns(tool_id)
         sub_calls = Counter(c.tool for t in sub for c in t.calls)
-        model = call.input.get("model") or (sub[0].model if sub else "inherited")
-        kind = call.input.get("subagent_type", "general-purpose")
+        args = call.input if isinstance(call.input, dict) else {}
+        model = args.get("model") or (sub[0].model if sub else "inherited")
+        kind = args.get("subagent_type", "general-purpose")
         did = (
-            ", ".join(f"{n} {k}" for k, n in sub_calls.most_common()) or "no calls seen"
+            ", ".join(f"{n} {_code(k, 40)}" for k, n in sub_calls.most_common())
+            or "no calls seen"
         )
         lines.append(
-            f"- main turn {call.turn}: {kind}, {model}: "
-            f"{_cap(_target(call.tool, call.input), 120)}. {len(sub)} turns ({did}); "
+            f"- main turn {call.turn}: {_code(kind, 40)}, {_code(model, 40)}: "
+            f"{_code(_target(call.tool, call.input), 120)}. {len(sub)} turns ({did}); "
             f"returned {call.result_chars} chars"
         )
 
@@ -266,7 +288,8 @@ def summary(trace: Trace) -> str:
         lines += ["", "**Largest results the main agent read**"]
         for call in biggest:
             lines.append(
-                f"- turn {call.turn}, {call.tool} `{_cap(_target(call.tool, call.input), 100)}`: "
+                f"- turn {call.turn}, {_code(call.tool, 40)} "
+                f"{_code(_target(call.tool, call.input), 100)}: "
                 f"{call.result_chars} chars"
             )
 
@@ -274,9 +297,9 @@ def summary(trace: Trace) -> str:
     if denials:
         lines += ["", "**Permission denials**"]
         for denial in denials:
-            name = denial.get("tool_name", "?")
+            name = str(denial.get("tool_name", "?"))
             args = denial.get("tool_input") or {}
-            lines.append(f"- {name} `{_cap(_target(name, args), 160)}`")
+            lines.append(f"- {_code(name, 40)} {_code(_target(name, args), 160)}")
     return "\n".join(lines) + "\n"
 
 
